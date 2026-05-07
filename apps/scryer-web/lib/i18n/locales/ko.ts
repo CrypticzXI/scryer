@@ -191,6 +191,7 @@ const ko: LocaleDictionary = {
     "라이브러리 스캔 완료. {{imported}}개 가져옴, {{skipped}}개 건너뜀, {{unmatched}}개 매칭 안됨.",
   "settings.libraryScanFailed": "라이브러리 스캔 실패.",
   "settings.libraryScanCancel": "취소",
+  "settings.libraryScanRunInBackground": "백그라운드에서 실행",
   "settings.libraryScanCancelFailed": "라이브러리 스캔을 취소하지 못했습니다.",
   "settings.libraryScanCanceled": "라이브러리 스캔이 취소되었습니다.",
   "settings.libraryScanCanceledSummary":
@@ -1259,6 +1260,7 @@ const ko: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "필러 영화 모니터링",
   "settings.monitorFillerMoviesDescription":
     "다운로드 대기열에 필러로 분류된 영화 포함",
+  "settings.sidecarFilesTitle": "사이드카 파일",
   "settings.nfoWriteOnImportLabel": "가져오기 시 NFO 작성",
   "settings.nfoWriteOnImportDescription":
     "가져온 미디어와 함께 Kodi/Jellyfin/Emby 호환 .nfo 메타데이터 파일을 작성합니다",

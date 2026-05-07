@@ -79,6 +79,14 @@ impl LibraryProbeRepository for SqliteLibraryStateStore {
             )
             .await
     }
+
+    async fn delete_probe_signatures_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
+        crate::queries::workflow::delete_library_probe_signatures_for_title_ids_query(
+            self.db.pool(),
+            title_ids,
+        )
+        .await
+    }
 }
 
 #[async_trait]
@@ -106,6 +114,14 @@ impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateStore {
         self.db
             .delete_library_scan_unmatched_item(library_id, facet, item_path)
             .await
+    }
+
+    async fn delete_for_library(&self, library_id: &str) -> AppResult<u32> {
+        crate::queries::library_scan_unmatched::delete_library_scan_unmatched_items_for_library_query(
+            self.db.pool(),
+            library_id,
+        )
+        .await
     }
 
     async fn list_library_scan_unmatched_items(
@@ -406,6 +422,33 @@ impl HousekeepingRepository for SqliteLibraryStateStore {
 
     async fn delete_rule_set_history_older_than(&self, days: i64) -> AppResult<u32> {
         self.db.delete_rule_set_history_older_than(days).await
+    }
+
+    async fn delete_history_events_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
+        crate::queries::housekeeping::delete_history_events_for_title_ids_query(
+            self.db.pool(),
+            title_ids,
+        )
+        .await
+    }
+
+    async fn delete_download_import_artifacts_for_title_ids(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<u32> {
+        crate::queries::housekeeping::delete_download_import_artifacts_for_title_ids_query(
+            self.db.pool(),
+            title_ids,
+        )
+        .await
+    }
+
+    async fn delete_release_attempts_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
+        crate::queries::housekeeping::delete_release_attempts_for_title_ids_query(
+            self.db.pool(),
+            title_ids,
+        )
+        .await
     }
 
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>> {

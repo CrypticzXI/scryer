@@ -131,7 +131,7 @@ pub trait LibraryRepository: Send + Sync {
         slug: String,
         roots: Vec<LibraryRootDraft>,
     ) -> AppResult<Library>;
-    async fn delete_empty(&self, library_id: &str) -> AppResult<bool>;
+    async fn delete_library(&self, library_id: &str) -> AppResult<bool>;
     async fn app_permission_mask_for_user(&self, user_id: &str) -> AppResult<AppPermissionMask>;
     async fn set_app_permission_mask_for_user(
         &self,
@@ -301,6 +301,7 @@ pub trait DomainEventRepository: Send + Sync {
         after_sequence: i64,
         limit: usize,
     ) -> AppResult<Vec<DomainEvent>>;
+    async fn delete_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
     async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64>;
     async fn set_subscriber_offset(&self, subscriber: &str, sequence: i64) -> AppResult<()>;
 }
@@ -362,6 +363,8 @@ pub trait SettingsRepository: Send + Sync {
         key_name: &str,
         scope_id: Option<String>,
     ) -> AppResult<()>;
+
+    async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32>;
 }
 
 #[async_trait]
@@ -387,6 +390,12 @@ pub trait HousekeepingRepository: Send + Sync {
     async fn delete_terminal_download_queue_commands_older_than(&self, days: i64)
     -> AppResult<u32>;
     async fn delete_rule_set_history_older_than(&self, days: i64) -> AppResult<u32>;
+    async fn delete_history_events_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
+    async fn delete_download_import_artifacts_for_title_ids(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<u32>;
+    async fn delete_release_attempts_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>>;
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32>;
 }
@@ -544,6 +553,7 @@ pub trait LibraryProbeRepository: Send + Sync {
     -> AppResult<Option<LibraryProbeSignature>>;
 
     async fn upsert_probe_signature(&self, probe: &LibraryProbeSignature) -> AppResult<()>;
+    async fn delete_probe_signatures_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
 }
 
 #[async_trait]
@@ -564,6 +574,7 @@ pub trait LibraryScanUnmatchedItemRepository: Send + Sync {
         facet: MediaFacet,
         item_path: &str,
     ) -> AppResult<()>;
+    async fn delete_for_library(&self, library_id: &str) -> AppResult<u32>;
 
     async fn list_library_scan_unmatched_items(
         &self,

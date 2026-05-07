@@ -142,13 +142,13 @@ fn cross_indexer_release_dedup_prefers_higher_priority_source() {
     let results = vec![
         make_search_result(
             "Lower Priority",
-            "Firefly.S01E12.720p.WEB-DL.x264-NTb",
+            "Signal.Run.S01E12.720p.WEB-DL.x264-NTb",
             "https://example.test/low",
             DownloadSourceKind::NzbUrl,
         ),
         make_search_result(
             "Higher Priority",
-            "Firefly.S01E12.720p.WEB-DL.x264-NTb",
+            "Signal.Run.S01E12.720p.WEB-DL.x264-NTb",
             "https://example.test/high",
             DownloadSourceKind::NzbUrl,
         ),

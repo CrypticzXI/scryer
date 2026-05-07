@@ -114,38 +114,38 @@ fn loaded_catalog_settings_permission_does_not_satisfy_legacy_manage_config() {
 
 #[test]
 fn fuzzy_exact_match() {
-    assert!(match_fuzzy("Cowboy Bebop", "cowboy bebop"));
+    assert!(match_fuzzy("Velvet Comet", "velvet comet"));
 }
 
 #[test]
 fn fuzzy_partial_match_beginning() {
-    assert!(match_fuzzy("Cowboy Bebop", "cow"));
+    assert!(match_fuzzy("Velvet Comet", "vel"));
 }
 
 #[test]
 fn fuzzy_partial_match_middle() {
-    assert!(match_fuzzy("Cowboy Bebop", "boy be"));
+    assert!(match_fuzzy("Velvet Comet", "vet co"));
 }
 
 #[test]
 fn fuzzy_partial_match_end() {
-    assert!(match_fuzzy("Cowboy Bebop", "bebop"));
+    assert!(match_fuzzy("Velvet Comet", "comet"));
 }
 
 #[test]
 fn fuzzy_case_insensitive() {
-    assert!(match_fuzzy("Cowboy Bebop", "COWBOY"));
-    assert!(match_fuzzy("cowboy bebop", "BEBOP"));
+    assert!(match_fuzzy("Velvet Comet", "VELVET"));
+    assert!(match_fuzzy("velvet comet", "COMET"));
 }
 
 #[test]
 fn fuzzy_no_match() {
-    assert!(!match_fuzzy("Cowboy Bebop", "naruto"));
+    assert!(!match_fuzzy("Velvet Comet", "solara"));
 }
 
 #[test]
 fn fuzzy_empty_query_matches_everything() {
-    assert!(match_fuzzy("Cowboy Bebop", ""));
+    assert!(match_fuzzy("Velvet Comet", ""));
     assert!(match_fuzzy("", ""));
 }
 
@@ -156,7 +156,7 @@ fn fuzzy_empty_candidate_no_match() {
 
 #[test]
 fn fuzzy_whitespace_query() {
-    assert!(match_fuzzy("Cowboy Bebop", "  "));
+    assert!(match_fuzzy("Velvet Comet", "  "));
 }
 
 // ── normalize_tags ────────────────────────────────────────────────────────
@@ -351,7 +351,7 @@ fn new_title_with_defaults() {
 
 #[test]
 fn parse_query_trims_and_lowercases() {
-    assert_eq!(parse_query("  Cowboy Bebop  "), "cowboy bebop");
+    assert_eq!(parse_query("  Velvet Comet  "), "velvet comet");
     assert_eq!(parse_query("UPPERCASE"), "uppercase");
 }
 

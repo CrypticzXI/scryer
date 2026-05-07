@@ -550,21 +550,21 @@ fn finish_xml(buf: Cursor<Vec<u8>>) -> String {
 mod tests {
     use super::*;
 
-    fn bastard_tvshow_nfo() -> &'static str {
+    fn nightfall_tvshow_nfo() -> &'static str {
         r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <tvshow>
-  <plot>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</plot>
-  <outline>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</outline>
+  <plot>Nightfall!! follows the remnant wardens of a ruined sky-kingdom as they try to stop a shard-born eclipse from swallowing the last inhabited cities.</plot>
+  <outline>Nightfall!! follows the remnant wardens of a ruined sky-kingdom as they try to stop a shard-born eclipse from swallowing the last inhabited cities.</outline>
   <lockdata>false</lockdata>
   <dateadded>2026-04-21 04:22:41</dateadded>
-  <title>Bastard!!</title>
-  <originaltitle>Bastard!! Ankoku no Hakaishin</originaltitle>
+  <title>Nightfall!!</title>
+  <originaltitle>Nightfall!! Kage no Requiem</originaltitle>
   <trailer>plugin://plugin.video.youtube/play/?video_id=_Iqc-dG8peA</trailer>
   <trailer>plugin://plugin.video.youtube/play/?video_id=Vt4zSf3CfRA</trailer>
   <rating>5</rating>
   <year>2022</year>
   <mpaa>TV-MA</mpaa>
-  <collectionnumber>156898</collectionnumber>
+  <collectionnumber>186898</collectionnumber>
   <imdb_id>tt17736234</imdb_id>
   <tmdbid>156898</tmdbid>
   <premiered>1992-08-25</premiered>
@@ -590,7 +590,7 @@ mod tests {
   <tag>seinen</tag>
   <anidbid>10</anidbid>
   <tvdbid>415677</tvdbid>
-  <tvdbslugid>bastard-2022</tvdbslugid>
+  <tvdbslugid>nightfall-2022</tvdbslugid>
   <art>
     <poster>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/poster.jpg</poster>
     <fanart>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/backdrop.jpg</fanart>
@@ -610,7 +610,7 @@ mod tests {
     fn make_title() -> Title {
         Title {
             id: "t1".into(),
-            name: "The Matrix".into(),
+            name: "Glass Harbor".into(),
             facet: MediaFacet::Movie,
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
             monitored: true,
@@ -628,7 +628,9 @@ mod tests {
             created_by: None,
             created_at: Utc::now(),
             year: Some(1999),
-            overview: Some("A computer hacker learns about the true nature of reality.".into()),
+            overview: Some(
+                "A courier uncovers the secret geometry beneath a flooded megacity.".into(),
+            ),
             poster_url: None,
             poster_source_url: None,
             banner_url: None,
@@ -644,7 +646,7 @@ mod tests {
             language: None,
             first_aired: None,
             network: None,
-            studio: Some("Warner Bros.".into()),
+            studio: Some("Aurora Gate".into()),
             country: None,
             aliases: vec![],
             tagged_aliases: vec![],
@@ -688,14 +690,14 @@ mod tests {
     fn parse_kodi_uniqueid_tvdb() {
         let nfo = r#"<?xml version="1.0" encoding="UTF-8"?>
 <movie>
-  <title>Dune</title>
+  <title>Glass Harbor</title>
   <uniqueid type="tvdb" default="true">12345</uniqueid>
   <uniqueid type="imdb">tt1160419</uniqueid>
 </movie>"#;
         let meta = parse_nfo(nfo);
         assert_eq!(meta.tvdb_id, Some("12345".into()));
         assert_eq!(meta.imdb_id, Some("tt1160419".into()));
-        assert_eq!(meta.title, Some("Dune".into()));
+        assert_eq!(meta.title, Some("Glass Harbor".into()));
     }
 
     #[test]
@@ -767,7 +769,7 @@ mod tests {
 
     #[test]
     fn parse_url_only_tmdb() {
-        let nfo = "https://www.themoviedb.org/movie/438631-dune";
+        let nfo = "https://www.themoviedb.org/movie/438631-glass-harbor";
         let meta = parse_nfo(nfo);
         assert_eq!(meta.tmdb_id, Some("438631".into()));
     }
@@ -794,7 +796,7 @@ mod tests {
     fn parse_full_movie_nfo() {
         let nfo = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <movie>
-  <title>The Matrix</title>
+  <title>Glass Harbor</title>
   <year>1999</year>
   <plot>A computer hacker learns about reality.</plot>
   <runtime>136</runtime>
@@ -809,37 +811,37 @@ mod tests {
         assert_eq!(meta.tvdb_id, Some("12345".into()));
         assert_eq!(meta.imdb_id, Some("tt0133093".into()));
         assert_eq!(meta.tmdb_id, Some("603".into()));
-        assert_eq!(meta.title, Some("The Matrix".into()));
+        assert_eq!(meta.title, Some("Glass Harbor".into()));
         assert_eq!(meta.year, Some(1999));
     }
 
     #[test]
     fn parse_tvshow_nfo() {
         let nfo = r#"<tvshow>
-  <title>Breaking Bad</title>
+  <title>Neon Divide</title>
   <year>2008</year>
   <uniqueid type="tvdb" default="true">81189</uniqueid>
 </tvshow>"#;
         let meta = parse_nfo(nfo);
         assert_eq!(meta.tvdb_id, Some("81189".into()));
-        assert_eq!(meta.title, Some("Breaking Bad".into()));
+        assert_eq!(meta.title, Some("Neon Divide".into()));
         assert_eq!(meta.year, Some(2008));
     }
 
     #[test]
-    fn parse_jellyfin_bastard_tvshow_nfo() {
-        let meta = parse_nfo(bastard_tvshow_nfo());
-        assert_eq!(meta.title.as_deref(), Some("Bastard!!"));
+    fn parse_jellyfin_nightfall_tvshow_nfo() {
+        let meta = parse_nfo(nightfall_tvshow_nfo());
+        assert_eq!(meta.title.as_deref(), Some("Nightfall!!"));
         assert_eq!(meta.year, Some(2022));
         assert_eq!(meta.tvdb_id.as_deref(), Some("415677"));
         assert_eq!(meta.tmdb_id.as_deref(), Some("156898"));
     }
 
     #[test]
-    fn parse_jellyfin_bastard_tvshow_nfo_with_utf8_bom() {
-        let prefixed = format!("\u{feff}{}", bastard_tvshow_nfo());
+    fn parse_jellyfin_nightfall_tvshow_nfo_with_utf8_bom() {
+        let prefixed = format!("\u{feff}{}", nightfall_tvshow_nfo());
         let meta = parse_nfo(&prefixed);
-        assert_eq!(meta.title.as_deref(), Some("Bastard!!"));
+        assert_eq!(meta.title.as_deref(), Some("Nightfall!!"));
         assert_eq!(meta.year, Some(2022));
         assert_eq!(meta.tvdb_id.as_deref(), Some("415677"));
     }
@@ -860,18 +862,18 @@ mod tests {
     #[test]
     fn detect_movie_nfo_root_kind() {
         assert_eq!(
-            detect_nfo_root_kind(r#"<movie><title>Dune</title></movie>"#),
+            detect_nfo_root_kind(r#"<movie><title>Glass Harbor</title></movie>"#),
             NfoRootKind::Movie
         );
         assert!(looks_like_movie_nfo(
-            r#"<movie><title>Dune</title></movie>"#
+            r#"<movie><title>Glass Harbor</title></movie>"#
         ));
     }
 
     #[test]
     fn reject_tvshow_and_episode_nfo_for_movie_detection() {
         assert_eq!(
-            detect_nfo_root_kind(r#"<tvshow><title>Bluey</title></tvshow>"#),
+            detect_nfo_root_kind(r#"<tvshow><title>Harbor Pals</title></tvshow>"#),
             NfoRootKind::TvShow
         );
         assert_eq!(
@@ -879,7 +881,7 @@ mod tests {
             NfoRootKind::Episode
         );
         assert!(!looks_like_movie_nfo(
-            r#"<tvshow><title>Bluey</title></tvshow>"#
+            r#"<tvshow><title>Harbor Pals</title></tvshow>"#
         ));
         assert!(!looks_like_movie_nfo(
             r#"<episodedetails><title>Pilot</title></episodedetails>"#
@@ -888,7 +890,7 @@ mod tests {
 
     #[test]
     fn detect_tvshow_root_kind_accepts_utf8_bom() {
-        let prefixed = format!("\u{feff}{}", bastard_tvshow_nfo());
+        let prefixed = format!("\u{feff}{}", nightfall_tvshow_nfo());
         assert_eq!(detect_nfo_root_kind(&prefixed), NfoRootKind::TvShow);
     }
 
@@ -959,7 +961,7 @@ mod tests {
         let xml = render_movie_nfo(&title);
         assert!(xml.contains("<?xml"));
         assert!(xml.contains("<movie>"));
-        assert!(xml.contains("<title>The Matrix</title>"));
+        assert!(xml.contains("<title>Glass Harbor</title>"));
         assert!(xml.contains("<year>1999</year>"));
         assert!(xml.contains("<plot>A computer hacker"));
         assert!(xml.contains("<runtime>136</runtime>"));
@@ -1010,7 +1012,7 @@ mod tests {
     fn render_plexmatch() {
         let title = make_title();
         let plex = super::render_plexmatch(&title);
-        assert!(plex.contains("title: The Matrix"));
+        assert!(plex.contains("title: Glass Harbor"));
         assert!(plex.contains("year: 1999"));
         assert!(plex.contains("tvdbid: 12345"));
         assert!(plex.contains("imdbid: tt0133093"));

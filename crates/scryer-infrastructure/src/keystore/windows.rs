@@ -84,15 +84,20 @@ mod tests {
     fn credential_manager_round_trip() {
         let store = WindowsCredentialManager;
         let test_key = "dGVzdC1rZXktZm9yLWNyZWRtZ3I=";
-
-        let _ = store.delete_key();
-
-        assert!(matches!(store.get_key(), Ok(None)));
+        let original = store.get_key().unwrap();
 
         store.set_key(test_key).unwrap();
         assert_eq!(store.get_key().unwrap(), Some(test_key.to_string()));
 
-        store.delete_key().unwrap();
-        assert!(matches!(store.get_key(), Ok(None)));
+        match original {
+            Some(previous) => {
+                store.set_key(&previous).unwrap();
+                assert_eq!(store.get_key().unwrap(), Some(previous));
+            }
+            None => {
+                store.delete_key().unwrap();
+                assert!(matches!(store.get_key(), Ok(None)));
+            }
+        }
     }
 }

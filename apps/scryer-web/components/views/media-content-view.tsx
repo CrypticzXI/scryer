@@ -246,7 +246,7 @@ export function MediaContentView({
     loadLibrarySettings: (libraryId: string) => Promise<LibrarySettingsRecord | null>;
     createLibrary: (input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
     updateLibrary: (libraryId: string, input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
-    deleteEmptyLibrary: (libraryId: string) => Promise<boolean | void> | boolean | void;
+    deleteLibrary: (libraryId: string) => Promise<boolean | void> | boolean | void;
     scanLibrary: (libraryId?: string) => Promise<void> | void;
     onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
     deleteCatalogTitle: (title: TitleRecord) => void;
@@ -672,7 +672,7 @@ export function MediaContentView({
             loadLibrarySettings={state.loadLibrarySettings}
             onCreateLibrary={state.createLibrary}
             onUpdateLibrary={state.updateLibrary}
-            onDeleteLibrary={state.deleteEmptyLibrary}
+            onDeleteLibrary={state.deleteLibrary}
             onScan={handleLibraryScan}
           />
         ) : null

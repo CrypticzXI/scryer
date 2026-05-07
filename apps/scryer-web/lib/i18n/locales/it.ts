@@ -196,6 +196,7 @@ const it: LocaleDictionary = {
     "Scansione libreria completata. {{imported}} importati, {{skipped}} saltati, {{unmatched}} senza corrispondenza.",
   "settings.libraryScanFailed": "Scansione libreria fallita.",
   "settings.libraryScanCancel": "Annulla",
+  "settings.libraryScanRunInBackground": "Esegui in background",
   "settings.libraryScanCancelFailed":
     "Impossibile annullare la scansione della libreria.",
   "settings.libraryScanCanceled": "Scansione della libreria annullata.",
@@ -1303,6 +1304,7 @@ const it: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "Monitorare i filmati di riempimento",
   "settings.monitorFillerMoviesDescription":
     "Includi i film classificati come riempitivi nella coda di download",
+  "settings.sidecarFilesTitle": "File sidecar",
   "settings.nfoWriteOnImportLabel": "Scrivi NFO all'importazione",
   "settings.nfoWriteOnImportDescription":
     "Scrivi file di metadati .nfo compatibili con Kodi/Jellyfin/Emby accanto ai media importati",

@@ -1833,7 +1833,7 @@ mod tests {
                     LibraryScanTitleDiscoveredEventData {
                         session_id: session_id.to_string(),
                         title_id: "title-1".to_string(),
-                        title_name: "Bluey".to_string(),
+                        title_name: "Harbor Pals".to_string(),
                         facet: MediaFacet::Movie,
                         discovered_file_count: 1,
                         folder_path: None,

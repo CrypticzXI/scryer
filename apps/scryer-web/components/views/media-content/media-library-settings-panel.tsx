@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import { SCORING_PERSONA_CHOICES } from "@/lib/constants/quality-profiles";
+import { boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
 import type {
   LibraryRecord,
   LibraryScanSummary,
@@ -1059,6 +1060,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     variant="outline"
                     onClick={handleDeleteLibrary}
                     disabled={actionBusy}
+                    className={boxedActionButtonToneClass.delete}
                   >
                     <Trash2 className="mr-1.5 h-4 w-4" />
                     {t("settings.libraryDeleteButton")}

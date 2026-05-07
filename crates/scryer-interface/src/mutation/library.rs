@@ -144,14 +144,14 @@ impl LibraryMutations {
         Ok(from_library(library))
     }
 
-    async fn delete_empty_library(
+    async fn delete_library(
         &self,
         ctx: &Context<'_>,
         input: DeleteLibraryInput,
     ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.delete_empty_library(&actor, &input.library_id)
+        app.delete_library(&actor, &input.library_id)
             .await
             .map_err(to_gql_error)
     }

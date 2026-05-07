@@ -242,27 +242,7 @@ pub(crate) async fn update_library_query(
         .ok_or_else(|| AppError::Repository("updated library was not found".into()))
 }
 
-pub(crate) async fn delete_empty_library_query(
-    pool: &SqlitePool,
-    library_id: &str,
-) -> AppResult<bool> {
-    let title_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM titles WHERE library_id = ?")
-        .bind(library_id)
-        .fetch_one(pool)
-        .await
-        .map_err(repository_error_from_sqlx)?;
-    let pending_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM library_scan_unmatched_items
-         WHERE library_id = ? AND status = 'pending'",
-    )
-    .bind(library_id)
-    .fetch_one(pool)
-    .await
-    .map_err(repository_error_from_sqlx)?;
-    if title_count > 0 || pending_count > 0 {
-        return Ok(false);
-    }
-
+pub(crate) async fn delete_library_query(pool: &SqlitePool, library_id: &str) -> AppResult<bool> {
     let rows_affected = sqlx::query("DELETE FROM libraries WHERE id = ?")
         .bind(library_id)
         .execute(pool)

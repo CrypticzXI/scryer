@@ -7434,7 +7434,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
     let ctx = TestContext::new().await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
     let (title, _season_one_collection) =
-        create_series_scan_title(&ctx, media_root.path(), "Attack on Titan", vec![]).await;
+        create_series_scan_title(&ctx, media_root.path(), "Stoneguard", vec![]).await;
 
     let season_four = ctx
         .catalog
@@ -8147,7 +8147,7 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
 }
 
 #[tokio::test]
-async fn library_anime_scan_prefers_tvshow_nfo_identity_for_bastard_fixture() {
+async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
 
@@ -8156,19 +8156,19 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_bastard_fixture() {
             "s0": {
                 "series": {
                     "tvdb_id": 415677,
-                    "name": "Bastard!! Correct Match",
-                    "sort_name": "Bastard!! Correct Match",
-                    "slug": "bastard-correct-match",
+                    "name": "Nightfall!! Correct Match",
+                    "sort_name": "Nightfall!! Correct Match",
+                    "slug": "nightfall-correct-match",
                     "status": "Ended",
                     "year": 2022,
                     "first_aired": "2022-06-30",
-                    "overview": "A regression fixture for the Bastard!! anime scan path.",
+                    "overview": "A regression fixture for the Nightfall!! anime scan path.",
                     "network": "Netflix",
                     "runtime_minutes": 24,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/415677/posters/test.jpg",
                     "country": "jpn",
                     "genres": ["Animation", "Fantasy"],
-                    "aliases": ["Bastard!! Ankoku no Hakaishin"],
+                    "aliases": ["Nightfall!! Kage no Requiem"],
                     "tagged_aliases": [],
                     "artworks": [],
                     "seasons": [
@@ -8211,14 +8211,14 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_bastard_fixture() {
         .mount(&ctx.smg_server)
         .await;
 
-    let bastard_tvshow_nfo = r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+    let nightfall_tvshow_nfo = r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <tvshow>
-  <plot>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</plot>
-  <outline>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</outline>
+  <plot>Nightfall!! follows the remnant wardens of a ruined sky-kingdom as they try to stop a shard-born eclipse from swallowing the last inhabited cities.</plot>
+  <outline>Nightfall!! follows the remnant wardens of a ruined sky-kingdom as they try to stop a shard-born eclipse from swallowing the last inhabited cities.</outline>
   <lockdata>false</lockdata>
   <dateadded>2026-04-21 04:22:41</dateadded>
-  <title>Bastard!!</title>
-  <originaltitle>Bastard!! Ankoku no Hakaishin</originaltitle>
+  <title>Nightfall!!</title>
+  <originaltitle>Nightfall!! Kage no Requiem</originaltitle>
   <trailer>plugin://plugin.video.youtube/play/?video_id=_Iqc-dG8peA</trailer>
   <trailer>plugin://plugin.video.youtube/play/?video_id=Vt4zSf3CfRA</trailer>
   <rating>5</rating>
@@ -8250,7 +8250,7 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_bastard_fixture() {
   <tag>seinen</tag>
   <anidbid>10</anidbid>
   <tvdbid>415677</tvdbid>
-  <tvdbslugid>bastard-2022</tvdbslugid>
+  <tvdbslugid>nightfall-2022</tvdbslugid>
   <art>
     <poster>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/poster.jpg</poster>
     <fanart>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/backdrop.jpg</fanart>
@@ -8265,17 +8265,17 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_bastard_fixture() {
 </tvshow>"#;
 
     let media_root = tempfile::tempdir().expect("media root tempdir");
-    let show_dir = media_root.path().join("Bastard!! (2022)");
+    let show_dir = media_root.path().join("Nightfall!! (2022)");
     let season_dir = show_dir.join("Season 01");
     std::fs::create_dir_all(&season_dir).expect("create season dir");
-    std::fs::write(show_dir.join("tvshow.nfo"), bastard_tvshow_nfo).expect("write tvshow.nfo");
+    std::fs::write(show_dir.join("tvshow.nfo"), nightfall_tvshow_nfo).expect("write tvshow.nfo");
     std::fs::write(
-        season_dir.join("Bastard!! (2022) - S01E01 (1) - 1080p.mkv"),
+        season_dir.join("Nightfall!! (2022) - S01E01 (1) - 1080p.mkv"),
         b"not-a-real-video",
     )
     .expect("write fake video");
     std::fs::write(
-        season_dir.join("Bastard!! (2022) - S01E01 (1) - 1080p.nfo"),
+        season_dir.join("Nightfall!! (2022) - S01E01 (1) - 1080p.nfo"),
         b"<episodedetails><title>Episode 1</title></episodedetails>",
     )
     .expect("write episode nfo");
@@ -8331,7 +8331,7 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_bastard_fixture() {
 
     let hydrated_title =
         hydrated_title.expect("anime title should hydrate from tvshow.nfo identity");
-    assert_eq!(hydrated_title.name, "Bastard!! Correct Match");
+    assert_eq!(hydrated_title.name, "Nightfall!! Correct Match");
     assert!(hydrated_title.metadata_fetched_at.is_some());
     assert_eq!(
         hydrated_title.folder_path.as_deref(),
@@ -8342,7 +8342,7 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_bastard_fixture() {
             .external_ids
             .iter()
             .any(|id| id.source == "tvdb" && id.value == "415677"),
-        "hydrated title should preserve the Bastard!! TVDB identity"
+        "hydrated title should preserve the Nightfall!! TVDB identity"
     );
 }
 
@@ -8718,11 +8718,11 @@ async fn library_series_scan_creates_unmonitored_titles() {
     seed_typed_settings_definitions(&ctx).await;
 
     let media_root = tempfile::tempdir().expect("media root tempdir");
-    let show_dir = media_root.path().join("Bluey");
+    let show_dir = media_root.path().join("Harbor Pals");
     std::fs::create_dir_all(&show_dir).expect("create show dir");
     std::fs::write(
         show_dir.join("tvshow.nfo"),
-        r#"<tvshow><title>Bluey</title><tvdbid>81189</tvdbid></tvshow>"#,
+        r#"<tvshow><title>Harbor Pals</title><tvdbid>81189</tvdbid></tvshow>"#,
     )
     .expect("write tvshow.nfo");
 
@@ -8765,7 +8765,7 @@ async fn library_series_scan_creates_unmonitored_titles() {
         .await
         .expect("list titles");
     assert_eq!(titles.len(), 1);
-    assert_eq!(titles[0].name, "Bluey");
+    assert_eq!(titles[0].name, "Harbor Pals");
     assert!(!titles[0].monitored);
 }
 
@@ -8775,16 +8775,16 @@ async fn library_series_scan_counts_new_title_files_before_post_hydration_scan_p
     seed_typed_settings_definitions(&ctx).await;
 
     let media_root = tempfile::tempdir().expect("media root tempdir");
-    let show_dir = media_root.path().join("Bluey");
+    let show_dir = media_root.path().join("Harbor Pals");
     let season_dir = show_dir.join("Season 01");
     std::fs::create_dir_all(&season_dir).expect("create show dir");
     std::fs::write(
         show_dir.join("tvshow.nfo"),
-        r#"<tvshow><title>Bluey</title><tvdbid>81189</tvdbid></tvshow>"#,
+        r#"<tvshow><title>Harbor Pals</title><tvdbid>81189</tvdbid></tvshow>"#,
     )
     .expect("write tvshow.nfo");
     std::fs::write(
-        season_dir.join("Bluey.S01E01.720p.WEB-DL.mkv"),
+        season_dir.join("Harbor.Pals.S01E01.720p.WEB-DL.mkv"),
         b"not-a-real-video",
     )
     .expect("write fake episode");

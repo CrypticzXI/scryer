@@ -355,7 +355,7 @@ fn assert_id_only_then_fallback(urls: &[String], id_fragment: &str, fallback_que
 }
 
 // ---------------------------------------------------------------------------
-// Demon Slayer S02E03 — anime episode, end-to-end through discovery layer
+// Blade Summit S02E03 — anime episode, end-to-end through discovery layer
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -364,7 +364,7 @@ async fn multi_indexer_url_trace_anime_episode() {
     let title_id = add_search_title(
         &app,
         &user,
-        "Demon Slayer",
+        "Blade Summit",
         MediaFacet::Anime,
         vec![external_id("tvdb", "348545"), external_id("anidb", "1535")],
     )
@@ -375,7 +375,7 @@ async fn multi_indexer_url_trace_anime_episode() {
         .await
         .expect("search should succeed");
 
-    println!("\n=== Demon Slayer S02E03 (anime, anidb=1535, tvdb=348545) ===");
+    println!("\n=== Blade Summit S02E03 (anime, anidb=1535, tvdb=348545) ===");
     print_summary(
         &captured_urls(&tosho).await,
         &captured_urls(&nzbgeek).await,
@@ -384,7 +384,7 @@ async fn multi_indexer_url_trace_anime_episode() {
 }
 
 // ---------------------------------------------------------------------------
-// Breaking Bad S05E01 — regular TV series
+// Cinder Line S05E01 — regular TV series
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -393,7 +393,7 @@ async fn multi_indexer_url_trace_series_episode() {
     let title_id = add_search_title(
         &app,
         &user,
-        "Breaking Bad",
+        "Cinder Line",
         MediaFacet::Series,
         vec![external_id("tvdb", "81189")],
     )
@@ -408,19 +408,19 @@ async fn multi_indexer_url_trace_series_episode() {
     let nzbgeek_urls = captured_urls(&nzbgeek).await;
     let torznab_urls = captured_urls(&torznab).await;
 
-    println!("\n=== Breaking Bad S05E01 (series, tvdb=81189) ===");
+    println!("\n=== Cinder Line S05E01 (series, tvdb=81189) ===");
     print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
 
     assert!(
         tosho_urls.is_empty(),
         "AnimeTosho should not handle series searches"
     );
-    assert_id_only_then_fallback(&nzbgeek_urls, "tvdbid=81189", "q=Breaking%20Bad");
-    assert_id_only_then_fallback(&torznab_urls, "tvdbid=81189", "q=Breaking%20Bad");
+    assert_id_only_then_fallback(&nzbgeek_urls, "tvdbid=81189", "q=Cinder%20Line");
+    assert_id_only_then_fallback(&torznab_urls, "tvdbid=81189", "q=Cinder%20Line");
 }
 
 // ---------------------------------------------------------------------------
-// The Matrix — movie with imdb_id only
+// Lattice Zero — movie with imdb_id only
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -429,7 +429,7 @@ async fn multi_indexer_url_trace_movie() {
     let title_id = add_search_title(
         &app,
         &user,
-        "The Matrix",
+        "Lattice Zero",
         MediaFacet::Movie,
         vec![external_id("imdb", "tt0133093")],
     )
@@ -444,28 +444,28 @@ async fn multi_indexer_url_trace_movie() {
     let nzbgeek_urls = captured_urls(&nzbgeek).await;
     let torznab_urls = captured_urls(&torznab).await;
 
-    println!("\n=== The Matrix (movie, imdb=tt0133093) ===");
+    println!("\n=== Lattice Zero (movie, imdb=tt0133093) ===");
     print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
 
     assert!(
         tosho_urls.is_empty(),
         "AnimeTosho should not handle non-anime movie searches"
     );
-    assert_id_only_then_fallback(&nzbgeek_urls, "imdbid=000133093", "q=The%20Matrix");
-    assert_id_only_then_fallback(&torznab_urls, "imdbid=000133093", "q=The%20Matrix");
+    assert_id_only_then_fallback(&nzbgeek_urls, "imdbid=000133093", "q=Lattice%20Zero");
+    assert_id_only_then_fallback(&torznab_urls, "imdbid=000133093", "q=Lattice%20Zero");
 }
 
 // ---------------------------------------------------------------------------
-// Spirited Away — movie with imdb_id + anidb_id (from metadata hydration)
+// Lantern Tide — movie with imdb_id + anidb_id (from metadata hydration)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn multi_indexer_url_trace_movie_spirited_away() {
+async fn multi_indexer_url_trace_movie_lantern_tide() {
     let (app, user, tosho, nzbgeek, torznab) = setup().await;
     let title_id = add_search_title(
         &app,
         &user,
-        "Sen to Chihiro no Kamikakushi",
+        "Lantern Tide: Hidden Current",
         MediaFacet::Movie,
         vec![
             external_id("imdb", "tt0245429"),
@@ -476,7 +476,7 @@ async fn multi_indexer_url_trace_movie_spirited_away() {
 
     let nzbgeek_fixture = load_fixture("nzbgeek/search_movie.json").replace(
         "Movie.Title.2024.2160p.UHD.BluRay.REMUX.DV.HDR.DTS-HD.MA.7.1.HEVC-GROUP",
-        "Sen.to.Chihiro.no.Kamikakushi.2001.1080p.BluRay",
+        "Lantern.Tide.Hidden.Current.2001.1080p.BluRay",
     );
     Mock::given(method("GET"))
         .and(path("/api/api"))
@@ -498,7 +498,7 @@ async fn multi_indexer_url_trace_movie_spirited_away() {
     assert!(
         results
             .iter()
-            .any(|result| result.title.contains("Sen.to.Chihiro.no.Kamikakushi")),
+            .any(|result| result.title.contains("Lantern.Tide.Hidden.Current")),
         "ID-backed alternate title should survive the title guard, got {:?}, urls: tosho={:?}, nzbgeek={:?}, torznab={:?}",
         results
             .iter()
@@ -509,6 +509,6 @@ async fn multi_indexer_url_trace_movie_spirited_away() {
         torznab_urls
     );
 
-    println!("\n=== Spirited Away (movie, imdb=tt0245429, anidb=112) ===");
+    println!("\n=== Lantern Tide (movie, imdb=tt0245429, anidb=112) ===");
     print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
 }

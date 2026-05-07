@@ -189,8 +189,8 @@ const en: LocaleDictionary = {
   "settings.libraryNewButton": "New library",
   "settings.libraryCreateButton": "Create library",
   "settings.librarySaveButton": "Save library",
-  "settings.libraryDeleteButton": "Delete empty library",
-  "settings.libraryDeleteConfirm": "Delete {{name}}? Only empty libraries can be deleted.",
+  "settings.libraryDeleteButton": "Delete library",
+  "settings.libraryDeleteConfirm": "Delete {{name}}? Media files on disk will not be removed.",
   "settings.libraryEmpty": "No libraries available.",
   "settings.libraryCreated": "Library created.",
   "settings.librarySaved": "Library saved.",
@@ -224,6 +224,7 @@ const en: LocaleDictionary = {
     "Library scan complete. {{imported}} imported, {{skipped}} skipped, {{unmatched}} unmatched.",
   "settings.libraryScanFailed": "Library scan failed.",
   "settings.libraryScanCancel": "Cancel",
+  "settings.libraryScanRunInBackground": "Run in background",
   "settings.libraryScanCancelFailed": "Failed to cancel library scan.",
   "settings.libraryScanCanceled": "Library scan canceled.",
   "settings.libraryScanCanceledSummary":
@@ -1632,6 +1633,7 @@ const en: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "Monitor Filler Movies",
   "settings.monitorFillerMoviesDescription":
     "Include movies classified as filler in the download queue",
+  "settings.sidecarFilesTitle": "Sidecar Files",
   "settings.nfoWriteOnImportLabel": "Write NFO on Import",
   "settings.nfoWriteOnImportDescription":
     "Write Kodi/Jellyfin/Emby-compatible .nfo metadata files alongside imported media",

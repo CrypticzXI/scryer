@@ -497,7 +497,7 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("library {}", library.id)))
     }
 
-    pub async fn delete_empty_library(&self, actor: &User, library_id: &str) -> AppResult<bool> {
+    pub async fn delete_library(&self, actor: &User, library_id: &str) -> AppResult<bool> {
         let library = self
             .services
             .catalog
@@ -512,10 +512,87 @@ impl AppUseCase {
                 "default libraries cannot be deleted".into(),
             ));
         }
+
+        for session in self
+            .active_library_scan_sessions()
+            .await
+            .into_iter()
+            .filter(|session| session.library_id.as_deref() == Some(library.id.as_str()))
+        {
+            if let Some(token) = self
+                .library_scan_cancellation_token(&session.session_id)
+                .await
+            {
+                token.cancel();
+            }
+            self.runtime
+                .library
+                .library_scan_tracker
+                .cancel_session(&session.session_id)
+                .await;
+            self.clear_library_scan_cancellation_token(&session.session_id)
+                .await;
+        }
+
+        self.services
+            .library
+            .library_scan_unmatched_items
+            .delete_for_library(&library.id)
+            .await?;
+
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_libraries(
+                Some(library.facet.clone()),
+                std::slice::from_ref(&library.id),
+                None,
+            )
+            .await?;
+        let title_ids: Vec<String> = titles.iter().map(|title| title.id.clone()).collect();
+
+        for title in &titles {
+            self.purge_title_logical_dependents(title, false).await?;
+        }
+
+        if !title_ids.is_empty() {
+            self.services
+                .events
+                .domain_events
+                .delete_for_title_ids(&title_ids)
+                .await?;
+            self.services
+                .workflow
+                .housekeeping
+                .delete_history_events_for_title_ids(&title_ids)
+                .await?;
+            self.services
+                .workflow
+                .housekeeping
+                .delete_download_import_artifacts_for_title_ids(&title_ids)
+                .await?;
+            self.services
+                .workflow
+                .housekeeping
+                .delete_release_attempts_for_title_ids(&title_ids)
+                .await?;
+        }
+
+        for title in &titles {
+            self.delete_title_row(title, None, false).await?;
+        }
+
+        self.services
+            .config
+            .settings
+            .delete_values_for_scope_id(&library.id)
+            .await?;
+
         self.services
             .catalog
             .libraries
-            .delete_empty(&library.id)
+            .delete_library(&library.id)
             .await
     }
 

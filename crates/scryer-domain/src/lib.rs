@@ -3247,8 +3247,8 @@ mod tests {
 
     #[test]
     fn fuzzy_search_matches_partial() {
-        assert!(match_fuzzy("Cowboy Bebop", "bebo"));
-        assert!(!match_fuzzy("Cowboy Bebop", "dune"));
+        assert!(match_fuzzy("Velvet Comet", "come"));
+        assert!(!match_fuzzy("Velvet Comet", "harbor"));
     }
 
     #[test]

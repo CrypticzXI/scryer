@@ -147,6 +147,19 @@ pub(crate) async fn delete_library_scan_unmatched_item_query(
     Ok(())
 }
 
+pub(crate) async fn delete_library_scan_unmatched_items_for_library_query(
+    pool: &SqlitePool,
+    library_id: &str,
+) -> AppResult<u32> {
+    let result = sqlx::query("DELETE FROM library_scan_unmatched_items WHERE library_id = ?")
+        .bind(library_id)
+        .execute(pool)
+        .await
+        .map_err(repository_error_from_sqlx)?;
+
+    Ok(result.rows_affected() as u32)
+}
+
 pub(crate) async fn get_library_scan_unmatched_item_query(
     pool: &SqlitePool,
     id: &str,

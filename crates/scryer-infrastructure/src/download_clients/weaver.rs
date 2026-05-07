@@ -1538,7 +1538,7 @@ mod tests {
                     "historyItems": [
                         {
                             "id": 10001,
-                            "name": "Paperman.2012.1080p",
+                            "name": "Paper.Lantern.2012.1080p",
                             "state": "COMPLETE",
                             "error": null,
                             "progressPercent": 100.0,
@@ -1546,7 +1546,7 @@ mod tests {
                             "category": "2000",
                             "attributes": [],
                             "clientRequestId": null,
-                            "outputDir": "/data/complete/Paperman.2012.1080p.#10001",
+                            "outputDir": "/data/complete/Paper.Lantern.2012.1080p.#10001",
                             "createdAt": "2024-01-01T00:00:00Z",
                             "completedAt": "2024-01-01T00:10:00Z",
                             "attention": null

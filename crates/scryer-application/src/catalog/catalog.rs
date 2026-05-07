@@ -582,6 +582,12 @@ pub(crate) struct HydrationBatchOutcome {
     pub(crate) failed_titles: HashMap<String, String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TitleLogicalDeleteOptions {
+    pub(crate) purge_recycle_bin_entries: bool,
+    pub(crate) append_title_deleted_event: bool,
+}
+
 impl AppUseCase {
     async fn emit_hydration_started(&self, title: &Title) {
         self.emit_metadata_hydration_updated_event(title, MetadataHydrationState::Started, None)
@@ -3781,18 +3787,51 @@ impl AppUseCase {
             .await?;
         }
 
-        // Purge recycle bin entries that belonged to this title.
-        if let Some(media_root) = crate::recycle_bin::media_root_for_title(self, &title).await {
+        self.delete_title_logical_cleanup(
+            &title,
+            Some(actor.id.clone()),
+            TitleLogicalDeleteOptions {
+                purge_recycle_bin_entries: true,
+                append_title_deleted_event: true,
+            },
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn delete_title_logical_cleanup(
+        &self,
+        title: &scryer_domain::Title,
+        actor_user_id: Option<String>,
+        options: TitleLogicalDeleteOptions,
+    ) -> AppResult<()> {
+        self.purge_title_logical_dependents(title, options.purge_recycle_bin_entries)
+            .await?;
+        self.delete_title_row(title, actor_user_id, options.append_title_deleted_event)
+            .await
+    }
+
+    pub(crate) async fn purge_title_logical_dependents(
+        &self,
+        title: &scryer_domain::Title,
+        purge_recycle_bin_entries: bool,
+    ) -> AppResult<()> {
+        let title_id = title.id.as_str();
+
+        if purge_recycle_bin_entries
+            && let Some(media_root) = crate::recycle_bin::media_root_for_title(self, title).await
+        {
             let config = crate::recycle_bin::resolve_recycle_config(self, Some(&media_root)).await;
-            match crate::recycle_bin::purge_for_title(&config, id).await {
+            match crate::recycle_bin::purge_for_title(&config, title_id).await {
                 Ok(n) if n > 0 => info!(
                     purged = n,
-                    title_id = %id,
+                    title_id = %title_id,
                     "purged recycle bin entries for deleted title"
                 ),
                 Err(e) => warn!(
                     error = %e,
-                    title_id = %id,
+                    title_id = %title_id,
                     "failed to purge recycle entries for deleted title"
                 ),
                 _ => {}
@@ -3803,7 +3842,7 @@ impl AppUseCase {
             .services
             .workflow
             .download_submissions
-            .list_for_title(id)
+            .list_for_title(title_id)
             .await
         {
             Ok(submissions) => submissions
@@ -3817,7 +3856,7 @@ impl AppUseCase {
                 .collect::<HashSet<_>>(),
             Err(err) => {
                 warn!(
-                    title_id = %id,
+                    title_id = %title_id,
                     error = %err,
                     "failed to list download submissions while deleting title; falling back to embedded queue metadata only"
                 );
@@ -3825,7 +3864,6 @@ impl AppUseCase {
             }
         };
 
-        // Cancel any inflight downloads for this title
         match self
             .services
             .integrations
@@ -3835,7 +3873,7 @@ impl AppUseCase {
         {
             Ok(queue_items) => {
                 for item in queue_items {
-                    let matches_title = item.title_id.as_deref() == Some(id)
+                    let matches_title = item.title_id.as_deref() == Some(title_id)
                         || queued_submission_keys.contains(&(
                             item.client_type.clone(),
                             item.download_client_item_id.clone(),
@@ -3853,7 +3891,7 @@ impl AppUseCase {
                             .await
                     {
                         warn!(
-                            title_id = %id,
+                            title_id = %title_id,
                             download_item_id = %item.download_client_item_id,
                             error = %err,
                             "failed to cancel inflight download while deleting title"
@@ -3863,67 +3901,63 @@ impl AppUseCase {
             }
             Err(err) => {
                 warn!(
-                    title_id = %id,
+                    title_id = %title_id,
                     error = %err,
                     "failed to list download queue while deleting title; skipping download cancellation"
                 );
             }
         }
 
-        if let Err(err) = self
-            .services
+        self.services
             .workflow
             .pending_releases
-            .delete_pending_releases_for_title(id)
-            .await
-        {
-            warn!(
-                title_id = %id,
-                error = %err,
-                "failed to delete pending releases while deleting title"
-            );
-        }
-
-        // Clean up wanted items for this title
-        if let Err(err) = self
-            .services
+            .delete_pending_releases_for_title(title_id)
+            .await?;
+        self.services
             .workflow
             .wanted_items
-            .delete_wanted_items_for_title(id)
-            .await
-        {
-            warn!(
-                title_id = %id,
-                error = %err,
-                "failed to delete wanted items while deleting title"
-            );
-        }
-
-        if let Err(err) = self
-            .services
+            .delete_wanted_items_for_title(title_id)
+            .await?;
+        self.services
             .workflow
             .download_submissions
-            .delete_for_title(id)
-            .await
-        {
-            warn!(
-                title_id = %id,
-                error = %err,
-                "failed to delete download submissions while deleting title"
-            );
+            .delete_for_title(title_id)
+            .await?;
+        self.services
+            .workflow
+            .blocklist_repo
+            .delete_for_title(title_id)
+            .await?;
+        self.services
+            .library
+            .library_probe_signatures
+            .delete_probe_signatures_for_title_ids(std::slice::from_ref(&title.id))
+            .await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn delete_title_row(
+        &self,
+        title: &scryer_domain::Title,
+        actor_user_id: Option<String>,
+        append_title_deleted_event: bool,
+    ) -> AppResult<()> {
+        let title_id = title.id.as_str();
+
+        self.services.catalog.titles.delete(title_id).await?;
+
+        if append_title_deleted_event {
+            let _ = self
+                .append_domain_event(new_title_domain_event(
+                    actor_user_id,
+                    title,
+                    DomainEventPayload::TitleDeleted(TitleDeletedEventData {
+                        title: title_context_snapshot(title),
+                    }),
+                ))
+                .await;
         }
-
-        self.services.catalog.titles.delete(id).await?;
-
-        let _ = self
-            .append_domain_event(new_title_domain_event(
-                Some(actor.id.clone()),
-                &title,
-                DomainEventPayload::TitleDeleted(TitleDeletedEventData {
-                    title: title_context_snapshot(&title),
-                }),
-            ))
-            .await;
 
         Ok(())
     }

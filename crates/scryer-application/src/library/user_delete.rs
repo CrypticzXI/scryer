@@ -977,12 +977,12 @@ mod tests {
         let inferred = infer_title_folder_path_from_paths(
             &root_folders,
             vec![
-                PathBuf::from("/data/anime/Bleach/Season 01/Bleach - S01E01.mkv"),
-                PathBuf::from("/data/anime/Bleach/Season 02/Bleach - S02E01.mkv"),
+                PathBuf::from("/data/anime/Emberfall/Season 01/Emberfall - S01E01.mkv"),
+                PathBuf::from("/data/anime/Emberfall/Season 02/Emberfall - S02E01.mkv"),
             ],
         );
 
-        assert_eq!(inferred.as_deref(), Some("/data/anime/Bleach"));
+        assert_eq!(inferred.as_deref(), Some("/data/anime/Emberfall"));
     }
 
     #[test]
@@ -995,7 +995,7 @@ mod tests {
         let inferred = infer_title_folder_path_from_paths(
             &root_folders,
             vec![
-                PathBuf::from("/data/anime/Bleach/Season 01/Bleach - S01E01.mkv"),
+                PathBuf::from("/data/anime/Emberfall/Season 01/Emberfall - S01E01.mkv"),
                 PathBuf::from("/data/anime/Naruto/Season 01/Naruto - S01E01.mkv"),
             ],
         );

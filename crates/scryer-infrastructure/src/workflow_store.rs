@@ -141,6 +141,13 @@ impl DomainEventRepository for SqliteWorkflowStore {
         .await
     }
 
+    async fn delete_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
+        crate::queries::domain_event::delete_domain_events_for_title_ids_query(
+            &self.pool, title_ids,
+        )
+        .await
+    }
+
     async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64> {
         crate::queries::domain_event::get_event_subscriber_offset_query(&self.pool, subscriber)
             .await

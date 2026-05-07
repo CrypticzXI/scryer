@@ -203,18 +203,18 @@ mod tests {
     #[test]
     fn search_variants_keep_full_movie_title_with_subtitle_and_franchise_suffix() {
         assert_eq!(
-            search_variants("Ralph Breaks the Internet Wreck-It Ralph 2"),
+            search_variants("Circuit Breakers Crash the Grid 2"),
             vec![
-                "Ralph Breaks the Internet Wreck-It Ralph 2".to_string(),
-                "ralph breaks the internet wreck it ralph 2".to_string()
+                "Circuit Breakers Crash the Grid 2".to_string(),
+                "circuit breakers crash the grid 2".to_string()
             ]
         );
         assert_eq!(
             reduced_comparison_key(
-                "Ralph Breaks the Internet Wreck-It Ralph 2",
+                "Circuit Breakers Crash the Grid 2",
                 TitleMatchProfile::Movie
             ),
-            "ralph breaks internet wreck it ralph 2"
+            "circuit breakers crash grid 2"
         );
     }
 }

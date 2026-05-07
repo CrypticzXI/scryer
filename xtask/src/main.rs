@@ -39,11 +39,8 @@ use x509_cert::{
     },
 };
 
-mod corpus;
 mod migrations;
 mod profile;
-mod release_parser;
-mod release_parser_compare;
 mod seed;
 
 const BLUE: &str = "\x1b[0;34m";
@@ -198,7 +195,6 @@ enum Commands {
     Nzbget(NzbgetArgs),
     Seed(SeedArgs),
     Profile(ProfileArgs),
-    Corpus(CorpusArgs),
 }
 
 #[derive(Args)]
@@ -384,49 +380,6 @@ struct ProfileHotpathsArgs {
     interval_seconds: Option<String>,
 }
 
-#[derive(Args)]
-struct CorpusArgs {
-    #[command(subcommand)]
-    command: CorpusCommand,
-}
-
-#[derive(Subcommand)]
-enum CorpusCommand {
-    ReleaseParser(ReleaseParserCorpusArgs),
-    ReleaseParserEval(ReleaseParserEvalArgs),
-    GuessitEval(ReleaseParserEvalArgs),
-    SonarrEval(ReleaseParserEvalArgs),
-    RadarrEval(ReleaseParserEvalArgs),
-}
-
-#[derive(Args, Clone)]
-pub(crate) struct ReleaseParserCorpusArgs {
-    #[arg(long, default_value_t = 1000)]
-    total: usize,
-    #[arg(long)]
-    output_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 8)]
-    nzbgeek_movie_pages: usize,
-    #[arg(long, default_value_t = 8)]
-    nzbgeek_series_pages: usize,
-    #[arg(long, default_value_t = 6)]
-    nzbgeek_anime_pages: usize,
-    #[arg(long, default_value_t = 12)]
-    animetosho_pages: usize,
-    #[arg(long, default_value_t = 4)]
-    max_per_title: usize,
-}
-
-#[derive(Args, Clone)]
-pub(crate) struct ReleaseParserEvalArgs {
-    #[arg(long)]
-    input: Option<PathBuf>,
-    #[arg(long)]
-    output_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 50)]
-    max_mismatches: usize,
-}
-
 #[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
 enum VersionBump {
     Patch,
@@ -571,15 +524,6 @@ fn main() -> Result<()> {
         },
         Commands::Profile(args) => match args.command {
             ProfileCommand::Hotpaths(args) => profile_hotpaths(&ctx, args),
-        },
-        Commands::Corpus(args) => match args.command {
-            CorpusCommand::ReleaseParser(args) => corpus::run_release_parser(&ctx, args),
-            CorpusCommand::ReleaseParserEval(args) => release_parser::run_eval(&ctx, args),
-            CorpusCommand::GuessitEval(args) => {
-                release_parser_compare::run_guessit_eval(&ctx, args)
-            }
-            CorpusCommand::SonarrEval(args) => release_parser_compare::run_sonarr_eval(&ctx, args),
-            CorpusCommand::RadarrEval(args) => release_parser_compare::run_radarr_eval(&ctx, args),
         },
     }
 }

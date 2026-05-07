@@ -1166,6 +1166,10 @@ mod tests {
                 .collect())
         }
 
+        async fn delete_for_title_ids(&self, _title_ids: &[String]) -> AppResult<u32> {
+            Ok(0)
+        }
+
         async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64> {
             let offsets = self.subscriber_offsets.lock().await;
             Ok(*offsets.get(subscriber).unwrap_or(&0))
@@ -1936,7 +1940,7 @@ mod tests {
 
     #[tokio::test]
     async fn tracked_download_resolution_marks_embedded_external_id_matches_as_id_only() {
-        let mut title = build_title("Paperman", MediaFacet::Movie, &[]);
+        let mut title = build_title("Paper Lantern", MediaFacet::Movie, &[]);
         title.external_ids.push(scryer_domain::ExternalId {
             source: "imdb".to_string(),
             value: "tt2388725".to_string(),
@@ -1952,7 +1956,7 @@ mod tests {
         item.client_type = "weaver".to_string();
         item.client_name = "weaver".to_string();
         item.download_client_item_id = "job-imdb".to_string();
-        item.title_name = "Paperman.2012.[tt2388725].1080p.BluRay.x264-GRP".to_string();
+        item.title_name = "Paper.Lantern.2012.[tt2388725].1080p.BluRay.x264-GRP".to_string();
         item.facet = Some("movie".to_string());
         item.is_scryer_origin = false;
 
@@ -1965,7 +1969,7 @@ mod tests {
 
     #[tokio::test]
     async fn assigning_title_to_completed_blocked_download_keeps_manual_import_actionable() {
-        let title = build_title("Paperman", MediaFacet::Movie, &[]);
+        let title = build_title("Paper Lantern", MediaFacet::Movie, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![title.clone()],
         });
@@ -2039,7 +2043,7 @@ mod tests {
         initial.client_type = "weaver".to_string();
         initial.client_name = "weaver".to_string();
         initial.download_client_item_id = "job-manual-movie-reresolve".to_string();
-        initial.title_name = "Paperman".to_string();
+        initial.title_name = "Paper Lantern".to_string();
         initial.facet = Some("movie".to_string());
         initial.is_scryer_origin = false;
 
@@ -2055,7 +2059,7 @@ mod tests {
         unchanged.client_type = "weaver".to_string();
         unchanged.client_name = "weaver".to_string();
         unchanged.download_client_item_id = "job-manual-movie-reresolve".to_string();
-        unchanged.title_name = "Paperman".to_string();
+        unchanged.title_name = "Paper Lantern".to_string();
         unchanged.facet = Some("movie".to_string());
         unchanged.is_scryer_origin = false;
 
@@ -2072,7 +2076,7 @@ mod tests {
             "unchanged unmatched polls should reuse the cached matcher"
         );
 
-        let title = build_title("Paperman", MediaFacet::Movie, &[]);
+        let title = build_title("Paper Lantern", MediaFacet::Movie, &[]);
         titles.lock().await.push(title.clone());
         app.append_domain_event(crate::domain_events::new_title_domain_event(
             None,
@@ -2088,7 +2092,7 @@ mod tests {
         updated.client_type = "weaver".to_string();
         updated.client_name = "weaver".to_string();
         updated.download_client_item_id = "job-manual-movie-reresolve".to_string();
-        updated.title_name = "Paperman".to_string();
+        updated.title_name = "Paper Lantern".to_string();
         updated.facet = Some("movie".to_string());
         updated.is_scryer_origin = false;
 
@@ -2118,7 +2122,7 @@ mod tests {
         initial.client_type = "weaver".to_string();
         initial.client_name = "weaver".to_string();
         initial.download_client_item_id = "job-unmatched-repeat".to_string();
-        initial.title_name = "Paperman".to_string();
+        initial.title_name = "Paper Lantern".to_string();
         initial.facet = Some("movie".to_string());
         initial.is_scryer_origin = false;
 
@@ -2136,7 +2140,7 @@ mod tests {
     #[tokio::test]
     async fn assigning_title_to_blocked_download_keeps_manual_import_actionable_even_if_client_is_still_downloading()
      {
-        let title = build_title("Paperman", MediaFacet::Movie, &[]);
+        let title = build_title("Paper Lantern", MediaFacet::Movie, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![title.clone()],
         });
@@ -2149,7 +2153,7 @@ mod tests {
         item.client_type = "weaver".to_string();
         item.client_name = "weaver".to_string();
         item.download_client_item_id = "job-manual-movie-downloading".to_string();
-        item.title_name = "Paperman".to_string();
+        item.title_name = "Paper Lantern".to_string();
         item.facet = Some("movie".to_string());
         item.state = DownloadQueueState::Downloading;
         item.is_scryer_origin = false;
@@ -2217,8 +2221,8 @@ mod tests {
 
     #[tokio::test]
     async fn track_reresolves_when_facet_hint_arrives_on_later_snapshot() {
-        let anime_title = build_title("One Piece", MediaFacet::Anime, &[]);
-        let series_title = build_title("One Piece", MediaFacet::Series, &[]);
+        let anime_title = build_title("Tidebreaker", MediaFacet::Anime, &[]);
+        let series_title = build_title("Tidebreaker", MediaFacet::Series, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![anime_title.clone(), series_title],
         });

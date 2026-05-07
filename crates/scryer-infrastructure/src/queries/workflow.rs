@@ -924,6 +924,31 @@ pub(crate) async fn get_library_probe_signature_query(
     .transpose()
 }
 
+pub(crate) async fn delete_library_probe_signatures_for_title_ids_query(
+    pool: &SqlitePool,
+    title_ids: &[String],
+) -> AppResult<u32> {
+    if title_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut builder =
+        QueryBuilder::<Sqlite>::new("DELETE FROM library_probe_signatures WHERE title_id IN (");
+    let mut separated = builder.separated(", ");
+    for title_id in title_ids {
+        separated.push_bind(title_id);
+    }
+    separated.push_unseparated(")");
+
+    let result = builder
+        .build()
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(result.rows_affected() as u32)
+}
+
 pub(crate) async fn create_release_download_attempt_query(
     pool: &SqlitePool,
     title_id: Option<String>,

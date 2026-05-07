@@ -1711,6 +1711,10 @@ mod tests {
                 .collect())
         }
 
+        async fn delete_for_title_ids(&self, _title_ids: &[String]) -> AppResult<u32> {
+            Ok(0)
+        }
+
         async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64> {
             let offsets = self.subscriber_offsets.lock().await;
             Ok(*offsets.get(subscriber).unwrap_or(&0))
@@ -2001,9 +2005,10 @@ mod tests {
 
     #[test]
     fn completed_download_lookup_keeps_same_native_id_from_different_clients() {
-        let first = build_completed_download("Paperman.2012.1080p", "/downloads/a", Some("movie"));
+        let first =
+            build_completed_download("Paper.Lantern.2012.1080p", "/downloads/a", Some("movie"));
         let mut second =
-            build_completed_download("Paperman.2012.1080p", "/downloads/b", Some("movie"));
+            build_completed_download("Paper.Lantern.2012.1080p", "/downloads/b", Some("movie"));
         second.client_id = "client-2".to_string();
 
         let lookup = index_completed_downloads(vec![first, second]);
@@ -2023,10 +2028,10 @@ mod tests {
 
     #[test]
     fn completed_download_path_retries_during_grace_window_and_blocks_after_deadline() {
-        let mut td = build_tracked_download("title-1", "movie", "Paperman.2012.1080p");
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
         let missing_dir = std::env::temp_dir().join(format!("scryer-missing-path-{}", Id::new().0));
         let completed = build_completed_download(
-            "Paperman.2012.1080p",
+            "Paper.Lantern.2012.1080p",
             missing_dir.to_string_lossy().as_ref(),
             Some("movie"),
         );
@@ -2052,7 +2057,7 @@ mod tests {
 
     #[test]
     fn completed_download_path_ready_clears_waiting_state_when_path_appears() {
-        let mut td = build_tracked_download("title-1", "movie", "Paperman.2012.1080p");
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
         td.path_missing_since = Some(Utc::now() - Duration::minutes(5));
         td.status = TrackedDownloadStatus::Warning;
         td.status_messages = vec![PATH_WAITING_MESSAGE.to_string()];
@@ -2060,7 +2065,7 @@ mod tests {
         let existing_dir = std::env::temp_dir().join(format!("scryer-path-ready-{}", Id::new().0));
         std::fs::create_dir_all(&existing_dir).expect("create temp dir");
         let completed = build_completed_download(
-            "Paperman.2012.1080p",
+            "Paper.Lantern.2012.1080p",
             existing_dir.to_string_lossy().as_ref(),
             Some("movie"),
         );
@@ -2078,7 +2083,7 @@ mod tests {
 
     #[tokio::test]
     async fn completed_download_reresolution_keeps_conflicting_id_only_match() {
-        let existing_title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let existing_title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
         let parsed_title = build_title("title-2", "The Other Movie", MediaFacet::Movie);
         let app = build_app(
             vec![existing_title.clone(), parsed_title],
@@ -2086,7 +2091,8 @@ mod tests {
             vec![],
             vec![],
         );
-        let mut td = build_tracked_download(&existing_title.id, "movie", "Paperman.2012.1080p");
+        let mut td =
+            build_tracked_download(&existing_title.id, "movie", "Paper.Lantern.2012.1080p");
         td.match_type = TitleMatchType::IdOnly;
         td.source_title = None;
         let completed = build_completed_download(
@@ -2108,14 +2114,14 @@ mod tests {
 
     #[tokio::test]
     async fn completed_download_reresolution_enriches_matching_id_only_title() {
-        let title = build_title("title-1", "Paperman", MediaFacet::Movie);
+        let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
         let app = build_app(vec![title.clone()], vec![], vec![], vec![]);
-        let mut td = build_tracked_download(&title.id, "movie", "Paperman.2012.1080p");
+        let mut td = build_tracked_download(&title.id, "movie", "Paper.Lantern.2012.1080p");
         td.match_type = TitleMatchType::IdOnly;
         td.source_title = None;
         td.facet = None;
         let completed = build_completed_download(
-            "Paperman.2012.1080p.WEB-DL",
+            "Paper.Lantern.2012.1080p.WEB-DL",
             "/tmp/does-not-matter",
             Some("movie"),
         );
@@ -2127,7 +2133,7 @@ mod tests {
         assert_eq!(td.facet.as_deref(), Some("movie"));
         assert_eq!(
             td.source_title.as_deref(),
-            Some("Paperman.2012.1080p.WEB-DL")
+            Some("Paper.Lantern.2012.1080p.WEB-DL")
         );
         assert!(!has_id_only_conflict(&td));
     }
@@ -2135,7 +2141,7 @@ mod tests {
     #[tokio::test]
     async fn check_with_lookup_uses_snapshot_without_fetching_client_history() {
         let completed = build_completed_download(
-            "Paperman.2012.1080p",
+            "Paper.Lantern.2012.1080p",
             std::env::temp_dir().to_string_lossy().as_ref(),
             Some("movie"),
         );
@@ -2146,7 +2152,7 @@ mod tests {
         });
         let app =
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
-        let mut td = build_tracked_download("title-1", "movie", "Paperman.2012.1080p");
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
         let lookup = index_completed_downloads(vec![completed]);
 
         check_with_lookup(&app, &mut td, Some(&lookup)).await;
@@ -2162,7 +2168,7 @@ mod tests {
     #[tokio::test]
     async fn load_completed_download_lookup_for_items_fetches_client_history_once_per_cycle() {
         let completed = build_completed_download(
-            "Paperman.2012.1080p",
+            "Paper.Lantern.2012.1080p",
             std::env::temp_dir().to_string_lossy().as_ref(),
             Some("movie"),
         );
@@ -2173,8 +2179,9 @@ mod tests {
         });
         let app =
             build_app_with_download_client(vec![], vec![], vec![], vec![], download_client.clone());
-        let first = build_tracked_download("title-1", "movie", "Paperman.2012.1080p");
-        let mut second = build_tracked_download("title-2", "movie", "Paperman.2012.1080p.REPACK");
+        let first = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        let mut second =
+            build_tracked_download("title-2", "movie", "Paper.Lantern.2012.1080p.REPACK");
         second.client_item.download_client_item_id = "dl-2".to_string();
         second.client_item.title_id = Some("title-2".to_string());
 
@@ -2288,7 +2295,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_import_resolves_absolute_episode_ranges() {
-        let title = build_title("title-1", "One Piece", MediaFacet::Anime);
+        let title = build_title("title-1", "Tidebreaker", MediaFacet::Anime);
         let collection = build_collection("season-22", "title-1", "22");
         let episodes = vec![
             build_episode("ep-1122", "title-1", "season-22", "22", "1", Some("1122")),
@@ -2304,7 +2311,7 @@ mod tests {
         let td = build_tracked_download(
             "title-1",
             "anime",
-            "[HatSubs] One Piece 1122-1124 (WEB 1080p)",
+            "[HatSubs] Tidebreaker 1122-1124 (WEB 1080p)",
         );
 
         assert!(verify_import(&app, &td, 0).await);
@@ -2312,7 +2319,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_import_absolute_range_requires_all_monitored_episodes_only() {
-        let title = build_title("title-1", "One Piece", MediaFacet::Anime);
+        let title = build_title("title-1", "Tidebreaker", MediaFacet::Anime);
         let collection = build_collection("season-22", "title-1", "22");
         let mut unmonitored =
             build_episode("ep-1123", "title-1", "season-22", "22", "2", Some("1123"));
@@ -2330,7 +2337,7 @@ mod tests {
         let td = build_tracked_download(
             "title-1",
             "anime",
-            "[HatSubs] One Piece 1122-1124 (WEB 1080p)",
+            "[HatSubs] Tidebreaker 1122-1124 (WEB 1080p)",
         );
 
         match expected_episode_units(&app, &td).await {
@@ -2348,14 +2355,14 @@ mod tests {
 
     #[tokio::test]
     async fn verify_import_accepts_release_when_title_has_no_monitored_episodes() {
-        let title = build_title("title-1", "Bluey", MediaFacet::Series);
+        let title = build_title("title-1", "Harbor Pals", MediaFacet::Series);
         let collection = build_collection("season-1", "title-1", "1");
         let mut first_episode = build_episode("ep-101", "title-1", "season-1", "1", "1", None);
         first_episode.monitored = false;
         let episodes = vec![first_episode];
         let artifacts = vec![build_artifact("dl-1", "ep-101", "S01E01.mkv")];
         let app = build_app(vec![title], vec![collection], episodes, artifacts);
-        let td = build_tracked_download("title-1", "series", "Bluey.S01E01.720p.WEB-DL-NTb");
+        let td = build_tracked_download("title-1", "series", "Harbor.Pals.S01E01.720p.WEB-DL-NTb");
 
         match expected_episode_units(&app, &td).await {
             ExpectedEpisodeResolution::Resolved(expected) => {
@@ -2369,7 +2376,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_import_absolute_range_blocks_when_monitored_episode_missing() {
-        let title = build_title("title-1", "One Piece", MediaFacet::Anime);
+        let title = build_title("title-1", "Tidebreaker", MediaFacet::Anime);
         let collection = build_collection("season-22", "title-1", "22");
         let episodes = vec![
             build_episode("ep-1122", "title-1", "season-22", "22", "1", Some("1122")),
@@ -2384,7 +2391,7 @@ mod tests {
         let td = build_tracked_download(
             "title-1",
             "anime",
-            "[HatSubs] One Piece 1122-1124 (WEB 1080p)",
+            "[HatSubs] Tidebreaker 1122-1124 (WEB 1080p)",
         );
 
         assert!(!verify_import(&app, &td, 0).await);
@@ -2394,7 +2401,7 @@ mod tests {
     async fn verify_import_partial_pack_accepts_one_monitored_episode() {
         let title = build_title(
             "title-1",
-            "Bastard!! Heavy Metal, Dark Fantasy",
+            "Nightfall!! Heavy Metal, Dark Fantasy",
             MediaFacet::Anime,
         );
         let collection = build_collection("season-1", "title-1", "1");
@@ -2407,7 +2414,7 @@ mod tests {
         let td = build_tracked_download(
             "title-1",
             "anime",
-            "[EMBER] BASTARD‼ Heavy Metal, Dark Fantasy (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Batch)",
+            "[EMBER] NIGHTFALL‼ Heavy Metal, Dark Fantasy (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Batch)",
         );
         match expected_episode_units(&app, &td).await {
             ExpectedEpisodeResolution::AtLeastOne(expected) => {

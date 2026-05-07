@@ -795,18 +795,4 @@ mod tests {
             "staged artifact should use the same .nzb.zst suffix as production"
         );
     }
-
-    #[tokio::test]
-    #[ignore = "utility test for manual Weaver interoperability checks"]
-    async fn emit_real_nzb_fixture_for_manual_weaver_submit() {
-        let output_root = std::env::temp_dir().join(format!(
-            "scryer-manual-staged-nzb-{}",
-            scryer_domain::Id::new().0
-        ));
-        let staged = materialize_real_staged_nzb_fixture(&output_root)
-            .await
-            .expect("real fixture should stage successfully");
-
-        println!("{}", staged.compressed_path.display());
-    }
 }

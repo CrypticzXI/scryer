@@ -157,7 +157,7 @@ const RENAME_PREVIEW_SERIES_SAMPLE: Record<string, string> = {
 };
 
 const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
-  title: "One Piece",
+  title: "Tidebreaker",
   year: "1999",
   quality: "1080p",
   edition: "Director's Cut",

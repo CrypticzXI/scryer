@@ -1345,7 +1345,7 @@ mod tests {
 
     #[test]
     fn context_bank_indexes_by_primary_name() {
-        let titles = vec![make_title("t1", "Inception", Some(2010))];
+        let titles = vec![make_title("t1", "Neon Cipher", Some(2010))];
         let bank = build_title_context_bank(&titles);
         assert_eq!(bank.len(), 1);
         assert_eq!(bank[0].info.title_id, "t1");
@@ -1354,13 +1354,13 @@ mod tests {
                 .evidence
                 .lookup_keys
                 .iter()
-                .any(|key| key == "inception")
+                .any(|key| key == "neon cipher")
         );
     }
 
     #[test]
     fn context_bank_skips_unmonitored() {
-        let titles = vec![make_unmonitored("t1", "Inception")];
+        let titles = vec![make_unmonitored("t1", "Neon Cipher")];
         let bank = build_title_context_bank(&titles);
         assert!(bank.is_empty());
     }
@@ -1369,9 +1369,9 @@ mod tests {
     fn context_bank_indexes_aliases() {
         let titles = vec![make_title_with_aliases(
             "t1",
-            "Spirited Away",
+            "Lantern Tide",
             Some(2001),
-            vec!["Sen to Chihiro no Kamikakushi"],
+            vec!["Lantern Tide: Hidden Current"],
         )];
         let bank = build_title_context_bank(&titles);
         assert_eq!(bank.len(), 1);
@@ -1380,22 +1380,22 @@ mod tests {
                 .evidence
                 .lookup_keys
                 .iter()
-                .any(|key| key == "spirited away")
+                .any(|key| key == "lantern tide")
         );
         assert!(
             bank[0]
                 .evidence
                 .lookup_keys
                 .iter()
-                .any(|key| key == "sen to chihiro no kamikakushi")
+                .any(|key| key == "lantern tide hidden current")
         );
     }
 
     #[test]
     fn context_bank_keeps_multiple_titles_same_normalized_name() {
         let titles = vec![
-            make_title("t1", "Dune", Some(1984)),
-            make_title("t2", "Dune", Some(2021)),
+            make_title("t1", "Glass Harbor", Some(1984)),
+            make_title("t2", "Glass Harbor", Some(2021)),
         ];
         let bank = build_title_context_bank(&titles);
         assert_eq!(bank.len(), 2);
@@ -1405,9 +1405,9 @@ mod tests {
 
     #[test]
     fn match_exact_title() {
-        let titles = vec![make_title("t1", "Inception", Some(2010))];
+        let titles = vec![make_title("t1", "Neon Cipher", Some(2010))];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Inception.2010.1080p.BluRay.x264", &bank);
+        let result = match_release_to_title_context("Neon.Cipher.2010.1080p.BluRay.x264", &bank);
         assert!(result.is_some(), "exact match should succeed");
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -1415,11 +1415,11 @@ mod tests {
     #[test]
     fn match_prefers_year_match() {
         let titles = vec![
-            make_title("t1", "Dune", Some(1984)),
-            make_title("t2", "Dune", Some(2021)),
+            make_title("t1", "Glass Harbor", Some(1984)),
+            make_title("t2", "Glass Harbor", Some(2021)),
         ];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Dune.2021.1080p.BluRay.x264", &bank);
+        let result = match_release_to_title_context("Glass.Harbor.2021.1080p.BluRay.x264", &bank);
         assert!(result.is_some(), "result was None");
         assert_eq!(result.unwrap().title_id, "t2");
     }
@@ -1427,11 +1427,11 @@ mod tests {
     #[test]
     fn match_with_year_stripped_from_release() {
         // Release has "Title 2010", lookup only has "Title" (with year in metadata)
-        let t = make_title("t1", "Inception", Some(2010));
+        let t = make_title("t1", "Neon Cipher", Some(2010));
         // Name doesn't include the year
         let titles = vec![t];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Inception.2010.1080p.BluRay", &bank);
+        let result = match_release_to_title_context("Neon.Cipher.2010.1080p.BluRay", &bank);
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -1439,9 +1439,9 @@ mod tests {
     #[test]
     fn match_release_title_without_year_finds_title_with_year() {
         // Lookup has "title 2024", release only has "title"
-        let titles = vec![make_title("t1", "Dune 2024", Some(2024))];
+        let titles = vec![make_title("t1", "Glass Harbor 2024", Some(2024))];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Dune", &bank);
+        let result = match_release_to_title_context("Glass Harbor", &bank);
         // Should match via the reverse year-addition path
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
@@ -1449,7 +1449,7 @@ mod tests {
 
     #[test]
     fn match_no_match_returns_none() {
-        let titles = vec![make_title("t1", "Inception", Some(2010))];
+        let titles = vec![make_title("t1", "Neon Cipher", Some(2010))];
         let bank = build_title_context_bank(&titles);
         let result = match_release_to_title_context("Totally.Unknown.Movie.2024.1080p", &bank);
         assert!(result.is_none());
@@ -1457,7 +1457,7 @@ mod tests {
 
     #[test]
     fn match_empty_release_title_returns_none() {
-        let titles = vec![make_title("t1", "Inception", Some(2010))];
+        let titles = vec![make_title("t1", "Neon Cipher", Some(2010))];
         let bank = build_title_context_bank(&titles);
         let result = match_release_to_title_context("", &bank);
         assert!(result.is_none());
@@ -1467,9 +1467,9 @@ mod tests {
     fn match_via_alias() {
         let titles = vec![make_title_with_aliases(
             "t1",
-            "Spirited Away",
+            "Lantern Tide",
             Some(2001),
-            vec!["Sen to Chihiro no Kamikakushi"],
+            vec!["Lantern Tide: Hidden Current"],
         )];
         let bank = build_title_context_bank(&titles);
         let result = match_release_to_title_context("Sen.to.Chihiro.no.Kamikakushi", &bank);
@@ -1513,15 +1513,15 @@ mod tests {
 
     #[test]
     fn parsed_release_matches_series_title_when_library_title_includes_year() {
-        let title = make_title("t1", "Bluey (2018)", Some(2018));
-        let parsed = crate::parse_release_metadata("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+        let title = make_title("t1", "Harbor Pals (2018)", Some(2018));
+        let parsed = crate::parse_release_metadata("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
 
         assert!(parsed_release_matches_title(&parsed, &title));
     }
 
     #[test]
     fn parsed_release_does_not_match_unrelated_series_title() {
-        let title = make_title("t1", "Bluey (2018)", Some(2018));
+        let title = make_title("t1", "Harbor Pals (2018)", Some(2018));
         let parsed =
             crate::parse_release_metadata("Blue.Exorcist.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
 

@@ -726,7 +726,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             // - Indexers with declared facets that don't include the current facet are skipped.
             // - Indexers that have the facet but only for ID-based search (deduplicates_aliases)
             //   are skipped when none of their supported IDs are available — freetext on
-            //   AnimeTosho for "The Matrix" is pointless when there's no anidb_id.
+            //   AnimeTosho for "Lattice Zero" is pointless when there's no anidb_id.
             let has_facet_entry = caps.has_facet(&facet);
             let has_declared_facets = !caps.supported_ids.is_empty();
             let skip_no_facet = !has_facet_entry && has_declared_facets;
@@ -1297,7 +1297,7 @@ fn normalize_for_comparison(input: &str) -> String {
 
 /// Returns the normalized titles that can legitimately identify this parsed
 /// release. The title guard uses exact matches against this set to reject
-/// nearby-but-wrong releases like "Firefly Lane" for a "Firefly" search.
+/// nearby-but-wrong releases like "Signal Road" for a "Signal Run" search.
 fn parsed_title_candidates(parsed: &scryer_application::ParsedReleaseMetadata) -> Vec<String> {
     let mut titles = if parsed.normalized_title_variants.is_empty() {
         vec![parsed.normalized_title.clone()]
@@ -1955,15 +1955,15 @@ mod tests {
     async fn series_search_with_tvdb_id_skips_freetext_when_id_tier_returns_results() {
         let (client, calls) = scripted_search_client(series_caps(), |call| {
             if call.ids.contains_key("tvdb_id") {
-                response_with_titles(&["Firefly.S01E12.720p.WEB-DL"])
+                response_with_titles(&["Signal.Run.S01E12.720p.WEB-DL"])
             } else {
-                response_with_titles(&["Firefly.Lane.S01E12.720p.WEB-DL"])
+                response_with_titles(&["Signal.Road.S01E12.720p.WEB-DL"])
             }
         });
 
         let response = client
             .search(
-                "Firefly S01E12".into(),
+                "Signal Run S01E12".into(),
                 HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
                 Some("series".into()),
                 Some("series".into()),
@@ -1983,7 +1983,7 @@ mod tests {
         assert!(calls[0].ids.contains_key("tvdb_id"));
         assert!(calls[0].query.is_empty());
         assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].title, "Firefly.S01E12.720p.WEB-DL");
+        assert_eq!(response.results[0].title, "Signal.Run.S01E12.720p.WEB-DL");
     }
 
     #[tokio::test]
@@ -1992,13 +1992,13 @@ mod tests {
             if call.ids.contains_key("tvdb_id") {
                 response_with_titles(&[])
             } else {
-                response_with_titles(&["Firefly.S01E12.720p.WEB-DL"])
+                response_with_titles(&["Signal.Run.S01E12.720p.WEB-DL"])
             }
         });
 
         let response = client
             .search(
-                "Firefly S01E12".into(),
+                "Signal Run S01E12".into(),
                 HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
                 Some("series".into()),
                 Some("series".into()),
@@ -2018,9 +2018,9 @@ mod tests {
         assert!(calls[0].ids.contains_key("tvdb_id"));
         assert!(calls[0].query.is_empty());
         assert!(calls[1].ids.is_empty());
-        assert_eq!(calls[1].query, "Firefly S01E12");
+        assert_eq!(calls[1].query, "Signal Run S01E12");
         assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].title, "Firefly.S01E12.720p.WEB-DL");
+        assert_eq!(response.results[0].title, "Signal.Run.S01E12.720p.WEB-DL");
     }
 
     #[tokio::test]
@@ -2030,15 +2030,15 @@ mod tests {
                 response_with_titles(&[])
             } else {
                 response_with_titles(&[
-                    "Firefly.S01E12.720p.WEB-DL",
-                    "Firefly.Lane.2021.S01E12.2160p.WEB-DL",
+                    "Signal.Run.S01E12.720p.WEB-DL",
+                    "Signal.Road.2021.S01E12.2160p.WEB-DL",
                 ])
             }
         });
 
         let response = client
             .search(
-                "Firefly S01E12".into(),
+                "Signal Run S01E12".into(),
                 HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
                 Some("series".into()),
                 Some("series".into()),
@@ -2058,7 +2058,7 @@ mod tests {
         assert!(calls[0].ids.contains_key("tvdb_id"));
         assert!(calls[1].ids.is_empty());
         assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].title, "Firefly.S01E12.720p.WEB-DL");
+        assert_eq!(response.results[0].title, "Signal.Run.S01E12.720p.WEB-DL");
     }
 
     #[tokio::test]
@@ -2067,13 +2067,13 @@ mod tests {
             if call.ids.contains_key("imdb_id") {
                 response_with_titles(&[])
             } else {
-                response_with_titles(&["The.Matrix.1999.1080p.BluRay"])
+                response_with_titles(&["Lattice.Zero.1999.1080p.BluRay"])
             }
         });
 
         let response = client
             .search(
-                "The Matrix".into(),
+                "Lattice Zero".into(),
                 HashMap::from([("imdb_id".to_string(), "tt0133093".to_string())]),
                 Some("movie".into()),
                 Some("movie".into()),
@@ -2093,8 +2093,8 @@ mod tests {
         assert!(calls[0].ids.contains_key("imdb_id"));
         assert!(calls[0].query.is_empty());
         assert!(calls[1].ids.is_empty());
-        assert_eq!(calls[1].query, "The Matrix");
-        assert_eq!(response.results[0].title, "The.Matrix.1999.1080p.BluRay");
+        assert_eq!(calls[1].query, "Lattice Zero");
+        assert_eq!(response.results[0].title, "Lattice.Zero.1999.1080p.BluRay");
     }
 
     #[tokio::test]
@@ -2103,13 +2103,13 @@ mod tests {
             if call.ids.contains_key("anidb_id") {
                 response_with_titles(&[])
             } else {
-                response_with_titles(&["Demon.Slayer.S02E03.720p.WEB-DL"])
+                response_with_titles(&["Blade.Summit.S02E03.720p.WEB-DL"])
             }
         });
 
         let response = client
             .search(
-                "Demon Slayer S02E03".into(),
+                "Blade Summit S02E03".into(),
                 HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
                 Some("anime".into()),
                 Some("anime".into()),
@@ -2133,8 +2133,8 @@ mod tests {
         assert!(calls[0].absolute_episode == Some(21) || calls[1].absolute_episode == Some(21));
         assert!(calls[0].ids.is_empty() || calls[1].ids.is_empty() || calls[2].ids.is_empty());
         assert!(calls[2].ids.is_empty());
-        assert_eq!(calls[2].query, "Demon Slayer S02E03");
-        assert_eq!(response.results[0].title, "Demon.Slayer.S02E03.720p.WEB-DL");
+        assert_eq!(calls[2].query, "Blade Summit S02E03");
+        assert_eq!(response.results[0].title, "Blade.Summit.S02E03.720p.WEB-DL");
     }
 
     #[tokio::test]
@@ -2143,13 +2143,13 @@ mod tests {
             if call.ids.contains_key("tvdb_id") {
                 Err(AppError::Repository("boom".into()))
             } else {
-                response_with_titles(&["Firefly.S01E12.720p.WEB-DL"])
+                response_with_titles(&["Signal.Run.S01E12.720p.WEB-DL"])
             }
         });
 
         let response = client
             .search(
-                "Firefly S01E12".into(),
+                "Signal Run S01E12".into(),
                 HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
                 Some("series".into()),
                 Some("series".into()),
@@ -2185,7 +2185,7 @@ mod tests {
 
         let response = client
             .search(
-                "Demon Slayer S02E03".into(),
+                "Blade Summit S02E03".into(),
                 HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
                 Some("anime".into()),
                 Some("anime".into()),
@@ -2217,7 +2217,7 @@ mod tests {
                 } else if call.ids.contains_key("anidb_id") {
                     response_with_titles(&[])
                 } else {
-                    response_with_titles(&["Demon.Slayer.S02E03.720p.WEB-DL"])
+                    response_with_titles(&["Blade.Summit.S02E03.720p.WEB-DL"])
                 }
             });
 
@@ -2231,7 +2231,7 @@ mod tests {
 
         let response = client
             .search(
-                "Demon Slayer S02E03".into(),
+                "Blade Summit S02E03".into(),
                 HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
                 Some("anime".into()),
                 Some("anime".into()),
@@ -2272,13 +2272,13 @@ mod tests {
                 if call.ids.contains_key("anidb_id") {
                     Err(AppError::Repository("lookup failed".into()))
                 } else {
-                    response_with_titles(&["Demon.Slayer.S02E03.720p.WEB-DL"])
+                    response_with_titles(&["Blade.Summit.S02E03.720p.WEB-DL"])
                 }
             });
 
         let response = client
             .search(
-                "Demon Slayer S02E03".into(),
+                "Blade Summit S02E03".into(),
                 HashMap::from([("anidb_id".to_string(), "1535".to_string())]),
                 Some("anime".into()),
                 Some("anime".into()),
@@ -2316,8 +2316,8 @@ mod tests {
     async fn exact_title_guard_rejects_false_positive_series_matches_for_freetext_searches() {
         let (client, _calls) = scripted_search_client(series_caps(), |_call| {
             response_with_titles(&[
-                "Firefly.S01E12.720p.WEB-DL",
-                "Firefly.Lane.2021.S01E12.2160p.WEB-DL",
+                "Signal.Run.S01E12.720p.WEB-DL",
+                "Signal.Road.2021.S01E12.2160p.WEB-DL",
                 "Friends.Like.These.S01E12.720p.WEB-DL",
                 "Smiling.Friends.S01E12.1080p.WEB-DL",
             ])
@@ -2325,7 +2325,7 @@ mod tests {
 
         let firefly = client
             .search(
-                "Firefly S01E12".into(),
+                "Signal Run S01E12".into(),
                 HashMap::new(),
                 Some("series".into()),
                 Some("series".into()),
@@ -2340,7 +2340,7 @@ mod tests {
             .await
             .expect("firefly search should succeed");
         assert_eq!(firefly.results.len(), 1);
-        assert_eq!(firefly.results[0].title, "Firefly.S01E12.720p.WEB-DL");
+        assert_eq!(firefly.results[0].title, "Signal.Run.S01E12.720p.WEB-DL");
 
         let friends = client
             .search(
@@ -2365,7 +2365,7 @@ mod tests {
     async fn id_backed_searches_skip_title_guard() {
         let (client, _calls) = scripted_search_client(movie_caps(), |call| {
             if call.ids.contains_key("imdb_id") {
-                response_with_titles(&["Sen.to.Chihiro.no.Kamikakushi.2001.1080p.BluRay"])
+                response_with_titles(&["Lantern.Tide.Hidden.Current.2001.1080p.BluRay"])
             } else {
                 response_with_titles(&[])
             }
@@ -2373,7 +2373,7 @@ mod tests {
 
         let response = client
             .search(
-                "Spirited Away".into(),
+                "Lantern Tide".into(),
                 HashMap::from([("imdb_id".to_string(), "tt0245429".to_string())]),
                 Some("movie".into()),
                 Some("movie".into()),
@@ -2412,7 +2412,7 @@ mod tests {
 
         let ids = HashMap::from([("anidb_id".to_string(), "18886".to_string())]);
         let strategies = build_strategies(&StrategyParams {
-            query: "Frieren: Beyond Journey's End S02E05",
+            query: "Silver Horizon: Beyond Journey's End S02E05",
             facet: "anime",
             ids: &ids,
             season: Some(2),
@@ -2443,33 +2443,33 @@ mod tests {
     #[test]
     fn preferred_anime_alias_query_strips_episode_context() {
         let alias = preferred_anime_alias_query(
-            "Frieren: Beyond Journey's End S02E05",
+            "Silver Horizon: Beyond Journey's End S02E05",
             &[scryer_domain::TaggedAlias {
-                name: "Sousou no Frieren".into(),
+                name: "Sora no Vale".into(),
                 language: "jpn".into(),
             }],
         );
 
-        assert_eq!(alias.as_deref(), Some("Sousou no Frieren"));
+        assert_eq!(alias.as_deref(), Some("Sora no Vale"));
     }
 
     #[test]
     fn preferred_anime_alias_query_skips_canonical_alias_and_uses_distinct_romanized_alias() {
         let alias = preferred_anime_alias_query(
-            "Frieren: Beyond Journey's End S02E05",
+            "Silver Horizon: Beyond Journey's End S02E05",
             &[
                 scryer_domain::TaggedAlias {
-                    name: "Frieren: Beyond Journey's End".into(),
+                    name: "Silver Horizon: Beyond Journey's End".into(),
                     language: "jpn".into(),
                 },
                 scryer_domain::TaggedAlias {
-                    name: "Sousou no Frieren".into(),
+                    name: "Sora no Vale".into(),
                     language: "jpn".into(),
                 },
             ],
         );
 
-        assert_eq!(alias.as_deref(), Some("Sousou no Frieren"));
+        assert_eq!(alias.as_deref(), Some("Sora no Vale"));
     }
 
     #[test]
@@ -2490,7 +2490,7 @@ mod tests {
 
         let ids = HashMap::from([("tvdb_id".to_string(), "424536".to_string())]);
         let strategies = build_strategies(&StrategyParams {
-            query: "Sousou no Frieren",
+            query: "Sora no Vale",
             facet: "anime",
             ids: &ids,
             season: Some(2),

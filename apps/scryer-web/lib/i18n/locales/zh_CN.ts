@@ -186,6 +186,7 @@ const zh_CN: LocaleDictionary = {
     "媒体库扫描完成。已导入 {{imported}} 个，跳过 {{skipped}} 个，未匹配 {{unmatched}} 个。",
   "settings.libraryScanFailed": "媒体库扫描失败。",
   "settings.libraryScanCancel": "取消",
+  "settings.libraryScanRunInBackground": "转到后台运行",
   "settings.libraryScanCancelFailed": "无法取消库扫描。",
   "settings.libraryScanCanceled": "图书馆扫描已取消。",
   "settings.libraryScanCanceledSummary":
@@ -1215,6 +1216,7 @@ const zh_CN: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "监控填充电影",
   "settings.monitorFillerMoviesDescription":
     "将分类为填充内容的电影包含在下载队列中",
+  "settings.sidecarFilesTitle": "Sidecar 文件",
   "settings.nfoWriteOnImportLabel": "导入时写入 NFO",
   "settings.nfoWriteOnImportDescription":
     "在导入的媒体旁写入 Kodi/Jellyfin/Emby 兼容的 .nfo 元数据文件",

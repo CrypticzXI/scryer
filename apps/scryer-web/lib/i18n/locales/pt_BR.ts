@@ -196,6 +196,7 @@ const pt_BR: LocaleDictionary = {
     "Verificação da biblioteca concluída. {{imported}} importados, {{skipped}} ignorados, {{unmatched}} sem correspondência.",
   "settings.libraryScanFailed": "A verificação da biblioteca falhou.",
   "settings.libraryScanCancel": "Cancelar",
+  "settings.libraryScanRunInBackground": "Executar em segundo plano",
   "settings.libraryScanCancelFailed":
     "Falha ao cancelar a verificação da biblioteca.",
   "settings.libraryScanCanceled": "Verificação da biblioteca cancelada.",
@@ -1307,6 +1308,7 @@ const pt_BR: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "Monitorar filmes de preenchimento",
   "settings.monitorFillerMoviesDescription":
     "Incluir filmes classificados como filler na fila de download",
+  "settings.sidecarFilesTitle": "Arquivos sidecar",
   "settings.nfoWriteOnImportLabel": "Gravar NFO ao importar",
   "settings.nfoWriteOnImportDescription":
     "Gravar arquivos de metadados .nfo compatíveis com Kodi/Jellyfin/Emby junto à mídia importada",

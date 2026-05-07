@@ -225,8 +225,8 @@ impl LibraryRepository for SqliteCatalogStore {
         library::update_library_query(&self.pool, library_id, name, slug, roots).await
     }
 
-    async fn delete_empty(&self, library_id: &str) -> AppResult<bool> {
-        library::delete_empty_library_query(&self.pool, library_id).await
+    async fn delete_library(&self, library_id: &str) -> AppResult<bool> {
+        library::delete_library_query(&self.pool, library_id).await
     }
 
     async fn app_permission_mask_for_user(&self, user_id: &str) -> AppResult<AppPermissionMask> {

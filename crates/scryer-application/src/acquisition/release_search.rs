@@ -946,7 +946,7 @@ mod tests {
     fn make_title() -> Title {
         Title {
             id: "title-1".to_string(),
-            name: "Bastard!!".to_string(),
+            name: "Nightfall!!".to_string(),
             facet: MediaFacet::Anime,
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Anime),
             monitored: true,
@@ -975,7 +975,7 @@ mod tests {
             country: None,
             aliases: vec![],
             tagged_aliases: vec![TaggedAlias {
-                name: "Bastard Heavy Metal Dark Fantasy".to_string(),
+                name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
                 language: "eng".to_string(),
             }],
             metadata_language: None,
@@ -1051,16 +1051,16 @@ mod tests {
     #[test]
     fn candidate_matches_title_subject_uses_contextual_alias_parse_when_needed() {
         let mut title = make_title();
-        title.name = "Frieren Beyond Journey's End".to_string();
+        title.name = "Silver Horizon Beyond the Vale".to_string();
         title.year = Some(2023);
-        title.aliases = vec!["Sousou no Frieren".to_string()];
+        title.aliases = vec!["Sora no Vale".to_string()];
         title.tagged_aliases = vec![TaggedAlias {
-            name: "Frieren Beyond Journeys End".to_string(),
+            name: "Silver Horizon Beyond the Vale".to_string(),
             language: "eng".to_string(),
         }];
 
         let candidate = make_candidate(
-            "[SubsPlease] Sousou.no.Frieren.Frieren.Beyond.Journeys.End.-.01.[1080p].[HEVC]",
+            "[SubsPlease] Sora.no.Vale.Silver.Horizon.Beyond.the.Vale.-.01.[1080p].[HEVC]",
             None,
         );
 
@@ -1072,7 +1072,7 @@ mod tests {
 
     #[test]
     fn candidate_parse_state_marks_ambiguous_parse() {
-        let mut candidate = make_candidate("Bastard.S01E01.1080p.WEB-DL", None);
+        let mut candidate = make_candidate("Nightfall.S01E01.1080p.WEB-DL", None);
         let parsed = candidate
             .parsed_release_metadata
             .as_mut()

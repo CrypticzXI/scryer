@@ -73,7 +73,7 @@ async fn test_indexer_search() {
     use scryer_application::SearchMode;
     let results = client
         .search(
-            "Dune Part Two".to_string(),
+            "Glass Harbor Part Two".to_string(),
             std::collections::HashMap::new(),
             None,
             None,
@@ -91,7 +91,7 @@ async fn test_indexer_search() {
 
     assert_eq!(results.len(), 1);
     let r = &results[0];
-    assert!(r.title.contains("Dune Part Two"));
+    assert!(r.title.contains("Glass Harbor Part Two"));
     assert_eq!(r.size_bytes, Some(8_000_000_000));
     assert!(r.source.contains("Test"));
 }

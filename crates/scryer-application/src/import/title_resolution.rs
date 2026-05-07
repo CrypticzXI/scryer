@@ -769,14 +769,14 @@ mod tests {
         let titles = [
             test_title("Random Other Show", MediaFacet::Anime, Some(2023), &[]),
             test_title(
-                "Frieren Beyond Journey's End",
+                "Silver Horizon Beyond the Vale",
                 MediaFacet::Anime,
                 Some(2023),
-                &["Sousou no Frieren", "Frieren Beyond Journeys End"],
+                &["Sora no Vale", "Silver Horizon Beyond the Vale"],
             ),
         ];
         let parsed = crate::parse_release_metadata(
-            "[SubsPlease] Sousou.no.Frieren.Frieren.Beyond.Journeys.End.-.01.[1080p].[HEVC]",
+            "[SubsPlease] Sora.no.Vale.Silver.Horizon.Beyond.the.Vale.-.01.[1080p].[HEVC]",
         );
 
         let matched =

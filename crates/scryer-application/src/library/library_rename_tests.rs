@@ -14,21 +14,21 @@ fn tokens(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 
 #[test]
 fn render_simple_tokens() {
-    let t = tokens(&[("title", "Inception"), ("year", "2010"), ("ext", "mkv")]);
+    let t = tokens(&[("title", "Neon Cipher"), ("year", "2010"), ("ext", "mkv")]);
     let result = render_rename_template("{title} ({year}).{ext}", &t);
-    assert_eq!(result, "Inception (2010).mkv");
+    assert_eq!(result, "Neon Cipher (2010).mkv");
 }
 
 #[test]
 fn render_full_movie_template() {
     let t = tokens(&[
-        ("title", "Inception"),
+        ("title", "Neon Cipher"),
         ("year", "2010"),
         ("quality", "1080p"),
         ("ext", "mkv"),
     ]);
     let result = render_rename_template("{title} ({year}) - {quality}.{ext}", &t);
-    assert_eq!(result, "Inception (2010) - 1080p.mkv");
+    assert_eq!(result, "Neon Cipher (2010) - 1080p.mkv");
 }
 
 #[test]

@@ -196,6 +196,7 @@ const de: LocaleDictionary = {
     "Bibliotheksscan abgeschlossen. {{imported}} importiert, {{skipped}} übersprungen, {{unmatched}} nicht zugeordnet.",
   "settings.libraryScanFailed": "Bibliotheksscan fehlgeschlagen.",
   "settings.libraryScanCancel": "Abbrechen",
+  "settings.libraryScanRunInBackground": "Im Hintergrund ausführen",
   "settings.libraryScanCancelFailed":
     "Der Bibliotheksscan konnte nicht abgebrochen werden.",
   "settings.libraryScanCanceled": "Bibliotheksscan abgebrochen.",
@@ -1304,6 +1305,7 @@ const de: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "Überwachen Sie Füllfilme",
   "settings.monitorFillerMoviesDescription":
     "Als Füllmaterial eingestufte Filme in die Download-Warteschlange aufnehmen",
+  "settings.sidecarFilesTitle": "Sidecar-Dateien",
   "settings.nfoWriteOnImportLabel": "NFO beim Import schreiben",
   "settings.nfoWriteOnImportDescription":
     "Kodi/Jellyfin/Emby-kompatible .nfo-Metadaten-Dateien neben importierten Medien schreiben",

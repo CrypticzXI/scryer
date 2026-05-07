@@ -14,11 +14,16 @@ use tokio::time::{Duration, Instant, sleep, timeout};
 struct MockTitleRepo {
     store: Arc<Mutex<Vec<Title>>>,
     create_or_get_existing_error: Arc<Mutex<Option<String>>>,
+    delete_operation_log: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
 }
 
 impl MockTitleRepo {
     async fn fail_create_or_get_existing(&self, message: &str) {
         *self.create_or_get_existing_error.lock().await = Some(message.to_string());
+    }
+
+    async fn set_delete_operation_log(&self, operation_log: Arc<Mutex<Vec<String>>>) {
+        *self.delete_operation_log.lock().await = Some(operation_log);
     }
 }
 
@@ -336,6 +341,12 @@ impl TitleRepository for MockTitleRepo {
     }
 
     async fn delete(&self, id: &str) -> AppResult<()> {
+        if let Some(operation_log) = self.delete_operation_log.lock().await.clone() {
+            operation_log
+                .lock()
+                .await
+                .push(format!("delete_title:{id}"));
+        }
         let mut list = self.store.lock().await;
         let position = list
             .iter()
@@ -972,6 +983,13 @@ impl UserRepository for MockUserRepo {
 struct MockDomainEventRepo {
     events: Arc<Mutex<Vec<DomainEvent>>>,
     subscriber_offsets: Arc<Mutex<HashMap<String, i64>>>,
+    delete_operation_log: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
+}
+
+impl MockDomainEventRepo {
+    async fn set_delete_operation_log(&self, operation_log: Arc<Mutex<Vec<String>>>) {
+        *self.delete_operation_log.lock().await = Some(operation_log);
+    }
 }
 
 #[derive(Default)]
@@ -1144,6 +1162,24 @@ impl DomainEventRepository for MockDomainEventRepo {
             .collect())
     }
 
+    async fn delete_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
+        if let Some(operation_log) = self.delete_operation_log.lock().await.clone() {
+            operation_log
+                .lock()
+                .await
+                .push("delete_domain_events".to_string());
+        }
+        let mut events = self.events.lock().await;
+        let before = events.len();
+        events.retain(|event| {
+            event
+                .title_id
+                .as_ref()
+                .is_none_or(|title_id| !title_ids.iter().any(|candidate| candidate == title_id))
+        });
+        Ok((before - events.len()) as u32)
+    }
+
     async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64> {
         let offsets = self.subscriber_offsets.lock().await;
         Ok(*offsets.get(subscriber).unwrap_or(&0))
@@ -1271,11 +1307,19 @@ impl LibraryRepository for MockLibraryRepo {
         Ok(library.clone())
     }
 
-    async fn delete_empty(&self, library_id: &str) -> AppResult<bool> {
+    async fn delete_library(&self, library_id: &str) -> AppResult<bool> {
         let mut libraries = self.libraries.lock().await;
         let before = libraries.len();
         libraries.retain(|library| library.id != library_id || library.is_default);
-        Ok(libraries.len() != before)
+        let deleted = libraries.len() != before;
+        drop(libraries);
+        if deleted {
+            let mut grants = self.grants.lock().await;
+            for user_grants in grants.values_mut() {
+                user_grants.retain(|grant| grant.library_id != library_id);
+            }
+        }
+        Ok(deleted)
     }
 
     async fn app_permission_mask_for_user(&self, user_id: &str) -> AppResult<AppPermissionMask> {
@@ -2162,6 +2206,10 @@ impl SettingsRepository for MockSettingsRepo {
     ) -> AppResult<()> {
         Ok(())
     }
+
+    async fn delete_values_for_scope_id(&self, _scope_id: &str) -> AppResult<u32> {
+        Ok(0)
+    }
 }
 
 #[derive(Default, Clone)]
@@ -2251,6 +2299,13 @@ impl SettingsRepository for StoredSettingsRepo {
             .await
             .remove(&(scope.to_string(), key_name.to_string(), scope_id));
         Ok(())
+    }
+
+    async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
+        let mut values = self.values.lock().await;
+        let before = values.len();
+        values.retain(|(_, _, stored_scope_id), _| stored_scope_id.as_deref() != Some(scope_id));
+        Ok((before - values.len()) as u32)
     }
 }
 
@@ -2551,6 +2606,13 @@ impl LibraryScanUnmatchedItemRepository for TrackingLibraryScanUnmatchedItemRepo
             !(item.library_id == library_id && item.facet == facet && item.item_path == item_path)
         });
         Ok(())
+    }
+
+    async fn delete_for_library(&self, library_id: &str) -> AppResult<u32> {
+        let mut items = self.items.lock().await;
+        let before = items.len();
+        items.retain(|item| item.library_id != library_id);
+        Ok((before - items.len()) as u32)
     }
 
     async fn list_library_scan_unmatched_items(
@@ -3649,6 +3711,13 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 struct TrackingPendingReleaseRepo {
     store: Arc<Mutex<Vec<PendingRelease>>>,
     deleted_title_ids: Arc<Mutex<Vec<String>>>,
+    delete_error: Arc<Mutex<Option<String>>>,
+}
+
+impl TrackingPendingReleaseRepo {
+    async fn fail_delete_for_title(&self, message: &str) {
+        *self.delete_error.lock().await = Some(message.to_string());
+    }
 }
 
 #[async_trait]
@@ -3801,11 +3870,114 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
     }
 
     async fn delete_pending_releases_for_title(&self, title_id: &str) -> AppResult<()> {
+        if let Some(message) = self.delete_error.lock().await.clone() {
+            return Err(AppError::Repository(message));
+        }
         self.deleted_title_ids
             .lock()
             .await
             .push(title_id.to_string());
+        self.store
+            .lock()
+            .await
+            .retain(|release| release.title_id != title_id);
         Ok(())
+    }
+}
+
+#[derive(Default, Clone)]
+struct TrackingHousekeepingRepo {
+    operation_log: Arc<Mutex<Vec<String>>>,
+}
+
+impl TrackingHousekeepingRepo {
+    fn with_operation_log(operation_log: Arc<Mutex<Vec<String>>>) -> Self {
+        Self { operation_log }
+    }
+}
+
+#[async_trait]
+impl HousekeepingRepository for TrackingHousekeepingRepo {
+    async fn delete_release_decisions_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_release_attempts_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_dispatched_event_outboxes_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_history_events_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_domain_events_older_than_for_types(
+        &self,
+        _days: i64,
+        _event_types: &[DomainEventType],
+    ) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_title_history_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_download_import_artifacts_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_terminal_imports_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_terminal_download_queue_commands_older_than(
+        &self,
+        _days: i64,
+    ) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_rule_set_history_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn delete_history_events_for_title_ids(&self, _title_ids: &[String]) -> AppResult<u32> {
+        self.operation_log
+            .lock()
+            .await
+            .push("delete_history_events".to_string());
+        Ok(0)
+    }
+
+    async fn delete_download_import_artifacts_for_title_ids(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<u32> {
+        self.operation_log
+            .lock()
+            .await
+            .push("delete_download_import_artifacts".to_string());
+        Ok(0)
+    }
+
+    async fn delete_release_attempts_for_title_ids(&self, _title_ids: &[String]) -> AppResult<u32> {
+        self.operation_log
+            .lock()
+            .await
+            .push("delete_release_attempts".to_string());
+        Ok(0)
+    }
+
+    async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>> {
+        Ok(Vec::new())
+    }
+
+    async fn delete_media_files_by_ids(&self, _ids: &[String]) -> AppResult<u32> {
+        Ok(0)
     }
 }
 
@@ -4226,18 +4398,347 @@ async fn update_library_rejects_root_used_by_other_facet_library() {
 }
 
 #[tokio::test]
-async fn delete_empty_library_rejects_default_library() {
+async fn delete_library_rejects_default_library() {
     let (app, user) = bootstrap();
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
 
     let error = app
-        .delete_empty_library(&user, &movie_library_id)
+        .delete_library(&user, &movie_library_id)
         .await
         .expect_err("default library delete should be rejected");
 
     assert!(
         matches!(error, AppError::Validation(ref message) if message.contains("default libraries cannot be deleted")),
         "unexpected delete error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_library_purges_library_state_for_non_default_library() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, mut user) = bootstrap_with_scan_unmatched_tracking(
+        settings.clone(),
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+    );
+
+    let library = app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Kids".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/Kids".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("library should be created");
+
+    app.services
+        .catalog
+        .libraries
+        .set_grants_for_user(
+            &user.id,
+            vec![scryer_domain::LibraryGrant {
+                user_id: user.id.clone(),
+                library_id: library.id.clone(),
+                permissions: scryer_domain::LibraryPermissionMask::from_permissions([
+                    scryer_domain::LibraryPermission::View,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                    scryer_domain::LibraryPermission::ManageLibrary,
+                ]),
+            }],
+        )
+        .await
+        .expect("library grants should be stored");
+    user.authorization.loaded = false;
+
+    settings
+        .set_scoped_value("system", "quality.profile", &library.id, "\"kids\"")
+        .await;
+
+    let created = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Delete Me".into(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+            library.id.clone(),
+        )
+        .await
+        .expect("title should be created");
+
+    let mut pending_item = build_test_unmatched_item(
+        "library-delete-unmatched",
+        MediaFacet::Movie,
+        "/Volumes/Media/Kids",
+        "/Volumes/Media/Kids/Delete.Me.2026.mkv",
+        "Delete Me",
+        "Delete Me",
+        Some(2026),
+    );
+    pending_item.library_id = library.id.clone();
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&pending_item)
+        .await
+        .expect("pending import should be stored");
+
+    let deleted = app
+        .delete_library(&user, &library.id)
+        .await
+        .expect("library delete should succeed");
+    assert!(deleted);
+
+    assert!(
+        app.services
+            .catalog
+            .libraries
+            .get_by_id(&library.id)
+            .await
+            .expect("library lookup should succeed")
+            .is_none()
+    );
+    assert!(
+        app.services
+            .catalog
+            .titles
+            .get_by_id(&created.title.id)
+            .await
+            .expect("title lookup should succeed")
+            .is_none()
+    );
+    assert!(
+        settings
+            .get_scoped_value("system", "quality.profile", &library.id)
+            .await
+            .is_none()
+    );
+    assert!(
+        unmatched_items
+            .items()
+            .await
+            .iter()
+            .all(|item| item.library_id != library.id)
+    );
+    assert!(
+        app.services
+            .catalog
+            .libraries
+            .permission_masks_for_user(&user.id)
+            .await
+            .expect("grant lookup should succeed")
+            .iter()
+            .all(|grant| grant.library_id != library.id)
+    );
+}
+
+#[tokio::test]
+async fn delete_library_purges_history_before_deleting_title_rows() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let titles = Arc::new(MockTitleRepo::default());
+    let operation_log = Arc::new(Mutex::new(Vec::new()));
+    titles.set_delete_operation_log(operation_log.clone()).await;
+
+    let domain_events = Arc::new(MockDomainEventRepo::default());
+    domain_events
+        .set_delete_operation_log(operation_log.clone())
+        .await;
+
+    let (app, mut user) = bootstrap_with_library_delete_repositories(
+        titles,
+        settings,
+        unmatched_items,
+        domain_events,
+        Arc::new(TrackingHousekeepingRepo::with_operation_log(
+            operation_log.clone(),
+        )),
+        Arc::new(TrackingPendingReleaseRepo::default()),
+    );
+
+    let library = app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Kids".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/Kids".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("library should be created");
+
+    app.services
+        .catalog
+        .libraries
+        .set_grants_for_user(
+            &user.id,
+            vec![scryer_domain::LibraryGrant {
+                user_id: user.id.clone(),
+                library_id: library.id.clone(),
+                permissions: scryer_domain::LibraryPermissionMask::from_permissions([
+                    scryer_domain::LibraryPermission::View,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                    scryer_domain::LibraryPermission::ManageLibrary,
+                ]),
+            }],
+        )
+        .await
+        .expect("library grants should be stored");
+    user.authorization.loaded = false;
+
+    app.create_title_without_hydration_in_library(
+        &user,
+        NewTitle {
+            name: "Delete Me".into(),
+            facet: MediaFacet::Movie,
+            monitored: false,
+            tags: vec![],
+            external_ids: vec![],
+            min_availability: None,
+            ..Default::default()
+        },
+        library.id.clone(),
+    )
+    .await
+    .expect("title should be created");
+
+    let deleted = app
+        .delete_library(&user, &library.id)
+        .await
+        .expect("library delete should succeed");
+    assert!(deleted);
+
+    let operations = operation_log.lock().await.clone();
+    let delete_title_index = operations
+        .iter()
+        .position(|entry| entry.starts_with("delete_title:"))
+        .expect("title delete should be recorded");
+
+    assert!(operations[..delete_title_index].contains(&"delete_domain_events".to_string()));
+    assert!(operations[..delete_title_index].contains(&"delete_history_events".to_string()));
+    assert!(
+        operations[..delete_title_index].contains(&"delete_download_import_artifacts".to_string())
+    );
+    assert!(operations[..delete_title_index].contains(&"delete_release_attempts".to_string()));
+}
+
+#[tokio::test]
+async fn delete_library_returns_error_when_title_dependency_cleanup_fails() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let titles = Arc::new(MockTitleRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    pending_releases
+        .fail_delete_for_title("pending release cleanup failed")
+        .await;
+
+    let (app, mut user) = bootstrap_with_library_delete_repositories(
+        titles,
+        settings.clone(),
+        unmatched_items,
+        Arc::new(MockDomainEventRepo::default()),
+        Arc::new(TrackingHousekeepingRepo::default()),
+        pending_releases,
+    );
+
+    let library = app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Kids".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/Kids".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("library should be created");
+
+    app.services
+        .catalog
+        .libraries
+        .set_grants_for_user(
+            &user.id,
+            vec![scryer_domain::LibraryGrant {
+                user_id: user.id.clone(),
+                library_id: library.id.clone(),
+                permissions: scryer_domain::LibraryPermissionMask::from_permissions([
+                    scryer_domain::LibraryPermission::View,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                    scryer_domain::LibraryPermission::ManageLibrary,
+                ]),
+            }],
+        )
+        .await
+        .expect("library grants should be stored");
+    user.authorization.loaded = false;
+
+    settings
+        .set_scoped_value("system", "quality.profile", &library.id, "\"kids\"")
+        .await;
+
+    let created = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle {
+                name: "Delete Me".into(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+            library.id.clone(),
+        )
+        .await
+        .expect("title should be created");
+
+    let error = app
+        .delete_library(&user, &library.id)
+        .await
+        .expect_err("library delete should fail");
+
+    assert!(
+        matches!(error, AppError::Repository(ref message) if message.contains("pending release cleanup failed")),
+        "unexpected delete error: {error:?}"
+    );
+    assert!(
+        app.services
+            .catalog
+            .libraries
+            .get_by_id(&library.id)
+            .await
+            .expect("library lookup should succeed")
+            .is_some()
+    );
+    assert!(
+        app.services
+            .catalog
+            .titles
+            .get_by_id(&created.title.id)
+            .await
+            .expect("title lookup should succeed")
+            .is_some()
+    );
+    assert!(
+        settings
+            .get_scoped_value("system", "quality.profile", &library.id)
+            .await
+            .is_some()
     );
 }
 
@@ -5377,6 +5878,69 @@ fn bootstrap_with_scan_unmatched_tracking(
         Arc::new(EmptySearchMetadataGateway),
     );
     (app, user)
+}
+
+fn bootstrap_with_library_delete_repositories(
+    titles: Arc<MockTitleRepo>,
+    settings: Arc<StoredSettingsRepo>,
+    unmatched_items: Arc<TrackingLibraryScanUnmatchedItemRepo>,
+    domain_events: Arc<dyn DomainEventRepository>,
+    housekeeping: Arc<dyn HousekeepingRepository>,
+    pending_releases: Arc<dyn PendingReleaseRepository>,
+) -> (AppUseCase, User) {
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let download_client = Arc::new(StubDownloadClient::default());
+    let indexer_client = Arc::new(MockIndexerClient);
+    let media_files = Arc::new(MockMediaFileRepo::default());
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(domain_events)
+    .with_metadata_gateway(Arc::new(EmptySearchMetadataGateway))
+    .with_library_scanner(Arc::new(MutableLibraryScanner::default()))
+    .with_media_files(media_files)
+    .with_library_scan_unmatched_items(unmatched_items)
+    .with_pending_releases(pending_releases)
+    .with_housekeeping(housekeeping)
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, test_admin_user())
 }
 
 fn bootstrap_with_scan_unmatched_and_metadata_tracking(
@@ -7504,7 +8068,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
         .create_title_without_hydration(
             &user,
             NewTitle {
-                name: "Dune".to_string(),
+                name: "Glass Harbor".to_string(),
                 facet: MediaFacet::Movie,
                 monitored: true,
                 tags: vec![],
@@ -9464,7 +10028,7 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
         .add_title(
             &user,
             NewTitle {
-                name: "Bastard!!".into(),
+                name: "Nightfall!!".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -9487,7 +10051,7 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
             &title.id,
             TitleMetadataUpdate {
                 tagged_aliases: vec![scryer_domain::TaggedAlias {
-                    name: "Bastard Heavy Metal Dark Fantasy".to_string(),
+                    name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
                     language: "eng".to_string(),
                 }],
                 ..Default::default()
@@ -11253,7 +11817,7 @@ async fn list_download_history_page_includes_tracked_terminal_rows_when_client_h
     tracked_history_item.client_name = "NZBGet".to_string();
     tracked_history_item.client_type = "nzbget".to_string();
     tracked_history_item.title_id = Some(title.id.clone());
-    tracked_history_item.title_name = "Paperman".to_string();
+    tracked_history_item.title_name = "Paper Lantern".to_string();
 
     let tracked_id = crate::tracked_downloads::tracked_download_id(
         Some("primary"),
@@ -11271,7 +11835,7 @@ async fn list_download_history_page_includes_tracked_terminal_rows_when_client_h
                 client_item: tracked_history_item,
                 title_id: Some(title.id.clone()),
                 facet: Some("movie".to_string()),
-                source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+                source_title: Some("Paper.Lantern.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
                 state: TrackedDownloadState::Imported,
                 status: scryer_domain::TrackedDownloadStatus::Ok,
                 status_messages: Vec::new(),
@@ -11302,7 +11866,7 @@ async fn list_download_history_page_includes_tracked_terminal_rows_when_client_h
     assert_eq!(page.items[0].import_status, Some(ImportStatus::Completed));
     assert_eq!(
         page.items[0].title_name,
-        "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb"
+        "Paper.Lantern.2012.720p.WEB-DL.AV1.AAC2.0-NTb"
     );
 }
 
@@ -13882,7 +14446,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
         .add_title(
             &user,
             NewTitle {
-                name: "Bleach".into(),
+                name: "Emberfall".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -13996,8 +14560,8 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             .await
             .clone(),
         vec![
-            "Bleach S01E01.1080p.WEB-DL".to_string(),
-            "Bleach S01E02.1080p.WEB-DL".to_string(),
+            "Emberfall S01E01.1080p.WEB-DL".to_string(),
+            "Emberfall S01E02.1080p.WEB-DL".to_string(),
         ]
     );
 
@@ -14019,8 +14583,8 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
         )
         .expect("grabbed release should parse");
         let expected_title = match wanted.episode_number.as_deref() {
-            Some("1") => "Bleach S01E01.1080p.WEB-DL",
-            Some("2") => "Bleach S01E02.1080p.WEB-DL",
+            Some("1") => "Emberfall S01E01.1080p.WEB-DL",
+            Some("2") => "Emberfall S01E02.1080p.WEB-DL",
             other => panic!("unexpected episode number: {other:?}"),
         };
         assert_eq!(grabbed_release["title"].as_str(), Some(expected_title));
@@ -16175,7 +16739,7 @@ async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
         .add_title(
             &user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Blade Summit".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -16277,7 +16841,7 @@ async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
         slug: "mugen-train".into(),
         year: Some(2020),
         content_status: "released".into(),
-        overview: "Demon Slayer: Mugen Train".into(),
+        overview: "Blade Summit: Ember Rail".into(),
         poster_url: "poster".into(),
         language: "eng".into(),
         runtime_minutes: 117,
@@ -16900,7 +17464,7 @@ async fn anime_specials_movies_attach_to_specials_collection_and_keep_ordered_mo
         .add_title(
             &user,
             NewTitle {
-                name: "Attack on Titan".into(),
+                name: "Stoneguard".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec!["scryer:monitor-specials:false".into()],
@@ -16969,7 +17533,7 @@ async fn anime_specials_movies_attach_to_specials_collection_and_keep_ordered_mo
             movie_imdb_id: Some("tt3865768".into()),
             movie_mal_id: Some(23775),
             movie_anidb_id: None,
-            name: "Attack on Titan: Crimson Bow and Arrow".into(),
+            name: "Stoneguard: Crimson Bow and Arrow".into(),
             slug: "crimson-bow-and-arrow".into(),
             year: Some(2014),
             content_status: "released".into(),
@@ -17056,7 +17620,7 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
         .add_title(
             &user,
             NewTitle {
-                name: "My Hero Academia".into(),
+                name: "Vanguard Academy".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -17140,7 +17704,7 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
         movie_imdb_id: Some("tt5626028".into()),
         movie_mal_id: Some(36665),
         movie_anidb_id: None,
-        name: "僕のヒーローアカデミア THE MOVIE ～2人の英雄～".into(),
+        name: "星界学園 THE MOVIE ～二人の英雄～".into(),
         slug: "my-hero-academia-the-movie-two-heroes".into(),
         year: Some(2018),
         content_status: "released".into(),
@@ -17148,7 +17712,7 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
         poster_url: "poster-ja".into(),
         language: "jpn".into(),
         runtime_minutes: 96,
-        sort_title: "僕のヒーローアカデミア THE MOVIE ～2人の英雄～".into(),
+        sort_title: "星界学園 THE MOVIE ～二人の英雄～".into(),
         imdb_id: "tt5626028".into(),
         genres: vec!["Action".into()],
         studio: "Bones".into(),
@@ -17171,11 +17735,11 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
     .await;
 
     let english_movie = AnimeMovie {
-        name: "My Hero Academia: Two Heroes".into(),
+        name: "Vanguard Academy: Two Heroes".into(),
         overview: "English overview".into(),
         poster_url: "poster-en".into(),
         language: "eng".into(),
-        sort_title: "My Hero Academia: Two Heroes".into(),
+        sort_title: "Vanguard Academy: Two Heroes".into(),
         ..japanese_movie.clone()
     };
 
@@ -17199,14 +17763,14 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
 
     assert_eq!(
         interstitial.label.as_deref(),
-        Some("My Hero Academia: Two Heroes")
+        Some("Vanguard Academy: Two Heroes")
     );
     assert_eq!(
         interstitial
             .interstitial_movie
             .as_ref()
             .map(|movie| movie.name.as_str()),
-        Some("My Hero Academia: Two Heroes")
+        Some("Vanguard Academy: Two Heroes")
     );
     assert_eq!(
         interstitial
@@ -17231,7 +17795,7 @@ async fn anime_specials_refresh_updates_localized_specials_movie_metadata() {
         .add_title(
             &user,
             NewTitle {
-                name: "Attack on Titan".into(),
+                name: "Stoneguard".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -17276,7 +17840,7 @@ async fn anime_specials_refresh_updates_localized_specials_movie_metadata() {
         movie_imdb_id: Some("tt3865768".into()),
         movie_mal_id: Some(23775),
         movie_anidb_id: None,
-        name: "進撃の巨人 前編～紅蓮の弓矢～".into(),
+        name: "石衛 前編～紅蓮の弓矢～".into(),
         slug: "crimson-bow-and-arrow".into(),
         year: Some(2014),
         content_status: "released".into(),
@@ -17284,7 +17848,7 @@ async fn anime_specials_refresh_updates_localized_specials_movie_metadata() {
         poster_url: "poster-ja".into(),
         language: "jpn".into(),
         runtime_minutes: 120,
-        sort_title: "進撃の巨人 前編～紅蓮の弓矢～".into(),
+        sort_title: "石衛 前編～紅蓮の弓矢～".into(),
         imdb_id: "tt3865768".into(),
         genres: vec!["Action".into()],
         studio: "WIT Studio".into(),
@@ -17307,11 +17871,11 @@ async fn anime_specials_refresh_updates_localized_specials_movie_metadata() {
     .await;
 
     let english_special = AnimeMovie {
-        name: "Attack on Titan: Crimson Bow and Arrow".into(),
+        name: "Stoneguard: Crimson Bow and Arrow".into(),
         overview: "English recap overview".into(),
         poster_url: "poster-en".into(),
         language: "eng".into(),
-        sort_title: "Attack on Titan: Crimson Bow and Arrow".into(),
+        sort_title: "Stoneguard: Crimson Bow and Arrow".into(),
         ..japanese_special.clone()
     };
 
@@ -17336,7 +17900,7 @@ async fn anime_specials_refresh_updates_localized_specials_movie_metadata() {
     assert_eq!(specials.specials_movies.len(), 1);
     assert_eq!(
         specials.specials_movies[0].name,
-        "Attack on Titan: Crimson Bow and Arrow"
+        "Stoneguard: Crimson Bow and Arrow"
     );
     assert_eq!(
         specials.specials_movies[0].overview,

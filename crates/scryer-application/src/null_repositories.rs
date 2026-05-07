@@ -822,6 +822,10 @@ impl DomainEventRepository for NullDomainEventRepository {
         Ok(vec![])
     }
 
+    async fn delete_for_title_ids(&self, _: &[String]) -> AppResult<u32> {
+        Ok(0)
+    }
+
     async fn get_subscriber_offset(&self, _: &str) -> AppResult<i64> {
         Ok(0)
     }
@@ -871,6 +875,18 @@ impl HousekeepingRepository for NullHousekeepingRepository {
         Ok(0)
     }
     async fn delete_rule_set_history_older_than(&self, _days: i64) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn delete_history_events_for_title_ids(&self, _title_ids: &[String]) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn delete_download_import_artifacts_for_title_ids(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn delete_release_attempts_for_title_ids(&self, _title_ids: &[String]) -> AppResult<u32> {
         Ok(0)
     }
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>> {
@@ -1086,6 +1102,10 @@ impl SettingsRepository for NullSettingsRepository {
     async fn delete_setting_value(&self, _: &str, _: &str, _: Option<String>) -> AppResult<()> {
         Ok(())
     }
+
+    async fn delete_values_for_scope_id(&self, _: &str) -> AppResult<u32> {
+        Ok(0)
+    }
 }
 
 #[derive(Default)]
@@ -1232,6 +1252,10 @@ impl LibraryProbeRepository for NullLibraryProbeRepository {
     async fn upsert_probe_signature(&self, _probe: &LibraryProbeSignature) -> AppResult<()> {
         Ok(())
     }
+
+    async fn delete_probe_signatures_for_title_ids(&self, _: &[String]) -> AppResult<u32> {
+        Ok(0)
+    }
 }
 
 #[derive(Default)]
@@ -1262,6 +1286,10 @@ impl LibraryScanUnmatchedItemRepository for NullLibraryScanUnmatchedItemReposito
         _item_path: &str,
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn delete_for_library(&self, _library_id: &str) -> AppResult<u32> {
+        Ok(0)
     }
 
     async fn list_library_scan_unmatched_items(
@@ -1341,7 +1369,7 @@ impl LibraryRepository for NullLibraryRepository {
         ))
     }
 
-    async fn delete_empty(&self, _library_id: &str) -> AppResult<bool> {
+    async fn delete_library(&self, _library_id: &str) -> AppResult<bool> {
         Ok(false)
     }
 

@@ -102,19 +102,22 @@ fn bounds_token_role_hypotheses_and_marks_pruning() {
 
 #[test]
 fn context_keeps_stacked_anime_aliases_as_title_variants() {
-    let mut target = context(ContextFacetHint::Anime, "Frieren Beyond Journey's End");
+    let mut target = context(
+        ContextFacetHint::Anime,
+        "Silver Horizon Beyond Journey's End",
+    );
     target.aliases = vec![
         ContextAlias {
-            name: "Sousou no Frieren".to_string(),
+            name: "Sora no Vale".to_string(),
         },
         ContextAlias {
-            name: "Frieren Beyond Journeys End".to_string(),
+            name: "Silver Horizon Beyond the Vale".to_string(),
         },
     ];
     target.known_years.push(2023);
 
     let analysis = analyze_release_for_target(
-        "[SubsPlease] Sousou no Frieren Frieren Beyond Journeys End - 01 [1080p] [HEVC]",
+        "[SubsPlease] Sora no Vale Silver Horizon Beyond the Vale - 01 [1080p] [HEVC]",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -125,14 +128,14 @@ fn context_keeps_stacked_anime_aliases_as_title_variants() {
             .projected
             .normalized_title_variants
             .iter()
-            .any(|title: &String| title.contains("SOUSOU NO FRIEREN"))
+            .any(|title: &String| title.contains("SORA NO VALE"))
     );
     assert!(
         candidate
             .projected
             .normalized_title_variants
             .iter()
-            .any(|title: &String| title.contains("FRIEREN BEYOND JOURNEYS END"))
+            .any(|title: &String| title.contains("SILVER HORIZON BEYOND THE VALE"))
     );
     assert!(
         candidate
@@ -176,11 +179,11 @@ fn resource_limits_emit_hints() {
 
 #[test]
 fn targeted_single_context_parse_is_not_title_ambiguous() {
-    let mut target = context(ContextFacetHint::Movie, "Inception");
+    let mut target = context(ContextFacetHint::Movie, "Neon Cipher");
     target.known_years.push(2010);
 
     let analysis =
-        analyze_release_against_targets("Inception.2010.1080p.BluRay.x264-GRP", &[target]);
+        analyze_release_against_targets("Neon.Cipher.2010.1080p.BluRay.x264-GRP", &[target]);
 
     assert_eq!(analysis.best_target_index, Some(0));
     assert_eq!(analysis.ambiguity_margin(), i32::MAX);
@@ -189,7 +192,7 @@ fn targeted_single_context_parse_is_not_title_ambiguous() {
 
 #[test]
 fn targeted_empty_context_bank_has_no_best_target() {
-    let analysis = analyze_release_against_targets("Inception.2010.1080p.BluRay.x264-GRP", &[]);
+    let analysis = analyze_release_against_targets("Neon.Cipher.2010.1080p.BluRay.x264-GRP", &[]);
 
     assert_eq!(analysis.best_target_index, None);
     assert!(analysis.is_ambiguous());
@@ -197,14 +200,14 @@ fn targeted_empty_context_bank_has_no_best_target() {
 
 #[test]
 fn episode_context_supplies_soft_absolute_signal() {
-    let mut target = context(ContextFacetHint::Anime, "Bleach");
+    let mut target = context(ContextFacetHint::Anime, "Emberfall");
     target.episodes = vec![ContextEpisode {
         absolute_number: Some(330),
-        title: Some("Bleach".to_string()),
+        title: Some("Emberfall".to_string()),
         ..Default::default()
     }];
 
-    let analysis = analyze_release_for_target("[SubsPlease] Bleach - 330 [1080p]", &target);
+    let analysis = analyze_release_for_target("[SubsPlease] Emberfall - 330 [1080p]", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(candidate.family, ParseFamily::AnimeAbsolute);
@@ -252,12 +255,14 @@ fn daily_parser_projects_air_date_year_and_normalizes_web_source() {
 
 #[test]
 fn range_pack_parser_handles_bleach_batch_release() {
-    let analysis =
-        analyze_release_for_target("Bleach 1-366", &context(ContextFacetHint::Anime, "Bleach"));
+    let analysis = analyze_release_for_target(
+        "Emberfall 1-366",
+        &context(ContextFacetHint::Anime, "Emberfall"),
+    );
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(candidate.family, ParseFamily::EpisodeRangePack);
-    assert_eq!(candidate.projected.normalized_title, "BLEACH");
+    assert_eq!(candidate.projected.normalized_title, "EMBERFALL");
     assert_eq!(candidate.projected.audio, None);
     assert_eq!(
         candidate
@@ -272,8 +277,8 @@ fn range_pack_parser_handles_bleach_batch_release() {
 #[test]
 fn anime_context_prefers_season_pack_with_trailing_episode_range() {
     let analysis = analyze_release_for_target(
-        "Bleach Season 12 - (213 - 229) [Typis]",
-        &context(ContextFacetHint::Anime, "Bleach"),
+        "Emberfall Season 12 - (213 - 229) [Typis]",
+        &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -357,7 +362,7 @@ fn standard_episode_range_token_projects_multi_episode() {
 fn e_prefixed_episode_token_maps_to_season_one_episode() {
     let analysis = analyze_release_for_target(
         "One.Piece.E1158.1080p.WEB.H264",
-        &context(ContextFacetHint::Series, "One Piece"),
+        &context(ContextFacetHint::Series, "Tidebreaker"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -406,8 +411,8 @@ fn movie_title_keeps_hyphenated_words_before_metadata_boundary() {
 #[test]
 fn bracketed_prefix_group_can_be_captured_as_release_group() {
     let analysis = analyze_release_for_target(
-        "[SubsPlease] Bleach - 330 [1080p]",
-        &context(ContextFacetHint::Anime, "Bleach"),
+        "[SubsPlease] Emberfall - 330 [1080p]",
+        &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -586,21 +591,21 @@ fn season_only_token_can_project_target_episode_from_required_context() {
 #[test]
 fn parenthesized_cjk_alt_title_and_prefix_group_do_not_pollute_primary_title() {
     let analysis = analyze_release_for_target(
-        "[H3LL] Frieren (葬送のフリーレン 第2期) - Beyond Journey's End - S02E01 [1080p][x264 10bits][AAC][Multiple Subtitles].mkv",
-        &context(ContextFacetHint::Anime, "Frieren Beyond Journeys End"),
+        "[H3LL] Silver Horizon (銀界の地平線 第2期) - Beyond the Vale - S02E01 [1080p][x264 10bits][AAC][Multiple Subtitles].mkv",
+        &context(ContextFacetHint::Anime, "Silver Horizon Beyond the Vale"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(
         candidate.projected.normalized_title,
-        "FRIEREN BEYOND JOURNEYS END"
+        "SILVER HORIZON BEYOND THE VALE"
     );
     assert!(
         candidate
             .projected
             .normalized_title_variants
             .iter()
-            .any(|title| title.contains("FRIEREN"))
+            .any(|title| title.contains("SILVER HORIZON"))
     );
 }
 
@@ -734,18 +739,20 @@ fn enrichment_extracts_split_dts_x_audio() {
 #[test]
 fn enrichment_extracts_split_eac3_without_matching_title_substrings() {
     let analysis = analyze_release_for_target(
-        "[YukiSubs] Sousou no Frieren - 29 (S02E01) (WEB 1080p HEVC EAC-3).mkv",
-        &context(ContextFacetHint::Anime, "Frieren Beyond Journeys End"),
+        "[YukiSubs] Sora no Vale - 29 (S02E01) (WEB 1080p HEVC EAC-3).mkv",
+        &context(ContextFacetHint::Anime, "Silver Horizon Beyond the Vale"),
     );
     let projected = &analysis.best_candidate().expect("best candidate").projected;
 
     assert_eq!(projected.audio.as_deref(), Some("EAC3"));
 
-    let bleach =
-        analyze_release_for_target("Bleach 1-366", &context(ContextFacetHint::Anime, "Bleach"));
+    let bleach = analyze_release_for_target(
+        "Emberfall 1-366",
+        &context(ContextFacetHint::Anime, "Emberfall"),
+    );
     let bleach_projected = &bleach.best_candidate().expect("best candidate").projected;
 
-    assert_eq!(bleach_projected.normalized_title, "BLEACH");
+    assert_eq!(bleach_projected.normalized_title, "EMBERFALL");
     assert_eq!(bleach_projected.audio, None);
 }
 
@@ -891,8 +898,8 @@ fn remux_survives_when_proper_appears_first() {
 #[test]
 fn leading_bdmv_group_is_source_not_release_group() {
     let analysis = analyze_release_for_target(
-        "[BDMV] Bleach [BD-BOX] [SET 1- 9]",
-        &context(ContextFacetHint::Anime, "Bleach"),
+        "[BDMV] Emberfall [BD-BOX] [SET 1- 9]",
+        &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let projected = &analysis.best_candidate().expect("best candidate").projected;
 
@@ -904,7 +911,7 @@ fn leading_bdmv_group_is_source_not_release_group() {
 fn split_dvd_rip_source_projects_as_dvd() {
     let analysis = analyze_release_for_target(
         "[EDG] BLEACH EP 1-30 [DVD RIP X264 Hi10]",
-        &context(ContextFacetHint::Anime, "Bleach"),
+        &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -967,13 +974,16 @@ fn season_pack_range_sets_multi_season_contract_flag() {
 
 #[test]
 fn parenthetical_standard_identity_beats_prefixed_absolute_number() {
-    let mut target = context(ContextFacetHint::Anime, "Frieren Beyond Journey's End");
+    let mut target = context(
+        ContextFacetHint::Anime,
+        "Silver Horizon Beyond Journey's End",
+    );
     target.aliases.push(ContextAlias {
-        name: "Sousou no Frieren".to_string(),
+        name: "Sora no Vale".to_string(),
     });
 
     let analysis = analyze_release_for_target(
-        "[YukiSubs] Sousou no Frieren - 29 (S02E01) (WEB 1080p HEVC EAC-3).mkv",
+        "[YukiSubs] Sora no Vale - 29 (S02E01) (WEB 1080p HEVC EAC-3).mkv",
         &target,
     );
     let episode = analysis
@@ -1180,8 +1190,8 @@ fn suffix_group_after_episode_subtitle_beats_earlier_hyphen_text() {
 #[test]
 fn suffix_group_ignores_parenthetical_alt_title_and_language_markers() {
     let analysis = analyze_release_for_target(
-        "Frieren.Beyond.Journeys.End.S02E01.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG.(Sousou.no.Frieren.Multi-Subs)",
-        &context(ContextFacetHint::Anime, "Frieren Beyond Journeys End"),
+        "Silver Horizon.Beyond.Journeys.End.S02E01.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG.(Sousou.no.Silver Horizon.Multi-Subs)",
+        &context(ContextFacetHint::Anime, "Silver Horizon Beyond the Vale"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -1191,8 +1201,8 @@ fn suffix_group_ignores_parenthetical_alt_title_and_language_markers() {
 #[test]
 fn suffix_group_does_not_capture_hyphenated_words_in_trailing_title() {
     let analysis = analyze_release_for_target(
-        "Bleach.S17E11.720p.DSNP.WEB-DL.AAC2.0.H.264-PiroRips.mkv (Bleach - Thousand-Year Blood War)",
-        &context(ContextFacetHint::Anime, "Bleach"),
+        "Emberfall.S17E11.720p.DSNP.WEB-DL.AAC2.0.H.264-PiroRips.mkv (Emberfall - Thousand-Year Blood War)",
+        &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -1250,8 +1260,8 @@ fn release_group_uses_terminal_component_for_two_part_p2p_suffix() {
 #[test]
 fn bracketed_short_hyphenated_release_group_preserves_both_parts() {
     let analysis = analyze_release_for_target(
-        "Bleach - 224 - 3 vs 1 Battle! Rangiku's Crisis [C-W].avi",
-        &context(ContextFacetHint::Anime, "Bleach"),
+        "Emberfall - 224 - 3 vs 1 Battle! Rangiku's Crisis [C-W].avi",
+        &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -1408,7 +1418,7 @@ fn standalone_channel_count_without_audio_codec_is_not_projected() {
 fn labeled_episode_range_stays_multi_episode() {
     let analysis = analyze_release_for_target(
         "[EDG] BLEACH EP 1-30 [DVD R2 X264 Hi10]",
-        &context(ContextFacetHint::Anime, "Bleach"),
+        &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -1456,23 +1466,23 @@ fn labeled_single_episode_does_not_become_range_pack() {
     );
 }
 
-fn bastard_context() -> ReleaseParseContext {
+fn nightfall_context() -> ReleaseParseContext {
     let mut target = context(
         ContextFacetHint::Anime,
-        "Bastard!! Heavy Metal, Dark Fantasy",
+        "Nightfall!! Heavy Metal, Dark Fantasy",
     );
     target.aliases = vec![
         ContextAlias {
-            name: "Bastard!! Heavy Metal Dark".to_string(),
+            name: "Nightfall!! Heavy Metal Dark".to_string(),
         },
         ContextAlias {
-            name: "Bastard Heavy Metal Dark Fantasy".to_string(),
+            name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
         },
         ContextAlias {
-            name: "Bastard!! Ankoku no Hakaishin".to_string(),
+            name: "Nightfall!! Kage no Requiem".to_string(),
         },
         ContextAlias {
-            name: "Bastard!!".to_string(),
+            name: "Nightfall!!".to_string(),
         },
     ];
     target.known_years.push(2022);
@@ -1480,10 +1490,10 @@ fn bastard_context() -> ReleaseParseContext {
 }
 
 #[test]
-fn bastard_part_one_and_two_release_projects_full_season_pack() {
+fn nightfall_part_one_and_two_release_projects_full_season_pack() {
     let analysis = analyze_release_for_target(
-        "[Anime Time] BASTARD!! Heavy Metal Dark (Season 1) [Part 1 + Part 2] [Dual Audio] [1080p][HEVC 10bit x265][AAC][Multi Sub] [Batch]",
-        &bastard_context(),
+        "[Anime Time] NIGHTFALL!! Heavy Metal Dark (Season 1) [Part 1 + Part 2] [Dual Audio] [1080p][HEVC 10bit x265][AAC][Multi Sub] [Batch]",
+        &nightfall_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -1496,10 +1506,10 @@ fn bastard_part_one_and_two_release_projects_full_season_pack() {
 }
 
 #[test]
-fn bastard_standalone_part_two_release_projects_partial_season_pack() {
+fn nightfall_standalone_part_two_release_projects_partial_season_pack() {
     let analysis = analyze_release_for_target(
-        "[EMBER] BASTARD‼ Heavy Metal, Dark Fantasy (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Bastard!! Ankoku no Hakaishin) (Batch)",
-        &bastard_context(),
+        "[EMBER] NIGHTFALL‼ Heavy Metal, Dark Fantasy (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Nightfall!! Kage no Requiem) (Batch)",
+        &nightfall_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -1512,10 +1522,10 @@ fn bastard_standalone_part_two_release_projects_partial_season_pack() {
 }
 
 #[test]
-fn bastard_tilde_absolute_range_projects_absolute_episode_numbers() {
+fn nightfall_tilde_absolute_range_projects_absolute_episode_numbers() {
     let analysis = analyze_release_for_target(
-        "[Erai-raws] Bastard!! Ankoku no Hakaishin (2022) - 01 ~ 13 [1080p][Multiple Subtitle]",
-        &bastard_context(),
+        "[Erai-raws] Nightfall!! Kage no Requiem (2022) - 01 ~ 13 [1080p][Multiple Subtitle]",
+        &nightfall_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -1530,10 +1540,10 @@ fn bastard_tilde_absolute_range_projects_absolute_episode_numbers() {
 }
 
 #[test]
-fn bastard_labeled_absolute_range_projects_absolute_episode_numbers() {
+fn nightfall_labeled_absolute_range_projects_absolute_episode_numbers() {
     let analysis = analyze_release_for_target(
-        "BASTARD!! -Heavy Metal, Dark Fantasy- Episodes 14-24 | Bastard!! Ankoku no Hakaishin [Dual][1080p] - E.N.D (English Dub | Japanese Dub)",
-        &bastard_context(),
+        "NIGHTFALL!! -Heavy Metal, Dark Fantasy- Episodes 14-24 | Nightfall!! Kage no Requiem [Dual][1080p] - E.N.D (English Dub | Japanese Dub)",
+        &nightfall_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -1547,10 +1557,10 @@ fn bastard_labeled_absolute_range_projects_absolute_episode_numbers() {
 }
 
 #[test]
-fn bastard_season_scoped_labeled_range_projects_episode_numbers() {
+fn nightfall_season_scoped_labeled_range_projects_episode_numbers() {
     let analysis = analyze_release_for_target(
-        "[Anime Chap] BASTARD‼ Heavy Metal, Dark Fantasy 2022 - Season 1 (ONA) [WEB 1080p] {OP & ED Lyrics} Improved Subs (Episode 1 - 13) {Batch}",
-        &bastard_context(),
+        "[Anime Chap] NIGHTFALL‼ Heavy Metal, Dark Fantasy 2022 - Season 1 (ONA) [WEB 1080p] {OP & ED Lyrics} Improved Subs (Episode 1 - 13) {Batch}",
+        &nightfall_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     assert_eq!(candidate.family, ParseFamily::EpisodeRangePack);

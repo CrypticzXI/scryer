@@ -199,6 +199,7 @@ const fr: LocaleDictionary = {
     "Analyse de la bibliothèque terminée. {{imported}} importé(s), {{skipped}} ignoré(s), {{unmatched}} non apparié(s).",
   "settings.libraryScanFailed": "L'analyse de la bibliothèque a échoué.",
   "settings.libraryScanCancel": "Annuler",
+  "settings.libraryScanRunInBackground": "Exécuter en arrière-plan",
   "settings.libraryScanCancelFailed":
     "Échec de l'annulation de l'analyse de la bibliothèque.",
   "settings.libraryScanCanceled": "Analyse de la bibliothèque annulée.",
@@ -1320,6 +1321,7 @@ const fr: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "Films de remplissage de moniteur",
   "settings.monitorFillerMoviesDescription":
     "Inclure les films classés comme remplissage dans la file d'attente de téléchargement",
+  "settings.sidecarFilesTitle": "Fichiers sidecar",
   "settings.nfoWriteOnImportLabel": "Écrire les NFO à l'importation",
   "settings.nfoWriteOnImportDescription":
     "Écrire des fichiers de métadonnées .nfo compatibles Kodi/Jellyfin/Emby à côté des médias importés",

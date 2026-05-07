@@ -4342,9 +4342,9 @@ async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
     let catalog = catalog_store(&services);
 
     let mut frieren = make_test_title("title-search-frieren", None);
-    frieren.name = "Frieren: Beyond Journey's End".to_string();
+    frieren.name = "Silver Horizon: Beyond Journey's End".to_string();
     frieren.facet = MediaFacet::Anime;
-    frieren.aliases = vec!["Sousou no Frieren".to_string()];
+    frieren.aliases = vec!["Sora no Vale".to_string()];
     TitleRepository::create(&catalog, frieren.clone())
         .await
         .expect("frieren should insert");
@@ -4356,7 +4356,7 @@ async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
         .expect("friend should insert");
 
     let mut firefly = make_test_title("title-search-firefly", None);
-    firefly.name = "Firefly".to_string();
+    firefly.name = "Signal Run".to_string();
     TitleRepository::create(&catalog, firefly.clone())
         .await
         .expect("firefly should insert");

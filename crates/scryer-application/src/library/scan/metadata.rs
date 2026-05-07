@@ -1872,15 +1872,15 @@ mod tests {
         }
     }
 
-    fn bastard_tvshow_nfo_fixture() -> &'static str {
+    fn nightfall_tvshow_nfo_fixture() -> &'static str {
         r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <tvshow>
-  <plot>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</plot>
-  <outline>The characters in BASTARD!! have forsaken technology and have traded it in for magic and the occult arts. The story revolves around a group of five magicians who set out to rebuild their world after a rampaging God destroys it and tips it into chaos. Driven by their leader Dark Schneider, Gara, Arshes Nei, Abigail and Kall Su set out to conquer kingdoms in the hope of rebuilding them into utopias, with each of the magicians having their own personal agenda in doing so. However, Dark Schneider's often reckless manner and short temper leads him to wreak havoc where ever he goes. He is trapped by a group of clerics in a baby boy, leaving the four without a leader.Fifteen years later, the four still continue their quest but their motives have changed to despotic world domination, and it is up to Dark Schneider to show them the "error of their ways", when he is freed by the clerics who once imprisoned him, so that he may defend them against his former comrades. It has now become Dark Schneider's responsibility to track down each one of his companions and set them on the right path again, but what seems to be the once reckless and amoral Dark Schneider has changed over his fifteen year imprisonment within the boy, Lucien Renlen.</outline>
+  <plot>Nightfall!! follows the remnant wardens of a ruined sky-kingdom as they try to stop a shard-born eclipse from swallowing the last inhabited cities.</plot>
+  <outline>Nightfall!! follows the remnant wardens of a ruined sky-kingdom as they try to stop a shard-born eclipse from swallowing the last inhabited cities.</outline>
   <lockdata>false</lockdata>
   <dateadded>2026-04-21 04:22:41</dateadded>
-  <title>Bastard!!</title>
-  <originaltitle>Bastard!! Ankoku no Hakaishin</originaltitle>
+  <title>Nightfall!!</title>
+  <originaltitle>Nightfall!! Kage no Requiem</originaltitle>
   <trailer>plugin://plugin.video.youtube/play/?video_id=_Iqc-dG8peA</trailer>
   <trailer>plugin://plugin.video.youtube/play/?video_id=Vt4zSf3CfRA</trailer>
   <rating>5</rating>
@@ -1912,7 +1912,7 @@ mod tests {
   <tag>seinen</tag>
   <anidbid>10</anidbid>
   <tvdbid>415677</tvdbid>
-  <tvdbslugid>bastard-2022</tvdbslugid>
+  <tvdbslugid>nightfall-2022</tvdbslugid>
   <art>
     <poster>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/poster.jpg</poster>
     <fanart>/config/metadata/library/df/df254e34942e2f83823ce24206a65630/backdrop.jpg</fanart>
@@ -1957,35 +1957,38 @@ mod tests {
     #[test]
     fn extract_library_queries_prefers_release_year_over_stale_folder_year() {
         let (queries, year) = extract_library_queries(
-            "/library/Dune (2020)/Dune.2021.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.TrueHD.7.1.Atmos-FGT.mkv",
+            "/library/Glass Harbor (2020)/Glass.Harbor.2021.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.TrueHD.7.1.Atmos-FGT.mkv",
             "/library",
         );
 
-        assert_eq!(queries, vec!["DUNE".to_string()]);
+        assert_eq!(queries, vec!["GLASS HARBOR".to_string()]);
         assert_eq!(year, Some(2021));
     }
 
     #[test]
     fn extract_library_queries_prefers_filename_over_parent_folder_for_nested_movie() {
         let (queries, year) = extract_library_queries(
-            "/library/Dune (2020)/Dune.Part.Two.2024.2160p.WEB-DL.H265-GRP.mkv",
-            "/library",
-        );
-
-        assert_eq!(queries, vec!["DUNE TWO".to_string(), "Dune".to_string()]);
-        assert_eq!(year, Some(2024));
-    }
-
-    #[test]
-    fn extract_library_queries_keeps_full_ralph_breaks_the_internet_title() {
-        let (queries, year) = extract_library_queries(
-            "/library/Ralph Breaks the Internet Wreck-It Ralph 2 (2018)/Ralph Breaks the Internet Wreck-It Ralph 2.mkv",
+            "/library/Glass Harbor (2020)/Glass.Harbor.Part.Two.2024.2160p.WEB-DL.H265-GRP.mkv",
             "/library",
         );
 
         assert_eq!(
             queries,
-            vec!["RALPH BREAKS THE INTERNET WRECK IT RALPH 2".to_string()]
+            vec!["GLASS HARBOR TWO".to_string(), "Glass Harbor".to_string()]
+        );
+        assert_eq!(year, Some(2024));
+    }
+
+    #[test]
+    fn extract_library_queries_keeps_full_circuit_breakers_crash_the_grid_title() {
+        let (queries, year) = extract_library_queries(
+            "/library/Circuit Breakers Crash the Grid 2 (2018)/Circuit Breakers Crash the Grid 2.mkv",
+            "/library",
+        );
+
+        assert_eq!(
+            queries,
+            vec!["CIRCUIT BREAKERS CRASH THE GRID 2".to_string()]
         );
         assert_eq!(year, Some(2018));
     }
@@ -1994,10 +1997,10 @@ mod tests {
     fn select_best_match_accepts_single_same_year_prefix_match() {
         let results = vec![MetadataSearchItem {
             tvdb_id: "tvdb-3".to_string(),
-            name: "Ralph Breaks the Internet".to_string(),
+            name: "Circuit Breakers".to_string(),
             year: Some(2018),
         }];
-        let raw_candidates = vec!["RALPH BREAKS THE INTERNET WRECK IT RALPH 2".to_string()];
+        let raw_candidates = vec!["CIRCUIT BREAKERS CRASH THE GRID 2".to_string()];
         let (candidates, reduced) =
             build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
 
@@ -2089,9 +2092,9 @@ mod tests {
             &path,
             r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <movie>
-  <title>Air Bud</title>
-  <originaltitle>Air Bud</originaltitle>
-  <sorttitle>Air Bud</sorttitle>
+  <title>Harbor Hound</title>
+  <originaltitle>Harbor Hound</originaltitle>
+  <sorttitle>Harbor Hound</sorttitle>
   <year>1997</year>
   <imdbid>tt0118570</imdbid>
   <tvdbid>5794</tvdbid>
@@ -2117,7 +2120,7 @@ mod tests {
         let metadata = read_valid_movie_nfo_metadata(Some(path.to_string_lossy().as_ref()))
             .await
             .expect("movie nfo");
-        assert_eq!(metadata.title.as_deref(), Some("Air Bud"));
+        assert_eq!(metadata.title.as_deref(), Some("Harbor Hound"));
         assert_eq!(metadata.year, Some(1997));
         assert_eq!(metadata.imdb_id.as_deref(), Some("tt0118570"));
         assert_eq!(metadata.tvdb_id.as_deref(), Some("5794"));
@@ -2130,7 +2133,7 @@ mod tests {
         let path = dir.path().join("movie.nfo");
         std::fs::write(
             &path,
-            r#"<tvshow><title>Bluey</title><tvdbid>81189</tvdbid></tvshow>"#,
+            r#"<tvshow><title>Silver Horizon</title><tvdbid>81189</tvdbid></tvshow>"#,
         )
         .expect("write nfo");
 
@@ -2146,17 +2149,17 @@ mod tests {
         let gateway = CountingMetadataGateway::default();
         gateway.set_search_results(
             METADATA_TYPE_MOVIE,
-            "Dune",
+            "Glass Harbor",
             vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
-                name: "Dune".into(),
+                name: "Glass Harbor".into(),
                 year: Some(2021),
             }],
         );
 
         let files = vec![
-            build_library_file("/library/Dune (2021)/Dune.2021.2160p.BluRay.mkv"),
-            build_library_file("/elsewhere/Dune (2021)/Dune.2021.1080p.WEB-DL.mkv"),
+            build_library_file("/library/Glass Harbor (2021)/Glass.Harbor.2021.2160p.BluRay.mkv"),
+            build_library_file("/elsewhere/Glass Harbor (2021)/Glass.Harbor.2021.1080p.WEB-DL.mkv"),
         ];
 
         let (candidates, stats) =
@@ -2164,7 +2167,10 @@ mod tests {
                 .await
                 .expect("movie preload should succeed");
 
-        assert_eq!(gateway.search_call_count(METADATA_TYPE_MOVIE, "Dune"), 1);
+        assert_eq!(
+            gateway.search_call_count(METADATA_TYPE_MOVIE, "Glass Harbor"),
+            1
+        );
         assert_eq!(stats.logical_lookups, 2);
         assert_eq!(stats.executed_requests, 1);
         assert_eq!(stats.coalesced_requests, 1);
@@ -2223,11 +2229,11 @@ mod tests {
     #[tokio::test]
     async fn preload_movie_library_scan_candidates_preserves_error_behavior_for_shared_requests() {
         let gateway = CountingMetadataGateway::default();
-        gateway.set_search_error(METADATA_TYPE_MOVIE, "Dune", "rate limited");
+        gateway.set_search_error(METADATA_TYPE_MOVIE, "Glass Harbor", "rate limited");
 
         let files = vec![
-            build_library_file("/library/Dune (2021)/Dune.2021.2160p.BluRay.mkv"),
-            build_library_file("/elsewhere/Dune (2021)/Dune.2021.1080p.WEB-DL.mkv"),
+            build_library_file("/library/Glass Harbor (2021)/Glass.Harbor.2021.2160p.BluRay.mkv"),
+            build_library_file("/elsewhere/Glass Harbor (2021)/Glass.Harbor.2021.1080p.WEB-DL.mkv"),
         ];
 
         let error =
@@ -2235,7 +2241,10 @@ mod tests {
                 .await
                 .expect_err("movie preload should fail on shared request error");
 
-        assert_eq!(gateway.search_call_count(METADATA_TYPE_MOVIE, "Dune"), 1);
+        assert_eq!(
+            gateway.search_call_count(METADATA_TYPE_MOVIE, "Glass Harbor"),
+            1
+        );
         assert!(matches!(error, AppError::Repository(message) if message == "rate limited"));
     }
 
@@ -2244,17 +2253,17 @@ mod tests {
         let gateway = CountingMetadataGateway::default();
         gateway.set_search_results(
             METADATA_TYPE_SERIES,
-            "Bluey",
+            "Silver Horizon",
             vec![MetadataSearchItem {
                 tvdb_id: "series-1".into(),
-                name: "Bluey".into(),
+                name: "Silver Horizon".into(),
                 year: Some(2018),
             }],
         );
 
         let folders = vec![
-            PathBuf::from("/library-a/Bluey (2018)"),
-            PathBuf::from("/library-b/Bluey (2018)"),
+            PathBuf::from("/library-a/Silver Horizon (2018)"),
+            PathBuf::from("/library-b/Silver Horizon (2018)"),
         ];
 
         let (candidates, stats) =
@@ -2262,7 +2271,10 @@ mod tests {
                 .await
                 .expect("series preload should succeed");
 
-        assert_eq!(gateway.search_call_count(METADATA_TYPE_SERIES, "Bluey"), 1);
+        assert_eq!(
+            gateway.search_call_count(METADATA_TYPE_SERIES, "Silver Horizon"),
+            1
+        );
         assert_eq!(stats.logical_lookups, 2);
         assert_eq!(stats.executed_requests, 1);
         assert_eq!(stats.coalesced_requests, 1);
@@ -2277,12 +2289,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_series_library_scan_candidates_prefers_tvshow_nfo_identity_for_bastard_fixture()
+    async fn prepare_series_library_scan_candidates_prefers_tvshow_nfo_identity_for_nightfall_fixture()
      {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let folder = tempdir.path().join("Bastard!! (2022)");
+        let folder = tempdir.path().join("Nightfall!! (2022)");
         std::fs::create_dir_all(&folder).expect("create show dir");
-        std::fs::write(folder.join("tvshow.nfo"), bastard_tvshow_nfo_fixture())
+        std::fs::write(folder.join("tvshow.nfo"), nightfall_tvshow_nfo_fixture())
             .expect("write tvshow.nfo");
 
         let candidates = prepare_series_library_scan_candidates(std::slice::from_ref(&folder))
@@ -2291,7 +2303,7 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         let candidate = &candidates[0];
-        assert_eq!(candidate.query, "Bastard!!");
+        assert_eq!(candidate.query, "Nightfall!!");
         assert_eq!(candidate.year_hint, Some(2022));
         assert_eq!(
             candidate
@@ -2305,22 +2317,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preload_series_library_scan_candidates_rejects_wrong_year_match_for_bastard_fixture() {
+    async fn preload_series_library_scan_candidates_rejects_wrong_year_match_for_nightfall_fixture()
+    {
         let gateway = CountingMetadataGateway::default();
         let wrong_year_match = vec![MetadataSearchItem {
             tvdb_id: "wrong-series".into(),
-            name: "Bastard".into(),
+            name: "Nightfall".into(),
             year: Some(2009),
         }];
-        gateway.set_search_results(METADATA_TYPE_SERIES, "Bastard!!", wrong_year_match.clone());
-        gateway.set_search_results(METADATA_TYPE_SERIES, "bastard", wrong_year_match);
+        gateway.set_search_results(
+            METADATA_TYPE_SERIES,
+            "Nightfall!!",
+            wrong_year_match.clone(),
+        );
+        gateway.set_search_results(METADATA_TYPE_SERIES, "nightfall", wrong_year_match);
 
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let folder = tempdir.path().join("Bastard!! (2022)");
+        let folder = tempdir.path().join("Nightfall!! (2022)");
         std::fs::create_dir_all(&folder).expect("create show dir");
         std::fs::write(
             folder.join("tvshow.nfo"),
-            r#"<tvshow><title>Bastard!!</title><year>2022</year></tvshow>"#,
+            r#"<tvshow><title>Nightfall!!</title><year>2022</year></tvshow>"#,
         )
         .expect("write tvshow.nfo");
 
@@ -2331,7 +2348,7 @@ mod tests {
 
         assert_eq!(stats.logical_lookups, 1);
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].query, "Bastard!!");
+        assert_eq!(candidates[0].query, "Nightfall!!");
         assert_eq!(
             candidates[0]
                 .nfo_meta
@@ -2346,11 +2363,15 @@ mod tests {
     #[tokio::test]
     async fn preload_series_library_scan_candidates_preserves_error_behavior_for_shared_requests() {
         let gateway = CountingMetadataGateway::default();
-        gateway.set_search_error(METADATA_TYPE_SERIES, "Bluey", "series rate limited");
+        gateway.set_search_error(
+            METADATA_TYPE_SERIES,
+            "Silver Horizon",
+            "series rate limited",
+        );
 
         let folders = vec![
-            PathBuf::from("/library-a/Bluey (2018)"),
-            PathBuf::from("/library-b/Bluey (2018)"),
+            PathBuf::from("/library-a/Silver Horizon (2018)"),
+            PathBuf::from("/library-b/Silver Horizon (2018)"),
         ];
 
         let (candidates, stats) =
@@ -2358,7 +2379,10 @@ mod tests {
                 .await
                 .expect("series preload should degrade gracefully");
 
-        assert_eq!(gateway.search_call_count(METADATA_TYPE_SERIES, "Bluey"), 1);
+        assert_eq!(
+            gateway.search_call_count(METADATA_TYPE_SERIES, "Silver Horizon"),
+            1
+        );
         assert_eq!(stats.logical_lookups, 2);
         assert_eq!(stats.executed_requests, 1);
         assert_eq!(stats.coalesced_requests, 1);
@@ -2551,7 +2575,7 @@ mod tests {
         let gateway = Arc::new(DelayedBatchMetadataGateway::new(Duration::from_millis(500)));
         let cancel_token = CancellationToken::new();
         let search_keys = vec![
-            BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Dune", None)
+            BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Glass Harbor", None)
                 .expect("metadata search key"),
         ];
 
@@ -2583,10 +2607,10 @@ mod tests {
         let gateway = CountingMetadataGateway::default();
         gateway.set_search_results(
             METADATA_TYPE_MOVIE,
-            "Dune",
+            "Glass Harbor",
             vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
-                name: "Dune".into(),
+                name: "Glass Harbor".into(),
                 year: Some(2021),
             }],
         );
@@ -2594,7 +2618,10 @@ mod tests {
         let mut resolver = StreamingMovieMetadataResolver::new(Arc::new(gateway.clone()), "eng");
 
         let (first_ready, first_progress) = resolver
-            .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])], None)
+            .ingest_candidates(
+                vec![build_prepared_movie_candidate(&["Glass Harbor"])],
+                None,
+            )
             .await
             .expect("first incremental metadata batch");
 
@@ -2602,10 +2629,16 @@ mod tests {
         assert_eq!(first_progress.completed_delta, 1);
         assert!(!first_progress.total_known);
         assert_eq!(first_ready.len(), 1);
-        assert_eq!(gateway.search_call_count(METADATA_TYPE_MOVIE, "Dune"), 1);
+        assert_eq!(
+            gateway.search_call_count(METADATA_TYPE_MOVIE, "Glass Harbor"),
+            1
+        );
 
         let (second_ready, second_progress) = resolver
-            .ingest_candidates(vec![build_prepared_movie_candidate(&["Dune"])], None)
+            .ingest_candidates(
+                vec![build_prepared_movie_candidate(&["Glass Harbor"])],
+                None,
+            )
             .await
             .expect("second incremental metadata batch");
 
@@ -2613,7 +2646,10 @@ mod tests {
         assert_eq!(second_progress.completed_delta, 1);
         assert!(!second_progress.total_known);
         assert_eq!(second_ready.len(), 1);
-        assert_eq!(gateway.search_call_count(METADATA_TYPE_MOVIE, "Dune"), 1);
+        assert_eq!(
+            gateway.search_call_count(METADATA_TYPE_MOVIE, "Glass Harbor"),
+            1
+        );
 
         let (final_ready, final_progress) = resolver
             .finish(None)
@@ -2677,16 +2713,16 @@ mod tests {
         let results = vec![
             MetadataSearchItem {
                 tvdb_id: "wrong".into(),
-                name: "Dune Drifter".into(),
+                name: "Glass Harbor Drift".into(),
                 year: Some(2020),
             },
             MetadataSearchItem {
                 tvdb_id: "right".into(),
-                name: "Dune".into(),
+                name: "Glass Harbor".into(),
                 year: Some(2021),
             },
         ];
-        let raw_candidates = vec!["Dune".to_string()];
+        let raw_candidates = vec!["Glass Harbor".to_string()];
         let (candidates, reduced) =
             build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
 
@@ -2700,17 +2736,17 @@ mod tests {
         .expect("exact title match");
 
         assert_eq!(selected.tvdb_id, "right");
-        assert_eq!(selected.name, "Dune");
+        assert_eq!(selected.name, "Glass Harbor");
     }
 
     #[test]
     fn select_best_match_rejects_canonical_wrong_year_results() {
         let results = vec![MetadataSearchItem {
             tvdb_id: "wrong".into(),
-            name: "Bastard".into(),
+            name: "Nightfall".into(),
             year: Some(2009),
         }];
-        let raw_candidates = vec!["Bastard!!".to_string()];
+        let raw_candidates = vec!["Nightfall!!".to_string()];
         let (candidates, reduced) =
             build_title_match_candidates(&raw_candidates, TitleMatchProfile::Series);
 
@@ -2730,10 +2766,10 @@ mod tests {
     fn select_best_match_accepts_canonical_match_with_missing_year() {
         let results = vec![MetadataSearchItem {
             tvdb_id: "right".into(),
-            name: "Bastard".into(),
+            name: "Nightfall".into(),
             year: None,
         }];
-        let raw_candidates = vec!["Bastard!!".to_string()];
+        let raw_candidates = vec!["Nightfall!!".to_string()];
         let (candidates, reduced) =
             build_title_match_candidates(&raw_candidates, TitleMatchProfile::Series);
 
@@ -2753,10 +2789,10 @@ mod tests {
     fn select_best_match_rejects_non_exact_title_even_with_year_match() {
         let results = vec![MetadataSearchItem {
             tvdb_id: "wrong".into(),
-            name: "Dune Drifter".into(),
+            name: "Glass Harbor Drift".into(),
             year: Some(2020),
         }];
-        let raw_candidates = vec!["Dune".to_string()];
+        let raw_candidates = vec!["Glass Harbor".to_string()];
         let (candidates, reduced) =
             build_title_match_candidates(&raw_candidates, TitleMatchProfile::Movie);
 

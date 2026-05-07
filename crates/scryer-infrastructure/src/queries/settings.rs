@@ -378,6 +378,19 @@ pub(crate) async fn delete_setting_value_query(
     Ok(())
 }
 
+pub(crate) async fn delete_settings_values_for_scope_id_query(
+    pool: &SqlitePool,
+    scope_id: &str,
+) -> AppResult<u32> {
+    let result = sqlx::query("DELETE FROM settings_values WHERE scope_id = ?")
+        .bind(scope_id)
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(result.rows_affected() as u32)
+}
+
 /// Returns (definition_id, is_sensitive) for a setting definition.
 pub(crate) async fn get_setting_definition_meta_query(
     pool: &SqlitePool,

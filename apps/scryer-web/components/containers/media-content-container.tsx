@@ -6,7 +6,7 @@ import {
   buildSetTitleMonitoredBatchMutation,
   buildUpdateTitleBatchMutation,
   createLibraryMutation,
-  deleteEmptyLibraryMutation,
+  deleteLibraryMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
   scanLibraryMutation,
@@ -2036,17 +2036,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [client, refreshLibraries, setGlobalStatus, t],
   );
 
-  const deleteEmptyLibrary = React.useCallback(
+  const deleteLibrary = React.useCallback(
     async (libraryId: string) => {
       setLibrarySettingsSaving(true);
       try {
         const { data, error } = await client
-          .mutation<{ deleteEmptyLibrary: boolean }>(deleteEmptyLibraryMutation, {
+          .mutation<{ deleteLibrary: boolean }>(deleteLibraryMutation, {
             input: { libraryId },
           })
           .toPromise();
         if (error) throw error;
-        if (!data?.deleteEmptyLibrary) {
+        if (!data?.deleteLibrary) {
           throw new Error(t("settings.libraryDeleteFailed"));
         }
         setSelectedLibraryIds((current) =>
@@ -2368,7 +2368,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           loadLibrarySettings,
           createLibrary,
           updateLibrary,
-          deleteEmptyLibrary,
+          deleteLibrary,
           onOpenOverview,
           scanLibrary: handleLibraryScan,
           deleteCatalogTitle: requestDeleteTitle,

@@ -59,21 +59,24 @@ mod tests {
     fn keychain_round_trip() {
         let store = MacOSKeychain;
         let test_key = "dGVzdC1rZXktZm9yLWtleWNoYWlu";
-
-        // Clean up any leftover from a previous test run
-        let _ = store.delete_key();
-
-        assert!(matches!(store.get_key(), Ok(None)));
+        let original = store.get_key().unwrap();
 
         store.set_key(test_key).unwrap();
         assert_eq!(store.get_key().unwrap(), Some(test_key.to_string()));
 
-        // Overwrite
         let new_key = "bmV3LXRlc3Qta2V5LXZhbHVl";
         store.set_key(new_key).unwrap();
         assert_eq!(store.get_key().unwrap(), Some(new_key.to_string()));
 
-        store.delete_key().unwrap();
-        assert!(matches!(store.get_key(), Ok(None)));
+        match original {
+            Some(previous) => {
+                store.set_key(&previous).unwrap();
+                assert_eq!(store.get_key().unwrap(), Some(previous));
+            }
+            None => {
+                store.delete_key().unwrap();
+                assert!(matches!(store.get_key(), Ok(None)));
+            }
+        }
     }
 }

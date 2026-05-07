@@ -196,6 +196,7 @@ const ja: LocaleDictionary = {
     "ライブラリスキャン完了。{{imported}}件インポート、{{skipped}}件スキップ、{{unmatched}}件未一致。",
   "settings.libraryScanFailed": "ライブラリスキャンに失敗しました。",
   "settings.libraryScanCancel": "キャンセル",
+  "settings.libraryScanRunInBackground": "バックグラウンドで実行",
   "settings.libraryScanCancelFailed":
     "ライブラリスキャンのキャンセルに失敗しました。",
   "settings.libraryScanCanceled":
@@ -1287,6 +1288,7 @@ const ja: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "モニターフィラームービー",
   "settings.monitorFillerMoviesDescription":
     "フィラーとして分類された映画をダウンロード キューに含める",
+  "settings.sidecarFilesTitle": "サイドカーファイル",
   "settings.nfoWriteOnImportLabel": "インポート時にNFOを書き込み",
   "settings.nfoWriteOnImportDescription":
     "インポートされたメディアと一緒にKodi/Jellyfin/Emby互換の.nfoメタデータファイルを書き込みます",

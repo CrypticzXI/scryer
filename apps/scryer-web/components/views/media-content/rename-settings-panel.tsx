@@ -116,7 +116,7 @@ const RENAME_PREVIEW_SERIES_SAMPLE: Record<string, string> = {
 };
 
 const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
-  title: "One Piece", year: "1999", quality: "1080p", edition: "Director's Cut",
+  title: "Tidebreaker", year: "1999", quality: "1080p", edition: "Director's Cut",
   source: "WEB-DL", video_codec: "x265", audio_codec: "AAC",
   audio_channels: "2.0", group: "SubsPlease", ext: "mkv",
   season: "1", season_order: "1", episode: "1",

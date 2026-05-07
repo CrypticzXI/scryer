@@ -260,14 +260,14 @@ fn find_monitored_movie_title_from_release_matches_alias_variant() {
 #[test]
 fn find_monitored_movie_title_from_release_matches_tagged_alias_variant() {
     let mut title =
-        test_movie_title_with_aliases_and_ids("movie-1", "Bastard!!", Some(2022), vec![], vec![]);
+        test_movie_title_with_aliases_and_ids("movie-1", "Nightfall!!", Some(2022), vec![], vec![]);
     title.tagged_aliases = vec![scryer_domain::TaggedAlias {
-        name: "Bastard Heavy Metal Dark Fantasy".to_string(),
+        name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
         language: "eng".to_string(),
     }];
 
     let parsed =
-        crate::parse_release_metadata("BASTARD.Heavy.Metal.Dark.Fantasy.2022.1080p.WEB-DL");
+        crate::parse_release_metadata("NIGHTFALL.Heavy.Metal.Dark.Fantasy.2022.1080p.WEB-DL");
 
     let matched = find_monitored_movie_title_from_release(&[title], &parsed)
         .expect("movie should resolve through tagged alias variants");
@@ -280,22 +280,23 @@ fn find_monitored_movie_title_from_release_prefers_imdb_id() {
     let titles = vec![
         test_movie_title_with_aliases_and_ids(
             "movie-1",
-            "Dune",
+            "Glass Harbor",
             Some(1984),
             vec![],
             vec![("imdb", "tt0087182")],
         ),
         test_movie_title_with_aliases_and_ids(
             "movie-2",
-            "Dune",
+            "Glass Harbor",
             Some(2021),
             vec![],
             vec![("imdb", "tt1160419"), ("tmdb", "438631")],
         ),
     ];
 
-    let parsed =
-        crate::parse_release_metadata("Dune.2021.{tmdb-438631}.[tt1160419].1080p.BluRay.x264-GRP");
+    let parsed = crate::parse_release_metadata(
+        "Glass.Harbor.2021.{tmdb-438631}.[tt1160419].1080p.BluRay.x264-GRP",
+    );
 
     let matched = find_monitored_movie_title_from_release(&titles, &parsed)
         .expect("movie should resolve by embedded IDs");
@@ -306,11 +307,11 @@ fn find_monitored_movie_title_from_release_prefers_imdb_id() {
 #[test]
 fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest_dir = dir.path().join("Paperman.2012.1080p.BluRay.x264-GRP");
+    let dest_dir = dir.path().join("Paper.Lantern.2012.1080p.BluRay.x264-GRP");
     std::fs::create_dir_all(&dest_dir).expect("create dest dir");
     let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"movie").expect("write file");
-    let completed = test_completed_download("Paperman.2012.1080p.BluRay.x264-GRP", &dest_dir);
+    let completed = test_completed_download("Paper.Lantern.2012.1080p.BluRay.x264-GRP", &dest_dir);
 
     let parsed = build_augmented_movie_import_metadata(&file_path, &completed);
 
@@ -322,11 +323,14 @@ fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_f
 #[test]
 fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest_dir = dir.path().join("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+    let dest_dir = dir
+        .path()
+        .join("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
     std::fs::create_dir_all(&dest_dir).expect("create dest dir");
     let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
-    let completed = test_completed_download("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
+    let completed =
+        test_completed_download("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
 
     let parsed = build_augmented_episode_import_metadata(&file_path, &completed, false);
     let episode = parsed.episode.expect("episode metadata");
@@ -339,11 +343,11 @@ fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obf
 #[test]
 fn build_augmented_episode_import_metadata_keeps_file_episode_when_other_files_exist() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest_dir = dir.path().join("Bluey.S01.Complete.720p.WEB-DL.AV1");
+    let dest_dir = dir.path().join("Harbor.Pals.S01.Complete.720p.WEB-DL.AV1");
     std::fs::create_dir_all(&dest_dir).expect("create dest dir");
-    let file_path = dest_dir.join("Bluey.S01E03.720p.WEB-DL.mkv");
+    let file_path = dest_dir.join("Harbor.Pals.S01E03.720p.WEB-DL.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
-    let completed = test_completed_download("Bluey.S01.Complete.720p.WEB-DL.AV1", &dest_dir);
+    let completed = test_completed_download("Harbor.Pals.S01.Complete.720p.WEB-DL.AV1", &dest_dir);
 
     let parsed = build_augmented_episode_import_metadata(&file_path, &completed, true);
     let episode = parsed.episode.expect("episode metadata");
@@ -356,11 +360,14 @@ fn build_augmented_episode_import_metadata_keeps_file_episode_when_other_files_e
 fn build_augmented_episode_import_metadata_does_not_infer_episode_from_download_title_when_other_files_exist()
  {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest_dir = dir.path().join("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+    let dest_dir = dir
+        .path()
+        .join("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
     std::fs::create_dir_all(&dest_dir).expect("create dest dir");
     let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
-    let completed = test_completed_download("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
+    let completed =
+        test_completed_download("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
 
     let parsed = build_augmented_episode_import_metadata(&file_path, &completed, true);
 
@@ -1190,12 +1197,12 @@ fn build_manual_import_cleanup_app(
 async fn maybe_remove_completed_manual_import_download_deletes_history_for_collection_success() {
     let mut title = test_title(MediaFacet::Series);
     title.id = "series-1".to_string();
-    title.name = "Bluey".to_string();
+    title.name = "Harbor Pals".to_string();
 
     let download_client = Arc::new(ManualImportCleanupDownloadClient::default());
     let app = build_manual_import_cleanup_app(vec![title], download_client.clone());
     let dir = tempfile::tempdir().expect("tempdir");
-    let completed = test_completed_download("Bluey.S01.Complete.1080p.WEB-DL", dir.path());
+    let completed = test_completed_download("Harbor.Pals.S01.Complete.1080p.WEB-DL", dir.path());
 
     maybe_remove_completed_manual_import_download(&app, Some(&completed), Some("series-1"), true)
         .await;
@@ -1210,12 +1217,13 @@ async fn maybe_remove_completed_manual_import_download_deletes_history_for_colle
 async fn maybe_remove_completed_manual_import_download_deletes_history_for_episode_set_success() {
     let mut title = test_title(MediaFacet::Anime);
     title.id = "anime-1".to_string();
-    title.name = "Frieren".to_string();
+    title.name = "Silver Horizon".to_string();
 
     let download_client = Arc::new(ManualImportCleanupDownloadClient::default());
     let app = build_manual_import_cleanup_app(vec![title], download_client.clone());
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut completed = test_completed_download("Frieren.S01E03-E04.1080p.WEB-DL", dir.path());
+    let mut completed =
+        test_completed_download("Silver Horizon.S01E03-E04.1080p.WEB-DL", dir.path());
     completed.download_client_item_id = "job-episode-set".to_string();
 
     maybe_remove_completed_manual_import_download(&app, Some(&completed), Some("anime-1"), true)

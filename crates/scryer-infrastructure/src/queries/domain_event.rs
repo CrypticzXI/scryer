@@ -478,6 +478,30 @@ pub(crate) async fn list_domain_events_after_sequence_query(
     list_domain_events_query(pool, &filter).await
 }
 
+pub(crate) async fn delete_domain_events_for_title_ids_query(
+    pool: &SqlitePool,
+    title_ids: &[String],
+) -> AppResult<u32> {
+    if title_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut builder = QueryBuilder::<Sqlite>::new("DELETE FROM domain_events WHERE title_id IN (");
+    let mut separated = builder.separated(", ");
+    for title_id in title_ids {
+        separated.push_bind(title_id);
+    }
+    separated.push_unseparated(")");
+
+    let result = builder
+        .build()
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    Ok(result.rows_affected() as u32)
+}
+
 pub(crate) async fn get_event_subscriber_offset_query(
     pool: &SqlitePool,
     subscriber: &str,

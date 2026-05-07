@@ -246,8 +246,8 @@ export const updateLibraryMutation = `mutation UpdateLibrary($input: UpdateLibra
   }
 }`;
 
-export const deleteEmptyLibraryMutation = `mutation DeleteEmptyLibrary($input: DeleteLibraryInput!) {
-  deleteEmptyLibrary(input: $input)
+export const deleteLibraryMutation = `mutation DeleteLibrary($input: DeleteLibraryInput!) {
+  deleteLibrary(input: $input)
 }`;
 
 export const cancelLibraryScanMutation = `mutation CancelLibraryScan($input: CancelLibraryScanInput!) {

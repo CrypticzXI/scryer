@@ -68,6 +68,30 @@ pub(crate) async fn delete_history_events_older_than_query(
     Ok(result.rows_affected() as u32)
 }
 
+pub(crate) async fn delete_history_events_for_title_ids_query(
+    pool: &SqlitePool,
+    title_ids: &[String],
+) -> AppResult<u32> {
+    if title_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut builder = QueryBuilder::<Sqlite>::new("DELETE FROM history_events WHERE title_id IN (");
+    let mut separated = builder.separated(", ");
+    for title_id in title_ids {
+        separated.push_bind(title_id);
+    }
+    separated.push_unseparated(")");
+
+    let result = builder.build().execute(pool).await.map_err(|e| {
+        AppError::Repository(format!(
+            "library delete: history_events cleanup failed: {e}"
+        ))
+    })?;
+
+    Ok(result.rows_affected() as u32)
+}
+
 pub(crate) async fn delete_domain_events_older_than_for_types_query(
     pool: &SqlitePool,
     days: i64,
@@ -131,6 +155,31 @@ pub(crate) async fn delete_download_import_artifacts_older_than_query(
     Ok(result.rows_affected() as u32)
 }
 
+pub(crate) async fn delete_download_import_artifacts_for_title_ids_query(
+    pool: &SqlitePool,
+    title_ids: &[String],
+) -> AppResult<u32> {
+    if title_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut builder =
+        QueryBuilder::<Sqlite>::new("DELETE FROM download_import_artifacts WHERE title_id IN (");
+    let mut separated = builder.separated(", ");
+    for title_id in title_ids {
+        separated.push_bind(title_id);
+    }
+    separated.push_unseparated(")");
+
+    let result = builder.build().execute(pool).await.map_err(|e| {
+        AppError::Repository(format!(
+            "library delete: download_import_artifacts cleanup failed: {e}"
+        ))
+    })?;
+
+    Ok(result.rows_affected() as u32)
+}
+
 pub(crate) async fn delete_terminal_imports_older_than_query(
     pool: &SqlitePool,
     days: i64,
@@ -145,6 +194,31 @@ pub(crate) async fn delete_terminal_imports_older_than_query(
     .execute(pool)
     .await
     .map_err(|e| AppError::Repository(format!("housekeeping: imports cleanup failed: {e}")))?;
+
+    Ok(result.rows_affected() as u32)
+}
+
+pub(crate) async fn delete_release_attempts_for_title_ids_query(
+    pool: &SqlitePool,
+    title_ids: &[String],
+) -> AppResult<u32> {
+    if title_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut builder =
+        QueryBuilder::<Sqlite>::new("DELETE FROM release_download_attempts WHERE title_id IN (");
+    let mut separated = builder.separated(", ");
+    for title_id in title_ids {
+        separated.push_bind(title_id);
+    }
+    separated.push_unseparated(")");
+
+    let result = builder.build().execute(pool).await.map_err(|e| {
+        AppError::Repository(format!(
+            "library delete: release_download_attempts cleanup failed: {e}"
+        ))
+    })?;
 
     Ok(result.rows_affected() as u32)
 }

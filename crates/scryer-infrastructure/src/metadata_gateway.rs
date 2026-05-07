@@ -1545,12 +1545,12 @@ mod tests {
     fn search_tvdb_batch_queries_trim_dedupe_and_preserve_first_seen_order() {
         let queries = vec![
             MetadataSearchQuery {
-                query: "  Spirited Away  ".to_string(),
+                query: "  Lantern Tide  ".to_string(),
                 type_hint: "movie".to_string(),
                 year: Some(2001),
             },
             MetadataSearchQuery {
-                query: "Spirited Away".to_string(),
+                query: "Lantern Tide".to_string(),
                 type_hint: "movie".to_string(),
                 year: Some(2001),
             },
@@ -1560,12 +1560,12 @@ mod tests {
                 year: None,
             },
             MetadataSearchQuery {
-                query: "Cowboy Bebop".to_string(),
+                query: "Velvet Comet".to_string(),
                 type_hint: "anime".to_string(),
                 year: None,
             },
             MetadataSearchQuery {
-                query: "Spirited Away".to_string(),
+                query: "Lantern Tide".to_string(),
                 type_hint: "movie".to_string(),
                 year: Some(2002),
             },
@@ -1574,13 +1574,13 @@ mod tests {
         let normalized = build_search_tvdb_batch_query(&queries);
 
         assert_eq!(normalized.len(), 3);
-        assert_eq!(normalized[0].query, "Spirited Away");
+        assert_eq!(normalized[0].query, "Lantern Tide");
         assert_eq!(normalized[0].type_hint, "movie");
         assert_eq!(normalized[0].year, Some(2001));
-        assert_eq!(normalized[1].query, "Cowboy Bebop");
+        assert_eq!(normalized[1].query, "Velvet Comet");
         assert_eq!(normalized[1].type_hint, "anime");
         assert_eq!(normalized[1].year, None);
-        assert_eq!(normalized[2].query, "Spirited Away");
+        assert_eq!(normalized[2].query, "Lantern Tide");
         assert_eq!(normalized[2].type_hint, "movie");
         assert_eq!(normalized[2].year, Some(2002));
     }

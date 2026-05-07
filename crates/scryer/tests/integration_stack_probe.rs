@@ -17,15 +17,15 @@ use scryer_application::{MediaFileRepository, ShowRepository, TitleRepository};
 use scryer_domain::MediaFacet;
 use scryer_infrastructure::SettingDefinitionSeed;
 
-const HAIKYU_TVDB_ID: i64 = 420_424;
-const MINIMUM_HAIKYU_IMPORTED_FILE_COUNT: usize = 12;
+const IRON_VALE_TVDB_ID: i64 = 420_424;
+const MINIMUM_IRON_VALE_IMPORTED_FILE_COUNT: usize = 12;
 
 #[test]
-fn haikyu_post_hydration_title_scan_subprocess_probe() {
+fn iron_vale_post_hydration_title_scan_subprocess_probe() {
     let exe = std::env::current_exe().expect("resolve current test executable");
     let mut child = Command::new(exe)
         .arg("--exact")
-        .arg("haikyu_post_hydration_title_scan_subprocess_probe_child")
+        .arg("iron_vale_post_hydration_title_scan_subprocess_probe_child")
         .arg("--ignored")
         .arg("--nocapture")
         .env("RUST_TEST_THREADS", "1")
@@ -79,7 +79,7 @@ fn haikyu_post_hydration_title_scan_subprocess_probe() {
 
 #[test]
 #[ignore = "subprocess-only stack probe child"]
-fn haikyu_post_hydration_title_scan_subprocess_probe_child() {
+fn iron_vale_post_hydration_title_scan_subprocess_probe_child() {
     if std::env::var_os("SCRYER_STACK_PROBE_CHILD").is_none() {
         return;
     }
@@ -91,19 +91,19 @@ fn haikyu_post_hydration_title_scan_subprocess_probe_child() {
         .expect("build tokio runtime for stack probe");
 
     runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(60), run_haikyu_stack_probe())
+        tokio::time::timeout(Duration::from_secs(60), run_iron_vale_stack_probe())
             .await
             .expect("stack probe should finish within timeout");
     });
 }
 
-async fn run_haikyu_stack_probe() {
+async fn run_iron_vale_stack_probe() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
-    install_haikyu_metadata_fixture(&ctx).await;
+    install_iron_vale_metadata_fixture(&ctx).await;
 
     let media_root = tempfile::tempdir().expect("create anime media root");
-    let show_dir = create_haikyu_library_root(media_root.path());
+    let show_dir = create_iron_vale_library_root(media_root.path());
     set_media_path(
         &ctx,
         "anime.path",
@@ -119,7 +119,7 @@ async fn run_haikyu_stack_probe() {
         .await
         .expect("first anime library scan should succeed");
     let first_metadata_fetched_at =
-        wait_for_haikyu_scan_to_settle(&ctx, Some(MINIMUM_HAIKYU_IMPORTED_FILE_COUNT)).await;
+        wait_for_iron_vale_scan_to_settle(&ctx, Some(MINIMUM_IRON_VALE_IMPORTED_FILE_COUNT)).await;
 
     eprintln!("stack probe: second manual anime library scan");
     ctx.app
@@ -134,7 +134,7 @@ async fn run_haikyu_stack_probe() {
         .await
         .expect("list anime titles after stack probe");
     assert_eq!(titles.len(), 1, "expected exactly one anime title");
-    assert_eq!(titles[0].name, "Haikyu!!");
+    assert_eq!(titles[0].name, "Iron Vale!!");
     assert_eq!(
         titles[0].folder_path.as_deref(),
         Some(show_dir.to_string_lossy().as_ref())
@@ -171,8 +171,8 @@ async fn run_haikyu_stack_probe() {
         .await
         .expect("list anime media files after stack probe");
     assert!(
-        media_files.len() >= MINIMUM_HAIKYU_IMPORTED_FILE_COUNT,
-        "expected most Haikyu!! files to be inserted during the stack probe, got {}",
+        media_files.len() >= MINIMUM_IRON_VALE_IMPORTED_FILE_COUNT,
+        "expected most Iron Vale!! files to be inserted during the stack probe, got {}",
         media_files.len()
     );
 }
@@ -226,8 +226,8 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
         .expect("upsert media path setting");
 }
 
-async fn install_haikyu_metadata_fixture(ctx: &TestContext) {
-    let fixture = build_haikyu_metadata_fixture();
+async fn install_iron_vale_metadata_fixture(ctx: &TestContext) {
+    let fixture = build_iron_vale_metadata_fixture();
     Mock::given(method("GET"))
         .and(path("/graphql"))
         .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
@@ -240,7 +240,7 @@ async fn install_haikyu_metadata_fixture(ctx: &TestContext) {
         .await;
 }
 
-fn build_haikyu_metadata_fixture() -> String {
+fn build_iron_vale_metadata_fixture() -> String {
     let seasons = vec![
         json!({ "tvdb_id": 610000, "number": 0, "label": "Specials", "episode_type": "special" }),
         json!({ "tvdb_id": 610001, "number": 1, "label": "Season 1", "episode_type": "default" }),
@@ -276,7 +276,7 @@ fn build_haikyu_metadata_fixture() -> String {
                 "name": if season_number == 0 {
                     format!("Special {episode_number}")
                 } else {
-                    format!("Haikyu Episode {absolute}")
+                    format!("Iron Vale Episode {absolute}")
                 },
                 "aired": format!("2014-{aired_month:02}-{aired_day:02}"),
                 "runtime_minutes": 24,
@@ -296,18 +296,18 @@ fn build_haikyu_metadata_fixture() -> String {
             "movie_imdb_id": "tt4200001",
             "movie_mal_id": 50001,
             "movie_anidb_id": null,
-            "name": "Haikyu!! Movie 1",
-            "slug": "haikyu-movie-1",
+            "name": "Iron Vale!! Movie 1",
+            "slug": "iron-vale-movie-1",
             "year": 2015,
             "content_status": "released",
             "overview": "Interstitial movie 1",
-            "poster_url": "https://example.invalid/haikyu-movie-1.jpg",
+            "poster_url": "https://example.invalid/iron-vale-movie-1.jpg",
             "language": "eng",
             "runtime_minutes": 90,
-            "sort_title": "Haikyu Movie 1",
+            "sort_title": "Iron Vale Movie 1",
             "imdb_id": "tt4200001",
             "genres": ["Animation", "Sports"],
-            "studio": "Production I.G",
+            "studio": "Skyline Animation",
             "digital_release_date": "2015-11-01",
             "association_confidence": "high",
             "continuity_status": "canon",
@@ -322,18 +322,18 @@ fn build_haikyu_metadata_fixture() -> String {
             "movie_imdb_id": "tt4200002",
             "movie_mal_id": 50002,
             "movie_anidb_id": null,
-            "name": "Haikyu!! Movie 2",
-            "slug": "haikyu-movie-2",
+            "name": "Iron Vale!! Movie 2",
+            "slug": "iron-vale-movie-2",
             "year": 2016,
             "content_status": "released",
             "overview": "Interstitial movie 2",
-            "poster_url": "https://example.invalid/haikyu-movie-2.jpg",
+            "poster_url": "https://example.invalid/iron-vale-movie-2.jpg",
             "language": "eng",
             "runtime_minutes": 92,
-            "sort_title": "Haikyu Movie 2",
+            "sort_title": "Iron Vale Movie 2",
             "imdb_id": "tt4200002",
             "genres": ["Animation", "Sports"],
-            "studio": "Production I.G",
+            "studio": "Skyline Animation",
             "digital_release_date": "2016-11-01",
             "association_confidence": "high",
             "continuity_status": "canon",
@@ -348,18 +348,18 @@ fn build_haikyu_metadata_fixture() -> String {
             "movie_imdb_id": "tt4200003",
             "movie_mal_id": 50003,
             "movie_anidb_id": null,
-            "name": "Haikyu!! Movie 3",
-            "slug": "haikyu-movie-3",
+            "name": "Iron Vale!! Movie 3",
+            "slug": "iron-vale-movie-3",
             "year": 2017,
             "content_status": "released",
             "overview": "Interstitial movie 3",
-            "poster_url": "https://example.invalid/haikyu-movie-3.jpg",
+            "poster_url": "https://example.invalid/iron-vale-movie-3.jpg",
             "language": "eng",
             "runtime_minutes": 94,
-            "sort_title": "Haikyu Movie 3",
+            "sort_title": "Iron Vale Movie 3",
             "imdb_id": "tt4200003",
             "genres": ["Animation", "Sports"],
-            "studio": "Production I.G",
+            "studio": "Skyline Animation",
             "digital_release_date": "2017-11-01",
             "association_confidence": "high",
             "continuity_status": "canon",
@@ -425,20 +425,20 @@ fn build_haikyu_metadata_fixture() -> String {
         "data": {
             "s0": {
                 "series": {
-                    "tvdb_id": HAIKYU_TVDB_ID,
-                    "name": "Haikyu!!",
-                    "sort_name": "Haikyu!!",
-                    "slug": "haikyu",
+                    "tvdb_id": IRON_VALE_TVDB_ID,
+                    "name": "Iron Vale!!",
+                    "sort_name": "Iron Vale!!",
+                    "slug": "iron-vale",
                     "status": "Ended",
                     "year": 2014,
                     "first_aired": "2014-04-06",
-                    "overview": "A volleyball anime fixture for the stack probe.",
-                    "network": "MBS",
+                    "overview": "An invented sports-anime fixture for the stack probe.",
+                    "network": "JTN",
                     "runtime_minutes": 24,
-                    "poster_url": "https://example.invalid/haikyu-poster.jpg",
+                    "poster_url": "https://example.invalid/iron-vale-poster.jpg",
                     "country": "jpn",
                     "genres": ["Animation", "Sports"],
-                    "aliases": ["Haikyuu"],
+                    "aliases": ["Ironvale"],
                     "tagged_aliases": [],
                     "artworks": [],
                     "seasons": seasons,
@@ -452,14 +452,14 @@ fn build_haikyu_metadata_fixture() -> String {
     .to_string()
 }
 
-fn create_haikyu_library_root(root: &Path) -> PathBuf {
-    let show_dir = root.join("Haikyu!! [BD]");
-    std::fs::create_dir_all(&show_dir).expect("create Haikyu show dir");
+fn create_iron_vale_library_root(root: &Path) -> PathBuf {
+    let show_dir = root.join("Iron Vale!! [BD]");
+    std::fs::create_dir_all(&show_dir).expect("create Iron Vale show dir");
     std::fs::write(
         show_dir.join("tvshow.nfo"),
-        format!("<tvshow><title>Haikyu!!</title><tvdbid>{HAIKYU_TVDB_ID}</tvdbid></tvshow>"),
+        format!("<tvshow><title>Iron Vale!!</title><tvdbid>{IRON_VALE_TVDB_ID}</tvdbid></tvshow>"),
     )
-    .expect("write Haikyu tvshow.nfo");
+    .expect("write Iron Vale tvshow.nfo");
 
     // Keep the metadata shape large (99 episodes plus interstitial movies),
     // but keep the on-disk fixture smaller so the subprocess probe spends its
@@ -474,20 +474,20 @@ fn create_haikyu_library_root(root: &Path) -> PathBuf {
     ];
     for (season_number, episodes) in season_sample_episodes {
         let season_dir = show_dir.join(format!("Season {season_number:02}"));
-        std::fs::create_dir_all(&season_dir).expect("create Haikyu season dir");
+        std::fs::create_dir_all(&season_dir).expect("create Iron Vale season dir");
         for episode_number in episodes {
             let file_name = format!(
-                "Haikyu!!.S{season_number:02}E{episode_number:02}.1080p.BluRay.x264-GRP.mkv"
+                "Iron.Vale!!.S{season_number:02}E{episode_number:02}.1080p.BluRay.x264-GRP.mkv"
             );
             std::fs::write(season_dir.join(file_name), b"not-a-real-video")
-                .expect("write Haikyu episode file");
+                .expect("write Iron Vale episode file");
         }
     }
 
     show_dir
 }
 
-async fn wait_for_haikyu_scan_to_settle(
+async fn wait_for_iron_vale_scan_to_settle(
     ctx: &TestContext,
     minimum_media_files: Option<usize>,
 ) -> DateTime<Utc> {
@@ -503,7 +503,7 @@ async fn wait_for_haikyu_scan_to_settle(
             .expect("list anime titles while waiting for stack probe scan");
         let title = titles
             .iter()
-            .find(|title| title.name == "Haikyu!!")
+            .find(|title| title.name == "Iron Vale!!")
             .cloned();
         let sessions = ctx.app.active_library_scan_sessions().await;
 
@@ -566,7 +566,7 @@ async fn wait_for_haikyu_scan_to_settle(
 
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for Haikyu!! scan to settle"
+            "timed out waiting for Iron Vale!! scan to settle"
         );
         sleep(Duration::from_millis(100)).await;
     }

@@ -197,6 +197,7 @@ const es: LocaleDictionary = {
     "Escaneo de biblioteca completo. {{imported}} importados, {{skipped}} omitidos, {{unmatched}} sin coincidencias.",
   "settings.libraryScanFailed": "El escaneo de biblioteca falló.",
   "settings.libraryScanCancel": "Cancelar",
+  "settings.libraryScanRunInBackground": "Ejecutar en segundo plano",
   "settings.libraryScanCancelFailed":
     "No se pudo cancelar el escaneo de la biblioteca.",
   "settings.libraryScanCanceled": "Escaneo de la biblioteca cancelado.",
@@ -1320,6 +1321,7 @@ const es: LocaleDictionary = {
   "settings.monitorFillerMoviesLabel": "Monitorear películas de relleno",
   "settings.monitorFillerMoviesDescription":
     "Incluir películas clasificadas como de relleno en la cola de descargas",
+  "settings.sidecarFilesTitle": "Archivos sidecar",
   "settings.nfoWriteOnImportLabel": "Escribir NFO al importar",
   "settings.nfoWriteOnImportDescription":
     "Escribir archivos de metadatos .nfo compatibles con Kodi/Jellyfin/Emby junto al medio importado",

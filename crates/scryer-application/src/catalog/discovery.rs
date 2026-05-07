@@ -1377,13 +1377,7 @@ pub(crate) fn build_user_rule_input(
     decision: &QualityProfileDecision,
     context: crate::user_rule_input::SearchRuleInputContext<'_>,
 ) -> scryer_rules::UserRuleInput {
-    crate::user_rule_input::build_search_rule_input(
-        parsed,
-        profile,
-        result,
-        decision,
-        context,
-    )
+    crate::user_rule_input::build_search_rule_input(parsed, profile, result, decision, context)
 }
 
 #[cfg(test)]
