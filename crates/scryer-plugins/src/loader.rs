@@ -22,14 +22,15 @@ use crate::notification_adapter::WasmNotificationClient;
 use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::types::{
-    ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL,
-    EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE,
-    EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION,
-    EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND, EXPORT_SUBTITLE_DOWNLOAD,
-    EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
-    PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SDK_VERSION,
-    SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
-    plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
+    ConfigFieldRole, ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD,
+    EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY,
+    EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS,
+    EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND,
+    EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH,
+    EXPORT_VALIDATE_CONFIG, PluginDescriptor, PluginHostBindingId as SdkHostBinding, PluginKind,
+    ProviderDescriptor, SDK_VERSION, SubtitleProviderMode, config_fields_to_domain,
+    indexer_capabilities_to_domain, plugin_descriptor_sdk_constraint,
+    validate_plugin_descriptor_sdk_contract,
 };
 
 const NZBGEEK_DEFAULT_BASE_URL: &str = "https://api.nzbgeek.info";
@@ -486,7 +487,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
 
     fn default_base_url_for_provider(&self, provider_type: &str) -> Option<String> {
         self.get_loaded(provider_type)
-            .and_then(|loaded| loaded.descriptor.default_base_url().map(ToOwned::to_owned))
+            .and_then(|loaded| default_indexer_connection_url(&loaded.descriptor))
     }
 
     fn rate_limit_seconds_for_provider(&self, provider_type: &str) -> Option<i64> {
@@ -1343,6 +1344,70 @@ fn validate_indexer_descriptor(
 ) -> bool {
     validate_descriptor_for_type(descriptor, None, load_source)
         && is_indexer_plugin_type(descriptor.plugin_type())
+        && validate_indexer_config_contract(descriptor)
+}
+
+fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
+    let connection_url_count = descriptor
+        .config_fields()
+        .iter()
+        .filter(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
+        .count();
+
+    match connection_url_count {
+        1 => true,
+        0 => {
+            warn!(
+                plugin = descriptor.id.as_str(),
+                provider_type = descriptor.provider_type(),
+                "indexer descriptor rejected: missing connection_url config field role"
+            );
+            false
+        }
+        _ => {
+            warn!(
+                plugin = descriptor.id.as_str(),
+                provider_type = descriptor.provider_type(),
+                "indexer descriptor rejected: multiple connection_url config field roles"
+            );
+            false
+        }
+    } && if indexer_provider_requires_api_key(descriptor.provider_type())
+        && !indexer_has_declared_api_key_field(descriptor)
+    {
+        warn!(
+            plugin = descriptor.id.as_str(),
+            provider_type = descriptor.provider_type(),
+            "indexer descriptor rejected: missing declared api_key config field"
+        );
+        false
+    } else {
+        true
+    }
+}
+
+fn indexer_provider_requires_api_key(provider_type: &str) -> bool {
+    matches!(
+        provider_type.trim().to_ascii_lowercase().as_str(),
+        "newznab" | "torznab" | "nzbgeek" | "dognzb"
+    )
+}
+
+fn indexer_has_declared_api_key_field(descriptor: &PluginDescriptor) -> bool {
+    descriptor.config_fields().iter().any(|field| {
+        field.key.eq_ignore_ascii_case("api_key")
+            && field.field_type == ConfigFieldType::Password
+            && field.value_source == ConfigFieldValueSource::User
+    })
+}
+
+fn default_indexer_connection_url(descriptor: &PluginDescriptor) -> Option<String> {
+    descriptor
+        .config_fields()
+        .iter()
+        .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
+        .and_then(|field| field.default_value.clone())
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn binding_allowed_for_plugin(
@@ -2780,6 +2845,36 @@ mod tests {
         }
     }
 
+    fn indexer_config_fields() -> Vec<ConfigFieldDef> {
+        vec![ConfigFieldDef {
+            key: "base_url".to_string(),
+            label: "Base URL".to_string(),
+            field_type: ConfigFieldType::String,
+            required: true,
+            default_value: None,
+            value_source: ConfigFieldValueSource::User,
+            role: Some(ConfigFieldRole::ConnectionUrl),
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        }]
+    }
+
+    fn indexer_api_key_field() -> ConfigFieldDef {
+        ConfigFieldDef {
+            key: "api_key".to_string(),
+            label: "API Key".to_string(),
+            field_type: ConfigFieldType::Password,
+            required: true,
+            default_value: None,
+            value_source: ConfigFieldValueSource::User,
+            role: None,
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        }
+    }
+
     fn descriptor(plugin_type: &str) -> PluginDescriptor {
         let provider = match plugin_type {
             "indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
@@ -2788,8 +2883,7 @@ mod tests {
                 source_kind: IndexerSourceKind::Generic,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
-                config_fields: vec![],
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
             }),
@@ -2799,8 +2893,7 @@ mod tests {
                 source_kind: IndexerSourceKind::Usenet,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
-                config_fields: vec![],
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
             }),
@@ -2810,8 +2903,7 @@ mod tests {
                 source_kind: IndexerSourceKind::Torrent,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
-                config_fields: vec![],
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
             }),
@@ -2987,6 +3079,49 @@ mod tests {
     }
 
     #[test]
+    fn auth_backed_indexers_require_declared_api_key_field() {
+        for provider_type in ["newznab", "torznab", "nzbgeek", "dognzb"] {
+            let mut descriptor = descriptor("usenet_indexer");
+            set_provider_type(&mut descriptor, provider_type);
+            assert!(
+                !validate_indexer_descriptor(
+                    &descriptor,
+                    PluginLoadSource::External { first_party: false }
+                ),
+                "expected {provider_type} to require an api_key field"
+            );
+
+            let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
+                panic!("expected indexer descriptor");
+            };
+            indexer.config_fields.push(indexer_api_key_field());
+
+            assert!(
+                validate_indexer_descriptor(
+                    &descriptor,
+                    PluginLoadSource::External { first_party: false }
+                ),
+                "expected {provider_type} to validate once api_key is declared"
+            );
+        }
+    }
+
+    #[test]
+    fn api_keyless_indexers_can_still_validate() {
+        for provider_type in ["animetosho", "torrent_rss"] {
+            let mut descriptor = descriptor("torrent_indexer");
+            set_provider_type(&mut descriptor, provider_type);
+            assert!(
+                validate_indexer_descriptor(
+                    &descriptor,
+                    PluginLoadSource::External { first_party: false }
+                ),
+                "expected {provider_type} to validate without api_key"
+            );
+        }
+    }
+
+    #[test]
     fn subtitle_provider_rejects_notification_expected_type() {
         let descriptor = descriptor("subtitle_provider");
         assert!(!validate_descriptor_for_type(
@@ -3046,6 +3181,7 @@ mod tests {
             required: true,
             default_value: None,
             value_source: ConfigFieldValueSource::HostBinding,
+            role: None,
             host_binding: Some(PluginHostBindingId::SmgOpenSubtitlesApiKey),
             options: vec![],
             help_text: None,
@@ -3073,6 +3209,7 @@ mod tests {
             required: true,
             default_value: None,
             value_source: ConfigFieldValueSource::HostBinding,
+            role: None,
             host_binding: Some(PluginHostBindingId::SmgOpenSubtitlesApiKey),
             options: vec![],
             help_text: None,
@@ -3098,6 +3235,7 @@ mod tests {
             required: true,
             default_value: None,
             value_source: ConfigFieldValueSource::HostBinding,
+            role: None,
             host_binding: Some(PluginHostBindingId::SmgOpenSubtitlesApiKey),
             options: vec![],
             help_text: None,

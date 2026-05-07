@@ -316,7 +316,65 @@ fn normalize_library_root_drafts(
     Ok(normalized)
 }
 
+fn normalize_library_root_path(path: &str) -> String {
+    path.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn conflicting_library_names_for_roots(
+    libraries: &[Library],
+    current_library_id: Option<&str>,
+    roots: &[LibraryRootDraft],
+) -> HashMap<String, Vec<String>> {
+    let mut other_libraries_by_root = HashMap::<String, Vec<String>>::new();
+    for library in libraries {
+        if current_library_id.is_some_and(|library_id| library.id == library_id) {
+            continue;
+        }
+
+        for root in &library.roots {
+            let normalized_path = normalize_library_root_path(&root.path);
+            if normalized_path.is_empty() {
+                continue;
+            }
+
+            let names = other_libraries_by_root.entry(normalized_path).or_default();
+            if !names.contains(&library.name) {
+                names.push(library.name.clone());
+            }
+        }
+    }
+
+    let mut conflicts = HashMap::<String, Vec<String>>::new();
+    for root in roots {
+        let normalized_path = normalize_library_root_path(&root.path);
+        if normalized_path.is_empty() {
+            continue;
+        }
+        if let Some(names) = other_libraries_by_root.get(&normalized_path) {
+            conflicts.insert(root.path.clone(), names.clone());
+        }
+    }
+
+    conflicts
+}
+
 impl AppUseCase {
+    async fn validate_library_root_conflicts(
+        &self,
+        current_library_id: Option<&str>,
+        roots: &[LibraryRootDraft],
+    ) -> AppResult<()> {
+        let libraries = self.services.catalog.libraries.list(None).await?;
+        let conflicts = conflicting_library_names_for_roots(&libraries, current_library_id, roots);
+        if let Some((path, library_names)) = conflicts.into_iter().next() {
+            let libraries = library_names.join(", ");
+            return Err(AppError::Validation(format!(
+                "library root '{path}' is already used by {libraries}"
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn require_library_management_permission(
         &self,
         actor: &User,
@@ -352,6 +410,7 @@ impl AppUseCase {
             return Err(AppError::Validation("library name is required".into()));
         }
         let roots = normalize_library_root_drafts(roots)?;
+        self.validate_library_root_conflicts(None, &roots).await?;
         let now = Utc::now();
         let library = Library {
             id: Id::new().0,
@@ -413,6 +472,8 @@ impl AppUseCase {
                 })
                 .collect(),
         };
+        self.validate_library_root_conflicts(Some(&existing.id), &roots)
+            .await?;
         let library = self
             .services
             .catalog

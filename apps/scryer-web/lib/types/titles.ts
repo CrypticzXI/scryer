@@ -92,6 +92,10 @@ export type LibrarySettingsRecord = {
   interSeasonMovies: boolean | null;
   monitorFillerMoviesOverride: boolean | null;
   monitorFillerMovies: boolean | null;
+  nfoWriteOnImportOverride: boolean | null;
+  nfoWriteOnImport: boolean;
+  plexmatchWriteOnImportOverride: boolean | null;
+  plexmatchWriteOnImport: boolean | null;
   indexerRoutingOverride: unknown[] | null;
   downloadClientRoutingOverride: unknown[] | null;
 };
@@ -105,6 +109,8 @@ export type LibrarySettingsDraft = {
   monitorSpecials: boolean | null;
   interSeasonMovies: boolean | null;
   monitorFillerMovies: boolean | null;
+  nfoWriteOnImport: boolean | null;
+  plexmatchWriteOnImport: boolean | null;
   indexerRouting?: unknown[] | null;
   downloadClientRouting?: unknown[] | null;
 };

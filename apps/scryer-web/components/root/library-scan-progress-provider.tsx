@@ -47,7 +47,8 @@ export function LibraryScanProgressProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const { sessions, getActiveSession, dismissSession } = useLibraryScanEventStream();
+  const { sessions, getActiveSession, refreshSessions, dismissSession } =
+    useLibraryScanEventStream();
   const dismissTimersRef = React.useRef<
     Record<string, ReturnType<typeof setTimeout>>
   >({});
@@ -115,8 +116,9 @@ export function LibraryScanProgressProvider({
       sessions: sessions.filter((session) => !isTerminal(session.status)),
       getActiveSession,
       getSessionById,
+      refreshSessions,
     }),
-    [getActiveSession, getSessionById, sessions],
+    [getActiveSession, getSessionById, refreshSessions, sessions],
   );
 
   return (

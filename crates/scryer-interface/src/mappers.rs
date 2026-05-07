@@ -12,9 +12,10 @@ use scryer_application::{
     TitleHistoryPage, TitleReleaseBlocklistEntry, WorkflowOperationInfo,
 };
 use scryer_domain::{
-    CalendarEpisode, Collection, DomainEvent, DownloadClientConfig, DownloadQueueItem, Episode,
-    IndexerConfig, Library, MediaFacet, PluginInstallation, PluginSupportTier, PolicyOutput,
-    RuleSet, SubtitleProviderConfig, Title, TitleHistoryRecord, User,
+    CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
+    DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, Library, MediaFacet,
+    PluginInstallation, PluginSupportTier, PolicyOutput, RuleSet, SubtitleProviderConfig, Title,
+    TitleHistoryRecord, User,
 };
 use scryer_rules;
 use serde_json::Value;
@@ -220,6 +221,10 @@ pub(crate) fn from_library_settings(settings: LibrarySettings) -> LibrarySetting
         inter_season_movies: settings.inter_season_movies,
         monitor_filler_movies_override: settings.monitor_filler_movies_override,
         monitor_filler_movies: settings.monitor_filler_movies,
+        nfo_write_on_import_override: settings.nfo_write_on_import_override,
+        nfo_write_on_import: settings.nfo_write_on_import,
+        plexmatch_write_on_import_override: settings.plexmatch_write_on_import_override,
+        plexmatch_write_on_import: settings.plexmatch_write_on_import,
         indexer_routing_override: settings.indexer_routing_override.map(|entries| {
             entries
                 .into_iter()
@@ -530,16 +535,24 @@ pub(crate) fn from_parsed_episode(episode: ParsedEpisodeMetadata) -> ParsedEpiso
     }
 }
 
-pub(crate) fn from_indexer_config(config: IndexerConfig) -> IndexerConfigPayload {
+pub(crate) fn from_indexer_config_with_fields(
+    config: IndexerConfig,
+    config_fields: &[ConfigFieldDef],
+) -> IndexerConfigPayload {
+    let (config_json, stored_secret_keys) =
+        redact_indexer_config_json(config.config_json, config_fields);
+    let has_api_key = stored_secret_keys.iter().any(|key| key == "api_key")
+        || config
+            .api_key_encrypted
+            .as_ref()
+            .is_some_and(|value| !value.is_empty());
     IndexerConfigPayload {
         id: config.id,
         name: config.name,
         provider_type: config.provider_type,
         base_url: config.base_url,
-        has_api_key: config
-            .api_key_encrypted
-            .as_ref()
-            .is_some_and(|value| !value.is_empty()),
+        has_api_key,
+        stored_secret_keys,
         rate_limit_seconds: config.rate_limit_seconds,
         rate_limit_burst: config.rate_limit_burst,
         disabled_until: config.disabled_until.map(|value| value.to_rfc3339()),
@@ -549,10 +562,65 @@ pub(crate) fn from_indexer_config(config: IndexerConfig) -> IndexerConfigPayload
         last_health_status: config.last_health_status,
         last_error_at: config.last_error_at.map(|value| value.to_rfc3339()),
         last_query_at: None,
-        config_json: config.config_json,
+        config_json,
         created_at: config.created_at.to_rfc3339(),
         updated_at: config.updated_at.to_rfc3339(),
     }
+}
+
+fn redact_indexer_config_json(
+    config_json: Option<String>,
+    config_fields: &[ConfigFieldDef],
+) -> (Option<String>, Vec<String>) {
+    let Some(raw) = config_json else {
+        return (None, Vec::new());
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return (Some(raw), Vec::new());
+    };
+    let Some(object) = value.as_object_mut() else {
+        return (Some(raw), Vec::new());
+    };
+
+    let configured_secret_keys = config_fields
+        .iter()
+        .filter(|field| field.field_type == ConfigFieldType::Password)
+        .map(|field| field.key.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut stored_secret_keys = object
+        .iter()
+        .filter_map(|(key, value)| {
+            let is_secret = if configured_secret_keys.is_empty() {
+                indexer_config_key_is_secret(key)
+            } else {
+                configured_secret_keys.contains(key.as_str())
+            };
+            if !is_secret {
+                return None;
+            }
+            match value {
+                serde_json::Value::String(value) if !value.trim().is_empty() => Some(key.clone()),
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    stored_secret_keys.sort();
+    stored_secret_keys.dedup();
+
+    for key in &stored_secret_keys {
+        object.remove(key);
+    }
+
+    let redacted = serde_json::to_string(&value).ok();
+    (redacted, stored_secret_keys)
+}
+
+fn indexer_config_key_is_secret(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
+    normalized.contains("apikey")
+        || normalized.contains("password")
+        || normalized.contains("secret")
+        || normalized.ends_with("token")
 }
 
 pub(crate) fn from_provider_type(
@@ -585,6 +653,7 @@ pub(crate) fn from_provider_type(
                     scryer_domain::ConfigFieldValueSource::HostBinding => "host_binding",
                 }
                 .to_string(),
+                role: f.role.map(|role| role.as_str().to_string()),
                 host_binding: f.host_binding.map(|binding| binding.as_str().to_string()),
                 options: f
                     .options

@@ -317,6 +317,7 @@ const PROVIDER_TYPE_FIELDS = `
       required
       defaultValue
       valueSource
+      role
       hostBinding
       options { value label }
       helpText
@@ -753,6 +754,10 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) 
     interSeasonMovies
     monitorFillerMoviesOverride
     monitorFillerMovies
+    nfoWriteOnImportOverride
+    nfoWriteOnImport
+    plexmatchWriteOnImportOverride
+    plexmatchWriteOnImport
     indexerRoutingOverride {
       indexerId
       enabled
@@ -1201,6 +1206,7 @@ export const indexersQuery = `query Indexers($providerType: String) {
     providerType
     baseUrl
     hasApiKey
+    storedSecretKeys
     rateLimitSeconds
     rateLimitBurst
     disabledUntil
@@ -1300,6 +1306,7 @@ const indexerFieldSelection = `
     providerType
     baseUrl
     hasApiKey
+    storedSecretKeys
     rateLimitSeconds
     rateLimitBurst
     disabledUntil

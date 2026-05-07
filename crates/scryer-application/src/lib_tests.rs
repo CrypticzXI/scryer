@@ -1777,6 +1777,61 @@ impl IndexerClient for MockIndexerClient {
     }
 }
 
+struct MockIndexerPluginProvider {
+    client: Arc<dyn IndexerClient>,
+}
+
+impl IndexerPluginProvider for MockIndexerPluginProvider {
+    fn client_for_provider(&self, _config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
+        Some(Arc::clone(&self.client))
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        vec!["nzbgeek".to_string(), "torrent_rss".to_string()]
+    }
+
+    fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
+        vec![]
+    }
+
+    fn config_fields_for_provider(
+        &self,
+        provider_type: &str,
+    ) -> Vec<scryer_domain::ConfigFieldDef> {
+        let connection_key = match provider_type {
+            "torrent_rss" => "feed_url",
+            _ => "base_url",
+        };
+        let mut fields = vec![scryer_domain::ConfigFieldDef {
+            key: connection_key.to_string(),
+            label: "Base URL".to_string(),
+            field_type: scryer_domain::ConfigFieldType::String,
+            required: true,
+            default_value: None,
+            value_source: scryer_domain::ConfigFieldValueSource::User,
+            role: Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        }];
+        if provider_type != "torrent_rss" {
+            fields.push(scryer_domain::ConfigFieldDef {
+                key: "api_key".to_string(),
+                label: "API Key".to_string(),
+                field_type: scryer_domain::ConfigFieldType::Password,
+                required: true,
+                default_value: None,
+                value_source: scryer_domain::ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: vec![],
+                help_text: None,
+            });
+        }
+        fields
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RecordedIndexerSearch {
     query: String,
@@ -2655,8 +2710,7 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
             id,
             name,
             provider_type,
-            base_url,
-            api_key_encrypted,
+            derived_base_url,
             rate_limit_seconds,
             rate_limit_burst,
             is_enabled,
@@ -2676,11 +2730,8 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         if let Some(provider_type) = provider_type {
             item.provider_type = provider_type;
         }
-        if let Some(base_url) = base_url {
+        if let Some(base_url) = derived_base_url {
             item.base_url = base_url;
-        }
-        if let Some(api_key_encrypted) = api_key_encrypted {
-            item.api_key_encrypted = Some(api_key_encrypted);
         }
         if let Some(rate_limit_seconds) = rate_limit_seconds {
             item.rate_limit_seconds = Some(rate_limit_seconds);
@@ -4063,6 +4114,190 @@ pub(crate) fn bootstrap() -> (AppUseCase, User) {
     bootstrap_with_user_repo(Arc::new(MockUserRepo::default()))
 }
 
+#[tokio::test]
+async fn create_library_rejects_root_used_by_other_facet_library() {
+    let (app, user) = bootstrap();
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let series_library = app
+        .services
+        .catalog
+        .libraries
+        .get_by_id(&series_library_id)
+        .await
+        .expect("series library should load")
+        .expect("series library should exist");
+
+    app.services
+        .catalog
+        .libraries
+        .update(
+            &series_library_id,
+            series_library.name.clone(),
+            series_library.slug.clone(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/TV".to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("series library roots should update");
+
+    let error = app
+        .create_library(
+            &user,
+            MediaFacet::Anime,
+            "Anime2".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/TV".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect_err("duplicate cross-facet root should be rejected");
+
+    match error {
+        AppError::Validation(message) => {
+            assert!(message.contains("/Volumes/Media/TV"));
+            assert!(message.contains(&series_library.name));
+        }
+        other => panic!("expected validation error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn update_library_rejects_root_used_by_other_facet_library() {
+    let (app, user) = bootstrap();
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let anime_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+    let series_library = app
+        .services
+        .catalog
+        .libraries
+        .get_by_id(&series_library_id)
+        .await
+        .expect("series library should load")
+        .expect("series library should exist");
+    let anime_library = app
+        .services
+        .catalog
+        .libraries
+        .get_by_id(&anime_library_id)
+        .await
+        .expect("anime library should load")
+        .expect("anime library should exist");
+
+    app.services
+        .catalog
+        .libraries
+        .update(
+            &series_library_id,
+            series_library.name.clone(),
+            series_library.slug.clone(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/TV".to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("series library roots should update");
+
+    let error = app
+        .update_library(
+            &user,
+            &anime_library_id,
+            Some(anime_library.name.clone()),
+            Some(vec![LibraryRootDraft {
+                path: "/Volumes/Media/TV".to_string(),
+                is_default: true,
+            }]),
+            None,
+        )
+        .await
+        .expect_err("duplicate cross-facet root should be rejected");
+
+    match error {
+        AppError::Validation(message) => {
+            assert!(message.contains("/Volumes/Media/TV"));
+            assert!(message.contains(&series_library.name));
+        }
+        other => panic!("expected validation error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn library_sidecar_settings_resolve_facet_defaults_and_library_overrides() {
+    let (app, user) = bootstrap();
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Series,
+        UpdateMediaSettings {
+            nfo_write_on_import: Some(true),
+            plexmatch_write_on_import: Some(true),
+            ..empty_update_media_settings()
+        },
+    )
+    .await
+    .expect("series media settings should update");
+
+    let baseline = app
+        .get_library_settings(&user, &series_library_id)
+        .await
+        .expect("series library settings should load");
+    assert_eq!(baseline.nfo_write_on_import_override, None);
+    assert!(baseline.nfo_write_on_import);
+    assert_eq!(baseline.plexmatch_write_on_import_override, None);
+    assert_eq!(baseline.plexmatch_write_on_import, Some(true));
+
+    app.update_library_settings(
+        &user,
+        &series_library_id,
+        LibrarySettingsOverrideDraft {
+            nfo_write_on_import: Some(false),
+            plexmatch_write_on_import: Some(false),
+            ..empty_library_settings_override()
+        },
+    )
+    .await
+    .expect("series library overrides should save");
+
+    let overridden = app
+        .get_library_settings(&user, &series_library_id)
+        .await
+        .expect("series library settings should reload");
+    assert_eq!(overridden.nfo_write_on_import_override, Some(false));
+    assert!(!overridden.nfo_write_on_import);
+    assert_eq!(overridden.plexmatch_write_on_import_override, Some(false));
+    assert_eq!(overridden.plexmatch_write_on_import, Some(false));
+}
+
+#[tokio::test]
+async fn movie_library_rejects_plexmatch_override() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let error = app
+        .update_library_settings(
+            &user,
+            &movie_library_id,
+            LibrarySettingsOverrideDraft {
+                plexmatch_write_on_import: Some(true),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect_err("movie library should reject plexmatch override");
+
+    match error {
+        AppError::Validation(message) => {
+            assert!(message.contains("plexmatch_write_on_import"));
+        }
+        other => panic!("expected validation error, got {other:?}"),
+    }
+}
+
 fn test_admin_user() -> User {
     let mut user = User::new_admin("admin");
     user.authorization = scryer_domain::UserAuthorization {
@@ -4419,6 +4654,9 @@ fn bootstrap_with_search_settings_and_indexer(
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
+    let plugin_provider = Arc::new(MockIndexerPluginProvider {
+        client: Arc::clone(&indexer_client),
+    });
 
     let services = AppServices::builder(
         titles,
@@ -4433,6 +4671,7 @@ fn bootstrap_with_search_settings_and_indexer(
         quality_profiles,
         String::new(),
     )
+    .with_plugin_provider(plugin_provider)
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
@@ -4702,14 +4941,18 @@ async fn create_indexer_config_writes_default_routing_entries() {
             NewIndexerConfig {
                 name: "NZBGeek".to_string(),
                 provider_type: "nzbgeek".to_string(),
-                base_url: "https://api.nzbgeek.info".to_string(),
-                api_key_encrypted: Some("0123456789abcdef".to_string()),
                 rate_limit_seconds: None,
                 rate_limit_burst: None,
                 is_enabled: true,
                 enable_interactive_search: true,
                 enable_auto_search: true,
-                config_json: None,
+                config_json: Some(
+                    serde_json::json!({
+                        "base_url": "https://api.nzbgeek.info",
+                        "api_key": "0123456789abcdef"
+                    })
+                    .to_string(),
+                ),
             },
         )
         .await
@@ -5309,6 +5552,41 @@ fn empty_update_media_settings_with_roots(
         monitor_filler_movies: None,
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
+    }
+}
+
+fn empty_update_media_settings() -> UpdateMediaSettings {
+    UpdateMediaSettings {
+        library_path: None,
+        root_folders: None,
+        required_audio_languages: None,
+        rename_template: None,
+        rename_collision_policy: None,
+        rename_missing_metadata_policy: None,
+        filler_policy: None,
+        recap_policy: None,
+        monitor_specials: None,
+        inter_season_movies: None,
+        monitor_filler_movies: None,
+        nfo_write_on_import: None,
+        plexmatch_write_on_import: None,
+    }
+}
+
+fn empty_library_settings_override() -> LibrarySettingsOverrideDraft {
+    LibrarySettingsOverrideDraft {
+        required_audio_languages: None,
+        quality_profile_id: None,
+        scoring_persona: None,
+        filler_policy: None,
+        recap_policy: None,
+        monitor_specials: None,
+        inter_season_movies: None,
+        monitor_filler_movies: None,
+        nfo_write_on_import: None,
+        plexmatch_write_on_import: None,
+        indexer_routing: None,
+        download_client_routing: None,
     }
 }
 

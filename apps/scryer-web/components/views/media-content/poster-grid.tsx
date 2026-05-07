@@ -67,6 +67,7 @@ type PosterGridProps = {
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
   scanLibraryDisabled?: boolean;
+  scanLibraryNotice?: string | null;
 };
 
 export const PosterGrid = React.memo(function PosterGrid({
@@ -83,6 +84,7 @@ export const PosterGrid = React.memo(function PosterGrid({
   onScanLibrary,
   scanLibraryLoading = false,
   scanLibraryDisabled = false,
+  scanLibraryNotice,
 }: PosterGridProps) {
   const t = useTranslate();
   const isMobile = useIsMobile();
@@ -96,6 +98,7 @@ export const PosterGrid = React.memo(function PosterGrid({
         configureRootsHref={configureRootsHref}
         scanLoading={scanLibraryLoading}
         scanDisabled={scanLibraryDisabled}
+        scanNotice={scanLibraryNotice}
         onScan={onScanLibrary}
       />
     );

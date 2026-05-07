@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { LayoutGrid, LayoutList } from "lucide-react";
+import { Eye, EyeOff, LayoutGrid, LayoutList, Pencil, Trash2, X } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +31,7 @@ import { AddTitleForm } from "./media-content/add-title-form";
 import { PosterGrid } from "./media-content/poster-grid";
 import { TitleTable } from "./media-content/title-table";
 import { CompactTitleTable } from "./media-content/compact-title-table";
+import { TitleTableActionButton } from "./media-content/title-table-shared";
 import {
   hasActiveTitleQuickFilters,
   TitleQuickFilterBar,
@@ -193,7 +194,6 @@ export function MediaContentView({
     setTitleFilter: (value: string) => void;
     refreshTitles: (query?: string) => Promise<void> | void;
     titleLoading: boolean;
-    titleStatus: string;
     monitoredTitles: TitleRecord[];
     titleQuickFilters: TitleQuickFilters;
     toggleTitleQuickMonitoringFilter: (
@@ -238,6 +238,8 @@ export function MediaContentView({
     libraryScanSummary: LibraryScanSummary | null;
     libraries: LibraryRecord[];
     librariesLoading: boolean;
+    rootValidationLibraries: LibraryRecord[];
+    rootValidationLibrariesLoading: boolean;
     selectedLibraryIds: string[];
     allLibrariesValue: string;
     setSelectedLibraryIds: (value: string[]) => void;
@@ -323,7 +325,6 @@ export function MediaContentView({
     setTitleFilter,
     refreshTitles,
     titleLoading,
-    titleStatus,
     monitoredTitles,
     titleQuickFilters,
     toggleTitleQuickMonitoringFilter,
@@ -355,6 +356,8 @@ export function MediaContentView({
     libraryScanSummary,
     libraries,
     librariesLoading,
+    rootValidationLibraries,
+    rootValidationLibrariesLoading,
     selectedLibraryIds,
     allLibrariesValue,
     setSelectedLibraryIds,
@@ -382,6 +385,10 @@ export function MediaContentView({
       current === titleFilter ? current : titleFilter
     ));
   }, [titleFilter]);
+  const compactSelectedVisibleCount = React.useMemo(
+    () => deferredMonitoredTitles.filter((title) => selectedTitleIds.has(title.id)).length,
+    [deferredMonitoredTitles, selectedTitleIds],
+  );
   const effectiveContentSettingsSection =
     !canManageConfig && isMediaSettingsSection(contentSettingsSection)
       ? "overview"
@@ -648,6 +655,8 @@ export function MediaContentView({
             settingsTitle={mediaLibrarySettingsTitle}
             libraries={libraries}
             librariesLoading={librariesLoading}
+            rootValidationLibraries={rootValidationLibraries}
+            rootValidationLibrariesLoading={rootValidationLibrariesLoading}
             preferredLibraryId={
               selectedLibraryIds.length === 1
                 ? selectedLibraryIds[0]
@@ -763,9 +772,66 @@ export function MediaContentView({
                   onToggleMonitoring={toggleTitleQuickMonitoringFilter}
                   onToggleStatus={toggleTitleQuickStatusFilter}
                   onClear={clearTitleQuickFilters}
+                  trailingContent={
+                    effectiveViewMode === "compact" || effectiveViewMode === "poster-table" ? (
+                      compactSelectedVisibleCount > 0 ? (
+                        <div className="flex h-12 w-full items-center justify-end gap-2 rounded-xl border border-border/70 bg-muted/20 px-3 py-2 sm:w-[20rem]">
+                          <span className="mr-1 text-sm text-muted-foreground whitespace-nowrap">
+                            {t("title.bulkSelectionCount", { count: compactSelectedVisibleCount })}
+                          </span>
+                          <TitleTableActionButton
+                            tone="enabled"
+                            label={t("title.monitorAction")}
+                            onClick={() => void bulkMonitorTitles(true)}
+                            disabled={bulkActionBusy}
+                            className="rounded-md"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </TitleTableActionButton>
+                          <TitleTableActionButton
+                            tone="disabled"
+                            label={t("title.unmonitorAction")}
+                            onClick={() => void bulkMonitorTitles(false)}
+                            disabled={bulkActionBusy}
+                            className="rounded-md"
+                          >
+                            <EyeOff className="h-4 w-4" />
+                          </TitleTableActionButton>
+                          <TitleTableActionButton
+                            tone="edit"
+                            label={t("label.edit")}
+                            onClick={openBulkTitleEdit}
+                            disabled={bulkActionBusy}
+                            className="rounded-md"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </TitleTableActionButton>
+                          <TitleTableActionButton
+                            tone="delete"
+                            label={t("label.delete")}
+                            onClick={openBulkTitleDelete}
+                            disabled={bulkActionBusy}
+                            className="rounded-md"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </TitleTableActionButton>
+                          <TitleTableActionButton
+                            tone="neutral"
+                            label={t("label.clear")}
+                            onClick={clearSelectedTitles}
+                            disabled={bulkActionBusy}
+                            className="rounded-md"
+                          >
+                            <X className="h-4 w-4" />
+                          </TitleTableActionButton>
+                        </div>
+                      ) : (
+                        <div className="h-12 w-full sm:w-[20rem]" aria-hidden="true" />
+                      )
+                    ) : null
+                  }
                 />
               </div>
-              <p className="mb-2 text-sm text-muted-foreground">{titleStatus}</p>
               {(() => {
                 const isMovieView = view === "movies";
                 const overviewTargetView = isMovieView ? "movies" as const : view === "anime" ? "anime" as const : "series" as const;
@@ -801,6 +867,7 @@ export function MediaContentView({
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
+                      scanLibraryNotice={libraryScanNotice}
                     />
                   );
                 }
@@ -825,10 +892,6 @@ export function MediaContentView({
                       selectedTitleIds={selectedTitleIds}
                       onToggleSelected={toggleTitleSelection}
                       onToggleSelectAll={toggleAllVisibleTitles}
-                      onClearSelection={clearSelectedTitles}
-                      onBulkMonitor={bulkMonitorTitles}
-                      onBulkEdit={openBulkTitleEdit}
-                      onBulkDelete={openBulkTitleDelete}
                       bulkActionBusy={bulkActionBusy}
                       showScanLibraryAction={showEmptyStateActions && showInitialScanAction}
                       showConfigureRootsAction={
@@ -838,6 +901,7 @@ export function MediaContentView({
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
+                      scanLibraryNotice={libraryScanNotice}
                     />
                   );
                 }
@@ -866,6 +930,7 @@ export function MediaContentView({
                     onScanLibrary={scanLibrary}
                     scanLibraryLoading={libraryScanLoading}
                     scanLibraryDisabled={libraryScanDisabled}
+                    scanLibraryNotice={libraryScanNotice}
                   />
                 );
               })()}
@@ -890,7 +955,6 @@ export function MediaContentView({
             onTitleFilterChange={handleTitleFilterChange}
             onRefreshTitles={handleRefreshTitles}
             titleLoading={titleLoading}
-            titleStatus={titleStatus}
             monitoredTitles={monitoredTitles}
             onOpenOverview={onOpenOverview}
             queueExisting={queueExisting}

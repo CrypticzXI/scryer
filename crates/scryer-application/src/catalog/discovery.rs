@@ -344,6 +344,21 @@ impl AppUseCase {
         resolved_profile.criteria.required_audio_languages = required_audio_languages;
         resolved_profile.criteria.scoring_persona = resolved_persona.clone();
         resolved_profile.criteria.facet_persona_overrides.clear();
+        let library_name = match library_id {
+            Some(library_id) => match self.services.catalog.libraries.get_by_id(library_id).await {
+                Ok(Some(library)) => Some(library.name),
+                Ok(None) => None,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        library_id = library_id,
+                        "failed to resolve library name for custom rule context"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
 
         let catalog_episodes = self
             .services
@@ -465,6 +480,7 @@ impl AppUseCase {
                     &result,
                     &decision,
                     category,
+                    library_name.as_deref(),
                     title_tags,
                     candidate_runtime_minutes,
                 );
@@ -1354,6 +1370,7 @@ pub(crate) fn build_user_rule_input(
     result: &IndexerSearchResult,
     decision: &QualityProfileDecision,
     category: Option<&str>,
+    library_name: Option<&str>,
     title_tags: &[String],
     runtime_minutes: Option<i32>,
 ) -> scryer_rules::UserRuleInput {
@@ -1363,6 +1380,7 @@ pub(crate) fn build_user_rule_input(
         result,
         decision,
         category,
+        library_name,
         title_tags,
         runtime_minutes,
     )

@@ -196,6 +196,7 @@ fn synthetic_test_input() -> UserRuleInput {
         },
         context: ContextDoc {
             title_id: Some("tt0000000".to_string()),
+            library_name: Some("Movies".to_string()),
             media_type: "movie".to_string(),
             category: "movie".to_string(),
             tags: vec![],

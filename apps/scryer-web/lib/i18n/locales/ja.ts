@@ -185,9 +185,6 @@ const ja: LocaleDictionary = {
     "このルートフォルダはすでに {{libraries}} で使われています。",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "デフォルトに設定",
-  "settings.librarySelectionScopeTitle": "アクティブなライブラリ",
-  "settings.librarySelectionScopeHelp":
-    "このセクションの上書き設定とスキャン操作は、選択したライブラリを対象にします。",
   "settings.libraryScanTitle": "ライブラリスキャン",
   "settings.libraryScanHelp":
     "映画フォルダをスキャンして不足しているタイトルをインポートします。",

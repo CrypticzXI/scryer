@@ -11,17 +11,13 @@ import { SettingsIndexersSection } from "@/components/views/settings/settings-in
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
-import type { IndexerRecord, ProviderTypeInfo } from "@/lib/types";
+import type { ConfigFieldDef, IndexerRecord, ProviderTypeInfo } from "@/lib/types";
 import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
   indexerProviderTypesQuery,
   indexersInitQuery,
   indexersQuery,
 } from "@/lib/graphql/queries";
-import {
-  resolveIndexerBaseUrl,
-  showIndexerApiKeyField,
-} from "@/lib/utils/indexers";
 import {
   createIndexerMutation,
   deleteIndexerMutation,
@@ -36,8 +32,7 @@ type SettingsIndexersSectionProps = ComponentProps<
 const INDEXER_INITIAL_DRAFT = {
   name: "",
   providerType: "",
-  baseUrl: "",
-  apiKey: "",
+  storedSecretKeys: [] as string[],
   isEnabled: true,
   enableInteractiveSearch: true,
   enableAutoSearch: true,
@@ -45,14 +40,61 @@ const INDEXER_INITIAL_DRAFT = {
 };
 
 function serializeConfigJson(
+  fields: ConfigFieldDef[],
   configValues: Record<string, string>,
+  storedSecretKeys: string[] = [],
 ): string | undefined {
-  const nonEmpty = Object.fromEntries(
-    Object.entries(configValues).filter(([, v]) => v !== ""),
-  );
-  return Object.keys(nonEmpty).length > 0
-    ? JSON.stringify(nonEmpty)
-    : undefined;
+  const entries: Record<string, string> = {};
+  const storedSecretKeySet = new Set(storedSecretKeys);
+
+  if (fields.length === 0) {
+    for (const [key, value] of Object.entries(configValues)) {
+      if (value.trim() !== "") {
+        entries[key] = value;
+      }
+    }
+    return Object.keys(entries).length > 0 ? JSON.stringify(entries) : undefined;
+  }
+
+  const fieldKeySet = new Set(fields.map((field) => field.key));
+  for (const [key, value] of Object.entries(configValues)) {
+    if (!fieldKeySet.has(key) && value.trim() !== "") {
+      entries[key] = value;
+    }
+  }
+
+  for (const field of fields) {
+    if (field.valueSource === "host_binding") {
+      continue;
+    }
+
+    const isStoredSecret =
+      (field.fieldType === "password" || field.fieldType === "secret") &&
+      storedSecretKeySet.has(field.key);
+    let nextValue =
+      configValues[field.key] ??
+      field.defaultValue ??
+      (field.fieldType === "bool" ? "false" : "");
+
+    if (isStoredSecret && nextValue.trim() === "") {
+      continue;
+    }
+
+    if (field.fieldType === "bool") {
+      entries[field.key] = nextValue.trim() || field.defaultValue || "false";
+      continue;
+    }
+
+    if (nextValue.trim() === "" && field.defaultValue) {
+      nextValue = field.defaultValue;
+    }
+
+    if (nextValue.trim() !== "") {
+      entries[field.key] = nextValue;
+    }
+  }
+
+  return Object.keys(entries).length > 0 ? JSON.stringify(entries) : undefined;
 }
 
 function parseConfigJson(configJson: string | null): Record<string, string> {
@@ -62,6 +104,71 @@ function parseConfigJson(configJson: string | null): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+function buildDraftConfigValues(
+  fields: ConfigFieldDef[],
+  parsedConfigValues: Record<string, string>,
+  storedSecretKeys: string[] = [],
+): Record<string, string> {
+  if (fields.length === 0) {
+    return { ...parsedConfigValues };
+  }
+
+  const nextValues = { ...parsedConfigValues };
+  const storedSecretKeySet = new Set(storedSecretKeys);
+  for (const field of fields) {
+    if (field.valueSource === "host_binding") {
+      continue;
+    }
+
+    if (
+      (field.fieldType === "password" || field.fieldType === "secret") &&
+      storedSecretKeySet.has(field.key)
+    ) {
+      nextValues[field.key] = "";
+      continue;
+    }
+
+    nextValues[field.key] =
+      parsedConfigValues[field.key] ??
+      field.defaultValue ??
+      (field.fieldType === "bool" ? "false" : "");
+  }
+
+  return nextValues;
+}
+
+function findMissingRequiredConfigField(
+  fields: ConfigFieldDef[],
+  configValues: Record<string, string>,
+  storedSecretKeys: string[] = [],
+): ConfigFieldDef | null {
+  const storedSecretKeySet = new Set(storedSecretKeys);
+  for (const field of fields) {
+    if (!field.required || field.valueSource === "host_binding") {
+      continue;
+    }
+
+    const nextValue =
+      configValues[field.key] ??
+      field.defaultValue ??
+      (field.fieldType === "bool" ? "false" : "");
+
+    if (
+      (field.fieldType === "password" || field.fieldType === "secret") &&
+      storedSecretKeySet.has(field.key) &&
+      nextValue.trim() === ""
+    ) {
+      continue;
+    }
+
+    if (field.fieldType !== "bool" && nextValue.trim() === "") {
+      return field;
+    }
+  }
+
+  return null;
 }
 
 type SettingsIndexersContainerProps = {
@@ -194,6 +301,10 @@ export function SettingsIndexersContainer({
         ...prev,
         providerType: nextProviderType,
         name: nextName,
+        configValues:
+          nextProviderType === prev.providerType
+            ? prev.configValues
+            : buildDraftConfigValues(nextProvider.configFields, {}),
       };
     });
   }, [editingIndexerId, providerTypes]);
@@ -208,29 +319,34 @@ export function SettingsIndexersContainer({
 
   const submitIndexer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const selectedProvider = providerTypes.find(
-      (pt) =>
-        pt.providerType === indexerDraft.providerType.trim().toLowerCase(),
-    );
-    const effectiveBaseUrl = resolveIndexerBaseUrl(
-      selectedProvider,
-      indexerDraft.baseUrl,
+    const normalizedProviderType = indexerDraft.providerType.trim().toLowerCase();
+    const selectedProvider =
+      providerTypes.find((pt) => pt.providerType === normalizedProviderType) ?? null;
+    const missingRequiredConfigField = findMissingRequiredConfigField(
+      selectedProvider?.configFields ?? [],
       indexerDraft.configValues,
+      indexerDraft.storedSecretKeys,
     );
-    const shouldIncludeApiKey = showIndexerApiKeyField(selectedProvider);
     const payload = {
       name: indexerDraft.name.trim(),
-      providerType: indexerDraft.providerType.trim(),
-      baseUrl: effectiveBaseUrl,
-      apiKey: shouldIncludeApiKey ? indexerDraft.apiKey.trim() : "",
+      providerType: normalizedProviderType,
       isEnabled: indexerDraft.isEnabled,
       enableInteractiveSearch: indexerDraft.enableInteractiveSearch,
       enableAutoSearch: indexerDraft.enableAutoSearch,
-      configJson: serializeConfigJson(indexerDraft.configValues),
+      configJson: serializeConfigJson(
+        selectedProvider?.configFields ?? [],
+        indexerDraft.configValues,
+        indexerDraft.storedSecretKeys,
+      ),
     };
 
-    if (!payload.name || !payload.providerType || !payload.baseUrl) {
+    if (!payload.name || !payload.providerType) {
       setGlobalStatus(t("form.indexerValidation"));
+      return;
+    }
+
+    if (missingRequiredConfigField) {
+      setGlobalStatus(`${missingRequiredConfigField.label}: ${t("setup.required")}`);
       return;
     }
 
@@ -243,8 +359,6 @@ export function SettingsIndexersContainer({
               id: editingIndexerId,
               name: payload.name,
               providerType: payload.providerType,
-              baseUrl: payload.baseUrl,
-              apiKey: payload.apiKey || undefined,
               isEnabled: payload.isEnabled,
               enableInteractiveSearch: payload.enableInteractiveSearch,
               enableAutoSearch: payload.enableAutoSearch,
@@ -253,15 +367,13 @@ export function SettingsIndexersContainer({
           })
           .toPromise();
         if (error) throw error;
-        setGlobalStatus(t("settings.indexerUpdated"));
+        setGlobalStatus(t("status.indexerUpdated"));
       } else {
         const { error } = await client
           .mutation(createIndexerMutation, {
             input: {
               name: payload.name,
               providerType: payload.providerType,
-              baseUrl: payload.baseUrl,
-              apiKey: payload.apiKey || undefined,
               isEnabled: payload.isEnabled,
               enableInteractiveSearch: payload.enableInteractiveSearch,
               enableAutoSearch: payload.enableAutoSearch,
@@ -270,7 +382,7 @@ export function SettingsIndexersContainer({
           })
           .toPromise();
         if (error) throw error;
-        setGlobalStatus(t("settings.indexerCreated"));
+        setGlobalStatus(t("status.indexerCreated"));
       }
       resetIndexerDraft();
       await refreshIndexers();
@@ -284,16 +396,25 @@ export function SettingsIndexersContainer({
   };
 
   const editIndexer = (indexer: IndexerRecord) => {
+    const selectedProvider =
+      providerTypes.find(
+        (providerType) =>
+          providerType.providerType === indexer.providerType.trim().toLowerCase(),
+      ) ?? null;
+    const parsedConfigValues = parseConfigJson(indexer.configJson);
     setEditingIndexerId(indexer.id);
     setIndexerDraft({
       name: indexer.name,
       providerType: indexer.providerType,
-      baseUrl: indexer.baseUrl,
-      apiKey: "",
+      storedSecretKeys: indexer.storedSecretKeys,
       isEnabled: indexer.isEnabled,
       enableInteractiveSearch: indexer.enableInteractiveSearch,
       enableAutoSearch: indexer.enableAutoSearch,
-      configValues: parseConfigJson(indexer.configJson),
+      configValues: buildDraftConfigValues(
+        selectedProvider?.configFields ?? [],
+        parsedConfigValues,
+        indexer.storedSecretKeys,
+      ),
     });
     setGlobalStatus(t("status.editingIndexer", { name: indexer.name }));
   };
@@ -358,34 +479,32 @@ export function SettingsIndexersContainer({
   };
 
   const testIndexerConnection = async () => {
-    const selectedProvider = providerTypes.find(
-      (pt) =>
-        pt.providerType === indexerDraft.providerType.trim().toLowerCase(),
-    );
-    const effectiveBaseUrl = resolveIndexerBaseUrl(
-      selectedProvider,
-      indexerDraft.baseUrl,
+    const normalizedProviderType = indexerDraft.providerType.trim().toLowerCase();
+    const selectedProvider =
+      providerTypes.find((pt) => pt.providerType === normalizedProviderType) ?? null;
+    const missingRequiredConfigField = findMissingRequiredConfigField(
+      selectedProvider?.configFields ?? [],
       indexerDraft.configValues,
+      indexerDraft.storedSecretKeys,
     );
-    const shouldIncludeApiKey = showIndexerApiKeyField(selectedProvider);
-    const draftApiKey = indexerDraft.apiKey.trim();
     const payload = {
-      providerType: indexerDraft.providerType.trim(),
-      baseUrl: effectiveBaseUrl,
-      apiKey: shouldIncludeApiKey && draftApiKey ? draftApiKey : undefined,
-      configJson: serializeConfigJson(indexerDraft.configValues),
+      providerType: normalizedProviderType,
+      configJson: serializeConfigJson(
+        selectedProvider?.configFields ?? [],
+        indexerDraft.configValues,
+        indexerDraft.storedSecretKeys,
+      ),
       indexerId: editingIndexerId ?? undefined,
     };
 
-    if (!payload.providerType || !payload.baseUrl) {
+    if (!payload.providerType) {
       setGlobalStatus(t("form.indexerValidation"));
       return;
     }
-    if (shouldIncludeApiKey && !draftApiKey && !editingIndexerId) {
-      setGlobalStatus(t("form.indexerApiKeyRequired"));
+    if (missingRequiredConfigField) {
+      setGlobalStatus(`${missingRequiredConfigField.label}: ${t("setup.required")}`);
       return;
     }
-
     setIsTestingConnection(true);
     try {
       await runConnectionFeedback({

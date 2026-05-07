@@ -1300,7 +1300,17 @@ impl AppUseCase {
             .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
             .await?;
         let mut scoped_filter = filter.clone();
-        scoped_filter.library_ids = Some(library_ids);
+        scoped_filter.library_ids = Some(match filter.library_ids.as_ref() {
+            Some(requested_library_ids) => {
+                let allowed_library_ids = library_ids.into_iter().collect::<HashSet<_>>();
+                requested_library_ids
+                    .iter()
+                    .filter(|library_id| allowed_library_ids.contains(*library_id))
+                    .cloned()
+                    .collect()
+            }
+            None => library_ids,
+        });
         project_title_history_page(self, &scoped_filter).await
     }
 

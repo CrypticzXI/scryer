@@ -606,8 +606,6 @@ pub struct IndexerConfig {
 pub struct NewIndexerConfig {
     pub name: String,
     pub provider_type: String,
-    pub base_url: String,
-    pub api_key_encrypted: Option<String>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub is_enabled: bool,
@@ -2827,6 +2825,27 @@ pub enum ConfigFieldValueSource {
     HostBinding,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigFieldRole {
+    ConnectionUrl,
+}
+
+impl ConfigFieldRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ConnectionUrl => "connection_url",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "connection_url" => Some(Self::ConnectionUrl),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PluginHostBindingId {
     #[serde(rename = "smg.opensubtitles_api_key")]
@@ -2866,6 +2885,8 @@ pub struct ConfigFieldDef {
     pub default_value: Option<String>,
     #[serde(default)]
     pub value_source: ConfigFieldValueSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<ConfigFieldRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_binding: Option<PluginHostBindingId>,
     /// For "select" fields: the available options.

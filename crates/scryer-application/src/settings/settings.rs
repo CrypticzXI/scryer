@@ -182,6 +182,8 @@ pub struct LibrarySettingsOverrideDraft {
     pub monitor_specials: Option<bool>,
     pub inter_season_movies: Option<bool>,
     pub monitor_filler_movies: Option<bool>,
+    pub nfo_write_on_import: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
     pub indexer_routing: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }
@@ -204,6 +206,10 @@ pub struct LibrarySettings {
     pub inter_season_movies: Option<bool>,
     pub monitor_filler_movies_override: Option<bool>,
     pub monitor_filler_movies: Option<bool>,
+    pub nfo_write_on_import_override: Option<bool>,
+    pub nfo_write_on_import: bool,
+    pub plexmatch_write_on_import_override: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
     pub indexer_routing_override: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing_override: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }
@@ -1113,6 +1119,50 @@ impl AppUseCase {
         Ok(default)
     }
 
+    pub(crate) async fn resolve_nfo_write_on_import(
+        &self,
+        library_id: Option<&str>,
+        facet: &MediaFacet,
+    ) -> AppResult<bool> {
+        let key_name = nfo_write_on_import_key(facet);
+        if let Some(library_id) = library_id
+            && let Some(value) = self
+                .read_setting_bool_value(key_name, Some(library_id))
+                .await?
+        {
+            return Ok(value);
+        }
+
+        Ok(self
+            .read_setting_bool_value(key_name, None)
+            .await?
+            .unwrap_or(false))
+    }
+
+    pub(crate) async fn resolve_plexmatch_write_on_import(
+        &self,
+        library_id: Option<&str>,
+        facet: &MediaFacet,
+    ) -> AppResult<Option<bool>> {
+        let Some(key_name) = plexmatch_write_on_import_key(facet) else {
+            return Ok(None);
+        };
+
+        if let Some(library_id) = library_id
+            && let Some(value) = self
+                .read_setting_bool_value(key_name, Some(library_id))
+                .await?
+        {
+            return Ok(Some(value));
+        }
+
+        Ok(Some(
+            self.read_setting_bool_value(key_name, None)
+                .await?
+                .unwrap_or(false),
+        ))
+    }
+
     async fn resolve_quality_profile_id(
         &self,
         library_id: Option<&str>,
@@ -1339,6 +1389,23 @@ impl AppUseCase {
         } else {
             None
         };
+        let nfo_write_on_import_override = self
+            .read_setting_bool_value(nfo_write_on_import_key(&library.facet), Some(&library.id))
+            .await?;
+        let nfo_write_on_import = self
+            .resolve_nfo_write_on_import(Some(&library.id), &library.facet)
+            .await?;
+        let plexmatch_write_on_import_override = match plexmatch_write_on_import_key(&library.facet)
+        {
+            Some(key_name) => {
+                self.read_setting_bool_value(key_name, Some(&library.id))
+                    .await?
+            }
+            None => None,
+        };
+        let plexmatch_write_on_import = self
+            .resolve_plexmatch_write_on_import(Some(&library.id), &library.facet)
+            .await?;
         let indexer_routing_override = self.load_indexer_routing_override(&library.id).await?;
         let download_client_routing_override = self
             .load_download_client_routing_override(&library.id)
@@ -1361,6 +1428,10 @@ impl AppUseCase {
             inter_season_movies,
             monitor_filler_movies_override,
             monitor_filler_movies,
+            nfo_write_on_import_override,
+            nfo_write_on_import,
+            plexmatch_write_on_import_override,
+            plexmatch_write_on_import,
             indexer_routing_override,
             download_client_routing_override,
         })
@@ -1391,6 +1462,12 @@ impl AppUseCase {
         {
             return Err(AppError::Validation(
                 "anime-specific settings require an anime library".to_string(),
+            ));
+        }
+        if library.facet == MediaFacet::Movie && settings.plexmatch_write_on_import.is_some() {
+            return Err(AppError::Validation(
+                "plexmatch_write_on_import is only valid for series and anime libraries"
+                    .to_string(),
             ));
         }
 
@@ -1507,6 +1584,34 @@ impl AppUseCase {
             }
         }
 
+        if let Some(value) = settings.nfo_write_on_import {
+            self.upsert_scoped_system_setting_json(
+                nfo_write_on_import_key(&library.facet),
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(nfo_write_on_import_key(&library.facet), &library.id)
+                .await?;
+        }
+
+        if let Some(key_name) = plexmatch_write_on_import_key(&library.facet) {
+            if let Some(value) = settings.plexmatch_write_on_import {
+                self.upsert_scoped_system_setting_json(
+                    key_name,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            } else {
+                self.delete_scoped_system_setting(key_name, &library.id)
+                    .await?;
+            }
+        }
+
         if let Some(entries) = settings.indexer_routing {
             let payload = indexer_routing_payload(entries)?;
             self.upsert_scoped_system_setting_json(
@@ -1535,22 +1640,28 @@ impl AppUseCase {
                 .await?;
         }
 
+        let mut changed_keys = vec![
+            REQUIRED_AUDIO_LANGUAGES_KEY.to_string(),
+            QUALITY_PROFILE_ID_KEY.to_string(),
+            SCORING_PERSONA_KEY.to_string(),
+            ANIME_FILLER_POLICY_KEY.to_string(),
+            ANIME_RECAP_POLICY_KEY.to_string(),
+            ANIME_MONITOR_SPECIALS_KEY.to_string(),
+            ANIME_INTER_SEASON_MOVIES_KEY.to_string(),
+            ANIME_MONITOR_FILLER_MOVIES_KEY.to_string(),
+            nfo_write_on_import_key(&library.facet).to_string(),
+            INDEXER_ROUTING_SETTINGS_KEY.to_string(),
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY.to_string(),
+        ];
+        if let Some(key_name) = plexmatch_write_on_import_key(&library.facet) {
+            changed_keys.push(key_name.to_string());
+        }
+
         self.emit_settings_saved(
             actor,
             "library_settings",
             Some(library.id.clone()),
-            vec![
-                REQUIRED_AUDIO_LANGUAGES_KEY.to_string(),
-                QUALITY_PROFILE_ID_KEY.to_string(),
-                SCORING_PERSONA_KEY.to_string(),
-                ANIME_FILLER_POLICY_KEY.to_string(),
-                ANIME_RECAP_POLICY_KEY.to_string(),
-                ANIME_MONITOR_SPECIALS_KEY.to_string(),
-                ANIME_INTER_SEASON_MOVIES_KEY.to_string(),
-                ANIME_MONITOR_FILLER_MOVIES_KEY.to_string(),
-                INDEXER_ROUTING_SETTINGS_KEY.to_string(),
-                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY.to_string(),
-            ],
+            changed_keys,
         )
         .await;
 

@@ -315,6 +315,11 @@ const PROFILE_FIELDS: RefField[] = [
 
 const CONTEXT_FIELDS: RefField[] = [
   { field: "title_id", type: "string?", descKey: "settings.refCtxTitleId" },
+  {
+    field: "library_name",
+    type: "string?",
+    descKey: "settings.refCtxLibraryName",
+  },
   { field: "media_type", type: "string", descKey: "settings.refCtxMediaType" },
   { field: "category", type: "string", descKey: "settings.refCtxCategory" },
   { field: "tags", type: "string[]", descKey: "settings.refCtxTags" },

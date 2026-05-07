@@ -413,6 +413,16 @@ async fn bootstrap_application(
     db.set_encryption_key(encryption_key)
         .await
         .map_err(|e| format!("failed to set encryption key on DB worker: {e}"))?;
+    let migrated_indexers = db
+        .migrate_legacy_indexer_config_sources()
+        .await
+        .map_err(|e| format!("failed to migrate legacy indexer config sources: {e}"))?;
+    if migrated_indexers > 0 {
+        tracing::info!(
+            migrated = migrated_indexers,
+            "migrated legacy indexer base/api fields into config_json"
+        );
+    }
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
 
     // Detect version upgrades by comparing with last-run version stored in DB

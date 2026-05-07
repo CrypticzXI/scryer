@@ -62,6 +62,7 @@ type TitleTableProps = {
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
   scanLibraryDisabled?: boolean;
+  scanLibraryNotice?: string | null;
 };
 
 export function TitleTable({
@@ -85,6 +86,7 @@ export function TitleTable({
   onScanLibrary,
   scanLibraryLoading = false,
   scanLibraryDisabled = false,
+  scanLibraryNotice,
 }: TitleTableProps) {
   "use no memo";
   const location = useLocation();
@@ -576,6 +578,7 @@ export function TitleTable({
                 onScan={onScanLibrary}
                 scanLoading={scanLibraryLoading}
                 scanDisabled={scanLibraryDisabled}
+                scanNotice={scanLibraryNotice}
               />
             </TableBody>
           ) : null}

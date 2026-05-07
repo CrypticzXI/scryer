@@ -683,7 +683,6 @@ fn fixture_descriptor(
             capabilities,
             scoring_policies: Vec::<crate::PluginScoringPolicy>::new(),
             config_fields: Vec::<ConfigFieldDef>::new(),
-            default_base_url: None,
             allowed_hosts: Vec::new(),
             rate_limit_seconds: None,
         }),

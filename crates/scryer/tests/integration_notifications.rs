@@ -102,6 +102,7 @@ impl FakeNotificationProvider {
                     required: true,
                     default_value: None,
                     value_source: ConfigFieldValueSource::User,
+                    role: None,
                     host_binding: None,
                     options: vec![],
                     help_text: None,
@@ -113,6 +114,7 @@ impl FakeNotificationProvider {
                     required: true,
                     default_value: None,
                     value_source: ConfigFieldValueSource::User,
+                    role: None,
                     host_binding: None,
                     options: vec![],
                     help_text: None,
@@ -124,6 +126,7 @@ impl FakeNotificationProvider {
                     required: false,
                     default_value: None,
                     value_source: ConfigFieldValueSource::User,
+                    role: None,
                     host_binding: None,
                     options: vec![ConfigFieldOption {
                         value: "/data => /mnt".to_string(),

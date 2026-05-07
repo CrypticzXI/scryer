@@ -41,7 +41,6 @@ type AddTitleFormProps = {
   onTitleFilterChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onRefreshTitles: () => void;
   titleLoading: boolean;
-  titleStatus: string;
   monitoredTitles: TitleRecord[];
   onOpenOverview: (targetView: ViewId, overviewTarget: OverviewTitleTarget) => void;
   queueExisting: (title: TitleRecord) => Promise<void> | void;
@@ -65,7 +64,6 @@ export function AddTitleForm({
   onTitleFilterChange,
   onRefreshTitles,
   titleLoading,
-  titleStatus,
   monitoredTitles,
   onOpenOverview,
   queueExisting,
@@ -246,7 +244,6 @@ export function AddTitleForm({
               {t("label.refresh")}
             </Button>
           </div>
-          <p className="mb-2 text-sm text-muted-foreground">{titleStatus}</p>
           {isMobile ? (
             <div className="space-y-2">
               {monitoredTitles.map((item) => {

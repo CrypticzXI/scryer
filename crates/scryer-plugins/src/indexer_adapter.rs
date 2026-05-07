@@ -9,7 +9,7 @@ use tracing::{info, warn};
 
 use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
 use crate::types::{
-    EXPORT_INDEXER_SEARCH, IndexerProtocol, IndexerSourceKind, PluginDescriptor,
+    ConfigFieldRole, EXPORT_INDEXER_SEARCH, IndexerProtocol, IndexerSourceKind, PluginDescriptor,
     PluginSearchContext, PluginSearchOrigin, PluginSearchQueryKind, PluginSearchRequest,
     PluginSearchRequestKind, PluginSearchResponse, PluginSearchSubjectKind, decode_plugin_result,
     normalize_external_ids, normalize_indexer_info_hash, tagged_alias_to_sdk,
@@ -132,36 +132,50 @@ fn build_manifest(
     config: &IndexerConfig,
 ) -> extism::Manifest {
     let mut manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes.to_vec())]);
-    manifest = apply_allowed_hosts(
-        manifest,
-        descriptor,
-        Some(&config.base_url),
-        config.config_json.as_deref(),
-    );
-    manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
-    manifest = manifest.with_config_key("base_url", &config.base_url);
-    if let Some(ref api_key) = config.api_key_encrypted {
-        manifest = manifest.with_config_key("api_key", api_key);
-    }
-
-    if let Some(ref json_str) = config.config_json {
+    let config_entries = config.config_json.as_deref().and_then(|json_str| {
         match parse_config_json_entries(json_str) {
-            Ok(map) => {
-                for (key, value) in &map {
-                    manifest = manifest.with_config_key(key, value);
-                }
-            }
+            Ok(map) => Some(map),
             Err(error) => {
                 warn!(
                     indexer = indexer_name,
                     error = %error,
-                    "failed to parse config_json; extra config keys will not be injected"
+                    "failed to parse config_json; config keys will not be injected"
                 );
+                None
             }
+        }
+    });
+    let connection_url = resolve_connection_url(descriptor, config_entries.as_ref());
+    manifest = apply_allowed_hosts(
+        manifest,
+        descriptor,
+        connection_url.as_deref(),
+        config.config_json.as_deref(),
+    );
+    manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
+
+    if let Some(map) = &config_entries {
+        for (key, value) in map {
+            manifest = manifest.with_config_key(key, value);
         }
     }
 
     manifest
+}
+
+fn resolve_connection_url(
+    descriptor: &PluginDescriptor,
+    config_entries: Option<&std::collections::HashMap<String, String>>,
+) -> Option<String> {
+    let field = descriptor
+        .config_fields()
+        .iter()
+        .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))?;
+    config_entries
+        .and_then(|entries| entries.get(&field.key))
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| field.default_value.clone())
 }
 
 fn build_search_context(

@@ -409,6 +409,28 @@ impl IndexerPluginProvider for MockPluginProvider {
         self.plugin_sdk_constraints.get(provider_type).cloned()
     }
 
+    fn config_fields_for_provider(
+        &self,
+        provider_type: &str,
+    ) -> Vec<scryer_domain::ConfigFieldDef> {
+        if let Some(default_url) = self.default_urls.get(provider_type) {
+            return vec![scryer_domain::ConfigFieldDef {
+                key: "base_url".to_string(),
+                label: "Base URL".to_string(),
+                field_type: scryer_domain::ConfigFieldType::String,
+                required: true,
+                default_value: Some(default_url.clone()),
+                value_source: scryer_domain::ConfigFieldValueSource::User,
+                role: Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                host_binding: None,
+                options: Vec::new(),
+                help_text: None,
+            }];
+        }
+
+        Vec::new()
+    }
+
     fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
         self.plugin_types.get(provider_type).cloned()
     }
@@ -611,6 +633,21 @@ fn make_runtime_plugin_load(
     plugin_type: &str,
     provider_type: &str,
 ) -> RuntimePluginLoad {
+    fn indexer_config_fields() -> Vec<scryer_plugin_sdk::ConfigFieldDef> {
+        vec![scryer_plugin_sdk::ConfigFieldDef {
+            key: "base_url".to_string(),
+            label: "Base URL".to_string(),
+            field_type: scryer_plugin_sdk::ConfigFieldType::String,
+            required: true,
+            default_value: None,
+            value_source: scryer_plugin_sdk::ConfigFieldValueSource::User,
+            role: Some(scryer_plugin_sdk::ConfigFieldRole::ConnectionUrl),
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        }]
+    }
+
     let provider = match plugin_type {
         "indexer" => {
             scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
@@ -619,8 +656,7 @@ fn make_runtime_plugin_load(
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Generic,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
-                config_fields: vec![],
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
             })
@@ -632,8 +668,7 @@ fn make_runtime_plugin_load(
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Usenet,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
-                config_fields: vec![],
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
             })
@@ -645,8 +680,7 @@ fn make_runtime_plugin_load(
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Torrent,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
-                config_fields: vec![],
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
             })
@@ -2561,8 +2595,18 @@ fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Generic,
                 capabilities: Default::default(),
                 scoring_policies: Vec::new(),
-                config_fields: Vec::new(),
-                default_base_url: None,
+                config_fields: vec![scryer_plugin_sdk::ConfigFieldDef {
+                    key: "base_url".to_string(),
+                    label: "Base URL".to_string(),
+                    field_type: scryer_plugin_sdk::ConfigFieldType::String,
+                    required: true,
+                    default_value: None,
+                    value_source: scryer_plugin_sdk::ConfigFieldValueSource::User,
+                    role: Some(scryer_plugin_sdk::ConfigFieldRole::ConnectionUrl),
+                    host_binding: None,
+                    options: vec![],
+                    help_text: None,
+                }],
                 allowed_hosts: vec!["https://example.com".to_string()],
                 rate_limit_seconds: None,
             },

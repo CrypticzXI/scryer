@@ -34,10 +34,6 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
-import {
-  showIndexerApiKeyField,
-  showIndexerBaseUrlField,
-} from "@/lib/utils/indexers";
 
 type SettingsIndexersSectionProps = {
   editingIndexerId: string | null;
@@ -214,12 +210,15 @@ function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
 function DynamicConfigField({
   field,
   value,
+  hasStoredSecretValue = false,
   onChange,
 }: {
   field: ConfigFieldDef;
   value: string;
+  hasStoredSecretValue?: boolean;
   onChange: (key: string, value: string) => void;
 }) {
+  const t = useTranslate();
   const requiredMarker = field.required ? (
     <span aria-hidden="true" className="text-destructive">
       *
@@ -289,7 +288,7 @@ function DynamicConfigField({
         <Textarea
           value={value}
           onChange={(e) => onChange(field.key, e.target.value)}
-          required={field.required}
+          required={field.required && !hasStoredSecretValue}
           placeholder={field.defaultValue ?? ""}
           rows={6}
         />
@@ -317,8 +316,12 @@ function DynamicConfigField({
               ? "number"
               : "text"
         }
-        required={field.required}
-        placeholder={field.defaultValue ?? ""}
+        required={field.required && !hasStoredSecretValue}
+        placeholder={
+          hasStoredSecretValue
+            ? t("form.apiKeyStoredPlaceholder")
+            : field.defaultValue ?? ""
+        }
       />
       {field.helpText ? (
         <p className="mt-1 text-xs text-muted-foreground">{field.helpText}</p>
@@ -380,10 +383,13 @@ export function SettingsIndexersSection({
     );
   }, [normalizedProviderType, providerTypes]);
 
-  const selectedProviderFields = selectedProvider?.configFields ?? [];
-
-  const shouldShowBaseUrlField = showIndexerBaseUrlField(selectedProvider);
-  const shouldShowApiKeyField = showIndexerApiKeyField(selectedProvider);
+  const selectedProviderFields = React.useMemo(
+    () =>
+      (selectedProvider?.configFields ?? []).filter(
+        (field) => field.valueSource !== "host_binding",
+      ),
+    [selectedProvider],
+  );
 
   const handleConfigValueChange = React.useCallback(
     (key: string, value: string) => {
@@ -407,10 +413,20 @@ export function SettingsIndexersSection({
         const shouldAutofillName =
           prev.name.trim().length === 0 ||
           prev.name === (previousProvider?.name ?? prev.providerType);
+        const nextConfigValues: Record<string, string> = {};
+        for (const field of nextProvider?.configFields ?? []) {
+          if (field.valueSource === "host_binding") {
+            continue;
+          }
+          nextConfigValues[field.key] =
+            field.defaultValue ?? (field.fieldType === "bool" ? "false" : "");
+        }
         return {
           ...prev,
           providerType: nextProviderType,
           name: shouldAutofillName ? (nextProvider?.name ?? prev.name) : prev.name,
+          storedSecretKeys: [],
+          configValues: nextConfigValues,
         };
       });
     },
@@ -554,7 +570,7 @@ export function SettingsIndexersSection({
         </CardHeader>
         <CardContent>
           <form className="space-y-3" onSubmit={submitIndexer}>
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-2">
               <label>
                 <Label className="mb-2 block">
                   {t("form.providerTypePlaceholder")}
@@ -591,38 +607,6 @@ export function SettingsIndexersSection({
                   placeholder={t("form.indexerNamePlaceholder")}
                 />
               </label>
-              {shouldShowBaseUrlField ? (
-                <label>
-                  <Label className="mb-2 block">{t("settings.baseUrl")}</Label>
-                  <Input
-                    value={indexerDraft.baseUrl}
-                    onChange={(event) =>
-                      setIndexerDraft((prev: IndexerDraft) => ({
-                        ...prev,
-                        baseUrl: event.target.value,
-                      }))
-                    }
-                    required
-                    placeholder={t("form.baseUrlPlaceholderValue")}
-                  />
-                </label>
-              ) : null}
-              {shouldShowApiKeyField ? (
-                <label>
-                  <Label className="mb-2 block">{t("settings.apiKey")}</Label>
-                  <Input
-                    value={indexerDraft.apiKey}
-                    onChange={(event) =>
-                      setIndexerDraft((prev: IndexerDraft) => ({
-                        ...prev,
-                        apiKey: event.target.value,
-                      }))
-                    }
-                    placeholder={editingIndexerId ? t("form.apiKeyStoredPlaceholder") : t("form.apiKeyInputPlaceholder")}
-                    type="password"
-                  />
-                </label>
-              ) : null}
             </div>
 
             {selectedProviderFields.length > 0 ? (
@@ -642,6 +626,9 @@ export function SettingsIndexersSection({
                           field.defaultValue ??
                           ""
                         }
+                        hasStoredSecretValue={indexerDraft.storedSecretKeys.includes(
+                          field.key,
+                        )}
                         onChange={handleConfigValueChange}
                       />
                     ))}
@@ -659,6 +646,9 @@ export function SettingsIndexersSection({
                             field.defaultValue ??
                             "false"
                           }
+                          hasStoredSecretValue={indexerDraft.storedSecretKeys.includes(
+                            field.key,
+                          )}
                           onChange={handleConfigValueChange}
                         />
                       ))}

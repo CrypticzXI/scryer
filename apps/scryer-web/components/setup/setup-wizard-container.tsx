@@ -40,7 +40,7 @@ import {
 import type { DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types/download-clients";
 import type { FacetQualityPrefs, ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { ExternalImportPreview, ExternalImportResult } from "@/lib/types/external-import";
-import type { ProviderTypeInfo } from "@/lib/types";
+import type { ConfigFieldDef, ProviderTypeInfo } from "@/lib/types";
 
 import { SetupProgressBar } from "./setup-progress-bar";
 import { SetupWelcomeView } from "./setup-welcome-view";
@@ -57,10 +57,81 @@ import type {
   RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
 
-const FALLBACK_PROVIDER_OPTIONS = [
-  { value: "nzbgeek", label: "NZBGeek Indexer" },
-  { value: "newznab", label: "Newznab Indexer" },
-];
+type SetupIndexerProviderOption = {
+  value: string;
+  label: string;
+  defaultBaseUrl?: string;
+  configFields: ConfigFieldDef[];
+};
+
+const FALLBACK_PROVIDER_OPTIONS: SetupIndexerProviderOption[] = [];
+
+function setupIndexerConfigFields(fields: ConfigFieldDef[]) {
+  return fields.filter((field) => field.valueSource !== "host_binding");
+}
+
+function buildSetupIndexerConfigValues(
+  fields: ConfigFieldDef[],
+): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const field of setupIndexerConfigFields(fields)) {
+    values[field.key] =
+      field.defaultValue ?? (field.fieldType === "bool" ? "false" : "");
+  }
+  return values;
+}
+
+function serializeSetupIndexerConfigJson(
+  fields: ConfigFieldDef[],
+  values: Record<string, string>,
+): string | undefined {
+  const entries: Record<string, string> = {};
+  const fieldKeySet = new Set(fields.map((field) => field.key));
+
+  for (const [key, value] of Object.entries(values)) {
+    if (!fieldKeySet.has(key) && value.trim() !== "") {
+      entries[key] = value;
+    }
+  }
+
+  for (const field of setupIndexerConfigFields(fields)) {
+    let value =
+      values[field.key] ??
+      field.defaultValue ??
+      (field.fieldType === "bool" ? "false" : "");
+    if (field.fieldType === "bool") {
+      entries[field.key] = value.trim() || field.defaultValue || "false";
+      continue;
+    }
+    if (value.trim() === "" && field.defaultValue) {
+      value = field.defaultValue;
+    }
+    if (value.trim() !== "") {
+      entries[field.key] = value;
+    }
+  }
+
+  return Object.keys(entries).length > 0 ? JSON.stringify(entries) : undefined;
+}
+
+function findMissingSetupIndexerField(
+  fields: ConfigFieldDef[],
+  values: Record<string, string>,
+): ConfigFieldDef | null {
+  for (const field of setupIndexerConfigFields(fields)) {
+    if (!field.required) {
+      continue;
+    }
+    const value =
+      values[field.key] ??
+      field.defaultValue ??
+      (field.fieldType === "bool" ? "false" : "");
+    if (field.fieldType !== "bool" && value.trim() === "") {
+      return field;
+    }
+  }
+  return null;
+}
 
 type PluginInstallProgressSubscriptionResult = {
   data?: {
@@ -197,11 +268,9 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
   // ── Step 5 (fresh): Indexer ─────────────────────────────────────────
   const [idxName, setIdxName] = useState("");
   const [idxProviderType, setIdxProviderType] = useState("");
-  const [idxBaseUrl, setIdxBaseUrl] = useState("");
-  const [idxApiKey, setIdxApiKey] = useState("");
-  const [idxProviderOptions, setIdxProviderOptions] = useState<
-    { value: string; label: string; defaultBaseUrl?: string }[]
-  >([]);
+  const [idxConfigValues, setIdxConfigValues] = useState<Record<string, string>>({});
+  const [idxProviderOptions, setIdxProviderOptions] =
+    useState<SetupIndexerProviderOption[]>([]);
   const [idxTesting, setIdxTesting] = useState(false);
   const [idxTestResult, setIdxTestResult] = useState<"success" | "failed" | null>(null);
   const [idxSaving, setIdxSaving] = useState(false);
@@ -291,10 +360,11 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
       if (data?.indexerProviderTypes?.length) {
         setIdxProviderOptions(
           data.indexerProviderTypes.map(
-            (provider: { providerType: string; name: string; defaultBaseUrl?: string }) => ({
+            (provider: ProviderTypeInfo) => ({
               value: provider.providerType,
               label: provider.name,
               defaultBaseUrl: provider.defaultBaseUrl || undefined,
+              configFields: provider.configFields ?? [],
             }),
           ),
         );
@@ -362,8 +432,11 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
     if (idxProviderOptions.some((option) => option.value === idxProviderType)) {
       return;
     }
-    if (idxProviderOptions[0]?.value) {
-      setIdxProviderType(idxProviderOptions[0].value);
+    const firstProvider = idxProviderOptions[0];
+    if (firstProvider?.value) {
+      setIdxProviderType(firstProvider.value);
+      setIdxConfigValues(buildSetupIndexerConfigValues(firstProvider.configFields));
+      setIdxName((current) => current || firstProvider.label);
     }
   }, [idxProviderOptions, idxProviderType]);
 
@@ -378,6 +451,72 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
   }, []);
 
   const availableDcTypeOptions = ensureDownloadClientTypeOption(dcTypeOptions, dcDraft.clientType);
+  const selectedIdxProvider = useMemo(
+    () => idxProviderOptions.find((option) => option.value === idxProviderType) ?? null,
+    [idxProviderOptions, idxProviderType],
+  );
+  const selectedIdxProviderFields = useMemo(
+    () => selectedIdxProvider?.configFields ?? [],
+    [selectedIdxProvider],
+  );
+
+  const resetIndexerSavedState = useCallback(() => {
+    setIdxSaved(false);
+    setIdxTestResult(null);
+    setIdxError(null);
+  }, []);
+
+  const handleIdxNameChange = useCallback(
+    (value: string) => {
+      setIdxName(value);
+      resetIndexerSavedState();
+    },
+    [resetIndexerSavedState],
+  );
+
+  const handleIdxProviderTypeChange = useCallback(
+    (nextProviderType: string) => {
+      const nextProvider =
+        idxProviderOptions.find((option) => option.value === nextProviderType) ??
+        null;
+      setIdxProviderType(nextProviderType);
+      setIdxConfigValues(
+        buildSetupIndexerConfigValues(nextProvider?.configFields ?? []),
+      );
+      setIdxName((current) => current || nextProvider?.label || "");
+      resetIndexerSavedState();
+    },
+    [idxProviderOptions, resetIndexerSavedState],
+  );
+
+  const handleIdxConfigValueChange = useCallback(
+    (key: string, value: string) => {
+      setIdxConfigValues((current) => ({ ...current, [key]: value }));
+      resetIndexerSavedState();
+    },
+    [resetIndexerSavedState],
+  );
+
+  const buildIndexerConfigJson = useCallback(() => {
+    if (!idxProviderType) {
+      setIdxError(t("form.providerTypePlaceholder"));
+      return null;
+    }
+
+    const missingField = findMissingSetupIndexerField(
+      selectedIdxProviderFields,
+      idxConfigValues,
+    );
+    if (missingField) {
+      setIdxError(`${missingField.label}: ${t("setup.required")}`);
+      return null;
+    }
+
+    return serializeSetupIndexerConfigJson(
+      selectedIdxProviderFields,
+      idxConfigValues,
+    );
+  }, [idxConfigValues, idxProviderType, selectedIdxProviderFields, t]);
 
   const refreshPluginsRegistry = useCallback(async () => {
     setPluginsRefreshing(true);
@@ -725,15 +864,17 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
     setIdxTesting(true);
     setIdxTestResult(null);
     setIdxError(null);
-    const selectedProvider = idxProviderOptions.find((p) => p.value === idxProviderType);
-    const effectiveBaseUrl = selectedProvider?.defaultBaseUrl || idxBaseUrl.trim();
+    const configJson = buildIndexerConfigJson();
+    if (configJson === null) {
+      setIdxTesting(false);
+      return;
+    }
     try {
       const { data, error } = await client
         .mutation(testIndexerConnectionMutation, {
           input: {
             providerType: idxProviderType,
-            baseUrl: effectiveBaseUrl,
-            apiKey: idxApiKey.trim() || undefined,
+            configJson,
           },
         })
         .toPromise();
@@ -748,22 +889,24 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
     } finally {
       setIdxTesting(false);
     }
-  }, [client, idxProviderType, idxBaseUrl, idxApiKey, idxProviderOptions]);
+  }, [buildIndexerConfigJson, client, idxProviderType]);
 
   // ── Indexer save ────────────────────────────────────────────────────
   const saveIndexer = useCallback(async () => {
     setIdxSaving(true);
     setIdxError(null);
-    const selectedProvider = idxProviderOptions.find((p) => p.value === idxProviderType);
-    const effectiveBaseUrl = selectedProvider?.defaultBaseUrl || idxBaseUrl.trim();
+    const configJson = buildIndexerConfigJson();
+    if (configJson === null) {
+      setIdxSaving(false);
+      return;
+    }
     try {
       const { error } = await client
         .mutation(createIndexerMutation, {
           input: {
             name: idxName.trim(),
             providerType: idxProviderType,
-            baseUrl: effectiveBaseUrl,
-            apiKey: idxApiKey.trim() || undefined,
+            configJson,
             isEnabled: true,
             enableInteractiveSearch: true,
             enableAutoSearch: true,
@@ -777,21 +920,23 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
     } finally {
       setIdxSaving(false);
     }
-  }, [client, idxName, idxProviderType, idxBaseUrl, idxApiKey, idxProviderOptions]);
+  }, [buildIndexerConfigJson, client, idxName, idxProviderType]);
 
   const handleIdxTestAndSave = useCallback(async () => {
     setIdxTesting(true);
     setIdxTestResult(null);
     setIdxError(null);
-    const selectedProvider = idxProviderOptions.find((p) => p.value === idxProviderType);
-    const effectiveBaseUrl = selectedProvider?.defaultBaseUrl || idxBaseUrl.trim();
+    const configJson = buildIndexerConfigJson();
+    if (configJson === null) {
+      setIdxTesting(false);
+      return;
+    }
     try {
       const { data, error } = await client
         .mutation(testIndexerConnectionMutation, {
           input: {
             providerType: idxProviderType,
-            baseUrl: effectiveBaseUrl,
-            apiKey: idxApiKey.trim() || undefined,
+            configJson,
           },
         })
         .toPromise();
@@ -808,7 +953,7 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
       setIdxTestResult("failed");
       setIdxTesting(false);
     }
-  }, [client, idxProviderType, idxBaseUrl, idxApiKey, idxProviderOptions, saveIndexer]);
+  }, [buildIndexerConfigJson, client, idxProviderType, saveIndexer]);
 
   // ── Import: Connect & Scan ──────────────────────────────────────────
   const handleImportConnect = useCallback(async () => {
@@ -1312,13 +1457,11 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
           t={t}
           name={idxName}
           providerType={idxProviderType}
-          baseUrl={idxBaseUrl}
-          apiKey={idxApiKey}
+          configValues={idxConfigValues}
           providerOptions={idxProviderOptions}
-          onNameChange={setIdxName}
-          onProviderTypeChange={setIdxProviderType}
-          onBaseUrlChange={setIdxBaseUrl}
-          onApiKeyChange={setIdxApiKey}
+          onNameChange={handleIdxNameChange}
+          onProviderTypeChange={handleIdxProviderTypeChange}
+          onConfigValueChange={handleIdxConfigValueChange}
           onTestConnection={idxSaved ? testIndexer : handleIdxTestAndSave}
           onNext={() => goToStep(6)}
           onBack={() => goToStep(4)}

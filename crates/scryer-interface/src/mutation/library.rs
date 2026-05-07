@@ -50,6 +50,8 @@ fn library_settings_draft(
         monitor_specials: input.monitor_specials,
         inter_season_movies: input.inter_season_movies,
         monitor_filler_movies: input.monitor_filler_movies,
+        nfo_write_on_import: input.nfo_write_on_import,
+        plexmatch_write_on_import: input.plexmatch_write_on_import,
         indexer_routing: input.indexer_routing.map(|entries| {
             entries
                 .into_iter()

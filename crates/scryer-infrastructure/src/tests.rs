@@ -31,6 +31,21 @@ fn test_descriptor_json(
     plugin_type: &str,
     provider_type: &str,
 ) -> String {
+    fn indexer_config_fields() -> Vec<scryer_plugin_sdk::ConfigFieldDef> {
+        vec![scryer_plugin_sdk::ConfigFieldDef {
+            key: "base_url".to_string(),
+            label: "Base URL".to_string(),
+            field_type: scryer_plugin_sdk::ConfigFieldType::String,
+            required: true,
+            default_value: None,
+            value_source: scryer_plugin_sdk::ConfigFieldValueSource::User,
+            role: Some(scryer_plugin_sdk::ConfigFieldRole::ConnectionUrl),
+            host_binding: None,
+            options: Vec::new(),
+            help_text: None,
+        }]
+    }
+
     let provider = match plugin_type {
         "indexer" => {
             scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
@@ -39,8 +54,7 @@ fn test_descriptor_json(
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Generic,
                 capabilities: Default::default(),
                 scoring_policies: Vec::new(),
-                config_fields: Vec::new(),
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
             })
@@ -52,8 +66,7 @@ fn test_descriptor_json(
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Usenet,
                 capabilities: Default::default(),
                 scoring_policies: Vec::new(),
-                config_fields: Vec::new(),
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
             })
@@ -65,8 +78,7 @@ fn test_descriptor_json(
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Torrent,
                 capabilities: Default::default(),
                 scoring_policies: Vec::new(),
-                config_fields: Vec::new(),
-                default_base_url: None,
+                config_fields: indexer_config_fields(),
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
             })

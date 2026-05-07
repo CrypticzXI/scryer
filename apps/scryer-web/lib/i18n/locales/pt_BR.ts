@@ -185,9 +185,6 @@ const pt_BR: LocaleDictionary = {
     "Esta pasta raiz já está sendo usada por {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Definir como padrão",
-  "settings.librarySelectionScopeTitle": "Biblioteca ativa",
-  "settings.librarySelectionScopeHelp":
-    "A biblioteca selecionada define o escopo das substituições e da ação de verificação nesta seção.",
   "settings.libraryScanTitle": "Verificação da biblioteca",
   "settings.libraryScanHelp":
     "Verificar a pasta de filmes e importar títulos ausentes.",

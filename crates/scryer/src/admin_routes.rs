@@ -89,19 +89,24 @@ async fn seed_single_indexer(
         );
         return Ok(());
     }
+    let api_key = api_key.expect("checked above");
 
     let input = NewIndexerConfig {
         name: normalize_env_option(&format!("{env_prefix}_NAME"))
             .unwrap_or_else(|| default_name.to_string()),
         provider_type: provider_type.clone(),
-        base_url: base_url.clone(),
-        api_key_encrypted: api_key,
         rate_limit_seconds: parse_optional_env_i64(&format!("{env_prefix}_RATE_LIMIT_SECONDS")),
         rate_limit_burst: parse_optional_env_i64(&format!("{env_prefix}_RATE_LIMIT_BURST")),
         is_enabled: parse_env_bool(&format!("{env_prefix}_ENABLED"), true),
         enable_interactive_search: true,
         enable_auto_search: true,
-        config_json: None,
+        config_json: Some(
+            serde_json::json!({
+                "base_url": base_url,
+                "api_key": api_key,
+            })
+            .to_string(),
+        ),
     };
 
     let existing = app_use_case

@@ -198,9 +198,6 @@ const en: LocaleDictionary = {
   "settings.librarySaveFailed": "Failed to save library.",
   "settings.libraryDeleteFailed": "Failed to delete library.",
   "settings.librarySettingsLoadFailed": "Failed to load library settings.",
-  "settings.librarySelectionScopeTitle": "Active library",
-  "settings.librarySelectionScopeHelp":
-    "The selected library sets the scope for the overrides and scan action in this section.",
   "settings.libraryRequiredAudioLabel": "Required audio",
   "settings.libraryEffectiveAudio": "Effective: {{value}}",
   "settings.libraryQualityProfileLabel": "Quality profile",
@@ -1095,6 +1092,8 @@ const en: LocaleDictionary = {
   "settings.refSectionContext": "— Title and search context",
   "settings.refCtxTitleId":
     "Internal Scryer title id when a concrete title is already known",
+  "settings.refCtxLibraryName":
+    "Resolved library name when evaluation is scoped to a specific library",
   "settings.refCtxMediaType":
     "Media facet being evaluated, typically movie, series, or anime",
   "settings.refCtxCategory":

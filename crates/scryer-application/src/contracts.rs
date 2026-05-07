@@ -175,8 +175,7 @@ pub struct IndexerConfigUpdate {
     pub id: String,
     pub name: Option<String>,
     pub provider_type: Option<String>,
-    pub base_url: Option<String>,
-    pub api_key_encrypted: Option<String>,
+    pub derived_base_url: Option<String>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub is_enabled: Option<bool>,
@@ -189,8 +188,7 @@ impl IndexerConfigUpdate {
     pub fn has_changes(&self) -> bool {
         self.name.is_some()
             || self.provider_type.is_some()
-            || self.base_url.is_some()
-            || self.api_key_encrypted.is_some()
+            || self.derived_base_url.is_some()
             || self.rate_limit_seconds.is_some()
             || self.rate_limit_burst.is_some()
             || self.is_enabled.is_some()

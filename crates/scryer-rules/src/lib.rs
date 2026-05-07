@@ -182,6 +182,7 @@ pub struct ProfileDoc {
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextDoc {
     pub title_id: Option<String>,
+    pub library_name: Option<String>,
     pub media_type: String,
     pub category: String,
     pub tags: Vec<String>,
@@ -960,6 +961,30 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         assert!(result.entries.is_empty());
     }
 
+    #[test]
+    fn rule_can_match_library_name() {
+        let policy = UserPolicy {
+            id: "library_name_rule".to_string(),
+            name: "Library Name Rule".to_string(),
+            rego_source: rewrite_package_declaration(
+                r#"
+score_entry["library_bonus"] := 75 if {
+    input.context.library_name == "Movies"
+}
+"#,
+                "library_name_rule",
+            ),
+            applied_facets: vec!["movie".to_string()],
+        };
+
+        let engine = UserRulesEngine::build(&[policy]).unwrap();
+        let mut evaluator = engine.evaluator();
+        let result = evaluator.evaluate(&test_input(), "movie").unwrap();
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].code, "library_bonus");
+        assert_eq!(result.entries[0].delta, 75);
+    }
+
     fn test_input() -> UserRuleInput {
         UserRuleInput {
             release: ReleaseDoc {
@@ -1028,6 +1053,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
             },
             context: ContextDoc {
                 title_id: Some("tt1234567".to_string()),
+                library_name: Some("Movies".to_string()),
                 media_type: "movie".to_string(),
                 category: "movie".to_string(),
                 tags: vec![],

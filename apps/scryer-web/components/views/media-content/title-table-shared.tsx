@@ -573,6 +573,7 @@ type TitleCollectionEmptyStateProps = {
   configureRootsHref?: string;
   scanLoading?: boolean;
   scanDisabled?: boolean;
+  scanNotice?: string | null;
   onScan?: () => Promise<void> | void;
 };
 
@@ -583,6 +584,7 @@ export function TitleCollectionEmptyState({
   configureRootsHref,
   scanLoading = false,
   scanDisabled = false,
+  scanNotice,
   onScan,
 }: TitleCollectionEmptyStateProps) {
   return (
@@ -617,6 +619,9 @@ export function TitleCollectionEmptyState({
             {scanLoading ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
             {t("settings.libraryScanButton")}
           </Button>
+          {scanNotice ? (
+            <p className="mt-3 text-xs text-muted-foreground">{scanNotice}</p>
+          ) : null}
         </div>
       ) : (
         <p className="text-muted-foreground">{t("title.noManaged")}</p>

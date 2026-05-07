@@ -68,10 +68,6 @@ type CompactTitleTableProps = {
   selectedTitleIds: ReadonlySet<string>;
   onToggleSelected: (titleId: string) => void;
   onToggleSelectAll: (checked: boolean) => void;
-  onClearSelection: () => void;
-  onBulkMonitor: (monitored: boolean) => Promise<void> | void;
-  onBulkEdit: () => void;
-  onBulkDelete: () => void;
   bulkActionBusy: boolean;
   showScanLibraryAction?: boolean;
   showConfigureRootsAction?: boolean;
@@ -79,6 +75,7 @@ type CompactTitleTableProps = {
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
   scanLibraryDisabled?: boolean;
+  scanLibraryNotice?: string | null;
 };
 
 export function CompactTitleTable({
@@ -99,10 +96,6 @@ export function CompactTitleTable({
   selectedTitleIds,
   onToggleSelected,
   onToggleSelectAll,
-  onClearSelection,
-  onBulkMonitor,
-  onBulkEdit,
-  onBulkDelete,
   bulkActionBusy,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
@@ -110,6 +103,7 @@ export function CompactTitleTable({
   onScanLibrary,
   scanLibraryLoading = false,
   scanLibraryDisabled = false,
+  scanLibraryNotice,
 }: CompactTitleTableProps) {
   "use no memo";
   const location = useLocation();
@@ -636,61 +630,6 @@ export function CompactTitleTable({
 
   return (
     <div className="space-y-3">
-      {selectedVisibleCount > 0 ? (
-        <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-card-foreground">
-            {t("title.bulkSelectionCount", { count: selectedVisibleCount })}
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => void onBulkMonitor(true)}
-              disabled={bulkActionBusy}
-            >
-              {t("title.monitorAction")}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => void onBulkMonitor(false)}
-              disabled={bulkActionBusy}
-            >
-              {t("title.unmonitorAction")}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={onBulkEdit}
-              disabled={bulkActionBusy}
-            >
-              {t("label.edit")}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={onBulkDelete}
-              disabled={bulkActionBusy}
-            >
-              {t("label.delete")}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={onClearSelection}
-              disabled={bulkActionBusy}
-            >
-              {t("label.clear")}
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       <div
         ref={titleTableScrollRef}
         className="relative w-full overflow-auto rounded-lg border border-border bg-background/40"
@@ -752,6 +691,7 @@ export function CompactTitleTable({
               onScan={onScanLibrary}
               scanLoading={scanLibraryLoading}
               scanDisabled={scanLibraryDisabled}
+              scanNotice={scanLibraryNotice}
             />
           </TableBody>
         ) : null}

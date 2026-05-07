@@ -186,9 +186,6 @@ const es: LocaleDictionary = {
     "Esta carpeta raíz ya está en uso por {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Establecer como predeterminada",
-  "settings.librarySelectionScopeTitle": "Biblioteca activa",
-  "settings.librarySelectionScopeHelp":
-    "La biblioteca seleccionada define el alcance de las anulaciones y de la acción de escaneo en esta sección.",
   "settings.libraryScanTitle": "Escaneo de biblioteca",
   "settings.libraryScanHelp":
     "Escanear la carpeta de películas e importar los títulos faltantes.",

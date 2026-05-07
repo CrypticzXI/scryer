@@ -819,37 +819,128 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
     }
 }
 
-fn derive_indexer_base_url_from_config_json(config_json: Option<&str>) -> Option<String> {
-    let raw = config_json?.trim();
+fn parse_indexer_config_json(
+    config_json: Option<&str>,
+) -> AppResult<serde_json::Map<String, serde_json::Value>> {
+    let raw = config_json.unwrap_or_default().trim();
     if raw.is_empty() {
-        return None;
+        return Ok(serde_json::Map::new());
     }
 
-    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let object = parsed.as_object()?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| AppError::Validation(error.to_string()))?;
+    parsed
+        .as_object()
+        .cloned()
+        .ok_or_else(|| AppError::Validation("indexer config_json must be a JSON object".into()))
+}
 
-    for key in ["feed_url", "feedUrl", "rss_url", "rssUrl"] {
-        if let Some(value) = object.get(key).and_then(|value| value.as_str())
-            && let Some(origin) = extract_url_origin(value)
-        {
-            return Some(origin);
+fn config_value_is_empty(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(value)) => value.trim().is_empty(),
+        _ => false,
+    }
+}
+
+fn config_value_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value.trim().to_string()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+    .filter(|value| !value.is_empty())
+}
+
+fn indexer_connection_url_field(
+    fields: &[scryer_domain::ConfigFieldDef],
+) -> AppResult<&scryer_domain::ConfigFieldDef> {
+    let mut connection_fields = fields
+        .iter()
+        .filter(|field| field.role == Some(scryer_domain::ConfigFieldRole::ConnectionUrl));
+    let field = connection_fields.next().ok_or_else(|| {
+        AppError::Validation("indexer provider is missing connection_url config field".into())
+    })?;
+    if connection_fields.next().is_some() {
+        return Err(AppError::Validation(
+            "indexer provider declares multiple connection_url config fields".into(),
+        ));
+    }
+    Ok(field)
+}
+
+pub(crate) fn derive_indexer_base_url_from_config_fields(
+    fields: &[scryer_domain::ConfigFieldDef],
+    config_json: Option<&str>,
+) -> AppResult<String> {
+    let field = indexer_connection_url_field(fields)?;
+    let object = parse_indexer_config_json(config_json)?;
+    let raw = object
+        .get(&field.key)
+        .and_then(config_value_to_string)
+        .or_else(|| {
+            field
+                .default_value
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_string)
+        })
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::Validation("indexer connection URL is required".into()))?;
+
+    if (field.key.contains("feed") || field.key.contains("rss"))
+        && let Some(origin) = extract_url_origin(&raw)
+    {
+        return Ok(origin);
+    }
+
+    Ok(raw)
+}
+
+pub(crate) fn normalize_indexer_config_json(
+    fields: &[scryer_domain::ConfigFieldDef],
+    config_json: Option<&str>,
+    persisted_config_json: Option<&str>,
+) -> AppResult<String> {
+    indexer_connection_url_field(fields)?;
+
+    let mut object = parse_indexer_config_json(config_json)?;
+    let persisted = parse_indexer_config_json(persisted_config_json)?;
+
+    for field in fields {
+        if config_value_is_empty(object.get(&field.key)) {
+            if field.field_type == scryer_domain::ConfigFieldType::Password {
+                if let Some(stored) = persisted.get(&field.key)
+                    && !config_value_is_empty(Some(stored))
+                {
+                    object.insert(field.key.clone(), stored.clone());
+                    continue;
+                }
+            }
+            if let Some(default_value) = field
+                .default_value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                object.insert(
+                    field.key.clone(),
+                    serde_json::Value::String(default_value.to_string()),
+                );
+            }
+        }
+
+        if field.required && config_value_is_empty(object.get(&field.key)) {
+            return Err(AppError::Validation(format!(
+                "{} is required",
+                field.label.trim()
+            )));
         }
     }
 
-    None
-}
-
-pub(crate) fn resolve_indexer_base_url(
-    base_url: &str,
-    config_json: Option<&str>,
-) -> AppResult<String> {
-    let normalized = base_url.trim();
-    if !normalized.is_empty() {
-        return Ok(normalized.to_string());
-    }
-
-    derive_indexer_base_url_from_config_json(config_json)
-        .ok_or_else(|| AppError::Validation("base URL is required".into()))
+    serde_json::to_string(&serde_json::Value::Object(object))
+        .map_err(|error| AppError::Repository(error.to_string()))
 }
 
 fn download_queue_projection_key(item: &DownloadQueueItem) -> String {
@@ -940,6 +1031,31 @@ pub async fn publish_download_queue_snapshot_events(
 }
 
 impl AppUseCase {
+    pub fn indexer_config_fields_for_provider_type(
+        &self,
+        provider_type: &str,
+    ) -> AppResult<Vec<scryer_domain::ConfigFieldDef>> {
+        let normalized = provider_type.trim().to_lowercase();
+        let Some(provider) = self.services.integrations.plugin_provider.available() else {
+            return Err(AppError::Validation(
+                "indexer plugin provider is unavailable".into(),
+            ));
+        };
+        if !provider
+            .available_provider_types()
+            .into_iter()
+            .any(|value| value == normalized)
+        {
+            return Err(AppError::Validation(format!(
+                "unsupported indexer provider type '{provider_type}'"
+            )));
+        }
+
+        let fields = provider.config_fields_for_provider(&normalized);
+        indexer_connection_url_field(&fields)?;
+        Ok(fields)
+    }
+
     fn normalize_download_client_type(&self, client_type: impl AsRef<str>) -> AppResult<String> {
         let normalized = client_type.as_ref().trim().to_lowercase();
         if normalized.is_empty() {
@@ -1031,33 +1147,18 @@ impl AppUseCase {
             return Err(AppError::Validation("provider type is required".into()));
         }
 
-        let normalized_config_json = input
-            .config_json
-            .clone()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
+        let fields = self.indexer_config_fields_for_provider_type(&provider_type)?;
+        let normalized_config_json =
+            normalize_indexer_config_json(&fields, input.config_json.as_deref(), None)?;
         let base_url =
-            resolve_indexer_base_url(&input.base_url, normalized_config_json.as_deref())?;
-
-        let api_key_encrypted = input
-            .api_key_encrypted
-            .map(|value| value.trim().to_string())
-            .and_then(|value| if value.is_empty() { None } else { Some(value) });
-
-        if let Some(value) = api_key_encrypted.as_deref()
-            && value.len() < 8
-        {
-            return Err(AppError::Validation(
-                "api key appears too short; provide a valid key".into(),
-            ));
-        }
+            derive_indexer_base_url_from_config_fields(&fields, Some(&normalized_config_json))?;
 
         let config = IndexerConfig {
             id: Id::new().0,
             name,
             provider_type,
             base_url,
-            api_key_encrypted,
+            api_key_encrypted: None,
             rate_limit_seconds: input.rate_limit_seconds,
             rate_limit_burst: input.rate_limit_burst,
             disabled_until: None,
@@ -1066,7 +1167,7 @@ impl AppUseCase {
             enable_auto_search: input.enable_auto_search,
             last_health_status: None,
             last_error_at: None,
-            config_json: normalized_config_json,
+            config_json: Some(normalized_config_json),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1111,31 +1212,37 @@ impl AppUseCase {
             return Err(AppError::Validation("provider type cannot be empty".into()));
         }
 
-        let normalized_config_json = update.config_json.map(|value| value.trim().to_string());
-
-        let normalized_base_url = match update.base_url {
-            Some(value) => {
-                let normalized = value.trim().to_string();
-                if normalized.is_empty() {
-                    return Err(AppError::Validation("base URL cannot be empty".into()));
-                }
-                Some(normalized)
-            }
-            None => derive_indexer_base_url_from_config_json(normalized_config_json.as_deref()),
-        };
-
-        let normalized_api_key = update
-            .api_key_encrypted
-            .map(|value| value.trim().to_string())
-            .and_then(|value| if value.is_empty() { None } else { Some(value) });
-
-        if let Some(value) = normalized_api_key.as_ref()
-            && value.len() < 8
-        {
-            return Err(AppError::Validation(
-                "api key appears too short; provide a valid key".into(),
-            ));
-        }
+        let existing = self
+            .services
+            .integrations
+            .indexer_configs
+            .get_by_id(config_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("indexer config '{config_id}' not found")))?;
+        let effective_provider = normalized_provider
+            .as_deref()
+            .unwrap_or(existing.provider_type.as_str())
+            .to_string();
+        let fields = self.indexer_config_fields_for_provider_type(&effective_provider)?;
+        let normalized_config_json = update
+            .config_json
+            .as_deref()
+            .map(|raw| {
+                normalize_indexer_config_json(&fields, Some(raw), existing.config_json.as_deref())
+            })
+            .transpose()?;
+        let normalized_base_url =
+            if normalized_config_json.is_some() || normalized_provider.is_some() {
+                let config_source = normalized_config_json
+                    .as_deref()
+                    .or(existing.config_json.as_deref());
+                Some(derive_indexer_base_url_from_config_fields(
+                    &fields,
+                    config_source,
+                )?)
+            } else {
+                None
+            };
 
         let updated = self
             .services
@@ -1145,8 +1252,7 @@ impl AppUseCase {
                 id: config_id.to_string(),
                 name: normalized_name,
                 provider_type: normalized_provider,
-                base_url: normalized_base_url,
-                api_key_encrypted: normalized_api_key,
+                derived_base_url: normalized_base_url,
                 rate_limit_seconds: update.rate_limit_seconds,
                 rate_limit_burst: update.rate_limit_burst,
                 is_enabled: update.is_enabled,

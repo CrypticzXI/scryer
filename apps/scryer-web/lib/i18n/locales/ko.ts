@@ -180,9 +180,6 @@ const ko: LocaleDictionary = {
     "이 루트 폴더는 이미 {{libraries}}에서 사용 중입니다.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "기본값으로 설정",
-  "settings.librarySelectionScopeTitle": "활성 라이브러리",
-  "settings.librarySelectionScopeHelp":
-    "선택한 라이브러리가 이 섹션의 재정의 설정과 스캔 작업 범위를 결정합니다.",
   "settings.libraryScanTitle": "라이브러리 스캔",
   "settings.libraryScanHelp":
     "영화 폴더를 스캔하고 누락된 타이틀을 가져옵니다.",

@@ -185,9 +185,6 @@ const de: LocaleDictionary = {
     "Dieser Stammordner wird bereits von {{libraries}} verwendet.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Als Standard festlegen",
-  "settings.librarySelectionScopeTitle": "Aktive Bibliothek",
-  "settings.librarySelectionScopeHelp":
-    "Die ausgewählte Bibliothek legt den Geltungsbereich für die Überschreibungen und die Scan-Aktion in diesem Abschnitt fest.",
   "settings.libraryScanTitle": "Bibliothek scannen",
   "settings.libraryScanHelp":
     "Filmordner scannen und fehlende Titel importieren.",

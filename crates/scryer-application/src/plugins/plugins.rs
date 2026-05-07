@@ -1616,7 +1616,7 @@ impl AppUseCase {
         Ok(())
     }
 
-    /// Ensure every auto-provisionable indexer plugin with a `default_base_url`
+    /// Ensure every auto-provisionable indexer plugin with a default connection URL
     /// has at least one IndexerConfig. This covers the case where a plugin was
     /// installed before the auto-create logic existed, or when the registry was
     /// stale at install time.
@@ -1627,6 +1627,13 @@ impl AppUseCase {
 
         let now = Utc::now();
         for pt in provider.available_provider_types() {
+            let fields = provider.config_fields_for_provider(&pt);
+            let Some(connection_field) = fields
+                .iter()
+                .find(|field| field.role == Some(scryer_domain::ConfigFieldRole::ConnectionUrl))
+            else {
+                continue;
+            };
             let Some(default_url) = provider.default_base_url_for_provider(&pt) else {
                 continue;
             };
@@ -1648,7 +1655,7 @@ impl AppUseCase {
                     id: Id::new().0,
                     name,
                     provider_type: pt.clone(),
-                    base_url: default_url,
+                    base_url: default_url.clone(),
                     api_key_encrypted: None,
                     is_enabled: true,
                     enable_interactive_search: true,
@@ -1658,7 +1665,12 @@ impl AppUseCase {
                     disabled_until: None,
                     last_health_status: None,
                     last_error_at: None,
-                    config_json: None,
+                    config_json: Some(
+                        serde_json::json!({
+                            connection_field.key.clone(): default_url,
+                        })
+                        .to_string(),
+                    ),
                     created_at: now,
                     updated_at: now,
                 };

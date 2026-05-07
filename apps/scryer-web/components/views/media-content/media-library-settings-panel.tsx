@@ -53,6 +53,8 @@ type MediaLibrarySettingsPanelProps = {
   settingsTitle: string;
   libraries: LibraryRecord[];
   librariesLoading: boolean;
+  rootValidationLibraries: LibraryRecord[];
+  rootValidationLibrariesLoading: boolean;
   preferredLibraryId: string;
   allLibrariesValue: string;
   loading: boolean;
@@ -151,6 +153,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   settingsTitle,
   libraries,
   librariesLoading,
+  rootValidationLibraries,
+  rootValidationLibrariesLoading,
   preferredLibraryId,
   allLibrariesValue,
   loading,
@@ -180,6 +184,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [draftMonitorSpecials, setDraftMonitorSpecials] = React.useState(INHERIT_VALUE);
   const [draftInterSeasonMovies, setDraftInterSeasonMovies] = React.useState(INHERIT_VALUE);
   const [draftMonitorFillerMovies, setDraftMonitorFillerMovies] = React.useState(INHERIT_VALUE);
+  const [draftNfoWriteOnImport, setDraftNfoWriteOnImport] = React.useState(INHERIT_VALUE);
+  const [draftPlexmatchWriteOnImport, setDraftPlexmatchWriteOnImport] = React.useState(INHERIT_VALUE);
   const [savedSettings, setSavedSettings] = React.useState<LibrarySettingsRecord | null>(null);
   const [browserOpen, setBrowserOpen] = React.useState(false);
   const [editingIndex, setEditingIndex] = React.useState<number | null>(null);
@@ -190,6 +196,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   );
   const currentFacet = activeLibrary?.facet ?? facet;
   const isAnimeFacet = currentFacet === "anime";
+  const showPlexmatch = currentFacet === "series" || currentFacet === "anime";
 
   React.useEffect(() => {
     if (mode === "new") {
@@ -225,6 +232,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftMonitorSpecials(INHERIT_VALUE);
       setDraftInterSeasonMovies(INHERIT_VALUE);
       setDraftMonitorFillerMovies(INHERIT_VALUE);
+      setDraftNfoWriteOnImport(INHERIT_VALUE);
+      setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
       return;
     }
     setDraftName(activeLibrary?.name ?? "");
@@ -259,6 +268,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         setDraftMonitorFillerMovies(
           booleanOverrideSelectValue(settings?.monitorFillerMoviesOverride),
         );
+        setDraftNfoWriteOnImport(
+          booleanOverrideSelectValue(settings?.nfoWriteOnImportOverride),
+        );
+        setDraftPlexmatchWriteOnImport(
+          booleanOverrideSelectValue(settings?.plexmatchWriteOnImportOverride),
+        );
       })
       .catch((error) => {
         if (!cancelled) {
@@ -284,7 +299,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     const otherLibrariesByRootPath = new Map<string, string[]>();
     const currentLibraryId = mode === "existing" ? activeLibrary?.id ?? null : null;
 
-    libraries.forEach((library) => {
+    rootValidationLibraries.forEach((library) => {
       if (library.id === currentLibraryId) {
         return;
       }
@@ -317,7 +332,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     });
 
     return conflicts;
-  }, [activeLibrary?.id, libraries, mode, normalizedDraftRoots]);
+  }, [activeLibrary?.id, mode, normalizedDraftRoots, rootValidationLibraries]);
   const sortedFolders = React.useMemo(
     () =>
       normalizedDraftRoots
@@ -326,7 +341,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     [normalizedDraftRoots],
   );
   const hasRootFolderConflicts = conflictingLibraryNamesByRootPath.size > 0;
-  const actionBusy = loading || librariesLoading || saving;
+  const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
   const savedRoots = React.useMemo(() => rootsFromLibrary(activeLibrary), [activeLibrary]);
   const settingsDraft = React.useMemo<LibrarySettingsDraft>(
@@ -349,6 +364,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         isAnimeFacet ? booleanOverrideFromSelectValue(draftInterSeasonMovies) : null,
       monitorFillerMovies:
         isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorFillerMovies) : null,
+      nfoWriteOnImport: booleanOverrideFromSelectValue(draftNfoWriteOnImport),
+      plexmatchWriteOnImport: showPlexmatch
+        ? booleanOverrideFromSelectValue(draftPlexmatchWriteOnImport)
+        : null,
       indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
       downloadClientRouting: savedSettings?.downloadClientRoutingOverride ?? null,
     }),
@@ -357,12 +376,15 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       draftInterSeasonMovies,
       draftMonitorFillerMovies,
       draftMonitorSpecials,
+      draftNfoWriteOnImport,
+      draftPlexmatchWriteOnImport,
       draftQualityProfileId,
       draftRecapPolicy,
       draftRequiredAudioLanguages,
       draftScoringPersona,
       isAnimeFacet,
       savedSettings,
+      showPlexmatch,
     ],
   );
   const hasSettingsChanges =
@@ -377,7 +399,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         settingsDraft.monitorSpecials !== savedSettings.monitorSpecialsOverride ||
         settingsDraft.interSeasonMovies !== savedSettings.interSeasonMoviesOverride ||
         settingsDraft.monitorFillerMovies !==
-          savedSettings.monitorFillerMoviesOverride));
+          savedSettings.monitorFillerMoviesOverride ||
+        settingsDraft.nfoWriteOnImport !== savedSettings.nfoWriteOnImportOverride ||
+        settingsDraft.plexmatchWriteOnImport !==
+          savedSettings.plexmatchWriteOnImportOverride));
   const hasDraftChanges =
     mode === "new" ||
     draftName.trim() !== (activeLibrary?.name ?? "") ||
@@ -400,6 +425,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftMonitorSpecials(INHERIT_VALUE);
       setDraftInterSeasonMovies(INHERIT_VALUE);
       setDraftMonitorFillerMovies(INHERIT_VALUE);
+      setDraftNfoWriteOnImport(INHERIT_VALUE);
+      setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
       return;
     }
     setMode("existing");
@@ -472,6 +499,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setDraftMonitorSpecials(INHERIT_VALUE);
     setDraftInterSeasonMovies(INHERIT_VALUE);
     setDraftMonitorFillerMovies(INHERIT_VALUE);
+    setDraftNfoWriteOnImport(INHERIT_VALUE);
+    setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
   };
 
   const handleSaveLibrary = async () => {
@@ -518,10 +547,6 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const browserTitle = editingIndex !== null
     ? t("settings.rootFolderEdit")
     : t("settings.rootFolderAdd");
-  const activeLibraryScopeLabel =
-    mode === "new"
-      ? t("settings.libraryNew")
-      : activeLibrary?.name ?? t("settings.librariesLabel");
   const libraryScanDisabled =
     scanLoading || actionBusy || mode === "new" || !activeLibrary;
   const libraryScanSummaryText = scanSummary
@@ -539,7 +564,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
           <CardTitle>{settingsTitle}</CardTitle>
           <Button
             type="button"
-            variant="outline"
+            variant="default"
             onClick={handleScan}
             disabled={libraryScanDisabled}
           >
@@ -579,15 +604,6 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
               <Plus className="mr-1.5 h-4 w-4" />
               {t("settings.libraryNewButton")}
             </Button>
-          </div>
-
-          <div className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
-            <p className="text-sm font-medium text-card-foreground">
-              {t("settings.librarySelectionScopeTitle")}: {activeLibraryScopeLabel}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("settings.librarySelectionScopeHelp")}
-            </p>
           </div>
 
           {scanSummary ? (
@@ -773,6 +789,86 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                         ),
                       })}
                     </p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-medium text-card-foreground">
+                    {t("settings.sidecarFilesTitle")}
+                  </h3>
+                </div>
+                <div
+                  className={`mt-4 grid gap-3 ${showPlexmatch ? "md:grid-cols-2" : "md:grid-cols-1"}`}
+                >
+                  <div className="space-y-2">
+                    <Label>{t("settings.nfoWriteOnImportLabel")}</Label>
+                    <Select
+                      value={draftNfoWriteOnImport}
+                      onValueChange={setDraftNfoWriteOnImport}
+                      disabled={settingsBusy}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {t(option.labelKey)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.nfoWriteOnImportDescription")}
+                    </p>
+                    {savedSettings ? (
+                      <p className="text-xs text-muted-foreground">
+                        {t("settings.libraryEffectiveProfile", {
+                          value: t(
+                            savedSettings.nfoWriteOnImport
+                              ? "label.enabled"
+                              : "label.disabled",
+                          ),
+                        })}
+                      </p>
+                    ) : null}
+                  </div>
+                  {showPlexmatch ? (
+                    <div className="space-y-2">
+                      <Label>{t("settings.plexmatchWriteOnImportLabel")}</Label>
+                      <Select
+                        value={draftPlexmatchWriteOnImport}
+                        onValueChange={setDraftPlexmatchWriteOnImport}
+                        disabled={settingsBusy}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {t("settings.plexmatchWriteOnImportDescription")}
+                      </p>
+                      {savedSettings?.plexmatchWriteOnImport != null ? (
+                        <p className="text-xs text-muted-foreground">
+                          {t("settings.libraryEffectiveProfile", {
+                            value: t(
+                              savedSettings.plexmatchWriteOnImport
+                                ? "label.enabled"
+                                : "label.disabled",
+                            ),
+                          })}
+                        </p>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               </div>

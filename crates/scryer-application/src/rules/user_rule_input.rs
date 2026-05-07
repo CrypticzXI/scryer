@@ -13,6 +13,7 @@ pub(crate) struct ReleaseRuntimeInfo<'a> {
 
 pub(crate) struct RuleContextInfo<'a> {
     pub title_id: Option<&'a str>,
+    pub library_name: Option<&'a str>,
     pub category: Option<&'a str>,
     pub title_tags: &'a [String],
     pub has_existing_file: bool,
@@ -119,6 +120,7 @@ pub(crate) fn build_rule_input(
         },
         context: ContextDoc {
             title_id: context.title_id.map(str::to_owned),
+            library_name: context.library_name.map(str::to_owned),
             media_type: category.to_string(),
             category: category.to_string(),
             tags: context.title_tags.to_vec(),
@@ -209,6 +211,7 @@ pub(crate) fn build_search_rule_input(
     result: &IndexerSearchResult,
     decision: &QualityProfileDecision,
     category: Option<&str>,
+    library_name: Option<&str>,
     title_tags: &[String],
     runtime_minutes: Option<i32>,
 ) -> scryer_rules::UserRuleInput {
@@ -226,6 +229,7 @@ pub(crate) fn build_search_rule_input(
         },
         RuleContextInfo {
             title_id: None,
+            library_name,
             category,
             title_tags,
             has_existing_file: false,
@@ -387,12 +391,14 @@ mod tests {
             },
             &test_decision(),
             Some("movie"),
+            Some("Movies"),
             &["anime".to_string()],
             Some(120),
         );
 
         let value = serde_json::to_value(input).unwrap();
         assert!(value["file"].is_null());
+        assert_eq!(value["context"]["library_name"], "Movies");
         assert_eq!(value["release"]["extra"]["indexer"], "test");
     }
 
@@ -422,6 +428,7 @@ mod tests {
             },
             RuleContextInfo {
                 title_id: Some("title-1"),
+                library_name: Some("Movies"),
                 category: Some("movie"),
                 title_tags: &[],
                 has_existing_file: true,
@@ -458,6 +465,7 @@ mod tests {
             },
             RuleContextInfo {
                 title_id: None,
+                library_name: None,
                 category: Some("movie"),
                 title_tags: &[],
                 has_existing_file: false,
@@ -498,6 +506,7 @@ mod tests {
             },
             RuleContextInfo {
                 title_id: None,
+                library_name: None,
                 category: Some("movie"),
                 title_tags: &[],
                 has_existing_file: false,
@@ -537,6 +546,7 @@ mod tests {
             },
             RuleContextInfo {
                 title_id: None,
+                library_name: None,
                 category: Some("movie"),
                 title_tags: &[],
                 has_existing_file: false,
@@ -569,6 +579,7 @@ mod tests {
             },
             RuleContextInfo {
                 title_id: Some("series-1"),
+                library_name: Some("Series"),
                 category: Some("series"),
                 title_tags: &[],
                 has_existing_file: false,
@@ -606,6 +617,7 @@ mod tests {
             },
             RuleContextInfo {
                 title_id: None,
+                library_name: None,
                 category: Some("movie"),
                 title_tags: &[],
                 has_existing_file: false,

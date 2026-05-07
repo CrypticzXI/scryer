@@ -20,6 +20,9 @@ pub(crate) fn config_field_to_domain(field: &ConfigFieldDef) -> scryer_domain::C
                 scryer_domain::ConfigFieldValueSource::HostBinding
             }
         },
+        role: field.role.map(|role| match role {
+            ConfigFieldRole::ConnectionUrl => scryer_domain::ConfigFieldRole::ConnectionUrl,
+        }),
         host_binding: field.host_binding.map(host_binding_to_domain),
         options: field
             .options

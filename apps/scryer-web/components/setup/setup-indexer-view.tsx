@@ -1,26 +1,27 @@
 import { Check, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import type { ConfigFieldDef } from "@/lib/types";
 
 interface ProviderOption {
   value: string;
   label: string;
   defaultBaseUrl?: string;
+  configFields: ConfigFieldDef[];
 }
 
 interface SetupIndexerViewProps {
   t: (key: string) => string;
   name: string;
   providerType: string;
-  baseUrl: string;
-  apiKey: string;
+  configValues: Record<string, string>;
   providerOptions: ProviderOption[];
   onNameChange: (value: string) => void;
   onProviderTypeChange: (value: string) => void;
-  onBaseUrlChange: (value: string) => void;
-  onApiKeyChange: (value: string) => void;
+  onConfigValueChange: (key: string, value: string) => void;
   onTestConnection: () => void;
   onNext: () => void;
   onBack: () => void;
@@ -32,17 +33,152 @@ interface SetupIndexerViewProps {
   error: string | null;
 }
 
+function isMissingRequiredField(
+  field: ConfigFieldDef,
+  configValues: Record<string, string>,
+) {
+  if (!field.required || field.valueSource === "host_binding") {
+    return false;
+  }
+
+  const value =
+    configValues[field.key] ??
+    field.defaultValue ??
+    (field.fieldType === "bool" ? "false" : "");
+  return field.fieldType !== "bool" && value.trim() === "";
+}
+
+function DynamicConfigField({
+  t,
+  field,
+  value,
+  onChange,
+}: {
+  t: SetupIndexerViewProps["t"];
+  field: ConfigFieldDef;
+  value: string;
+  onChange: (key: string, value: string) => void;
+}) {
+  const requiredMarker = field.required ? (
+    <span aria-hidden="true" className="text-destructive">
+      *
+    </span>
+  ) : null;
+
+  if (field.fieldType === "bool") {
+    return (
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={value === "true"}
+          onChange={(event) =>
+            onChange(field.key, event.target.checked ? "true" : "false")
+          }
+          className="accent-primary"
+        />
+        <span className="inline-flex items-center gap-2 text-sm">
+          {field.label}
+          {requiredMarker}
+        </span>
+        {field.helpText ? (
+          <span className="text-xs text-muted-foreground">
+            {field.helpText}
+          </span>
+        ) : null}
+      </label>
+    );
+  }
+
+  if (field.fieldType === "select" && field.options.length > 0) {
+    return (
+      <label className="space-y-2">
+        <Label className="inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+        </Label>
+        <Select
+          value={value || field.defaultValue || ""}
+          onValueChange={(nextValue) => onChange(field.key, nextValue)}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {field.options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {field.helpText ? (
+          <p className="text-xs text-muted-foreground">{field.helpText}</p>
+        ) : null}
+      </label>
+    );
+  }
+
+  if (field.fieldType === "multiline") {
+    return (
+      <label className="space-y-2">
+        <Label className="inline-flex items-center gap-2">
+          {field.label}
+          {requiredMarker}
+        </Label>
+        <Textarea
+          value={value}
+          onChange={(event) => onChange(field.key, event.target.value)}
+          required={field.required}
+          placeholder={field.defaultValue ?? ""}
+          rows={5}
+        />
+        {field.helpText ? (
+          <p className="text-xs text-muted-foreground">{field.helpText}</p>
+        ) : null}
+      </label>
+    );
+  }
+
+  return (
+    <label className="space-y-2">
+      <Label className="inline-flex items-center gap-2">
+        {field.label}
+        {requiredMarker}
+      </Label>
+      <Input
+        value={value}
+        onChange={(event) => onChange(field.key, event.target.value)}
+        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        type={
+          field.fieldType === "password" || field.fieldType === "secret"
+            ? "password"
+            : field.fieldType === "number"
+              ? "number"
+              : "text"
+        }
+        required={field.required}
+        placeholder={
+          field.fieldType === "password" || field.fieldType === "secret"
+            ? t("form.apiKeyInputPlaceholder")
+            : field.defaultValue ?? ""
+        }
+      />
+      {field.helpText ? (
+        <p className="text-xs text-muted-foreground">{field.helpText}</p>
+      ) : null}
+    </label>
+  );
+}
+
 export function SetupIndexerView({
   t,
   name,
   providerType,
-  baseUrl,
-  apiKey,
+  configValues,
   providerOptions,
   onNameChange,
   onProviderTypeChange,
-  onBaseUrlChange,
-  onApiKeyChange,
+  onConfigValueChange,
   onTestConnection,
   onNext,
   onBack,
@@ -54,8 +190,14 @@ export function SetupIndexerView({
   error,
 }: SetupIndexerViewProps) {
   const selectedProvider = providerOptions.find((p) => p.value === providerType);
-  const hasDefaultUrl = !!selectedProvider?.defaultBaseUrl;
-  const canTest = name.trim().length > 0 && providerType.length > 0;
+  const selectedProviderFields = (selectedProvider?.configFields ?? []).filter(
+    (field) => field.valueSource !== "host_binding",
+  );
+  const hasMissingRequiredField = selectedProviderFields.some((field) =>
+    isMissingRequiredField(field, configValues),
+  );
+  const canTest =
+    name.trim().length > 0 && providerType.length > 0 && !hasMissingRequiredField;
   const canProceed = saved;
 
   return (
@@ -87,26 +229,40 @@ export function SetupIndexerView({
             </SelectContent>
           </Select>
         </div>
-        {!hasDefaultUrl && (
-          <div className="space-y-2">
-            <Label htmlFor="idx-url">{t("settings.baseUrl")}</Label>
-            <Input
-              id="idx-url"
-              value={baseUrl}
-              onChange={(e) => onBaseUrlChange(e.target.value)}
-              placeholder="https://api.example.com"
+        {selectedProviderFields
+          .filter((field) => field.fieldType !== "bool")
+          .map((field) => (
+            <DynamicConfigField
+              key={field.key}
+              t={t}
+              field={field}
+              value={
+                configValues[field.key] ??
+                field.defaultValue ??
+                ""
+              }
+              onChange={onConfigValueChange}
             />
+          ))}
+        {selectedProviderFields.some((field) => field.fieldType === "bool") ? (
+          <div className="flex flex-wrap items-center gap-4">
+            {selectedProviderFields
+              .filter((field) => field.fieldType === "bool")
+              .map((field) => (
+                <DynamicConfigField
+                  key={field.key}
+                  t={t}
+                  field={field}
+                  value={
+                    configValues[field.key] ??
+                    field.defaultValue ??
+                    "false"
+                  }
+                  onChange={onConfigValueChange}
+                />
+              ))}
           </div>
-        )}
-        <div className="space-y-2">
-          <Label htmlFor="idx-apikey">{t("settings.apiKey")}</Label>
-          <Input
-            id="idx-apikey"
-            type="password"
-            value={apiKey}
-            onChange={(e) => onApiKeyChange(e.target.value)}
-          />
-        </div>
+        ) : null}
         <div className="flex items-center gap-3">
           <Button
             variant="outline"

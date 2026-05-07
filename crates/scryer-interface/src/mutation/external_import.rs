@@ -20,6 +20,47 @@ pub(crate) struct ExternalImportMutations;
 
 const SONARR_EPISODE_FETCH_CONCURRENCY: usize = 8;
 
+fn imported_indexer_config_json(
+    fields: &[scryer_domain::ConfigFieldDef],
+    base_url: &str,
+    api_key: Option<&str>,
+    api_path: Option<&str>,
+) -> String {
+    let mut object = serde_json::Map::new();
+    if let Some(connection_field) = fields
+        .iter()
+        .find(|field| field.role == Some(scryer_domain::ConfigFieldRole::ConnectionUrl))
+        && !base_url.trim().is_empty()
+    {
+        object.insert(
+            connection_field.key.clone(),
+            serde_json::Value::String(base_url.trim().to_string()),
+        );
+    }
+    if let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty())
+        && let Some(api_key_field) = fields.iter().find(|field| {
+            field.key == "api_key"
+                || (field.field_type == scryer_domain::ConfigFieldType::Password
+                    && field.key.to_ascii_lowercase().contains("api"))
+        })
+    {
+        object.insert(
+            api_key_field.key.clone(),
+            serde_json::Value::String(api_key.to_string()),
+        );
+    }
+    if let Some(api_path) = api_path.map(str::trim).filter(|value| !value.is_empty())
+        && let Some(api_path_field) = fields.iter().find(|field| field.key == "api_path")
+    {
+        object.insert(
+            api_path_field.key.clone(),
+            serde_json::Value::String(api_path.to_string()),
+        );
+    }
+
+    serde_json::Value::Object(object).to_string()
+}
+
 #[Object]
 impl ExternalImportMutations {
     /// Connect to Sonarr and/or Radarr, fetch their configs, return a preview.
@@ -329,21 +370,19 @@ impl ExternalImportMutations {
                 continue;
             };
 
-            let mut base_url =
-                external_import::field_str(&idx.fields, "baseUrl").unwrap_or_default();
+            let base_url = external_import::field_str(&idx.fields, "baseUrl").unwrap_or_default();
             let api_path = external_import::field_str(&idx.fields, "apiPath");
-            if let Some(path) = &api_path
-                && !path.is_empty()
-                && !base_url.is_empty()
-            {
-                base_url = format!(
-                    "{}/{}",
-                    base_url.trim_end_matches('/'),
-                    path.trim_start_matches('/')
-                );
-            }
-
             let api_key = external_import::field_str_sensitive(&idx.fields, "apiKey");
+            let fields = match app.indexer_config_fields_for_provider_type(scryer_type) {
+                Ok(fields) => fields,
+                Err(_) => continue,
+            };
+            let config_json = imported_indexer_config_json(
+                &fields,
+                &base_url,
+                api_key.as_deref(),
+                api_path.as_deref(),
+            );
 
             // If the plugin was just auto-installed, it may have auto-created a
             // default IndexerConfig. Update that config instead of creating a
@@ -355,7 +394,7 @@ impl ExternalImportMutations {
                     .await
                     .unwrap_or_default();
                 if let Some(existing_config) = existing.first() {
-                    if api_key.is_some() || existing_config.base_url != base_url {
+                    if existing_config.config_json.as_deref() != Some(config_json.as_str()) {
                         let _ = app
                             .update_indexer_config(
                                 &actor,
@@ -363,14 +402,13 @@ impl ExternalImportMutations {
                                     id: existing_config.id.clone(),
                                     name: Some(idx.name.clone()),
                                     provider_type: None,
-                                    base_url: Some(base_url),
-                                    api_key_encrypted: api_key,
+                                    derived_base_url: None,
                                     rate_limit_seconds: None,
                                     rate_limit_burst: None,
                                     is_enabled: None,
                                     enable_interactive_search: None,
                                     enable_auto_search: None,
-                                    config_json: None,
+                                    config_json: Some(config_json.clone()),
                                 },
                             )
                             .await;
@@ -386,14 +424,12 @@ impl ExternalImportMutations {
                     NewIndexerConfig {
                         name: idx.name.clone(),
                         provider_type: scryer_type.to_string(),
-                        base_url,
-                        api_key_encrypted: api_key,
                         rate_limit_seconds: None,
                         rate_limit_burst: None,
                         is_enabled: true,
                         enable_interactive_search: true,
                         enable_auto_search: true,
-                        config_json: None,
+                        config_json: Some(config_json),
                     },
                 )
                 .await
@@ -799,10 +835,13 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
 mod tests {
     use std::collections::HashMap;
 
+    use scryer_domain::{
+        ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
+    };
     use scryer_infrastructure::external_import::{ArrDownloadClient, ArrIndexer};
     use serde_json::Value;
 
-    use super::{map_download_client, map_indexer};
+    use super::{imported_indexer_config_json, map_download_client, map_indexer};
 
     #[test]
     fn map_download_client_marks_qbittorrent_as_supported() {
@@ -842,5 +881,56 @@ mod tests {
         assert!(payload.supported);
         assert_eq!(payload.scryer_provider_type.as_deref(), Some("animetosho"));
         assert_eq!(payload.dedup_key, "animetosho:https://feed.animetosho.org");
+    }
+
+    #[test]
+    fn imported_indexer_config_keeps_base_url_and_api_path_separate() {
+        let fields = vec![
+            ConfigFieldDef {
+                key: "base_url".into(),
+                label: "Base URL".into(),
+                field_type: ConfigFieldType::String,
+                required: true,
+                default_value: None,
+                value_source: ConfigFieldValueSource::User,
+                role: Some(ConfigFieldRole::ConnectionUrl),
+                host_binding: None,
+                options: vec![],
+                help_text: None,
+            },
+            ConfigFieldDef {
+                key: "api_key".into(),
+                label: "API Key".into(),
+                field_type: ConfigFieldType::Password,
+                required: true,
+                default_value: None,
+                value_source: ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: vec![],
+                help_text: None,
+            },
+            ConfigFieldDef {
+                key: "api_path".into(),
+                label: "API Path".into(),
+                field_type: ConfigFieldType::String,
+                required: false,
+                default_value: Some("/api".into()),
+                value_source: ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: vec![],
+                help_text: None,
+            },
+        ];
+
+        let config_json =
+            imported_indexer_config_json(&fields, "https://indexer.example", Some("secret"), Some("/api/v1"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&config_json).expect("config json should parse");
+
+        assert_eq!(parsed["base_url"], "https://indexer.example");
+        assert_eq!(parsed["api_key"], "secret");
+        assert_eq!(parsed["api_path"], "/api/v1");
     }
 }

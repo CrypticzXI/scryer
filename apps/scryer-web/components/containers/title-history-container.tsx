@@ -1,13 +1,17 @@
 import * as React from "react";
 import { useClient } from "urql";
-import { titleHistoryQuery } from "@/lib/graphql/queries";
+import { librariesQuery, titleHistoryQuery } from "@/lib/graphql/queries";
 import { retryImportMutation } from "@/lib/graphql/mutations";
 import { useActivitySubscription } from "@/lib/hooks/use-activity-subscription";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import type { TitleHistoryEvent, TitleHistoryPage, TitleRecord } from "@/lib/types";
+import type { LibraryRecord, TitleHistoryEvent, TitleHistoryPage, TitleRecord } from "@/lib/types";
 import { WANTED_HISTORY_FILTERS } from "@/components/common/title-history-event-meta";
 import { TitleHistoryView } from "@/components/views/title-history-view";
+import {
+  normalizeLibraryFilterSelection,
+  selectedLibraryIdsToQueryValue,
+} from "@/lib/utils/library-filter";
 
 const PAGE_SIZE = 50;
 const WANTED_HISTORY_ACTIVITY_KINDS = new Set([
@@ -30,6 +34,9 @@ export function TitleHistoryContainer() {
   const [activeFilters, setActiveFilters] = React.useState<string[]>([]);
   const [page, setPage] = React.useState(0);
   const [selectedTitle, setSelectedTitle] = React.useState<TitleRecord | null>(null);
+  const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
+  const [librariesLoading, setLibrariesLoading] = React.useState(false);
+  const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
 
   const selectedEventTypes = React.useMemo(
     () => (activeFilters.length > 0 ? activeFilters : [...WANTED_HISTORY_FILTERS]),
@@ -46,6 +53,7 @@ export function TitleHistoryContainer() {
           filter: {
             eventTypes: selectedEventTypes,
             titleIds: selectedTitle ? [selectedTitle.id] : null,
+            libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
             groupByEvent: true,
             limit: PAGE_SIZE,
             offset,
@@ -68,7 +76,48 @@ export function TitleHistoryContainer() {
     } finally {
       setLoading(false);
     }
-  }, [client, offset, selectedEventTypes, selectedTitle, t]);
+  }, [client, offset, selectedEventTypes, selectedLibraryIds, selectedTitle, t]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setLibrariesLoading(true);
+    void client
+      .query(
+        librariesQuery,
+        { facet: null, permission: "view" },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled) {
+          return;
+        }
+        if (error) {
+          throw error;
+        }
+        const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
+        setLibraries(nextLibraries);
+        setSelectedLibraryIds((current) =>
+          normalizeLibraryFilterSelection(current, nextLibraries),
+        );
+      })
+      .catch((fetchError) => {
+        if (!cancelled) {
+          setGlobalStatus(
+            fetchError instanceof Error ? fetchError.message : t("status.failedToLoad"),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLibrariesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, setGlobalStatus, t]);
 
   React.useEffect(() => {
     void fetchHistory();
@@ -97,6 +146,11 @@ export function TitleHistoryContainer() {
   const handleSelectedTitleChange = React.useCallback((title: TitleRecord | null) => {
     setPage(0);
     setSelectedTitle(title);
+  }, []);
+
+  const handleSelectedLibraryIdsChange = React.useCallback((libraryIds: string[]) => {
+    setPage(0);
+    setSelectedLibraryIds(libraryIds);
   }, []);
 
   const handlePreviousPage = React.useCallback(() => {
@@ -140,9 +194,13 @@ export function TitleHistoryContainer() {
       activeFilters={activeFilters}
       availableFilters={[...WANTED_HISTORY_FILTERS]}
       selectedTitle={selectedTitle}
+      libraries={libraries}
+      librariesLoading={librariesLoading}
+      selectedLibraryIds={selectedLibraryIds}
       currentPage={page}
       pageSize={PAGE_SIZE}
       onSelectedTitleChange={handleSelectedTitleChange}
+      onSelectedLibraryIdsChange={handleSelectedLibraryIdsChange}
       onToggleFilter={toggleFilter}
       onClearFilters={clearFilters}
       onPreviousPage={handlePreviousPage}

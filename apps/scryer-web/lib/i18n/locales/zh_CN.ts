@@ -176,9 +176,6 @@ const zh_CN: LocaleDictionary = {
   "settings.rootFolderConflict": "此根文件夹已被 {{libraries}} 使用。",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "设为默认",
-  "settings.librarySelectionScopeTitle": "当前媒体库",
-  "settings.librarySelectionScopeHelp":
-    "所选媒体库决定了此区域中的覆盖设置和扫描操作范围。",
   "settings.libraryScanTitle": "媒体库扫描",
   "settings.libraryScanHelp": "扫描电影文件夹并导入缺失的标题。",
   "settings.libraryScanButton": "扫描媒体库",

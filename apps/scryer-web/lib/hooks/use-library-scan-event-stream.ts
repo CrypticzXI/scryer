@@ -62,51 +62,61 @@ function mergeSessionsByNewest(
   return next;
 }
 
+function replaceActiveSessions(
+  current: Record<string, LibraryScanProgress>,
+  incoming: LibraryScanProgress[],
+): Record<string, LibraryScanProgress> {
+  const retainedTerminalSessions = Object.values(current).filter((session) =>
+    isTerminal(session.status),
+  );
+
+  return mergeSessionsByNewest(indexSessions(retainedTerminalSessions), incoming);
+}
+
 export function useLibraryScanEventStream() {
   const client = useClient();
   const [sessionsById, setSessionsById] = useState<
     Record<string, LibraryScanProgress>
   >({});
 
+  const refreshSessions = useCallback(async () => {
+    const { data, error } = await client
+      .query(activeLibraryScansQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+
+    if (error) {
+      throw error;
+    }
+
+    const rawSessions: unknown[] = Array.isArray(data?.activeLibraryScans)
+      ? data.activeLibraryScans
+      : [];
+    const sessions = rawSessions
+      .map(normalizeLibraryScanProgress)
+      .filter((session): session is LibraryScanProgress => session !== null);
+
+    setSessionsById((current) => replaceActiveSessions(current, sessions));
+    return sessions;
+  }, [client]);
+
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      try {
-        const { data, error } = await client
-          .query(activeLibraryScansQuery, {})
-          .toPromise();
-
-        if (error) {
-          throw error;
-        }
-
-        if (cancelled) {
-          return;
-        }
-
-        const rawSessions: unknown[] = Array.isArray(data?.activeLibraryScans)
-          ? data.activeLibraryScans
-          : [];
-        const sessions = rawSessions
-          .map(normalizeLibraryScanProgress)
-          .filter((session): session is LibraryScanProgress => session !== null);
-
-        setSessionsById((current) =>
-          mergeSessionsByNewest(current, Object.values(indexSessions(sessions))),
-        );
-      } catch (error) {
-        console.error(
-          "[library-scan-events] failed to bootstrap active scan sessions:",
-          error,
-        );
+    void refreshSessions().catch((error) => {
+      if (cancelled) {
+        return;
       }
-    })();
+
+      console.error(
+        "[library-scan-events] failed to bootstrap active scan sessions:",
+        error,
+      );
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [refreshSessions]);
 
   useDeferredWsSubscription<{ data?: { libraryScanState?: unknown } }>({
     enabled: true,
@@ -150,6 +160,25 @@ export function useLibraryScanEventStream() {
     [sessionsById],
   );
 
+  useEffect(() => {
+    if (!sessions.some((session) => !isTerminal(session.status))) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshSessions().catch((error) => {
+        console.error(
+          "[library-scan-events] failed to reconcile active scan sessions:",
+          error,
+        );
+      });
+    }, 5_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [refreshSessions, sessions]);
+
   const getActiveSession = useCallback(
     (facet: Facet, libraryId?: string | null) =>
       sessions.find(
@@ -164,6 +193,7 @@ export function useLibraryScanEventStream() {
   return {
     sessions,
     getActiveSession,
+    refreshSessions,
     dismissSession,
   };
 }

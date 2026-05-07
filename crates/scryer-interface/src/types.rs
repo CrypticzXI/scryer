@@ -1731,6 +1731,7 @@ pub struct IndexerConfigPayload {
     pub provider_type: String,
     pub base_url: String,
     pub has_api_key: bool,
+    pub stored_secret_keys: Vec<String>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub disabled_until: Option<String>,
@@ -1787,6 +1788,10 @@ pub struct LibrarySettingsPayload {
     pub inter_season_movies: Option<bool>,
     pub monitor_filler_movies_override: Option<bool>,
     pub monitor_filler_movies: Option<bool>,
+    pub nfo_write_on_import_override: Option<bool>,
+    pub nfo_write_on_import: bool,
+    pub plexmatch_write_on_import_override: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
     pub indexer_routing_override: Option<Vec<IndexerRoutingEntryPayload>>,
     pub download_client_routing_override: Option<Vec<DownloadClientRoutingEntryPayload>>,
 }
@@ -2808,8 +2813,6 @@ pub struct QueueTvdbMoviesScanInput {
 pub struct CreateIndexerConfigInput {
     pub name: String,
     pub provider_type: String,
-    pub base_url: String,
-    pub api_key: Option<String>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub is_enabled: Option<bool>,
@@ -2823,8 +2826,6 @@ pub struct UpdateIndexerConfigInput {
     pub id: String,
     pub name: Option<String>,
     pub provider_type: Option<String>,
-    pub base_url: Option<String>,
-    pub api_key: Option<String>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub is_enabled: Option<bool>,
@@ -2906,8 +2907,6 @@ pub struct TestSubtitleProviderConnectionInput {
 #[derive(InputObject)]
 pub struct TestIndexerConnectionInput {
     pub provider_type: String,
-    pub base_url: String,
-    pub api_key: Option<String>,
     pub config_json: Option<String>,
     pub indexer_id: Option<String>,
 }
@@ -3088,6 +3087,8 @@ pub struct LibrarySettingsInput {
     pub monitor_specials: Option<bool>,
     pub inter_season_movies: Option<bool>,
     pub monitor_filler_movies: Option<bool>,
+    pub nfo_write_on_import: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
     pub indexer_routing: Option<Vec<IndexerRoutingEntryInput>>,
     pub download_client_routing: Option<Vec<DownloadClientRoutingEntryInput>>,
 }
@@ -3623,6 +3624,7 @@ pub struct PluginConfigFieldPayload {
     pub required: bool,
     pub default_value: Option<String>,
     pub value_source: String,
+    pub role: Option<String>,
     pub host_binding: Option<String>,
     pub options: Vec<PluginConfigFieldOptionPayload>,
     pub help_text: Option<String>,
@@ -4038,6 +4040,7 @@ pub struct TitleHistoryPagePayload {
 pub struct TitleHistoryFilterInput {
     pub event_types: Option<Vec<String>>,
     pub title_ids: Option<Vec<String>>,
+    pub library_ids: Option<Vec<String>>,
     pub title_search: Option<String>,
     pub download_id: Option<String>,
     pub episode_id: Option<String>,

@@ -22,10 +22,15 @@ export function FilterChipButton({
     <Button
       type="button"
       size="sm"
-      variant={selected ? "default" : "secondary"}
+      variant={selected ? "default" : "outline"}
       onClick={onClick}
       title={title}
-      className={cn("gap-1.5 text-xs", className)}
+      className={cn(
+        "gap-1.5 text-xs",
+        !selected &&
+          "border-input bg-field text-foreground hover:bg-field/90 hover:text-foreground",
+        className,
+      )}
     >
       {icon}
       {children}

@@ -1513,12 +1513,8 @@ async fn import_movie_download(
         .await?;
 
     let nfo_enabled = app
-        .read_setting_string_value("nfo.write_on_import.movie", None)
-        .await
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some("true");
+        .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
+        .await?;
     if nfo_enabled {
         let nfo_path = dest_path.with_extension("nfo");
         let nfo_content = render_movie_nfo(title);
@@ -2184,12 +2180,8 @@ async fn import_interstitial_movie_download(
 
     // Write Jellyfin-compatible NFO with airsbefore_season
     let nfo_enabled = app
-        .read_setting_string_value("nfo.write_on_import.anime", None)
-        .await
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some("true");
+        .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
+        .await?;
     if nfo_enabled {
         let nfo_path = dest_path.with_extension("nfo");
         let nfo_content = crate::nfo::render_interstitial_movie_nfo(
@@ -2358,18 +2350,9 @@ async fn import_series_download(
 
     let quality_profile = resolve_import_quality_profile(app, title).await;
 
-    // Check NFO write setting (non-fatal, opt-in)
-    let nfo_key = match title.facet {
-        scryer_domain::MediaFacet::Anime => "nfo.write_on_import.anime",
-        _ => "nfo.write_on_import.series",
-    };
     let nfo_enabled = app
-        .read_setting_string_value(nfo_key, None)
-        .await
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some("true");
+        .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
+        .await?;
 
     let mut imported_count: usize = 0;
     let mut skipped_count: usize = 0;
@@ -3753,17 +3736,20 @@ async fn write_series_sidecars(
         }
     }
 
-    let plexmatch_key = match title.facet {
-        scryer_domain::MediaFacet::Anime => "plexmatch.write_on_import.anime",
-        _ => "plexmatch.write_on_import.series",
-    };
-    let plexmatch_enabled = app
-        .read_setting_string_value(plexmatch_key, None)
+    let plexmatch_enabled = match app
+        .resolve_plexmatch_write_on_import(Some(&title.library_id), &title.facet)
         .await
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some("true");
+    {
+        Ok(value) => value.unwrap_or(false),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                title_id = %title.id,
+                "failed to resolve plexmatch sidecar setting"
+            );
+            false
+        }
+    };
     if plexmatch_enabled {
         let plexmatch_path = PathBuf::from(media_root)
             .join(title_folder)

@@ -330,7 +330,11 @@ impl PluginDescriptor {
 
     pub fn default_base_url(&self) -> Option<&str> {
         match &self.provider {
-            ProviderDescriptor::Indexer(provider) => provider.default_base_url.as_deref(),
+            ProviderDescriptor::Indexer(provider) => provider
+                .config_fields
+                .iter()
+                .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
+                .and_then(|field| field.default_value.as_deref()),
             ProviderDescriptor::DownloadClient(provider) => provider.default_base_url.as_deref(),
             ProviderDescriptor::Notification(provider) => provider.default_base_url.as_deref(),
             ProviderDescriptor::Subtitle(provider) => provider.default_base_url.as_deref(),
@@ -339,7 +343,15 @@ impl PluginDescriptor {
 
     pub fn set_default_base_url(&mut self, value: Option<String>) {
         match &mut self.provider {
-            ProviderDescriptor::Indexer(provider) => provider.default_base_url = value,
+            ProviderDescriptor::Indexer(provider) => {
+                if let Some(field) = provider
+                    .config_fields
+                    .iter_mut()
+                    .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
+                {
+                    field.default_value = value;
+                }
+            }
             ProviderDescriptor::DownloadClient(provider) => provider.default_base_url = value,
             ProviderDescriptor::Notification(provider) => provider.default_base_url = value,
             ProviderDescriptor::Subtitle(provider) => provider.default_base_url = value,
@@ -573,8 +585,6 @@ pub struct IndexerDescriptor {
     pub scoring_policies: Vec<PluginScoringPolicy>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config_fields: Vec<ConfigFieldDef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -883,6 +893,12 @@ pub enum ConfigFieldValueSource {
     HostBinding,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigFieldRole {
+    ConnectionUrl,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum PluginHostBindingId {
     #[serde(rename = "smg.opensubtitles_api_key")]
@@ -908,6 +924,8 @@ pub struct ConfigFieldDef {
     pub default_value: Option<String>,
     #[serde(default)]
     pub value_source: ConfigFieldValueSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<ConfigFieldRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_binding: Option<PluginHostBindingId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2064,7 +2082,6 @@ mod tests {
                 capabilities: IndexerCapabilities::default(),
                 scoring_policies: vec![],
                 config_fields: vec![],
-                default_base_url: None,
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
             }),
@@ -2244,7 +2261,6 @@ mod tests {
                 },
                 scoring_policies: vec![],
                 config_fields: vec![],
-                default_base_url: None,
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
             }),

@@ -227,6 +227,24 @@ pub(crate) async fn probe_and_validate(
         .map(|guard| guard.clone())
         .unwrap_or_else(|_| scryer_rules::UserRulesEngine::empty());
     if !user_rules_engine.is_empty() {
+        let library_name = match app
+            .services
+            .catalog
+            .libraries
+            .get_by_id(&title.library_id)
+            .await
+        {
+            Ok(Some(library)) => Some(library.name),
+            Ok(None) => None,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    library_id = %title.library_id,
+                    "failed to resolve library name for post-download rule context"
+                );
+                None
+            }
+        };
         let decision = build_import_profile_decision(
             quality_profile,
             &required_audio_languages,
@@ -251,6 +269,7 @@ pub(crate) async fn probe_and_validate(
             },
             crate::user_rule_input::RuleContextInfo {
                 title_id: Some(&title.id),
+                library_name: library_name.as_deref(),
                 category: Some(facet_to_category_hint(&title.facet)),
                 title_tags: &title.tags,
                 has_existing_file,

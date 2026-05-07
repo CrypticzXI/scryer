@@ -185,9 +185,6 @@ const it: LocaleDictionary = {
     "Questa cartella radice è già usata da {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Imposta come predefinita",
-  "settings.librarySelectionScopeTitle": "Libreria attiva",
-  "settings.librarySelectionScopeHelp":
-    "La libreria selezionata definisce l’ambito delle sostituzioni e dell’azione di scansione in questa sezione.",
   "settings.libraryScanTitle": "Scansione libreria",
   "settings.libraryScanHelp":
     "Scansiona la cartella dei film e importa i titoli mancanti.",

@@ -6,6 +6,7 @@ export type IndexerRecord = {
   providerType: string;
   baseUrl: string;
   hasApiKey: boolean;
+  storedSecretKeys: string[];
   rateLimitSeconds: number | null;
   rateLimitBurst: number | null;
   disabledUntil: string | null;
@@ -23,8 +24,7 @@ export type IndexerRecord = {
 export type IndexerDraft = {
   name: string;
   providerType: string;
-  baseUrl: string;
-  apiKey: string;
+  storedSecretKeys: string[];
   isEnabled: boolean;
   enableInteractiveSearch: boolean;
   enableAutoSearch: boolean;
@@ -43,6 +43,7 @@ export type ConfigFieldDef = {
   required: boolean;
   defaultValue: string | null;
   valueSource: "user" | "host_binding";
+  role: "connection_url" | null;
   hostBinding: string | null;
   options: ConfigFieldOption[];
   helpText: string | null;

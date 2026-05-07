@@ -16,9 +16,9 @@ use crate::mappers::{
     from_activity_event, from_backup_info, from_calendar_episode, from_collection,
     from_delete_preview, from_disk_space, from_domain_event, from_download_client_config,
     from_download_client_routing_entry, from_download_queue_item, from_episode,
-    from_health_check_result, from_indexer_config, from_indexer_routing_entry, from_job_definition,
-    from_job_run, from_library, from_library_paths_settings, from_library_scan_session,
-    from_library_settings, from_media_rename_plan, from_media_settings,
+    from_health_check_result, from_indexer_config_with_fields, from_indexer_routing_entry,
+    from_job_definition, from_job_run, from_library, from_library_paths_settings,
+    from_library_scan_session, from_library_settings, from_media_rename_plan, from_media_settings,
     from_pending_import_connection, from_pending_import_counts, from_pending_release,
     from_provider_type, from_quality_profile_settings, from_release_decision,
     from_service_settings, from_smg_version_compatibility_notice, from_submission_scope,
@@ -673,7 +673,7 @@ impl QueryRoot {
         let f = TitleHistoryFilter {
             event_types: parsed_types,
             title_ids: filter.title_ids,
-            library_ids: None,
+            library_ids: filter.library_ids,
             title_search: filter.title_search,
             download_id: filter.download_id,
             episode_id: filter.episode_id,
@@ -1225,8 +1225,13 @@ impl QueryRoot {
             .indexer_query_stats(&actor)
             .await
             .map_err(to_gql_error)?;
-        let mut payloads: Vec<IndexerConfigPayload> =
-            configs.into_iter().map(from_indexer_config).collect();
+        let mut payloads = Vec::with_capacity(configs.len());
+        for config in configs {
+            let config_fields = app
+                .indexer_config_fields_for_provider_type(&config.provider_type)
+                .unwrap_or_default();
+            payloads.push(from_indexer_config_with_fields(config, &config_fields));
+        }
         for payload in &mut payloads {
             if let Some(s) = stats.iter().find(|s| s.indexer_id == payload.id) {
                 payload.last_query_at = s.last_query_at.clone();
@@ -1242,11 +1247,16 @@ impl QueryRoot {
     ) -> GqlResult<Option<IndexerConfigPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let mut payload = app
+        let config = app
             .get_indexer_config(&actor, &id)
             .await
-            .map_err(to_gql_error)?
-            .map(from_indexer_config);
+            .map_err(to_gql_error)?;
+        let mut payload = config.map(|config| {
+            let config_fields = app
+                .indexer_config_fields_for_provider_type(&config.provider_type)
+                .unwrap_or_default();
+            from_indexer_config_with_fields(config, &config_fields)
+        });
         if let Some(ref mut p) = payload {
             let stats = app
                 .indexer_query_stats(&actor)

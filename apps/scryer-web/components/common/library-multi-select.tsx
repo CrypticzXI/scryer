@@ -88,6 +88,11 @@ export function LibraryMultiSelect({
 
   const toggleLibrary = React.useCallback(
     (libraryId: string) => {
+      if (normalizedSelectedLibraryIds.length === 0) {
+        onSelectedLibraryIdsChange([libraryId]);
+        return;
+      }
+
       const allLibraryIds = libraries.map((library) => library.id);
       const selectedSet = new Set(
         normalizedSelectedLibraryIds.length > 0
@@ -117,7 +122,10 @@ export function LibraryMultiSelect({
         <Button
           type="button"
           variant="outline"
-          className={cn("justify-between px-3 text-left font-normal", triggerClassName)}
+          className={cn(
+            "justify-between bg-field px-3 text-left font-normal hover:bg-field/90",
+            triggerClassName,
+          )}
           disabled={disabled || libraries.length === 0}
         >
           <span

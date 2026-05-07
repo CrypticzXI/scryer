@@ -9,6 +9,7 @@ export type LibraryScanProgressContextValue = {
     libraryId?: string | null,
   ) => LibraryScanProgress | null;
   getSessionById: (sessionId: string) => LibraryScanProgress | null;
+  refreshSessions: () => Promise<LibraryScanProgress[]>;
 };
 
 export const LibraryScanProgressContext =

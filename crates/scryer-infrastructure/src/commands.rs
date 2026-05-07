@@ -524,6 +524,10 @@ pub(crate) enum DbCommand {
         encryption_key: Option<EncryptionKey>,
         reply: Sender<AppResult<IndexerConfig>>,
     },
+    MigrateLegacyIndexerConfigSources {
+        encryption_key: Option<EncryptionKey>,
+        reply: Sender<AppResult<u64>>,
+    },
     TouchIndexerLastError {
         provider_type: String,
         reply: Sender<AppResult<()>>,
@@ -1998,6 +2002,20 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                             crate::queries::indexer::create_indexer_config_query(
                                 &pool,
                                 &config,
+                                encryption_key.as_ref(),
+                            )
+                        })
+                        .await,
+                    );
+                }
+                DbCommand::MigrateLegacyIndexerConfigSources {
+                    encryption_key,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        run_with_sqlite_busy_retries("migrate_legacy_indexer_config_sources", || {
+                            crate::queries::indexer::migrate_legacy_indexer_config_sources_query(
+                                &pool,
                                 encryption_key.as_ref(),
                             )
                         })

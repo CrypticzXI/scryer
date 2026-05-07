@@ -207,6 +207,7 @@ fn test_input() -> scryer_rules::UserRuleInput {
         },
         context: scryer_rules::ContextDoc {
             title_id: Some("test-title-id".to_string()),
+            library_name: Some("Movies".to_string()),
             media_type: "movie".to_string(),
             category: "movie".to_string(),
             tags: vec![],

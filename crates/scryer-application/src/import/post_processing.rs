@@ -155,8 +155,7 @@ pub async fn run_post_processing(ctx: PostProcessingContext) -> crate::AppResult
         .customization
         .pp_scripts
         .list_enabled_for_facet(facet_str)
-        .await
-        .unwrap_or_default();
+        .await?;
 
     if scripts.is_empty() {
         return Ok(());
@@ -182,13 +181,7 @@ pub async fn run_post_processing(ctx: PostProcessingContext) -> crate::AppResult
     for script in &blocking {
         let run = execute_script(script, &ctx, facet_str, &env_json).await;
         log_run_activity(&ctx, &run).await;
-        ctx.app
-            .services
-            .customization
-            .pp_scripts
-            .record_run(run)
-            .await
-            .ok();
+        persist_run_record(&ctx.app, run).await;
     }
 
     // Fire-and-forget scripts run in parallel.
@@ -219,12 +212,7 @@ pub async fn run_post_processing(ctx: PostProcessingContext) -> crate::AppResult
             };
             let run = execute_script(&script, &ff_ctx, &facet_str_owned, &env_json).await;
             log_run_activity(&ff_ctx, &run).await;
-            app.services
-                .customization
-                .pp_scripts
-                .record_run(run)
-                .await
-                .ok();
+            persist_run_record(&app, run).await;
         });
     }
 
@@ -602,6 +590,22 @@ async fn log_run_activity(ctx: &PostProcessingContext, run: &PostProcessingScrip
             ),
         })
         .await;
+}
+
+async fn persist_run_record(app: &AppUseCase, run: PostProcessingScriptRun) {
+    let script_id = run.script_id.clone();
+    let script_name = run.script_name.clone();
+    let title_id = run.title_id.clone();
+
+    if let Err(error) = app.services.customization.pp_scripts.record_run(run).await {
+        tracing::warn!(
+            error = %error,
+            script_id = %script_id,
+            script_name = %script_name,
+            title_id = ?title_id,
+            "failed to record post-processing script run"
+        );
+    }
 }
 
 /// Escape a path for use in a shell command.

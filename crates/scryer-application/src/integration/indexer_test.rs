@@ -8,15 +8,32 @@ impl AppUseCase {
         &self,
         actor: &User,
         provider_type: &str,
-        base_url: &str,
-        api_key: Option<&str>,
         config_json: Option<&str>,
+        indexer_id: Option<&str>,
     ) -> AppResult<()> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
-        let base_url =
-            crate::app_usecase_integration::resolve_indexer_base_url(base_url, config_json)?;
+        let fields = self.indexer_config_fields_for_provider_type(provider_type)?;
+        let persisted_config_json = if let Some(indexer_id) = indexer_id {
+            self.services
+                .integrations
+                .indexer_configs
+                .get_by_id(indexer_id)
+                .await?
+                .and_then(|config| config.config_json)
+        } else {
+            None
+        };
+        let normalized_config_json = crate::app_usecase_integration::normalize_indexer_config_json(
+            &fields,
+            config_json,
+            persisted_config_json.as_deref(),
+        )?;
+        let base_url = crate::app_usecase_integration::derive_indexer_base_url_from_config_fields(
+            &fields,
+            Some(&normalized_config_json),
+        )?;
         validate_test_flight_url(&base_url)?;
 
         let provider = self
@@ -31,9 +48,19 @@ impl AppUseCase {
         // Build a temporary IndexerConfig to get a client from the plugin
         // Reject obviously invalid API keys (e.g. masked placeholders from
         // Sonarr/Radarr import that were stored before the masking fix).
-        if let Some(key) = api_key {
-            let trimmed = key.trim();
-            if trimmed.chars().all(|c| c == '*') && !trimmed.is_empty() {
+        let parsed_config: serde_json::Value = serde_json::from_str(&normalized_config_json)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        for field in fields
+            .iter()
+            .filter(|field| field.field_type == scryer_domain::ConfigFieldType::Password)
+        {
+            if let Some(trimmed) = parsed_config
+                .get(&field.key)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                && trimmed.chars().all(|c| c == '*')
+                && !trimmed.is_empty()
+            {
                 return Err(AppError::Validation(
                     "API key appears to be a masked placeholder — enter the real key".into(),
                 ));
@@ -45,7 +72,7 @@ impl AppUseCase {
             name: "Test Connection".to_string(),
             provider_type: provider_type.to_string(),
             base_url,
-            api_key_encrypted: api_key.map(|k| k.trim().to_string()),
+            api_key_encrypted: None,
             rate_limit_seconds: None,
             rate_limit_burst: None,
             is_enabled: true,
@@ -54,7 +81,7 @@ impl AppUseCase {
             disabled_until: None,
             last_health_status: None,
             last_error_at: None,
-            config_json: config_json.map(|s| s.to_string()),
+            config_json: Some(normalized_config_json),
             created_at: now,
             updated_at: now,
         };
@@ -183,6 +210,27 @@ mod tests {
             vec!["torrent_rss".to_string()]
         }
 
+        fn config_fields_for_provider(
+            &self,
+            provider_type: &str,
+        ) -> Vec<scryer_domain::ConfigFieldDef> {
+            if provider_type != "torrent_rss" {
+                return vec![];
+            }
+            vec![scryer_domain::ConfigFieldDef {
+                key: "feed_url".to_string(),
+                label: "Feed URL".to_string(),
+                field_type: scryer_domain::ConfigFieldType::String,
+                required: true,
+                default_value: None,
+                value_source: scryer_domain::ConfigFieldValueSource::User,
+                role: Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                host_binding: None,
+                options: vec![],
+                help_text: None,
+            }]
+        }
+
         fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
             vec![]
         }
@@ -240,7 +288,10 @@ mod tests {
     #[tokio::test]
     async fn create_indexer_config_derives_base_url_from_feed_url() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
-        let app = test_app(indexer_repo.clone(), None);
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(Arc::new(RecordingPluginProvider::new())),
+        );
 
         let created = app
             .create_indexer_config(
@@ -248,8 +299,6 @@ mod tests {
                 NewIndexerConfig {
                     name: "RSS".to_string(),
                     provider_type: "torrent_rss".to_string(),
-                    base_url: String::new(),
-                    api_key_encrypted: None,
                     rate_limit_seconds: None,
                     rate_limit_burst: None,
                     is_enabled: true,
@@ -277,9 +326,8 @@ mod tests {
         app.test_indexer_connection(
             &test_admin(),
             "torrent_rss",
-            "",
-            None,
             Some(r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#),
+            None,
         )
         .await
         .unwrap();

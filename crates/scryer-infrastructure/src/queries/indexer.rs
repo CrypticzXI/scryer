@@ -120,21 +120,6 @@ fn maybe_encrypt_config_json(
         .map_err(|e| AppError::Repository(format!("failed to encrypt config_json: {e}")))
 }
 
-fn maybe_encrypt_api_key(
-    key: Option<&EncryptionKey>,
-    api_key: Option<&String>,
-) -> AppResult<Option<String>> {
-    let Some(api_key) = api_key else {
-        return Ok(None);
-    };
-    let Some(key) = key else {
-        return Ok(Some(api_key.clone()));
-    };
-    crate::encryption::encrypt_value(key, api_key)
-        .map(Some)
-        .map_err(|e| AppError::Repository(format!("failed to encrypt API key: {e}")))
-}
-
 pub(crate) async fn list_indexer_configs_query(
     pool: &SqlitePool,
     provider_type: Option<String>,
@@ -211,12 +196,110 @@ async fn get_indexer_config_tx(
         .transpose()
 }
 
+pub(crate) async fn migrate_legacy_indexer_config_sources_query(
+    pool: &SqlitePool,
+    encryption_key: Option<&EncryptionKey>,
+) -> AppResult<u64> {
+    let configs = list_indexer_configs_query(pool, None, encryption_key).await?;
+    let mut migrated = 0_u64;
+
+    for config in configs {
+        if config.base_url.trim().is_empty() && config.api_key_encrypted.is_none() {
+            continue;
+        }
+
+        let mut object = config
+            .config_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+
+        let connection_key = legacy_indexer_connection_key(&config.provider_type);
+        let mut changed = false;
+        if !config.base_url.trim().is_empty() && config_value_missing(object.get(connection_key)) {
+            object.insert(
+                connection_key.to_string(),
+                serde_json::Value::String(config.base_url.trim().to_string()),
+            );
+            changed = true;
+        }
+
+        let legacy_api_key = config
+            .api_key_encrypted
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(api_key) = legacy_api_key
+            && config_value_missing(object.get("api_key"))
+        {
+            object.insert(
+                "api_key".to_string(),
+                serde_json::Value::String(api_key.to_string()),
+            );
+            changed = true;
+        }
+
+        let clear_legacy_api_key = config.api_key_encrypted.is_some();
+        if !changed && !clear_legacy_api_key {
+            continue;
+        }
+
+        let now = Utc::now().to_rfc3339();
+        if changed {
+            let normalized = serde_json::Value::Object(object).to_string();
+            let stored = maybe_encrypt_config_json(encryption_key, Some(&normalized))?;
+            sqlx::query(
+                "UPDATE indexers
+                 SET config_json = ?, api_key_encrypted = NULL, updated_at = ?
+                 WHERE id = ?",
+            )
+            .bind(stored)
+            .bind(&now)
+            .bind(&config.id)
+            .execute(pool)
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        } else {
+            sqlx::query(
+                "UPDATE indexers
+                 SET api_key_encrypted = NULL, updated_at = ?
+                 WHERE id = ?",
+            )
+            .bind(&now)
+            .bind(&config.id)
+            .execute(pool)
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        }
+        migrated += 1;
+    }
+
+    Ok(migrated)
+}
+
+fn legacy_indexer_connection_key(provider_type: &str) -> &'static str {
+    if provider_type.eq_ignore_ascii_case("torrent_rss") {
+        "feed_url"
+    } else {
+        "base_url"
+    }
+}
+
+fn config_value_missing(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(value)) => value.trim().is_empty(),
+        _ => false,
+    }
+}
+
 pub(crate) async fn create_indexer_config_query(
     pool: &SqlitePool,
     config: &IndexerConfig,
     encryption_key: Option<&EncryptionKey>,
 ) -> AppResult<IndexerConfig> {
-    let stored_api_key = maybe_encrypt_api_key(encryption_key, config.api_key_encrypted.as_ref())?;
+    let stored_api_key: Option<String> = None;
     let stored_config_json =
         maybe_encrypt_config_json(encryption_key, config.config_json.as_ref())?;
 
@@ -273,11 +356,8 @@ pub(crate) async fn update_indexer_config_query(
     if update.provider_type.is_some() {
         assignments.push("provider_type = ?".to_string());
     }
-    if update.base_url.is_some() {
+    if update.derived_base_url.is_some() {
         assignments.push("base_url = ?".to_string());
-    }
-    if update.api_key_encrypted.is_some() {
-        assignments.push("api_key_encrypted = ?".to_string());
     }
     if update.rate_limit_seconds.is_some() {
         assignments.push("rate_limit_seconds = ?".to_string());
@@ -317,12 +397,8 @@ pub(crate) async fn update_indexer_config_query(
     if let Some(provider_type) = update.provider_type.as_ref() {
         statement = statement.bind(provider_type);
     }
-    if let Some(base_url) = update.base_url.as_ref() {
+    if let Some(base_url) = update.derived_base_url.as_ref() {
         statement = statement.bind(base_url);
-    }
-    if let Some(api_key) = update.api_key_encrypted.as_ref() {
-        let stored = maybe_encrypt_api_key(encryption_key, Some(api_key))?;
-        statement = statement.bind(stored);
     }
     if let Some(rate_limit_seconds) = update.rate_limit_seconds {
         statement = statement.bind(rate_limit_seconds);

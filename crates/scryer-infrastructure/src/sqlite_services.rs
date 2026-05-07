@@ -173,6 +173,21 @@ impl DbRuntime {
         Ok(())
     }
 
+    pub async fn migrate_legacy_indexer_config_sources(&self) -> AppResult<u64> {
+        let encryption_key = self.current_encryption_key()?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.sender
+            .send(DbCommand::MigrateLegacyIndexerConfigSources {
+                encryption_key,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?;
+        reply_rx
+            .await
+            .map_err(|err| AppError::Repository(err.to_string()))?
+    }
+
     pub async fn upsert_library_scan_unmatched_item(
         &self,
         item: &scryer_application::LibraryScanUnmatchedItem,

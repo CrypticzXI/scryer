@@ -239,6 +239,8 @@ function librarySettingsInput(settings: LibrarySettingsDraft | undefined) {
     monitorSpecials: settings.monitorSpecials,
     interSeasonMovies: settings.interSeasonMovies,
     monitorFillerMovies: settings.monitorFillerMovies,
+    nfoWriteOnImport: settings.nfoWriteOnImport,
+    plexmatchWriteOnImport: settings.plexmatchWriteOnImport,
     indexerRouting: settings.indexerRouting,
     downloadClientRouting: settings.downloadClientRouting,
   };
@@ -409,8 +411,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [startedLibraryScanSessionId, setStartedLibraryScanSessionId] =
     React.useState<string | null>(null);
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "movie";
-  const { getActiveSession, getSessionById } = useLibraryScanProgress();
+  const { getActiveSession, getSessionById, refreshSessions: refreshLibraryScanSessions } =
+    useLibraryScanProgress();
   const activeLibraryScanSession = getActiveSession(activeFacet);
+  const startedLibraryScanSession = startedLibraryScanSessionId
+    ? getSessionById(startedLibraryScanSessionId)
+    : null;
   const isMobile = useIsMobile();
   const activeQualityScopeId =
     CATEGORY_SCOPE_MAP[view as keyof typeof CATEGORY_SCOPE_MAP] ?? "movie";
@@ -452,6 +458,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
+  const [rootValidationLibraries, setRootValidationLibraries] = React.useState<LibraryRecord[]>([]);
+  const [rootValidationLibrariesLoading, setRootValidationLibrariesLoading] = React.useState(false);
   const [librarySettingsSaving, setLibrarySettingsSaving] = React.useState(false);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const activeCatalogQueryRef = React.useRef("");
@@ -491,7 +499,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const libraryScanInProgress =
     libraryScanLoading ||
     Boolean(activeLibraryScanSession) ||
-    Boolean(startedLibraryScanSessionId);
+    Boolean(startedLibraryScanSessionId && !startedLibraryScanSession);
   const titleDeletePreviewVariables = React.useMemo(
     () =>
       titleToDelete && deleteFilesOnDisk
@@ -789,6 +797,43 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
     setStartedLibraryScanSessionId(null);
   }, [getSessionById, setLibraryScanSummary, startedLibraryScanSessionId]);
+
+  React.useEffect(() => {
+    if (!startedLibraryScanSessionId || startedLibraryScanSession) {
+      return;
+    }
+
+    let cancelled = false;
+    const retryDelaysMs = [0, 400, 1_200];
+    const timers = retryDelaysMs.map((delayMs) =>
+      window.setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        void refreshLibraryScanSessions().catch((error) => {
+          console.error(
+            "[library-scan] failed to reconcile started scan session:",
+            error,
+          );
+        });
+      }, delayMs),
+    );
+    const releaseTimer = window.setTimeout(() => {
+      if (!cancelled) {
+        setStartedLibraryScanSessionId(null);
+      }
+    }, 4_000);
+
+    return () => {
+      cancelled = true;
+      timers.forEach((timer) => window.clearTimeout(timer));
+      window.clearTimeout(releaseTimer);
+    };
+  }, [
+    refreshLibraryScanSessions,
+    startedLibraryScanSession,
+    startedLibraryScanSessionId,
+  ]);
 
   React.useEffect(() => {
     setLibraryScanNotice(null);
@@ -1871,6 +1916,37 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     }
   }, [activeFacet, client, isMediaView, setGlobalStatus, t]);
 
+  const refreshRootValidationLibraries = React.useCallback(
+    async (): Promise<LibraryRecord[] | null> => {
+      if (!isMediaView) {
+        setRootValidationLibraries([]);
+        return [];
+      }
+      setRootValidationLibrariesLoading(true);
+      try {
+        const { data, error } = await client
+          .query(
+            librariesQuery,
+            { facet: null, permission: "view" },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) throw error;
+        const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
+        setRootValidationLibraries(nextLibraries);
+        return nextLibraries;
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToLoad"),
+        );
+        return null;
+      } finally {
+        setRootValidationLibrariesLoading(false);
+      }
+    },
+    [client, isMediaView, setGlobalStatus, t],
+  );
+
   const loadLibrarySettings = React.useCallback(
     async (libraryId: string): Promise<LibrarySettingsRecord | null> => {
       const { data, error } = await client
@@ -1905,6 +1981,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         if (error) throw error;
         const library = data?.createLibrary ?? null;
         await refreshLibraries();
+        await refreshRootValidationLibraries();
         if (library) {
           setSelectedLibraryIds([library.id]);
           setGlobalStatus(t("settings.libraryCreated"));
@@ -1942,6 +2019,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         if (error) throw error;
         const library = data?.updateLibrary ?? null;
         await refreshLibraries();
+        await refreshRootValidationLibraries();
         if (library) {
           setGlobalStatus(t("settings.librarySaved"));
         }
@@ -1975,6 +2053,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           current.filter((selectedLibraryId) => selectedLibraryId !== libraryId),
         );
         await refreshLibraries();
+        await refreshRootValidationLibraries();
         setGlobalStatus(t("settings.libraryDeleted"));
         return true;
       } catch (error) {
@@ -2013,7 +2092,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         .mutation(scanLibraryMutation, { libraryId: targetLibraryId })
         .toPromise();
       if (result.error) throw result.error;
-      setStartedLibraryScanSessionId(result.data?.scanLibrary?.sessionId ?? null);
+      const sessionId = result.data?.scanLibrary?.sessionId ?? null;
+      setLibraryScanNotice(t("settings.libraryScanRunning"));
+      setStartedLibraryScanSessionId(sessionId);
+      void refreshLibraryScanSessions().catch((error) => {
+        console.error("[library-scan] failed to refresh active scan sessions:", error);
+      });
     } catch (error) {
       console.error("[library-scan] mutation failed:", error);
       const message =
@@ -2057,6 +2141,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     activeLibraryScanSession,
     client,
     selectedLibraryIds,
+    refreshLibraryScanSessions,
     setLibraryScanLoading,
     setLibraryScanNotice,
     setLibraryScanSummary,
@@ -2074,6 +2159,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   React.useEffect(() => {
     void refreshLibraries();
   }, [refreshLibraries]);
+
+  React.useEffect(() => {
+    if (contentSettingsSection !== "library" || !isMediaView) {
+      setRootValidationLibraries([]);
+      setRootValidationLibrariesLoading(false);
+      return;
+    }
+    void refreshRootValidationLibraries();
+  }, [contentSettingsSection, isMediaView, refreshRootValidationLibraries]);
 
   // Load media settings once per view/scope change (subscription handles live updates).
   // Deferred pattern: StrictMode unmount/remount cancels the stale call.
@@ -2230,7 +2324,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           setTitleFilter,
           refreshTitles,
           titleLoading,
-          titleStatus,
           monitoredTitles: visibleTitles,
           titleQuickFilters,
           toggleTitleQuickMonitoringFilter,
@@ -2267,6 +2360,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           libraryScanSummary,
           libraries,
           librariesLoading,
+          rootValidationLibraries,
+          rootValidationLibrariesLoading,
           selectedLibraryIds,
           allLibrariesValue: ALL_LIBRARIES_VALUE,
           setSelectedLibraryIds,

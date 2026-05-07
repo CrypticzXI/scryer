@@ -73,54 +73,67 @@ export function TitleQuickFilterBar({
   onToggleMonitoring,
   onToggleStatus,
   onClear,
+  trailingContent,
 }: {
   view: "movies" | "series" | "anime";
   filters: TitleQuickFilters;
   onToggleMonitoring: (filter: "monitored" | "unmonitored") => void;
   onToggleStatus: (filter: "continuing" | "ended") => void;
   onClear: () => void;
+  trailingContent?: React.ReactNode;
 }) {
   const t = useTranslate();
   const showStatusFilters = view !== "movies";
   const allSelected = !hasActiveTitleQuickFilters(filters, view);
 
   return (
-    <div className="flex flex-wrap gap-2">
-      <FilterChipButton selected={allSelected} onClick={onClear} className="text-xs">
-        {t("activity.historyFilter.all")}
-      </FilterChipButton>
-      <FilterChipButton
-        selected={filters.monitored}
-        onClick={() => onToggleMonitoring("monitored")}
-        icon={<Eye className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}
-      >
-        {t("title.monitored")}
-      </FilterChipButton>
-      <FilterChipButton
-        selected={filters.unmonitored}
-        onClick={() => onToggleMonitoring("unmonitored")}
-        icon={<EyeOff className="h-3.5 w-3.5 shrink-0 text-rose-500" />}
-      >
-        {t("search.monitorType.unmonitored")}
-      </FilterChipButton>
-      {showStatusFilters ? (
-        <>
-          <FilterChipButton
-            selected={filters.continuing}
-            onClick={() => onToggleStatus("continuing")}
-            icon={<Play className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}
-          >
-            {t("title.continuing")}
-          </FilterChipButton>
-          <FilterChipButton
-            selected={filters.ended}
-            onClick={() => onToggleStatus("ended")}
-            icon={<Square className="h-3.5 w-3.5 shrink-0 text-zinc-400" />}
-          >
-            {t("title.ended")}
-          </FilterChipButton>
-        </>
-      ) : null}
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <div className="flex min-w-0 flex-1 flex-wrap gap-2">
+        <FilterChipButton
+          selected={allSelected}
+          onClick={onClear}
+          className="h-11 rounded-xl px-4 text-sm"
+        >
+          {t("activity.historyFilter.all")}
+        </FilterChipButton>
+        <FilterChipButton
+          selected={filters.monitored}
+          onClick={() => onToggleMonitoring("monitored")}
+          icon={<Eye className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}
+          className="h-11 rounded-xl px-4 text-sm"
+        >
+          {t("title.monitored")}
+        </FilterChipButton>
+        <FilterChipButton
+          selected={filters.unmonitored}
+          onClick={() => onToggleMonitoring("unmonitored")}
+          icon={<EyeOff className="h-3.5 w-3.5 shrink-0 text-rose-500" />}
+          className="h-11 rounded-xl px-4 text-sm"
+        >
+          {t("search.monitorType.unmonitored")}
+        </FilterChipButton>
+        {showStatusFilters ? (
+          <>
+            <FilterChipButton
+              selected={filters.continuing}
+              onClick={() => onToggleStatus("continuing")}
+              icon={<Play className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}
+              className="h-11 rounded-xl px-4 text-sm"
+            >
+              {t("title.continuing")}
+            </FilterChipButton>
+            <FilterChipButton
+              selected={filters.ended}
+              onClick={() => onToggleStatus("ended")}
+              icon={<Square className="h-3.5 w-3.5 shrink-0 text-zinc-400" />}
+              className="h-11 rounded-xl px-4 text-sm"
+            >
+              {t("title.ended")}
+            </FilterChipButton>
+          </>
+        ) : null}
+      </div>
+      {trailingContent ? <div className="w-full shrink-0 sm:w-auto">{trailingContent}</div> : null}
     </div>
   );
 }

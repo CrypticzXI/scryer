@@ -188,9 +188,6 @@ const fr: LocaleDictionary = {
     "Ce dossier racine est déjà utilisé par {{libraries}}.",
   "settings.rootFolderAddPlaceholder": "/data/movies",
   "settings.rootFolderSetDefault": "Définir par défaut",
-  "settings.librarySelectionScopeTitle": "Bibliothèque active",
-  "settings.librarySelectionScopeHelp":
-    "La bibliothèque sélectionnée détermine la portée des remplacements et de l’action d’analyse dans cette section.",
   "settings.libraryScanTitle": "Analyse de la bibliothèque",
   "settings.libraryScanHelp":
     "Analyser le dossier de films et importer les titres manquants.",

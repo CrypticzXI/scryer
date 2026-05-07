@@ -1,10 +1,11 @@
 import { Loader2 } from "lucide-react";
+import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FilterChipButton } from "@/components/common/filter-chip-button";
 import { HistoryEventTable } from "@/components/common/history-event-table";
-import type { TitleHistoryEvent, TitleRecord } from "@/lib/types";
+import type { LibraryRecord, TitleHistoryEvent, TitleRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { HistoryEventIcon } from "@/components/common/history-event-icon";
 import { getTitleHistoryFilterLabel } from "@/components/common/title-history-event-meta";
@@ -17,9 +18,13 @@ export function TitleHistoryView({
   activeFilters,
   availableFilters,
   selectedTitle,
+  libraries,
+  librariesLoading,
+  selectedLibraryIds,
   currentPage,
   pageSize,
   onSelectedTitleChange,
+  onSelectedLibraryIdsChange,
   onToggleFilter,
   onClearFilters,
   onPreviousPage,
@@ -35,9 +40,13 @@ export function TitleHistoryView({
   activeFilters: string[];
   availableFilters: string[];
   selectedTitle: TitleRecord | null;
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryIds: string[];
   currentPage: number;
   pageSize: number;
   onSelectedTitleChange: (title: TitleRecord | null) => void;
+  onSelectedLibraryIdsChange: (libraryIds: string[]) => void;
   onToggleFilter: (eventType: string) => void;
   onClearFilters: () => void;
   onPreviousPage: () => void;
@@ -85,13 +94,22 @@ export function TitleHistoryView({
             </Button>
           </div>
         </div>
-        <TitleAutocompletePicker
-          className="w-full"
-          placeholder={t("title.filterPlaceholder")}
-          selectedTitle={selectedTitle}
-          selectedTitleId={selectedTitle?.id ?? null}
-          onSelectedTitleChange={onSelectedTitleChange}
-        />
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+          <TitleAutocompletePicker
+            className="w-full lg:flex-1"
+            placeholder={t("title.filterPlaceholder")}
+            selectedTitle={selectedTitle}
+            selectedTitleId={selectedTitle?.id ?? null}
+            onSelectedTitleChange={onSelectedTitleChange}
+          />
+          <LibraryMultiSelect
+            libraries={libraries}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+            disabled={librariesLoading}
+            triggerClassName="w-full lg:w-72 lg:shrink-0"
+          />
+        </div>
         <div className="flex flex-wrap gap-2">
           <FilterChipButton
             selected={activeFilters.length === 0}

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
-    from_download_client_config, from_housekeeping_report, from_indexer_config,
+    from_download_client_config, from_housekeeping_report, from_indexer_config_with_fields,
     from_rss_sync_report, from_subtitle_provider_config,
 };
 use crate::types::*;
@@ -48,8 +48,6 @@ impl ConfigMutations {
                 NewIndexerConfig {
                     name: input.name,
                     provider_type: input.provider_type,
-                    base_url: input.base_url,
-                    api_key_encrypted: input.api_key,
                     rate_limit_seconds: input.rate_limit_seconds,
                     rate_limit_burst: input.rate_limit_burst,
                     is_enabled: input.is_enabled.unwrap_or(true),
@@ -60,8 +58,11 @@ impl ConfigMutations {
             )
             .await
             .map_err(to_gql_error)?;
+        let config_fields = app
+            .indexer_config_fields_for_provider_type(&config.provider_type)
+            .unwrap_or_default();
 
-        Ok(from_indexer_config(config))
+        Ok(from_indexer_config_with_fields(config, &config_fields))
     }
 
     async fn update_indexer_config(
@@ -78,8 +79,7 @@ impl ConfigMutations {
                     id: input.id,
                     name: input.name,
                     provider_type: input.provider_type,
-                    base_url: input.base_url,
-                    api_key_encrypted: input.api_key,
+                    derived_base_url: None,
                     rate_limit_seconds: input.rate_limit_seconds,
                     rate_limit_burst: input.rate_limit_burst,
                     is_enabled: input.is_enabled,
@@ -90,7 +90,10 @@ impl ConfigMutations {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(from_indexer_config(config))
+        let config_fields = app
+            .indexer_config_fields_for_provider_type(&config.provider_type)
+            .unwrap_or_default();
+        Ok(from_indexer_config_with_fields(config, &config_fields))
     }
 
     async fn delete_indexer_config(
@@ -381,25 +384,11 @@ impl ConfigMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
 
-        // If no API key provided but an existing indexer ID is given,
-        // look up the stored key so "Test Connection" works without
-        // re-entering the key.
-        let mut api_key = input.api_key;
-        if api_key.as_ref().is_none_or(|k| k.trim().is_empty())
-            && let Some(ref indexer_id) = input.indexer_id
-            && let Ok(Some(config)) = app.get_indexer_config(&actor, indexer_id).await
-            && let Some(ref stored_key) = config.api_key_encrypted
-            && !stored_key.is_empty()
-        {
-            api_key = Some(stored_key.clone());
-        }
-
         app.test_indexer_connection(
             &actor,
             &input.provider_type,
-            &input.base_url,
-            api_key.as_deref(),
             input.config_json.as_deref(),
+            input.indexer_id.as_deref(),
         )
         .await
         .map_err(to_gql_error)?;

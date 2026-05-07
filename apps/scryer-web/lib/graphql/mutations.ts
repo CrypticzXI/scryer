@@ -84,6 +84,7 @@ export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndex
     providerType
     baseUrl
     hasApiKey
+    storedSecretKeys
     rateLimitSeconds
     rateLimitBurst
     disabledUntil
@@ -105,6 +106,7 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     providerType
     baseUrl
     hasApiKey
+    storedSecretKeys
     rateLimitSeconds
     rateLimitBurst
     disabledUntil
