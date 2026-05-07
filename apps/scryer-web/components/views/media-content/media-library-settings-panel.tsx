@@ -507,7 +507,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const handleSaveLibrary = async () => {
     const name = draftName.trim();
     if (!name) {
-      return;
+      return null;
     }
     const roots = normalizeRoots(draftRoots);
     setDraftRoots(roots);
@@ -517,11 +517,27 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         setMode("existing");
         setActiveLibraryId(created.id);
       }
-      return;
+      return created ?? null;
     }
     if (activeLibrary) {
-      await onUpdateLibrary(activeLibrary.id, { name, roots, settings: settingsDraft });
+      return (
+        (await onUpdateLibrary(activeLibrary.id, {
+          name,
+          roots,
+          settings: settingsDraft,
+        })) ?? activeLibrary
+      );
     }
+    return null;
+  };
+
+  const handleSaveAndScanLibrary = async () => {
+    const savedLibrary = await handleSaveLibrary();
+    const libraryId = savedLibrary?.id ?? (mode === "existing" ? activeLibrary?.id : null);
+    if (!libraryId) {
+      return;
+    }
+    void onScan(libraryId);
   };
 
   const handleDeleteLibrary = async () => {
@@ -1041,7 +1057,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                 <Button
                   type="button"
                   variant="primary"
-                  onClick={handleSaveLibrary}
+                  onClick={handleSaveAndScanLibrary}
                   disabled={
                     settingsBusy ||
                     !draftName.trim() ||
@@ -1050,9 +1066,20 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   }
                 >
                   <Save className="mr-1.5 h-4 w-4" />
-                  {mode === "new"
-                    ? t("settings.libraryCreateButton")
-                    : t("settings.librarySaveButton")}
+                  {t("settings.librarySaveAndScanButton")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleSaveLibrary}
+                  disabled={
+                    settingsBusy ||
+                    !draftName.trim() ||
+                    !hasDraftChanges ||
+                    hasRootFolderConflicts
+                  }
+                >
+                  {t("settings.librarySaveOnlyButton")}
                 </Button>
                 {mode !== "new" && activeLibrary && !activeLibrary.isDefault ? (
                   <Button

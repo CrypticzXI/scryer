@@ -189,6 +189,8 @@ const en: LocaleDictionary = {
   "settings.libraryNewButton": "New library",
   "settings.libraryCreateButton": "Create library",
   "settings.librarySaveButton": "Save library",
+  "settings.librarySaveAndScanButton": "Save & Scan",
+  "settings.librarySaveOnlyButton": "Save only",
   "settings.libraryDeleteButton": "Delete library",
   "settings.libraryDeleteConfirm": "Delete {{name}}? Media files on disk will not be removed.",
   "settings.libraryEmpty": "No libraries available.",
