@@ -21,6 +21,10 @@ impl AppUseCase {
     }
 
     /// Insert a pending release when a delay profile holds back a grab.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "pending-release orchestration persists the full delayed grab context explicitly"
+    )]
     pub(crate) async fn insert_pending_release(
         &self,
         wanted: &WantedItem,

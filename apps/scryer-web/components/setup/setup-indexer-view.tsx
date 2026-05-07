@@ -4,7 +4,7 @@ import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { ConfigFieldDef } from "@/lib/types";
+import { type ConfigFieldDef, visibleIndexerConfigFields } from "@/lib/types";
 
 interface ProviderOption {
   value: string;
@@ -190,8 +190,11 @@ export function SetupIndexerView({
   error,
 }: SetupIndexerViewProps) {
   const selectedProvider = providerOptions.find((p) => p.value === providerType);
-  const selectedProviderFields = (selectedProvider?.configFields ?? []).filter(
-    (field) => field.valueSource !== "host_binding",
+  const selectedProviderFields = visibleIndexerConfigFields(
+    providerType,
+    (selectedProvider?.configFields ?? []).filter(
+      (field) => field.valueSource !== "host_binding",
+    ),
   );
   const hasMissingRequiredField = selectedProviderFields.some((field) =>
     isMissingRequiredField(field, configValues),

@@ -833,6 +833,10 @@ pub trait WantedItemRepository: Send + Sync {
         excluded_facets: &[MediaFacet],
     ) -> AppResult<Vec<WantedItem>>;
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the repository update maps directly onto persisted wanted-item state fields"
+    )]
     async fn update_wanted_item_status(
         &self,
         id: &str,
@@ -1139,6 +1143,10 @@ pub trait PluginInstallationRepository: Send + Sync {
         &self,
         plugin_id: &str,
     ) -> AppResult<Option<PersistedPluginWasmPayload>>;
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "builtin plugin seeding persists the full published plugin contract explicitly"
+    )]
     async fn seed_builtin(
         &self,
         plugin_id: &str,
@@ -1150,8 +1158,6 @@ pub trait PluginInstallationRepository: Send + Sync {
         plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()>;
-    async fn store_registry_cache(&self, json: &str) -> AppResult<()>;
-    async fn get_registry_cache(&self) -> AppResult<Option<String>>;
     async fn upsert_plugin_catalog_source(&self, source: &PluginCatalogSource) -> AppResult<()>;
     async fn list_plugin_catalog_sources(&self) -> AppResult<Vec<PluginCatalogSource>>;
     async fn get_plugin_catalog_source(
@@ -1170,6 +1176,10 @@ pub trait PluginInstallationRepository: Send + Sync {
 
 #[async_trait]
 pub trait IndexerClient: Send + Sync {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "indexer search forwards the full caller-controlled search envelope to plugins"
+    )]
     async fn search(
         &self,
         query: String,

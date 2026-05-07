@@ -42,6 +42,10 @@ pub(crate) fn facet_to_category_hint(facet: &MediaFacet) -> &'static str {
     facet.as_str()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "post-download scoring needs the complete import context to match search-time policy decisions"
+)]
 pub(crate) fn build_import_profile_decision(
     profile: &crate::QualityProfile,
     required_audio_languages: &[String],
@@ -143,6 +147,10 @@ pub(crate) fn build_media_file_analysis(
 /// Probe a file at the given path and validate it against the quality profile and user rules.
 /// The file does NOT need to be at its final destination — this can probe a file in-place
 /// at its download location before any move/copy.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "probe-and-validate carries the full import gate context through one decision point"
+)]
 pub(crate) async fn probe_and_validate(
     app: &AppUseCase,
     title: &Title,
@@ -329,6 +337,10 @@ pub(crate) async fn probe_and_validate(
 /// Probe a source file once, apply the existing gate, and merge detected media
 /// facts back into parsed metadata so downstream rename and scoring decisions
 /// use the same resolved view that will later be persisted.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prepared import candidates need the full gate context plus caller scoring state"
+)]
 pub(crate) async fn prepare_import_candidate(
     app: &AppUseCase,
     title: &Title,

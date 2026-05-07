@@ -143,6 +143,15 @@ fn builtin_provider_exposes_expected_metadata_and_supports_removal() {
         Some("https://api.nzbgeek.info"),
         "nzbgeek should expose its default base URL"
     );
+    let nzbgeek_fields = provider.config_fields_for_provider("nzbgeek");
+    assert_eq!(
+        nzbgeek_fields
+            .iter()
+            .find(|field| field.key == "base_url")
+            .and_then(|field| field.default_value.as_deref()),
+        Some("https://api.nzbgeek.info"),
+        "nzbgeek base_url field should carry the builtin default URL"
+    );
     assert!(
         provider.default_base_url_for_provider("newznab").is_none(),
         "newznab should not expose a default base URL"

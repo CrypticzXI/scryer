@@ -1125,6 +1125,10 @@ impl RenamePlanSource {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "rename plan items mirror the persisted planning record fields explicitly"
+)]
 fn rename_plan_item(
     item_ids: RenamePlanItemIds,
     current_path: String,
@@ -1395,6 +1399,10 @@ fn existing_collision_write_action(collision_policy: &RenameCollisionPolicy) -> 
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series rename planning needs the full title, template, and collision context together"
+)]
 pub(crate) fn build_series_rename_plan_items_from_media_files(
     title: &Title,
     mut collections: Vec<Collection>,
@@ -1475,6 +1483,10 @@ fn group_title_media_files(media_files: Vec<TitleMediaFile>) -> Vec<GroupedTitle
     grouped
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "single-file rename planning combines media, collection, and collision context in one decision point"
+)]
 fn build_series_media_file_rename_plan_item(
     title: &Title,
     collections: &[Collection],

@@ -1183,7 +1183,7 @@ fn mock_default_library(facet: MediaFacet) -> Library {
         id: scryer_domain::default_library_id_for_facet(&facet),
         facet: facet.clone(),
         name: format!("Default {}", facet.as_str()),
-        slug: "default".to_string(),
+        slug: scryer_domain::default_library_slug_for_facet(&facet).to_string(),
         is_default: true,
         roots: Vec::new(),
         created_at: now,
@@ -4223,6 +4223,77 @@ async fn update_library_rejects_root_used_by_other_facet_library() {
         }
         other => panic!("expected validation error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn delete_empty_library_rejects_default_library() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let error = app
+        .delete_empty_library(&user, &movie_library_id)
+        .await
+        .expect_err("default library delete should be rejected");
+
+    assert!(
+        matches!(error, AppError::Validation(ref message) if message.contains("default libraries cannot be deleted")),
+        "unexpected delete error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn update_default_library_preserves_default_slug() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let updated = app
+        .update_library(
+            &user,
+            &movie_library_id,
+            Some("Main Movies".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("default library rename should succeed");
+
+    assert_eq!(updated.name, "Main Movies");
+    assert_eq!(
+        updated.slug,
+        scryer_domain::default_library_slug_for_facet(&MediaFacet::Movie)
+    );
+}
+
+#[tokio::test]
+async fn update_non_default_library_rederives_slug_from_name() {
+    let (app, user) = bootstrap();
+    let created = app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Kids Movies".to_string(),
+            vec![LibraryRootDraft {
+                path: "/Volumes/Media/Kids".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("custom library should be created");
+
+    let updated = app
+        .update_library(
+            &user,
+            &created.id,
+            Some("Adult Movies".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("custom library rename should succeed");
+
+    assert_eq!(updated.name, "Adult Movies");
+    assert_eq!(updated.slug, "adult-movies");
 }
 
 #[tokio::test]
@@ -10307,6 +10378,84 @@ async fn count_download_import_items_matches_selected_filter() {
 }
 
 #[tokio::test]
+async fn find_download_queue_scope_ignores_stale_submission_titles() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Scope Regression Movie".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create visible title");
+
+    let mut blocked = queue_history_fixture_item("blocked-1", DownloadQueueState::Completed, 20);
+    blocked.title_id = Some(title.id.clone());
+    blocked.title_name = title.name.clone();
+    blocked.facet = Some("movie".to_string());
+    blocked.tracked_state = Some(TrackedDownloadState::ImportBlocked);
+    *download_client.history_items.lock().await = vec![blocked];
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: "missing-title".to_string(),
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "blocked-1".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Fixture blocked-1".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record stale submission");
+
+    let scope = app
+        .find_download_queue_scope(&user, Some("primary"), "nzbget", "blocked-1")
+        .await
+        .expect("stale scope lookup should not fail");
+    assert!(scope.is_none());
+
+    let page = app
+        .list_download_import_page(&user, 50, 0, DownloadImportFilter::All)
+        .await
+        .expect("download import page should still load");
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].download_client_item_id, "blocked-1");
+}
+
+#[tokio::test]
 async fn list_download_import_page_returns_promptly_when_tracked_snapshot_handle_never_replies() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -10377,11 +10526,8 @@ async fn list_download_import_page_uses_runtime_tracked_snapshot_cache() {
     .await
     .expect("create download client config");
 
-    *download_client.history_items.lock().await = vec![queue_history_fixture_item(
-        "completed-1",
-        DownloadQueueState::Completed,
-        40,
-    )];
+    let history_item = queue_history_fixture_item("completed-1", DownloadQueueState::Completed, 40);
+    *download_client.history_items.lock().await = vec![history_item.clone()];
 
     let tracked_id =
         crate::tracked_downloads::tracked_download_id(Some("primary"), "nzbget", "completed-1");
@@ -10393,6 +10539,7 @@ async fn list_download_import_page_uses_runtime_tracked_snapshot_cache() {
         .insert(
             tracked_id,
             crate::tracked_downloads::TrackedDownloadQueueMetadata {
+                client_item: history_item,
                 title_id: Some("title-1".to_string()),
                 facet: Some("series".to_string()),
                 source_title: Some("Cached Release".to_string()),
@@ -11051,6 +11198,112 @@ async fn list_download_history_page_filters_terminal_rows_and_clamps_page_size_t
         .expect("client filtered history page should load");
     assert_eq!(client_filtered_page.total_count, 5);
     assert_eq!(client_filtered_page.available_clients.len(), 1);
+}
+
+#[tokio::test]
+async fn list_download_history_page_includes_tracked_terminal_rows_when_client_history_is_empty() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Tracked History Fixture".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                poster_url: None,
+                year: Some(2012),
+                overview: None,
+                sort_title: None,
+                slug: None,
+                runtime_minutes: None,
+                language: None,
+                content_status: None,
+            },
+        )
+        .await
+        .expect("title should be added");
+
+    let mut tracked_history_item =
+        queue_history_fixture_item("tracked-terminal-1", DownloadQueueState::Completed, 50);
+    tracked_history_item.client_id = "primary".to_string();
+    tracked_history_item.client_name = "NZBGet".to_string();
+    tracked_history_item.client_type = "nzbget".to_string();
+    tracked_history_item.title_id = Some(title.id.clone());
+    tracked_history_item.title_name = "Paperman".to_string();
+
+    let tracked_id = crate::tracked_downloads::tracked_download_id(
+        Some("primary"),
+        "nzbget",
+        "tracked-terminal-1",
+    );
+    app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await
+        .insert(
+            tracked_id,
+            crate::tracked_downloads::TrackedDownloadQueueMetadata {
+                client_item: tracked_history_item,
+                title_id: Some(title.id.clone()),
+                facet: Some("movie".to_string()),
+                source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+                state: TrackedDownloadState::Imported,
+                status: scryer_domain::TrackedDownloadStatus::Ok,
+                status_messages: Vec::new(),
+                match_type: scryer_domain::TitleMatchType::Submission,
+            },
+        );
+
+    let page = app
+        .list_download_history_page(
+            &user,
+            50,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("tracked terminal history page should load");
+
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].download_client_item_id, "tracked-terminal-1");
+    assert_eq!(
+        page.items[0].tracked_state,
+        Some(TrackedDownloadState::Imported)
+    );
+    assert_eq!(page.items[0].import_status, Some(ImportStatus::Completed));
+    assert_eq!(
+        page.items[0].title_name,
+        "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb"
+    );
 }
 
 #[tokio::test]

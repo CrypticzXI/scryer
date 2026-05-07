@@ -502,6 +502,10 @@ impl AppUseCase {
     }
 
     /// Process RSS releases matched to a movie title.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "RSS movie processing threads grab state, timing, and scoring context together"
+    )]
     async fn process_rss_title_releases(
         &self,
         title: &Title,
@@ -570,6 +574,10 @@ impl AppUseCase {
     }
 
     /// Process RSS releases matched to a series title — match episodes individually.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "RSS series processing carries per-episode routing state through one workflow step"
+    )]
     async fn process_rss_series_releases(
         &self,
         title: &Title,
@@ -728,6 +736,10 @@ impl AppUseCase {
     }
 
     /// Score a batch of RSS releases against the quality profile.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "RSS scoring needs the full release and title context to match interactive search behavior"
+    )]
     async fn score_rss_releases(
         &self,
         releases: &[IndexerSearchResult],
@@ -784,6 +796,10 @@ impl AppUseCase {
 
     /// Try to grab the best candidate from scored RSS releases.
     /// Reuses the same logic as process_single_wanted_item for consistency.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "RSS grab attempts coordinate release state, client state, and reporting in one place"
+    )]
     async fn try_grab_rss_release(
         &self,
         title: &Title,

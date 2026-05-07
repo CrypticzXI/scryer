@@ -835,9 +835,7 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
 mod tests {
     use std::collections::HashMap;
 
-    use scryer_domain::{
-        ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
-    };
+    use scryer_domain::{ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource};
     use scryer_infrastructure::external_import::{ArrDownloadClient, ArrIndexer};
     use serde_json::Value;
 
@@ -924,8 +922,12 @@ mod tests {
             },
         ];
 
-        let config_json =
-            imported_indexer_config_json(&fields, "https://indexer.example", Some("secret"), Some("/api/v1"));
+        let config_json = imported_indexer_config_json(
+            &fields,
+            "https://indexer.example",
+            Some("secret"),
+            Some("/api/v1"),
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&config_json).expect("config json should parse");
 

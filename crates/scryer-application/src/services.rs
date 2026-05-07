@@ -717,6 +717,10 @@ pub struct AppServices {
 }
 
 impl AppServices {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "service assembly intentionally enumerates each root dependency explicitly"
+    )]
     pub fn builder(
         titles: Arc<dyn TitleRepository>,
         shows: Arc<dyn ShowRepository>,
@@ -749,6 +753,10 @@ impl AppServices {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "placeholder wiring intentionally follows the full service dependency surface"
+    )]
     fn with_placeholder_defaults(
         titles: Arc<dyn TitleRepository>,
         shows: Arc<dyn ShowRepository>,

@@ -2,18 +2,33 @@ use std::path::Path;
 
 use crate::{AppServicesBuilder, AppUseCase};
 
+pub struct UpgradeForTestInput<'a> {
+    pub actor: &'a scryer_domain::User,
+    pub title: &'a scryer_domain::Title,
+    pub existing_file: &'a crate::TitleMediaFile,
+    pub source_path: &'a Path,
+    pub dest_path: &'a Path,
+    pub parsed: crate::ParsedReleaseMetadata,
+    pub final_score: i32,
+    pub target_episode_ids: &'a [String],
+    pub recycle_config: &'a crate::recycle_bin::RecycleBinConfig,
+}
+
 pub async fn execute_upgrade_for_test(
     app: &AppUseCase,
-    actor: &scryer_domain::User,
-    title: &scryer_domain::Title,
-    existing_file: &crate::TitleMediaFile,
-    source_path: &Path,
-    dest_path: &Path,
-    parsed: crate::ParsedReleaseMetadata,
-    final_score: i32,
-    target_episode_ids: &[String],
-    recycle_config: &crate::recycle_bin::RecycleBinConfig,
+    input: UpgradeForTestInput<'_>,
 ) -> crate::AppResult<crate::upgrade::UpgradeResult> {
+    let UpgradeForTestInput {
+        actor,
+        title,
+        existing_file,
+        source_path,
+        dest_path,
+        parsed,
+        final_score,
+        target_episode_ids,
+        recycle_config,
+    } = input;
     let prepared = crate::post_download_gate::PreparedImportCandidate {
         parsed,
         accepted: Box::new(crate::post_download_gate::ImportedFileAcceptance {

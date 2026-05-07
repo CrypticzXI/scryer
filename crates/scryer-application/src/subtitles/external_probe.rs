@@ -161,6 +161,10 @@ pub(crate) async fn resolve_external_subtitle(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "subtitle probing combines filename hints, cache state, and detector selection in one step"
+)]
 async fn resolve_external_subtitle_with_detector(
     media_file_id: &str,
     subtitle_path: &Path,

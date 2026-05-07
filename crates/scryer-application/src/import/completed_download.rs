@@ -820,11 +820,20 @@ async fn expected_episode_units(
         return ExpectedEpisodeResolution::Unresolved;
     }
 
-    let expected_episode_ids = episodes
+    let all_expected_episode_ids = episodes
+        .iter()
+        .map(|episode| episode.id.clone())
+        .collect::<HashSet<_>>();
+    let monitored_expected_episode_ids = episodes
         .into_iter()
         .filter(|episode| episode.monitored)
         .map(|episode| episode.id)
         .collect::<HashSet<_>>();
+    let expected_episode_ids = if monitored_expected_episode_ids.is_empty() {
+        all_expected_episode_ids
+    } else {
+        monitored_expected_episode_ids
+    };
 
     if ep_meta.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
         && ep_meta.is_partial_season
@@ -2332,6 +2341,27 @@ mod tests {
                 );
             }
             _ => panic!("expected monitored range episode set"),
+        }
+
+        assert!(verify_import(&app, &td, 0).await);
+    }
+
+    #[tokio::test]
+    async fn verify_import_accepts_release_when_title_has_no_monitored_episodes() {
+        let title = build_title("title-1", "Bluey", MediaFacet::Series);
+        let collection = build_collection("season-1", "title-1", "1");
+        let mut first_episode = build_episode("ep-101", "title-1", "season-1", "1", "1", None);
+        first_episode.monitored = false;
+        let episodes = vec![first_episode];
+        let artifacts = vec![build_artifact("dl-1", "ep-101", "S01E01.mkv")];
+        let app = build_app(vec![title], vec![collection], episodes, artifacts);
+        let td = build_tracked_download("title-1", "series", "Bluey.S01E01.720p.WEB-DL-NTb");
+
+        match expected_episode_units(&app, &td).await {
+            ExpectedEpisodeResolution::Resolved(expected) => {
+                assert_eq!(expected, HashSet::from(["ep-101".to_string()]));
+            }
+            _ => panic!("expected resolved episodes for an explicitly queued release"),
         }
 
         assert!(verify_import(&app, &td, 0).await);

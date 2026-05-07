@@ -216,14 +216,12 @@ fn seed_indexers(
             json!({
                 "name": name,
                 "providerType": required_string(entry, "providerType")?,
-                "baseUrl": required_string(entry, "baseUrl")?,
-                "apiKey": optional_value(entry, "apiKey"),
                 "rateLimitSeconds": present_or_null(entry, "rateLimitSeconds"),
                 "rateLimitBurst": present_or_null(entry, "rateLimitBurst"),
                 "isEnabled": first_present(entry, &["enabled", "isEnabled"]),
                 "enableInteractiveSearch": present_or_null(entry, "enableInteractiveSearch"),
                 "enableAutoSearch": present_or_null(entry, "enableAutoSearch"),
-                "configJson": config_json_value(entry),
+                "configJson": indexer_config_json_value(entry),
             }),
         );
     }
@@ -612,10 +610,6 @@ fn first_present(entry: &Value, keys: &[&str]) -> Value {
     Value::Null
 }
 
-fn optional_value(entry: &Value, key: &str) -> Value {
-    entry.get(key).cloned().unwrap_or(Value::Null)
-}
-
 fn config_json_value(entry: &Value) -> Value {
     if let Some(config) = entry.get("config") {
         Value::String(config.to_string())
@@ -626,11 +620,82 @@ fn config_json_value(entry: &Value) -> Value {
     }
 }
 
+fn indexer_config_json_value(entry: &Value) -> Value {
+    if let Value::Null = config_json_value(entry) {
+        let mut legacy_config = Map::new();
+
+        if let Some(base_url) = entry.get("baseUrl") {
+            legacy_config.insert("base_url".to_string(), base_url.clone());
+        }
+        if let Some(api_key) = entry.get("apiKey") {
+            legacy_config.insert("api_key".to_string(), api_key.clone());
+        }
+
+        if legacy_config.is_empty() {
+            Value::Null
+        } else {
+            Value::String(Value::Object(legacy_config).to_string())
+        }
+    } else {
+        config_json_value(entry)
+    }
+}
+
 fn config_json_value_with_default(entry: &Value, default: &str) -> Value {
     if let Value::Null = config_json_value(entry) {
         Value::String(default.to_string())
     } else {
         config_json_value(entry)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexer_config_json_value;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn indexer_config_json_value_prefers_explicit_config() {
+        let entry = json!({
+            "config": {
+                "base_url": "http://override:8080",
+                "api_key": "override-key"
+            },
+            "baseUrl": "http://legacy:8080",
+            "apiKey": "legacy-key"
+        });
+
+        let got = indexer_config_json_value(&entry);
+        let parsed: Value = serde_json::from_str(got.as_str().expect("config json string"))
+            .expect("valid config json");
+
+        assert_eq!(
+            parsed,
+            json!({
+                "base_url": "http://override:8080",
+                "api_key": "override-key"
+            })
+        );
+    }
+
+    #[test]
+    fn indexer_config_json_value_builds_legacy_newznab_shape() {
+        let entry = json!({
+            "baseUrl": "http://legacy:8080",
+            "apiKey": "legacy-key"
+        });
+
+        let got = indexer_config_json_value(&entry);
+        let parsed: Value = serde_json::from_str(got.as_str().expect("config json string"))
+            .expect("valid config json");
+
+        assert_eq!(
+            parsed,
+            json!({
+                "base_url": "http://legacy:8080",
+                "api_key": "legacy-key"
+            })
+        );
     }
 }
 

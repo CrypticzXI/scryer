@@ -676,10 +676,6 @@ pub(crate) enum DbCommand {
         seed: BuiltinPluginSeed,
         reply: Sender<AppResult<()>>,
     },
-    StorePluginRegistryCache {
-        json: String,
-        reply: Sender<AppResult<()>>,
-    },
     CreateNotificationChannel {
         config: NotificationChannelConfig,
         encryption_key: Option<EncryptionKey>,
@@ -2431,16 +2427,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::StorePluginRegistryCache { json, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("store_plugin_registry_cache", || {
-                            crate::queries::plugin_installation::store_registry_cache_query(
-                                &pool, &json,
-                            )
-                        })
-                        .await,
-                    );
-                }
                 DbCommand::CreateNotificationChannel {
                     config,
                     encryption_key,
@@ -2580,12 +2566,19 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::UpsertWantedItem { item, reply } => {
-                    let _ = reply
-                        .send(crate::queries::wanted::upsert_wanted_item_query(&pool, &item).await);
+                    let _ = reply.send(
+                        run_with_sqlite_busy_retries("upsert_wanted_item", || {
+                            crate::queries::wanted::upsert_wanted_item_query(&pool, &item)
+                        })
+                        .await,
+                    );
                 }
                 DbCommand::EnsureWantedItemSeeded { item, reply } => {
                     let _ = reply.send(
-                        crate::queries::wanted::ensure_wanted_item_seeded_query(&pool, &item).await,
+                        run_with_sqlite_busy_retries("ensure_wanted_item_seeded", || {
+                            crate::queries::wanted::ensure_wanted_item_seeded_query(&pool, &item)
+                        })
+                        .await,
                     );
                 }
                 DbCommand::UpdateWantedItemStatus {

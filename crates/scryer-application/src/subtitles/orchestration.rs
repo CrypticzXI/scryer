@@ -22,6 +22,20 @@ use scryer_domain::{
     ExternalSubtitleSourceKind, SubtitleBlocklistEntry, SubtitleDownload, Title, User,
 };
 
+pub struct DownloadSubtitleForMediaFileRequest {
+    pub media_file_id: String,
+    pub provider_name: String,
+    pub provider_file_id: String,
+    pub language: String,
+    pub forced: bool,
+    pub hearing_impaired: bool,
+    pub score: Option<i32>,
+    pub release_info: Option<String>,
+    pub uploader: Option<String>,
+    pub ai_translated: bool,
+    pub machine_translated: bool,
+}
+
 #[derive(Clone)]
 struct PluginSubtitleProviderAdapter {
     client: Arc<dyn SubtitleProviderClient>,
@@ -486,30 +500,32 @@ impl AppUseCase {
         Ok(filtered)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn download_subtitle_for_media_file(
         &self,
         actor: &User,
-        media_file_id: &str,
-        provider_name: &str,
-        provider_file_id: &str,
-        language: &str,
-        forced: bool,
-        hearing_impaired: bool,
-        score: Option<i32>,
-        release_info: Option<String>,
-        uploader: Option<String>,
-        ai_translated: bool,
-        machine_translated: bool,
+        request: DownloadSubtitleForMediaFileRequest,
     ) -> AppResult<()> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        let DownloadSubtitleForMediaFileRequest {
+            media_file_id,
+            provider_name,
+            provider_file_id,
+            language,
+            forced,
+            hearing_impaired,
+            score,
+            release_info,
+            uploader,
+            ai_translated,
+            machine_translated,
+        } = request;
 
         let media_file = self
             .services
             .library
             .media_files
-            .get_media_file_by_id(media_file_id)
+            .get_media_file_by_id(&media_file_id)
             .await?
             .ok_or_else(|| AppError::NotFound("media file not found".to_string()))?;
         let title = self
@@ -521,15 +537,15 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound("title not found".to_string()))?;
         let settings = self.subtitle_settings().await?;
         let provider =
-            runtime_subtitle_provider_for_download(self, &settings, provider_name).await?;
+            runtime_subtitle_provider_for_download(self, &settings, &provider_name).await?;
 
         let file_path = Path::new(&media_file.file_path);
         let episode_context = media_file_episode_context(self, &media_file).await;
         let (dest_path, _) = crate::subtitles::download::download_and_save_with_selection(
             &provider,
-            provider_file_id,
+            &provider_file_id,
             file_path,
-            language,
+            &language,
             forced,
             hearing_impaired,
             crate::subtitles::download::SubtitleDownloadSelection {
@@ -545,9 +561,9 @@ impl AppUseCase {
             title_id: media_file.title_id.clone(),
             episode_id: media_file.episode_id.clone(),
             source_kind: ExternalSubtitleSourceKind::Downloaded,
-            language: language.to_string(),
-            provider: Some(provider_name.to_string()),
-            provider_file_id: Some(provider_file_id.to_string()),
+            language,
+            provider: Some(provider_name),
+            provider_file_id: Some(provider_file_id),
             file_path: dest_path.to_string_lossy().to_string(),
             score,
             hearing_impaired,
@@ -795,6 +811,10 @@ fn should_reload_subtitle_poller(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "subtitle sync needs the full media, policy, and download context for one operation"
+)]
 async fn maybe_sync_downloaded_subtitle(
     app: &AppUseCase,
     sync_settings: SubtitleSyncSettings,

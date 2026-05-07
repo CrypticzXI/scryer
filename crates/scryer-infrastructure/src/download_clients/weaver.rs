@@ -51,6 +51,17 @@ struct GraphqlError {
     message: String,
 }
 
+struct GraphqlMultipartUploadRequest<'a> {
+    request_label: &'static str,
+    query: &'a str,
+    variables: Value,
+    upload_variable_path: &'a str,
+    filename: String,
+    upload_path: &'a std::path::Path,
+    content_type: &'a str,
+    content_length: u64,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WeaverAttribute {
@@ -374,21 +385,23 @@ impl WeaverDownloadClient {
         Self::parse_graphql_response(status, &body)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn graphql_multipart_request<T>(
         &self,
-        request_label: &'static str,
-        query: &str,
-        variables: Value,
-        upload_variable_path: &str,
-        filename: String,
-        upload_path: &std::path::Path,
-        content_type: &str,
-        content_length: u64,
+        request: GraphqlMultipartUploadRequest<'_>,
     ) -> AppResult<T>
     where
         T: DeserializeOwned,
     {
+        let GraphqlMultipartUploadRequest {
+            request_label,
+            query,
+            variables,
+            upload_variable_path,
+            filename,
+            upload_path,
+            content_type,
+            content_length,
+        } = request;
         let response = self
             .outbound_http
             .send_async(self.mutation_policy(request_label), || {
@@ -974,15 +987,15 @@ impl DownloadClient for WeaverDownloadClient {
             );
 
             match self
-                .graphql_multipart_request::<SubmissionPayload>(
-                    "weaver_submit_nzb",
-                    graphql_docs::SUBMIT_NZB_MUTATION,
-                    variables.clone(),
-                    "variables.input.nzbUpload",
-                    format!("{nzb_filename}.zst"),
-                    &staged.staged_nzb.compressed_path,
-                    "application/zstd",
-                    tokio::fs::metadata(&staged.staged_nzb.compressed_path)
+                .graphql_multipart_request::<SubmissionPayload>(GraphqlMultipartUploadRequest {
+                    request_label: "weaver_submit_nzb",
+                    query: graphql_docs::SUBMIT_NZB_MUTATION,
+                    variables: variables.clone(),
+                    upload_variable_path: "variables.input.nzbUpload",
+                    filename: format!("{nzb_filename}.zst"),
+                    upload_path: &staged.staged_nzb.compressed_path,
+                    content_type: "application/zstd",
+                    content_length: tokio::fs::metadata(&staged.staged_nzb.compressed_path)
                         .await
                         .map_err(|error| {
                             AppError::Repository(format!(
@@ -991,7 +1004,7 @@ impl DownloadClient for WeaverDownloadClient {
                             ))
                         })?
                         .len(),
-                )
+                })
                 .await
             {
                 Ok(data) => {

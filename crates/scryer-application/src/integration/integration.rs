@@ -910,13 +910,12 @@ pub(crate) fn normalize_indexer_config_json(
 
     for field in fields {
         if config_value_is_empty(object.get(&field.key)) {
-            if field.field_type == scryer_domain::ConfigFieldType::Password {
-                if let Some(stored) = persisted.get(&field.key)
-                    && !config_value_is_empty(Some(stored))
-                {
-                    object.insert(field.key.clone(), stored.clone());
-                    continue;
-                }
+            if field.field_type == scryer_domain::ConfigFieldType::Password
+                && let Some(stored) = persisted.get(&field.key)
+                && !config_value_is_empty(Some(stored))
+            {
+                object.insert(field.key.clone(), stored.clone());
+                continue;
             }
             if let Some(default_value) = field
                 .default_value
@@ -978,6 +977,46 @@ fn apply_tracked_download_queue_metadata(
 
 fn tracked_download_queue_snapshot(item: &TrackedDownload) -> TrackedDownloadQueueMetadata {
     TrackedDownloadQueueMetadata::from(item)
+}
+
+fn synthetic_terminal_download_queue_item(
+    tracked: &TrackedDownloadQueueMetadata,
+    primary_client: Option<&DownloadClientConfig>,
+) -> Option<DownloadQueueItem> {
+    let state = match tracked.state {
+        TrackedDownloadState::Imported => DownloadQueueState::Completed,
+        TrackedDownloadState::Failed => DownloadQueueState::Failed,
+        _ => return None,
+    };
+
+    let mut item = tracked.client_item.clone();
+    item.state = state;
+    item.progress_percent = 100;
+    item.remaining_seconds = Some(0);
+    item.attention_required = matches!(tracked.state, TrackedDownloadState::Failed);
+
+    if matches!(tracked.state, TrackedDownloadState::Imported) {
+        item.import_status = Some(ImportStatus::Completed);
+        if item.imported_at.is_none() {
+            item.imported_at = item.last_updated_at.clone();
+        }
+    } else if item.import_status.is_none() {
+        item.import_status = Some(ImportStatus::Failed);
+    }
+
+    if let Some(primary_client) = primary_client {
+        if item.client_id.trim().is_empty() {
+            item.client_id = primary_client.id.clone();
+        }
+        if item.client_name.trim().is_empty() {
+            item.client_name = primary_client.name.clone();
+        }
+        if item.client_type.trim().is_empty() {
+            item.client_type = primary_client.client_type.clone();
+        }
+    }
+
+    Some(item)
 }
 
 pub async fn publish_download_queue_snapshot_events(
@@ -1322,10 +1361,6 @@ impl AppUseCase {
         mut items: Vec<DownloadQueueItem>,
         use_tracked_runtime_snapshot: bool,
     ) -> Vec<DownloadQueueItem> {
-        if items.is_empty() {
-            return items;
-        }
-
         enrich_download_queue_items_from_submissions(self, &mut items).await;
 
         if use_tracked_runtime_snapshot {
@@ -1336,6 +1371,16 @@ impl AppUseCase {
             .await
             {
                 Ok(snapshot) => {
+                    let existing_ids = items
+                        .iter()
+                        .map(|item| {
+                            tracked_download_id(
+                                Some(item.client_id.as_str()),
+                                &item.client_type,
+                                &item.download_client_item_id,
+                            )
+                        })
+                        .collect::<HashSet<_>>();
                     for item in &mut items {
                         let tracked_id = tracked_download_id(
                             Some(item.client_id.as_str()),
@@ -1346,6 +1391,20 @@ impl AppUseCase {
                             apply_tracked_download_queue_metadata(item, metadata);
                         }
                     }
+                    items.extend(snapshot.iter().filter_map(|(tracked_id, metadata)| {
+                        if existing_ids.contains(tracked_id) {
+                            return None;
+                        }
+                        synthetic_terminal_download_queue_item(metadata, primary_client).map(
+                            |mut item| {
+                                if item.download_client_item_id.trim().is_empty() {
+                                    item.download_client_item_id = tracked_id.to_string();
+                                }
+                                apply_tracked_download_queue_metadata(&mut item, metadata);
+                                item
+                            },
+                        )
+                    }));
                 }
                 Err(_) => {
                     tracing::warn!(
@@ -1986,6 +2045,10 @@ impl AppUseCase {
             .await)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "download-history queries mirror the user-visible filter surface explicitly"
+    )]
     pub async fn list_download_history_page(
         &self,
         actor: &User,
@@ -2111,9 +2174,24 @@ impl AppUseCase {
             ))
             .await?;
         if let Some(submission) = submission.as_ref() {
-            self.require_title_library_permission(
+            let Some(title) = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&submission.title_id)
+                .await?
+            else {
+                tracing::warn!(
+                    title_id = %submission.title_id,
+                    client_type,
+                    download_client_item_id,
+                    "download submission scope refers to a missing title; ignoring stale scope"
+                );
+                return Ok(None);
+            };
+            self.require_library_permission(
                 actor,
-                &submission.title_id,
+                &title.library_id,
                 scryer_domain::LibraryPermission::View,
             )
             .await?;
@@ -3468,8 +3546,10 @@ async fn finalize_tracked_terminal_state(
     let cleanup =
         crate::import::import::reconcile_terminal_download_cleanup_for_tracked(app, td, state)
             .await;
-    if crate::import::import::terminal_download_cleanup_is_complete(cleanup) {
-        tracker.stop_tracking(id);
+    if crate::import::import::terminal_download_cleanup_is_complete(cleanup)
+        && let Some(tracked) = tracker.find_mut(id)
+    {
+        tracked.is_trackable = false;
     }
 }
 

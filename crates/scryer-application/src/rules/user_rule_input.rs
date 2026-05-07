@@ -205,15 +205,20 @@ fn is_retagged_release(parsed: &ParsedReleaseMetadata) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SearchRuleInputContext<'a> {
+    pub(crate) category: Option<&'a str>,
+    pub(crate) library_name: Option<&'a str>,
+    pub(crate) title_tags: &'a [String],
+    pub(crate) runtime_minutes: Option<i32>,
+}
+
 pub(crate) fn build_search_rule_input(
     parsed: &ParsedReleaseMetadata,
     profile: &QualityProfile,
     result: &IndexerSearchResult,
     decision: &QualityProfileDecision,
-    category: Option<&str>,
-    library_name: Option<&str>,
-    title_tags: &[String],
-    runtime_minutes: Option<i32>,
+    context: SearchRuleInputContext<'_>,
 ) -> scryer_rules::UserRuleInput {
     build_rule_input(
         parsed,
@@ -229,13 +234,13 @@ pub(crate) fn build_search_rule_input(
         },
         RuleContextInfo {
             title_id: None,
-            library_name,
-            category,
-            title_tags,
+            library_name: context.library_name,
+            category: context.category,
+            title_tags: context.title_tags,
             has_existing_file: false,
             existing_score: None,
             search_mode: "auto",
-            runtime_minutes,
+            runtime_minutes: context.runtime_minutes,
             is_filler: false,
         },
         None,
@@ -390,10 +395,12 @@ mod tests {
                 auto_decision_summary: None,
             },
             &test_decision(),
-            Some("movie"),
-            Some("Movies"),
-            &["anime".to_string()],
-            Some(120),
+            SearchRuleInputContext {
+                category: Some("movie"),
+                library_name: Some("Movies"),
+                title_tags: &["anime".to_string()],
+                runtime_minutes: Some(120),
+            },
         );
 
         let value = serde_json::to_value(input).unwrap();

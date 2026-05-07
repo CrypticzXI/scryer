@@ -35,6 +35,10 @@ async fn apply_streaming_metadata_progress(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "movie scan batches coordinate shared scan state, indexes, and progress reporting"
+)]
 async fn process_ready_movie_candidate_batches(
     app: &AppUseCase,
     actor: &User,
@@ -91,6 +95,10 @@ async fn process_ready_movie_candidate_batches(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series scan batches coordinate shared scan state, indexes, and progress reporting"
+)]
 async fn process_series_candidate_batch(
     app: &AppUseCase,
     actor: &User,
@@ -193,6 +201,10 @@ async fn process_series_candidate_batch(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "movie library scans are top-level orchestration entry points with explicit runtime state"
+)]
 pub(super) async fn scan_library_movies(
     app: &AppUseCase,
     actor: &User,
@@ -406,6 +418,10 @@ pub(super) async fn scan_library_movies(
     Ok(summary)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series library scans are top-level orchestration entry points with explicit runtime state"
+)]
 pub(super) async fn scan_library_series(
     app: &AppUseCase,
     actor: &User,

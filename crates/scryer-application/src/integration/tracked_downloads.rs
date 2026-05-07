@@ -55,6 +55,7 @@ pub struct TrackedDownload {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedDownloadQueueMetadata {
+    pub client_item: DownloadQueueItem,
     pub title_id: Option<String>,
     pub facet: Option<String>,
     pub source_title: Option<String>,
@@ -67,6 +68,7 @@ pub struct TrackedDownloadQueueMetadata {
 impl From<&TrackedDownload> for TrackedDownloadQueueMetadata {
     fn from(value: &TrackedDownload) -> Self {
         Self {
+            client_item: value.client_item.clone(),
             title_id: value.title_id.clone(),
             facet: value.facet.clone(),
             source_title: value.source_title.clone(),

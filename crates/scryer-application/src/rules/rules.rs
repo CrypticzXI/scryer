@@ -74,6 +74,10 @@ impl AppUseCase {
         Ok(rule_set)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the application boundary mirrors the editable rule-set fields explicitly"
+    )]
     pub async fn update_rule_set(
         &self,
         actor: &User,

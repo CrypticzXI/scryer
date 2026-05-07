@@ -13,6 +13,10 @@ struct PersistedScannedMediaFile {
     db_elapsed: Duration,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "media-file persistence combines source metadata, cache state, and summary accounting"
+)]
 async fn persist_or_reuse_scanned_media_file(
     app: &AppUseCase,
     title: &Title,
@@ -272,6 +276,10 @@ async fn ensure_movie_collection_for_file(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "title-scan finalization coordinates persistence, linking, and summary accounting together"
+)]
 pub(crate) async fn finalize_title_scan_file(
     app: &AppUseCase,
     title: &Title,

@@ -475,22 +475,35 @@ async fn legacy_external_rows_are_hidden_and_do_not_block_reinstall() {
 }
 
 #[tokio::test]
-async fn registry_cache_row_uses_supported_shape_and_survives_cleanup() {
-    let (services, db) = temp_services("scryer_plugin_registry_cache_shape").await;
+async fn plugin_catalog_source_rows_survive_cleanup() {
+    let (services, db) = temp_services("scryer_plugin_catalog_source_shape").await;
     let customization = SqliteCustomizationStore::new(&services);
-    let registry_json = r#"{"schema_version":1,"plugins":[],"rule_packs":[]}"#;
+    let source = scryer_domain::PluginCatalogSource {
+        source_key: "__central_catalog_v2".to_string(),
+        source_kind: "central".to_string(),
+        source_url: "https://example.com/catalog-v2.min.json.zst".to_string(),
+        github_repo: Some("scryer-media/scryer-plugins".to_string()),
+        support_tier: scryer_domain::PluginSupportTier::Official,
+        catalog_json: Some(
+            r#"{"schema_version":"scryer.plugin.catalog.v2","plugins":[],"rule_packs":[]}"#
+                .to_string(),
+        ),
+        last_success_at: Some(Utc::now()),
+        last_error: None,
+        updated_at: Utc::now(),
+    };
 
     customization
-        .store_registry_cache(registry_json)
+        .upsert_plugin_catalog_source(&source)
         .await
-        .expect("store registry cache");
+        .expect("store plugin catalog source");
 
     assert_eq!(
         customization
-            .get_registry_cache()
+            .get_plugin_catalog_source("__central_catalog_v2")
             .await
-            .expect("read registry cache"),
-        Some(registry_json.to_string())
+            .expect("read plugin catalog source"),
+        Some(source.clone())
     );
 
     let removed = customization
@@ -500,20 +513,20 @@ async fn registry_cache_row_uses_supported_shape_and_survives_cleanup() {
     assert!(removed.is_empty());
     assert_eq!(
         customization
-            .get_registry_cache()
+            .get_plugin_catalog_source("__central_catalog_v2")
             .await
-            .expect("read registry cache after cleanup"),
-        Some(registry_json.to_string())
+            .expect("read plugin catalog source after cleanup"),
+        Some(source.clone())
     );
 
     let row = sqlx::query(
-        "SELECT source_kind, wasm_encoding FROM plugin_installations WHERE plugin_id = '__registry_cache'",
+        "SELECT source_kind, support_tier FROM plugin_catalog_sources WHERE source_key = '__central_catalog_v2'",
     )
     .fetch_one(&services.pool)
     .await
-    .expect("load registry cache row");
-    assert_eq!(row.get::<String, _>("source_kind"), "bundled");
-    assert_eq!(row.get::<String, _>("wasm_encoding"), "identity");
+    .expect("load plugin catalog source row");
+    assert_eq!(row.get::<String, _>("source_kind"), "central");
+    assert_eq!(row.get::<String, _>("support_tier"), "official");
 
     let _ = std::fs::remove_file(db);
 }

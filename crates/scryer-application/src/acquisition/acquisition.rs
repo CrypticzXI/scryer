@@ -828,6 +828,10 @@ fn title_scoped_domain_event(
 }
 
 // Canonical owner for all title-affecting failed release / blocklist side effects.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "failure recording persists the full release-attribution envelope for auditability"
+)]
 async fn record_failed_release_outcome(
     app: &AppUseCase,
     title_id: Option<&str>,
@@ -1980,6 +1984,10 @@ impl AppUseCase {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "wanted-item processing coordinates shared acquisition state across a single loop iteration"
+)]
 async fn process_single_wanted_item(
     app: &AppUseCase,
     item: &WantedItem,

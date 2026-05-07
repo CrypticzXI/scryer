@@ -4525,6 +4525,10 @@ impl AppUseCase {
         Ok(collection)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "collection creation mirrors the editable collection fields at the application boundary"
+    )]
     pub async fn create_collection(
         &self,
         actor: &User,
@@ -4579,6 +4583,10 @@ impl AppUseCase {
         Ok(collection)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "collection updates keep each mutable field explicit for callers and validation"
+    )]
     pub async fn update_collection(
         &self,
         actor: &User,
@@ -4673,6 +4681,10 @@ impl AppUseCase {
         Ok(collection)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "episode creation mirrors the full editable episode form at the application boundary"
+    )]
     pub async fn create_episode(
         &self,
         actor: &User,
@@ -4730,6 +4742,10 @@ impl AppUseCase {
         Ok(episode)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "episode updates keep each mutable field explicit for validation and auditing"
+    )]
     pub async fn update_episode(
         &self,
         actor: &User,

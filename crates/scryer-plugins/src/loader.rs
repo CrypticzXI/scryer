@@ -22,7 +22,7 @@ use crate::notification_adapter::WasmNotificationClient;
 use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::types::{
-    ConfigFieldRole, ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD,
+    ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD,
     EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY,
     EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS,
     EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND,
@@ -200,7 +200,7 @@ fn builtin_indexer_provider_types() -> Vec<String> {
         builtin_provider_types_from_assets(
             crate::builtins::INDEXER_BUILTINS,
             is_indexer_plugin_type,
-            apply_builtin_indexer_overrides,
+            apply_indexer_provider_overrides,
         )
     });
 
@@ -246,6 +246,7 @@ impl WasmIndexerPluginProvider {
         plugin: ExternalPluginWasm<'_>,
     ) -> Result<LoadedPluginRecord, String> {
         let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
+        let descriptor = apply_indexer_provider_overrides(descriptor);
         if !validate_indexer_descriptor(
             &descriptor,
             PluginLoadSource::External {
@@ -260,25 +261,23 @@ impl WasmIndexerPluginProvider {
     fn prepare_runtime_plugin_record(
         plugin: RuntimePluginLoad,
     ) -> Result<LoadedPluginRecord, String> {
+        let descriptor = apply_indexer_provider_overrides(plugin.descriptor);
         if !validate_indexer_descriptor(
-            &plugin.descriptor,
+            &descriptor,
             PluginLoadSource::External {
                 first_party: plugin.first_party,
             },
         ) {
             return Err("indexer descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(
-            plugin.descriptor,
-            plugin.wasm_bytes,
-        ))
+        Ok(LoadedPluginRecord::new(descriptor, plugin.wasm_bytes))
     }
 
     fn prepare_builtin_asset_record(
         asset: crate::builtins::BuiltinPluginAsset,
     ) -> Result<LoadedPluginRecord, String> {
         let descriptor = parse_builtin_descriptor(asset)?;
-        let descriptor = apply_builtin_indexer_overrides(descriptor);
+        let descriptor = apply_indexer_provider_overrides(descriptor);
         let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
         if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin) {
             return Err("built-in indexer descriptor rejected".to_string());
@@ -383,9 +382,32 @@ impl WasmIndexerPluginProvider {
     }
 }
 
-fn apply_builtin_indexer_overrides(mut descriptor: PluginDescriptor) -> PluginDescriptor {
+fn apply_indexer_provider_overrides(mut descriptor: PluginDescriptor) -> PluginDescriptor {
+    let missing_connection_url = !descriptor
+        .config_fields()
+        .iter()
+        .any(|field| field.role == Some(ConfigFieldRole::ConnectionUrl));
+    if descriptor
+        .provider_type()
+        .eq_ignore_ascii_case("torrent_rss")
+        && missing_connection_url
+        && let Some(feed_url_field) = descriptor
+            .config_fields_mut()
+            .iter_mut()
+            .find(|field| field.key.eq_ignore_ascii_case("feed_url"))
+    {
+        feed_url_field.role = Some(ConfigFieldRole::ConnectionUrl);
+    }
+
     if descriptor.provider_type().eq_ignore_ascii_case("nzbgeek") {
         descriptor.set_default_base_url(Some(NZBGEEK_DEFAULT_BASE_URL.to_string()));
+        if let Some(base_url_field) = descriptor
+            .config_fields_mut()
+            .iter_mut()
+            .find(|field| field.key == "base_url")
+        {
+            base_url_field.default_value = Some(NZBGEEK_DEFAULT_BASE_URL.to_string());
+        }
     }
     if descriptor.provider_type().eq_ignore_ascii_case("dognzb") {
         descriptor.set_default_base_url(Some(DOGNZB_DEFAULT_BASE_URL.to_string()));
@@ -1354,7 +1376,7 @@ fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
         .filter(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
         .count();
 
-    match connection_url_count {
+    let has_connection_url = match connection_url_count {
         1 => true,
         0 => {
             warn!(
@@ -1372,7 +1394,12 @@ fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
             );
             false
         }
-    } && if indexer_provider_requires_api_key(descriptor.provider_type())
+    };
+    if !has_connection_url {
+        return false;
+    }
+
+    if indexer_provider_requires_api_key(descriptor.provider_type())
         && !indexer_has_declared_api_key_field(descriptor)
     {
         warn!(
@@ -1380,10 +1407,10 @@ fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
             provider_type = descriptor.provider_type(),
             "indexer descriptor rejected: missing declared api_key config field"
         );
-        false
-    } else {
-        true
+        return false;
     }
+
+    true
 }
 
 fn indexer_provider_requires_api_key(provider_type: &str) -> bool {
@@ -3119,6 +3146,42 @@ mod tests {
                 "expected {provider_type} to validate without api_key"
             );
         }
+    }
+
+    #[test]
+    fn torrent_rss_feed_url_is_backfilled_as_connection_url() {
+        let mut descriptor = descriptor("torrent_indexer");
+        set_provider_type(&mut descriptor, "torrent_rss");
+
+        let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
+            panic!("expected indexer descriptor");
+        };
+        indexer.config_fields = vec![ConfigFieldDef {
+            key: "feed_url".to_string(),
+            label: "Feed URL".to_string(),
+            field_type: ConfigFieldType::String,
+            required: true,
+            default_value: None,
+            value_source: ConfigFieldValueSource::User,
+            role: None,
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        }];
+
+        let descriptor = apply_indexer_provider_overrides(descriptor);
+
+        assert!(
+            descriptor
+                .config_fields()
+                .iter()
+                .find(|field| field.key == "feed_url")
+                .is_some_and(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
+        );
+        assert!(validate_indexer_descriptor(
+            &descriptor,
+            PluginLoadSource::External { first_party: false }
+        ));
     }
 
     #[test]

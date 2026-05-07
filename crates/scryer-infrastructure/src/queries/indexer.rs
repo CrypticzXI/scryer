@@ -546,3 +546,91 @@ pub(crate) async fn is_indexer_at_quota(pool: &SqlitePool, indexer_id: &str) -> 
         _ => Ok(false),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::{get_indexer_config_query, migrate_legacy_indexer_config_sources_query};
+
+    async fn create_test_indexers_table(pool: &sqlx::SqlitePool) {
+        sqlx::query(
+            "CREATE TABLE indexers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider_type TEXT NOT NULL,
+                base_url TEXT NOT NULL DEFAULT '',
+                api_key_encrypted TEXT,
+                rate_limit_seconds INTEGER,
+                rate_limit_burst INTEGER,
+                disabled_until TEXT,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                enable_interactive_search INTEGER NOT NULL DEFAULT 1,
+                enable_auto_search INTEGER NOT NULL DEFAULT 1,
+                last_health_status TEXT,
+                last_error_at TEXT,
+                config_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await
+        .expect("indexers table should be created");
+    }
+
+    #[tokio::test]
+    async fn migration_clears_legacy_api_key_when_config_json_already_has_it() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        create_test_indexers_table(&pool).await;
+
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO indexers (
+                id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
+                rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
+                enable_auto_search, last_health_status, last_error_at, config_json, created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("idx-1")
+        .bind("Test Indexer")
+        .bind("newznab")
+        .bind("")
+        .bind("legacy-secret")
+        .bind(None::<i64>)
+        .bind(None::<i64>)
+        .bind(None::<String>)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .bind(r#"{"api_key":"config-secret"}"#)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy row should insert");
+
+        let migrated = migrate_legacy_indexer_config_sources_query(&pool, None)
+            .await
+            .expect("migration should succeed");
+        assert_eq!(migrated, 1);
+
+        let config = get_indexer_config_query(&pool, "idx-1", None)
+            .await
+            .expect("query should succeed")
+            .expect("config should exist");
+        assert_eq!(
+            config.config_json.as_deref(),
+            Some(r#"{"api_key":"config-secret"}"#)
+        );
+        assert_eq!(config.api_key_encrypted, None);
+    }
+}

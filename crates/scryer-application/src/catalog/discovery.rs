@@ -261,6 +261,10 @@ impl AppUseCase {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "release scoring needs the full search context to produce deterministic ranking decisions"
+    )]
     pub(crate) async fn score_release_results(
         &self,
         mut raw_results: Vec<IndexerSearchResult>,
@@ -479,10 +483,12 @@ impl AppUseCase {
                     &resolved_profile,
                     &result,
                     &decision,
-                    category,
-                    library_name.as_deref(),
-                    title_tags,
-                    candidate_runtime_minutes,
+                    crate::user_rule_input::SearchRuleInputContext {
+                        category,
+                        library_name: library_name.as_deref(),
+                        title_tags,
+                        runtime_minutes: candidate_runtime_minutes,
+                    },
                 );
                 let facet = category.unwrap_or("movie");
                 match user_evaluator.evaluate(&user_input, facet) {
@@ -1369,20 +1375,14 @@ pub(crate) fn build_user_rule_input(
     profile: &QualityProfile,
     result: &IndexerSearchResult,
     decision: &QualityProfileDecision,
-    category: Option<&str>,
-    library_name: Option<&str>,
-    title_tags: &[String],
-    runtime_minutes: Option<i32>,
+    context: crate::user_rule_input::SearchRuleInputContext<'_>,
 ) -> scryer_rules::UserRuleInput {
     crate::user_rule_input::build_search_rule_input(
         parsed,
         profile,
         result,
         decision,
-        category,
-        library_name,
-        title_tags,
-        runtime_minutes,
+        context,
     )
 }
 

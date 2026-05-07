@@ -634,12 +634,6 @@ impl PluginInstallationRepository for NullPluginInstallationRepository {
     ) -> AppResult<()> {
         Ok(())
     }
-    async fn store_registry_cache(&self, _json: &str) -> AppResult<()> {
-        Ok(())
-    }
-    async fn get_registry_cache(&self) -> AppResult<Option<String>> {
-        Ok(None)
-    }
     async fn upsert_plugin_catalog_source(
         &self,
         _source: &scryer_domain::PluginCatalogSource,
@@ -1300,7 +1294,7 @@ fn null_default_library(facet: MediaFacet) -> Library {
         id: scryer_domain::default_library_id_for_facet(&facet),
         facet: facet.clone(),
         name: format!("Default {}", facet.as_str()),
-        slug: "default".to_string(),
+        slug: scryer_domain::default_library_slug_for_facet(&facet).to_string(),
         is_default: true,
         roots: Vec::new(),
         created_at: now,

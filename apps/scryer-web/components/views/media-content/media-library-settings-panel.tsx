@@ -1053,15 +1053,17 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     ? t("settings.libraryCreateButton")
                     : t("settings.librarySaveButton")}
                 </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={handleDeleteLibrary}
-                  disabled={actionBusy || mode === "new" || !activeLibrary || activeLibrary.isDefault}
-                >
-                  <Trash2 className="mr-1.5 h-4 w-4" />
-                  {t("settings.libraryDeleteButton")}
-                </Button>
+                {mode !== "new" && activeLibrary && !activeLibrary.isDefault ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleDeleteLibrary}
+                    disabled={actionBusy}
+                  >
+                    <Trash2 className="mr-1.5 h-4 w-4" />
+                    {t("settings.libraryDeleteButton")}
+                  </Button>
+                ) : null}
               </div>
             </div>
           ) : null}

@@ -1,8 +1,10 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::{
-    NotificationChannelConfig, PersistedPluginWasmPayload, PluginHostBindingId, PluginWasmEncoding,
+    NotificationChannelConfig, PersistedPluginWasmPayload, PluginHostBindingId, PluginSupportTier,
+    PluginWasmEncoding,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
@@ -13,7 +15,7 @@ use tokio::sync::Mutex;
 struct MockPluginInstallationRepo {
     installations: Arc<Mutex<Vec<PluginInstallation>>>,
     payloads: Arc<Mutex<HashMap<String, PersistedPluginWasmPayload>>>,
-    registry_cache: Arc<Mutex<Option<String>>>,
+    catalog_sources: Arc<Mutex<Vec<scryer_domain::PluginCatalogSource>>>,
     seeded: Arc<Mutex<Vec<SeededPluginRecord>>>,
     get_enabled_payload_calls: Arc<AtomicUsize>,
     get_single_payload_calls: Arc<AtomicUsize>,
@@ -30,15 +32,214 @@ type SeededPluginRecord = (
     String,
 );
 
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogFixtureManifest {
+    #[serde(default)]
+    plugins: Vec<CatalogFixtureEntry>,
+    #[serde(default)]
+    rule_packs: Vec<RulePackCatalogEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogFixtureEntry {
+    id: String,
+    name: String,
+    description: String,
+    plugin_type: String,
+    provider_type: String,
+    #[serde(default = "catalog_fixture_default_official")]
+    official: bool,
+    #[serde(default)]
+    releases: Vec<CatalogFixtureRelease>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CatalogFixtureRelease {
+    version: String,
+    #[serde(default = "catalog_fixture_default_sdk_constraint")]
+    sdk_constraint: String,
+    #[serde(default)]
+    builtin: bool,
+    #[serde(default)]
+    wasm_url: Option<String>,
+}
+
+fn catalog_fixture_default_official() -> bool {
+    true
+}
+
+fn catalog_fixture_default_sdk_constraint() -> String {
+    scryer_plugin_sdk::current_sdk_constraint()
+}
+
 impl MockPluginInstallationRepo {
     fn new() -> Self {
         Self {
             installations: Arc::new(Mutex::new(vec![])),
             payloads: Arc::new(Mutex::new(HashMap::new())),
-            registry_cache: Arc::new(Mutex::new(None)),
+            catalog_sources: Arc::new(Mutex::new(vec![])),
             seeded: Arc::new(Mutex::new(vec![])),
             get_enabled_payload_calls: Arc::new(AtomicUsize::new(0)),
             get_single_payload_calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    async fn store_catalog_fixture_json(&self, json: &str) -> AppResult<()> {
+        let fixture: CatalogFixtureManifest = serde_json::from_str(json).map_err(|error| {
+            AppError::Validation(format!("invalid catalog fixture JSON: {error}"))
+        })?;
+        self.store_catalog_fixture(&fixture).await
+    }
+
+    async fn store_catalog_fixture(&self, fixture: &CatalogFixtureManifest) -> AppResult<()> {
+        let mut sources = self.catalog_sources.lock().await;
+        sources.retain(|source| {
+            source.source_key != CENTRAL_CATALOG_SOURCE_KEY
+                && !source.source_key.starts_with("child:")
+        });
+
+        if fixture.plugins.is_empty() && fixture.rule_packs.is_empty() {
+            return Ok(());
+        }
+
+        let mut central_plugins = Vec::new();
+        let now = Utc::now();
+
+        for plugin in &fixture.plugins {
+            let source_repo = fixture_source_repo(&plugin.id);
+            let github_repo = GitHubRepo::parse(&source_repo)?;
+            central_plugins.push(CentralCatalogEntry {
+                id: plugin.id.clone(),
+                name: plugin.name.clone(),
+                description: plugin.description.clone(),
+                plugin_type: plugin.plugin_type.clone(),
+                provider_type: plugin.provider_type.clone(),
+                publisher: "scryer".to_string(),
+                support_tier: if plugin.official {
+                    PluginSupportTier::Official
+                } else {
+                    PluginSupportTier::Unverified
+                },
+                docs_url: format!("https://example.com/{}/docs", plugin.id),
+                source_repo: source_repo.clone(),
+                child_catalog_url: fixture_child_catalog_url(
+                    &github_repo,
+                    plugin
+                        .releases
+                        .first()
+                        .map(|release| release.version.as_str()),
+                ),
+                required_signer: RequiredSigner {
+                    github_repository: github_repo.slug(),
+                    github_workflow: None,
+                },
+            });
+
+            let releases = plugin
+                .releases
+                .iter()
+                .filter(|release| !release.builtin)
+                .filter_map(|release| {
+                    release.wasm_url.as_ref()?;
+                    Some(ChildCatalogRelease {
+                        version: release.version.clone(),
+                        sdk_constraint: release.sdk_constraint.clone(),
+                        artifact_manifest_url: format!(
+                            "{}v{}/plugin.manifest.json",
+                            github_repo.release_asset_prefix(),
+                            release.version
+                        ),
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let child = ChildCatalog {
+                schema_version: "scryer.plugin.child_catalog.v2".to_string(),
+                id: plugin.id.clone(),
+                name: plugin.name.clone(),
+                description: plugin.description.clone(),
+                plugin_type: plugin.plugin_type.clone(),
+                provider_type: plugin.provider_type.clone(),
+                publisher: "scryer".to_string(),
+                support_tier: if plugin.official {
+                    PluginSupportTier::Official
+                } else {
+                    PluginSupportTier::Unverified
+                },
+                docs_url: format!("https://example.com/{}/docs", plugin.id),
+                source_repo,
+                releases,
+            };
+
+            sources.push(scryer_domain::PluginCatalogSource {
+                source_key: child_catalog_source_key(&plugin.id),
+                source_kind: "child".to_string(),
+                source_url: fixture_child_catalog_url(
+                    &github_repo,
+                    plugin
+                        .releases
+                        .first()
+                        .map(|release| release.version.as_str()),
+                ),
+                github_repo: Some(github_repo.slug()),
+                support_tier: if plugin.official {
+                    PluginSupportTier::Official
+                } else {
+                    PluginSupportTier::Unverified
+                },
+                catalog_json: Some(serde_json::to_string(&child).expect("serialize child catalog")),
+                last_success_at: Some(now),
+                last_error: None,
+                updated_at: now,
+            });
+        }
+
+        let central = CentralCatalog {
+            schema_version: "scryer.plugin.catalog.v2".to_string(),
+            plugins: central_plugins,
+            rule_packs: fixture.rule_packs.clone(),
+        };
+
+        sources.push(scryer_domain::PluginCatalogSource {
+            source_key: CENTRAL_CATALOG_SOURCE_KEY.to_string(),
+            source_kind: "central".to_string(),
+            source_url: plugin_catalog_url(),
+            github_repo: Some(CENTRAL_CATALOG_REPO.to_string()),
+            support_tier: PluginSupportTier::Official,
+            catalog_json: Some(serde_json::to_string(&central).expect("serialize central catalog")),
+            last_success_at: Some(now),
+            last_error: None,
+            updated_at: now,
+        });
+
+        Ok(())
+    }
+
+    async fn store_raw_catalog_source(
+        &self,
+        source_key: &str,
+        source_kind: &str,
+        catalog_json: Option<String>,
+    ) {
+        let source = scryer_domain::PluginCatalogSource {
+            source_key: source_key.to_string(),
+            source_kind: source_kind.to_string(),
+            source_url: "https://example.com/catalog.json".to_string(),
+            github_repo: None,
+            support_tier: PluginSupportTier::Official,
+            catalog_json,
+            last_success_at: Some(Utc::now()),
+            last_error: None,
+            updated_at: Utc::now(),
+        };
+        let mut sources = self.catalog_sources.lock().await;
+        if let Some(existing) = sources
+            .iter_mut()
+            .find(|existing| existing.source_key == source.source_key)
+        {
+            *existing = source;
+        } else {
+            sources.push(source);
         }
     }
 }
@@ -198,33 +399,39 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
         Ok(())
     }
 
-    async fn store_registry_cache(&self, json: &str) -> AppResult<()> {
-        *self.registry_cache.lock().await = Some(json.to_string());
-        Ok(())
-    }
-
-    async fn get_registry_cache(&self) -> AppResult<Option<String>> {
-        Ok(self.registry_cache.lock().await.clone())
-    }
-
     async fn upsert_plugin_catalog_source(
         &self,
-        _source: &scryer_domain::PluginCatalogSource,
+        source: &scryer_domain::PluginCatalogSource,
     ) -> AppResult<()> {
+        let mut sources = self.catalog_sources.lock().await;
+        if let Some(existing) = sources
+            .iter_mut()
+            .find(|existing| existing.source_key == source.source_key)
+        {
+            *existing = source.clone();
+        } else {
+            sources.push(source.clone());
+        }
         Ok(())
     }
 
     async fn list_plugin_catalog_sources(
         &self,
     ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {
-        Ok(Vec::new())
+        Ok(self.catalog_sources.lock().await.clone())
     }
 
     async fn get_plugin_catalog_source(
         &self,
-        _source_key: &str,
+        source_key: &str,
     ) -> AppResult<Option<scryer_domain::PluginCatalogSource>> {
-        Ok(None)
+        Ok(self
+            .catalog_sources
+            .lock()
+            .await
+            .iter()
+            .find(|source| source.source_key == source_key)
+            .cloned())
     }
 
     async fn upsert_plugin_catalog_status(
@@ -735,9 +942,23 @@ fn make_runtime_plugin_load(
     }
 }
 
-fn make_registry_json(entries: &[serde_json::Value]) -> String {
+fn fixture_source_repo(plugin_id: &str) -> String {
+    format!(
+        "https://github.com/scryer-media/test-plugin-{}",
+        plugin_id.replace('_', "-")
+    )
+}
+
+fn fixture_child_catalog_url(github_repo: &GitHubRepo, version: Option<&str>) -> String {
+    format!(
+        "{}v{}/catalog-v2.min.json.zst",
+        github_repo.release_asset_prefix(),
+        version.unwrap_or("0.1.0")
+    )
+}
+
+fn make_catalog_fixture_json(entries: &[serde_json::Value]) -> String {
     serde_json::json!({
-        "schema_version": 1,
         "plugins": entries
     })
     .to_string()
@@ -754,7 +975,20 @@ fn assert_not_available_from_catalog(err: AppError, plugin_id: &str) {
     }
 }
 
-fn registry_entry(
+fn downloaded_release_contract(
+    version: &str,
+    sdk_constraint: &str,
+    scryer_constraint: Option<&str>,
+) -> DownloadedPluginReleaseContract {
+    DownloadedPluginReleaseContract {
+        version: version.to_string(),
+        sdk_version: Some(scryer_plugin_sdk::SDK_VERSION.to_string()),
+        sdk_constraint: sdk_constraint.to_string(),
+        scryer_constraint: scryer_constraint.map(str::to_string),
+    }
+}
+
+fn catalog_entry(
     id: &str,
     version: &str,
     builtin: bool,
@@ -762,13 +996,11 @@ fn registry_entry(
 ) -> serde_json::Value {
     let mut release = serde_json::json!({
         "version": version,
-        "sdk_version": scryer_plugin_sdk::SDK_VERSION,
         "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
         "builtin": builtin,
     });
     if let Some(url) = wasm_url {
         release["wasm_url"] = serde_json::json!(url);
-        release["wasm_sha256"] = serde_json::json!("abc123");
     }
 
     serde_json::json!({
@@ -782,27 +1014,27 @@ fn registry_entry(
     })
 }
 
-fn registry_entry_with_type(
+fn catalog_entry_with_type(
     id: &str,
     plugin_type: &str,
     version: &str,
     builtin: bool,
     wasm_url: Option<&str>,
 ) -> serde_json::Value {
-    let mut entry = registry_entry(id, version, builtin, wasm_url);
+    let mut entry = catalog_entry(id, version, builtin, wasm_url);
     entry["plugin_type"] = serde_json::json!(plugin_type);
     entry
 }
 
-fn registry_entry_with_min_scryer_version(
+fn catalog_entry_with_sdk_constraint(
     id: &str,
     version: &str,
     builtin: bool,
     wasm_url: Option<&str>,
-    min_scryer_version: &str,
+    sdk_constraint: &str,
 ) -> serde_json::Value {
-    let mut entry = registry_entry(id, version, builtin, wasm_url);
-    entry["releases"][0]["min_scryer_version"] = serde_json::json!(min_scryer_version);
+    let mut entry = catalog_entry(id, version, builtin, wasm_url);
+    entry["releases"][0]["sdk_constraint"] = serde_json::json!(sdk_constraint);
     entry
 }
 
@@ -1623,39 +1855,10 @@ async fn uninstall_notification_plugin_touches_only_notification_family() {
     );
 }
 
-// ── RegistryManifest serde ───────────────────────────────────────────────────
-
-#[test]
-fn registry_manifest_deserialize_with_defaults() {
-    let json = r#"{
-        "schema_version": 1,
-        "plugins": [{
-            "id": "test",
-            "name": "Test",
-            "description": "A test plugin",
-            "plugin_type": "indexer",
-            "provider_type": "test",
-            "version": "0.1.0"
-        }]
-    }"#;
-    let manifest: RegistryManifest = serde_json::from_str(json).unwrap();
-    assert_eq!(manifest.plugins.len(), 1);
-    let entry = &manifest.plugins[0];
-    assert_eq!(entry.id, "test");
-    assert_eq!(entry.author, ""); // default
-    assert!(!entry.official); // default false
-    assert!(entry.releases.is_empty());
-    assert!(entry.source_url.is_none());
-    assert!(entry.wasm_url.is_none());
-    assert!(entry.wasm_sha256.is_none());
-    assert!(entry.legacy_min_scryer_version.is_none());
-}
-
 #[tokio::test]
-async fn list_rule_pack_registry_reads_cached_legacy_registry_manifest() {
+async fn list_rule_pack_registry_reads_cached_central_catalog() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let registry_json = serde_json::json!({
-        "schema_version": 1,
+    let catalog_json = serde_json::json!({
         "plugins": [],
         "rule_packs": [{
             "id": "anime-defaults",
@@ -1663,14 +1866,12 @@ async fn list_rule_pack_registry_reads_cached_legacy_registry_manifest() {
             "description": "Helpful anime rules",
             "author": "scryer",
             "version": "0.1.0",
-            "url": "https://example.com/rule-pack.json"
+            "url": "https://github.com/scryer-media/scryer-plugins/releases/download/catalog%2Fv2/anime-scoring.json"
         }]
     })
     .to_string();
-    let manifest: RegistryManifest = serde_json::from_str(&registry_json).unwrap();
-
-    h.app
-        .apply_plugin_registry_manifest(&manifest, &registry_json)
+    h.plugin_repo
+        .store_catalog_fixture_json(&catalog_json)
         .await
         .unwrap();
 
@@ -1682,20 +1883,23 @@ async fn list_rule_pack_registry_reads_cached_legacy_registry_manifest() {
 // ── list_available_plugins ───────────────────────────────────────────────────
 
 #[tokio::test]
-async fn list_empty_registry_empty_installations() {
+async fn list_empty_catalog_empty_installations() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert!(result.is_empty());
 }
 
 #[tokio::test]
-async fn list_registry_entries_not_installed() {
+async fn list_catalog_entries_not_installed() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[
-        registry_entry("alpha", "1.0.0", false, Some("https://example.com/a.wasm")),
-        registry_entry("beta", "2.0.0", false, Some("https://example.com/b.wasm")),
+    let json = make_catalog_fixture_json(&[
+        catalog_entry("alpha", "1.0.0", false, Some("https://example.com/a.wasm")),
+        catalog_entry("beta", "2.0.0", false, Some("https://example.com/b.wasm")),
     ]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert_eq!(result.len(), 2);
@@ -1712,13 +1916,16 @@ async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_o
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let initiator = admin();
     let other_actor = config_admin();
-    let json = make_registry_json(&[registry_entry(
+    let json = make_catalog_fixture_json(&[catalog_entry(
         "alpha",
         "1.0.0",
         false,
         Some("https://example.com/a.wasm"),
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
     h.app
         .runtime
         .plugins
@@ -1744,19 +1951,22 @@ async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_o
 }
 
 #[tokio::test]
-async fn list_keeps_incompatible_registry_entries_visible_as_blocked() {
+async fn list_keeps_incompatible_catalog_entries_visible_as_blocked() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[
-        registry_entry("alpha", "1.0.0", false, Some("https://example.com/a.wasm")),
-        registry_entry_with_min_scryer_version(
+    let json = make_catalog_fixture_json(&[
+        catalog_entry("alpha", "1.0.0", false, Some("https://example.com/a.wasm")),
+        catalog_entry_with_sdk_constraint(
             "torrent-rss",
             "1.0.0",
             false,
             Some("https://example.com/torrent-rss.wasm"),
-            "99.0.0",
+            ">=99.0.0",
         ),
     ]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert_eq!(result.len(), 2);
@@ -1772,16 +1982,19 @@ async fn list_keeps_incompatible_registry_entries_visible_as_blocked() {
 }
 
 #[tokio::test]
-async fn list_keeps_installed_incompatible_registry_entries_visible() {
+async fn list_keeps_installed_incompatible_catalog_entries_visible() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry_with_min_scryer_version(
+    let json = make_catalog_fixture_json(&[catalog_entry_with_sdk_constraint(
         "torrent-rss",
         "2.0.0",
         false,
         Some("https://example.com/torrent-rss.wasm"),
-        "99.0.0",
+        ">=99.0.0",
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
     h.plugin_repo
         .installations
         .lock()
@@ -1796,23 +2009,26 @@ async fn list_keeps_installed_incompatible_registry_entries_visible() {
 }
 
 #[tokio::test]
-async fn list_hides_registry_entries_with_invalid_min_version() {
+async fn list_hides_catalog_entries_with_invalid_sdk_constraint() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry_with_min_scryer_version(
+    let json = make_catalog_fixture_json(&[catalog_entry_with_sdk_constraint(
         "torrent-rss",
         "1.0.0",
         false,
         Some("https://example.com/torrent-rss.wasm"),
-        "not-a-semver",
+        "not-a-version-req",
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert!(result.is_empty());
 }
 
 #[test]
-fn installed_host_block_uses_persisted_scryer_constraint_without_registry() {
+fn installed_host_block_uses_persisted_scryer_constraint_without_catalog() {
     let mut installation = make_installation("alpha", "0.1.0", false, true);
     installation.scryer_constraint = Some(">=99.0.0".to_string());
 
@@ -1864,63 +2080,23 @@ async fn decode_persisted_plugin_wasm_payload_rejects_digest_mismatch() {
 }
 
 #[tokio::test]
-async fn apply_plugin_registry_manifest_backfills_release_metadata_and_reloads_provider() {
-    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let installation = make_installation("alpha", "0.2.0", false, true);
-    h.plugin_repo.installations.lock().await.push(installation);
-
-    let mut entry = registry_entry_with_min_scryer_version(
-        "alpha",
-        "0.2.0",
-        false,
-        Some("https://example.com/a.wasm"),
-        ">=99.0.0",
-    );
-    entry["releases"][0]["source_url"] = serde_json::json!("https://example.com/a");
-    let json = make_registry_json(&[entry]);
-    let manifest: RegistryManifest = serde_json::from_str(&json).unwrap();
-
-    h.app
-        .apply_plugin_registry_manifest(&manifest, &json)
-        .await
-        .unwrap();
-
-    let installation = h
-        .plugin_repo
-        .get_plugin_installation("alpha")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(installation.scryer_constraint.as_deref(), Some(">=99.0.0"));
-    assert_eq!(
-        installation.source_url.as_deref(),
-        Some("https://example.com/a")
-    );
-    assert_eq!(
-        h.plugin_provider
-            .as_ref()
-            .unwrap()
-            .reload_count
-            .load(Ordering::Relaxed),
-        1
-    );
-}
-
-#[tokio::test]
-async fn list_available_prefers_specific_indexer_class_over_legacy_registry_type() {
+async fn list_available_prefers_specific_indexer_class_over_catalog_type() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let mut installation = make_installation("torznab", "0.1.0", false, true);
     installation.plugin_type = "torrent_indexer".to_string();
     h.plugin_repo.installations.lock().await.push(installation);
 
-    let json = make_registry_json(&[registry_entry_with_type(
+    let json = make_catalog_fixture_json(&[catalog_entry_with_type(
         "torznab",
         "indexer",
         "0.2.0",
         false,
         Some("https://example.com/torznab.wasm"),
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     let torznab = result.iter().find(|p| p.id == "torznab").unwrap();
@@ -1928,15 +2104,18 @@ async fn list_available_prefers_specific_indexer_class_over_legacy_registry_type
 }
 
 #[tokio::test]
-async fn list_installed_and_in_registry() {
+async fn list_installed_and_in_catalog() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry(
+    let json = make_catalog_fixture_json(&[catalog_entry(
         "alpha",
         "0.2.0",
         false,
         Some("https://example.com/a.wasm"),
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
     h.plugin_repo
         .installations
         .lock()
@@ -1955,8 +2134,11 @@ async fn list_installed_and_in_registry() {
 #[tokio::test]
 async fn list_installed_at_latest() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry("alpha", "0.1.0", false, None)]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    let json = make_catalog_fixture_json(&[catalog_entry("alpha", "0.1.0", false, None)]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
     h.plugin_repo
         .installations
         .lock()
@@ -1968,10 +2150,13 @@ async fn list_installed_at_latest() {
 }
 
 #[tokio::test]
-async fn list_installed_ahead_of_registry() {
+async fn list_installed_ahead_of_catalog() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry("alpha", "0.1.0", false, None)]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    let json = make_catalog_fixture_json(&[catalog_entry("alpha", "0.1.0", false, None)]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
     h.plugin_repo
         .installations
         .lock()
@@ -1983,7 +2168,7 @@ async fn list_installed_ahead_of_registry() {
 }
 
 #[tokio::test]
-async fn list_installed_not_in_registry() {
+async fn list_installed_not_in_catalog() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     h.plugin_repo
         .installations
@@ -2003,11 +2188,14 @@ async fn list_installed_not_in_registry() {
 #[tokio::test]
 async fn list_merge_both_sources() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[
-        registry_entry("alpha", "1.0.0", false, None),
-        registry_entry("beta", "1.0.0", false, None),
+    let json = make_catalog_fixture_json(&[
+        catalog_entry("alpha", "1.0.0", false, None),
+        catalog_entry("beta", "1.0.0", false, None),
     ]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
     {
         let mut list = h.plugin_repo.installations.lock().await;
         list.push(make_installation("alpha", "1.0.0", false, true));
@@ -2026,12 +2214,15 @@ async fn list_merge_both_sources() {
 }
 
 #[tokio::test]
-async fn list_invalid_registry_json_fallback() {
+async fn list_invalid_central_catalog_json_fallback() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     h.plugin_repo
-        .store_registry_cache("not valid json!!!")
-        .await
-        .unwrap();
+        .store_raw_catalog_source(
+            CENTRAL_CATALOG_SOURCE_KEY,
+            "central",
+            Some("not valid json!!!".to_string()),
+        )
+        .await;
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert!(result.is_empty());
@@ -2040,8 +2231,11 @@ async fn list_invalid_registry_json_fallback() {
 #[tokio::test]
 async fn list_invalid_semver_no_update() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry("alpha", "not-a-version", false, None)]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    let json = make_catalog_fixture_json(&[catalog_entry("alpha", "not-a-version", false, None)]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
     h.plugin_repo
         .installations
         .lock()
@@ -2055,11 +2249,14 @@ async fn list_invalid_semver_no_update() {
 #[tokio::test]
 async fn plugin_update_count_matches_available_plugins() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[
-        registry_entry("alpha", "0.2.0", false, None),
-        registry_entry("beta", "1.0.0", false, None),
+    let json = make_catalog_fixture_json(&[
+        catalog_entry("alpha", "0.2.0", false, None),
+        catalog_entry("beta", "1.0.0", false, None),
     ]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
     h.plugin_repo
         .installations
         .lock()
@@ -2084,8 +2281,11 @@ async fn list_default_base_url_from_provider() {
         Some("https://feed.animetosho.org"),
     );
     let h = bootstrap_plugins(Some(provider));
-    let json = make_registry_json(&[registry_entry("animetosho", "0.1.0", false, None)]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    let json = make_catalog_fixture_json(&[catalog_entry("animetosho", "0.1.0", false, None)]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert_eq!(
@@ -2095,7 +2295,7 @@ async fn list_default_base_url_from_provider() {
 }
 
 #[tokio::test]
-async fn list_uses_application_builtin_provider_types_over_registry_flags() {
+async fn list_uses_application_builtin_provider_types_over_catalog_flags() {
     let provider = MockPluginProvider::new().with_builtin_provider(
         "animetosho",
         "AnimeTosho",
@@ -2103,13 +2303,16 @@ async fn list_uses_application_builtin_provider_types_over_registry_flags() {
     );
     let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["jimaku"]));
     let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
-    let json = make_registry_json(&[
-        registry_entry_with_type("animetosho", "indexer", "0.3.4", false, None),
-        registry_entry_with_type("jimaku", "subtitle_provider", "0.1.0", false, None),
-        registry_entry_with_type("opensubtitles", "subtitle_provider", "0.1.0", true, None),
-        registry_entry_with_type("whisper", "subtitle_provider", "0.1.0", true, None),
+    let json = make_catalog_fixture_json(&[
+        catalog_entry_with_type("animetosho", "indexer", "0.3.4", false, None),
+        catalog_entry_with_type("jimaku", "subtitle_provider", "0.1.0", false, None),
+        catalog_entry_with_type("opensubtitles", "subtitle_provider", "0.1.0", true, None),
+        catalog_entry_with_type("whisper", "subtitle_provider", "0.1.0", true, None),
     ]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
 
@@ -2413,22 +2616,25 @@ async fn uninstall_auth_rejects_viewer() {
 // ── install_plugin error paths ───────────────────────────────────────────────
 
 #[tokio::test]
-async fn install_registry_not_loaded() {
+async fn install_catalog_not_loaded() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let err = h.app.install_plugin(&admin(), "alpha").await.unwrap_err();
     assert_not_available_from_catalog(err, "alpha");
 }
 
 #[tokio::test]
-async fn install_not_in_registry() {
+async fn install_not_in_catalog() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry(
+    let json = make_catalog_fixture_json(&[catalog_entry(
         "beta",
         "1.0.0",
         false,
         Some("https://example.com/b.wasm"),
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let err = h.app.install_plugin(&admin(), "alpha").await.unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
@@ -2437,8 +2643,11 @@ async fn install_not_in_registry() {
 #[tokio::test]
 async fn install_builtin_rejected() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry("nzbgeek", "0.2.0", true, None)]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    let json = make_catalog_fixture_json(&[catalog_entry("nzbgeek", "0.2.0", true, None)]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let err = h.app.install_plugin(&admin(), "nzbgeek").await.unwrap_err();
     assert_not_available_from_catalog(err, "nzbgeek");
@@ -2447,24 +2656,30 @@ async fn install_builtin_rejected() {
 #[tokio::test]
 async fn install_no_wasm_url() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry("alpha", "1.0.0", false, None)]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    let json = make_catalog_fixture_json(&[catalog_entry("alpha", "1.0.0", false, None)]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let err = h.app.install_plugin(&admin(), "alpha").await.unwrap_err();
     assert_not_available_from_catalog(err, "alpha");
 }
 
 #[tokio::test]
-async fn install_rejects_incompatible_host_version() {
+async fn install_rejects_incompatible_sdk_line() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_registry_json(&[registry_entry_with_min_scryer_version(
+    let json = make_catalog_fixture_json(&[catalog_entry_with_sdk_constraint(
         "torrent-rss",
         "1.0.0",
         false,
         Some("https://example.com/torrent-rss.wasm"),
-        "99.0.0",
+        ">=99.0.0",
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let err = h
         .app
@@ -2508,7 +2723,7 @@ async fn upgrade_builtin_rejected() {
 }
 
 #[tokio::test]
-async fn upgrade_registry_not_loaded() {
+async fn upgrade_catalog_not_loaded() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     h.plugin_repo
         .installations
@@ -2521,15 +2736,18 @@ async fn upgrade_registry_not_loaded() {
 }
 
 #[tokio::test]
-async fn upgrade_not_in_registry() {
+async fn upgrade_not_in_catalog() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     h.plugin_repo
         .installations
         .lock()
         .await
         .push(make_installation("alpha", "0.1.0", false, true));
-    let json = make_registry_json(&[registry_entry("beta", "1.0.0", false, None)]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    let json = make_catalog_fixture_json(&[catalog_entry("beta", "1.0.0", false, None)]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let err = h.app.upgrade_plugin(&admin(), "alpha").await.unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
@@ -2543,13 +2761,16 @@ async fn upgrade_already_at_latest() {
         .lock()
         .await
         .push(make_installation("alpha", "0.2.0", false, true));
-    let json = make_registry_json(&[registry_entry(
+    let json = make_catalog_fixture_json(&[catalog_entry(
         "alpha",
         "0.2.0",
         false,
         Some("https://example.com/a.wasm"),
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let err = h.app.upgrade_plugin(&admin(), "alpha").await.unwrap_err();
     assert_not_available_from_catalog(err, "alpha");
@@ -2563,8 +2784,11 @@ async fn upgrade_no_wasm_url() {
         .lock()
         .await
         .push(make_installation("alpha", "0.1.0", false, true));
-    let json = make_registry_json(&[registry_entry("alpha", "0.2.0", false, None)]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    let json = make_catalog_fixture_json(&[catalog_entry("alpha", "0.2.0", false, None)]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let err = h.app.upgrade_plugin(&admin(), "alpha").await.unwrap_err();
     assert_not_available_from_catalog(err, "alpha");
@@ -2572,15 +2796,8 @@ async fn upgrade_no_wasm_url() {
 
 #[test]
 fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
-    let release: RegistryRelease = serde_json::from_value(serde_json::json!({
-        "version": "0.2.0",
-        "sdk_version": scryer_plugin_sdk::SDK_VERSION,
-        "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
-        "builtin": false,
-        "wasm_url": "https://example.com/a.wasm",
-        "wasm_sha256": "abc123"
-    }))
-    .unwrap();
+    let release =
+        downloaded_release_contract("0.2.0", &scryer_plugin_sdk::current_sdk_constraint(), None);
     let descriptor = scryer_plugin_sdk::PluginDescriptor {
         id: "alpha".to_string(),
         name: "Alpha Plugin".to_string(),
@@ -2631,7 +2848,7 @@ fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
 }
 
 #[test]
-fn validate_downloaded_plugin_descriptor_accepts_registry_sdk_constraint_override() {
+fn validate_downloaded_plugin_descriptor_accepts_release_sdk_constraint_override() {
     let sdk_version = semver::Version::parse(scryer_plugin_sdk::SDK_VERSION).unwrap();
     let narrow_sdk_constraint = format!(
         ">={}.{}.0, <{}.{}.0",
@@ -2640,15 +2857,7 @@ fn validate_downloaded_plugin_descriptor_accepts_registry_sdk_constraint_overrid
         sdk_version.major,
         sdk_version.minor + 1
     );
-    let release: RegistryRelease = serde_json::from_value(serde_json::json!({
-        "version": "0.2.0",
-        "sdk_version": scryer_plugin_sdk::SDK_VERSION,
-        "sdk_constraint": narrow_sdk_constraint,
-        "builtin": false,
-        "wasm_url": "https://example.com/a.wasm",
-        "wasm_sha256": "abc123"
-    }))
-    .unwrap();
+    let release = downloaded_release_contract("0.2.0", &narrow_sdk_constraint, None);
     let descriptor = scryer_plugin_sdk::PluginDescriptor {
         id: "jellyfin".to_string(),
         name: "Jellyfin".to_string(),
@@ -2683,15 +2892,7 @@ fn validate_downloaded_plugin_descriptor_accepts_registry_sdk_constraint_overrid
 
 #[test]
 fn validate_catalog_downloaded_plugin_descriptor_skips_release_host_compatibility_check() {
-    let release: RegistryRelease = serde_json::from_value(serde_json::json!({
-        "version": "0.2.0",
-        "sdk_version": scryer_plugin_sdk::SDK_VERSION,
-        "sdk_constraint": ">=99.0.0",
-        "builtin": false,
-        "wasm_url": "https://example.com/a.wasm",
-        "wasm_sha256": "abc123"
-    }))
-    .unwrap();
+    let release = downloaded_release_contract("0.2.0", ">=99.0.0", None);
     let descriptor = scryer_plugin_sdk::PluginDescriptor {
         id: "email".to_string(),
         name: "Email".to_string(),
@@ -2725,7 +2926,7 @@ fn validate_catalog_downloaded_plugin_descriptor_skips_release_host_compatibilit
 }
 
 #[test]
-fn installation_sdk_contract_filter_uses_persisted_registry_constraint() {
+fn installation_sdk_contract_filter_uses_persisted_sdk_constraint() {
     let mut installation = make_installation("jellyfin", "0.2.0", false, true);
     installation.sdk_constraint = ">=99.0.0".to_string();
 
@@ -2733,21 +2934,24 @@ fn installation_sdk_contract_filter_uses_persisted_registry_constraint() {
 }
 
 #[tokio::test]
-async fn upgrade_rejects_incompatible_host_version() {
+async fn upgrade_rejects_incompatible_sdk_line() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     h.plugin_repo
         .installations
         .lock()
         .await
         .push(make_installation("torrent-rss", "0.1.0", false, true));
-    let json = make_registry_json(&[registry_entry_with_min_scryer_version(
+    let json = make_catalog_fixture_json(&[catalog_entry_with_sdk_constraint(
         "torrent-rss",
         "0.2.0",
         false,
         Some("https://example.com/torrent-rss.wasm"),
-        "99.0.0",
+        ">=99.0.0",
     )]);
-    h.plugin_repo.store_registry_cache(&json).await.unwrap();
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
 
     let err = h
         .app

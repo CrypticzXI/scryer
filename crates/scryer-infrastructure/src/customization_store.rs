@@ -209,14 +209,6 @@ impl PluginInstallationRepository for SqliteCustomizationStore {
             .await
     }
 
-    async fn store_registry_cache(&self, json: &str) -> AppResult<()> {
-        self.db.store_plugin_registry_cache(json).await
-    }
-
-    async fn get_registry_cache(&self) -> AppResult<Option<String>> {
-        plugin_installation::get_registry_cache_query(&self.pool).await
-    }
-
     async fn upsert_plugin_catalog_source(&self, source: &PluginCatalogSource) -> AppResult<()> {
         plugin_installation::upsert_plugin_catalog_source_query(&self.pool, source).await
     }

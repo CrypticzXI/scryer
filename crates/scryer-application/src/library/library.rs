@@ -474,16 +474,16 @@ impl AppUseCase {
         };
         self.validate_library_root_conflicts(Some(&existing.id), &roots)
             .await?;
+        let slug = if existing.is_default {
+            scryer_domain::default_library_slug_for_facet(&existing.facet).to_string()
+        } else {
+            slug_from_library_name(&name)
+        };
         let library = self
             .services
             .catalog
             .libraries
-            .update(
-                &existing.id,
-                name.clone(),
-                slug_from_library_name(&name),
-                roots,
-            )
+            .update(&existing.id, name.clone(), slug, roots)
             .await?;
         if let Some(settings) = settings {
             self.update_library_settings(actor, &library.id, settings)
@@ -877,6 +877,10 @@ impl AppUseCase {
         Ok(roots)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "library scan sessions carry explicit runtime, permission, and cancellation context"
+    )]
     async fn execute_started_library_scan_session(
         &self,
         actor: &User,

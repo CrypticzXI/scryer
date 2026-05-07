@@ -2303,20 +2303,6 @@ impl DbRuntime {
             .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
-    pub async fn store_plugin_registry_cache(&self, json: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::StorePluginRegistryCache {
-                json: json.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
     pub async fn create_notification_channel(
         &self,
         config: NotificationChannelConfig,

@@ -9,7 +9,23 @@ use scryer_application::{
 use scryer_domain::User;
 
 fn admin() -> User {
-    User::new_admin("admin")
+    User {
+        id: scryer_domain::Id::new().0,
+        username: "admin".to_string(),
+        password_hash: None,
+        entitlements: vec![
+            scryer_domain::Entitlement::ViewCatalog,
+            scryer_domain::Entitlement::ManageConfig,
+        ],
+        authorization: scryer_domain::UserAuthorization {
+            app: scryer_domain::AppPermissionMask::from_permissions([
+                scryer_domain::AppPermission::ManageSystemSettings,
+                scryer_domain::AppPermission::ManageCatalogSettings,
+            ]),
+            loaded: true,
+            ..Default::default()
+        },
+    }
 }
 
 fn available_provider_types(
@@ -50,7 +66,7 @@ fn load_wasm_fixture(path: &std::path::Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
-fn registry_plugin_entry(
+fn catalog_plugin_entry(
     plugin_id: &str,
     name: &str,
     description: &str,
@@ -60,18 +76,7 @@ fn registry_plugin_entry(
     builtin: bool,
     wasm_url: Option<String>,
 ) -> serde_json::Value {
-    const TEST_SDK_VERSION: &str = "1.0.0";
-    const TEST_SDK_CONSTRAINT: &str = ">=1.0.0, <2.0.0";
-
-    let mut release = serde_json::json!({
-        "version": version,
-        "sdk_version": TEST_SDK_VERSION,
-        "sdk_constraint": TEST_SDK_CONSTRAINT,
-        "builtin": builtin,
-    });
-    if let Some(wasm_url) = wasm_url {
-        release["wasm_url"] = serde_json::json!(wasm_url);
-    }
+    const TEST_SDK_CONSTRAINT: &str = ">=1.5.0, <1.6.0";
 
     serde_json::json!({
         "id": plugin_id,
@@ -80,8 +85,110 @@ fn registry_plugin_entry(
         "plugin_type": plugin_type,
         "provider_type": provider_type,
         "official": true,
-        "releases": [release],
+        "publisher": "scryer",
+        "support_tier": "official",
+        "docs_url": format!("https://example.com/{plugin_id}/docs"),
+        "source_repo": format!("https://github.com/scryer-media/test-plugin-{}", plugin_id.replace('_', "-")),
+        "releases": if builtin || wasm_url.is_none() {
+            serde_json::json!([])
+        } else {
+            serde_json::json!([{
+                "version": version,
+                "sdk_constraint": TEST_SDK_CONSTRAINT,
+                "artifact_manifest_url": format!(
+                    "https://github.com/scryer-media/test-plugin-{}/releases/download/v{}/plugin.manifest.json",
+                    plugin_id.replace('_', "-"),
+                    version
+                ),
+            }])
+        },
     })
+}
+
+async fn seed_official_catalog(
+    ctx: &TestContext,
+    entries: &[serde_json::Value],
+) -> scryer_application::AppResult<()> {
+    let central_plugins = entries
+        .iter()
+        .map(|entry| {
+            let id = entry["id"].as_str().expect("id");
+            let source_repo = entry["source_repo"].as_str().expect("source_repo");
+            serde_json::json!({
+                "id": id,
+                "name": entry["name"].as_str().expect("name"),
+                "description": entry["description"].as_str().expect("description"),
+                "plugin_type": entry["plugin_type"].as_str().expect("plugin_type"),
+                "provider_type": entry["provider_type"].as_str().expect("provider_type"),
+                "publisher": "scryer",
+                "support_tier": "official",
+                "docs_url": entry["docs_url"].as_str().expect("docs_url"),
+                "source_repo": source_repo,
+                "child_catalog_url": format!(
+                    "https://github.com/scryer-media/test-plugin-{}/releases/download/v0.1.0/catalog-v2.min.json.zst",
+                    id.replace('_', "-")
+                ),
+                "required_signer": {
+                    "github_repository": format!("scryer-media/test-plugin-{}", id.replace('_', "-"))
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let central_catalog = serde_json::json!({
+        "schema_version": "scryer.plugin.catalog.v2",
+        "plugins": central_plugins,
+        "rule_packs": [],
+    })
+    .to_string();
+
+    ctx.customization
+        .upsert_plugin_catalog_source(&scryer_domain::PluginCatalogSource {
+            source_key: "__central_catalog_v2".to_string(),
+            source_kind: "central".to_string(),
+            source_url: "https://example.com/catalog-v2.min.json.zst".to_string(),
+            github_repo: Some("scryer-media/scryer-plugins".to_string()),
+            support_tier: scryer_domain::PluginSupportTier::Official,
+            catalog_json: Some(central_catalog),
+            last_success_at: Some(chrono::Utc::now()),
+            last_error: None,
+            updated_at: chrono::Utc::now(),
+        })
+        .await?;
+
+    for entry in entries {
+        let id = entry["id"].as_str().expect("id");
+        let child_catalog = serde_json::json!({
+            "schema_version": "scryer.plugin.child_catalog.v2",
+            "id": id,
+            "name": entry["name"].as_str().expect("name"),
+            "description": entry["description"].as_str().expect("description"),
+            "plugin_type": entry["plugin_type"].as_str().expect("plugin_type"),
+            "provider_type": entry["provider_type"].as_str().expect("provider_type"),
+            "publisher": "scryer",
+            "support_tier": "official",
+            "docs_url": entry["docs_url"].as_str().expect("docs_url"),
+            "source_repo": entry["source_repo"].as_str().expect("source_repo"),
+            "releases": entry["releases"].clone(),
+        })
+        .to_string();
+
+        ctx.customization
+            .upsert_plugin_catalog_source(&scryer_domain::PluginCatalogSource {
+                source_key: format!("child:{id}"),
+                source_kind: "child".to_string(),
+                source_url: format!("https://example.com/{id}/catalog-v2.min.json.zst"),
+                github_repo: Some(format!("scryer-media/test-plugin-{}", id.replace('_', "-"))),
+                support_tier: scryer_domain::PluginSupportTier::Official,
+                catalog_json: Some(child_catalog),
+                last_success_at: Some(chrono::Utc::now()),
+                last_error: None,
+                updated_at: chrono::Utc::now(),
+            })
+            .await?;
+    }
+
+    Ok(())
 }
 
 fn bundled_test_indexer_fixture() -> RealPluginFixture {
@@ -251,15 +358,14 @@ async fn seed_builtins_prunes_removed_builtin_installations() {
 // ── list_available_plugins ───────────────────────────────────────────────────
 
 #[tokio::test]
-async fn list_available_with_builtins_and_registry() {
+async fn list_available_with_builtins_and_catalog_v2() {
     let ctx = TestContext::new().await;
     ctx.app.seed_builtin_plugins().await.unwrap();
 
-    // Store a registry cache that includes a non-builtin plugin
-    let registry_json = serde_json::json!({
-        "schema_version": 1,
-        "plugins": [
-            registry_plugin_entry(
+    seed_official_catalog(
+        &ctx,
+        &[
+            catalog_plugin_entry(
                 "nzbgeek",
                 "NZBGeek",
                 "NZBGeek indexer",
@@ -269,7 +375,7 @@ async fn list_available_with_builtins_and_registry() {
                 true,
                 None,
             ),
-            registry_plugin_entry(
+            catalog_plugin_entry(
                 "animetosho",
                 "AnimeTosho",
                 "AnimeTosho indexer",
@@ -278,19 +384,16 @@ async fn list_available_with_builtins_and_registry() {
                 "0.1.0",
                 false,
                 Some("https://example.com/animetosho.wasm".to_string()),
-            )
-        ]
-    })
-    .to_string();
-    ctx.customization
-        .store_registry_cache(&registry_json)
-        .await
-        .unwrap();
+            ),
+        ],
+    )
+    .await
+    .unwrap();
 
     let result = ctx.app.list_available_plugins(&admin()).await.unwrap();
 
     // Should have nzbgeek (installed+builtin), newznab (installed+builtin),
-    // and animetosho (not installed, registry-available)
+    // and animetosho (not installed, catalog-available)
     assert!(result.len() >= 3, "got {} plugins", result.len());
 
     let nzbgeek = result.iter().find(|p| p.id == "nzbgeek").unwrap();

@@ -1,2 +1,3 @@
 pub(crate) mod dispatcher;
-pub(crate) mod notifications;
+#[path = "notifications.rs"]
+pub(crate) mod runtime;

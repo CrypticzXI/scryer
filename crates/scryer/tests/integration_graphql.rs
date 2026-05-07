@@ -9408,7 +9408,7 @@ async fn graphql_dev_auto_login() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
-        r#"mutation { devAutoLogin { token user { username } } }"#,
+        r#"mutation { devAutoLogin { token user { username appPermissions } } }"#,
         json!({}),
     )
     .await;
@@ -9418,6 +9418,15 @@ async fn graphql_dev_auto_login() {
         "should return token"
     );
     assert_eq!(body["data"]["devAutoLogin"]["user"]["username"], "admin");
+    assert_eq!(
+        body["data"]["devAutoLogin"]["user"]["appPermissions"],
+        json!([
+            "manageUsers",
+            "managePermissions",
+            "manageSystemSettings",
+            "manageCatalogSettings",
+        ])
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -11584,13 +11593,13 @@ async fn graphql_wanted_items_empty() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
-        r#"query($status: WantedStatusValue, $mediaType: WantedMediaTypeValue) {
-            wantedItems(status: $status, mediaType: $mediaType) {
+        r#"query($statuses: [WantedStatusValue!], $mediaTypes: [WantedMediaTypeValue!]) {
+            wantedItems(statuses: $statuses, mediaTypes: $mediaTypes) {
                 items { id }
                 total
             }
         }"#,
-        json!({ "status": "wanted", "mediaType": "movie" }),
+        json!({ "statuses": ["wanted"], "mediaTypes": ["movie"] }),
     )
     .await;
     assert_no_errors(&body);
@@ -11709,7 +11718,9 @@ async fn login_with_valid_credentials_returns_token() {
             &admin,
             "logintest".to_string(),
             "s3cr3t!".to_string(),
-            scryer_domain::AppPermissionMask::NONE,
+            scryer_domain::AppPermissionMask::from_permissions([
+                scryer_domain::AppPermission::ManageUsers,
+            ]),
             vec![],
         )
         .await
@@ -11717,7 +11728,7 @@ async fn login_with_valid_credentials_returns_token() {
 
     let body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "logintest", password: "s3cr3t!" }) { token expiresAt user { username } } }"#,
+        r#"mutation { login(input: { username: "logintest", password: "s3cr3t!" }) { token expiresAt user { username appPermissions } } }"#,
         None,
     )
     .await;
@@ -11729,6 +11740,10 @@ async fn login_with_valid_credentials_returns_token() {
     let token = body["data"]["login"]["token"].as_str().unwrap();
     assert!(!token.is_empty(), "JWT token should not be empty");
     assert_eq!(body["data"]["login"]["user"]["username"], "logintest");
+    assert_eq!(
+        body["data"]["login"]["user"]["appPermissions"],
+        json!(["manageUsers"])
+    );
 }
 
 /// Providing the wrong password must produce a GraphQL error — never a token.

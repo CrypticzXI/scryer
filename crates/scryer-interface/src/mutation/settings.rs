@@ -635,6 +635,10 @@ impl SettingsMutations {
             .authenticate_credentials(&input.username, &input.password)
             .await
             .map_err(to_gql_error)?;
+        let user = app
+            .attach_user_authorization(user)
+            .await
+            .map_err(to_gql_error)?;
         let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
         let expires_at =
             (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
@@ -655,6 +659,10 @@ impl SettingsMutations {
         let app = app_from_ctx(ctx)?;
         let user = app
             .find_or_create_default_user()
+            .await
+            .map_err(to_gql_error)?;
+        let user = app
+            .attach_user_authorization(user)
             .await
             .map_err(to_gql_error)?;
         let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;

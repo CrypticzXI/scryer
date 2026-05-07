@@ -1,3 +1,4 @@
 pub(crate) use crate::*;
 
-pub(crate) mod health;
+#[path = "health.rs"]
+pub(crate) mod runtime;

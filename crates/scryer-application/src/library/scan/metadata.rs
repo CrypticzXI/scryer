@@ -678,6 +678,10 @@ fn register_streaming_movie_metadata_batch(
     Ok(stats)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "batched metadata resolution coordinates gateway, progress, and candidate state explicitly"
+)]
 pub(crate) async fn resolve_full_scan_metadata_batches<T, BuildStats, CandidateKeys>(
     metadata_gateway: Arc<dyn MetadataGateway>,
     metadata_language: &str,

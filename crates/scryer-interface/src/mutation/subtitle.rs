@@ -1,4 +1,5 @@
 use async_graphql::{Context, InputObject, Object, SimpleObject};
+use scryer_application::DownloadSubtitleForMediaFileRequest;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 
@@ -105,17 +106,21 @@ impl SubtitleMutations {
         let actor = actor_from_ctx(ctx)?;
         app.download_subtitle_for_media_file(
             &actor,
-            &input.media_file_id,
-            input.provider.as_deref().unwrap_or("opensubtitles"),
-            &input.provider_file_id,
-            &input.language,
-            input.forced.unwrap_or(false),
-            input.hearing_impaired.unwrap_or(false),
-            input.score,
-            input.release_info,
-            input.uploader,
-            input.ai_translated.unwrap_or(false),
-            input.machine_translated.unwrap_or(false),
+            DownloadSubtitleForMediaFileRequest {
+                media_file_id: input.media_file_id,
+                provider_name: input
+                    .provider
+                    .unwrap_or_else(|| "opensubtitles".to_string()),
+                provider_file_id: input.provider_file_id,
+                language: input.language,
+                forced: input.forced.unwrap_or(false),
+                hearing_impaired: input.hearing_impaired.unwrap_or(false),
+                score: input.score,
+                release_info: input.release_info,
+                uploader: input.uploader,
+                ai_translated: input.ai_translated.unwrap_or(false),
+                machine_translated: input.machine_translated.unwrap_or(false),
+            },
         )
         .await
         .map_err(to_gql_error)?;

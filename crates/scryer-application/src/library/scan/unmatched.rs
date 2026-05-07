@@ -24,6 +24,24 @@ struct MovieUnmatchedScanRecord {
     search_attempts: Vec<LibraryScanUnmatchedSearchAttempt>,
 }
 
+struct LibraryScanUnmatchedScope<'a> {
+    facet: &'a MediaFacet,
+    library_id: &'a str,
+    title_id: Option<&'a str>,
+    session_id: &'a str,
+    library_path: &'a str,
+}
+
+struct LibraryScanUnmatchedItemArgs {
+    item_path: String,
+    display_name: String,
+    query: String,
+    year_hint: Option<u32>,
+    reason_code: String,
+    error_message: Option<String>,
+    search_attempts: Vec<LibraryScanUnmatchedSearchAttempt>,
+}
+
 fn normalize_library_scan_root(library_path: &str) -> String {
     Path::new(library_path).to_string_lossy().trim().to_string()
 }
@@ -42,37 +60,27 @@ fn build_library_scan_unmatched_item_id(
 }
 
 fn build_library_scan_unmatched_item(
-    facet: &MediaFacet,
-    library_id: &str,
-    title_id: Option<&str>,
-    session_id: &str,
-    library_path: &str,
-    item_path: String,
-    display_name: String,
-    query: String,
-    year_hint: Option<u32>,
-    reason_code: &str,
-    error_message: Option<String>,
-    search_attempts: Vec<LibraryScanUnmatchedSearchAttempt>,
+    scope: LibraryScanUnmatchedScope<'_>,
+    args: LibraryScanUnmatchedItemArgs,
 ) -> LibraryScanUnmatchedItem {
-    let item_path = normalize_library_scan_item_path(&item_path);
+    let item_path = normalize_library_scan_item_path(&args.item_path);
     let timestamp = Utc::now().to_rfc3339();
 
     LibraryScanUnmatchedItem {
-        id: build_library_scan_unmatched_item_id(facet, library_id, &item_path),
-        library_id: library_id.to_string(),
-        facet: facet.clone(),
+        id: build_library_scan_unmatched_item_id(scope.facet, scope.library_id, &item_path),
+        library_id: scope.library_id.to_string(),
+        facet: scope.facet.clone(),
         status: PendingImportStatus::Pending,
-        title_id: title_id.map(str::to_string),
-        scan_session_id: session_id.to_string(),
-        scan_root: normalize_library_scan_root(library_path),
+        title_id: scope.title_id.map(str::to_string),
+        scan_session_id: scope.session_id.to_string(),
+        scan_root: normalize_library_scan_root(scope.library_path),
         item_path,
-        display_name,
-        query,
-        year_hint: year_hint.map(|value| value as i32),
-        reason_code: reason_code.to_string(),
-        error_message,
-        search_attempts,
+        display_name: args.display_name,
+        query: args.query,
+        year_hint: args.year_hint.map(|value| value as i32),
+        reason_code: args.reason_code,
+        error_message: args.error_message,
+        search_attempts: args.search_attempts,
         created_at: timestamp.clone(),
         updated_at: timestamp,
     }
@@ -121,6 +129,10 @@ fn build_movie_unmatched_scan_record(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "movie unmatched items still mirror the caller's scan context and persisted payload fields"
+)]
 pub(crate) fn build_movie_unmatched_scan_item(
     facet: &MediaFacet,
     library_id: &str,
@@ -133,21 +145,29 @@ pub(crate) fn build_movie_unmatched_scan_item(
 ) -> LibraryScanUnmatchedItem {
     let record = build_movie_unmatched_scan_record(candidate, batch_search_results);
     build_library_scan_unmatched_item(
-        facet,
-        library_id,
-        None,
-        session_id,
-        library_path,
-        record.path,
-        record.display_name,
-        record.query,
-        record.year_hint,
-        reason_override.unwrap_or(record.reason),
-        error_message,
-        record.search_attempts,
+        LibraryScanUnmatchedScope {
+            facet,
+            library_id,
+            title_id: None,
+            session_id,
+            library_path,
+        },
+        LibraryScanUnmatchedItemArgs {
+            item_path: record.path,
+            display_name: record.display_name,
+            query: record.query,
+            year_hint: record.year_hint,
+            reason_code: reason_override.unwrap_or(record.reason).to_string(),
+            error_message,
+            search_attempts: record.search_attempts,
+        },
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series unmatched items still mirror the caller's scan context and persisted payload fields"
+)]
 pub(crate) fn build_series_unmatched_scan_item(
     facet: &MediaFacet,
     library_id: &str,
@@ -168,21 +188,29 @@ pub(crate) fn build_series_unmatched_scan_item(
         reason_override.unwrap_or_else(|| library_scan_unmatched_reason_code(&search_attempts));
 
     build_library_scan_unmatched_item(
-        facet,
-        library_id,
-        None,
-        session_id,
-        library_path,
-        candidate.item_path().to_string(),
-        series_unmatched_display_name(candidate),
-        candidate.query.clone(),
-        candidate.year_hint,
-        reason_code,
-        error_message,
-        search_attempts,
+        LibraryScanUnmatchedScope {
+            facet,
+            library_id,
+            title_id: None,
+            session_id,
+            library_path,
+        },
+        LibraryScanUnmatchedItemArgs {
+            item_path: candidate.item_path().to_string(),
+            display_name: series_unmatched_display_name(candidate),
+            query: candidate.query.clone(),
+            year_hint: candidate.year_hint,
+            reason_code: reason_code.to_string(),
+            error_message,
+            search_attempts,
+        },
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "title-bound unmatched items still mirror the caller's scan context and persisted payload fields"
+)]
 pub(crate) fn build_title_bound_unmatched_scan_item(
     facet: &MediaFacet,
     library_id: &str,
@@ -196,18 +224,22 @@ pub(crate) fn build_title_bound_unmatched_scan_item(
     reason_code: &str,
 ) -> LibraryScanUnmatchedItem {
     build_library_scan_unmatched_item(
-        facet,
-        library_id,
-        Some(title_id),
-        session_id.unwrap_or_default(),
-        title_scan_root,
-        item_path.to_string(),
-        display_name.to_string(),
-        query.to_string(),
-        year_hint,
-        reason_code,
-        None,
-        Vec::new(),
+        LibraryScanUnmatchedScope {
+            facet,
+            library_id,
+            title_id: Some(title_id),
+            session_id: session_id.unwrap_or_default(),
+            library_path: title_scan_root,
+        },
+        LibraryScanUnmatchedItemArgs {
+            item_path: item_path.to_string(),
+            display_name: display_name.to_string(),
+            query: query.to_string(),
+            year_hint,
+            reason_code: reason_code.to_string(),
+            error_message: None,
+            search_attempts: Vec::new(),
+        },
     )
 }
 

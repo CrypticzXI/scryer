@@ -57,6 +57,14 @@ pub fn default_library_id_for_facet(facet: &MediaFacet) -> String {
     format!("{}_default_library", facet.as_str())
 }
 
+pub fn default_library_slug_for_facet(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => "movies",
+        MediaFacet::Series => "series",
+        MediaFacet::Anime => "anime",
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RootFolderEntry {
     pub path: String,

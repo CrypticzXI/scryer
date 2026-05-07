@@ -101,6 +101,10 @@ export type OverviewPathTarget = {
   titleSlug: string | null;
 };
 
+function defaultLibrarySlugForView(view: ViewId): string | null {
+  return isMediaView(view) ? view : null;
+}
+
 function decodePathSegment(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -118,6 +122,14 @@ export function buildOverviewDetailPath(
   const normalizedTitleSlug = titleSlug?.trim();
   if (!normalizedLibrarySlug || !normalizedTitleSlug) {
     return `/${view}/overview`;
+  }
+  const defaultLibrarySlug = defaultLibrarySlugForView(view);
+  if (
+    defaultLibrarySlug &&
+    normalizedLibrarySlug.toLowerCase() === defaultLibrarySlug &&
+    !MEDIA_RESERVED_OVERVIEW_SEGMENTS.has(normalizedTitleSlug.toLowerCase())
+  ) {
+    return `/${view}/${encodeURIComponent(normalizedTitleSlug)}`;
   }
   return `/${view}/${encodeURIComponent(normalizedLibrarySlug)}/${encodeURIComponent(normalizedTitleSlug)}`;
 }
@@ -156,13 +168,30 @@ export function parseContentSectionFromPath(value: string | null, subValue?: str
 }
 
 export function parseOverviewTargetFromPath(
+  view: ViewId,
   value: string | null,
   subValue?: string | null,
 ): OverviewPathTarget {
   const normalizedLibrarySlug = value?.trim();
   const normalizedTitleSlug = subValue?.trim();
-  if (!normalizedLibrarySlug || !normalizedTitleSlug) {
+  if (!normalizedLibrarySlug) {
     return { librarySlug: null, titleSlug: null };
+  }
+
+  if (!normalizedTitleSlug) {
+    if (MEDIA_RESERVED_OVERVIEW_SEGMENTS.has(normalizedLibrarySlug.toLowerCase())) {
+      return { librarySlug: null, titleSlug: null };
+    }
+
+    const defaultLibrarySlug = defaultLibrarySlugForView(view);
+    if (!defaultLibrarySlug) {
+      return { librarySlug: null, titleSlug: null };
+    }
+
+    return {
+      librarySlug: defaultLibrarySlug,
+      titleSlug: decodePathSegment(normalizedLibrarySlug),
+    };
   }
 
   if (MEDIA_RESERVED_OVERVIEW_SEGMENTS.has(normalizedLibrarySlug.toLowerCase())) {

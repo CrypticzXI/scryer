@@ -418,12 +418,26 @@ impl AppUseCase {
             .filter(|candidate| candidate.id != title.id)
             .filter_map(tracked_title_folder_from_title)
             .collect();
+        let folder_path =
+            if let Some(folder_path) = normalize_optional_path_string(title.folder_path) {
+                Some(folder_path)
+            } else {
+                self.services
+                    .library
+                    .media_files
+                    .list_media_files_for_title(&title.id)
+                    .await
+                    .ok()
+                    .and_then(|media_files| {
+                        infer_title_folder_path_from_media_files(&root_folders, &media_files)
+                    })
+            };
 
         Ok(UserDeleteContext::Title(TitleDeleteContext {
             title_id: title.id,
             title_name: title.name,
             facet: title.facet,
-            folder_path: normalize_optional_path_string(title.folder_path),
+            folder_path,
             root_folders,
             other_titles,
         }))
@@ -491,6 +505,71 @@ fn tracked_title_folder_from_title(title: Title) -> Option<TrackedTitleFolder> {
 fn normalize_optional_path_string(path: Option<String>) -> Option<String> {
     path.map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn infer_title_folder_path_from_media_files(
+    root_folders: &[RootFolderEntry],
+    media_files: &[crate::TitleMediaFile],
+) -> Option<String> {
+    infer_title_folder_path_from_paths(
+        root_folders,
+        media_files
+            .iter()
+            .map(|media_file| PathBuf::from(&media_file.file_path)),
+    )
+}
+
+fn infer_title_folder_path_from_paths<I>(
+    root_folders: &[RootFolderEntry],
+    file_paths: I,
+) -> Option<String>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let normalized_roots = root_folders
+        .iter()
+        .filter_map(|entry| normalize_optional_path_string(Some(entry.path.clone())))
+        .filter_map(|path| normalize_absolute_path(Path::new(&path)).ok())
+        .collect::<Vec<_>>();
+    if normalized_roots.is_empty() {
+        return None;
+    }
+
+    let mut candidates = BTreeSet::new();
+    for file_path in file_paths {
+        let normalized_file_path = match normalize_absolute_path(&file_path) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        let Some(parent) = normalized_file_path.parent() else {
+            continue;
+        };
+
+        for root in &normalized_roots {
+            if !normalized_file_path.starts_with(root) {
+                continue;
+            }
+
+            let Ok(relative_parent) = parent.strip_prefix(root) else {
+                continue;
+            };
+            let Some(Component::Normal(first_segment)) = relative_parent.components().next() else {
+                continue;
+            };
+
+            candidates.insert(root.join(first_segment));
+            break;
+        }
+    }
+
+    if candidates.len() != 1 {
+        return None;
+    }
+
+    candidates
+        .into_iter()
+        .next()
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 fn build_delete_manifest_sync(context: UserDeleteContext) -> AppResult<UserDeleteManifest> {
@@ -881,5 +960,46 @@ async fn delete_single_path(entry: &DeleteManifestEntry) -> AppResult<()> {
                     })
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_title_folder_path_from_paths_uses_title_root_under_configured_root() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+
+        let inferred = infer_title_folder_path_from_paths(
+            &root_folders,
+            vec![
+                PathBuf::from("/data/anime/Bleach/Season 01/Bleach - S01E01.mkv"),
+                PathBuf::from("/data/anime/Bleach/Season 02/Bleach - S02E01.mkv"),
+            ],
+        );
+
+        assert_eq!(inferred.as_deref(), Some("/data/anime/Bleach"));
+    }
+
+    #[test]
+    fn infer_title_folder_path_from_paths_returns_none_for_mixed_title_roots() {
+        let root_folders = vec![RootFolderEntry {
+            path: "/data/anime".to_string(),
+            is_default: true,
+        }];
+
+        let inferred = infer_title_folder_path_from_paths(
+            &root_folders,
+            vec![
+                PathBuf::from("/data/anime/Bleach/Season 01/Bleach - S01E01.mkv"),
+                PathBuf::from("/data/anime/Naruto/Season 01/Naruto - S01E01.mkv"),
+            ],
+        );
+
+        assert_eq!(inferred, None);
     }
 }

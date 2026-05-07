@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
+import { visibleIndexerConfigFields } from "@/lib/types";
 import type {
   IndexerRecord,
   IndexerDraft,
@@ -385,10 +386,13 @@ export function SettingsIndexersSection({
 
   const selectedProviderFields = React.useMemo(
     () =>
-      (selectedProvider?.configFields ?? []).filter(
-        (field) => field.valueSource !== "host_binding",
+      visibleIndexerConfigFields(
+        normalizedProviderType,
+        (selectedProvider?.configFields ?? []).filter(
+          (field) => field.valueSource !== "host_binding",
+        ),
       ),
-    [selectedProvider],
+    [normalizedProviderType, selectedProvider],
   );
 
   const handleConfigValueChange = React.useCallback(

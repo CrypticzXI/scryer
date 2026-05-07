@@ -32,6 +32,10 @@ pub enum UpgradeResult {
 ///
 /// If the new file import fails, the old file is restored from the recycle bin
 /// so that we never lose both copies.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "upgrade execution coordinates file movement, scoring, and persistence state in one transaction"
+)]
 pub(crate) async fn execute_upgrade(
     app: &AppUseCase,
     _actor: &User,

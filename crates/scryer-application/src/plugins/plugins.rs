@@ -1,7 +1,7 @@
 use super::catalog::{
-    CentralCatalogEntry, ChildCatalog, ChildCatalogRelease, GitHubRepo, PluginReleaseManifest,
-    RequiredSigner, blake3_digest, compress_zstd, decompress_zstd,
-    github_outage_status_from_summary, parse_and_validate_central_catalog,
+    CentralCatalog, CentralCatalogEntry, ChildCatalog, ChildCatalogRelease, GitHubRepo,
+    PluginReleaseManifest, RequiredSigner, RulePackCatalogEntry, blake3_digest, compress_zstd,
+    decompress_zstd, github_outage_status_from_summary, parse_and_validate_central_catalog,
     parse_and_validate_child_catalog, parse_and_validate_release_manifest, parse_digest_string,
     plugin_manifest_asset_url, verify_digest, verify_signed_blob, verify_split_digest,
 };
@@ -151,7 +151,7 @@ struct CatalogPluginResolution {
     github_repo: GitHubRepo,
 }
 
-/// Community rule pack entry from the registry.
+/// Community rule pack entry from the official catalog.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RulePackRegistryEntry {
     pub id: String,
@@ -162,6 +162,20 @@ pub struct RulePackRegistryEntry {
     pub url: String,
     #[serde(default)]
     pub min_scryer_version: Option<String>,
+}
+
+impl From<RulePackCatalogEntry> for RulePackRegistryEntry {
+    fn from(value: RulePackCatalogEntry) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            description: value.description,
+            author: value.author,
+            version: value.version,
+            url: value.url,
+            min_scryer_version: value.min_scryer_version,
+        }
+    }
 }
 
 /// A single rule template within a community rule pack.
@@ -198,95 +212,18 @@ struct RulePackRule {
     applied_facets: Vec<String>,
 }
 
-/// Raw registry JSON format (matches scryer-plugins/registry.json).
-#[derive(Clone, Debug, Deserialize)]
-struct RegistryManifest {
-    #[expect(dead_code)]
-    schema_version: u32,
-    plugins: Vec<RegistryEntry>,
-    #[serde(default)]
-    rule_packs: Vec<RulePackRegistryEntry>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct RegistryEntry {
-    id: String,
-    name: String,
-    description: String,
-    plugin_type: String,
-    provider_type: String,
-    #[serde(default)]
-    author: String,
-    #[serde(default)]
-    official: bool,
-    #[serde(default)]
-    releases: Vec<RegistryRelease>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    sdk_version: Option<String>,
-    #[serde(default)]
-    sdk_constraint: Option<String>,
-    #[serde(default)]
-    scryer_constraint: Option<String>,
-    #[serde(default, rename = "min_scryer_version")]
-    legacy_min_scryer_version: Option<String>,
-    #[serde(default)]
-    source_url: Option<String>,
-    #[serde(default)]
-    wasm_url: Option<String>,
-    #[serde(default)]
-    wasm_sha256: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct RegistryRelease {
+#[derive(Clone, Debug)]
+struct DownloadedPluginReleaseContract {
     version: String,
-    #[serde(default)]
-    sdk_version: String,
-    #[serde(default)]
+    sdk_version: Option<String>,
     sdk_constraint: String,
-    #[serde(default)]
     scryer_constraint: Option<String>,
-    #[serde(default, rename = "min_scryer_version")]
-    legacy_min_scryer_version: Option<String>,
-    #[serde(default)]
-    source_url: Option<String>,
-    #[serde(default)]
-    wasm_url: Option<String>,
-    #[serde(default)]
-    wasm_sha256: Option<String>,
 }
 
-impl RegistryEntry {
-    fn normalized_releases(&self) -> Vec<RegistryRelease> {
-        if !self.releases.is_empty() {
-            return self.releases.clone();
-        }
-
-        self.version
-            .as_ref()
-            .map(|version| {
-                vec![RegistryRelease {
-                    version: version.clone(),
-                    sdk_version: self.sdk_version.clone().unwrap_or_default(),
-                    sdk_constraint: self.sdk_constraint.clone().unwrap_or_default(),
-                    scryer_constraint: self.scryer_constraint.clone(),
-                    legacy_min_scryer_version: self.legacy_min_scryer_version.clone(),
-                    source_url: self.source_url.clone(),
-                    wasm_url: self.wasm_url.clone(),
-                    wasm_sha256: self.wasm_sha256.clone(),
-                }]
-            })
-            .unwrap_or_default()
-    }
-}
-
-fn registry_release_scryer_constraint(release: &RegistryRelease) -> Option<&str> {
-    release
-        .scryer_constraint
-        .as_deref()
-        .or(release.legacy_min_scryer_version.as_deref())
+fn downloaded_plugin_release_scryer_constraint(
+    release: &DownloadedPluginReleaseContract,
+) -> Option<&str> {
+    release.scryer_constraint.as_deref()
 }
 
 fn normalized_constraint(raw: Option<&str>) -> Option<String> {
@@ -302,15 +239,18 @@ fn current_sdk_version() -> &'static semver::Version {
     &VERSION
 }
 
-fn normalized_release_sdk_constraint(release: &RegistryRelease) -> String {
-    sdk_constraint_or_legacy(&release.sdk_version, &release.sdk_constraint)
+fn normalized_release_sdk_constraint(release: &DownloadedPluginReleaseContract) -> String {
+    release.sdk_version.as_deref().map_or_else(
+        || release.sdk_constraint.trim().to_string(),
+        |sdk_version| sdk_constraint_or_legacy(sdk_version, &release.sdk_constraint),
+    )
 }
 
-fn parse_registry_release_version(
+fn parse_child_release_version(
     plugin_id: &str,
-    release: &RegistryRelease,
+    release: &ChildCatalogRelease,
 ) -> Option<semver::Version> {
-    semver::Version::parse(release.version.trim()).map_or_else(
+    semver::Version::parse(release.version.trim_start_matches('v')).map_or_else(
         |error| {
             warn!(
                 plugin_id,
@@ -324,26 +264,38 @@ fn parse_registry_release_version(
     )
 }
 
-fn parse_registry_release_sdk_req(
+fn parse_child_release_sdk_req(
     plugin_id: &str,
-    release: &RegistryRelease,
+    release: &ChildCatalogRelease,
 ) -> Option<semver::VersionReq> {
-    let sdk_version = release.sdk_version.trim();
-    let descriptor_version = semver::Version::parse(sdk_version).map_or_else(
+    semver::VersionReq::parse(release.sdk_constraint.trim()).map_or_else(
         |error| {
             warn!(
                 plugin_id,
                 version = release.version.as_str(),
-                sdk_version,
+                sdk_constraint = release.sdk_constraint.as_str(),
                 error = %error,
-                "skipping plugin release with invalid sdk_version"
+                "skipping plugin release with invalid sdk_constraint"
             );
             None
         },
         Some,
-    )?;
+    )
+}
+
+fn child_release_is_sdk_compatible(plugin_id: &str, release: &ChildCatalogRelease) -> bool {
+    let Some(sdk_req) = parse_child_release_sdk_req(plugin_id, release) else {
+        return false;
+    };
+    sdk_req.matches(current_sdk_version())
+}
+
+fn downloaded_plugin_release_is_host_compatible(
+    plugin_id: &str,
+    release: &DownloadedPluginReleaseContract,
+) -> bool {
     let constraint = normalized_release_sdk_constraint(release);
-    let req = semver::VersionReq::parse(constraint.trim()).map_or_else(
+    let sdk_req = semver::VersionReq::parse(constraint.trim()).map_or_else(
         |error| {
             warn!(
                 plugin_id,
@@ -355,28 +307,14 @@ fn parse_registry_release_sdk_req(
             None
         },
         Some,
-    )?;
-    if !req.matches(&descriptor_version) {
-        warn!(
-            plugin_id,
-            version = release.version.as_str(),
-            sdk_version,
-            sdk_constraint = constraint.as_str(),
-            "skipping plugin release whose sdk_version does not satisfy sdk_constraint"
-        );
-        return None;
-    }
-    Some(req)
-}
-
-fn registry_release_is_host_compatible(plugin_id: &str, release: &RegistryRelease) -> bool {
-    let Some(sdk_req) = parse_registry_release_sdk_req(plugin_id, release) else {
+    );
+    let Some(sdk_req) = sdk_req else {
         return false;
     };
     if !sdk_req.matches(current_sdk_version()) {
         return false;
     }
-    let Some(constraint) = registry_release_scryer_constraint(release) else {
+    let Some(constraint) = downloaded_plugin_release_scryer_constraint(release) else {
         return true;
     };
     let constraint = constraint.trim();
@@ -398,106 +336,65 @@ fn registry_release_is_host_compatible(plugin_id: &str, release: &RegistryReleas
     }
 }
 
-fn registry_release_has_valid_scryer_constraint(
-    plugin_id: &str,
-    release: &RegistryRelease,
-) -> bool {
-    let Some(constraint) = registry_release_scryer_constraint(release) else {
-        return true;
-    };
-    let constraint = constraint.trim();
-    if constraint.is_empty() {
-        return true;
-    }
-    match semver::VersionReq::parse(constraint) {
-        Ok(_) => true,
-        Err(error) => {
-            warn!(
-                plugin_id,
-                version = release.version.as_str(),
-                scryer_constraint = constraint,
-                error = %error,
-                "skipping plugin release with invalid scryer_constraint"
-            );
-            false
-        }
-    }
-}
-
-fn highest_registry_release<F>(entry: &RegistryEntry, predicate: F) -> Option<RegistryRelease>
-where
-    F: Fn(&RegistryRelease) -> bool,
-{
-    entry
-        .normalized_releases()
-        .into_iter()
-        .filter(|release| predicate(release))
-        .filter_map(|release| {
-            let version = parse_registry_release_version(&entry.id, &release)?;
-            parse_registry_release_sdk_req(&entry.id, &release)?;
-            if !registry_release_has_valid_scryer_constraint(&entry.id, &release) {
-                return None;
-            }
-            Some((version, release))
-        })
-        .max_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, release)| release)
-}
-
-fn latest_release(entry: &RegistryEntry) -> Option<RegistryRelease> {
-    highest_registry_release(entry, |_| true)
-}
-
-fn latest_compatible_release(entry: &RegistryEntry) -> Option<RegistryRelease> {
-    highest_registry_release(entry, |release| {
-        registry_release_is_host_compatible(&entry.id, release)
-    })
-}
-
-fn latest_compatible_child_release(child: &ChildCatalog) -> Option<ChildCatalogRelease> {
-    let sdk_version = current_sdk_version();
+fn latest_child_release(child: &ChildCatalog) -> Option<ChildCatalogRelease> {
     child
         .releases
         .iter()
-        .filter(|release| {
-            semver::VersionReq::parse(&release.sdk_constraint)
-                .map(|req| req.matches(sdk_version))
-                .unwrap_or(false)
-        })
         .filter_map(|release| {
-            semver::Version::parse(release.version.trim_start_matches('v'))
-                .ok()
-                .map(|version| (version, release))
+            parse_child_release_version(&child.id, release).map(|version| (version, release))
         })
         .max_by(|(left, _), (right, _)| left.cmp(right))
         .map(|(_, release)| release.clone())
 }
 
-fn latest_host_blocked_release(entry: &RegistryEntry) -> Option<RegistryRelease> {
-    let latest = latest_release(entry)?;
-    let selected = latest_compatible_release(entry)?;
-    let latest_version = parse_registry_release_version(&entry.id, &latest)?;
-    let selected_version = parse_registry_release_version(&entry.id, &selected)?;
-    if latest_version > selected_version && !registry_release_is_host_compatible(&entry.id, &latest)
-    {
-        Some(latest)
-    } else {
-        None
+fn latest_compatible_child_release(child: &ChildCatalog) -> Option<ChildCatalogRelease> {
+    child
+        .releases
+        .iter()
+        .filter(|release| child_release_is_sdk_compatible(&child.id, release))
+        .filter_map(|release| {
+            parse_child_release_version(&child.id, release).map(|version| (version, release))
+        })
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, release)| release.clone())
+}
+
+fn latest_host_blocked_child_release(child: &ChildCatalog) -> Option<ChildCatalogRelease> {
+    let latest = latest_child_release(child)?;
+    let latest_version = parse_child_release_version(&child.id, &latest)?;
+    let selected = latest_compatible_child_release(child);
+    match selected {
+        Some(selected) => {
+            let selected_version = parse_child_release_version(&child.id, &selected)?;
+            if latest_version > selected_version
+                && !child_release_is_sdk_compatible(&child.id, &latest)
+            {
+                Some(latest)
+            } else {
+                None
+            }
+        }
+        None if !child_release_is_sdk_compatible(&child.id, &latest) => Some(latest),
+        None => None,
     }
 }
 
-fn installed_registry_release(
-    entry: &RegistryEntry,
+fn installed_child_release(
+    child: &ChildCatalog,
     installation: &PluginInstallation,
-) -> Option<RegistryRelease> {
+) -> Option<ChildCatalogRelease> {
     if installation.wasm_digest.is_some() {
         return None;
     }
 
-    entry.normalized_releases().into_iter().find(|release| {
-        release.version == installation.version
-            && normalized_release_sdk_constraint(release) == installation.sdk_constraint
-    })
+    child
+        .releases
+        .iter()
+        .find(|release| {
+            release.version == installation.version
+                && release.sdk_constraint == installation.sdk_constraint
+        })
+        .cloned()
 }
 
 fn installation_is_catalog_official(installation: &PluginInstallation) -> bool {
@@ -539,19 +436,14 @@ fn persisted_plugin_descriptor_json(descriptor: &PluginDescriptor) -> AppResult<
     })
 }
 
-fn installation_runtime_release(installation: &PluginInstallation) -> RegistryRelease {
-    RegistryRelease {
+fn installation_runtime_release(
+    installation: &PluginInstallation,
+) -> DownloadedPluginReleaseContract {
+    DownloadedPluginReleaseContract {
         version: installation.version.clone(),
-        sdk_version: installation.sdk_version.clone(),
+        sdk_version: Some(installation.sdk_version.clone()),
         sdk_constraint: installation.sdk_constraint.clone(),
         scryer_constraint: installation.scryer_constraint.clone(),
-        legacy_min_scryer_version: None,
-        source_url: installation
-            .source_repo
-            .clone()
-            .or_else(|| installation.source_url.clone()),
-        wasm_url: installation.source_url.clone(),
-        wasm_sha256: None,
     }
 }
 
@@ -661,7 +553,7 @@ fn validate_downloaded_plugin_descriptor(
     plugin_id: &str,
     expected_plugin_type: &str,
     expected_provider_type: &str,
-    release: &RegistryRelease,
+    release: &DownloadedPluginReleaseContract,
     descriptor: &PluginDescriptor,
     enforce_release_host_compatibility: bool,
 ) -> AppResult<ValidatedDownloadedPlugin> {
@@ -695,14 +587,21 @@ fn validate_downloaded_plugin_descriptor(
     }
     if descriptor.version != release.version {
         return Err(AppError::Validation(format!(
-            "downloaded plugin '{}' has version '{}' but registry selected '{}'",
+            "downloaded plugin '{}' has version '{}' but the selected release is '{}'",
             descriptor.id, descriptor.version, release.version
         )));
     }
-    if !release.sdk_version.trim().is_empty() && descriptor.sdk_version != release.sdk_version {
+    if release
+        .sdk_version
+        .as_deref()
+        .is_some_and(|sdk_version| !sdk_version.trim().is_empty())
+        && release.sdk_version.as_deref() != Some(descriptor.sdk_version.as_str())
+    {
         return Err(AppError::Validation(format!(
-            "downloaded plugin '{}' has sdk_version '{}' but registry selected '{}'",
-            descriptor.id, descriptor.sdk_version, release.sdk_version
+            "downloaded plugin '{}' has sdk_version '{}' but the selected release is '{}'",
+            descriptor.id,
+            descriptor.sdk_version,
+            release.sdk_version.as_deref().unwrap_or_default()
         )));
     }
     let descriptor_sdk_constraint = plugin_descriptor_sdk_constraint(descriptor);
@@ -712,12 +611,12 @@ fn validate_downloaded_plugin_descriptor(
             plugin_id = descriptor.id.as_str(),
             version = release.version.as_str(),
             descriptor_sdk_constraint = descriptor_sdk_constraint.as_str(),
-            registry_sdk_constraint = release_sdk_constraint.as_str(),
-            "downloaded plugin sdk_constraint differs from registry metadata; using registry constraint"
+            selected_sdk_constraint = release_sdk_constraint.as_str(),
+            "downloaded plugin sdk_constraint differs from selected release metadata; using selected release constraint"
         );
     }
     if enforce_release_host_compatibility
-        && !registry_release_is_host_compatible(plugin_id, release)
+        && !downloaded_plugin_release_is_host_compatible(plugin_id, release)
     {
         return Err(AppError::Validation(format!(
             "plugin '{}' no longer has a host-compatible release for this Scryer version",
@@ -738,7 +637,6 @@ const CENTRAL_CATALOG_SOURCE_KEY: &str = "__central_catalog_v2";
 const CATALOG_STATUS_KEY: &str = "github_distribution";
 const CENTRAL_CATALOG_REPO: &str = "scryer-media/scryer-plugins";
 const CENTRAL_CATALOG_WORKFLOW: &str = ".github/workflows/release-plugin.yml";
-const LEGACY_PLUGIN_REGISTRY_URL_SUFFIX: &str = "main/registry.json";
 const SQLITE_PLUGIN_WASM_ZSTD_LEVEL: i32 = 3;
 
 const LEGACY_INDEXER_PLUGIN_TYPE: &str = "indexer";
@@ -754,24 +652,12 @@ fn current_scryer_version() -> &'static semver::Version {
     &VERSION
 }
 
-fn parse_legacy_plugin_registry_manifest(body: &str) -> AppResult<RegistryManifest> {
-    serde_json::from_str(body)
-        .map_err(|e| AppError::Repository(format!("failed to parse legacy plugin registry: {e}")))
-}
-
 fn plugin_catalog_url() -> String {
     std::env::var(CATALOG_URL_ENV)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_CATALOG_URL.to_string())
-}
-
-fn legacy_plugin_registry_url() -> String {
-    format!(
-        "https://raw.githubusercontent.com/{}/{}",
-        CENTRAL_CATALOG_REPO, LEGACY_PLUGIN_REGISTRY_URL_SUFFIX
-    )
 }
 
 fn bundle_url_for(url: &str) -> String {
@@ -942,7 +828,7 @@ fn validate_catalog_downloaded_plugin_release(
     plugin_id: &str,
     expected_plugin_type: &str,
     expected_provider_type: &str,
-    release: &RegistryRelease,
+    release: &DownloadedPluginReleaseContract,
     wasm_bytes: &[u8],
 ) -> AppResult<ValidatedDownloadedPlugin> {
     let descriptor =
@@ -1836,26 +1722,151 @@ impl AppUseCase {
             None => HashSet::new(),
         };
 
-        // Try to parse cached registry
-        let registry_json = self
+        let sources = self
             .services
             .customization
             .plugin_installations
-            .get_registry_cache()
+            .list_plugin_catalog_sources()
             .await?;
-
-        let registry_entries: Vec<RegistryEntry> = match registry_json {
-            Some(json) => serde_json::from_str::<RegistryManifest>(&json)
-                .map(|m| m.plugins)
-                .unwrap_or_default(),
-            None => vec![],
-        };
+        let central = sources
+            .iter()
+            .find(|source| source.source_key == CENTRAL_CATALOG_SOURCE_KEY)
+            .and_then(|source| source.catalog_json.as_deref())
+            .and_then(|json| parse_and_validate_central_catalog(json.as_bytes()).ok());
         let builtin_by_key = self.builtin_seed_by_key();
         let effective_installations = installations.iter().collect::<Vec<_>>();
 
         let mut result = Vec::new();
 
-        for resolved in self.resolved_catalog_plugins().await.unwrap_or_default() {
+        if let Some(central) = central {
+            for entry in central.plugins {
+                let inst = effective_installations
+                    .iter()
+                    .copied()
+                    .find(|installation| installation.plugin_id == entry.id);
+                let Some(child_json) = sources
+                    .iter()
+                    .find(|source| source.source_key == child_catalog_source_key(&entry.id))
+                    .and_then(|source| source.catalog_json.as_deref())
+                else {
+                    continue;
+                };
+                let Ok(child) =
+                    parse_and_validate_child_catalog(child_json.as_bytes(), Some(&entry), None)
+                else {
+                    continue;
+                };
+
+                let plugin_type =
+                    merged_plugin_type(&child.plugin_type, inst.map(|i| i.plugin_type.as_str()));
+                let builtin = inst
+                    .map(|installation| installation.is_builtin)
+                    .unwrap_or_else(|| {
+                        builtin_by_key
+                            .contains_key(&builtin_lookup_key(&plugin_type, &child.provider_type))
+                    });
+                let selected_release = latest_compatible_child_release(&child);
+                let latest_release = latest_child_release(&child);
+                let blocked_release = latest_host_blocked_child_release(&child);
+                let active_release =
+                    inst.and_then(|installation| installed_child_release(&child, installation));
+                let display_release = selected_release
+                    .clone()
+                    .or_else(|| active_release.clone())
+                    .or_else(|| latest_release.clone());
+
+                if inst.is_none() && display_release.is_none() && !builtin {
+                    continue;
+                }
+
+                let version = display_release
+                    .as_ref()
+                    .map(|release| release.version.clone())
+                    .or_else(|| inst.map(|installation| installation.version.clone()))
+                    .unwrap_or_default();
+                let latest_version = match (selected_release.as_ref(), latest_release.as_ref()) {
+                    (Some(selected), Some(latest)) => {
+                        let selected_version = parse_child_release_version(&entry.id, selected);
+                        let latest_semver = parse_child_release_version(&entry.id, latest);
+                        match selected_version.zip(latest_semver) {
+                            Some((selected_version, latest_semver))
+                                if latest_semver > selected_version =>
+                            {
+                                Some(latest.version.clone())
+                            }
+                            _ => None,
+                        }
+                    }
+                    (None, Some(latest)) => Some(latest.version.clone()),
+                    _ => None,
+                };
+                let blocked_reason = if selected_release.is_none() && latest_release.is_some() {
+                    Some("no_compatible_release".to_string())
+                } else if blocked_release.is_some() {
+                    Some("newer_release_requires_newer_scryer".to_string())
+                } else {
+                    None
+                };
+                let update_available = inst
+                    .and_then(|installation| {
+                        selected_release.as_ref().and_then(|release| {
+                            parse_child_release_version(&entry.id, release)
+                                .zip(semver::Version::parse(installation.version.as_str()).ok())
+                        })
+                    })
+                    .is_some_and(|(selected_version, installed_version)| {
+                        selected_version > installed_version
+                    });
+
+                result.push(RegistryPlugin {
+                    id: child.id.clone(),
+                    name: child.name.clone(),
+                    description: child.description.clone(),
+                    version,
+                    latest_version,
+                    plugin_type: plugin_type.clone(),
+                    provider_type: child.provider_type.clone(),
+                    author: child.publisher.clone(),
+                    official: entry.support_tier == PluginSupportTier::Official,
+                    publisher: Some(child.publisher.clone()),
+                    support_tier: entry.support_tier,
+                    docs_url: Some(child.docs_url.clone()),
+                    source_repo: Some(child.source_repo.clone()),
+                    builtin,
+                    source_url: inst
+                        .and_then(|installation| installation.source_url.clone())
+                        .or_else(|| {
+                            display_release
+                                .as_ref()
+                                .map(|release| release.artifact_manifest_url.clone())
+                        }),
+                    source_kind: inst
+                        .map(|installation| source_kind_label(installation.source_kind))
+                        .or_else(|| Some(source_kind_label(PluginSourceKind::Downloaded))),
+                    blocked_reason,
+                    wasm_url: display_release
+                        .as_ref()
+                        .map(|release| release.artifact_manifest_url.clone()),
+                    wasm_sha256: None,
+                    min_scryer_version: None,
+                    default_base_url: self
+                        .default_base_url_for_plugin(&plugin_type, &child.provider_type),
+                    is_installed: inst.is_some(),
+                    is_enabled: inst.map(|i| i.is_enabled).unwrap_or(false),
+                    installed_version: inst.map(|i| i.version.clone()),
+                    update_available,
+                    install_in_progress: install_in_progress_ids.contains(&child.id),
+                });
+            }
+        }
+
+        for resolved in self
+            .resolved_catalog_plugins()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|resolved| resolved.central.is_none())
+        {
             let inst = effective_installations
                 .iter()
                 .copied()
@@ -1914,124 +1925,6 @@ impl AppUseCase {
                 installed_version: inst.map(|i| i.version.clone()),
                 update_available,
                 install_in_progress: install_in_progress_ids.contains(&resolved.child.id),
-            });
-        }
-
-        for entry in &registry_entries {
-            if result.iter().any(|plugin| plugin.id == entry.id) {
-                continue;
-            }
-            let inst = effective_installations
-                .iter()
-                .copied()
-                .find(|installation| installation.plugin_id == entry.id);
-
-            let plugin_type =
-                merged_plugin_type(&entry.plugin_type, inst.map(|i| i.plugin_type.as_str()));
-            let builtin_key = builtin_lookup_key(&plugin_type, &entry.provider_type);
-            let builtin_seed = builtin_by_key.get(&builtin_key);
-            let selected_release = latest_compatible_release(entry);
-            let latest_release = latest_release(entry);
-            let blocked_release = latest_host_blocked_release(entry);
-            let active_release =
-                inst.and_then(|installation| installed_registry_release(entry, installation));
-            let display_release = selected_release
-                .clone()
-                .or_else(|| active_release.clone())
-                .or_else(|| latest_release.clone());
-
-            if inst.is_none() && display_release.is_none() && builtin_seed.is_none() {
-                continue;
-            }
-
-            let version = display_release
-                .as_ref()
-                .map(|release| release.version.clone())
-                .or_else(|| inst.map(|installation| installation.version.clone()))
-                .unwrap_or_default();
-            let latest_version = match (selected_release.as_ref(), latest_release.as_ref()) {
-                (Some(selected), Some(latest)) => {
-                    let selected_version = parse_registry_release_version(&entry.id, selected);
-                    let latest_semver = parse_registry_release_version(&entry.id, latest);
-                    match selected_version.zip(latest_semver) {
-                        Some((selected_version, latest_semver))
-                            if latest_semver > selected_version =>
-                        {
-                            Some(latest.version.clone())
-                        }
-                        _ => None,
-                    }
-                }
-                (None, Some(latest)) => Some(latest.version.clone()),
-                _ => None,
-            };
-            let blocked_reason = if selected_release.is_none() && latest_release.is_some() {
-                Some("no_compatible_release".to_string())
-            } else if blocked_release.is_some() {
-                Some("newer_release_requires_newer_scryer".to_string())
-            } else {
-                None
-            };
-            let update_available = inst
-                .and_then(|installation| {
-                    selected_release.as_ref().and_then(|release| {
-                        parse_registry_release_version(&entry.id, release)
-                            .zip(semver::Version::parse(installation.version.as_str()).ok())
-                    })
-                })
-                .is_some_and(|(selected_version, installed_version)| {
-                    selected_version > installed_version
-                });
-            let release_source_url = display_release
-                .as_ref()
-                .and_then(|release| release.source_url.clone());
-            let release_wasm_url = display_release
-                .as_ref()
-                .and_then(|release| release.wasm_url.clone());
-            let release_wasm_sha256 = display_release
-                .as_ref()
-                .and_then(|release| release.wasm_sha256.clone());
-            let release_scryer_constraint = display_release.as_ref().and_then(|release| {
-                registry_release_scryer_constraint(release).map(str::to_string)
-            });
-            let builtin = inst
-                .map(|installation| installation.is_builtin)
-                .unwrap_or_else(|| builtin_seed.is_some());
-
-            result.push(RegistryPlugin {
-                id: entry.id.clone(),
-                name: entry.name.clone(),
-                description: entry.description.clone(),
-                version,
-                latest_version,
-                plugin_type,
-                provider_type: entry.provider_type.clone(),
-                author: entry.author.clone(),
-                official: entry.official,
-                publisher: inst
-                    .and_then(|installation| installation.publisher.clone())
-                    .or_else(|| Some(entry.author.clone())),
-                support_tier: inst
-                    .map(|installation| installation.support_tier)
-                    .unwrap_or(PluginSupportTier::Official),
-                docs_url: inst.and_then(|installation| installation.docs_url.clone()),
-                source_repo: inst.and_then(|installation| installation.source_repo.clone()),
-                builtin,
-                source_url: inst
-                    .and_then(|installation| installation.source_url.clone())
-                    .or(release_source_url),
-                source_kind: inst.map(|installation| source_kind_label(installation.source_kind)),
-                blocked_reason,
-                wasm_url: release_wasm_url,
-                wasm_sha256: release_wasm_sha256,
-                min_scryer_version: release_scryer_constraint,
-                default_base_url: self
-                    .default_base_url_for_plugin(&entry.plugin_type, &entry.provider_type),
-                is_installed: inst.is_some(),
-                is_enabled: inst.map(|i| i.is_enabled).unwrap_or(false),
-                installed_version: inst.map(|i| i.version.clone()),
-                update_available,
-                install_in_progress: install_in_progress_ids.contains(&entry.id),
             });
         }
 
@@ -2095,112 +1988,37 @@ impl AppUseCase {
             .count() as i64)
     }
 
-    #[cfg(test)]
-    async fn synchronize_plugin_installation_release_metadata(
-        &self,
-        manifest: &RegistryManifest,
-    ) -> AppResult<()> {
-        let repo = &self.services.customization.plugin_installations;
-
-        for mut installation in
-            repo.list_plugin_installations()
-                .await?
-                .into_iter()
-                .filter(|installation| {
-                    installation.source_kind == PluginSourceKind::Downloaded
-                        && installation.wasm_digest.is_none()
-                })
-        {
-            let Some(entry) = manifest.plugins.iter().find(|entry| {
-                entry.official
-                    && entry.id == installation.plugin_id
-                    && entry.plugin_type == installation.plugin_type
-                    && entry.provider_type == installation.provider_type
-            }) else {
-                continue;
-            };
-
-            let Some(release) = installed_registry_release(entry, &installation) else {
-                continue;
-            };
-
-            let next_sdk_constraint = normalized_release_sdk_constraint(&release);
-            let next_scryer_constraint =
-                normalized_constraint(registry_release_scryer_constraint(&release));
-            let next_source_url = release.source_url.clone();
-
-            if installation.sdk_constraint == next_sdk_constraint
-                && installation.scryer_constraint == next_scryer_constraint
-                && installation.source_url == next_source_url
-            {
-                continue;
-            }
-
-            installation.sdk_constraint = next_sdk_constraint;
-            installation.scryer_constraint = next_scryer_constraint;
-            installation.source_url = next_source_url;
-            installation.updated_at = Utc::now();
-            repo.update_plugin_installation(&installation, None).await?;
-        }
-
-        Ok(())
-    }
-
-    #[cfg(test)]
-    async fn apply_plugin_registry_manifest(
-        &self,
-        _manifest: &RegistryManifest,
-        body: &str,
-    ) -> AppResult<()> {
-        self.store_legacy_plugin_registry_cache(body).await?;
-        self.synchronize_plugin_installation_release_metadata(
-            &parse_legacy_plugin_registry_manifest(body)?,
-        )
-        .await?;
-        self.rebuild_plugin_provider().await?;
-        self.publish_provider_catalog_changed(ProviderCatalogFamily::all().into_iter().collect());
-        Ok(())
-    }
-
-    async fn load_rule_pack_registry_manifest(&self) -> AppResult<RegistryManifest> {
-        if let Some(json) = self
+    async fn cached_central_catalog(&self) -> AppResult<Option<CentralCatalog>> {
+        let Some(source) = self
             .services
             .customization
             .plugin_installations
-            .get_registry_cache()
+            .get_plugin_catalog_source(CENTRAL_CATALOG_SOURCE_KEY)
             .await?
-        {
-            match parse_legacy_plugin_registry_manifest(&json) {
-                Ok(manifest) => return Ok(manifest),
-                Err(error) => {
-                    warn!(error = %error, "cached legacy plugin registry is invalid; refetching");
-                }
+        else {
+            return Ok(None);
+        };
+        let Some(json) = source.catalog_json else {
+            return Ok(None);
+        };
+        match parse_and_validate_central_catalog(json.as_bytes()) {
+            Ok(catalog) => Ok(Some(catalog)),
+            Err(error) => {
+                warn!(error = %error, "cached central plugin catalog is invalid");
+                Ok(None)
             }
         }
-
-        let body = self.fetch_legacy_plugin_registry_body().await?;
-        self.store_legacy_plugin_registry_cache(&body).await
     }
 
-    async fn fetch_legacy_plugin_registry_body(&self) -> AppResult<String> {
-        let bytes = fetch_plugin_bytes(
-            &legacy_plugin_registry_url(),
-            "legacy plugin registry",
-            "legacy_plugin_registry",
-        )
-        .await?;
-        String::from_utf8(bytes)
-            .map_err(|e| AppError::Repository(format!("legacy plugin registry is not UTF-8: {e}")))
-    }
+    async fn load_rule_pack_catalog(&self) -> AppResult<CentralCatalog> {
+        if let Some(catalog) = self.cached_central_catalog().await? {
+            return Ok(catalog);
+        }
 
-    async fn store_legacy_plugin_registry_cache(&self, body: &str) -> AppResult<RegistryManifest> {
-        let manifest = parse_legacy_plugin_registry_manifest(body)?;
-        self.services
-            .customization
-            .plugin_installations
-            .store_registry_cache(body)
-            .await?;
-        Ok(manifest)
+        self.refresh_plugin_catalog_internal().await?;
+        self.cached_central_catalog().await?.ok_or_else(|| {
+            AppError::Repository("central plugin catalog is unavailable".to_string())
+        })
     }
 
     /// Refresh the plugin registry from the remote URL.
@@ -2632,21 +2450,17 @@ impl AppUseCase {
     ) -> AppResult<PluginInstallation> {
         let (compressed_wasm_bytes, wasm_bytes, manifest, artifact_url) =
             self.fetch_catalog_release_wasm(&resolved, reporter).await?;
-        let registry_release = RegistryRelease {
+        let release = DownloadedPluginReleaseContract {
             version: resolved.release.version.clone(),
-            sdk_version: String::new(),
+            sdk_version: None,
             sdk_constraint: resolved.release.sdk_constraint.clone(),
             scryer_constraint: None,
-            legacy_min_scryer_version: None,
-            source_url: Some(resolved.child.source_repo.clone()),
-            wasm_url: Some(artifact_url.clone()),
-            wasm_sha256: None,
         };
         let validated = validate_catalog_downloaded_plugin_release(
             &resolved.child.id,
             &resolved.child.plugin_type,
             &resolved.child.provider_type,
-            &registry_release,
+            &release,
             &wasm_bytes,
         )?;
 
@@ -2732,21 +2546,17 @@ impl AppUseCase {
 
         let (compressed_wasm_bytes, wasm_bytes, manifest, artifact_url) =
             self.fetch_catalog_release_wasm(&resolved, reporter).await?;
-        let registry_release = RegistryRelease {
+        let release = DownloadedPluginReleaseContract {
             version: resolved.release.version.clone(),
-            sdk_version: String::new(),
+            sdk_version: None,
             sdk_constraint: resolved.release.sdk_constraint.clone(),
             scryer_constraint: None,
-            legacy_min_scryer_version: None,
-            source_url: Some(resolved.child.source_repo.clone()),
-            wasm_url: Some(artifact_url.clone()),
-            wasm_sha256: None,
         };
         let validated = validate_catalog_downloaded_plugin_release(
             &resolved.child.id,
             &resolved.child.plugin_type,
             &resolved.child.provider_type,
-            &registry_release,
+            &release,
             &wasm_bytes,
         )?;
 
@@ -3350,20 +3160,20 @@ impl AppUseCase {
         result
     }
 
-    /// List available community rule packs from the cached registry.
+    /// List available community rule packs from the cached central catalog.
     pub async fn list_rule_pack_registry(
         &self,
         actor: &User,
     ) -> AppResult<Vec<RulePackRegistryEntry>> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
-        let manifest = self.load_rule_pack_registry_manifest().await?;
+        let catalog = self.load_rule_pack_catalog().await?;
 
-        // Filter by min_scryer_version compatibility
         let current = current_scryer_version();
-        Ok(manifest
+        Ok(catalog
             .rule_packs
             .into_iter()
+            .map(RulePackRegistryEntry::from)
             .filter(|pack| {
                 pack.min_scryer_version
                     .as_ref()
@@ -3382,14 +3192,12 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
-        // Find the pack URL from registry
         let packs = self.list_rule_pack_registry(actor).await?;
         let pack = packs
             .iter()
             .find(|p| p.id == pack_id)
             .ok_or_else(|| AppError::NotFound(format!("rule pack {pack_id}")))?;
 
-        // Fetch the JSON
         let outbound_http = plugin_http_client(PluginHttpClientProfile::RulePackFetch)?;
         let response = outbound_http
             .send(

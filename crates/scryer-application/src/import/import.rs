@@ -1715,6 +1715,10 @@ async fn import_movie_download(
 // Interstitial movie import: anime franchise movie → Season 00 of the series
 // ---------------------------------------------------------------------------
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "interstitial imports coordinate title, source, and collection state in a single workflow step"
+)]
 async fn import_interstitial_movie_download(
     app: &AppUseCase,
     actor: &User,
@@ -2673,6 +2677,10 @@ async fn cleanup_superseded_episode_incumbents(
 }
 
 /// Import a single episode video file: parse, gate, import, and link.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "single-episode imports need the full source, rename, and persistence context together"
+)]
 async fn import_single_episode_file(
     app: &AppUseCase,
     actor: &User,
@@ -2869,6 +2877,10 @@ async fn import_single_episode_file(
     Ok(outcome)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resolved episode imports coordinate rename tokens, coverage, and scoring in one step"
+)]
 async fn execute_resolved_episode_import(
     app: &AppUseCase,
     actor: &User,
@@ -3235,6 +3247,10 @@ pub(crate) async fn resolve_import_paths(
 /// files where no per-season episode number is known).
 /// `quality_override` replaces the filename-parsed quality token when the
 /// caller supplies an explicit label (e.g. manual import).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "episode rename rendering uses the full canonical token set explicitly"
+)]
 pub(crate) fn episode_import_dest_path(
     title: &scryer_domain::Title,
     parsed: &crate::ParsedReleaseMetadata,
@@ -3770,6 +3786,10 @@ async fn write_series_sidecars(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "import artifact persistence records the full import outcome for later inspection"
+)]
 async fn persist_file_import_artifact(
     app: &AppUseCase,
     import_id: &str,

@@ -452,6 +452,10 @@ async fn merge_series_title_work_for_index(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series title insertion updates shared indexes and workset state together"
+)]
 async fn append_series_title_and_merge_work(
     app: &AppUseCase,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
@@ -482,6 +486,10 @@ async fn append_series_title_and_merge_work(
     index
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "movie scan resolution threads shared title indexes through one candidate decision"
+)]
 async fn resolve_movie_scan_candidate(
     app: &AppUseCase,
     actor: &User,
@@ -547,6 +555,10 @@ async fn resolve_movie_scan_candidate(
     Ok(MovieCandidateResolution::Unresolved(Box::new(candidate)))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "metadata matches update the same in-memory title indexes and creation context together"
+)]
 async fn resolve_movie_metadata_match(
     app: &AppUseCase,
     actor: &User,
@@ -608,6 +620,10 @@ async fn resolve_movie_metadata_match(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "movie full-scan processing coordinates shared scan state across a single candidate"
+)]
 pub(super) async fn process_movie_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
@@ -716,6 +732,10 @@ pub(super) async fn process_movie_full_scan_candidate(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series full-scan processing coordinates shared scan state across a single candidate"
+)]
 pub(super) async fn process_series_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
@@ -842,6 +862,10 @@ pub(super) async fn process_series_full_scan_candidate(
     Ok(Some(candidate))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resolved movie scan candidates update shared scan state, indexes, and reporting together"
+)]
 pub(super) async fn process_resolved_movie_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
@@ -954,6 +978,10 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resolved series scan candidates update shared scan state, indexes, and reporting together"
+)]
 pub(super) async fn process_resolved_series_full_scan_candidate(
     app: &AppUseCase,
     actor: &User,
@@ -1132,6 +1160,10 @@ async fn refresh_existing_series_title_match(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series refresh candidates need shared title indexes and workset state in one step"
+)]
 pub(super) async fn process_series_refresh_candidate(
     app: &AppUseCase,
     actor: &User,
@@ -1223,6 +1255,10 @@ pub(super) async fn process_series_refresh_candidate(
     Ok(Some(candidate))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resolved series refresh candidates update indexes and background work in one place"
+)]
 pub(super) async fn process_resolved_series_refresh_candidate(
     app: &AppUseCase,
     actor: &User,
@@ -1310,6 +1346,10 @@ pub(super) async fn process_resolved_series_refresh_candidate(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "movie refresh candidates need shared indexes, probe paths, and workset state together"
+)]
 pub(super) async fn process_movie_refresh_candidate(
     app: &AppUseCase,
     actor: &User,
@@ -1405,6 +1445,10 @@ pub(super) async fn process_movie_refresh_candidate(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resolved movie refresh candidates update indexes and background work in one place"
+)]
 pub(super) async fn process_resolved_movie_refresh_candidate(
     app: &AppUseCase,
     actor: &User,

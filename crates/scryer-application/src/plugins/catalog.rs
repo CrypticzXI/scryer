@@ -53,6 +53,8 @@ static VERIFY_LIMIT: OnceLock<Semaphore> = OnceLock::new();
 pub struct CentralCatalog {
     pub schema_version: String,
     pub plugins: Vec<CentralCatalogEntry>,
+    #[serde(default)]
+    pub rule_packs: Vec<RulePackCatalogEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -69,6 +71,19 @@ pub struct CentralCatalogEntry {
     pub source_repo: String,
     pub child_catalog_url: String,
     pub required_signer: RequiredSigner,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RulePackCatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    pub url: String,
+    #[serde(default)]
+    pub min_scryer_version: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -372,7 +387,7 @@ fn validate_central_catalog(catalog: &CentralCatalog) -> AppResult<()> {
         )));
     }
 
-    let mut ids = HashSet::new();
+    let mut plugin_ids = HashSet::new();
     for entry in &catalog.plugins {
         require_non_empty("plugin id", &entry.id)?;
         require_non_empty("plugin name", &entry.name)?;
@@ -382,7 +397,7 @@ fn validate_central_catalog(catalog: &CentralCatalog) -> AppResult<()> {
         require_non_empty("docs_url", &entry.docs_url)?;
         require_non_empty("source_repo", &entry.source_repo)?;
         require_non_empty("child_catalog_url", &entry.child_catalog_url)?;
-        if !ids.insert(entry.id.clone()) {
+        if !plugin_ids.insert(entry.id.clone()) {
             return Err(AppError::Validation(format!(
                 "duplicate plugin id '{}' in central catalog",
                 entry.id
@@ -404,6 +419,37 @@ fn validate_central_catalog(catalog: &CentralCatalog) -> AppResult<()> {
             )));
         }
         require_release_asset_url("child catalog", &entry.child_catalog_url, &source_repo)?;
+    }
+
+    let catalog_repo = GitHubRepo::parse("https://github.com/scryer-media/scryer-plugins")?;
+    let mut rule_pack_ids = HashSet::new();
+    for entry in &catalog.rule_packs {
+        require_non_empty("rule pack id", &entry.id)?;
+        require_non_empty("rule pack name", &entry.name)?;
+        require_non_empty("rule pack author", &entry.author)?;
+        require_non_empty("rule pack version", &entry.version)?;
+        require_non_empty("rule pack url", &entry.url)?;
+        if !rule_pack_ids.insert(entry.id.clone()) {
+            return Err(AppError::Validation(format!(
+                "duplicate rule pack id '{}' in central catalog",
+                entry.id
+            )));
+        }
+        semver::Version::parse(entry.version.trim()).map_err(|error| {
+            AppError::Validation(format!(
+                "rule pack '{}' has invalid version '{}': {error}",
+                entry.id, entry.version
+            ))
+        })?;
+        if let Some(min_scryer_version) = entry.min_scryer_version.as_deref() {
+            semver::Version::parse(min_scryer_version.trim()).map_err(|error| {
+                AppError::Validation(format!(
+                    "rule pack '{}' has invalid min_scryer_version '{}': {error}",
+                    entry.id, min_scryer_version
+                ))
+            })?;
+        }
+        require_release_asset_url("rule pack", &entry.url, &catalog_repo)?;
     }
 
     Ok(())

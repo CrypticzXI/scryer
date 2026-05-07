@@ -1,5 +1,3 @@
-#![allow(clippy::module_inception, clippy::too_many_arguments)]
-
 mod acquisition;
 mod authorization;
 mod catalog;
@@ -203,7 +201,8 @@ pub use settings::settings::{
     UpdateServiceSettings, UpdateSubtitleSettings,
 };
 pub use subtitles::orchestration::{
-    spawn_subtitle_search_for_file, start_background_subtitle_poller,
+    DownloadSubtitleForMediaFileRequest, spawn_subtitle_search_for_file,
+    start_background_subtitle_poller,
 };
 
 pub const DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE: &str =

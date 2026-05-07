@@ -58,6 +58,19 @@ export type ProviderTypeInfo = {
   recommendedFacets: Array<"movie" | "series" | "anime">;
 };
 
+export function visibleIndexerConfigFields(
+  providerType: string,
+  configFields: ConfigFieldDef[],
+): ConfigFieldDef[] {
+  const normalizedProviderType = providerType.trim().toLowerCase();
+  if (normalizedProviderType === "nzbgeek") {
+    return configFields.filter(
+      (field) => field.key !== "base_url" && field.key !== "api_path",
+    );
+  }
+  return configFields;
+}
+
 export type IndexerCategoryRoutingSettings = {
   categories: string[];
   enabled: boolean;

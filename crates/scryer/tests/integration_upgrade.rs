@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use common::TestContext;
 use scryer_application::recycle_bin::RecycleBinConfig;
-use scryer_application::testing::{AppUseCaseTestExt, execute_upgrade_for_test};
+use scryer_application::testing::{
+    AppUseCaseTestExt, UpgradeForTestInput, execute_upgrade_for_test,
+};
 use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
     ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, TitleRepository,
@@ -149,15 +151,17 @@ async fn upgrade_replaces_old_file_with_new() {
 
     let outcome = execute_upgrade_for_test(
         &app,
-        &actor,
-        &title,
-        &existing,
-        &new_source,
-        &new_dest,
-        parsed,
-        650,
-        &[],
-        &recycle_config,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            recycle_config: &recycle_config,
+        },
     )
     .await
     .expect("execute_upgrade");
@@ -232,15 +236,17 @@ async fn upgrade_restores_old_file_on_import_failure() {
 
     let result = execute_upgrade_for_test(
         &app,
-        &actor,
-        &title,
-        &existing,
-        &bad_source,
-        &new_dest,
-        parsed,
-        700,
-        &[],
-        &recycle_config,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &bad_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 700,
+            target_episode_ids: &[],
+            recycle_config: &recycle_config,
+        },
     )
     .await;
 
@@ -294,15 +300,17 @@ async fn upgrade_with_disabled_recycle_bin() {
 
     let outcome = execute_upgrade_for_test(
         &app,
-        &actor,
-        &title,
-        &existing,
-        &new_source,
-        &new_dest,
-        parsed,
-        600,
-        &[],
-        &disabled_config,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 600,
+            target_episode_ids: &[],
+            recycle_config: &disabled_config,
+        },
     )
     .await
     .expect("execute_upgrade");

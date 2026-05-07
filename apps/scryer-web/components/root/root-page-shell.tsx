@@ -586,7 +586,7 @@ function AuthenticatedHomePage({
         ? parseWantedSectionFromPath(normalizedSegments[1] ?? null)
         : "wanted";
       const parsedOverviewTarget = isMediaView(parsedView) && parsedContentSection === "overview"
-        ? parseOverviewTargetFromPath(segments[1] ?? null, segments[2] ?? null)
+        ? parseOverviewTargetFromPath(parsedView, segments[1] ?? null, segments[2] ?? null)
         : { librarySlug: null, titleSlug: null };
       return {
         parsedView,
