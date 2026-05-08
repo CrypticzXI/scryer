@@ -6,13 +6,12 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, CutoffUnmetQualitySummary,
-    DeleteExecutionConfirmation,
+    AppError, AppResult, CollectionUpdate, CutoffUnmetQualitySummary, DeleteExecutionConfirmation,
     DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
     LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision,
     ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, WantedItem,
-    WantedItemRepository, start_background_download_delete_poller,
+    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
+    start_background_download_delete_poller,
 };
 use scryer_domain::{
     Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds,
@@ -11800,21 +11799,21 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
 
     scryer_application::LibraryRepository::create(
         &ctx.catalog,
-            Library {
-                id: custom_library_id.clone(),
-                facet: MediaFacet::Movie,
-                name: "Scoped Movies".to_string(),
-                slug: "scoped-movies".to_string(),
-                is_default: false,
-                roots: Vec::new(),
-                created_at: now,
-                updated_at: now,
-            },
-            vec![LibraryRootDraft {
-                path: media_root.path().to_string_lossy().to_string(),
-                is_default: true,
-            }],
-        )
+        Library {
+            id: custom_library_id.clone(),
+            facet: MediaFacet::Movie,
+            name: "Scoped Movies".to_string(),
+            slug: "scoped-movies".to_string(),
+            is_default: false,
+            roots: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
+        vec![LibraryRootDraft {
+            path: media_root.path().to_string_lossy().to_string(),
+            is_default: true,
+        }],
+    )
     .await
     .expect("create custom library");
 
@@ -11858,7 +11857,11 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         digital_release_date: Some("2024-01-01".to_string()),
         folder_path: None,
     };
-    let title = ctx.catalog.create(title).await.expect("create scoped title");
+    let title = ctx
+        .catalog
+        .create(title)
+        .await
+        .expect("create scoped title");
 
     let file_path = media_root.path().join("Scoped.Delete.Movie.2024.1080p.mkv");
     std::fs::write(&file_path, b"scoped-delete").expect("write media file");
@@ -12023,7 +12026,9 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
     };
     let title = ctx.catalog.create(title).await.expect("create anime title");
 
-    let file_path = media_root.path().join("Interstitial.Cleanup.Show.Movie.1080p.mkv");
+    let file_path = media_root
+        .path()
+        .join("Interstitial.Cleanup.Show.Movie.1080p.mkv");
     std::fs::write(&file_path, b"interstitial-delete").expect("write interstitial media file");
 
     let file_id = ctx
@@ -12082,7 +12087,11 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
         .await
         .expect("create interstitial collection");
 
-    let actor = ctx.app.find_or_create_default_user().await.expect("default user");
+    let actor = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("default user");
     let preview = ctx
         .app
         .preview_delete_media_file(&actor, &file_id)
@@ -12122,8 +12131,7 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
         .expect("reload interstitial collection")
         .expect("interstitial collection should remain");
     assert_eq!(
-        refreshed_collection.ordered_path,
-        None,
+        refreshed_collection.ordered_path, None,
         "delete should clear the interstitial collection ordered_path"
     );
 }

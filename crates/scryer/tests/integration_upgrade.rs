@@ -13,7 +13,9 @@ use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
     ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, TitleRepository,
 };
-use scryer_domain::{Entitlement, LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization};
+use scryer_domain::{
+    Entitlement, LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization,
+};
 use scryer_infrastructure::FsFileImporter;
 
 // ---------------------------------------------------------------------------

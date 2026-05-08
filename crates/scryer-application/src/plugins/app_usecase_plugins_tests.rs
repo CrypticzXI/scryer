@@ -2189,8 +2189,18 @@ async fn list_installed_not_in_catalog() {
 async fn list_merge_both_sources() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_catalog_fixture_json(&[
-        catalog_entry("alpha", "1.0.0", false, Some("https://example.com/alpha.wasm.zst")),
-        catalog_entry("beta", "1.0.0", false, Some("https://example.com/beta.wasm.zst")),
+        catalog_entry(
+            "alpha",
+            "1.0.0",
+            false,
+            Some("https://example.com/alpha.wasm.zst"),
+        ),
+        catalog_entry(
+            "beta",
+            "1.0.0",
+            false,
+            Some("https://example.com/beta.wasm.zst"),
+        ),
     ]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
@@ -2250,8 +2260,18 @@ async fn list_invalid_semver_no_update() {
 async fn plugin_update_count_matches_available_plugins() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_catalog_fixture_json(&[
-        catalog_entry("alpha", "0.2.0", false, Some("https://example.com/alpha.wasm.zst")),
-        catalog_entry("beta", "1.0.0", false, Some("https://example.com/beta.wasm.zst")),
+        catalog_entry(
+            "alpha",
+            "0.2.0",
+            false,
+            Some("https://example.com/alpha.wasm.zst"),
+        ),
+        catalog_entry(
+            "beta",
+            "1.0.0",
+            false,
+            Some("https://example.com/beta.wasm.zst"),
+        ),
     ]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
@@ -2758,7 +2778,9 @@ async fn upgrade_already_at_latest() {
         .unwrap();
 
     let err = h.app.upgrade_plugin(&admin(), "alpha").await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(message) if message.contains("already at version 0.2.0")));
+    assert!(
+        matches!(err, AppError::Validation(message) if message.contains("already at version 0.2.0"))
+    );
 }
 
 #[tokio::test]

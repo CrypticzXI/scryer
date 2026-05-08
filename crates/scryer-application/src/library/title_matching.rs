@@ -60,11 +60,7 @@ pub(crate) fn search_variants(title: &str) -> Vec<String> {
     }
 
     let canonical = canonical_lookup_key(title);
-    if !canonical.is_empty()
-        && !variants
-            .iter()
-            .any(|value| value == &canonical)
-    {
+    if !canonical.is_empty() && !variants.iter().any(|value| value == &canonical) {
         variants.push(canonical);
     }
 

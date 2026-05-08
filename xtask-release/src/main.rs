@@ -883,9 +883,9 @@ fn write_release_dry_run_cache(ctx: &TaskContext, cache: &ReleaseDryRunCache) ->
 
 fn canonicalize_json_value(value: serde_json::Value) -> serde_json::Value {
     match value {
-        serde_json::Value::Array(values) => serde_json::Value::Array(
-            values.into_iter().map(canonicalize_json_value).collect(),
-        ),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(canonicalize_json_value).collect())
+        }
         serde_json::Value::Object(map) => {
             let ordered = map
                 .into_iter()
@@ -1738,11 +1738,8 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
     }
     fs::write(&paths.wasm, &compressed_wasm)
         .with_context(|| format!("failed to write {}", paths.wasm.display()))?;
-    fs::write(
-        &paths.descriptor_json,
-        canonical_pretty_json(&descriptor)?,
-    )
-    .with_context(|| format!("failed to write {}", paths.descriptor_json.display()))?;
+    fs::write(&paths.descriptor_json, canonical_pretty_json(&descriptor)?)
+        .with_context(|| format!("failed to write {}", paths.descriptor_json.display()))?;
     fs::write(
         &paths.description,
         format!("{}\n", child.description.trim()),
