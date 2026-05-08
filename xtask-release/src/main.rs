@@ -2126,15 +2126,15 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     ));
 
     if reused_dry_run_cache {
-        ok("Skipped post-bump cargo check via dry-run cache reuse");
-    } else {
-        step("Running cargo check after version bump");
-        let mut cargo_check = ctx.release_command_in("cargo", &ctx.repo_root);
-        cargo_check.arg("check");
-        add_prod_package_args(&mut cargo_check);
-        run_checked(&mut cargo_check)?;
-        ok("cargo check passed");
+        ok("Reused dry-run cache for pre-bump validations");
     }
+
+    step("Running cargo check after version bump");
+    let mut cargo_check = ctx.release_command_in("cargo", &ctx.repo_root);
+    cargo_check.arg("check");
+    add_prod_package_args(&mut cargo_check);
+    run_checked(&mut cargo_check)?;
+    ok("cargo check passed");
 
     step("Committing version bump");
     let mut changed = Vec::new();
