@@ -1537,6 +1537,10 @@ mod tests {
         ) -> AppResult<()> {
             Ok(())
         }
+
+        async fn delete_values_for_scope_id(&self, _scope_id: &str) -> AppResult<u32> {
+            Ok(0)
+        }
     }
 
     #[derive(Default)]

@@ -5562,7 +5562,7 @@ async fn ensure_indexer_routing_entries_for_existing_indexers_backfills_missing_
             name: "NZBGeek".to_string(),
             provider_type: "nzbgeek".to_string(),
             base_url: "https://api.nzbgeek.info".to_string(),
-            api_key_encrypted: Some("0123456789abcdef".to_string()),
+            api_key_encrypted: None,
             rate_limit_seconds: None,
             rate_limit_burst: None,
             disabled_until: None,
@@ -5571,7 +5571,13 @@ async fn ensure_indexer_routing_entries_for_existing_indexers_backfills_missing_
             enable_auto_search: true,
             last_health_status: None,
             last_error_at: None,
-            config_json: None,
+            config_json: Some(
+                serde_json::json!({
+                    "base_url": "https://api.nzbgeek.info",
+                    "api_key": "0123456789abcdef"
+                })
+                .to_string(),
+            ),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
@@ -9989,7 +9995,7 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
 async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
-        "BASTARD.Heavy.Metal.Dark.Fantasy.S01E01.1080p.NF.WEB-DL",
+        "Nightfall.Heavy.Metal.Dark.Fantasy.S01E01.1080p.NF.WEB-DL",
     ));
     let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
 

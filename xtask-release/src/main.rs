@@ -881,6 +881,31 @@ fn write_release_dry_run_cache(ctx: &TaskContext, cache: &ReleaseDryRunCache) ->
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
+fn canonicalize_json_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values.into_iter().map(canonicalize_json_value).collect(),
+        ),
+        serde_json::Value::Object(map) => {
+            let ordered = map
+                .into_iter()
+                .map(|(key, value)| (key, canonicalize_json_value(value)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let mut canonical = serde_json::Map::with_capacity(ordered.len());
+            for (key, value) in ordered {
+                canonical.insert(key, value);
+            }
+            serde_json::Value::Object(canonical)
+        }
+        other => other,
+    }
+}
+
+fn canonical_pretty_json<T: Serialize>(value: &T) -> Result<String> {
+    let canonical = canonicalize_json_value(serde_json::to_value(value)?);
+    Ok(serde_json::to_string_pretty(&canonical)? + "\n")
+}
+
 fn load_release_dry_run_cache(ctx: &TaskContext) -> Result<ReleaseDryRunCache> {
     let path = release_dry_run_cache_path(ctx);
     let raw =
@@ -1715,7 +1740,7 @@ fn sync_builtin_plugin(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<()
         .with_context(|| format!("failed to write {}", paths.wasm.display()))?;
     fs::write(
         &paths.descriptor_json,
-        serde_json::to_string_pretty(&descriptor)? + "\n",
+        canonical_pretty_json(&descriptor)?,
     )
     .with_context(|| format!("failed to write {}", paths.descriptor_json.display()))?;
     fs::write(
@@ -3177,6 +3202,46 @@ mod tests {
         let json = serde_json::to_string(&cache).unwrap();
         let decoded: ReleaseDryRunCache = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, cache);
+    }
+
+    #[test]
+    fn canonical_pretty_json_sorts_nested_object_keys() {
+        let value = serde_json::json!({
+            "version": "1.0.0",
+            "provider": {
+                "supported_ids": {
+                    "series": ["tvdb_id"],
+                    "anime": ["tvdb_id"],
+                    "movie": ["imdb_id"]
+                },
+                "rss": true
+            },
+            "id": "plugin.example"
+        });
+
+        assert_eq!(
+            canonical_pretty_json(&value).unwrap(),
+            concat!(
+                "{\n",
+                "  \"id\": \"plugin.example\",\n",
+                "  \"provider\": {\n",
+                "    \"rss\": true,\n",
+                "    \"supported_ids\": {\n",
+                "      \"anime\": [\n",
+                "        \"tvdb_id\"\n",
+                "      ],\n",
+                "      \"movie\": [\n",
+                "        \"imdb_id\"\n",
+                "      ],\n",
+                "      \"series\": [\n",
+                "        \"tvdb_id\"\n",
+                "      ]\n",
+                "    }\n",
+                "  },\n",
+                "  \"version\": \"1.0.0\"\n",
+                "}\n"
+            )
+        );
     }
 
     #[test]

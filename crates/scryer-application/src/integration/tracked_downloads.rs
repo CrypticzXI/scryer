@@ -471,6 +471,7 @@ pub(crate) async fn publish_runtime_tracked_download_snapshot_cache(
     let snapshot = tracker
         .get_all()
         .into_iter()
+        .filter(|tracked| tracked.is_trackable)
         .map(|tracked| {
             (
                 tracked.id.clone(),
@@ -2221,8 +2222,8 @@ mod tests {
 
     #[tokio::test]
     async fn track_reresolves_when_facet_hint_arrives_on_later_snapshot() {
-        let anime_title = build_title("Tidebreaker", MediaFacet::Anime, &[]);
-        let series_title = build_title("Tidebreaker", MediaFacet::Series, &[]);
+        let anime_title = build_title("One Piece", MediaFacet::Anime, &[]);
+        let series_title = build_title("One Piece", MediaFacet::Series, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![anime_title.clone(), series_title],
         });

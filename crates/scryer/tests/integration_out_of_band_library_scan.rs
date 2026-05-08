@@ -13,7 +13,21 @@ use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title, User
 use scryer_infrastructure::SettingDefinitionSeed;
 
 fn admin() -> User {
-    User::new_admin("admin")
+    let mut user = User::new_admin("admin");
+    user.authorization = scryer_domain::UserAuthorization {
+        app: scryer_domain::AppPermissionMask::from_permissions([
+            scryer_domain::AppPermission::ManageCatalogSettings,
+        ]),
+        default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::ManageTitles,
+            scryer_domain::LibraryPermission::ResolveImports,
+            scryer_domain::LibraryPermission::ManageLibrary,
+        ]),
+        loaded: true,
+        ..Default::default()
+    };
+    user
 }
 
 async fn seed_media_path_settings(ctx: &TestContext) {

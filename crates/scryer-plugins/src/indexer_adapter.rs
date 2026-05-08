@@ -108,7 +108,7 @@ impl WasmIndexerClient {
         indexer_name: String,
         config: IndexerConfig,
     ) -> Result<Self, AppError> {
-        let manifest = build_manifest(&wasm_bytes, &descriptor, &indexer_name, &config);
+        let manifest = build_manifest(wasm_bytes, &descriptor, &indexer_name, &config);
         let worker = IndexerPluginWorker::start(manifest, &descriptor, &indexer_name)?;
 
         info!(
@@ -126,25 +126,13 @@ impl WasmIndexerClient {
 }
 
 fn build_manifest(
-    wasm_bytes: &[u8],
+    wasm_bytes: Vec<u8>,
     descriptor: &PluginDescriptor,
     indexer_name: &str,
     config: &IndexerConfig,
 ) -> extism::Manifest {
-    let mut manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes.to_vec())]);
-    let config_entries = config.config_json.as_deref().and_then(|json_str| {
-        match parse_config_json_entries(json_str) {
-            Ok(map) => Some(map),
-            Err(error) => {
-                warn!(
-                    indexer = indexer_name,
-                    error = %error,
-                    "failed to parse config_json; config keys will not be injected"
-                );
-                None
-            }
-        }
-    });
+    let mut manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
+    let config_entries = build_config_entries(descriptor, indexer_name, config);
     let connection_url = resolve_connection_url(descriptor, config_entries.as_ref());
     manifest = apply_allowed_hosts(
         manifest,
@@ -161,6 +149,27 @@ fn build_manifest(
     }
 
     manifest
+}
+
+fn build_config_entries(
+    _descriptor: &PluginDescriptor,
+    indexer_name: &str,
+    config: &IndexerConfig,
+) -> Option<std::collections::HashMap<String, String>> {
+    match config.config_json.as_deref() {
+        Some(json_str) => match parse_config_json_entries(json_str) {
+            Ok(map) => Some(map),
+            Err(error) => {
+                warn!(
+                    indexer = indexer_name,
+                    error = %error,
+                    "failed to parse config_json; config keys will not be injected"
+                );
+                None
+            }
+        },
+        None => None,
+    }
 }
 
 fn resolve_connection_url(

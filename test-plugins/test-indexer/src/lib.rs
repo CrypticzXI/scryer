@@ -64,6 +64,7 @@ pub fn scryer_indexer_search(input: String) -> FnResult<String> {
         protected: None,
         guid: None,
         info_url: None,
+        ..PluginSearchResult::default()
     }];
 
     Ok(serde_json::to_string(&PluginResult::Ok(

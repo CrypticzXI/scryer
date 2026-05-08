@@ -13,7 +13,7 @@ use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
     ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, TitleRepository,
 };
-use scryer_domain::{MediaFacet, Title, User};
+use scryer_domain::{Entitlement, LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization};
 use scryer_infrastructure::FsFileImporter;
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,19 @@ fn last_upgrade_event(
 }
 
 fn test_actor() -> User {
-    User::new_admin("admin")
+    User {
+        id: scryer_domain::Id::new().0,
+        username: "admin".to_string(),
+        password_hash: None,
+        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageConfig],
+        authorization: UserAuthorization {
+            loaded: true,
+            default_library: LibraryPermissionMask::from_permissions([
+                scryer_domain::LibraryPermission::View,
+            ]),
+            ..Default::default()
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------

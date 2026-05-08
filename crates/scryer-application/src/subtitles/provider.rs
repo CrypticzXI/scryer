@@ -1368,7 +1368,7 @@ mod tests {
 
         assert_eq!(q.media_kind, SubtitleMediaKind::Episode);
         assert_eq!(q.series_imdb_id.as_deref(), Some("tt1234567"));
-        assert_eq!(q.title_aliases, vec!["Metastasis"]);
+        assert_eq!(q.title_aliases, vec!["Faultline"]);
         assert_eq!(q.hearing_impaired, Some(false));
     }
 

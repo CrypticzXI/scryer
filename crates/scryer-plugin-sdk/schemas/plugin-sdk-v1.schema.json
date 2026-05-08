@@ -625,6 +625,16 @@
           "$ref": "#/$defs/ConfigFieldValueSource",
           "default": "user"
         },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConfigFieldRole"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "host_binding": {
           "anyOf": [
             {
@@ -670,6 +680,12 @@
       "enum": [
         "user",
         "host_binding"
+      ]
+    },
+    "ConfigFieldRole": {
+      "type": "string",
+      "enum": [
+        "connection_url"
       ]
     },
     "PluginHostBindingId": {
@@ -732,12 +748,6 @@
           "items": {
             "$ref": "#/$defs/ConfigFieldDef"
           }
-        },
-        "default_base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "allowed_hosts": {
           "type": "array",

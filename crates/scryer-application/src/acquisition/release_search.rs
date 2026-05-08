@@ -1023,10 +1023,10 @@ mod tests {
         let title = make_title();
         let keys = canonical_title_lookup_keys(&title);
 
-        assert!(keys.iter().any(|key| key == "bastard"));
+        assert!(keys.iter().any(|key| key == "nightfall"));
         assert!(
             keys.iter()
-                .any(|key| key == "bastard heavy metal dark fantasy")
+                .any(|key| key == "nightfall heavy metal dark fantasy")
         );
     }
 

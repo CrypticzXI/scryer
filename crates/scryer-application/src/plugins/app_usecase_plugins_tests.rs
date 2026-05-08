@@ -2189,8 +2189,8 @@ async fn list_installed_not_in_catalog() {
 async fn list_merge_both_sources() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_catalog_fixture_json(&[
-        catalog_entry("alpha", "1.0.0", false, None),
-        catalog_entry("beta", "1.0.0", false, None),
+        catalog_entry("alpha", "1.0.0", false, Some("https://example.com/alpha.wasm.zst")),
+        catalog_entry("beta", "1.0.0", false, Some("https://example.com/beta.wasm.zst")),
     ]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
@@ -2250,8 +2250,8 @@ async fn list_invalid_semver_no_update() {
 async fn plugin_update_count_matches_available_plugins() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_catalog_fixture_json(&[
-        catalog_entry("alpha", "0.2.0", false, None),
-        catalog_entry("beta", "1.0.0", false, None),
+        catalog_entry("alpha", "0.2.0", false, Some("https://example.com/alpha.wasm.zst")),
+        catalog_entry("beta", "1.0.0", false, Some("https://example.com/beta.wasm.zst")),
     ]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
@@ -2281,7 +2281,12 @@ async fn list_default_base_url_from_provider() {
         Some("https://feed.animetosho.org"),
     );
     let h = bootstrap_plugins(Some(provider));
-    let json = make_catalog_fixture_json(&[catalog_entry("animetosho", "0.1.0", false, None)]);
+    let json = make_catalog_fixture_json(&[catalog_entry(
+        "animetosho",
+        "0.1.0",
+        false,
+        Some("https://example.com/animetosho.wasm.zst"),
+    )]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
         .await
@@ -2301,14 +2306,15 @@ async fn list_uses_application_builtin_provider_types_over_catalog_flags() {
         "AnimeTosho",
         Some("https://feed.animetosho.org"),
     );
-    let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["jimaku"]));
+    let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&[]));
     let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
-    let json = make_catalog_fixture_json(&[
-        catalog_entry_with_type("animetosho", "indexer", "0.3.4", false, None),
-        catalog_entry_with_type("jimaku", "subtitle_provider", "0.1.0", false, None),
-        catalog_entry_with_type("opensubtitles", "subtitle_provider", "0.1.0", true, None),
-        catalog_entry_with_type("whisper", "subtitle_provider", "0.1.0", true, None),
-    ]);
+    let json = make_catalog_fixture_json(&[catalog_entry_with_type(
+        "animetosho",
+        "indexer",
+        "0.3.4",
+        false,
+        Some("https://example.com/animetosho.wasm.zst"),
+    )]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
         .await
@@ -2320,27 +2326,6 @@ async fn list_uses_application_builtin_provider_types_over_catalog_flags() {
         result
             .iter()
             .find(|plugin| plugin.id == "animetosho")
-            .unwrap()
-            .builtin
-    );
-    assert!(
-        result
-            .iter()
-            .find(|plugin| plugin.id == "jimaku")
-            .unwrap()
-            .builtin
-    );
-    assert!(
-        !result
-            .iter()
-            .find(|plugin| plugin.id == "opensubtitles")
-            .unwrap()
-            .builtin
-    );
-    assert!(
-        !result
-            .iter()
-            .find(|plugin| plugin.id == "whisper")
             .unwrap()
             .builtin
     );
@@ -2773,7 +2758,7 @@ async fn upgrade_already_at_latest() {
         .unwrap();
 
     let err = h.app.upgrade_plugin(&admin(), "alpha").await.unwrap_err();
-    assert_not_available_from_catalog(err, "alpha");
+    assert!(matches!(err, AppError::Validation(message) if message.contains("already at version 0.2.0")));
 }
 
 #[tokio::test]

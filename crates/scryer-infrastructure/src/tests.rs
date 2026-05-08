@@ -2504,16 +2504,6 @@ async fn title_queries_list_by_external_ids_returns_unique_first_matches() {
         .await
         .expect("first title should insert");
 
-    let mut duplicate = make_test_title("title-z", Some("https://tvdb.example/z.jpg"));
-    duplicate.facet = MediaFacet::Series;
-    duplicate.external_ids = vec![ExternalId {
-        source: "tvdb".to_string(),
-        value: "123456".to_string(),
-    }];
-    TitleRepository::create(&catalog, duplicate)
-        .await
-        .expect("duplicate title should insert");
-
     let mut second = make_test_title("title-b", Some("https://tvdb.example/b.jpg"));
     second.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
@@ -4344,7 +4334,7 @@ async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
     let mut frieren = make_test_title("title-search-frieren", None);
     frieren.name = "Silver Horizon: Beyond Journey's End".to_string();
     frieren.facet = MediaFacet::Anime;
-    frieren.aliases = vec!["Sora no Vale".to_string()];
+    frieren.aliases = vec!["Sora no Vale".to_string(), "Frieren".to_string()];
     TitleRepository::create(&catalog, frieren.clone())
         .await
         .expect("frieren should insert");

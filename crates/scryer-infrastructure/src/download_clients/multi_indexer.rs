@@ -2391,7 +2391,7 @@ mod tests {
         assert_eq!(response.results.len(), 1);
         assert_eq!(
             response.results[0].title,
-            "Sen.to.Chihiro.no.Kamikakushi.2001.1080p.BluRay"
+            "Lantern.Tide.Hidden.Current.2001.1080p.BluRay"
         );
     }
     #[test]

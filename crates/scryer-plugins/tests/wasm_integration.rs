@@ -262,8 +262,13 @@ async fn nzbgeek_builtin_rss_search_uses_category_only_request() {
         .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
 
     let mut config = test_config("nzbgeek");
-    config.base_url = base_url;
-    config.api_key_encrypted = Some("test-key".to_string());
+    config.config_json = Some(
+        serde_json::json!({
+            "base_url": base_url,
+            "api_key": "test-key",
+        })
+        .to_string(),
+    );
 
     let client = provider.client_for_provider(&config).unwrap();
     let response = client

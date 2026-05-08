@@ -63,7 +63,7 @@ pub(crate) fn search_variants(title: &str) -> Vec<String> {
     if !canonical.is_empty()
         && !variants
             .iter()
-            .any(|value| value.eq_ignore_ascii_case(&canonical))
+            .any(|value| value == &canonical)
     {
         variants.push(canonical);
     }

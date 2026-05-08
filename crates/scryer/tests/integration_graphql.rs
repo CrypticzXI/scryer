@@ -6,17 +6,19 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, CutoffUnmetQualitySummary, DownloadSubmissionRepository,
-    EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput, MediaFileAnalysis,
-    MediaFileRepository, PendingRelease, ReleaseDecision, ScopedExternalId, ShowRepository,
-    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
-    TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
+    AppError, AppResult, CollectionUpdate, CutoffUnmetQualitySummary,
+    DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
+    LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision,
+    ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, WantedItem,
+    WantedItemRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{
     Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds,
     DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id, ImportCompletedEventData,
-    MediaFacet, MediaPathUpdate, MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData,
-    Title, TitleContextSnapshot,
+    Library, LibraryPermission, LibraryPermissionMask, MediaFacet, MediaPathUpdate,
+    MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title, TitleContextSnapshot,
+    User, UserAuthorization,
 };
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteCatalogStore, SqliteLibraryStateStore,
@@ -11785,6 +11787,161 @@ async fn login_with_wrong_password_returns_error() {
         error_msg.to_ascii_lowercase().contains("credentials")
             || error_msg.to_ascii_lowercase().contains("invalid"),
         "error should indicate bad credentials: {error_msg}"
+    );
+}
+
+#[tokio::test]
+async fn delete_media_file_honors_custom_library_permissions_after_library_refactor() {
+    let ctx = TestContext::new().await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    let now = Utc::now();
+    let custom_library_id = Id::new().0;
+
+    scryer_application::LibraryRepository::create(
+        &ctx.catalog,
+            Library {
+                id: custom_library_id.clone(),
+                facet: MediaFacet::Movie,
+                name: "Scoped Movies".to_string(),
+                slug: "scoped-movies".to_string(),
+                is_default: false,
+                roots: Vec::new(),
+                created_at: now,
+                updated_at: now,
+            },
+            vec![LibraryRootDraft {
+                path: media_root.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+        )
+    .await
+    .expect("create custom library");
+
+    let title = Title {
+        id: Id::new().0,
+        name: "Scoped Delete Movie".to_string(),
+        library_id: custom_library_id.clone(),
+        facet: MediaFacet::Movie,
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "998877".to_string(),
+        }],
+        created_by: None,
+        created_at: now,
+        year: Some(2024),
+        overview: Some("delete path coverage".to_string()),
+        poster_url: None,
+        poster_source_url: None,
+        banner_url: None,
+        banner_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: Some("Scoped Delete Movie".to_string()),
+        slug: Some("scoped-delete-movie".to_string()),
+        imdb_id: Some("tt9988776".to_string()),
+        runtime_minutes: Some(90),
+        genres: vec!["Drama".to_string()],
+        content_status: Some("released".to_string()),
+        language: Some("eng".to_string()),
+        first_aired: Some("2024-01-01".to_string()),
+        network: None,
+        studio: Some("Scoped Studio".to_string()),
+        country: Some("usa".to_string()),
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: Some("eng".to_string()),
+        metadata_fetched_at: Some(now),
+        min_availability: None,
+        digital_release_date: Some("2024-01-01".to_string()),
+        folder_path: None,
+    };
+    let title = ctx.catalog.create(title).await.expect("create scoped title");
+
+    let file_path = media_root.path().join("Scoped.Delete.Movie.2024.1080p.mkv");
+    std::fs::write(&file_path, b"scoped-delete").expect("write media file");
+
+    let file_id = ctx
+        .library_state
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: file_path.to_string_lossy().to_string(),
+            size_bytes: 4_096,
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert media file");
+
+    let actor = User {
+        id: Id::new().0,
+        username: "scoped-delete-user".to_string(),
+        password_hash: None,
+        entitlements: vec![],
+        authorization: UserAuthorization {
+            app: scryer_domain::AppPermissionMask::NONE,
+            libraries: HashMap::from([(
+                custom_library_id.clone(),
+                LibraryPermissionMask::from_permission(LibraryPermission::ManageTitles),
+            )]),
+            default_library: LibraryPermissionMask::NONE,
+            loaded: true,
+        },
+    };
+
+    let preview_body = schema_exec(
+        &ctx,
+        &format!(
+            r#"
+            query {{
+              deleteMediaFilePreview(input: {{ fileId: "{file_id}" }}) {{
+                fingerprint
+                requiresTypedConfirmation
+              }}
+            }}
+            "#
+        ),
+        Some(actor.clone()),
+    )
+    .await;
+    assert_no_errors(&preview_body);
+    let preview = &preview_body["data"]["deleteMediaFilePreview"];
+    assert_eq!(preview["requiresTypedConfirmation"], json!(false));
+    let fingerprint = preview["fingerprint"]
+        .as_str()
+        .expect("preview fingerprint should be present");
+
+    let delete_body = schema_exec(
+        &ctx,
+        &format!(
+            r#"
+            mutation {{
+              deleteMediaFile(input: {{
+                fileId: "{file_id}",
+                deleteFromDisk: true,
+                previewFingerprint: "{fingerprint}"
+              }})
+            }}
+            "#
+        ),
+        Some(actor),
+    )
+    .await;
+    assert_no_errors(&delete_body);
+    assert_eq!(delete_body["data"]["deleteMediaFile"], json!(true));
+
+    assert!(
+        !file_path.exists(),
+        "delete should remove the on-disk media file"
+    );
+    assert!(
+        ctx.library_state
+            .get_media_file_by_id(&file_id)
+            .await
+            .expect("lookup deleted media file")
+            .is_none(),
+        "delete should remove the media file row"
     );
 }
 

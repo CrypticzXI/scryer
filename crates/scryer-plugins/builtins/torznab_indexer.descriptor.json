@@ -1,7 +1,7 @@
 {
   "id": "torznab",
   "name": "Torznab Indexer",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "sdk_version": "1.5.0",
   "sdk_constraint": ">=1.5.0, <1.6.0",
   "provider": {
@@ -15,14 +15,14 @@
     "capabilities": {
       "rss": true,
       "supported_ids": {
-        "series": [
-          "tvdb_id"
-        ],
         "anime": [
           "tvdb_id"
         ],
         "movie": [
           "imdb_id"
+        ],
+        "series": [
+          "tvdb_id"
         ]
       },
       "deduplicates_aliases": false,
@@ -99,23 +99,6 @@
       }
     },
     "config_fields": [
-      {
-        "key": "base_url",
-        "label": "Base URL",
-        "field_type": "string",
-        "required": true,
-        "value_source": "user",
-        "role": "connection_url",
-        "help_text": "Indexer site URL, for example https://indexer.example"
-      },
-      {
-        "key": "api_key",
-        "label": "API Key",
-        "field_type": "password",
-        "required": true,
-        "value_source": "user",
-        "help_text": "Indexer API key"
-      },
       {
         "key": "api_path",
         "label": "API Path",

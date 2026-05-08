@@ -6,13 +6,32 @@ use std::path::PathBuf;
 
 use common::TestContext;
 use scryer_application::{
-    ActivityKind, ActivitySeverity, PostProcessingContext, run_post_processing,
+    ActivityKind, ActivitySeverity, PostProcessingContext, TitleRepository, run_post_processing,
 };
-use scryer_domain::{MediaFacet, PostProcessingScript, User};
+use scryer_domain::{
+    AppPermission, AppPermissionMask, LibraryPermission, LibraryPermissionMask, MediaFacet,
+    PostProcessingScript, User,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn admin() -> User {
+    let mut user = User::new_admin("admin");
+    user.authorization = scryer_domain::UserAuthorization {
+        app: AppPermissionMask::from_permissions([AppPermission::ManageCatalogSettings]),
+        default_library: LibraryPermissionMask::from_permissions([
+            LibraryPermission::View,
+            LibraryPermission::ManageTitles,
+            LibraryPermission::ResolveImports,
+            LibraryPermission::ManageLibrary,
+        ]),
+        loaded: true,
+        ..Default::default()
+    };
+    user
+}
 
 /// Create a post-processing script in the DB for the given facet.
 async fn create_script(
@@ -44,11 +63,56 @@ async fn create_script(
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    let actor = User::new_admin("admin");
+    let actor = admin();
     ctx.app
         .create_post_processing_script(&actor, script)
         .await
         .expect("create script");
+}
+
+async fn seed_title(ctx: &TestContext, id: &str, name: &str, facet: MediaFacet) {
+    TitleRepository::create(
+        &ctx.catalog,
+        scryer_domain::Title {
+            id: id.to_string(),
+            name: name.to_string(),
+            facet: facet.clone(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            created_by: None,
+            created_at: chrono::Utc::now(),
+            year: Some(2024),
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            banner_url: None,
+            banner_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: vec![],
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: vec![],
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        },
+    )
+    .await
+    .expect("seed title");
 }
 
 /// Build a PostProcessingContext for a movie import.
@@ -76,7 +140,7 @@ fn movie_context(
 async fn last_post_processing_event(
     app: &scryer_application::AppUseCase,
 ) -> Option<scryer_application::ActivityEvent> {
-    let actor = User::new_admin("admin");
+    let actor = admin();
     let events = app
         .recent_activity(&actor, 10, 0)
         .await
@@ -111,6 +175,7 @@ async fn skips_when_no_script_configured() {
 #[tokio::test]
 async fn successful_script_records_success_event() {
     let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-pp-test", "Test Movie", MediaFacet::Movie).await;
     create_script(&ctx, MediaFacet::Movie, "true", 300, false).await;
 
     let dest_dir = tempfile::tempdir().expect("tempdir");
@@ -131,6 +196,7 @@ async fn successful_script_records_success_event() {
 #[tokio::test]
 async fn failed_script_records_warning_with_stderr() {
     let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-pp-test", "Test Movie", MediaFacet::Movie).await;
     create_script(
         &ctx,
         MediaFacet::Movie,
@@ -157,6 +223,7 @@ async fn failed_script_records_warning_with_stderr() {
 #[tokio::test]
 async fn timeout_kills_script_and_records_warning() {
     let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-pp-test", "Test Movie", MediaFacet::Movie).await;
     create_script(&ctx, MediaFacet::Movie, "sleep 60", 1, false).await;
 
     let dest_dir = tempfile::tempdir().expect("tempdir");
@@ -258,6 +325,7 @@ async fn script_working_directory_is_file_parent() {
 #[tokio::test]
 async fn series_facet_uses_series_script() {
     let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-series-pp", "Test Show", MediaFacet::Series).await;
     create_script(&ctx, MediaFacet::Series, "true", 300, false).await;
 
     let dest_dir = tempfile::tempdir().expect("tempdir");
@@ -291,6 +359,7 @@ async fn series_facet_uses_series_script() {
 #[tokio::test]
 async fn anime_facet_uses_anime_script() {
     let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-anime-pp", "Test Anime", MediaFacet::Anime).await;
     create_script(&ctx, MediaFacet::Anime, "true", 300, false).await;
 
     let dest_dir = tempfile::tempdir().expect("tempdir");
@@ -324,6 +393,7 @@ async fn anime_facet_uses_anime_script() {
 #[tokio::test]
 async fn invalid_command_records_spawn_failure() {
     let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-pp-test", "Test Movie", MediaFacet::Movie).await;
     create_script(
         &ctx,
         MediaFacet::Movie,

@@ -15,9 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use tempfile::NamedTempFile;
-use xtask_support::{
-    TaskContext, command_available, ok, run_status, step, warn,
-};
+use xtask_support::{TaskContext, command_available, ok, run_status, step, warn};
 
 mod profile;
 mod seed;

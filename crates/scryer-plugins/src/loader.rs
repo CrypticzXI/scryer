@@ -22,17 +22,18 @@ use crate::notification_adapter::WasmNotificationClient;
 use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::types::{
-    ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD,
-    EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY,
-    EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS,
-    EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND,
-    EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH,
-    EXPORT_VALIDATE_CONFIG, PluginDescriptor, PluginHostBindingId as SdkHostBinding, PluginKind,
-    ProviderDescriptor, SDK_VERSION, SubtitleProviderMode, config_fields_to_domain,
-    indexer_capabilities_to_domain, plugin_descriptor_sdk_constraint,
-    validate_plugin_descriptor_sdk_contract,
+    ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, EXPORT_DESCRIBE,
+    EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
+    EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED,
+    EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH,
+    EXPORT_NOTIFICATION_SEND, EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE,
+    EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
+    PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SDK_VERSION,
+    SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
+    plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
 };
 
+const ANIMETOSHO_DEFAULT_BASE_URL: &str = "https://feed.animetosho.org";
 const NZBGEEK_DEFAULT_BASE_URL: &str = "https://api.nzbgeek.info";
 const DOGNZB_DEFAULT_BASE_URL: &str = "https://api.dognzb.cr";
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
@@ -63,9 +64,45 @@ impl PluginLoadSource {
     }
 }
 
+enum LoadedPluginBacking {
+    Owned(Vec<u8>),
+    Builtin(crate::builtins::BuiltinPluginAsset),
+}
+
 struct LoadedPlugin {
-    wasm_bytes: Vec<u8>,
+    wasm: LoadedPluginBacking,
     descriptor: PluginDescriptor,
+}
+
+impl LoadedPlugin {
+    fn from_owned(descriptor: PluginDescriptor, wasm_bytes: Vec<u8>) -> Self {
+        Self {
+            wasm: LoadedPluginBacking::Owned(wasm_bytes),
+            descriptor,
+        }
+    }
+
+    fn from_builtin(
+        descriptor: PluginDescriptor,
+        asset: crate::builtins::BuiltinPluginAsset,
+    ) -> Self {
+        Self {
+            wasm: LoadedPluginBacking::Builtin(asset),
+            descriptor,
+        }
+    }
+
+    fn materialize_wasm(&self) -> Result<Vec<u8>, String> {
+        match &self.wasm {
+            LoadedPluginBacking::Owned(wasm_bytes) => Ok(wasm_bytes.clone()),
+            LoadedPluginBacking::Builtin(asset) => crate::builtins::decode_builtin_wasm(*asset),
+        }
+    }
+
+    #[cfg(test)]
+    fn stores_builtin_asset(&self) -> bool {
+        matches!(self.wasm, LoadedPluginBacking::Builtin(_))
+    }
 }
 
 struct LoadedPluginRecord {
@@ -75,9 +112,14 @@ struct LoadedPluginRecord {
 }
 
 impl LoadedPluginRecord {
-    fn new(descriptor: PluginDescriptor, wasm_bytes: Vec<u8>) -> Self {
-        let primary_key = descriptor.provider_type().trim().to_ascii_lowercase();
-        let alias_keys = descriptor
+    fn new(loaded: LoadedPlugin) -> Self {
+        let primary_key = loaded
+            .descriptor
+            .provider_type()
+            .trim()
+            .to_ascii_lowercase();
+        let alias_keys = loaded
+            .descriptor
             .provider_aliases()
             .iter()
             .map(|alias| alias.trim().to_ascii_lowercase())
@@ -88,10 +130,7 @@ impl LoadedPluginRecord {
         Self {
             primary_key,
             alias_keys,
-            loaded: LoadedPlugin {
-                wasm_bytes,
-                descriptor,
-            },
+            loaded,
         }
     }
 }
@@ -200,7 +239,7 @@ fn builtin_indexer_provider_types() -> Vec<String> {
         builtin_provider_types_from_assets(
             crate::builtins::INDEXER_BUILTINS,
             is_indexer_plugin_type,
-            apply_indexer_provider_overrides,
+            |descriptor| apply_indexer_provider_overrides(descriptor, PluginLoadSource::Builtin),
         )
     });
 
@@ -246,7 +285,12 @@ impl WasmIndexerPluginProvider {
         plugin: ExternalPluginWasm<'_>,
     ) -> Result<LoadedPluginRecord, String> {
         let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
-        let descriptor = apply_indexer_provider_overrides(descriptor);
+        let descriptor = apply_indexer_provider_overrides(
+            descriptor,
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        );
         if !validate_indexer_descriptor(
             &descriptor,
             PluginLoadSource::External {
@@ -255,13 +299,20 @@ impl WasmIndexerPluginProvider {
         ) {
             return Err("indexer descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            descriptor, wasm_bytes,
+        )))
     }
 
     fn prepare_runtime_plugin_record(
         plugin: RuntimePluginLoad,
     ) -> Result<LoadedPluginRecord, String> {
-        let descriptor = apply_indexer_provider_overrides(plugin.descriptor);
+        let descriptor = apply_indexer_provider_overrides(
+            plugin.descriptor,
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        );
         if !validate_indexer_descriptor(
             &descriptor,
             PluginLoadSource::External {
@@ -270,19 +321,23 @@ impl WasmIndexerPluginProvider {
         ) {
             return Err("indexer descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, plugin.wasm_bytes))
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            descriptor,
+            plugin.wasm_bytes,
+        )))
     }
 
     fn prepare_builtin_asset_record(
         asset: crate::builtins::BuiltinPluginAsset,
     ) -> Result<LoadedPluginRecord, String> {
         let descriptor = parse_builtin_descriptor(asset)?;
-        let descriptor = apply_indexer_provider_overrides(descriptor);
-        let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
+        let descriptor = apply_indexer_provider_overrides(descriptor, PluginLoadSource::Builtin);
         if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin) {
             return Err("built-in indexer descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_builtin(
+            descriptor, asset,
+        )))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -382,7 +437,10 @@ impl WasmIndexerPluginProvider {
     }
 }
 
-fn apply_indexer_provider_overrides(mut descriptor: PluginDescriptor) -> PluginDescriptor {
+fn apply_indexer_provider_overrides(
+    mut descriptor: PluginDescriptor,
+    load_source: PluginLoadSource,
+) -> PluginDescriptor {
     let missing_connection_url = !descriptor
         .config_fields()
         .iter()
@@ -397,6 +455,75 @@ fn apply_indexer_provider_overrides(mut descriptor: PluginDescriptor) -> PluginD
             .find(|field| field.key.eq_ignore_ascii_case("feed_url"))
     {
         feed_url_field.role = Some(ConfigFieldRole::ConnectionUrl);
+    }
+
+    if matches!(load_source, PluginLoadSource::Builtin) {
+        if descriptor
+            .provider_type()
+            .eq_ignore_ascii_case("animetosho")
+        {
+            descriptor.set_default_base_url(Some(ANIMETOSHO_DEFAULT_BASE_URL.to_string()));
+            if missing_connection_url {
+                descriptor.config_fields_mut().insert(
+                    0,
+                    ConfigFieldDef {
+                        key: "base_url".to_string(),
+                        label: "Base URL".to_string(),
+                        field_type: ConfigFieldType::String,
+                        required: false,
+                        default_value: Some(ANIMETOSHO_DEFAULT_BASE_URL.to_string()),
+                        value_source: ConfigFieldValueSource::User,
+                        role: Some(ConfigFieldRole::ConnectionUrl),
+                        host_binding: None,
+                        options: vec![],
+                        help_text: Some("AnimeTosho feed API base URL".to_string()),
+                    },
+                );
+            }
+        }
+
+        if missing_connection_url
+            && matches!(
+                descriptor.provider_type().to_ascii_lowercase().as_str(),
+                "newznab" | "torznab" | "nzbgeek" | "dognzb"
+            )
+        {
+            descriptor.config_fields_mut().insert(
+                0,
+                ConfigFieldDef {
+                    key: "base_url".to_string(),
+                    label: "Base URL".to_string(),
+                    field_type: ConfigFieldType::String,
+                    required: true,
+                    default_value: None,
+                    value_source: ConfigFieldValueSource::User,
+                    role: Some(ConfigFieldRole::ConnectionUrl),
+                    host_binding: None,
+                    options: vec![],
+                    help_text: Some(
+                        "Base URL for the provider API endpoint, such as https://indexer.example/api"
+                            .to_string(),
+                    ),
+                },
+            );
+        }
+
+        if indexer_provider_requires_api_key(descriptor.provider_type())
+            && !indexer_has_declared_api_key_field(&descriptor)
+        {
+            descriptor.config_fields_mut().push(ConfigFieldDef {
+                key: "api_key".to_string(),
+                label: "API Key".to_string(),
+                field_type: ConfigFieldType::Password,
+                required: true,
+                default_value: None,
+                value_source: ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: vec![],
+                help_text: Some("API key used to authenticate search requests".to_string()),
+            });
+        }
     }
 
     if descriptor.provider_type().eq_ignore_ascii_case("nzbgeek") {
@@ -555,8 +682,21 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         let provider = config.provider_type.trim().to_ascii_lowercase();
         let loaded = self.get_loaded(&provider)?;
 
+        let wasm_bytes = match loaded.materialize_wasm() {
+            Ok(wasm_bytes) => wasm_bytes,
+            Err(error) => {
+                tracing::warn!(
+                    indexer = config.name.as_str(),
+                    provider = provider.as_str(),
+                    error = %error,
+                    "failed to materialize WASM indexer plugin bytes"
+                );
+                return None;
+            }
+        };
+
         match WasmIndexerClient::new(
-            loaded.wasm_bytes.clone(),
+            wasm_bytes,
             loaded.descriptor.clone(),
             config.name.clone(),
             config.clone(),
@@ -851,7 +991,9 @@ impl WasmDownloadClientPluginProvider {
         ) {
             return Err("download client descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            descriptor, wasm_bytes,
+        )))
     }
 
     fn prepare_runtime_plugin_record(
@@ -866,10 +1008,10 @@ impl WasmDownloadClientPluginProvider {
         ) {
             return Err("download client descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
             plugin.descriptor,
             plugin.wasm_bytes,
-        ))
+        )))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -935,7 +1077,20 @@ impl WasmDownloadClientPluginProvider {
         loaded: &LoadedPlugin,
         config: &DownloadClientConfig,
     ) -> Option<Arc<dyn DownloadClient>> {
-        let mut manifest = Manifest::new([extism::Wasm::data(loaded.wasm_bytes.clone())]);
+        let wasm_bytes = match loaded.materialize_wasm() {
+            Ok(wasm_bytes) => wasm_bytes,
+            Err(error) => {
+                warn!(
+                    client = config.name.as_str(),
+                    provider_type = config.client_type.as_str(),
+                    error = %error,
+                    "failed to materialize WASM download client bytes"
+                );
+                return None;
+            }
+        };
+
+        let mut manifest = Manifest::new([extism::Wasm::data(wasm_bytes)]);
         let computed_base_url = compute_base_url_from_config_json(&config.config_json);
         manifest = apply_allowed_hosts(
             manifest,
@@ -1585,7 +1740,9 @@ impl WasmSubtitlePluginProvider {
         ) {
             return Err("subtitle provider descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            descriptor, wasm_bytes,
+        )))
     }
 
     fn prepare_runtime_plugin_record(
@@ -1600,17 +1757,16 @@ impl WasmSubtitlePluginProvider {
         ) {
             return Err("subtitle provider descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
             plugin.descriptor,
             plugin.wasm_bytes,
-        ))
+        )))
     }
 
     fn prepare_builtin_asset_record(
         asset: crate::builtins::BuiltinPluginAsset,
     ) -> Result<LoadedPluginRecord, String> {
         let descriptor = parse_builtin_descriptor(asset)?;
-        let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
         if !validate_descriptor_for_type(
             &descriptor,
             Some("subtitle_provider"),
@@ -1618,7 +1774,9 @@ impl WasmSubtitlePluginProvider {
         ) {
             return Err("built-in subtitle provider descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_builtin(
+            descriptor, asset,
+        )))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -1724,8 +1882,20 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
     ) -> Option<Arc<dyn SubtitleProviderClient>> {
         let provider = config.provider_type.trim().to_ascii_lowercase();
         let loaded = self.get_loaded(&provider)?;
+        let wasm_bytes = match loaded.materialize_wasm() {
+            Ok(wasm_bytes) => wasm_bytes,
+            Err(error) => {
+                warn!(
+                    subtitle_provider = config.name.as_str(),
+                    provider_type = provider.as_str(),
+                    error = %error,
+                    "failed to materialize WASM subtitle provider bytes"
+                );
+                return None;
+            }
+        };
         match WasmSubtitleClient::new(
-            loaded.wasm_bytes.clone(),
+            wasm_bytes,
             loaded.descriptor.clone(),
             config.clone(),
             host_bindings.clone(),
@@ -2137,7 +2307,8 @@ pub fn load_indexer_plugins(plugins_dir: &Path) -> Result<WasmIndexerPluginProvi
                     "loaded indexer plugin"
                 );
 
-                let record = LoadedPluginRecord::new(descriptor, wasm_bytes);
+                let record =
+                    LoadedPluginRecord::new(LoadedPlugin::from_owned(descriptor, wasm_bytes));
                 let _ = insert_loaded_plugin(
                     &mut provider.plugins,
                     &mut provider.aliases,
@@ -2410,7 +2581,9 @@ impl WasmNotificationPluginProvider {
         ) {
             return Err("notification descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(descriptor, wasm_bytes))
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            descriptor, wasm_bytes,
+        )))
     }
 
     fn prepare_runtime_plugin_record(
@@ -2425,10 +2598,10 @@ impl WasmNotificationPluginProvider {
         ) {
             return Err("notification descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
             plugin.descriptor,
             plugin.wasm_bytes,
-        ))
+        )))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -2494,7 +2667,19 @@ impl WasmNotificationPluginProvider {
         loaded: &LoadedPlugin,
         config: &NotificationChannelConfig,
     ) -> Option<Arc<dyn NotificationClient>> {
-        let mut manifest = Manifest::new([extism::Wasm::data(loaded.wasm_bytes.clone())]);
+        let wasm_bytes = match loaded.materialize_wasm() {
+            Ok(wasm_bytes) => wasm_bytes,
+            Err(error) => {
+                warn!(
+                    channel = config.name.as_str(),
+                    error = %error,
+                    "failed to materialize WASM notification plugin bytes"
+                );
+                return None;
+            }
+        };
+
+        let mut manifest = Manifest::new([extism::Wasm::data(wasm_bytes)]);
         manifest = apply_allowed_hosts(
             manifest,
             &loaded.descriptor,
@@ -3024,6 +3209,9 @@ mod tests {
             &mut descriptor,
             aliases.iter().map(|alias| (*alias).to_string()).collect(),
         );
+        if indexer_provider_requires_api_key(provider_type) {
+            descriptor.config_fields_mut().push(indexer_api_key_field());
+        }
 
         RuntimePluginLoad {
             descriptor,
@@ -3040,6 +3228,25 @@ mod tests {
             validate_plugin_descriptor_sdk_contract(&descriptor, SDK_VERSION)
                 .expect("embedded builtin should match current SDK line");
         }
+    }
+
+    #[test]
+    fn builtin_records_keep_embedded_assets_until_materialized() {
+        let record = WasmIndexerPluginProvider::prepare_builtin_asset_record(NZBGEEK)
+            .expect("builtin loads");
+        assert!(record.loaded.stores_builtin_asset());
+
+        let first = record
+            .loaded
+            .materialize_wasm()
+            .expect("builtin should decode on demand");
+        let second = record
+            .loaded
+            .materialize_wasm()
+            .expect("builtin should decode on repeated access");
+
+        assert!(!first.is_empty());
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -3169,7 +3376,10 @@ mod tests {
             help_text: None,
         }];
 
-        let descriptor = apply_indexer_provider_overrides(descriptor);
+        let descriptor = apply_indexer_provider_overrides(
+            descriptor,
+            PluginLoadSource::External { first_party: false },
+        );
 
         assert!(
             descriptor
@@ -3179,6 +3389,109 @@ mod tests {
                 .is_some_and(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
         );
         assert!(validate_indexer_descriptor(
+            &descriptor,
+            PluginLoadSource::External { first_party: false }
+        ));
+    }
+
+    #[test]
+    fn auth_backed_builtin_indexers_backfill_base_url_and_api_key() {
+        for provider_type in ["newznab", "torznab", "nzbgeek", "dognzb"] {
+            let mut descriptor = descriptor("usenet_indexer");
+            set_provider_type(&mut descriptor, provider_type);
+
+            let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
+                panic!("expected indexer descriptor");
+            };
+            indexer.config_fields.clear();
+
+            let descriptor =
+                apply_indexer_provider_overrides(descriptor, PluginLoadSource::Builtin);
+
+            assert!(
+                descriptor
+                    .config_fields()
+                    .iter()
+                    .any(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
+            );
+            assert!(descriptor.config_fields().iter().any(
+                |field| field.key == "api_key" && field.field_type == ConfigFieldType::Password
+            ));
+            assert!(validate_indexer_descriptor(
+                &descriptor,
+                PluginLoadSource::Builtin
+            ));
+        }
+    }
+
+    #[test]
+    fn animetosho_builtin_backfills_default_connection_url() {
+        let mut descriptor = descriptor("torrent_indexer");
+        set_provider_type(&mut descriptor, "animetosho");
+
+        let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
+            panic!("expected indexer descriptor");
+        };
+        indexer.config_fields.clear();
+
+        let descriptor = apply_indexer_provider_overrides(descriptor, PluginLoadSource::Builtin);
+
+        let base_url_field = descriptor
+            .config_fields()
+            .iter()
+            .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
+            .expect("builtin animetosho should expose a connection url");
+        assert_eq!(base_url_field.key, "base_url");
+        assert!(!base_url_field.required);
+        assert_eq!(
+            base_url_field.default_value.as_deref(),
+            Some(ANIMETOSHO_DEFAULT_BASE_URL)
+        );
+        assert!(validate_indexer_descriptor(
+            &descriptor,
+            PluginLoadSource::Builtin
+        ));
+    }
+
+    #[test]
+    fn auth_backed_external_indexers_without_declared_fields_are_rejected() {
+        for provider_type in ["newznab", "torznab", "nzbgeek", "dognzb"] {
+            let mut descriptor = descriptor("usenet_indexer");
+            set_provider_type(&mut descriptor, provider_type);
+
+            let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
+                panic!("expected indexer descriptor");
+            };
+            indexer.config_fields.clear();
+
+            let descriptor = apply_indexer_provider_overrides(
+                descriptor,
+                PluginLoadSource::External { first_party: false },
+            );
+
+            assert!(!validate_indexer_descriptor(
+                &descriptor,
+                PluginLoadSource::External { first_party: false }
+            ));
+        }
+    }
+
+    #[test]
+    fn animetosho_external_without_connection_field_is_rejected() {
+        let mut descriptor = descriptor("torrent_indexer");
+        set_provider_type(&mut descriptor, "animetosho");
+
+        let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
+            panic!("expected indexer descriptor");
+        };
+        indexer.config_fields.clear();
+
+        let descriptor = apply_indexer_provider_overrides(
+            descriptor,
+            PluginLoadSource::External { first_party: false },
+        );
+
+        assert!(!validate_indexer_descriptor(
             &descriptor,
             PluginLoadSource::External { first_party: false }
         ));

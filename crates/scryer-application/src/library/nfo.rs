@@ -963,11 +963,11 @@ mod tests {
         assert!(xml.contains("<movie>"));
         assert!(xml.contains("<title>Glass Harbor</title>"));
         assert!(xml.contains("<year>1999</year>"));
-        assert!(xml.contains("<plot>A computer hacker"));
+        assert!(xml.contains("<plot>A courier uncovers the secret geometry"));
         assert!(xml.contains("<runtime>136</runtime>"));
         assert!(xml.contains("<genre>Action</genre>"));
         assert!(xml.contains("<genre>Sci-Fi</genre>"));
-        assert!(xml.contains("<studio>Warner Bros.</studio>"));
+        assert!(xml.contains("<studio>Aurora Gate</studio>"));
         assert!(xml.contains(r#"<uniqueid type="tvdb" default="true">12345</uniqueid>"#));
         assert!(xml.contains(r#"<uniqueid type="imdb">tt0133093</uniqueid>"#));
         assert!(xml.contains(r#"<uniqueid type="tmdb">603</uniqueid>"#));

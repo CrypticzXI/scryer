@@ -97,7 +97,12 @@ async fn setup() -> (
             disabled_until: None,
             last_health_status: None,
             last_error_at: None,
-            config_json: None,
+            config_json: Some(
+                serde_json::json!({
+                    "base_url": tosho_server.uri(),
+                })
+                .to_string(),
+            ),
             created_at: now,
             updated_at: now,
         },
@@ -115,7 +120,13 @@ async fn setup() -> (
             disabled_until: None,
             last_health_status: None,
             last_error_at: None,
-            config_json: None,
+            config_json: Some(
+                serde_json::json!({
+                    "base_url": format!("{}/api", nzbgeek_server.uri()),
+                    "api_key": "test-api-key",
+                })
+                .to_string(),
+            ),
             created_at: now,
             updated_at: now,
         },
@@ -133,7 +144,13 @@ async fn setup() -> (
             disabled_until: None,
             last_health_status: None,
             last_error_at: None,
-            config_json: None,
+            config_json: Some(
+                serde_json::json!({
+                    "base_url": format!("{}/api", torznab_server.uri()),
+                    "api_key": "test-api-key",
+                })
+                .to_string(),
+            ),
             created_at: now,
             updated_at: now,
         },
@@ -257,12 +274,21 @@ async fn setup() -> (
     );
 
     // Create a test user with ViewCatalog entitlement
-    let user = User {
+    let mut user = User {
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
         entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
         authorization: Default::default(),
+    };
+
+    user.authorization = scryer_domain::UserAuthorization {
+        default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::ManageTitles,
+        ]),
+        loaded: true,
+        ..Default::default()
     };
 
     (app, user, tosho_server, nzbgeek_server, torznab_server)

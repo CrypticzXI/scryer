@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::library::library::library_scan_cancel_requested;
 use crate::library_discovery::{
@@ -415,7 +416,11 @@ fn expand_search_candidates(queries: &[String]) -> Vec<String> {
 
     for query in queries {
         for variant in crate::title_matching::search_variants(query) {
-            if variant.trim().is_empty() || !seen.insert(variant.clone()) {
+            let dedupe_key = variant
+                .nfkc()
+                .flat_map(char::to_lowercase)
+                .collect::<String>();
+            if dedupe_key.trim().is_empty() || !seen.insert(dedupe_key) {
                 continue;
             }
             search_candidates.push(variant);

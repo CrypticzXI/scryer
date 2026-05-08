@@ -11,7 +11,9 @@ use scryer_application::{
     TitleRepository, UserRepository, WantedCompleteTransition, WantedItemRepository,
     WantedSearchTransition, WantedStatus,
 };
-use scryer_domain::{Id, Library, LibraryGrant, LibraryPermissionMask, MediaFacet, Title, User};
+use scryer_domain::{
+    Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
+};
 use sqlx::{Row, query};
 
 // ---------------------------------------------------------------------------
@@ -149,6 +151,19 @@ async fn seed_pending_release(
     pr
 }
 
+fn admin() -> User {
+    let mut user = User::new_admin("admin");
+    user.authorization = scryer_domain::UserAuthorization {
+        default_library: LibraryPermissionMask::from_permissions([
+            LibraryPermission::View,
+            LibraryPermission::ManageTitles,
+        ]),
+        loaded: true,
+        ..Default::default()
+    };
+    user
+}
+
 #[tokio::test]
 async fn direct_wanted_item_lookup_requires_access_to_item_library() {
     let ctx = TestContext::new().await;
@@ -259,7 +274,7 @@ async fn list_pending_releases_returns_only_waiting() {
     )
     .await;
 
-    let actor = scryer_domain::User::new_admin("admin");
+    let actor = admin();
     let pending = app.list_pending_releases(&actor).await.expect("list");
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].release_score, 500);
@@ -700,7 +715,7 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
 
     let (first_items, first_total) = app
         .list_wanted_items(
-            &scryer_domain::User::new_admin("admin"),
+            &admin(),
             scryer_application::WantedItemsQuery {
                 limit: 50,
                 offset: 0,
@@ -715,7 +730,7 @@ async fn list_wanted_items_does_not_duplicate_movies_across_syncs() {
 
     let (second_items, second_total) = app
         .list_wanted_items(
-            &scryer_domain::User::new_admin("admin"),
+            &admin(),
             scryer_application::WantedItemsQuery {
                 limit: 50,
                 offset: 0,
@@ -751,7 +766,7 @@ async fn ensure_wanted_item_seeded_preserves_paused_status_and_existing_schedule
         .await
         .expect("schedule wanted item");
 
-    app.pause_wanted_item(&scryer_domain::User::new_admin("admin"), &wanted.id)
+    app.pause_wanted_item(&admin(), &wanted.id)
         .await
         .expect("pause wanted item");
 
@@ -961,7 +976,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
 
     ctx.app
         .clone()
-        .pause_wanted_item(&scryer_domain::User::new_admin("admin"), &wanted.id)
+        .pause_wanted_item(&admin(), &wanted.id)
         .await
         .expect("pause wanted item");
 
@@ -1095,7 +1110,7 @@ async fn dismiss_sets_status_to_dismissed() {
     )
     .await;
 
-    let actor = scryer_domain::User::new_admin("admin");
+    let actor = admin();
     let result = app
         .dismiss_pending_release(&actor, &pr.id)
         .await
@@ -1122,7 +1137,7 @@ async fn dismiss_nonexistent_returns_error() {
     let app = ctx.app.clone();
 
     let err = app
-        .dismiss_pending_release(&scryer_domain::User::new_admin("admin"), "nonexistent-id")
+        .dismiss_pending_release(&admin(), "nonexistent-id")
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Repository(_)));
@@ -1146,7 +1161,7 @@ async fn dismiss_non_waiting_returns_error() {
     .await;
 
     let err = app
-        .dismiss_pending_release(&scryer_domain::User::new_admin("admin"), &pr.id)
+        .dismiss_pending_release(&admin(), &pr.id)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Repository(_)));
@@ -1162,7 +1177,7 @@ async fn force_grab_nonexistent_returns_error() {
     let app = ctx.app.clone();
 
     let err = app
-        .force_grab_pending_release(&scryer_domain::User::new_admin("admin"), "nonexistent-id")
+        .force_grab_pending_release(&admin(), "nonexistent-id")
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Repository(_)));
@@ -1186,7 +1201,7 @@ async fn force_grab_non_waiting_returns_error() {
     .await;
 
     let err = app
-        .force_grab_pending_release(&scryer_domain::User::new_admin("admin"), &pr.id)
+        .force_grab_pending_release(&admin(), &pr.id)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Repository(_)));

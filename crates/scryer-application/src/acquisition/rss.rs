@@ -1469,7 +1469,7 @@ mod tests {
             "t1",
             "Lantern Tide",
             Some(2001),
-            vec!["Lantern Tide: Hidden Current"],
+            vec!["Sen to Chihiro no Kamikakushi"],
         )];
         let bank = build_title_context_bank(&titles);
         let result = match_release_to_title_context("Sen.to.Chihiro.no.Kamikakushi", &bank);

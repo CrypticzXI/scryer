@@ -10,10 +10,22 @@ use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
 use scryer_application::{IndexerClient, IndexerPluginProvider, MetadataSearchQuery, SearchMode};
-use scryer_domain::User;
+use scryer_domain::{Entitlement, LibraryPermissionMask, User, UserAuthorization};
 
 fn admin() -> User {
-    User::new_admin("admin")
+    User {
+        id: scryer_domain::Id::new().0,
+        username: "admin".to_string(),
+        password_hash: None,
+        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageConfig],
+        authorization: UserAuthorization {
+            loaded: true,
+            default_library: LibraryPermissionMask::from_permissions([
+                scryer_domain::LibraryPermission::View,
+            ]),
+            ..Default::default()
+        },
+    }
 }
 
 /// Create an IndexerClient backed by the built-in nzbgeek WASM plugin,
@@ -26,7 +38,7 @@ fn new_nzbgeek_client(uri: &str) -> Arc<dyn IndexerClient> {
         name: "Test NZBGeek".to_string(),
         provider_type: "nzbgeek".to_string(),
         base_url: uri.to_string(),
-        api_key_encrypted: Some("test-api-key".to_string()),
+        api_key_encrypted: None,
         is_enabled: true,
         enable_interactive_search: true,
         enable_auto_search: true,
@@ -35,7 +47,13 @@ fn new_nzbgeek_client(uri: &str) -> Arc<dyn IndexerClient> {
         disabled_until: None,
         last_health_status: None,
         last_error_at: None,
-        config_json: None,
+        config_json: Some(
+            serde_json::json!({
+                "base_url": uri,
+                "api_key": "test-api-key",
+            })
+            .to_string(),
+        ),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
@@ -509,7 +527,12 @@ async fn nzbgeek_search_no_api_key_fails() {
         disabled_until: None,
         last_health_status: None,
         last_error_at: None,
-        config_json: None,
+        config_json: Some(
+            serde_json::json!({
+                "base_url": ctx.nzbgeek_server.uri(),
+            })
+            .to_string(),
+        ),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
