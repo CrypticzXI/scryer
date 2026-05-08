@@ -499,6 +499,7 @@ jobs:
           SCRYER_EMBED_UI_DIR: ${{ github.workspace }}/scryer-web-out
           SCRYER_SMG_REGISTRATION_SECRET: ${{ secrets.SMG_REGISTRATION_SECRET }}
           SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
+          RUST_MIN_STACK: "4194304"
         run: >-
           cargo nextest run --target x86_64-unknown-linux-musl --locked
           -p scryer
