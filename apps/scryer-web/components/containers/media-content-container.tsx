@@ -1996,7 +1996,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setLibrarySettingsSaving(false);
       }
     },
-    [activeFacet, client, refreshLibraries, setGlobalStatus, t],
+    [activeFacet, client, refreshLibraries, refreshRootValidationLibraries, setGlobalStatus, t],
   );
 
   const updateLibrary = React.useCallback(
@@ -2033,7 +2033,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setLibrarySettingsSaving(false);
       }
     },
-    [client, refreshLibraries, setGlobalStatus, t],
+    [client, refreshLibraries, refreshRootValidationLibraries, setGlobalStatus, t],
   );
 
   const deleteLibrary = React.useCallback(
@@ -2065,7 +2065,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setLibrarySettingsSaving(false);
       }
     },
-    [client, refreshLibraries, setGlobalStatus, t],
+    [client, refreshLibraries, refreshRootValidationLibraries, setGlobalStatus, t],
   );
 
   const handleLibraryScan = React.useCallback(async (libraryId?: string) => {
