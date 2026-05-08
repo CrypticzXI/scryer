@@ -3989,6 +3989,24 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
+        let (matching_movie_collection_ids, matching_interstitial_collection_ids) = self
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(&media_file.title_id)
+            .await?
+            .into_iter()
+            .filter(|collection| {
+                collection.ordered_path.as_deref() == Some(media_file.file_path.as_str())
+            })
+            .fold((Vec::new(), Vec::new()), |mut acc, collection| {
+                match collection.collection_type {
+                    scryer_domain::CollectionType::Movie => acc.0.push(collection.id),
+                    scryer_domain::CollectionType::Interstitial => acc.1.push(collection.id),
+                    _ => {}
+                }
+                acc
+            });
 
         if delete_from_disk {
             let delete_confirmation = delete_confirmation.ok_or_else(|| {
@@ -4013,6 +4031,46 @@ impl AppUseCase {
             .media_files
             .delete_media_file(file_id)
             .await?;
+        for collection_id in matching_movie_collection_ids {
+            if let Err(error) = self
+                .services
+                .catalog
+                .shows
+                .delete_collection(&collection_id)
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    file_id = %file_id,
+                    collection_id = %collection_id,
+                    file_path = %media_file.file_path,
+                    "failed to delete matching movie collection after media file delete"
+                );
+            }
+        }
+        for collection_id in matching_interstitial_collection_ids {
+            if let Err(error) = self
+                .services
+                .catalog
+                .shows
+                .update_collection(
+                    &collection_id,
+                    CollectionUpdate {
+                        clear_ordered_path: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    file_id = %file_id,
+                    collection_id = %collection_id,
+                    file_path = %media_file.file_path,
+                    "failed to clear matching interstitial collection ordered_path after media file delete"
+                );
+            }
+        }
 
         info!(
             file_id = %file_id,
@@ -4668,6 +4726,7 @@ impl AppUseCase {
             collection_index: collection_index.map(|value| value.trim().to_string()),
             label: normalize_show_text_opt(label),
             ordered_path: normalize_show_text_opt(ordered_path),
+            clear_ordered_path: false,
             first_episode_number: normalize_show_text_opt(first_episode_number),
             last_episode_number: normalize_show_text_opt(last_episode_number),
             monitored,

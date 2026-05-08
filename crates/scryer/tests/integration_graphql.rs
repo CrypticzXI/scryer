@@ -7,6 +7,7 @@ use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CutoffUnmetQualitySummary,
+    DeleteExecutionConfirmation,
     DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
     LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision,
     ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
@@ -11873,6 +11874,26 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         })
         .await
         .expect("insert media file");
+    let collection = ctx
+        .catalog
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Movie,
+            collection_index: "1".to_string(),
+            label: Some("1080p".to_string()),
+            ordered_path: Some(file_path.to_string_lossy().to_string()),
+            narrative_order: None,
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: now,
+        })
+        .await
+        .expect("create matching movie collection");
 
     let actor = User {
         id: Id::new().0,
@@ -11942,6 +11963,168 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             .expect("lookup deleted media file")
             .is_none(),
         "delete should remove the media file row"
+    );
+    assert!(
+        ctx.catalog
+            .list_collections_for_title(&title.id)
+            .await
+            .expect("list remaining collections")
+            .into_iter()
+            .all(|entry| entry.id != collection.id),
+        "delete should remove the matching movie collection row"
+    );
+}
+
+#[tokio::test]
+async fn delete_media_file_clears_matching_interstitial_collection_ordered_path() {
+    let ctx = TestContext::new().await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    let now = Utc::now();
+
+    let title = Title {
+        id: Id::new().0,
+        name: "Interstitial Cleanup Show".to_string(),
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Anime),
+        facet: MediaFacet::Anime,
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "777001".to_string(),
+        }],
+        created_by: None,
+        created_at: now,
+        year: Some(2024),
+        overview: Some("interstitial cleanup coverage".to_string()),
+        poster_url: None,
+        poster_source_url: None,
+        banner_url: None,
+        banner_source_url: None,
+        background_url: None,
+        background_source_url: None,
+        sort_title: Some("Interstitial Cleanup Show".to_string()),
+        slug: Some("interstitial-cleanup-show".to_string()),
+        imdb_id: Some("tt7770001".to_string()),
+        runtime_minutes: Some(24),
+        genres: vec!["Animation".to_string()],
+        content_status: Some("continuing".to_string()),
+        language: Some("jpn".to_string()),
+        first_aired: Some("2024-01-01".to_string()),
+        network: None,
+        studio: Some("Cleanup Studio".to_string()),
+        country: Some("jpn".to_string()),
+        aliases: vec![],
+        tagged_aliases: vec![],
+        metadata_language: Some("eng".to_string()),
+        metadata_fetched_at: Some(now),
+        min_availability: None,
+        digital_release_date: None,
+        folder_path: None,
+    };
+    let title = ctx.catalog.create(title).await.expect("create anime title");
+
+    let file_path = media_root.path().join("Interstitial.Cleanup.Show.Movie.1080p.mkv");
+    std::fs::write(&file_path, b"interstitial-delete").expect("write interstitial media file");
+
+    let file_id = ctx
+        .library_state
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: file_path.to_string_lossy().to_string(),
+            size_bytes: 5_120,
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert interstitial media file");
+    let collection = ctx
+        .catalog
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Interstitial,
+            collection_index: "0".to_string(),
+            label: Some("Movie".to_string()),
+            ordered_path: Some(file_path.to_string_lossy().to_string()),
+            narrative_order: Some("1.0".to_string()),
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: Some(scryer_domain::InterstitialMovieMetadata {
+                tvdb_id: "7770019".to_string(),
+                name: "Cleanup Movie".to_string(),
+                slug: "cleanup-movie".to_string(),
+                year: Some(2024),
+                content_status: "released".to_string(),
+                overview: "cleanup".to_string(),
+                poster_url: "https://example.com/cleanup-movie.jpg".to_string(),
+                language: "eng".to_string(),
+                runtime_minutes: 95,
+                sort_title: "Cleanup Movie".to_string(),
+                imdb_id: "tt7770019".to_string(),
+                genres: vec!["Adventure".to_string()],
+                studio: "Cleanup Studio".to_string(),
+                digital_release_date: Some("2024-02-01".to_string()),
+                association_confidence: None,
+                continuity_status: None,
+                movie_form: None,
+                confidence: None,
+                signal_summary: None,
+                placement: None,
+                movie_tmdb_id: None,
+                movie_mal_id: None,
+                movie_anidb_id: None,
+            }),
+            specials_movies: vec![],
+            interstitial_season_episode: Some("S00E01".to_string()),
+            monitored: true,
+            created_at: now,
+        })
+        .await
+        .expect("create interstitial collection");
+
+    let actor = ctx.app.find_or_create_default_user().await.expect("default user");
+    let preview = ctx
+        .app
+        .preview_delete_media_file(&actor, &file_id)
+        .await
+        .expect("preview interstitial delete");
+
+    ctx.app
+        .delete_media_file(
+            &actor,
+            &file_id,
+            true,
+            Some(DeleteExecutionConfirmation {
+                preview_fingerprint: preview.fingerprint,
+                typed_confirmation: None,
+            }),
+        )
+        .await
+        .expect("delete interstitial media file");
+
+    assert!(
+        !file_path.exists(),
+        "delete should remove the interstitial file from disk"
+    );
+    assert!(
+        ctx.library_state
+            .get_media_file_by_id(&file_id)
+            .await
+            .expect("lookup deleted interstitial media file")
+            .is_none(),
+        "delete should remove the interstitial media file row"
+    );
+
+    let refreshed_collection = ctx
+        .catalog
+        .get_collection_by_id(&collection.id)
+        .await
+        .expect("reload interstitial collection")
+        .expect("interstitial collection should remain");
+    assert_eq!(
+        refreshed_collection.ordered_path,
+        None,
+        "delete should clear the interstitial collection ordered_path"
     );
 }
 

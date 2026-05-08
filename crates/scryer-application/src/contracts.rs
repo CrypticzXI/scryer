@@ -327,6 +327,7 @@ pub struct CollectionUpdate {
     pub collection_index: Option<String>,
     pub label: Option<String>,
     pub ordered_path: Option<String>,
+    pub clear_ordered_path: bool,
     pub first_episode_number: Option<String>,
     pub last_episode_number: Option<String>,
     pub monitored: Option<bool>,
@@ -338,6 +339,7 @@ impl CollectionUpdate {
             || self.collection_index.is_some()
             || self.label.is_some()
             || self.ordered_path.is_some()
+            || self.clear_ordered_path
             || self.first_episode_number.is_some()
             || self.last_episode_number.is_some()
             || self.monitored.is_some()
@@ -348,6 +350,7 @@ impl CollectionUpdate {
             || self.collection_index.is_some()
             || self.label.is_some()
             || self.ordered_path.is_some()
+            || self.clear_ordered_path
             || self.first_episode_number.is_some()
             || self.last_episode_number.is_some()
     }

@@ -1152,6 +1152,7 @@ pub(crate) async fn update_collection_query(
         collection_index,
         label,
         ordered_path,
+        clear_ordered_path,
         first_episode_number,
         last_episode_number,
         monitored,
@@ -1167,7 +1168,9 @@ pub(crate) async fn update_collection_query(
     if label.is_some() {
         assignments.push("label = ?");
     }
-    if ordered_path.is_some() {
+    if clear_ordered_path {
+        assignments.push("ordered_path = NULL");
+    } else if ordered_path.is_some() {
         assignments.push("ordered_path = ?");
     }
     if first_episode_number.is_some() {
@@ -1200,7 +1203,7 @@ pub(crate) async fn update_collection_query(
     if let Some(label) = label {
         statement = statement.bind(label);
     }
-    if let Some(ordered_path) = ordered_path {
+    if !clear_ordered_path && let Some(ordered_path) = ordered_path {
         statement = statement.bind(ordered_path);
     }
     if let Some(first_episode_number) = first_episode_number {
