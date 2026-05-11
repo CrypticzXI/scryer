@@ -2,10 +2,14 @@
 
 [![Scryer overview](docs/img/scryer-overview.webp)](https://www.scryer.media/scryer/)
 
-The product website is the source for installation and end-user setup:
 
-- [Scryer website](https://www.scryer.media/scryer/)
-- [Scryer getting started](https://www.scryer.media/scryer/docs/getting-started/)
+<h3 align="center">
+    <a href="https://www.scryer.media/scryer/docs/getting-started/">Getting Started Guide</a>
+</h3>
+
+<p align="center">
+For more information about the tool, please visit the <a href="https://www.scryer.media/scryer">official webiste</a>
+</p>
 
 ## What Scryer Is
 
@@ -22,7 +26,7 @@ At a high level, it:
 
 Conceptually it is "Sonarr + Radarr, with some extra bits from other *arr tools"
 
-Scryer was written from scratch and has no affiliation with the Servarr tools.
+*Scryer was written from scratch and has no affiliation with the Servarr tools*
 
 ## Technical Overview
 
@@ -47,14 +51,17 @@ Scryer ships as a single Rust binary with:
 │  │ rename · post-processing · rules   │ │
 │  └────────────────────────────────────┘ │
 │  ┌────────────────────────────────────┐ │
-│  │ Storage (SQLite) + Plugins         │ │
+│  │ Plugin System (WASM)               │ │
+│  └────────────────────────────────────┘ │
+│  ┌────────────────────────────────────┐ │
+│  │ Storage (SQLite)                   │ │
 │  └────────────────────────────────────┘ │
 └─────────────────────────────────────────┘
-         │                    │
-    ┌────┴────┐         ┌─────┴──────┐
-    │ Metadata│         │ Indexers & │
-    │  API    │         │ Clients    │
-    └─────────┘         └────────────┘
+         │                     │
+    ┌────┴─────┐         ┌─────┴──────┐
+    │ Metadata │         │ Indexers & │
+    │  API     │         │ Clients    │
+    └──────────┘         └────────────┘
 ```
 
 ## Development
