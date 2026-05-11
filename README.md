@@ -22,14 +22,14 @@ Scryer is a self-hosted media management application for movies, TV series, and 
 
 At a high level, it:
 
-- monitors a library and tracked titles
+- monitors libraries and tracked titles
 - searches for releases through pluggable providers
 - evaluates releases against quality and rules policies
 - coordinates downloads and imports
 - organizes files for downstream media servers
 - manages subtitles
 
-Conceptually it is "Sonarr + Radarr, with some extra bits from other *arr tools"
+Conceptually it is "Sonarr + Radarr, with some extra bits from other *arr tools", however Scryer is a machine-code compiled binary that runs very efficiently compared to the *arr tools.
 
 *Scryer was written from scratch and has no affiliation with the Servarr tools*
 
@@ -50,17 +50,17 @@ Scryer ships as a single Rust binary with:
 │  ┌───────────┐  ┌────────────────────┐  │
 │  │ Web UI    │  │ GraphQL API        │  │
 │  └───────────┘  └────────────────────┘  │
-│  ┌────────────────────────────────────┐ │
-│  │ Application layer                  │ │
-│  │ acquisition · import · subtitles   │ │
-│  │ rename · post-processing · rules   │ │
-│  └────────────────────────────────────┘ │
-│  ┌────────────────────────────────────┐ │
-│  │ Plugin System (WASM)               │ │
-│  └────────────────────────────────────┘ │
-│  ┌────────────────────────────────────┐ │
-│  │ Storage (SQLite)                   │ │
-│  └────────────────────────────────────┘ │
+│  ┌───────────────────────────────────┐  │
+│  │ Application layer                 │  │
+│  │ acquisition · import · subtitles  │  │
+│  │ rename · post-processing · rules  │  │
+│  └───────────────────────────────────┘  │
+│  ┌───────────────────────────────────┐  │
+│  │ Plugin System (WASM)              │  │
+│  └───────────────────────────────────┘  │
+│  ┌───────────────────────────────────┐  │
+│  │ Storage (SQLite)                  │  │
+│  └───────────────────────────────────┘  │
 └─────────────────────────────────────────┘
          │                     │
     ┌────┴─────┐         ┌─────┴──────┐
