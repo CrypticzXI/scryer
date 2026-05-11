@@ -1,9 +1,11 @@
-# scryer
+# Scryer
+
+[![Scryer overview](docs/img/scryer-overview.webp)](https://www.scryer.media/scryer/)
 
 The product website is the source for installation and end-user setup:
 
 - [Scryer website](https://www.scryer.media/scryer/)
-- [Scryer getting started](https://www.scryer.media/scryer/docs/)
+- [Scryer getting started](https://www.scryer.media/scryer/docs/getting-started/)
 
 ## What Scryer Is
 
@@ -18,9 +20,13 @@ At a high level, it:
 - organizes files for downstream media servers
 - manages subtitles
 
+Conceptually it is "Sonarr + Radarr, with some extra bits from other *arr tools"
+
+Scryer was written from scratch and has no affiliation with the Servarr tools.
+
 ## Technical Overview
 
-Scryer ships as a single Rust application with:
+Scryer ships as a single Rust binary with:
 
 - an embedded web UI
 - a GraphQL API
