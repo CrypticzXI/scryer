@@ -1,5 +1,10 @@
 # Scryer
 
+<p align="center">
+  <a href="https://github.com/scryer-media/scryer/releases"><img src="https://img.shields.io/github/v/release/scryer-media/scryer" alt="Release" /></a>
+  <a href="https://ghcr.io/scryer-media/scryer"><img src="https://img.shields.io/badge/container-ghcr.io-blue" alt="Container" /></a>
+</p>
+
 [![Scryer overview](docs/img/scryer-overview.webp)](https://www.scryer.media/scryer/)
 
 
