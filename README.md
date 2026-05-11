@@ -64,3 +64,6 @@ Scryer ships as a single Rust binary with:
 - [Issues](https://github.com/scryer-media/scryer/issues)
 
 For installation, upgrade guidance, and end-user documentation, use the website links at the top of this file.
+
+---
+*All media images courtesy of [thetvdb](https://thetvdb.com/)*
