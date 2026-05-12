@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use scryer_domain::MediaFacet;
+use scryer_domain::{ExternalId, MediaFacet};
 
 use crate::{
     AnimeMapping, AnimeMovie, AppResult, EpisodeMetadata, MetadataGateway, MovieMetadata,
@@ -54,6 +54,26 @@ pub fn rename_facet_settings(facet: &MediaFacet) -> RenameFacetSettings {
 
 fn non_empty(s: String) -> Option<String> {
     if s.trim().is_empty() { None } else { Some(s) }
+}
+
+pub(crate) fn primary_anime_mapping(anime_mappings: &[AnimeMapping]) -> Option<&AnimeMapping> {
+    anime_mappings
+        .iter()
+        .find(|mapping| mapping.mapping_type != "S")
+        .or(anime_mappings.first())
+}
+
+fn primary_anime_mapping_extra_external_ids(anime_mappings: &[AnimeMapping]) -> Vec<ExternalId> {
+    primary_anime_mapping(anime_mappings)
+        .and_then(|mapping| mapping.anidb_id)
+        .filter(|anidb_id| *anidb_id > 0)
+        .map(|anidb_id| {
+            vec![ExternalId {
+                source: "anidb".to_string(),
+                value: anidb_id.to_string(),
+            }]
+        })
+        .unwrap_or_default()
 }
 
 /// Build a [`HydrationResult`] from an already-fetched [`MovieMetadata`].
@@ -114,6 +134,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
 
 /// Build a [`HydrationResult`] from an already-fetched [`SeriesMetadata`].
 pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> HydrationResult {
+    let extra_external_ids = primary_anime_mapping_extra_external_ids(&series.anime_mappings);
     let update = TitleMetadataUpdate {
         name: non_empty(series.name),
         year: series.year.filter(|&y| y > 0),
@@ -140,6 +161,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         tagged_aliases: series.tagged_aliases,
         metadata_language: Some(language.to_string()),
         metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+        extra_external_ids,
         ..Default::default()
     };
     HydrationResult {
@@ -189,4 +211,78 @@ pub trait FacetHandler: Send + Sync {
         tvdb_id: i64,
         language: &str,
     ) -> AppResult<HydrationResult>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn anime_mapping(mapping_type: &str, anidb_id: Option<i64>) -> AnimeMapping {
+        AnimeMapping {
+            mal_id: None,
+            mal_dub_id: None,
+            anilist_id: None,
+            anidb_id,
+            kitsu_id: None,
+            simkl_id: None,
+            thetvdb_id: None,
+            themoviedb_id: None,
+            imdb_id: None,
+            trakt_id: None,
+            alt_tvdb_id: None,
+            thetvdb_season: Some(1),
+            thetvdb_part: None,
+            score: None,
+            anime_media_type: String::new(),
+            global_media_type: String::new(),
+            status: String::new(),
+            mapping_type: mapping_type.to_string(),
+            episode_mappings: vec![],
+        }
+    }
+
+    fn test_series(anime_mappings: Vec<AnimeMapping>) -> SeriesMetadata {
+        SeriesMetadata {
+            tvdb_id: 12345,
+            name: "Sword Art Online".to_string(),
+            sort_name: "Sword Art Online".to_string(),
+            slug: "sword-art-online".to_string(),
+            year: Some(2012),
+            content_status: String::new(),
+            first_aired: String::new(),
+            overview: String::new(),
+            network: String::new(),
+            runtime_minutes: 24,
+            poster_url: String::new(),
+            banner_url: None,
+            background_url: None,
+            country: String::new(),
+            genres: vec![],
+            aliases: vec![],
+            tagged_aliases: vec![],
+            seasons: vec![],
+            episodes: vec![],
+            anime_mappings,
+            anime_movies: vec![],
+        }
+    }
+
+    #[test]
+    fn series_hydration_uses_primary_anime_mapping_for_title_level_anidb() {
+        let result = series_to_hydration_result(
+            test_series(vec![
+                anime_mapping("S", Some(9999)),
+                anime_mapping("R", Some(15146)),
+            ]),
+            "eng",
+        );
+
+        assert_eq!(
+            result.metadata_update.extra_external_ids,
+            vec![ExternalId {
+                source: "anidb".to_string(),
+                value: "15146".to_string(),
+            }]
+        );
+    }
 }

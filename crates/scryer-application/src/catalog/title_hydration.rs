@@ -214,6 +214,8 @@ pub async fn start_background_title_hydration_loop(
 }
 
 async fn queue_missing_anibridge_scoped_id_hydration(app: &AppUseCase) {
+    let mut pending_title_ids = std::collections::BTreeSet::new();
+
     match app
         .services
         .catalog
@@ -224,27 +226,9 @@ async fn queue_missing_anibridge_scoped_id_hydration(app: &AppUseCase) {
         .await
     {
         Ok(title_ids) => {
-            if title_ids.is_empty() {
-                return;
-            }
-            let mut queued = 0usize;
             for title_id in title_ids {
-                if app
-                    .services
-                    .catalog
-                    .titles
-                    .mark_title_metadata_hydration_due_now(&title_id)
-                    .await
-                    .is_ok()
-                {
-                    queued += 1;
-                }
+                pending_title_ids.insert(title_id);
             }
-            info!(
-                queued,
-                "queued anime titles for anibridge scoped external ID hydration"
-            );
-            app.runtime.catalog.title_hydration_wake.notify_one();
         }
         Err(error) => {
             warn!(
@@ -253,6 +237,49 @@ async fn queue_missing_anibridge_scoped_id_hydration(app: &AppUseCase) {
             );
         }
     }
+
+    match app
+        .services
+        .catalog
+        .titles
+        .list_anime_title_ids_missing_title_anidb_external_ids(ANIBRIDGE_SCOPED_ID_BACKFILL_BATCH)
+        .await
+    {
+        Ok(title_ids) => {
+            for title_id in title_ids {
+                pending_title_ids.insert(title_id);
+            }
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                "failed to queue title-level AniDB hydration backfill"
+            );
+        }
+    }
+
+    if pending_title_ids.is_empty() {
+        return;
+    }
+
+    let mut queued = 0usize;
+    for title_id in pending_title_ids {
+        if app
+            .services
+            .catalog
+            .titles
+            .mark_title_metadata_hydration_due_now(&title_id)
+            .await
+            .is_ok()
+        {
+            queued += 1;
+        }
+    }
+    info!(
+        queued,
+        "queued anime titles for anibridge/title AniDB hydration"
+    );
+    app.runtime.catalog.title_hydration_wake.notify_one();
 }
 
 async fn schedule_title_hydration_retry(

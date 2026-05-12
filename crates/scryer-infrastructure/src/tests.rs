@@ -7,11 +7,11 @@ use scryer_application::{
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
     NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
     PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
-    ReleaseDownloadAttemptOutcome, ScopedExternalId, ShowRepository, SubmissionScope,
-    SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
-    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
-    WantedStatus,
+    ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
+    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
+    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
+    WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -1018,6 +1018,59 @@ async fn settings_with_defaults_query_and_tx_paths_match() {
 }
 
 #[tokio::test]
+async fn explicit_setting_query_skips_definition_defaults_for_missing_scopes() {
+    let (services, db) = temp_services("scryer_settings_explicit").await;
+    let settings = SqliteSettingsStore::new(&services);
+
+    settings
+        .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
+            category: "media".to_string(),
+            scope: "system".to_string(),
+            key_name: "quality.profile_id".to_string(),
+            data_type: "string".to_string(),
+            default_value_json: "\"4k\"".to_string(),
+            is_sensitive: false,
+            validation_json: None,
+        }])
+        .await
+        .expect("definitions should seed");
+
+    settings
+        .upsert_setting_value(
+            "system",
+            "quality.profile_id",
+            Some("series".to_string()),
+            "\"wizard-series\"",
+            "user",
+            None,
+        )
+        .await
+        .expect("facet override should save");
+
+    let inherited = settings
+        .get_setting_json(
+            "system",
+            "quality.profile_id",
+            Some("series_default_library".to_string()),
+        )
+        .await
+        .expect("inherited lookup should succeed");
+    assert_eq!(inherited.as_deref(), Some("\"4k\""));
+
+    let explicit = settings
+        .get_setting_json_explicit(
+            "system",
+            "quality.profile_id",
+            Some("series_default_library".to_string()),
+        )
+        .await
+        .expect("explicit lookup should succeed");
+    assert_eq!(explicit, None);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn serialized_writer_handles_notification_channel_and_subscription_round_trip() {
     let (services, db) = temp_services("scryer_notification_writer").await;
     services
@@ -1512,6 +1565,34 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
             .await
             .expect("missing scoped-id backfill query should run");
     assert!(!missing.contains(&title.id));
+
+    let missing_title_anidb =
+        TitleRepository::list_anime_title_ids_missing_title_anidb_external_ids(&catalog, 10)
+            .await
+            .expect("missing title AniDB backfill query should run");
+    assert!(missing_title_anidb.contains(&title.id));
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_language: Some("eng".to_string()),
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            extra_external_ids: vec![ExternalId {
+                source: "anidb".to_string(),
+                value: "18562".to_string(),
+            }],
+            ..TitleMetadataUpdate::default()
+        },
+    )
+    .await
+    .expect("hydrated title metadata should persist title-level AniDB");
+
+    let missing_title_anidb =
+        TitleRepository::list_anime_title_ids_missing_title_anidb_external_ids(&catalog, 10)
+            .await
+            .expect("missing title AniDB backfill query should rerun");
+    assert!(!missing_title_anidb.contains(&title.id));
 
     let _ = std::fs::remove_file(db);
 }

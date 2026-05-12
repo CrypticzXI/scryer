@@ -622,23 +622,37 @@ jobs:
             version "${VERSION}"
             license "MIT"
 
+            def install_support_files
+              (pkgshare/"config.env.example").write <<~EOS
+                # Homebrew-managed Scryer service overrides.
+                SCRYER_BIND=127.0.0.1:8686
+              EOS
+
+              (libexec/"scryer-service").write <<~SH
+                #!/bin/sh
+                CONFIG_FILE="#{etc}/scryer/config.env"
+
+                if [ -f "$CONFIG_FILE" ]; then
+                  set -a
+                  . "$CONFIG_FILE"
+                  set +a
+                fi
+
+                exec "#{opt_bin}/scryer" --data-dir "#{var}/scryer" "$@"
+              SH
+
+              chmod 0755, libexec/"scryer-service"
+            end
+
             on_macos do
               on_arm do
                 url "https://github.com/${REPO}/releases/download/scryer-v${VERSION}/scryer-darwin-arm64.tar.gz"
                 sha256 "${DARWIN_ARM_SHA}"
-
-                def install
-                  bin.install "scryer"
-                end
               end
 
               on_intel do
                 url "https://github.com/${REPO}/releases/download/scryer-v${VERSION}/scryer-darwin-x86_64.tar.gz"
                 sha256 "${DARWIN_X86_SHA}"
-
-                def install
-                  bin.install "scryer"
-                end
               end
             end
 
@@ -646,24 +660,38 @@ jobs:
               on_arm do
                 url "https://github.com/${REPO}/releases/download/scryer-v${VERSION}/scryer-linux-arm64.tar.gz"
                 sha256 "${LINUX_ARM_SHA}"
-
-                def install
-                  bin.install "scryer"
-                end
               end
 
               on_intel do
                 url "https://github.com/${REPO}/releases/download/scryer-v${VERSION}/scryer-linux-x86_64.tar.gz"
                 sha256 "${LINUX_X86_SHA}"
-
-                def install
-                  bin.install "scryer"
-                end
               end
             end
 
+            def install
+              bin.install "scryer"
+              install_support_files
+
+              config_dir = etc/"scryer"
+              config_dir.mkpath
+              config_file = config_dir/"config.env"
+              unless config_file.exist?
+                config_file.write <<~EOS
+                  SCRYER_BIND=127.0.0.1:8686
+                EOS
+              end
+            end
+
+            def caveats
+              <<~EOS
+                Edit #{etc}/scryer/config.env to customize the Homebrew-managed service,
+                then restart it with:
+                  brew services restart scryer
+              EOS
+            end
+
             service do
-              run [opt_bin/"scryer", "--data-dir", var/"scryer"]
+              run [opt_libexec/"scryer-service"]
               keep_alive true
               log_path var/"log/scryer.log"
               error_log_path var/"log/scryer.log"

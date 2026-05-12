@@ -85,6 +85,12 @@ pub trait TitleRepository: Send + Sync {
         &self,
         limit: usize,
     ) -> AppResult<Vec<String>>;
+    async fn list_anime_title_ids_missing_title_anidb_external_ids(
+        &self,
+        _limit: usize,
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
+    }
     async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()>;
     async fn schedule_title_metadata_hydration_retry(
         &self,
@@ -346,6 +352,14 @@ pub trait SettingsRepository: Send + Sync {
         key_name: &str,
         scope_id: Option<String>,
     ) -> AppResult<Option<String>>;
+    async fn get_setting_json_explicit(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        self.get_setting_json(scope, key_name, scope_id).await
+    }
 
     async fn upsert_setting_json(
         &self,

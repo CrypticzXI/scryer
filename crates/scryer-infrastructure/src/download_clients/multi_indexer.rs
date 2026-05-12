@@ -81,6 +81,43 @@ impl StrategyBatchHealth {
     }
 }
 
+const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 12;
+
+fn log_indexer_skip(
+    mode: SearchMode,
+    indexer_name: &str,
+    reason: &str,
+    disabled_until: Option<chrono::DateTime<chrono::Utc>>,
+) {
+    if matches!(mode, SearchMode::Interactive) {
+        if let Some(disabled_until) = disabled_until {
+            info!(
+                indexer = indexer_name,
+                reason,
+                disabled_until = %disabled_until,
+                "skipping indexer before dispatch"
+            );
+        } else {
+            info!(
+                indexer = indexer_name,
+                reason, "skipping indexer before dispatch"
+            );
+        }
+    } else if let Some(disabled_until) = disabled_until {
+        debug!(
+            indexer = indexer_name,
+            reason,
+            disabled_until = %disabled_until,
+            "skipping indexer before dispatch"
+        );
+    } else {
+        debug!(
+            indexer = indexer_name,
+            reason, "skipping indexer before dispatch"
+        );
+    }
+}
+
 fn should_run_fallback_tier(
     collected_results: &[IndexerSearchResult],
     primary_had_success: bool,
@@ -349,6 +386,12 @@ impl IndexerBackoffTracker {
                 disabled_until: None,
             });
 
+        if let Some(until) = state.disabled_until
+            && until > chrono::Utc::now()
+        {
+            return until;
+        }
+
         let period_index = state.escalation_level.min(BACKOFF_PERIODS_SECS.len() - 1);
         let backoff_secs = BACKOFF_PERIODS_SECS[period_index];
         let until = chrono::Utc::now() + chrono::Duration::seconds(backoff_secs as i64);
@@ -497,7 +540,7 @@ impl MultiIndexerSearchClient {
             set.spawn(async move {
                 let start = std::time::Instant::now();
                 let response = tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
+                    std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
                     client.search(
                         strategy.query,
                         strategy.ids,
@@ -581,25 +624,28 @@ impl IndexerClient for MultiIndexerSearchClient {
         let mut enabled: Vec<&IndexerConfig> = Vec::new();
         for c in &configs {
             if !c.is_enabled {
+                log_indexer_skip(mode, c.name.as_str(), "disabled", None);
                 continue;
             }
             // Check persistent disabled_until from config
             if let Some(until) = c.disabled_until
                 && until > now
             {
-                debug!(
-                    indexer = c.name.as_str(),
-                    disabled_until = %until,
-                    "skipping indexer: temporarily disabled (config)"
+                log_indexer_skip(
+                    mode,
+                    c.name.as_str(),
+                    "temporarily disabled (config)",
+                    Some(until),
                 );
                 continue;
             }
             // Check in-memory backoff escalation
             if let Some(until) = self.backoff_tracker.is_disabled(&c.id).await {
-                debug!(
-                    indexer = c.name.as_str(),
-                    disabled_until = %until,
-                    "skipping indexer: temporarily disabled (backoff)"
+                log_indexer_skip(
+                    mode,
+                    c.name.as_str(),
+                    "temporarily disabled (backoff)",
+                    Some(until),
                 );
                 continue;
             }
@@ -609,6 +655,8 @@ impl IndexerClient for MultiIndexerSearchClient {
             };
             if mode_ok {
                 enabled.push(c);
+            } else {
+                log_indexer_skip(mode, c.name.as_str(), "disabled for search mode", None);
             }
         }
 
@@ -798,7 +846,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 }
                                 let start = std::time::Instant::now();
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(30),
+                                    std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
                                     client.search(
                                         query,
                                         HashMap::new(),
@@ -941,7 +989,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     response.grab_current,
                                     response.grab_max,
                                 );
-                                backoff_tracker.record_success(&indexer_id).await;
 
                                 record_strategy_metrics(
                                     &indexer_name,
@@ -1030,7 +1077,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         response.grab_current,
                                         response.grab_max,
                                     );
-                                    backoff_tracker.record_success(&indexer_id).await;
 
                                     record_strategy_metrics(
                                         &indexer_name,
@@ -2310,6 +2356,33 @@ mod tests {
         let stats = stats.queries.lock().expect("stats log mutex");
         assert_eq!(stats.len(), 2);
         assert!(stats.iter().all(|success| !*success));
+    }
+
+    #[tokio::test]
+    async fn record_failure_does_not_extend_active_backoff() {
+        let tracker = IndexerBackoffTracker::new();
+        let disabled_until = chrono::Utc::now() + chrono::Duration::minutes(45);
+
+        tracker.state.lock().await.insert(
+            "idx-1".to_string(),
+            IndexerBackoffState {
+                escalation_level: 3,
+                disabled_until: Some(disabled_until),
+            },
+        );
+
+        let returned = tracker.record_failure("idx-1").await;
+        assert_eq!(returned, disabled_until);
+
+        let state = tracker
+            .state
+            .lock()
+            .await
+            .get("idx-1")
+            .cloned()
+            .expect("backoff state should remain present");
+        assert_eq!(state.escalation_level, 3);
+        assert_eq!(state.disabled_until, Some(disabled_until));
     }
 
     #[tokio::test]

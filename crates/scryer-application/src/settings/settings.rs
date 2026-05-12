@@ -873,6 +873,21 @@ impl AppUseCase {
             }))
     }
 
+    pub(crate) async fn read_setting_bool_value_explicit(
+        &self,
+        key_name: &str,
+        scope_id: Option<&str>,
+    ) -> AppResult<Option<bool>> {
+        Ok(self
+            .read_setting_string_value_explicit(key_name, scope_id)
+            .await?
+            .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Some(true),
+                "false" | "0" | "no" | "off" => Some(false),
+                _ => None,
+            }))
+    }
+
     pub(crate) async fn read_setting_i64_value(
         &self,
         key_name: &str,
@@ -1039,7 +1054,7 @@ impl AppUseCase {
     ) -> AppResult<ScoringPersona> {
         if let Some(library_id) = library_id
             && let Some(persona) = parse_scoring_persona_setting(
-                self.read_setting_string_value(SCORING_PERSONA_KEY, Some(library_id))
+                self.read_setting_string_value_explicit(SCORING_PERSONA_KEY, Some(library_id))
                     .await?,
             )
         {
@@ -1048,7 +1063,7 @@ impl AppUseCase {
 
         if let Some(scope_id) = scope_id
             && let Some(persona) = parse_scoring_persona_setting(
-                self.read_setting_string_value(SCORING_PERSONA_KEY, Some(scope_id))
+                self.read_setting_string_value_explicit(SCORING_PERSONA_KEY, Some(scope_id))
                     .await?,
             )
         {
@@ -1074,7 +1089,7 @@ impl AppUseCase {
     ) -> AppResult<String> {
         if let Some(library_id) = library_id
             && let Some(value) = self
-                .read_setting_string_value(key_name, Some(library_id))
+                .read_setting_string_value_explicit(key_name, Some(library_id))
                 .await?
                 .and_then(|value| normalize_optional_string(Some(value)))
         {
@@ -1083,7 +1098,7 @@ impl AppUseCase {
 
         if let Some(scope_id) = scope_id
             && let Some(value) = self
-                .read_setting_string_value(key_name, Some(scope_id))
+                .read_setting_string_value_explicit(key_name, Some(scope_id))
                 .await?
                 .and_then(|value| normalize_optional_string(Some(value)))
         {
@@ -1102,7 +1117,7 @@ impl AppUseCase {
     ) -> AppResult<bool> {
         if let Some(library_id) = library_id
             && let Some(value) = self
-                .read_setting_bool_value(key_name, Some(library_id))
+                .read_setting_bool_value_explicit(key_name, Some(library_id))
                 .await?
         {
             return Ok(value);
@@ -1110,7 +1125,7 @@ impl AppUseCase {
 
         if let Some(scope_id) = scope_id
             && let Some(value) = self
-                .read_setting_bool_value(key_name, Some(scope_id))
+                .read_setting_bool_value_explicit(key_name, Some(scope_id))
                 .await?
         {
             return Ok(value);
@@ -1127,7 +1142,7 @@ impl AppUseCase {
         let key_name = nfo_write_on_import_key(facet);
         if let Some(library_id) = library_id
             && let Some(value) = self
-                .read_setting_bool_value(key_name, Some(library_id))
+                .read_setting_bool_value_explicit(key_name, Some(library_id))
                 .await?
         {
             return Ok(value);
@@ -1150,7 +1165,7 @@ impl AppUseCase {
 
         if let Some(library_id) = library_id
             && let Some(value) = self
-                .read_setting_bool_value(key_name, Some(library_id))
+                .read_setting_bool_value_explicit(key_name, Some(library_id))
                 .await?
         {
             return Ok(Some(value));
@@ -1170,7 +1185,7 @@ impl AppUseCase {
     ) -> AppResult<String> {
         if let Some(library_id) = library_id
             && let Some(profile_id) = self
-                .read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(library_id))
+                .read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(library_id))
                 .await?
                 .and_then(|value| normalize_optional_string(Some(value)))
         {
@@ -1178,7 +1193,7 @@ impl AppUseCase {
         }
         if let Some(scope_id) = scope_id
             && let Some(profile_id) = self
-                .read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(scope_id))
+                .read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(scope_id))
                 .await?
                 .and_then(|value| normalize_optional_string(Some(value)))
         {
@@ -1199,7 +1214,10 @@ impl AppUseCase {
         library_id: &str,
     ) -> AppResult<Option<Vec<DownloadClientRoutingSettingsEntry>>> {
         let Some(raw_json) = self
-            .read_setting_string_value(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, Some(library_id))
+            .read_setting_string_value_explicit(
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                Some(library_id),
+            )
             .await?
         else {
             return Ok(None);
@@ -1232,7 +1250,7 @@ impl AppUseCase {
         library_id: &str,
     ) -> AppResult<Option<Vec<IndexerRoutingSettingsEntry>>> {
         let Some(raw_json) = self
-            .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(library_id))
+            .read_setting_string_value_explicit(INDEXER_ROUTING_SETTINGS_KEY, Some(library_id))
             .await?
         else {
             return Ok(None);
@@ -1279,21 +1297,21 @@ impl AppUseCase {
             .resolve_required_audio_languages(None, Some(&library.id), Some(scope_id))
             .await?;
         let quality_profile_id_override = self
-            .read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(&library.id))
+            .read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(&library.id))
             .await?
             .and_then(|value| normalize_optional_string(Some(value)));
         let quality_profile_id = self
             .resolve_quality_profile_id(Some(&library.id), Some(scope_id))
             .await?;
         let scoring_persona_override = parse_scoring_persona_setting(
-            self.read_setting_string_value(SCORING_PERSONA_KEY, Some(&library.id))
+            self.read_setting_string_value_explicit(SCORING_PERSONA_KEY, Some(&library.id))
                 .await?,
         );
         let scoring_persona = self
             .resolve_scoring_persona(Some(&library.id), Some(scope_id))
             .await?;
         let filler_policy_override = if library.facet == MediaFacet::Anime {
-            self.read_setting_string_value(ANIME_FILLER_POLICY_KEY, Some(&library.id))
+            self.read_setting_string_value_explicit(ANIME_FILLER_POLICY_KEY, Some(&library.id))
                 .await?
                 .and_then(|value| normalize_optional_string(Some(value)))
         } else {
@@ -1313,7 +1331,7 @@ impl AppUseCase {
             None
         };
         let recap_policy_override = if library.facet == MediaFacet::Anime {
-            self.read_setting_string_value(ANIME_RECAP_POLICY_KEY, Some(&library.id))
+            self.read_setting_string_value_explicit(ANIME_RECAP_POLICY_KEY, Some(&library.id))
                 .await?
                 .and_then(|value| normalize_optional_string(Some(value)))
         } else {
@@ -1333,7 +1351,7 @@ impl AppUseCase {
             None
         };
         let monitor_specials_override = if library.facet == MediaFacet::Anime {
-            self.read_setting_bool_value(ANIME_MONITOR_SPECIALS_KEY, Some(&library.id))
+            self.read_setting_bool_value_explicit(ANIME_MONITOR_SPECIALS_KEY, Some(&library.id))
                 .await?
         } else {
             None
@@ -1352,7 +1370,7 @@ impl AppUseCase {
             None
         };
         let inter_season_movies_override = if library.facet == MediaFacet::Anime {
-            self.read_setting_bool_value(ANIME_INTER_SEASON_MOVIES_KEY, Some(&library.id))
+            self.read_setting_bool_value_explicit(ANIME_INTER_SEASON_MOVIES_KEY, Some(&library.id))
                 .await?
         } else {
             None
@@ -1371,8 +1389,11 @@ impl AppUseCase {
             None
         };
         let monitor_filler_movies_override = if library.facet == MediaFacet::Anime {
-            self.read_setting_bool_value(ANIME_MONITOR_FILLER_MOVIES_KEY, Some(&library.id))
-                .await?
+            self.read_setting_bool_value_explicit(
+                ANIME_MONITOR_FILLER_MOVIES_KEY,
+                Some(&library.id),
+            )
+            .await?
         } else {
             None
         };
@@ -1390,7 +1411,10 @@ impl AppUseCase {
             None
         };
         let nfo_write_on_import_override = self
-            .read_setting_bool_value(nfo_write_on_import_key(&library.facet), Some(&library.id))
+            .read_setting_bool_value_explicit(
+                nfo_write_on_import_key(&library.facet),
+                Some(&library.id),
+            )
             .await?;
         let nfo_write_on_import = self
             .resolve_nfo_write_on_import(Some(&library.id), &library.facet)
@@ -1398,7 +1422,7 @@ impl AppUseCase {
         let plexmatch_write_on_import_override = match plexmatch_write_on_import_key(&library.facet)
         {
             Some(key_name) => {
-                self.read_setting_bool_value(key_name, Some(&library.id))
+                self.read_setting_bool_value_explicit(key_name, Some(&library.id))
                     .await?
             }
             None => None,
@@ -1748,7 +1772,7 @@ impl AppUseCase {
             let mut values = HashMap::new();
             for scope_id in ["movie", "series", "anime"] {
                 if let Some(persona) = parse_scoring_persona_setting(
-                    self.read_setting_string_value(SCORING_PERSONA_KEY, Some(scope_id))
+                    self.read_setting_string_value_explicit(SCORING_PERSONA_KEY, Some(scope_id))
                         .await?,
                 ) {
                     values.insert(scope_id.to_string(), persona);
@@ -1768,7 +1792,7 @@ impl AppUseCase {
         for scope_id in ["movie", "series", "anime"] {
             selected_profile_ids_by_scope.insert(
                 scope_id.to_string(),
-                self.read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(scope_id))
+                self.read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(scope_id))
                     .await?,
             );
         }
@@ -2297,7 +2321,7 @@ impl AppUseCase {
         let mut category_persona_selections = Vec::with_capacity(3);
         for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
             let override_profile_id = self
-                .read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(facet.as_str()))
+                .read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(facet.as_str()))
                 .await?
                 .filter(|value| profiles.iter().any(|profile| profile.id == *value));
             let effective_profile_id = override_profile_id
@@ -2311,7 +2335,7 @@ impl AppUseCase {
             });
 
             let override_persona = parse_scoring_persona_setting(
-                self.read_setting_string_value(SCORING_PERSONA_KEY, Some(facet.as_str()))
+                self.read_setting_string_value_explicit(SCORING_PERSONA_KEY, Some(facet.as_str()))
                     .await?,
             );
             let effective_persona = override_persona

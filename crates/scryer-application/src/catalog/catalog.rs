@@ -1719,15 +1719,11 @@ impl AppUseCase {
             );
         }
 
-        // Build extra external IDs from the primary anime mapping only.
         let mut metadata_update = result.metadata_update;
 
         // Store anime-specific metadata as tags on the title
-        if let Some(primary) = result
-            .anime_mappings
-            .iter()
-            .find(|m| m.mapping_type != "S")
-            .or(result.anime_mappings.first())
+        if let Some(primary) =
+            crate::catalog::facets::handler::primary_anime_mapping(&result.anime_mappings)
         {
             if let Some(score) = primary.score {
                 metadata_update

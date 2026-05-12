@@ -234,6 +234,95 @@ pub(crate) async fn get_setting_with_defaults_query(
     Ok(result)
 }
 
+fn explicit_setting_sql(has_scope_id: bool) -> &'static str {
+    if has_scope_id {
+        "SELECT
+            d.id AS definition_id,
+            d.category,
+            d.scope,
+            d.key_name,
+            d.data_type,
+            d.default_value_json,
+            d.is_sensitive,
+            d.validation_json,
+            sv.value_json AS effective_value_json,
+            sv.value_json,
+            sv.source,
+            sv.scope_id,
+            sv.updated_by_user_id,
+            sv.created_at,
+            sv.updated_at
+         FROM settings_definitions d
+         JOIN settings_values sv
+           ON sv.setting_definition_id = d.id
+          AND sv.scope = d.scope
+         WHERE d.scope = ?
+           AND d.key_name = ?
+           AND sv.scope = ?
+           AND sv.scope_id = ?
+         LIMIT 1"
+    } else {
+        "SELECT
+            d.id AS definition_id,
+            d.category,
+            d.scope,
+            d.key_name,
+            d.data_type,
+            d.default_value_json,
+            d.is_sensitive,
+            d.validation_json,
+            sv.value_json AS effective_value_json,
+            sv.value_json,
+            sv.source,
+            sv.scope_id,
+            sv.updated_by_user_id,
+            sv.created_at,
+            sv.updated_at
+         FROM settings_definitions d
+         JOIN settings_values sv
+           ON sv.setting_definition_id = d.id
+          AND sv.scope = d.scope
+         WHERE d.scope = ?
+           AND d.key_name = ?
+           AND sv.scope = ?
+           AND sv.scope_id IS NULL
+         LIMIT 1"
+    }
+}
+
+pub(crate) async fn get_setting_explicit_query(
+    pool: &SqlitePool,
+    scope: &str,
+    key_name: &str,
+    scope_id: Option<String>,
+    encryption_key: Option<&EncryptionKey>,
+) -> AppResult<Option<SettingsValueRecord>> {
+    let scope = scope.trim().to_string();
+    let key_name = key_name.trim().to_string();
+
+    if scope.is_empty() || key_name.is_empty() {
+        return Err(AppError::Validation(
+            "scope and key_name are required to read a setting".to_string(),
+        ));
+    }
+
+    let mut query = sqlx::query(explicit_setting_sql(scope_id.is_some()));
+    query = query.bind(&scope).bind(&key_name).bind(&scope);
+    if let Some(scope_id) = scope_id {
+        query = query.bind(scope_id);
+    }
+
+    let Some(row) = query
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?
+    else {
+        return Ok(None);
+    };
+
+    decode_settings_with_defaults_row(&row, encryption_key).map(Some)
+}
+
 #[expect(clippy::too_many_arguments)]
 pub(crate) async fn upsert_setting_value_query(
     pool: &SqlitePool,

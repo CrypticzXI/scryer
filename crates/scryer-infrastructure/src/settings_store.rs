@@ -161,6 +161,27 @@ impl SettingsRepository for SqliteSettingsStore {
         }
     }
 
+    async fn get_setting_json_explicit(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        let encryption_key = self.encryption_key();
+        match crate::queries::settings::get_setting_explicit_query(
+            &self.pool,
+            scope,
+            key_name,
+            scope_id,
+            encryption_key.as_ref(),
+        )
+        .await?
+        {
+            Some(record) => Ok(Some(record.effective_value_json)),
+            None => Ok(None),
+        }
+    }
+
     async fn upsert_setting_json(
         &self,
         scope: &str,

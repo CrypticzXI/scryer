@@ -118,6 +118,13 @@ impl TitleRepository for SqliteCatalogStore {
             .await
     }
 
+    async fn list_anime_title_ids_missing_title_anidb_external_ids(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<String>> {
+        title::list_anime_title_ids_missing_title_anidb_external_ids_query(&self.pool, limit).await
+    }
+
     async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()> {
         self.db.mark_title_metadata_hydration_due_now(id).await
     }

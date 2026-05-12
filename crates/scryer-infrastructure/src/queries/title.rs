@@ -1521,6 +1521,40 @@ pub(crate) async fn list_anime_title_ids_missing_anibridge_scoped_external_ids_q
     Ok(ids)
 }
 
+pub(crate) async fn list_anime_title_ids_missing_title_anidb_external_ids_query(
+    pool: &SqlitePool,
+    limit: usize,
+) -> AppResult<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT t.id
+         FROM titles t
+         WHERE t.facet = 'anime'
+           AND EXISTS (
+               SELECT 1 FROM title_external_ids te
+               WHERE te.title_id = t.id AND LOWER(te.source) IN ('tvdb', 'tvdb_id')
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM title_external_ids te
+               WHERE te.title_id = t.id AND LOWER(te.source) IN ('anidb', 'anidb_id')
+           )
+         ORDER BY COALESCE(t.metadata_fetched_at, ''), t.created_at
+         LIMIT ?",
+    )
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    .map_err(repository_error_from_sqlx)?;
+
+    let mut ids = Vec::with_capacity(rows.len());
+    for row in rows {
+        ids.push(
+            row.try_get("id")
+                .map_err(|err| AppError::Repository(err.to_string()))?,
+        );
+    }
+    Ok(ids)
+}
+
 pub(crate) async fn get_episode_by_id_query(
     pool: &SqlitePool,
     episode_id: &str,

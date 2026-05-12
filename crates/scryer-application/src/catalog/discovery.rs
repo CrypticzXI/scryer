@@ -1112,11 +1112,14 @@ impl AppUseCase {
             .map(|t| t.trim_start_matches("scryer:quality-profile:").to_string());
 
         let category_profile_id = self
-            .read_setting_string_value(QUALITY_PROFILE_ID_KEY, category_scope_id.as_deref())
+            .read_setting_string_value_explicit(
+                QUALITY_PROFILE_ID_KEY,
+                category_scope_id.as_deref(),
+            )
             .await?;
         let library_profile_id = match lookup.library_id {
             Some(library_id) => {
-                self.read_setting_string_value(QUALITY_PROFILE_ID_KEY, Some(library_id))
+                self.read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(library_id))
                     .await?
             }
             None => None,
@@ -1172,6 +1175,15 @@ impl AppUseCase {
             .await
     }
 
+    pub(crate) async fn read_setting_string_value_explicit(
+        &self,
+        key_name: &str,
+        scope_id: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        self.read_setting_string_value_for_scope_explicit(SETTINGS_SCOPE_SYSTEM, key_name, scope_id)
+            .await
+    }
+
     pub(crate) async fn read_setting_string_value_for_scope(
         &self,
         scope: &str,
@@ -1184,6 +1196,49 @@ impl AppUseCase {
             .config
             .settings
             .get_setting_json(scope, key_name, scope_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let trimmed = raw_value.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        if trimmed == INHERIT_QUALITY_PROFILE_VALUE {
+            return Ok(None);
+        }
+
+        let Ok(parsed) = serde_json::from_str::<Value>(trimmed) else {
+            return Ok(Some(trimmed.to_string()));
+        };
+        match parsed {
+            Value::Null => Ok(None),
+            Value::String(value) => {
+                let normalized = value.trim();
+                if normalized.is_empty() || normalized == INHERIT_QUALITY_PROFILE_VALUE {
+                    Ok(None)
+                } else {
+                    Ok(Some(normalized.to_string()))
+                }
+            }
+            _ => Ok(Some(trimmed.to_string())),
+        }
+    }
+
+    pub(crate) async fn read_setting_string_value_for_scope_explicit(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        let scope_id = scope_id.map(std::string::ToString::to_string);
+        let Some(raw_value) = self
+            .services
+            .config
+            .settings
+            .get_setting_json_explicit(scope, key_name, scope_id)
             .await?
         else {
             return Ok(None);

@@ -2310,6 +2310,112 @@ impl SettingsRepository for StoredSettingsRepo {
 }
 
 #[derive(Default, Clone)]
+struct CoalescingSettingsRepo {
+    values: StoredSettingValues,
+}
+
+impl CoalescingSettingsRepo {
+    async fn set_value(&self, scope: &str, key_name: &str, value: &str) {
+        self.values.lock().await.insert(
+            (scope.to_string(), key_name.to_string(), None),
+            value.to_string(),
+        );
+    }
+
+    async fn set_scoped_value(&self, scope: &str, key_name: &str, scope_id: &str, value: &str) {
+        self.values.lock().await.insert(
+            (
+                scope.to_string(),
+                key_name.to_string(),
+                Some(scope_id.to_string()),
+            ),
+            value.to_string(),
+        );
+    }
+
+    fn implicit_default(key_name: &str) -> Option<&'static str> {
+        match key_name {
+            QUALITY_PROFILE_ID_KEY => Some("\"4k\""),
+            SCORING_PERSONA_KEY => Some("\"Balanced\""),
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY | INDEXER_ROUTING_SETTINGS_KEY => Some("{}"),
+            _ => None,
+        }
+    }
+}
+
+#[async_trait]
+impl SettingsRepository for CoalescingSettingsRepo {
+    async fn get_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        if let Some(value) = self
+            .values
+            .lock()
+            .await
+            .get(&(scope.to_string(), key_name.to_string(), scope_id.clone()))
+            .cloned()
+        {
+            return Ok(Some(value));
+        }
+
+        Ok(Self::implicit_default(key_name).map(str::to_string))
+    }
+
+    async fn get_setting_json_explicit(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        Ok(self
+            .values
+            .lock()
+            .await
+            .get(&(scope.to_string(), key_name.to_string(), scope_id))
+            .cloned())
+    }
+
+    async fn upsert_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+        value_json: String,
+        _source: &str,
+        _updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        self.values.lock().await.insert(
+            (scope.to_string(), key_name.to_string(), scope_id),
+            value_json,
+        );
+        Ok(())
+    }
+
+    async fn delete_setting_value(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<()> {
+        self.values
+            .lock()
+            .await
+            .remove(&(scope.to_string(), key_name.to_string(), scope_id));
+        Ok(())
+    }
+
+    async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
+        let mut values = self.values.lock().await;
+        let before = values.len();
+        values.retain(|(_, _, stored_scope_id), _| stored_scope_id.as_deref() != Some(scope_id));
+        Ok((before - values.len()) as u32)
+    }
+}
+
+#[derive(Default, Clone)]
 struct MutableLibraryScanner {
     library_files: Arc<Mutex<Vec<LibraryFile>>>,
 }
@@ -4845,6 +4951,196 @@ async fn library_sidecar_settings_resolve_facet_defaults_and_library_overrides()
     assert_eq!(overridden.plexmatch_write_on_import, Some(false));
 }
 
+fn test_quality_profile(id: &str) -> QualityProfile {
+    QualityProfile {
+        id: id.to_string(),
+        name: id.to_string(),
+        criteria: QualityProfileCriteria::default(),
+    }
+}
+
+#[tokio::test]
+async fn resolve_quality_profile_uses_facet_settings_when_library_scope_only_coalesces_defaults() {
+    let settings = Arc::new(CoalescingSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            "\"wizard-movie\"",
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            "movie",
+            "\"wizard-movie\"",
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            "series",
+            "\"wizard-series\"",
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            "anime",
+            "\"wizard-anime\"",
+        )
+        .await;
+
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("wizard-movie"),
+            test_quality_profile("wizard-series"),
+            test_quality_profile("wizard-anime"),
+        ])
+        .await;
+
+    let (app, _) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+
+    for (facet, category_hint, expected_profile_id) in [
+        (MediaFacet::Movie, "movie", "wizard-movie"),
+        (MediaFacet::Series, "series", "wizard-series"),
+        (MediaFacet::Anime, "anime", "wizard-anime"),
+    ] {
+        let library_id = scryer_domain::default_library_id_for_facet(&facet);
+        let resolved = app
+            .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
+                title_tags: &[],
+                library_id: Some(library_id.as_str()),
+                imdb_id: None,
+                tvdb_id: None,
+                category_hint: Some(category_hint),
+            })
+            .await
+            .expect("quality profile should resolve");
+
+        assert_eq!(resolved.id, expected_profile_id);
+    }
+}
+
+#[tokio::test]
+async fn library_settings_inherit_facet_quality_and_persona_when_library_scope_only_coalesces_defaults()
+ {
+    let settings = Arc::new(CoalescingSettingsRepo::default());
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            "\"wizard-movie\"",
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            "series",
+            "\"wizard-series\"",
+        )
+        .await;
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, SCORING_PERSONA_KEY, "\"Compatible\"")
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            SCORING_PERSONA_KEY,
+            "series",
+            "\"Audiophile\"",
+        )
+        .await;
+
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("wizard-movie"),
+            test_quality_profile("wizard-series"),
+        ])
+        .await;
+
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+
+    let library_settings = app
+        .get_library_settings(&user, &series_library_id)
+        .await
+        .expect("library settings should load");
+
+    assert_eq!(library_settings.quality_profile_id_override, None);
+    assert_eq!(library_settings.quality_profile_id, "wizard-series");
+    assert_eq!(library_settings.scoring_persona_override, None);
+    assert_eq!(library_settings.scoring_persona, ScoringPersona::Audiophile);
+}
+
+#[tokio::test]
+async fn library_settings_inherit_facet_routing_when_library_scope_only_coalesces_defaults() {
+    let settings = Arc::new(CoalescingSettingsRepo::default());
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "series",
+            r#"{"weaver":{"enabled":true,"category":"tv"}}"#,
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            INDEXER_ROUTING_SETTINGS_KEY,
+            "series",
+            r#"{"nzbgeek":{"enabled":true,"categories":["5000"],"priority":7}}"#,
+        )
+        .await;
+
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+    );
+
+    let download_client_routing = app
+        .get_download_client_routing(&user, "series")
+        .await
+        .expect("download client routing should load");
+    assert_eq!(download_client_routing.len(), 1);
+    assert_eq!(download_client_routing[0].client_id, "weaver");
+
+    let indexer_routing = app
+        .get_indexer_routing(&user, "series")
+        .await
+        .expect("indexer routing should load");
+    assert_eq!(indexer_routing.len(), 1);
+    assert_eq!(indexer_routing[0].indexer_id, "nzbgeek");
+
+    let library_settings = app
+        .get_library_settings(&user, &series_library_id)
+        .await
+        .expect("library settings should load");
+
+    assert_eq!(library_settings.download_client_routing_override, None);
+    assert_eq!(library_settings.indexer_routing_override, None);
+}
+
 #[tokio::test]
 async fn movie_library_rejects_plexmatch_override() {
     let (app, user) = bootstrap();
@@ -5218,13 +5514,24 @@ fn bootstrap_with_search_settings_and_indexer(
     settings: Arc<StoredSettingsRepo>,
     indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User) {
+    bootstrap_with_settings_repo_and_profiles(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        indexer_client,
+    )
+}
+
+fn bootstrap_with_settings_repo_and_profiles(
+    settings: Arc<dyn SettingsRepository>,
+    quality_profiles: Arc<dyn QualityProfileRepository>,
+    indexer_client: Arc<dyn IndexerClient>,
+) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
-    let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
     let plugin_provider = Arc::new(MockIndexerPluginProvider {
         client: Arc::clone(&indexer_client),

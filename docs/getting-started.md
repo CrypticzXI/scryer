@@ -22,7 +22,27 @@ To stop the service:
 brew services stop scryer
 ```
 
-Configuration is at `$(brew --prefix)/etc/scryer/config.env`. Edit it to set your media paths, then restart the service.
+To change the web UI port on macOS, create or edit the Homebrew service env file:
+
+```bash
+mkdir -p "$(brew --prefix)/etc/scryer"
+cp "$(brew --prefix scryer)/share/scryer/config.env.example" "$(brew --prefix)/etc/scryer/config.env"
+nano "$(brew --prefix)/etc/scryer/config.env"
+```
+
+Add or uncomment this line, for example:
+
+```bash
+SCRYER_BIND=127.0.0.1:8090
+```
+
+Then restart scryer:
+
+```bash
+brew services restart scryer
+```
+
+After that, open `http://localhost:8090`.
 
 ---
 
