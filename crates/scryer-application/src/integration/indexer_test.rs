@@ -41,11 +41,11 @@ impl AppUseCase {
             .integrations
             .plugin_provider
             .available()
-            .ok_or_else(|| AppError::Repository("plugin provider not available".into()))?;
+            .ok_or_else(|| AppError::Repository("indexer provider not available".into()))?;
 
         let now = Utc::now();
 
-        // Build a temporary IndexerConfig to get a client from the plugin
+        // Build a temporary IndexerConfig to get a client from the provider.
         // Reject obviously invalid API keys (e.g. masked placeholders from
         // Sonarr/Radarr import that were stored before the masking fix).
         let parsed_config: serde_json::Value = serde_json::from_str(&normalized_config_json)
@@ -79,6 +79,9 @@ impl AppUseCase {
             enable_interactive_search: true,
             enable_auto_search: true,
             disabled_until: None,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(normalized_config_json),
@@ -86,9 +89,22 @@ impl AppUseCase {
             updated_at: now,
         };
 
+        let management_capabilities = provider.management_capabilities_for_provider(provider_type);
+        if management_capabilities.supports_validate_config {
+            let client = provider
+                .management_client_for_provider(&temp_config)
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "no indexer management client available for provider type '{provider_type}'"
+                    ))
+                })?;
+            let result = client.validate_connection().await?;
+            return validate_indexer_connection_result(result);
+        }
+
         let client = provider.client_for_provider(&temp_config).ok_or_else(|| {
             AppError::Validation(format!(
-                "no indexer plugin available for provider type '{provider_type}'"
+                "no indexer provider available for provider type '{provider_type}'"
             ))
         })?;
 
@@ -112,6 +128,24 @@ impl AppUseCase {
 
         Ok(())
     }
+}
+
+fn validate_indexer_connection_result(result: crate::IndexerValidationResult) -> AppResult<()> {
+    if result.status.eq_ignore_ascii_case("valid") {
+        return Ok(());
+    }
+
+    let message = result.message.unwrap_or(result.status.clone());
+    if matches!(
+        result.status.as_str(),
+        "invalid_config" | "auth_failed" | "missing_host_binding"
+    ) {
+        return Err(AppError::Validation(message));
+    }
+
+    Err(AppError::Repository(format!(
+        "indexer connection test failed: {message}"
+    )))
 }
 
 fn validate_test_flight_url(raw: &str) -> AppResult<()> {
@@ -143,6 +177,7 @@ mod tests {
         NullTitleRepository, NullUserRepository,
     };
     use async_trait::async_trait;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -174,8 +209,51 @@ mod tests {
             Ok(config)
         }
 
-        async fn update(&self, _update: crate::IndexerConfigUpdate) -> AppResult<IndexerConfig> {
-            Err(AppError::Repository("not implemented".into()))
+        async fn update(&self, update: crate::IndexerConfigUpdate) -> AppResult<IndexerConfig> {
+            let mut created = self.created.lock().await;
+            let config = created
+                .iter_mut()
+                .find(|config| config.id == update.id)
+                .ok_or_else(|| AppError::NotFound(format!("indexer config {}", update.id)))?;
+
+            if let Some(name) = update.name {
+                config.name = name;
+            }
+            if let Some(provider_type) = update.provider_type {
+                config.provider_type = provider_type;
+            }
+            if let Some(base_url) = update.derived_base_url {
+                config.base_url = base_url;
+            }
+            if let Some(rate_limit_seconds) = update.rate_limit_seconds {
+                config.rate_limit_seconds = Some(rate_limit_seconds);
+            }
+            if let Some(rate_limit_burst) = update.rate_limit_burst {
+                config.rate_limit_burst = Some(rate_limit_burst);
+            }
+            if let Some(is_enabled) = update.is_enabled {
+                config.is_enabled = is_enabled;
+            }
+            if let Some(enable_interactive_search) = update.enable_interactive_search {
+                config.enable_interactive_search = enable_interactive_search;
+            }
+            if let Some(enable_auto_search) = update.enable_auto_search {
+                config.enable_auto_search = enable_auto_search;
+            }
+            if let Some(managed_parent_config_id) = update.managed_parent_config_id {
+                config.managed_parent_config_id = managed_parent_config_id;
+            }
+            if let Some(managed_child_key) = update.managed_child_key {
+                config.managed_child_key = managed_child_key;
+            }
+            if let Some(managed_metadata_json) = update.managed_metadata_json {
+                config.managed_metadata_json = managed_metadata_json;
+            }
+            if let Some(config_json) = update.config_json {
+                config.config_json = Some(config_json);
+            }
+
+            Ok(config.clone())
         }
 
         async fn delete(&self, id: &str) -> AppResult<()> {
@@ -188,15 +266,119 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingSettingsRepository {
+        values: Arc<Mutex<HashMap<(String, String, Option<String>), String>>>,
+    }
+
+    #[async_trait]
+    impl SettingsRepository for RecordingSettingsRepository {
+        async fn get_setting_json(
+            &self,
+            scope_kind: &str,
+            key: &str,
+            scope_id: Option<String>,
+        ) -> AppResult<Option<String>> {
+            Ok(self
+                .values
+                .lock()
+                .await
+                .get(&(scope_kind.to_string(), key.to_string(), scope_id))
+                .cloned())
+        }
+
+        async fn upsert_setting_json(
+            &self,
+            scope_kind: &str,
+            key: &str,
+            scope_id: Option<String>,
+            value: String,
+            _source: &str,
+            _updated_by_user_id: Option<String>,
+        ) -> AppResult<()> {
+            self.values
+                .lock()
+                .await
+                .insert((scope_kind.to_string(), key.to_string(), scope_id), value);
+            Ok(())
+        }
+
+        async fn delete_setting_value(
+            &self,
+            scope_kind: &str,
+            key: &str,
+            scope_id: Option<String>,
+        ) -> AppResult<()> {
+            self.values
+                .lock()
+                .await
+                .remove(&(scope_kind.to_string(), key.to_string(), scope_id));
+            Ok(())
+        }
+
+        async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
+            let mut values = self.values.lock().await;
+            let before = values.len();
+            values.retain(|(_, _, entry_scope_id), _| entry_scope_id.as_deref() != Some(scope_id));
+            Ok((before - values.len()) as u32)
+        }
+    }
+
     struct RecordingPluginProvider {
         seen_configs: Arc<std::sync::Mutex<Vec<IndexerConfig>>>,
+        seen_management_configs: Arc<std::sync::Mutex<Vec<IndexerConfig>>>,
+        supports_validate_config: bool,
+        supports_managed_children_sync: bool,
+        sync_plan: crate::IndexerSyncPlan,
     }
 
     impl RecordingPluginProvider {
         fn new() -> Self {
             Self {
                 seen_configs: Arc::new(std::sync::Mutex::new(Vec::new())),
+                seen_management_configs: Arc::new(std::sync::Mutex::new(Vec::new())),
+                supports_validate_config: false,
+                supports_managed_children_sync: false,
+                sync_plan: crate::IndexerSyncPlan::default(),
             }
+        }
+
+        fn with_validate_config_support() -> Self {
+            Self {
+                supports_validate_config: true,
+                ..Self::new()
+            }
+        }
+
+        fn with_sync_plan(sync_plan: crate::IndexerSyncPlan) -> Self {
+            Self {
+                supports_managed_children_sync: true,
+                sync_plan,
+                ..Self::new()
+            }
+        }
+    }
+
+    struct RecordingIndexerManagementClient {
+        sync_plan: crate::IndexerSyncPlan,
+    }
+
+    #[async_trait]
+    impl IndexerManagementClient for RecordingIndexerManagementClient {
+        async fn validate_connection(&self) -> AppResult<crate::IndexerValidationResult> {
+            Ok(crate::IndexerValidationResult {
+                status: "valid".to_string(),
+                message: None,
+                retry_after_seconds: None,
+            })
+        }
+
+        async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<crate::IndexerSyncPlan> {
+            Ok(self.sync_plan.clone())
+        }
+
+        fn name(&self) -> &str {
+            "torrent_rss"
         }
     }
 
@@ -206,14 +388,62 @@ mod tests {
             Some(Arc::new(NullIndexerClient))
         }
 
+        fn management_client_for_provider(
+            &self,
+            config: &IndexerConfig,
+        ) -> Option<Arc<dyn IndexerManagementClient>> {
+            self.seen_management_configs
+                .lock()
+                .unwrap()
+                .push(config.clone());
+            Some(Arc::new(RecordingIndexerManagementClient {
+                sync_plan: self.sync_plan.clone(),
+            }))
+        }
+
         fn available_provider_types(&self) -> Vec<String> {
-            vec!["torrent_rss".to_string()]
+            vec!["torrent_rss".to_string(), "manager".to_string()]
+        }
+
+        fn management_capabilities_for_provider(
+            &self,
+            provider_type: &str,
+        ) -> scryer_domain::IndexerManagementCapabilities {
+            if provider_type == "torrent_rss" && self.supports_validate_config {
+                return scryer_domain::IndexerManagementCapabilities {
+                    supports_validate_config: true,
+                    supports_managed_children_sync: false,
+                };
+            }
+
+            if provider_type == "manager" && self.supports_managed_children_sync {
+                return scryer_domain::IndexerManagementCapabilities {
+                    supports_validate_config: false,
+                    supports_managed_children_sync: true,
+                };
+            }
+
+            scryer_domain::IndexerManagementCapabilities::default()
         }
 
         fn config_fields_for_provider(
             &self,
             provider_type: &str,
         ) -> Vec<scryer_domain::ConfigFieldDef> {
+            if provider_type == "manager" {
+                return vec![scryer_domain::ConfigFieldDef {
+                    key: "base_url".to_string(),
+                    label: "Base URL".to_string(),
+                    field_type: scryer_domain::ConfigFieldType::String,
+                    required: true,
+                    default_value: None,
+                    value_source: scryer_domain::ConfigFieldValueSource::User,
+                    role: Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                    host_binding: None,
+                    options: vec![],
+                    help_text: None,
+                }];
+            }
             if provider_type != "torrent_rss" {
                 return vec![];
             }
@@ -239,6 +469,7 @@ mod tests {
     fn test_app(
         indexer_configs: Arc<dyn IndexerConfigRepository>,
         plugin_provider: Option<Arc<dyn IndexerPluginProvider>>,
+        settings: Arc<dyn SettingsRepository>,
     ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(NullTitleRepository),
@@ -249,7 +480,7 @@ mod tests {
             Arc::new(NullDownloadClient),
             Arc::new(NullDownloadClientConfigRepository),
             Arc::new(NullReleaseAttemptRepository),
-            Arc::new(NullSettingsRepository),
+            settings,
             Arc::new(NullQualityProfileRepository),
             String::new(),
         );
@@ -291,6 +522,7 @@ mod tests {
         let app = test_app(
             indexer_repo.clone(),
             Some(Arc::new(RecordingPluginProvider::new())),
+            Arc::new(NullSettingsRepository),
         );
 
         let created = app
@@ -321,6 +553,7 @@ mod tests {
         let app = test_app(
             Arc::new(RecordingIndexerConfigRepo::new()),
             Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
         );
 
         app.test_indexer_connection(
@@ -335,5 +568,383 @@ mod tests {
         let seen = provider.seen_configs.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].base_url, "https://ipt.beelyrics.net");
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_uses_validate_config_when_supported() {
+        let provider = Arc::new(RecordingPluginProvider::with_validate_config_support());
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        app.test_indexer_connection(
+            &test_admin(),
+            "torrent_rss",
+            Some(r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let seen_search = provider.seen_configs.lock().unwrap();
+        assert!(seen_search.is_empty());
+
+        let seen_management = provider.seen_management_configs.lock().unwrap();
+        assert_eq!(seen_management.len(), 1);
+        assert_eq!(seen_management[0].base_url, "https://ipt.beelyrics.net");
+    }
+
+    #[tokio::test]
+    async fn managed_parent_providers_disable_search_modes_on_create_and_update() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let app = test_app(
+            indexer_repo,
+            Some(Arc::new(RecordingPluginProvider::with_sync_plan(
+                crate::IndexerSyncPlan::default(),
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let created = app
+            .create_indexer_config(
+                &test_admin(),
+                NewIndexerConfig {
+                    name: "Parent Manager".to_string(),
+                    provider_type: "manager".to_string(),
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: true,
+                    config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!created.enable_interactive_search);
+        assert!(!created.enable_auto_search);
+
+        let updated = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: created.id.clone(),
+                    name: Some("Renamed Parent Manager".to_string()),
+                    enable_interactive_search: Some(true),
+                    enable_auto_search: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.name, "Renamed Parent Manager");
+        assert!(!updated.enable_interactive_search);
+        assert!(!updated.enable_auto_search);
+    }
+
+    #[tokio::test]
+    async fn sync_indexer_config_reconciles_managed_children_and_routing() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        let parent = IndexerConfig {
+            id: "parent".to_string(),
+            name: "Parent Manager".to_string(),
+            provider_type: "manager".to_string(),
+            base_url: "https://manager.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some("{}".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        let existing_keep = IndexerConfig {
+            id: "managed-keep".to_string(),
+            name: "Old Keep".to_string(),
+            provider_type: "torrent_rss".to_string(),
+            base_url: "https://old.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: false,
+            enable_interactive_search: false,
+            enable_auto_search: false,
+            managed_parent_config_id: Some(parent.id.clone()),
+            managed_child_key: Some("keep".to_string()),
+            managed_metadata_json: Some("{\"old\":true}".to_string()),
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(r#"{"feed_url":"https://old.example/rss"}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        let existing_delete = IndexerConfig {
+            id: "managed-delete".to_string(),
+            name: "Delete Me".to_string(),
+            provider_type: "torrent_rss".to_string(),
+            base_url: "https://delete.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: Some(parent.id.clone()),
+            managed_child_key: Some("delete".to_string()),
+            managed_metadata_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(r#"{"feed_url":"https://delete.example/rss"}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        indexer_repo.create(parent.clone()).await.unwrap();
+        indexer_repo.create(existing_keep).await.unwrap();
+        indexer_repo.create(existing_delete).await.unwrap();
+
+        let sync_plan = crate::IndexerSyncPlan {
+            children: vec![
+                crate::ManagedIndexerChildPlan {
+                    child_key: "keep".to_string(),
+                    name: "Managed Keep".to_string(),
+                    provider_type: "torrent_rss".to_string(),
+                    config_json: r#"{"feed_url":"https://keep.example/rss"}"#.to_string(),
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: false,
+                    managed_metadata_json: Some("{\"source\":\"keep\"}".to_string()),
+                    routing_scopes: vec![
+                        crate::ManagedIndexerRoutingScope {
+                            scope_id: "movie".to_string(),
+                            categories: vec!["2000".to_string()],
+                        },
+                        crate::ManagedIndexerRoutingScope {
+                            scope_id: "series".to_string(),
+                            categories: vec!["5000".to_string()],
+                        },
+                    ],
+                },
+                crate::ManagedIndexerChildPlan {
+                    child_key: "new".to_string(),
+                    name: "Managed New".to_string(),
+                    provider_type: "torrent_rss".to_string(),
+                    config_json: r#"{"feed_url":"https://new.example/rss"}"#.to_string(),
+                    is_enabled: true,
+                    enable_interactive_search: false,
+                    enable_auto_search: true,
+                    managed_metadata_json: Some("{\"source\":\"new\"}".to_string()),
+                    routing_scopes: vec![crate::ManagedIndexerRoutingScope {
+                        scope_id: "anime".to_string(),
+                        categories: vec!["5070".to_string(), "5070".to_string()],
+                    }],
+                },
+            ],
+        };
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(sync_plan));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider.clone()),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+
+        app.update_indexer_routing(
+            &test_admin(),
+            "movie",
+            vec![IndexerRoutingSettingsEntry {
+                indexer_id: "managed-keep".to_string(),
+                enabled: false,
+                categories: vec!["1111".to_string()],
+                priority: 17,
+            }],
+        )
+        .await
+        .unwrap();
+        app.update_indexer_routing(
+            &test_admin(),
+            "anime",
+            vec![
+                IndexerRoutingSettingsEntry {
+                    indexer_id: "managed-keep".to_string(),
+                    enabled: true,
+                    categories: vec!["9999".to_string()],
+                    priority: 3,
+                },
+                IndexerRoutingSettingsEntry {
+                    indexer_id: "managed-delete".to_string(),
+                    enabled: true,
+                    categories: vec!["8888".to_string()],
+                    priority: 4,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let result = app
+            .sync_indexer_config(&test_admin(), &parent.id)
+            .await
+            .unwrap();
+
+        assert_eq!(result.parent_config_id, parent.id);
+        assert_eq!(result.created_ids.len(), 1);
+        assert_eq!(result.updated_ids, vec!["managed-keep".to_string()]);
+        assert_eq!(result.deleted_ids, vec!["managed-delete".to_string()]);
+
+        let configs = indexer_repo.list(None).await.unwrap();
+        assert_eq!(configs.len(), 3);
+        let synced_parent = configs
+            .iter()
+            .find(|config| config.id == parent.id)
+            .unwrap();
+        assert!(!synced_parent.enable_interactive_search);
+        assert!(!synced_parent.enable_auto_search);
+        let keep = configs
+            .iter()
+            .find(|config| config.id == "managed-keep")
+            .unwrap();
+        assert_eq!(keep.name, "Managed Keep");
+        assert_eq!(keep.base_url, "https://keep.example");
+        assert_eq!(keep.managed_child_key.as_deref(), Some("keep"));
+        assert_eq!(
+            keep.managed_metadata_json.as_deref(),
+            Some("{\"source\":\"keep\"}")
+        );
+        assert!(
+            configs
+                .iter()
+                .any(|config| config.managed_child_key.as_deref() == Some("new"))
+        );
+        assert!(!configs.iter().any(|config| config.id == "managed-delete"));
+
+        let movie = app
+            .get_indexer_routing(&test_admin(), "movie")
+            .await
+            .unwrap();
+        let keep_movie = movie
+            .iter()
+            .find(|entry| entry.indexer_id == "managed-keep")
+            .unwrap();
+        assert!(!keep_movie.enabled);
+        assert_eq!(keep_movie.categories, vec!["2000"]);
+        assert_eq!(keep_movie.priority, 17);
+
+        let series = app
+            .get_indexer_routing(&test_admin(), "series")
+            .await
+            .unwrap();
+        assert!(series.iter().any(|entry| {
+            entry.indexer_id == "managed-keep" && entry.enabled && entry.categories == vec!["5000"]
+        }));
+
+        let anime = app
+            .get_indexer_routing(&test_admin(), "anime")
+            .await
+            .unwrap();
+        assert!(!anime.iter().any(|entry| entry.indexer_id == "managed-keep"));
+        assert!(
+            !anime
+                .iter()
+                .any(|entry| entry.indexer_id == "managed-delete")
+        );
+        assert!(anime.iter().any(|entry| {
+            entry.indexer_id == result.created_ids[0]
+                && entry.enabled
+                && entry.categories == vec!["5070"]
+        }));
+    }
+
+    #[tokio::test]
+    async fn managed_child_indexers_reject_all_direct_updates() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "child".to_string(),
+                name: "Managed Child".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                base_url: "https://managed.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: true,
+                managed_parent_config_id: Some("parent".to_string()),
+                managed_child_key: Some("child".to_string()),
+                managed_metadata_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"feed_url":"https://managed.example/rss"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        let app = test_app(
+            indexer_repo,
+            Some(Arc::new(RecordingPluginProvider::new())),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let rate_limit_error = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: "child".to_string(),
+                    rate_limit_seconds: Some(15),
+                    rate_limit_burst: Some(3),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            rate_limit_error
+                .to_string()
+                .contains("managed child indexers are controlled by their parent sync")
+        );
+
+        let update_error = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: "child".to_string(),
+                    name: Some("Renamed".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            update_error
+                .to_string()
+                .contains("managed child indexers are controlled by their parent sync")
+        );
+
+        let delete_error = app
+            .delete_indexer_config(&test_admin(), "child")
+            .await
+            .unwrap_err();
+        assert!(
+            delete_error
+                .to_string()
+                .contains("managed child indexers are controlled by their parent sync")
+        );
     }
 }

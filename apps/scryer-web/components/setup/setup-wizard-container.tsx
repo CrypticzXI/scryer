@@ -318,8 +318,9 @@ export function SetupWizardContainer({
   const [customSeriesPaths, setCustomSeriesPaths] = useState<string[]>([]);
   const [selectedDcKeys, setSelectedDcKeys] = useState<Set<string>>(new Set());
   const [selectedIdxKeys, setSelectedIdxKeys] = useState<Set<string>>(new Set());
-  // User-supplied API keys for imports whose keys were masked by Sonarr/Radarr.
-  const [apiKeyOverrides, setApiKeyOverrides] = useState<Map<string, string>>(new Map());
+  // User-supplied API keys for clients whose keys were masked by Sonarr/Radarr.
+  const [dcApiKeyOverrides, setDcApiKeyOverrides] = useState<Map<string, string>>(new Map());
+  const [idxApiKeyOverrides, setIdxApiKeyOverrides] = useState<Map<string, string>>(new Map());
   const [selectedAnimePaths, setSelectedAnimePaths] = useState<string[]>([]);
   const [customAnimePaths, setCustomAnimePaths] = useState<string[]>([]);
   const [importExecuting, setImportExecuting] = useState(false);
@@ -1014,7 +1015,8 @@ export function SetupWizardContainer({
       }
 
       setImportPreview(preview);
-      setApiKeyOverrides(new Map());
+      setDcApiKeyOverrides(new Map());
+      setIdxApiKeyOverrides(new Map());
 
       // Auto-select all supported items
       const dcKeys = new Set<string>();
@@ -1079,6 +1081,18 @@ export function SetupWizardContainer({
   );
 
   const handleImportExecute = useCallback(async () => {
+    const missingProwlarrKey = importPreview?.indexers.find((indexer) => (
+      selectedIdxKeys.has(indexer.dedupKey)
+        && indexer.requiresApiKeyOverride
+        && !(idxApiKeyOverrides.get(indexer.dedupKey)?.trim())
+    ));
+    if (missingProwlarrKey) {
+      setImportExecuteError(t("setup.prowlarrApiKeyRequired", {
+        name: missingProwlarrKey.name,
+      }));
+      return;
+    }
+
     setImportExecuting(true);
     setImportExecuteError(null);
     try {
@@ -1096,7 +1110,6 @@ export function SetupWizardContainer({
       const indexerDedupKeys = new Set(
         importPreview?.indexers.map((indexer) => indexer.dedupKey) ?? [],
       );
-      const apiKeyOverrideEntries = [...apiKeyOverrides.entries()];
 
       const { data, error } = await client
         .mutation(executeExternalImportMutation, {
@@ -1108,10 +1121,10 @@ export function SetupWizardContainer({
             selectedAnimePaths: finalSelectedAnimePaths,
             selectedDownloadClientDedupKeys: [...selectedDcKeys],
             selectedIndexerDedupKeys: [...selectedIdxKeys],
-            downloadClientApiKeyOverrides: apiKeyOverrideEntries
+            downloadClientApiKeyOverrides: [...dcApiKeyOverrides.entries()]
               .filter(([dedupKey]) => downloadClientDedupKeys.has(dedupKey))
               .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey })),
-            indexerApiKeyOverrides: apiKeyOverrideEntries
+            indexerApiKeyOverrides: [...idxApiKeyOverrides.entries()]
               .filter(([dedupKey]) => indexerDedupKeys.has(dedupKey))
               .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey })),
           },
@@ -1148,8 +1161,10 @@ export function SetupWizardContainer({
     finalSelectedAnimePaths,
     selectedDcKeys,
     selectedIdxKeys,
-    apiKeyOverrides,
+    dcApiKeyOverrides,
+    idxApiKeyOverrides,
     importPreview,
+    t,
     goToStep,
   ]);
 
@@ -1393,8 +1408,17 @@ export function SetupWizardContainer({
     });
   }, []);
 
-  const setApiKeyOverride = useCallback((dedupKey: string, apiKey: string) => {
-    setApiKeyOverrides((prev) => {
+  const setDcApiKey = useCallback((dedupKey: string, apiKey: string) => {
+    setDcApiKeyOverrides((prev) => {
+      const next = new Map(prev);
+      if (apiKey) next.set(dedupKey, apiKey);
+      else next.delete(dedupKey);
+      return next;
+    });
+  }, []);
+
+  const setIdxApiKey = useCallback((dedupKey: string, apiKey: string) => {
+    setIdxApiKeyOverrides((prev) => {
       const next = new Map(prev);
       if (apiKey) next.set(dedupKey, apiKey);
       else next.delete(dedupKey);
@@ -1589,7 +1613,8 @@ export function SetupWizardContainer({
           customAnimePaths={customAnimePaths}
           selectedDcKeys={selectedDcKeys}
           selectedIdxKeys={selectedIdxKeys}
-          apiKeyOverrides={apiKeyOverrides}
+          dcApiKeyOverrides={dcApiKeyOverrides}
+          idxApiKeyOverrides={idxApiKeyOverrides}
           indexerProviderConfigFieldsByType={indexerProviderConfigFieldsByType}
           onToggleMoviesPath={toggleMoviesPath}
           onToggleSeriesPath={toggleSeriesPath}
@@ -1602,7 +1627,8 @@ export function SetupWizardContainer({
           onRemoveCustomAnimePath={removeCustomAnimePath}
           onToggleDc={toggleDcKey}
           onToggleIdx={toggleIdxKey}
-          onSetApiKey={setApiKeyOverride}
+          onSetDcApiKey={setDcApiKey}
+          onSetIdxApiKey={setIdxApiKey}
           onImport={handleImportExecute}
           onBack={() => goToStep(1)}
           importing={importExecuting}

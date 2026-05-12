@@ -24,6 +24,16 @@ kind = "sql"
 file = "migrations/0104_first_class_libraries_and_permissions.sql"
 scope = "all"
 
+[[migration]]
+version = 105
+description = "indexer managed children"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0105_indexer_managed_children.sql"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"

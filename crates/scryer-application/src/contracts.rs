@@ -181,6 +181,9 @@ pub struct IndexerConfigUpdate {
     pub is_enabled: Option<bool>,
     pub enable_interactive_search: Option<bool>,
     pub enable_auto_search: Option<bool>,
+    pub managed_parent_config_id: Option<Option<String>>,
+    pub managed_child_key: Option<Option<String>>,
+    pub managed_metadata_json: Option<Option<String>>,
     pub config_json: Option<String>,
 }
 
@@ -194,6 +197,9 @@ impl IndexerConfigUpdate {
             || self.is_enabled.is_some()
             || self.enable_interactive_search.is_some()
             || self.enable_auto_search.is_some()
+            || self.managed_parent_config_id.is_some()
+            || self.managed_child_key.is_some()
+            || self.managed_metadata_json.is_some()
             || self.config_json.is_some()
     }
 }
@@ -249,6 +255,45 @@ pub struct SubtitleProviderValidationResult {
     pub status: String,
     pub message: Option<String>,
     pub retry_after_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerValidationResult {
+    pub status: String,
+    pub message: Option<String>,
+    pub retry_after_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedIndexerRoutingScope {
+    pub scope_id: String,
+    pub categories: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedIndexerChildPlan {
+    pub child_key: String,
+    pub name: String,
+    pub provider_type: String,
+    pub config_json: String,
+    pub is_enabled: bool,
+    pub enable_interactive_search: bool,
+    pub enable_auto_search: bool,
+    pub managed_metadata_json: Option<String>,
+    pub routing_scopes: Vec<ManagedIndexerRoutingScope>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerSyncPlan {
+    pub children: Vec<ManagedIndexerChildPlan>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerConfigSyncResult {
+    pub parent_config_id: String,
+    pub created_ids: Vec<String>,
+    pub updated_ids: Vec<String>,
+    pub deleted_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -2884,6 +2884,9 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
             is_enabled,
             enable_interactive_search,
             enable_auto_search,
+            managed_parent_config_id,
+            managed_child_key,
+            managed_metadata_json,
             config_json,
         } = update;
         let mut entries = self.store.lock().await;
@@ -2915,6 +2918,15 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         }
         if let Some(enable_auto_search) = enable_auto_search {
             item.enable_auto_search = enable_auto_search;
+        }
+        if let Some(managed_parent_config_id) = managed_parent_config_id {
+            item.managed_parent_config_id = managed_parent_config_id;
+        }
+        if let Some(managed_child_key) = managed_child_key {
+            item.managed_child_key = managed_child_key;
+        }
+        if let Some(managed_metadata_json) = managed_metadata_json {
+            item.managed_metadata_json = managed_metadata_json;
         }
         if let Some(config_json) = config_json {
             item.config_json = Some(config_json);
@@ -5876,6 +5888,9 @@ async fn ensure_indexer_routing_entries_for_existing_indexers_backfills_missing_
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(

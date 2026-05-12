@@ -520,3 +520,39 @@ fn validate_contiguous_versions(migrations: &[CompiledMigration]) -> Result<(), 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::Sha256;
+
+    const BASELINE_0100_SHA256: &str =
+        "61042ad74ec32e3d1f16fc49b548d1fd1e29dbcf64680f4ece78dc86141c577d";
+
+    fn source_db_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scryer/src/db")
+    }
+
+    #[test]
+    fn baseline_0100_snapshot_is_immutable() {
+        let digest = Sha256::digest(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scryer/src/db/baselines/0100_baseline.sql"
+        )));
+        assert_eq!(
+            checksum_hex(&digest),
+            BASELINE_0100_SHA256,
+            "baseline 0100 is immutable; add a new baseline instead of editing this file"
+        );
+    }
+
+    #[test]
+    fn source_bundle_registers_migration_0105() {
+        let bundle =
+            compile_source_bundle(&source_db_root()).expect("compile source migration bundle");
+        assert!(
+            bundle.catalog.find_migration(105).is_some(),
+            "migration 0105 must be registered in migration_manifest.toml"
+        );
+    }
+}

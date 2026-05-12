@@ -617,13 +617,15 @@ async fn bootstrap_application(
         scryer_infrastructure::InMemoryIndexerStatsTracker::new(Some(db.pool().clone())),
     );
 
-    let dynamic_provider = scryer_plugins::DynamicPluginProvider::new(
+    let dynamic_provider = Arc::new(scryer_plugins::DynamicPluginProvider::new(
         scryer_plugins::build_indexer_plugin_provider_from_runtime_plugins(
             &indexer_runtime_plugins,
             &disabled_builtin_plugins,
         ),
+    ));
+    let plugin_provider: Arc<dyn IndexerPluginProvider> = Arc::new(
+        scryer_infrastructure::NativeProwlarrIndexerProvider::new(dynamic_provider),
     );
-    let plugin_provider: Arc<dyn IndexerPluginProvider> = Arc::new(dynamic_provider);
     let subtitle_plugin_provider: Arc<dyn SubtitlePluginProvider> =
         Arc::new(scryer_plugins::DynamicSubtitlePluginProvider::new(
             scryer_plugins::build_subtitle_plugin_provider_from_runtime_plugins(

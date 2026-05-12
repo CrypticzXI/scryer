@@ -1,1 +1,1 @@
-Generic Torznab-compatible torrent indexer for Jackett, Prowlarr, and native Torznab feeds
+Generic Torznab-compatible torrent indexer for Jackett and native Torznab feeds

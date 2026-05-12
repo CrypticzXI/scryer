@@ -11,6 +11,9 @@ export type IndexerRecord = {
   rateLimitBurst: number | null;
   disabledUntil: string | null;
   isEnabled: boolean;
+  isManaged: boolean;
+  managedParentConfigId: string | null;
+  supportsManagedChildrenSync: boolean;
   enableInteractiveSearch: boolean;
   enableAutoSearch: boolean;
   lastHealthStatus: string | null;

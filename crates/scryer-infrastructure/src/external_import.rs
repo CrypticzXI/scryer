@@ -33,6 +33,13 @@ pub struct ArrIndexer {
     pub fields: HashMap<String, Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedProwlarrIndexer {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub child_name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ArrMovie {
     pub id: i64,
@@ -441,6 +448,43 @@ pub fn map_indexer_provider_type(
     }
 }
 
+pub fn detect_prowlarr_proxy_indexer(indexer: &ArrIndexer) -> Option<DetectedProwlarrIndexer> {
+    let implementation = indexer.implementation.trim().to_ascii_lowercase();
+    if implementation != "newznab" && implementation != "torznab" {
+        return None;
+    }
+
+    let api_path = field_str(&indexer.fields, "apiPath")?;
+    if api_path.trim().trim_end_matches('/') != "/api" {
+        return None;
+    }
+
+    let base_url = prowlarr_parent_base_url(&field_str(&indexer.fields, "baseUrl")?)?;
+    Some(DetectedProwlarrIndexer {
+        base_url,
+        api_key: field_str_sensitive(&indexer.fields, "apiKey"),
+        child_name: indexer.name.clone(),
+    })
+}
+
+fn prowlarr_parent_base_url(base_url: &str) -> Option<String> {
+    let mut url = url::Url::parse(base_url.trim()).ok()?;
+    url.set_query(None);
+    url.set_fragment(None);
+
+    let path = url.path().trim_end_matches('/').to_string();
+    let indexer_id = path.rsplit('/').next()?;
+    if indexer_id.is_empty() || !indexer_id.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+
+    let parent_len = path.len().saturating_sub(indexer_id.len());
+    let parent_path = path[..parent_len].trim_end_matches('/');
+    url.set_path(parent_path);
+
+    Some(url.as_str().trim_end_matches('/').to_string())
+}
+
 fn known_native_indexer_provider_type(
     base_url: Option<String>,
     api_path: Option<String>,
@@ -529,7 +573,10 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::{map_download_client_type, map_indexer_provider_type};
+    use super::{
+        ArrIndexer, detect_prowlarr_proxy_indexer, map_download_client_type,
+        map_indexer_provider_type,
+    };
 
     #[test]
     fn map_download_client_type_recognizes_qbittorrent_variants() {
@@ -577,6 +624,67 @@ mod tests {
                 )]),
             ),
             None
+        );
+    }
+
+    #[test]
+    fn detects_prowlarr_proxy_indexer_and_preserves_reverse_proxy_path() {
+        let detected = detect_prowlarr_proxy_indexer(&ArrIndexer {
+            id: 1,
+            name: "NZBGeek".into(),
+            implementation: "Newznab".into(),
+            fields: HashMap::from([
+                (
+                    "baseUrl".into(),
+                    Value::String("https://media.example.test/prowlarr/12345/".into()),
+                ),
+                ("apiPath".into(), Value::String("/api".into())),
+                ("apiKey".into(), Value::String("secret".into())),
+            ]),
+        })
+        .expect("prowlarr proxy indexer");
+
+        assert_eq!(detected.base_url, "https://media.example.test/prowlarr");
+        assert_eq!(detected.api_key.as_deref(), Some("secret"));
+        assert_eq!(detected.child_name, "NZBGeek");
+    }
+
+    #[test]
+    fn detects_prowlarr_proxy_indexer_with_unbounded_numeric_id() {
+        let detected = detect_prowlarr_proxy_indexer(&ArrIndexer {
+            id: 1,
+            name: "Large ID".into(),
+            implementation: "Torznab".into(),
+            fields: HashMap::from([
+                (
+                    "baseUrl".into(),
+                    Value::String("http://prowlarr.local/123456".into()),
+                ),
+                ("apiPath".into(), Value::String("/api/".into())),
+            ]),
+        })
+        .expect("prowlarr proxy indexer");
+
+        assert_eq!(detected.base_url, "http://prowlarr.local");
+        assert_eq!(detected.api_key, None);
+    }
+
+    #[test]
+    fn ignores_non_prowlarr_shaped_arr_indexers() {
+        assert!(
+            detect_prowlarr_proxy_indexer(&ArrIndexer {
+                id: 1,
+                name: "Direct Newznab".into(),
+                implementation: "Newznab".into(),
+                fields: HashMap::from([
+                    (
+                        "baseUrl".into(),
+                        Value::String("https://indexer.example/api".into()),
+                    ),
+                    ("apiPath".into(), Value::String("/api".into())),
+                ]),
+            })
+            .is_none()
         );
     }
 }
