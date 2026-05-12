@@ -61,11 +61,10 @@ async fn setup() -> (
     let settings_store = Arc::new(SqliteSettingsStore::new(&db));
     let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
 
-    // Load all three indexer plugins
+    // Load the remaining bundled indexer plugins.
     let plugin_provider: Arc<dyn IndexerPluginProvider> =
         Arc::new(scryer_plugins::DynamicPluginProvider::new(
             scryer_plugins::WasmIndexerPluginProvider::empty()
-                .with_builtin_asset(scryer_plugins::builtins::ANIMETOSHO)
                 .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
                 .with_builtin_asset(scryer_plugins::builtins::TORZNAB),
         ));
@@ -83,29 +82,6 @@ async fn setup() -> (
     use scryer_application::IndexerConfigRepository;
     let now = chrono::Utc::now();
     for config in [
-        scryer_domain::IndexerConfig {
-            id: "tosho-1".into(),
-            name: "AnimeTosho".into(),
-            provider_type: "animetosho".into(),
-            base_url: tosho_server.uri(),
-            api_key_encrypted: None,
-            is_enabled: true,
-            enable_interactive_search: true,
-            enable_auto_search: true,
-            rate_limit_seconds: Some(0),
-            rate_limit_burst: None,
-            disabled_until: None,
-            last_health_status: None,
-            last_error_at: None,
-            config_json: Some(
-                serde_json::json!({
-                    "base_url": tosho_server.uri(),
-                })
-                .to_string(),
-            ),
-            created_at: now,
-            updated_at: now,
-        },
         scryer_domain::IndexerConfig {
             id: "nzbgeek-1".into(),
             name: "NZBGeek".into(),

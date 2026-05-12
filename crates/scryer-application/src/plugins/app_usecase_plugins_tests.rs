@@ -2979,18 +2979,13 @@ async fn seed_uses_provider_builtin_inventory() {
             Some("https://api.nzbgeek.info"),
         )
         .with_builtin_provider("newznab", "Newznab Indexer", None)
-        .with_builtin_provider(
-            "animetosho",
-            "AnimeTosho",
-            Some("https://feed.animetosho.org"),
-        )
         .with_builtin_provider("torznab", "Torznab Indexer", None);
     let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["jimaku"]));
     let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
     h.app.seed_builtin_plugins().await.unwrap();
 
     let seeded = h.plugin_repo.seeded.lock().await;
-    assert_eq!(seeded.len(), 5);
+    assert_eq!(seeded.len(), 4);
 
     let ids: Vec<&str> = seeded
         .iter()
@@ -2998,7 +2993,6 @@ async fn seed_uses_provider_builtin_inventory() {
         .collect();
     assert!(ids.contains(&"nzbgeek"));
     assert!(ids.contains(&"newznab"));
-    assert!(ids.contains(&"animetosho"));
     assert!(ids.contains(&"torznab"));
     assert!(ids.contains(&"jimaku"));
 }
@@ -3012,11 +3006,6 @@ async fn rebuild_plugin_provider_seeds_builtin_installations() {
             Some("https://api.nzbgeek.info"),
         )
         .with_builtin_provider("newznab", "Newznab Indexer", None)
-        .with_builtin_provider(
-            "animetosho",
-            "AnimeTosho",
-            Some("https://feed.animetosho.org"),
-        )
         .with_builtin_provider("torznab", "Torznab Indexer", None);
     let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["jimaku"]));
     let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
@@ -3024,7 +3013,7 @@ async fn rebuild_plugin_provider_seeds_builtin_installations() {
     h.app.rebuild_plugin_provider().await.unwrap();
 
     let installations = h.plugin_repo.list_plugin_installations().await.unwrap();
-    assert_eq!(installations.len(), 5);
+    assert_eq!(installations.len(), 4);
     assert!(
         installations
             .iter()

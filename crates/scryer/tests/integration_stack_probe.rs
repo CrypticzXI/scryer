@@ -13,12 +13,30 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use common::TestContext;
-use scryer_application::{MediaFileRepository, ShowRepository, TitleRepository};
-use scryer_domain::MediaFacet;
+use scryer_application::{LibraryRootDraft, MediaFileRepository, ShowRepository, TitleRepository};
+use scryer_domain::{
+    AppPermission, AppPermissionMask, LibraryPermission, LibraryPermissionMask, MediaFacet, User,
+};
 use scryer_infrastructure::SettingDefinitionSeed;
 
 const IRON_VALE_TVDB_ID: i64 = 420_424;
 const MINIMUM_IRON_VALE_IMPORTED_FILE_COUNT: usize = 12;
+
+fn admin() -> User {
+    let mut user = User::new_admin("admin");
+    user.authorization = scryer_domain::UserAuthorization {
+        app: AppPermissionMask::from_permissions([AppPermission::ManageCatalogSettings]),
+        default_library: LibraryPermissionMask::from_permissions([
+            LibraryPermission::View,
+            LibraryPermission::ManageTitles,
+            LibraryPermission::ResolveImports,
+            LibraryPermission::ManageLibrary,
+        ]),
+        loaded: true,
+        ..Default::default()
+    };
+    user
+}
 
 #[test]
 fn iron_vale_post_hydration_title_scan_subprocess_probe() {
@@ -104,6 +122,7 @@ async fn run_iron_vale_stack_probe() {
 
     let media_root = tempfile::tempdir().expect("create anime media root");
     let show_dir = create_iron_vale_library_root(media_root.path());
+    set_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
     set_media_path(
         &ctx,
         "anime.path",
@@ -207,6 +226,15 @@ async fn seed_media_path_settings(ctx: &TestContext) {
                 is_sensitive: false,
                 validation_json: None,
             },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "media".into(),
+                key_name: "anime.root_folders".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
         ])
         .await
         .expect("seed media path setting definitions");
@@ -224,6 +252,23 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
         )
         .await
         .expect("upsert media path setting");
+}
+
+async fn set_default_library_root(ctx: &TestContext, facet: MediaFacet, root: &Path) {
+    let library_id = scryer_domain::default_library_id_for_facet(&facet);
+    ctx.app
+        .update_library(
+            &admin(),
+            &library_id,
+            None,
+            Some(vec![LibraryRootDraft {
+                path: root.to_string_lossy().to_string(),
+                is_default: true,
+            }]),
+            None,
+        )
+        .await
+        .expect("update default library root");
 }
 
 async fn install_iron_vale_metadata_fixture(ctx: &TestContext) {

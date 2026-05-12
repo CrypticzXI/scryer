@@ -150,10 +150,6 @@ struct PluginManifestV2 {
 
 const BUILTIN_PLUGINS: &[BuiltinPluginSpec] = &[
     BuiltinPluginSpec {
-        plugin_id: "animetosho",
-        artifact_stem: "animetosho_indexer",
-    },
-    BuiltinPluginSpec {
         plugin_id: "newznab",
         artifact_stem: "newznab_indexer",
     },

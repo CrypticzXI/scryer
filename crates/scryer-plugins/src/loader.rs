@@ -33,7 +33,6 @@ use crate::types::{
     plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
 };
 
-const ANIMETOSHO_DEFAULT_BASE_URL: &str = "https://feed.animetosho.org";
 const NZBGEEK_DEFAULT_BASE_URL: &str = "https://api.nzbgeek.info";
 const DOGNZB_DEFAULT_BASE_URL: &str = "https://api.dognzb.cr";
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
@@ -458,30 +457,6 @@ fn apply_indexer_provider_overrides(
     }
 
     if matches!(load_source, PluginLoadSource::Builtin) {
-        if descriptor
-            .provider_type()
-            .eq_ignore_ascii_case("animetosho")
-        {
-            descriptor.set_default_base_url(Some(ANIMETOSHO_DEFAULT_BASE_URL.to_string()));
-            if missing_connection_url {
-                descriptor.config_fields_mut().insert(
-                    0,
-                    ConfigFieldDef {
-                        key: "base_url".to_string(),
-                        label: "Base URL".to_string(),
-                        field_type: ConfigFieldType::String,
-                        required: false,
-                        default_value: Some(ANIMETOSHO_DEFAULT_BASE_URL.to_string()),
-                        value_source: ConfigFieldValueSource::User,
-                        role: Some(ConfigFieldRole::ConnectionUrl),
-                        host_binding: None,
-                        options: vec![],
-                        help_text: Some("AnimeTosho feed API base URL".to_string()),
-                    },
-                );
-            }
-        }
-
         if missing_connection_url
             && matches!(
                 descriptor.provider_type().to_ascii_lowercase().as_str(),
@@ -550,7 +525,6 @@ fn builtin_indexer_asset_for_provider(
     provider_type: &str,
 ) -> Option<crate::builtins::BuiltinPluginAsset> {
     match provider_type.trim().to_ascii_lowercase().as_str() {
-        "animetosho" => Some(crate::builtins::ANIMETOSHO),
         "newznab" => Some(crate::builtins::NEWZNAB),
         "nzbgeek" => Some(crate::builtins::NZBGEEK),
         "torznab" => Some(crate::builtins::TORZNAB),
@@ -3004,7 +2978,7 @@ pub fn build_notification_plugin_provider_from_runtime_plugins(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::{ANIMETOSHO, NEWZNAB, NZBGEEK, TORZNAB};
+    use crate::builtins::{NEWZNAB, NZBGEEK, TORZNAB};
     use crate::types::{
         ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, DownloadClientCapabilities,
         DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind, NotificationCapabilities,
@@ -3222,7 +3196,7 @@ mod tests {
 
     #[test]
     fn embedded_builtin_descriptors_match_current_sdk_line() {
-        for asset in [ANIMETOSHO, NEWZNAB, NZBGEEK, TORZNAB] {
+        for asset in [NEWZNAB, NZBGEEK, TORZNAB] {
             let descriptor: PluginDescriptor = serde_json::from_str(asset.descriptor_json)
                 .expect("embedded builtin descriptor should parse");
             validate_plugin_descriptor_sdk_contract(&descriptor, SDK_VERSION)
@@ -3252,7 +3226,7 @@ mod tests {
     #[test]
     fn builtin_providers_expose_embedded_plugins() {
         let indexers = build_indexer_plugin_provider(&[], &[]);
-        for provider_type in ["animetosho", "newznab", "nzbgeek", "torznab"] {
+        for provider_type in ["newznab", "nzbgeek", "torznab"] {
             assert!(
                 indexers.plugin_name_for_provider(provider_type).is_some(),
                 "expected builtin indexer provider '{provider_type}' to be available"
@@ -3422,35 +3396,6 @@ mod tests {
                 PluginLoadSource::Builtin
             ));
         }
-    }
-
-    #[test]
-    fn animetosho_builtin_backfills_default_connection_url() {
-        let mut descriptor = descriptor("torrent_indexer");
-        set_provider_type(&mut descriptor, "animetosho");
-
-        let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
-            panic!("expected indexer descriptor");
-        };
-        indexer.config_fields.clear();
-
-        let descriptor = apply_indexer_provider_overrides(descriptor, PluginLoadSource::Builtin);
-
-        let base_url_field = descriptor
-            .config_fields()
-            .iter()
-            .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
-            .expect("builtin animetosho should expose a connection url");
-        assert_eq!(base_url_field.key, "base_url");
-        assert!(!base_url_field.required);
-        assert_eq!(
-            base_url_field.default_value.as_deref(),
-            Some(ANIMETOSHO_DEFAULT_BASE_URL)
-        );
-        assert!(validate_indexer_descriptor(
-            &descriptor,
-            PluginLoadSource::Builtin
-        ));
     }
 
     #[test]

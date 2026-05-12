@@ -19,13 +19,6 @@ pub const NEWZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
     description: include_str!("../builtins/newznab_indexer.description.txt"),
 };
 
-/// Built-in AnimeTosho indexer plugin asset pair.
-pub const ANIMETOSHO: BuiltinPluginAsset = BuiltinPluginAsset {
-    wasm_zstd: include_bytes!("../builtins/animetosho_indexer.wasm.zst"),
-    descriptor_json: include_str!("../builtins/animetosho_indexer.descriptor.json"),
-    description: include_str!("../builtins/animetosho_indexer.description.txt"),
-};
-
 /// Built-in Torznab indexer plugin asset pair.
 pub const TORZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
     wasm_zstd: include_bytes!("../builtins/torznab_indexer.wasm.zst"),
@@ -33,7 +26,7 @@ pub const TORZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
     description: include_str!("../builtins/torznab_indexer.description.txt"),
 };
 
-pub const INDEXER_BUILTINS: &[BuiltinPluginAsset] = &[NZBGEEK, NEWZNAB, ANIMETOSHO, TORZNAB];
+pub const INDEXER_BUILTINS: &[BuiltinPluginAsset] = &[NZBGEEK, NEWZNAB, TORZNAB];
 pub const SUBTITLE_BUILTINS: &[BuiltinPluginAsset] = &[];
 pub const DOWNLOAD_CLIENT_BUILTINS: &[BuiltinPluginAsset] = &[];
 pub const NOTIFICATION_BUILTINS: &[BuiltinPluginAsset] = &[];

@@ -1,1 +1,0 @@
-Anime release aggregator with torrent and NZB downloads from Nyaa, nekoBT, and other trackers
