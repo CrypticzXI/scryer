@@ -310,6 +310,8 @@ const PROVIDER_TYPE_FIELDS = `
     defaultBaseUrl
     availableHostBindings
     recommendedFacets
+    supportedEvents
+    supportsTest
     configFields {
       key
       label

@@ -3,13 +3,14 @@ use crate::{
     ParsedEpisodeMetadata, ParsedReleaseMetadata, WantedCompleteTransition, WantedItemsQuery,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
+    apply_remote_path_mappings_to_completed_download,
     domain_events::{
         created_media_update, deleted_media_update, new_title_domain_event, title_context_snapshot,
     },
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
-    parse_release_metadata,
+    parse_download_client_remote_path_mappings, parse_release_metadata,
     polling_worker::PollingWorker,
     render_rename_template, sanitize_filesystem_component,
 };
@@ -40,6 +41,43 @@ fn maybe_trigger_subtitle_search(app: &AppUseCase, title_id: &str, media_file_id
             crate::spawn_subtitle_search_for_file(app, title_id, media_file_id);
         }
     });
+}
+
+async fn remap_completed_download_for_client(app: &AppUseCase, completed: &mut CompletedDownload) {
+    let client_id = completed.client_id.trim();
+    if client_id.is_empty() {
+        return;
+    }
+
+    let config = match app
+        .services
+        .integrations
+        .download_client_configs
+        .get_by_id(client_id)
+        .await
+    {
+        Ok(Some(config)) => config,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                error = %error,
+                "import: failed to load download client config for remote path mapping"
+            );
+            return;
+        }
+    };
+
+    match parse_download_client_remote_path_mappings(&config.config_json) {
+        Ok(mappings) => apply_remote_path_mappings_to_completed_download(completed, &mappings),
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                error = %error,
+                "import: failed to parse remote path mappings"
+            );
+        }
+    }
 }
 
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
@@ -214,8 +252,9 @@ pub async fn retry_failed_import(
         )));
     }
 
-    let completed: CompletedDownload = serde_json::from_str(&record.payload_json)
+    let mut completed: CompletedDownload = serde_json::from_str(&record.payload_json)
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
+    remap_completed_download_for_client(app, &mut completed).await;
 
     if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id")
         .map(|value| value.trim().to_string())
@@ -880,6 +919,8 @@ pub async fn import_completed_download(
     actor: &User,
     completed: &CompletedDownload,
 ) -> AppResult<ImportResult> {
+    let mut completed = completed.clone();
+    remap_completed_download_for_client(app, &mut completed).await;
     let started_at = Utc::now();
     let source_ref = &completed.download_client_item_id;
 
@@ -894,7 +935,7 @@ pub async fn import_completed_download(
         return Ok(ImportResult {
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::AlreadyImported),
-            ..base_completed_import_result("", completed, started_at)
+            ..base_completed_import_result("", &completed, started_at)
         });
     }
 
@@ -919,7 +960,7 @@ pub async fn import_completed_download(
             completed.client_type.clone(),
             source_ref.clone(),
             import_type.as_str().to_string(),
-            serde_json::to_string(completed).unwrap_or_default(),
+            serde_json::to_string(&completed).unwrap_or_default(),
         )
         .await?;
 
@@ -936,7 +977,7 @@ pub async fn import_completed_download(
         let result = ImportResult {
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::NoVideoFiles),
-            ..base_completed_import_result(&import_id, completed, started_at)
+            ..base_completed_import_result(&import_id, &completed, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
         let _ = app
@@ -951,7 +992,7 @@ pub async fn import_completed_download(
 
     // From here on, any error must update the import record to "failed" rather than
     // propagating via `?`. Otherwise the record stays "processing" indefinitely.
-    match run_import(app, actor, &import_id, completed, started_at, None).await {
+    match run_import(app, actor, &import_id, &completed, started_at, None).await {
         Ok(result) => Ok(result),
         Err(error) => {
             let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
@@ -963,7 +1004,7 @@ pub async fn import_completed_download(
                 decision: ImportDecision::Failed,
                 skip_reason,
                 error_message: Some(error.to_string()),
-                ..base_completed_import_result(&import_id, completed, started_at)
+                ..base_completed_import_result(&import_id, &completed, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             let _ = app

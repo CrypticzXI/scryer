@@ -78,7 +78,64 @@ impl AppUseCase {
             }];
         }
 
-        vec![]
+        let mut results = Vec::new();
+        for config in enabled {
+            let has_remote_path_mappings =
+                match crate::has_download_client_remote_path_mappings(&config.config_json) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        results.push(HealthCheckResult {
+                            source: "DownloadClient".into(),
+                            status: HealthCheckStatus::Warning,
+                            message: format!(
+                                "Download client '{}' has invalid remote path mappings: {error}",
+                                config.name
+                            ),
+                        });
+                        continue;
+                    }
+                };
+
+            let status = match self
+                .services
+                .integrations
+                .download_client
+                .get_client_status_for_client_id(&config.id)
+                .await
+            {
+                Ok(status) => status,
+                Err(_) => continue,
+            };
+
+            let unresolved_roots = status
+                .remote_output_roots
+                .iter()
+                .map(|path| path.trim())
+                .filter(|path| !path.is_empty())
+                .filter(|path| !std::path::Path::new(path).exists())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+
+            if unresolved_roots.is_empty() {
+                continue;
+            }
+
+            if status.is_localhost != Some(false) && !has_remote_path_mappings {
+                continue;
+            }
+
+            results.push(HealthCheckResult {
+                source: "DownloadClient".into(),
+                status: HealthCheckStatus::Warning,
+                message: format!(
+                    "Download client '{}' reports output paths that Scryer still cannot access after remote path mapping: {}. Check remote path mappings and container volume mounts.",
+                    config.name,
+                    unresolved_roots.join(", ")
+                ),
+            });
+        }
+
+        results
     }
 
     async fn check_indexers(&self) -> Vec<HealthCheckResult> {

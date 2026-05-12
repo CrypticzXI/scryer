@@ -1797,7 +1797,16 @@ impl QueryRoot {
         Ok(provider_types
             .into_iter()
             .map(|(pt, name, fields, default_base_url)| {
-                from_provider_type(pt, name, fields, default_base_url, Vec::new(), Vec::new())
+                from_provider_type(
+                    pt,
+                    name,
+                    fields,
+                    default_base_url,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                )
             })
             .collect())
     }
@@ -1812,7 +1821,16 @@ impl QueryRoot {
         Ok(provider_types
             .into_iter()
             .map(|(pt, name, fields, default_base_url)| {
-                from_provider_type(pt, name, fields, default_base_url, Vec::new(), Vec::new())
+                from_provider_type(
+                    pt,
+                    name,
+                    fields,
+                    default_base_url,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                )
             })
             .collect())
     }
@@ -1846,6 +1864,8 @@ impl QueryRoot {
                     None,
                     available_host_bindings.clone(),
                     recommended_facets,
+                    Vec::new(),
+                    false,
                 )
             })
             .collect())
@@ -2060,7 +2080,22 @@ impl QueryRoot {
                     .notification_provider_name(&pt)
                     .unwrap_or_else(|| pt.clone());
                 let fields = app.notification_provider_config_fields(&pt);
-                from_provider_type(pt, name, fields, None, Vec::new(), Vec::new())
+                let supported_events = app
+                    .notification_provider_supported_events(&pt)
+                    .into_iter()
+                    .map(|event| event.as_str().to_string())
+                    .collect();
+                let supports_test = app.notification_provider_supports_test(&pt);
+                from_provider_type(
+                    pt,
+                    name,
+                    fields,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    supported_events,
+                    supports_test,
+                )
             })
             .collect())
     }

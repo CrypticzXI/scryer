@@ -3638,6 +3638,8 @@ pub struct ProviderTypePayload {
     pub default_base_url: Option<String>,
     pub available_host_bindings: Vec<String>,
     pub recommended_facets: Vec<MediaFacetValue>,
+    pub supported_events: Vec<String>,
+    pub supports_test: bool,
 }
 
 #[derive(SimpleObject, Clone)]

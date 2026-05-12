@@ -1,4 +1,5 @@
 import { Check, Loader2, X } from "lucide-react";
+import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
 import { Button } from "@/components/ui/button";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -202,6 +203,13 @@ export function SetupDownloadClientView({
             </div>
           </>
         )}
+        <DownloadClientRemotePathMappingsField
+          fieldKey="remote_path_mappings"
+          label={t("settings.downloadClientRemotePathMappings")}
+          value={draft.remotePathMappings}
+          helpText={t("settings.downloadClientRemotePathMappingsHelp")}
+          onChange={(_, value) => onDraftChange({ remotePathMappings: value })}
+        />
         <div className="flex items-center gap-3">
           <Button
             variant="outline"

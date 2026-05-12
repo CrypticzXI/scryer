@@ -8,8 +8,10 @@ use chrono::Utc;
 use common::{TestContext, disabled_auth_runtime_handle};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, NotificationClient, NotificationMediaUpdateTypePayload,
-    NotificationPayload, NotificationPluginProvider, NotificationScopeIdUpdate,
+    AppError, AppResult, NotificationAppPayload, NotificationClient,
+    NotificationExternalIdsPayload, NotificationFilePayload, NotificationMediaFilePayload,
+    NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
+    NotificationPluginProvider, NotificationScopeIdUpdate, NotificationTitlePayload,
     start_notification_dispatcher,
 };
 use scryer_domain::{
@@ -17,7 +19,8 @@ use scryer_domain::{
     DomainEventStream, DomainEventType, DomainExternalIds, ExternalId, ImportCompletedEventData,
     LibraryScanProgressedEventData, MediaFacet, MediaFileDeletedEventData, MediaFileDeletedReason,
     MediaFileRenamedEventData, MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType,
-    NewDomainEvent, NewTitle, NotificationEventType, TitleContextSnapshot,
+    NewDomainEvent, NewTitle, NotificationChannelConfig, NotificationEventType,
+    TitleContextSnapshot,
 };
 use scryer_infrastructure::SqliteNotificationStore;
 use scryer_interface::build_schema;
@@ -144,6 +147,16 @@ impl FakeNotificationProvider {
     }
 }
 
+fn jellyfin_supported_event_types() -> Vec<NotificationEventType> {
+    vec![
+        NotificationEventType::ImportComplete,
+        NotificationEventType::Upgrade,
+        NotificationEventType::Rename,
+        NotificationEventType::FileDeleted,
+        NotificationEventType::FileDeletedForUpgrade,
+    ]
+}
+
 impl NotificationPluginProvider for FakeNotificationProvider {
     fn client_for_channel(
         &self,
@@ -173,6 +186,18 @@ impl NotificationPluginProvider for FakeNotificationProvider {
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
         (provider_type == self.provider_type).then(|| self.provider_name.clone())
     }
+
+    fn supported_events_for_provider(&self, provider_type: &str) -> Vec<NotificationEventType> {
+        if provider_type == self.provider_type {
+            jellyfin_supported_event_types()
+        } else {
+            vec![]
+        }
+    }
+
+    fn supports_test_for_provider(&self, provider_type: &str) -> bool {
+        provider_type == self.provider_type
+    }
 }
 
 fn assert_no_errors(body: &Value) {
@@ -193,13 +218,20 @@ async fn schema_exec(
     serde_json::to_value(&response).expect("serialize GraphQL response")
 }
 
-fn config_json_with_path_mappings() -> String {
+fn jellyfin_config_json(base_url: &str, path_mappings: &str) -> String {
     serde_json::json!({
-        "base_url": "http://jellyfin:8096",
+        "base_url": base_url,
         "api_key": "secret",
-        "path_mappings": "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV"
+        "path_mappings": path_mappings,
     })
     .to_string()
+}
+
+fn config_json_with_path_mappings() -> String {
+    jellyfin_config_json(
+        "http://jellyfin:8096",
+        "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV",
+    )
 }
 
 fn repo_root() -> PathBuf {
@@ -217,6 +249,112 @@ fn jellyfin_dist_wasm_path() -> PathBuf {
         .join("scryer-plugins")
         .join("dist")
         .join("jellyfin_notification.wasm")
+}
+
+fn load_jellyfin_dist_provider() -> Option<Arc<dyn NotificationPluginProvider>> {
+    let wasm_path = jellyfin_dist_wasm_path();
+    if !wasm_path.exists() {
+        eprintln!(
+            "skipping jellyfin dist test; missing {}",
+            wasm_path.display()
+        );
+        return None;
+    }
+
+    let wasm_bytes = std::fs::read(&wasm_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", wasm_path.display()));
+    let wasm_provider =
+        scryer_plugins::WasmNotificationPluginProvider::empty().with_external_bytes(&wasm_bytes);
+    if !wasm_provider
+        .available_provider_types()
+        .iter()
+        .any(|provider_type| provider_type == "jellyfin")
+    {
+        eprintln!(
+            "skipping jellyfin dist test; optional dist artifact is incompatible with SDK {}",
+            scryer_plugins::SDK_VERSION
+        );
+        return None;
+    }
+
+    Some(Arc::new(
+        scryer_plugins::DynamicNotificationPluginProvider::new(wasm_provider),
+    ))
+}
+
+fn jellyfin_channel_config(base_url: &str, path_mappings: &str) -> NotificationChannelConfig {
+    let now = Utc::now();
+    NotificationChannelConfig {
+        id: "channel-jellyfin".to_string(),
+        name: "Jellyfin".to_string(),
+        channel_type: scryer_domain::ChannelType::parse("jellyfin").expect("jellyfin channel"),
+        config_json: jellyfin_config_json(base_url, path_mappings),
+        is_enabled: true,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn jellyfin_title_payload(
+    name: &str,
+    facet: &str,
+    path: Option<&str>,
+    external_ids: NotificationExternalIdsPayload,
+) -> NotificationTitlePayload {
+    NotificationTitlePayload {
+        id: Some("title-1".to_string()),
+        name: name.to_string(),
+        facet: facet.to_string(),
+        year: Some(2024),
+        slug: Some("example-title".to_string()),
+        path: path.map(str::to_string),
+        overview: None,
+        sort_title: None,
+        poster_url: None,
+        banner_url: None,
+        background_url: None,
+        genres: Vec::new(),
+        tags: Vec::new(),
+        aliases: Vec::new(),
+        original_language: None,
+        original_country: None,
+        external_ids,
+    }
+}
+
+fn jellyfin_notification_payload(
+    event_type: NotificationEventType,
+    title: Option<NotificationTitlePayload>,
+    file: Option<NotificationFilePayload>,
+    media_files: Vec<NotificationMediaFilePayload>,
+) -> NotificationPayload {
+    NotificationPayload {
+        schema_version: 1,
+        event_type,
+        event_id: Some("evt-jellyfin".to_string()),
+        occurred_at: Some(Utc::now().to_rfc3339()),
+        correlation_id: None,
+        actor: None,
+        severity: None,
+        is_test: false,
+        summary_title: "Jellyfin Test".to_string(),
+        summary_message: "Jellyfin notification test payload".to_string(),
+        app: NotificationAppPayload {
+            name: "Scryer".to_string(),
+            version: "test".to_string(),
+        },
+        title,
+        episode: None,
+        episodes: Vec::new(),
+        release: None,
+        download: None,
+        import: None,
+        health: None,
+        file,
+        media_files,
+        application_update: None,
+        manual_interaction: None,
+    }
 }
 
 fn lifecycle_metadata(
@@ -841,6 +979,8 @@ async fn notification_provider_types_query_exposes_jellyfin_multiline_field() {
           notificationProviderTypes {
             providerType
             name
+            supportedEvents
+            supportsTest
             configFields {
               key
               fieldType
@@ -862,6 +1002,17 @@ async fn notification_provider_types_query_exposes_jellyfin_multiline_field() {
         .expect("jellyfin provider");
 
     assert_eq!(jellyfin["name"], "Jellyfin");
+    assert_eq!(
+        jellyfin["supportedEvents"],
+        json!(vec![
+            "import_complete",
+            "upgrade",
+            "rename",
+            "file_deleted",
+            "file_deleted_for_upgrade",
+        ]),
+    );
+    assert_eq!(jellyfin["supportsTest"], true);
     assert!(
         jellyfin["configFields"]
             .as_array()
@@ -904,34 +1055,10 @@ async fn create_channel_preserves_multiline_jellyfin_config_json() {
 
 #[tokio::test]
 async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
-    let wasm_path = jellyfin_dist_wasm_path();
-    if !wasm_path.exists() {
-        eprintln!(
-            "skipping jellyfin dist test; missing {}",
-            wasm_path.display()
-        );
+    let Some(provider) = load_jellyfin_dist_provider() else {
         return;
-    }
-
+    };
     let ctx = TestContext::new().await;
-    let wasm_bytes = std::fs::read(&wasm_path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", wasm_path.display()));
-    let wasm_provider =
-        scryer_plugins::WasmNotificationPluginProvider::empty().with_external_bytes(&wasm_bytes);
-    if !wasm_provider
-        .available_provider_types()
-        .iter()
-        .any(|provider_type| provider_type == "jellyfin")
-    {
-        eprintln!(
-            "skipping jellyfin dist test; optional dist artifact is incompatible with SDK {}",
-            scryer_plugins::SDK_VERSION
-        );
-        return;
-    }
-    let provider: Arc<dyn NotificationPluginProvider> = Arc::new(
-        scryer_plugins::DynamicNotificationPluginProvider::new(wasm_provider),
-    );
     let app = app_with_notification_provider(&ctx, provider);
     let user = default_user(&app).await;
 
@@ -966,6 +1093,506 @@ async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
     app.test_notification_channel(&user, &channel.id)
         .await
         .expect("jellyfin dist plugin should accept test payload");
+}
+
+#[tokio::test]
+async fn jellyfin_dist_plugin_refreshes_mapped_title_folder_for_import_complete() {
+    let Some(provider) = load_jellyfin_dist_provider() else {
+        return;
+    };
+    let ctx = TestContext::new().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&ctx.nzbgeek_server)
+        .await;
+
+    let channel = jellyfin_channel_config(
+        &ctx.nzbgeek_server.uri(),
+        "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV",
+    );
+    let client = provider
+        .client_for_channel(&channel)
+        .expect("jellyfin client should load");
+
+    let title = jellyfin_title_payload(
+        "Example Movie",
+        "movie",
+        Some("/data/Movies/Example Movie (2024)"),
+        NotificationExternalIdsPayload {
+            tmdb_id: Some("987".to_string()),
+            imdb_id: Some("tt6543210".to_string()),
+            ..Default::default()
+        },
+    );
+    let payload = jellyfin_notification_payload(
+        NotificationEventType::ImportComplete,
+        Some(title),
+        Some(NotificationFilePayload {
+            primary_path: Some("/data/Movies/Example Movie (2024)/Example Movie.mkv".to_string()),
+            media_updates: vec![NotificationMediaUpdatePayload {
+                path: "/data/Movies/Example Movie (2024)/Example Movie.mkv".to_string(),
+                update_type: NotificationMediaUpdateTypePayload::Created,
+            }],
+        }),
+        vec![NotificationMediaFilePayload {
+            id: Some("file-1".to_string()),
+            path: "/data/Movies/Example Movie (2024)/Example Movie.mkv".to_string(),
+            ..Default::default()
+        }],
+    );
+
+    client
+        .send_notification(&payload)
+        .await
+        .expect("import_complete should refresh Jellyfin");
+
+    let requests = ctx
+        .nzbgeek_server
+        .received_requests()
+        .await
+        .expect("request capture should succeed");
+    assert_eq!(requests.len(), 1, "expected one mapped refresh request");
+    assert_eq!(requests[0].url.path(), "/Library/Media/Updated");
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("json body");
+    assert_eq!(
+        body,
+        json!({
+            "updates": [
+                {
+                    "path": "/mnt/media/Movies/Example Movie (2024)",
+                    "updateType": "Created",
+                }
+            ]
+        }),
+    );
+}
+
+#[tokio::test]
+async fn jellyfin_dist_plugin_refreshes_rename_once_with_modified_update() {
+    let Some(provider) = load_jellyfin_dist_provider() else {
+        return;
+    };
+    let ctx = TestContext::new().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&ctx.nzbgeek_server)
+        .await;
+
+    let channel = jellyfin_channel_config(
+        &ctx.nzbgeek_server.uri(),
+        "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV",
+    );
+    let client = provider
+        .client_for_channel(&channel)
+        .expect("jellyfin client should load");
+
+    let payload = jellyfin_notification_payload(
+        NotificationEventType::Rename,
+        Some(jellyfin_title_payload(
+            "Example Show",
+            "series",
+            Some("/data/TV/Example Show"),
+            NotificationExternalIdsPayload {
+                tvdb_id: Some("123".to_string()),
+                imdb_id: Some("tt456".to_string()),
+                ..Default::default()
+            },
+        )),
+        Some(NotificationFilePayload {
+            primary_path: Some("/data/TV/Example Show/New Name.mkv".to_string()),
+            media_updates: vec![
+                NotificationMediaUpdatePayload {
+                    path: "/data/TV/Example Show/Old Name.mkv".to_string(),
+                    update_type: NotificationMediaUpdateTypePayload::Deleted,
+                },
+                NotificationMediaUpdatePayload {
+                    path: "/data/TV/Example Show/New Name.mkv".to_string(),
+                    update_type: NotificationMediaUpdateTypePayload::Created,
+                },
+            ],
+        }),
+        vec![NotificationMediaFilePayload {
+            id: Some("file-episode-1".to_string()),
+            path: "/data/TV/Example Show/New Name.mkv".to_string(),
+            ..Default::default()
+        }],
+    );
+
+    client
+        .send_notification(&payload)
+        .await
+        .expect("rename should refresh Jellyfin");
+
+    let requests = ctx
+        .nzbgeek_server
+        .received_requests()
+        .await
+        .expect("request capture should succeed");
+    assert_eq!(requests.len(), 1, "expected one rename refresh request");
+    assert_eq!(requests[0].url.path(), "/Library/Media/Updated");
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("json body");
+    assert_eq!(
+        body,
+        json!({
+            "updates": [
+                {
+                    "path": "/mnt/media/TV/Example Show",
+                    "updateType": "Modified",
+                }
+            ]
+        }),
+    );
+}
+
+#[tokio::test]
+async fn jellyfin_dist_plugin_refreshes_file_deleted_once_with_deleted_update() {
+    let Some(provider) = load_jellyfin_dist_provider() else {
+        return;
+    };
+    let ctx = TestContext::new().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&ctx.nzbgeek_server)
+        .await;
+
+    let channel = jellyfin_channel_config(
+        &ctx.nzbgeek_server.uri(),
+        "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV",
+    );
+    let client = provider
+        .client_for_channel(&channel)
+        .expect("jellyfin client should load");
+
+    let payload = jellyfin_notification_payload(
+        NotificationEventType::FileDeleted,
+        Some(jellyfin_title_payload(
+            "Example Movie",
+            "movie",
+            Some("/data/Movies/Example Movie (2024)"),
+            NotificationExternalIdsPayload {
+                tmdb_id: Some("987".to_string()),
+                imdb_id: Some("tt6543210".to_string()),
+                ..Default::default()
+            },
+        )),
+        Some(NotificationFilePayload {
+            primary_path: Some("/data/Movies/Example Movie (2024)/Example Movie.mkv".to_string()),
+            media_updates: vec![NotificationMediaUpdatePayload {
+                path: "/data/Movies/Example Movie (2024)/Example Movie.mkv".to_string(),
+                update_type: NotificationMediaUpdateTypePayload::Deleted,
+            }],
+        }),
+        Vec::new(),
+    );
+
+    client
+        .send_notification(&payload)
+        .await
+        .expect("file_deleted should refresh Jellyfin");
+
+    let requests = ctx
+        .nzbgeek_server
+        .received_requests()
+        .await
+        .expect("request capture should succeed");
+    assert_eq!(requests.len(), 1, "expected one delete refresh request");
+    assert_eq!(requests[0].url.path(), "/Library/Media/Updated");
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("json body");
+    assert_eq!(
+        body,
+        json!({
+            "updates": [
+                {
+                    "path": "/mnt/media/Movies/Example Movie (2024)",
+                    "updateType": "Deleted",
+                }
+            ]
+        }),
+    );
+}
+
+#[tokio::test]
+async fn jellyfin_dist_plugin_falls_back_to_movie_and_series_id_updates_when_paths_do_not_map() {
+    let Some(provider) = load_jellyfin_dist_provider() else {
+        return;
+    };
+    let ctx = TestContext::new().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&ctx.nzbgeek_server)
+        .await;
+
+    let channel = jellyfin_channel_config(
+        &ctx.nzbgeek_server.uri(),
+        "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV",
+    );
+    let client = provider
+        .client_for_channel(&channel)
+        .expect("jellyfin client should load");
+
+    let movie_payload = jellyfin_notification_payload(
+        NotificationEventType::ImportComplete,
+        Some(jellyfin_title_payload(
+            "Fallback Movie",
+            "movie",
+            None,
+            NotificationExternalIdsPayload {
+                tmdb_id: Some("987".to_string()),
+                imdb_id: Some("tt6543210".to_string()),
+                ..Default::default()
+            },
+        )),
+        Some(NotificationFilePayload {
+            primary_path: Some("/srv/movies/Fallback Movie/Fallback Movie.mkv".to_string()),
+            media_updates: vec![NotificationMediaUpdatePayload {
+                path: "/srv/movies/Fallback Movie/Fallback Movie.mkv".to_string(),
+                update_type: NotificationMediaUpdateTypePayload::Created,
+            }],
+        }),
+        Vec::new(),
+    );
+    client
+        .send_notification(&movie_payload)
+        .await
+        .expect("movie fallback should succeed");
+
+    let series_payload = jellyfin_notification_payload(
+        NotificationEventType::ImportComplete,
+        Some(jellyfin_title_payload(
+            "Fallback Show",
+            "series",
+            None,
+            NotificationExternalIdsPayload {
+                tvdb_id: Some("123".to_string()),
+                ..Default::default()
+            },
+        )),
+        Some(NotificationFilePayload {
+            primary_path: Some("/srv/tv/Fallback Show/S01E01.mkv".to_string()),
+            media_updates: vec![NotificationMediaUpdatePayload {
+                path: "/srv/tv/Fallback Show/S01E01.mkv".to_string(),
+                update_type: NotificationMediaUpdateTypePayload::Created,
+            }],
+        }),
+        Vec::new(),
+    );
+    client
+        .send_notification(&series_payload)
+        .await
+        .expect("series fallback should succeed");
+
+    let requests = ctx
+        .nzbgeek_server
+        .received_requests()
+        .await
+        .expect("request capture should succeed");
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected one movie and one series fallback"
+    );
+
+    let movie_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/Library/Movies/Updated")
+        .expect("movie fallback request");
+    let movie_query = movie_request
+        .url
+        .query_pairs()
+        .into_owned()
+        .collect::<HashMap<_, _>>();
+    assert_eq!(movie_query.get("tmdbId").map(String::as_str), Some("987"));
+    assert_eq!(
+        movie_query.get("imdbId").map(String::as_str),
+        Some("tt6543210"),
+    );
+
+    let series_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/Library/Series/Updated")
+        .expect("series fallback request");
+    let series_query = series_request
+        .url
+        .query_pairs()
+        .into_owned()
+        .collect::<HashMap<_, _>>();
+    assert_eq!(series_query.get("tvdbId").map(String::as_str), Some("123"));
+}
+
+#[tokio::test]
+async fn jellyfin_dist_plugin_skips_unsupported_download_event_without_failure() {
+    let Some(provider) = load_jellyfin_dist_provider() else {
+        return;
+    };
+    let ctx = TestContext::new().await;
+
+    let channel = jellyfin_channel_config(
+        &ctx.nzbgeek_server.uri(),
+        "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV",
+    );
+    let client = provider
+        .client_for_channel(&channel)
+        .expect("jellyfin client should load");
+
+    let payload = jellyfin_notification_payload(
+        NotificationEventType::Download,
+        Some(jellyfin_title_payload(
+            "Unsupported Download",
+            "movie",
+            Some("/data/Movies/Unsupported Download"),
+            NotificationExternalIdsPayload::default(),
+        )),
+        None,
+        Vec::new(),
+    );
+
+    client
+        .send_notification(&payload)
+        .await
+        .expect("unsupported download event should be skipped successfully");
+
+    let requests = ctx
+        .nzbgeek_server
+        .received_requests()
+        .await
+        .expect("request capture should succeed");
+    assert!(
+        requests.is_empty(),
+        "unsupported Jellyfin download event should not make HTTP requests"
+    );
+}
+
+#[tokio::test]
+async fn jellyfin_download_subscription_migration_rewrites_and_deduplicates_rows() {
+    let ctx = TestContext::new().await;
+    let app = app_with_notifications(&ctx);
+    let user = default_user(&app).await;
+
+    let jellyfin_channel = app
+        .create_notification_channel(
+            &user,
+            "Jellyfin".into(),
+            "jellyfin".into(),
+            config_json_with_path_mappings(),
+            true,
+        )
+        .await
+        .expect("create jellyfin channel");
+    let webhook_channel = app
+        .create_notification_channel(&user, "Webhook".into(), "webhook".into(), "{}".into(), true)
+        .await
+        .expect("create webhook channel");
+
+    let legacy_download = app
+        .create_notification_subscription(
+            &user,
+            jellyfin_channel.id.clone(),
+            "download".into(),
+            "global".into(),
+            None,
+            false,
+        )
+        .await
+        .expect("create legacy jellyfin download subscription");
+    let existing_import_complete = app
+        .create_notification_subscription(
+            &user,
+            jellyfin_channel.id.clone(),
+            "import_complete".into(),
+            "global".into(),
+            None,
+            true,
+        )
+        .await
+        .expect("create existing jellyfin import_complete subscription");
+    let untouched_webhook_download = app
+        .create_notification_subscription(
+            &user,
+            webhook_channel.id.clone(),
+            "download".into(),
+            "global".into(),
+            None,
+            true,
+        )
+        .await
+        .expect("create non-jellyfin download subscription");
+
+    let older = "2024-01-01T00:00:00Z";
+    let newer = "2024-02-01T00:00:00Z";
+    sqlx::query(
+        "UPDATE notification_subscriptions
+         SET created_at = ?, updated_at = ?, is_enabled = 0
+         WHERE id = ?",
+    )
+    .bind(older)
+    .bind(older)
+    .bind(&legacy_download.id)
+    .execute(ctx.db.pool())
+    .await
+    .expect("age legacy download subscription");
+    sqlx::query(
+        "UPDATE notification_subscriptions
+         SET created_at = ?, updated_at = ?, is_enabled = 1
+         WHERE id = ?",
+    )
+    .bind(newer)
+    .bind(newer)
+    .bind(&existing_import_complete.id)
+    .execute(ctx.db.pool())
+    .await
+    .expect("age existing import_complete subscription");
+
+    sqlx::query(include_str!(
+        "../src/db/migrations/0105_jellyfin_download_subscription_rewrite.sql"
+    ))
+    .execute(ctx.db.pool())
+    .await
+    .expect("migration SQL should execute");
+
+    let jellyfin_rows = sqlx::query_as::<_, (String, String, i64, String)>(
+        "SELECT id, event_type, is_enabled, created_at
+         FROM notification_subscriptions
+         WHERE channel_id = ?
+         ORDER BY id",
+    )
+    .bind(&jellyfin_channel.id)
+    .fetch_all(ctx.db.pool())
+    .await
+    .expect("load jellyfin subscriptions after migration");
+    assert_eq!(
+        jellyfin_rows,
+        vec![(
+            existing_import_complete.id.clone(),
+            "import_complete".to_string(),
+            1,
+            older.to_string(),
+        )],
+    );
+
+    let webhook_rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, event_type
+         FROM notification_subscriptions
+         WHERE channel_id = ?
+         ORDER BY id",
+    )
+    .bind(&webhook_channel.id)
+    .fetch_all(ctx.db.pool())
+    .await
+    .expect("load webhook subscriptions after migration");
+    assert_eq!(
+        webhook_rows,
+        vec![(
+            untouched_webhook_download.id.clone(),
+            "download".to_string(),
+        )],
+    );
 }
 
 #[tokio::test]

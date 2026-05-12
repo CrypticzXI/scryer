@@ -2,6 +2,7 @@ mod acquisition;
 mod authorization;
 mod catalog;
 mod contracts;
+mod download_client_path_mappings;
 mod events;
 mod health;
 mod helpers;
@@ -155,6 +156,11 @@ pub use contracts::{
     SubtitleGenerationInput, SubtitleProviderConfigUpdate, SubtitleProviderValidationResult,
     SubtitleStreamDetail, SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage,
     WantedItemsQuery, WantedSearchOutcome,
+};
+pub use download_client_path_mappings::{
+    DownloadClientRemotePathMapping, apply_remote_path_mappings_to_completed_download,
+    apply_remote_path_mappings_to_status, has_download_client_remote_path_mappings,
+    parse_download_client_remote_path_mappings, remap_remote_path,
 };
 pub use event_views::{
     apply_download_queue_projection_event, apply_job_next_run_projection_event,

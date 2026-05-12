@@ -630,6 +630,8 @@ pub(crate) fn from_provider_type(
     default_base_url: Option<String>,
     available_host_bindings: Vec<String>,
     recommended_facets: Vec<String>,
+    supported_events: Vec<String>,
+    supports_test: bool,
 ) -> ProviderTypePayload {
     ProviderTypePayload {
         provider_type,
@@ -640,6 +642,8 @@ pub(crate) fn from_provider_type(
             .into_iter()
             .filter_map(|facet| MediaFacetValue::parse(&facet))
             .collect(),
+        supported_events,
+        supports_test,
         config_fields: config_fields
             .into_iter()
             .map(|f| PluginConfigFieldPayload {

@@ -33,5 +33,6 @@ export const DEFAULT_DOWNLOAD_CLIENT_DRAFT: DownloadClientDraft = {
   apiKey: "",
   username: "",
   password: "",
+  remotePathMappings: "",
   isEnabled: true,
 };

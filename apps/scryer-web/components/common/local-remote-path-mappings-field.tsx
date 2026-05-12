@@ -11,13 +11,16 @@ type PathMappingRow = {
   remotePath: string;
 };
 
-type LocalRemotePathMappingsFieldProps = {
+type PathMappingDirection = "local-to-remote" | "remote-to-local";
+
+export type LocalRemotePathMappingsFieldProps = {
   fieldKey: string;
   label: string;
   value: string;
   helpText?: string | null;
   required?: boolean;
   maxRows?: number;
+  direction?: PathMappingDirection;
   onChange: (key: string, value: string) => void;
 };
 
@@ -27,26 +30,40 @@ function emptyRow(): PathMappingRow {
   return { localPath: "", remotePath: "" };
 }
 
-function parsePathMappings(value: string): PathMappingRow[] {
+function parsePathMappings(value: string, direction: PathMappingDirection): PathMappingRow[] {
   const rows = value
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [localPath, remotePath = ""] = line.split(/=>/, 2);
+      const [firstPath, secondPath = ""] = line.split(/=>/, 2);
+      const first = firstPath.trim();
+      const second = secondPath.trim();
+
+      if (direction === "remote-to-local") {
+        return {
+          localPath: second,
+          remotePath: first,
+        };
+      }
+
       return {
-        localPath: localPath.trim(),
-        remotePath: remotePath.trim(),
+        localPath: first,
+        remotePath: second,
       };
     });
 
   return rows.length > 0 ? rows : [emptyRow()];
 }
 
-function serializePathMappings(rows: PathMappingRow[]): string {
+function serializePathMappings(rows: PathMappingRow[], direction: PathMappingDirection): string {
   return rows
     .filter((row) => row.localPath.trim() || row.remotePath.trim())
-    .map((row) => `${row.localPath.trim()} => ${row.remotePath.trim()}`)
+    .map((row) =>
+      direction === "remote-to-local"
+        ? `${row.remotePath.trim()} => ${row.localPath.trim()}`
+        : `${row.localPath.trim()} => ${row.remotePath.trim()}`,
+    )
     .join("\n");
 }
 
@@ -57,29 +74,30 @@ export function LocalRemotePathMappingsField({
   helpText,
   required = false,
   maxRows = DEFAULT_MAX_ROWS,
+  direction = "local-to-remote",
   onChange,
 }: LocalRemotePathMappingsFieldProps) {
   const t = useTranslate();
   const [rows, setRows] = React.useState<PathMappingRow[]>(() =>
-    parsePathMappings(value),
+    parsePathMappings(value, direction),
   );
   const [browseRowIndex, setBrowseRowIndex] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     setRows((currentRows) =>
-      serializePathMappings(currentRows) === value
+      serializePathMappings(currentRows, direction) === value
         ? currentRows
-        : parsePathMappings(value),
+        : parsePathMappings(value, direction),
     );
-  }, [value]);
+  }, [direction, value]);
 
   const writeRows = React.useCallback(
     (nextRows: PathMappingRow[]) => {
       const normalizedRows = nextRows.length > 0 ? nextRows : [emptyRow()];
       setRows(normalizedRows);
-      onChange(fieldKey, serializePathMappings(normalizedRows));
+      onChange(fieldKey, serializePathMappings(normalizedRows, direction));
     },
-    [fieldKey, onChange],
+    [direction, fieldKey, onChange],
   );
 
   const updateRow = React.useCallback(
@@ -120,7 +138,8 @@ export function LocalRemotePathMappingsField({
 
   const browseInitialPath =
     browseRowIndex == null ? "/" : (rows[browseRowIndex]?.localPath.trim() || "/");
-  const isEmpty = serializePathMappings(rows).trim().length === 0;
+  const isEmpty = serializePathMappings(rows, direction).trim().length === 0;
+  const localPathFirst = direction === "local-to-remote";
 
   return (
     <label className="block">
@@ -133,23 +152,31 @@ export function LocalRemotePathMappingsField({
           >
             <div className="relative min-w-0">
               <Input
-                value={row.localPath}
-                readOnly
-                onClick={() => setBrowseRowIndex(index)}
-                className="cursor-pointer pr-10 font-mono text-sm"
+                value={localPathFirst ? row.localPath : row.remotePath}
+                readOnly={localPathFirst}
+                onClick={localPathFirst ? () => setBrowseRowIndex(index) : undefined}
+                onChange={
+                  localPathFirst
+                    ? undefined
+                    : (event) => updateRow(index, { remotePath: event.target.value })
+                }
+                required={required && isEmpty && index === 0}
+                className={`font-mono text-sm${localPathFirst ? " cursor-pointer pr-10" : ""}`}
                 aria-label={`${label} ${index + 1}`}
               />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
-                onClick={() => setBrowseRowIndex(index)}
-                title={t("setup.browse")}
-                aria-label={t("setup.browse")}
-              >
-                <FolderOpen className="h-4 w-4" />
-              </Button>
+              {localPathFirst ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
+                  onClick={() => setBrowseRowIndex(index)}
+                  title={t("setup.browse")}
+                  aria-label={t("setup.browse")}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+              ) : null}
             </div>
 
             <span
@@ -159,12 +186,33 @@ export function LocalRemotePathMappingsField({
               =&gt;
             </span>
 
-            <Input
-              value={row.remotePath}
-              onChange={(event) => updateRow(index, { remotePath: event.target.value })}
-              required={required && isEmpty && index === 0}
-              className="font-mono text-sm"
-            />
+            <div className="relative min-w-0">
+              <Input
+                value={localPathFirst ? row.remotePath : row.localPath}
+                readOnly={!localPathFirst}
+                onClick={!localPathFirst ? () => setBrowseRowIndex(index) : undefined}
+                onChange={
+                  localPathFirst
+                    ? (event) => updateRow(index, { remotePath: event.target.value })
+                    : undefined
+                }
+                required={required && isEmpty && index === 0}
+                className={`font-mono text-sm${!localPathFirst ? " cursor-pointer pr-10" : ""}`}
+              />
+              {!localPathFirst ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
+                  onClick={() => setBrowseRowIndex(index)}
+                  title={t("setup.browse")}
+                  aria-label={t("setup.browse")}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+              ) : null}
+            </div>
 
             {rows.length > 1 ? (
               <Button

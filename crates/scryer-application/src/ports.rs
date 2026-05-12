@@ -1637,6 +1637,15 @@ pub trait NotificationPluginProvider: Send + Sync {
     fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
         None
     }
+    fn supported_events_for_provider(
+        &self,
+        _provider_type: &str,
+    ) -> Vec<scryer_domain::NotificationEventType> {
+        vec![]
+    }
+    fn supports_test_for_provider(&self, _provider_type: &str) -> bool {
+        false
+    }
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
@@ -1913,6 +1922,13 @@ pub trait DownloadClient: Send + Sync {
         Err(AppError::Repository(
             "client status is not supported for this download client".to_string(),
         ))
+    }
+
+    async fn get_client_status_for_client_id(
+        &self,
+        _client_id: &str,
+    ) -> AppResult<DownloadClientStatus> {
+        self.get_client_status().await
     }
 
     async fn test_connection(&self) -> AppResult<String> {

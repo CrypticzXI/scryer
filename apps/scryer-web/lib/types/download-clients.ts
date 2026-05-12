@@ -24,6 +24,7 @@ export type DownloadClientDraft = {
   apiKey: string;
   username: string;
   password: string;
+  remotePathMappings: string;
   isEnabled: boolean;
 };
 

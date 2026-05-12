@@ -1,6 +1,7 @@
 
 import * as React from "react";
 import { ChevronDown, ChevronUp, Edit, Power, PowerOff, Server, Trash2 } from "lucide-react";
+import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
 import { InfoHelp } from "@/components/common/info-help";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
@@ -647,6 +648,18 @@ export function SettingsDownloadClientsSection({
                       />
                     </span>
                   </label>
+                  <DownloadClientRemotePathMappingsField
+                    fieldKey="remote_path_mappings"
+                    label={t("settings.downloadClientRemotePathMappings")}
+                    value={downloadClientDraft.remotePathMappings}
+                    helpText={t("settings.downloadClientRemotePathMappingsHelp")}
+                    onChange={(_, value) =>
+                      setDownloadClientDraft((prev: DownloadClientDraft) => ({
+                        ...prev,
+                        remotePathMappings: value,
+                      }))
+                    }
+                  />
                 </div>
               </details>
             </div>

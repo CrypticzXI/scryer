@@ -402,6 +402,16 @@ export function SettingsNotificationsSection({
   const t = useTranslate();
   const normalizedChannelType = channelDraft.channelType.trim().toLowerCase();
   const selectedFacetScopeIds = subscriptionDraft.facetScopeIds;
+  const providerByType = React.useMemo(
+    () =>
+      new Map(
+        providerTypes.map((providerType) => [
+          providerType.providerType.trim().toLowerCase(),
+          providerType,
+        ]),
+      ),
+    [providerTypes],
+  );
   const scopeOptions = React.useMemo(
     () =>
       SCOPE_OPTIONS.map((scope) => ({
@@ -410,13 +420,24 @@ export function SettingsNotificationsSection({
       })),
     [t],
   );
+  const selectedSubscriptionChannel = React.useMemo(() => {
+    return channels.find((channel) => channel.id === subscriptionDraft.channelId) ?? null;
+  }, [channels, subscriptionDraft.channelId]);
+  const selectedSubscriptionProvider = React.useMemo(() => {
+    const providerType = selectedSubscriptionChannel?.channelType.trim().toLowerCase();
+    return providerType ? providerByType.get(providerType) ?? null : null;
+  }, [providerByType, selectedSubscriptionChannel]);
+  const supportedSubscriptionEventTypes = React.useMemo(() => {
+    const supportedEvents = selectedSubscriptionProvider?.supportedEvents ?? [];
+    return supportedEvents.length > 0 ? supportedEvents : eventTypes;
+  }, [eventTypes, selectedSubscriptionProvider]);
   const eventTypeOptions = React.useMemo(
     () =>
-      eventTypes.map((eventType) => ({
+      supportedSubscriptionEventTypes.map((eventType) => ({
         value: eventType,
         label: notificationEventLabel(eventType, t),
       })),
-    [eventTypes, t],
+    [supportedSubscriptionEventTypes, t],
   );
   const orderedSubscriptionEventTypes = React.useCallback(
     (values: string[]) => {
@@ -446,12 +467,33 @@ export function SettingsNotificationsSection({
   }, [providerTypes]);
 
   const selectedProvider = React.useMemo(() => {
-    return providerTypes.find(
-      (pt) => pt.providerType === normalizedChannelType,
-    ) ?? null;
-  }, [normalizedChannelType, providerTypes]);
+    return providerByType.get(normalizedChannelType) ?? null;
+  }, [normalizedChannelType, providerByType]);
 
   const selectedProviderFields = selectedProvider?.configFields ?? [];
+
+  React.useEffect(() => {
+    const supported = new Set(supportedSubscriptionEventTypes);
+    setSubscriptionDraft((prev) => {
+      const filtered = orderedSubscriptionEventTypes(
+        prev.eventTypes.filter((eventType) => supported.has(eventType)),
+      );
+      if (
+        filtered.length === prev.eventTypes.length
+        && filtered.every((eventType, index) => eventType === prev.eventTypes[index])
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        eventTypes: filtered,
+      };
+    });
+  }, [
+    orderedSubscriptionEventTypes,
+    setSubscriptionDraft,
+    supportedSubscriptionEventTypes,
+  ]);
 
   const handleConfigValueChange = React.useCallback(
     (key: string, value: string) => {
@@ -656,6 +698,12 @@ export function SettingsNotificationsSection({
                     </div>
                   ) : null}
                 </div>
+              ) : null}
+
+              {selectedProvider?.providerType === "jellyfin" ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.notificationJellyfinChannelHint")}
+                </p>
               ) : null}
 
               <label className="flex items-center gap-2">
@@ -891,6 +939,12 @@ export function SettingsNotificationsSection({
                   </Select>
                 </label>
               </div>
+
+              {selectedSubscriptionProvider?.providerType === "jellyfin" ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.notificationJellyfinSubscriptionHint")}
+                </p>
+              ) : null}
 
               {subscriptionDraft.scope === "facet" ? (
                 <div>

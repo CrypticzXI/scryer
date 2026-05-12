@@ -1498,6 +1498,10 @@ const ko: LocaleDictionary = {
   "settings.notificationProviderType": "제공자 유형",
   "settings.notificationNoProviders":
     "알림 플러그인이 설치되지 않았습니다. 먼저 플러그인 페이지에서 알림 플러그인을 설치하세요.",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "릴리스 가져옴",
   "settings.notificationEvent.download": "다운로드 실패함",
   "settings.notificationEvent.upgrade": "업그레이드 가져옴",

@@ -7,8 +7,10 @@ use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE, DownloadClient,
     DownloadClientAddRequest, DownloadClientConfigRepository, DownloadClientPluginProvider,
-    DownloadGrabResult, DownloadSourceKind, SettingsRepository, StagedNzbRef, StagedNzbStore,
-    accepted_inputs_for_client,
+    DownloadClientRemotePathMapping, DownloadClientStatus, DownloadGrabResult, DownloadSourceKind,
+    SettingsRepository, StagedNzbRef, StagedNzbStore, accepted_inputs_for_client,
+    apply_remote_path_mappings_to_completed_download, apply_remote_path_mappings_to_status,
+    parse_download_client_remote_path_mappings,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, MediaFacet};
 use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry, default_reqwest_client};
@@ -27,6 +29,23 @@ use super::{
 const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
 const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 10;
+
+fn download_client_remote_path_mappings(
+    config: &DownloadClientConfig,
+) -> Option<Vec<DownloadClientRemotePathMapping>> {
+    match parse_download_client_remote_path_mappings(&config.config_json) {
+        Ok(mappings) => Some(mappings),
+        Err(error) => {
+            warn!(
+                client_id = %config.id,
+                client = %config.name,
+                error = %error,
+                "failed to parse remote path mappings for download client"
+            );
+            None
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct PrioritizedDownloadClientRouter {
@@ -193,6 +212,13 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
 
     async fn get_client_status(&self) -> AppResult<scryer_application::DownloadClientStatus> {
         self.inner.get_client_status().await
+    }
+
+    async fn get_client_status_for_client_id(
+        &self,
+        client_id: &str,
+    ) -> AppResult<scryer_application::DownloadClientStatus> {
+        self.inner.get_client_status_for_client_id(client_id).await
     }
 
     async fn test_connection(&self) -> AppResult<String> {
@@ -1283,8 +1309,12 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         count = items.len(),
                         "completed downloads from client"
                     );
+                    let mappings = download_client_remote_path_mappings(&config);
                     for item in &mut items {
                         item.client_id = config.id.clone();
+                        if let Some(mappings) = mappings.as_deref() {
+                            apply_remote_path_mappings_to_completed_download(item, mappings);
+                        }
                     }
                     all_items.extend(items);
                 }
@@ -1335,8 +1365,12 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         count = items.len(),
                         "recent completed downloads from client"
                     );
+                    let mappings = download_client_remote_path_mappings(&config);
                     for item in &mut items {
                         item.client_id = config.id.clone();
+                        if let Some(mappings) = mappings.as_deref() {
+                            apply_remote_path_mappings_to_completed_download(item, mappings);
+                        }
                     }
                     all_items.extend(items);
                 }
@@ -1416,6 +1450,37 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         self.fallback_client
             .delete_queue_item_for_client(client_type, id, is_history)
             .await
+    }
+
+    async fn get_client_status_for_client_id(
+        &self,
+        client_id: &str,
+    ) -> AppResult<DownloadClientStatus> {
+        let client_id = client_id.trim();
+        if client_id.is_empty() {
+            return Err(AppError::Validation("client id is required".into()));
+        }
+
+        let config = self
+            .download_client_configs
+            .get_by_id(client_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation(format!("download client not found: {client_id}"))
+            })?;
+        let client = Self::client_from_config(
+            &config,
+            self.staged_nzb_store.clone(),
+            self.staged_nzb_pipeline_limit.clone(),
+            self.plugin_provider.as_ref(),
+            self.feedback_read_timeout,
+        )?;
+        let mut status = client.get_client_status().await?;
+        let mappings = download_client_remote_path_mappings(&config);
+        if let Some(mappings) = mappings.as_deref() {
+            apply_remote_path_mappings_to_status(&mut status, mappings);
+        }
+        Ok(status)
     }
 }
 
@@ -1549,6 +1614,7 @@ mod tests {
         queue_items: Mutex<Vec<DownloadQueueItem>>,
         history_items: Mutex<Vec<DownloadQueueItem>>,
         completed_downloads: Mutex<Vec<scryer_domain::CompletedDownload>>,
+        status: Mutex<DownloadClientStatus>,
         paused: Mutex<Vec<String>>,
         resumed: Mutex<Vec<String>>,
         deleted: Mutex<Vec<(String, bool)>>,
@@ -1580,6 +1646,10 @@ mod tests {
             &self,
         ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
             Ok(self.completed_downloads.lock().unwrap().clone())
+        }
+
+        async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {
+            Ok(self.status.lock().unwrap().clone())
         }
 
         async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
@@ -2535,6 +2605,97 @@ mod tests {
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_completed_downloads_applies_remote_path_mappings_from_client_config() {
+        let client = Arc::new(MockDownloadClient::default());
+        client
+            .completed_downloads
+            .lock()
+            .unwrap()
+            .push(scryer_domain::CompletedDownload {
+                client_type: "qbittorrent".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "remote-1".to_string(),
+                name: "Remote Download".to_string(),
+                dest_dir: "D:\\Data\\Completed\\Remote Download".to_string(),
+                category: None,
+                size_bytes: None,
+                completed_at: Some(Utc::now()),
+                parameters: Vec::new(),
+            });
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![("client-a".to_string(), client.clone())],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![DownloadClientConfig {
+                    config_json:
+                        r#"{"remote_path_mappings":"D:\\Data\\Completed => /Volumes/downloads"}"#
+                            .to_string(),
+                    ..test_config("client-a", "Client A", "qbittorrent", 0)
+                }],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router
+            .list_completed_downloads()
+            .await
+            .expect("completed downloads should succeed");
+
+        assert_eq!(items[0].client_id, "client-a");
+        assert_eq!(items[0].dest_dir, "/Volumes/downloads/Remote Download");
+    }
+
+    #[tokio::test]
+    async fn get_client_status_for_client_id_applies_remote_path_mappings_to_output_roots() {
+        let client = Arc::new(MockDownloadClient::default());
+        *client.status.lock().unwrap() = DownloadClientStatus {
+            is_localhost: Some(false),
+            remote_output_roots: vec!["/downloads/complete".to_string()],
+            ..DownloadClientStatus::default()
+        };
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![("client-a".to_string(), client.clone())],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![DownloadClientConfig {
+                    config_json: r#"{"remote_path_mappings":"/downloads => /Volumes/downloads"}"#
+                        .to_string(),
+                    ..test_config("client-a", "Client A", "qbittorrent", 0)
+                }],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let status = router
+            .get_client_status_for_client_id("client-a")
+            .await
+            .expect("client status should succeed");
+
+        assert_eq!(
+            status.remote_output_roots,
+            vec!["/Volumes/downloads/complete".to_string()]
+        );
     }
 
     #[tokio::test]

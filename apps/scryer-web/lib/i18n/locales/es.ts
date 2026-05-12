@@ -388,6 +388,9 @@ const es: LocaleDictionary = {
     "Elimina las descargas fallidas del historial del cliente de descarga.",
   "settings.downloadClientEnabledInfo":
     "Cuando está deshabilitado, este cliente se omite durante el enrutamiento de descargas.",
+  "settings.downloadClientRemotePathMappings": "Mapeos de rutas remotas",
+  "settings.downloadClientRemotePathMappingsHelp":
+    "Asigna las rutas que el cliente de descarga informa dentro de su contenedor o host a rutas locales que Scryer puede leer. Introduce una regla por línea como REMOTE => LOCAL.",
   "settings.downloadClientNamePlaceholder": "Mi cliente de descarga",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "Ej. api",
@@ -1571,6 +1574,10 @@ const es: LocaleDictionary = {
   "settings.notificationProviderType": "Tipo de proveedor",
   "settings.notificationNoProviders":
     "No hay plugins de notificación instalados. Instala un plugin de notificación desde la página de Plugins.",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "Lanzamiento capturado",
   "settings.notificationEvent.download": "La descarga falló",
   "settings.notificationEvent.upgrade": "Actualización importada",

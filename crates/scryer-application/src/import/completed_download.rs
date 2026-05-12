@@ -18,10 +18,13 @@ use crate::domain_events::{
 use crate::import_workflow::import_completed_download;
 use crate::tracked_downloads::TrackedDownload;
 use crate::{AppResult, AppUseCase, User};
+use crate::{
+    apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
+};
 
 const PATH_WAITING_MESSAGE: &str =
     "Completed download path is not available yet. Retrying for up to 10 minutes.";
-const PATH_BLOCKED_MESSAGE: &str = "Completed download path is still unavailable. Check volume mounts or download paths, then retry manually.";
+const PATH_BLOCKED_MESSAGE: &str = "Completed download path is still unavailable. Check remote path mappings, volume mounts, or download paths, then retry manually.";
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
@@ -449,6 +452,43 @@ fn completed_download_lookup_key(
     )
 }
 
+async fn remap_completed_download_for_client(app: &AppUseCase, completed: &mut CompletedDownload) {
+    let client_id = completed.client_id.trim();
+    if client_id.is_empty() {
+        return;
+    }
+
+    let config = match app
+        .services
+        .integrations
+        .download_client_configs
+        .get_by_id(client_id)
+        .await
+    {
+        Ok(Some(config)) => config,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                error = %error,
+                "find_completed_download: failed to load download client config for remote path mapping"
+            );
+            return;
+        }
+    };
+
+    match parse_download_client_remote_path_mappings(&config.config_json) {
+        Ok(mappings) => apply_remote_path_mappings_to_completed_download(completed, &mappings),
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                error = %error,
+                "find_completed_download: failed to parse remote path mappings"
+            );
+        }
+    }
+}
+
 async fn find_completed_download(
     app: &AppUseCase,
     td: &TrackedDownload,
@@ -471,7 +511,11 @@ async fn find_completed_download(
             .and_then(|indexed| find_completed_download_in_lookup(indexed, td)),
     };
     match completed {
-        Some(completed) => Some(with_tracked_metadata(td, completed)),
+        Some(completed) => {
+            let mut completed = with_tracked_metadata(td, completed);
+            remap_completed_download_for_client(app, &mut completed).await;
+            Some(completed)
+        }
         None => {
             tracing::debug!(
                 id = %td.id,
@@ -972,18 +1016,18 @@ mod tests {
     use crate::{
         ActivityKind, AppError, AppResult, AppServices, AppUseCase, CollectionUpdate,
         CreateTitleOutcome, DomainEventRepository, DownloadClient, DownloadClientAddRequest,
-        DownloadGrabResult, EpisodeUpdate, FacetRegistry, ImportArtifact, ImportArtifactRepository,
-        IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration, QualityProfile,
-        QualityProfileRepository, ScopedExternalId, ShowRepository, TitleMetadataUpdate,
-        TitleRepository,
+        DownloadClientConfigRepository, DownloadGrabResult, EpisodeUpdate, FacetRegistry,
+        ImportArtifact, ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig,
+        PendingTitleHydration, QualityProfile, QualityProfileRepository, ScopedExternalId,
+        ShowRepository, TitleMetadataUpdate, TitleRepository,
     };
     use async_trait::async_trait;
     use chrono::Utc;
     use scryer_domain::{
         CalendarEpisode, Collection, CollectionType, DomainEvent, DomainEventFilter,
-        DownloadQueueItem, DownloadQueueState, Episode, EpisodeType, Id, MediaFacet,
-        NewDomainEvent, Title, TitleHistoryEventType, TitleMatchType, TrackedDownloadState,
-        TrackedDownloadStatus, User,
+        DownloadClientConfig, DownloadQueueItem, DownloadQueueState, Episode, EpisodeType, Id,
+        MediaFacet, NewDomainEvent, Title, TitleHistoryEventType, TitleMatchType,
+        TrackedDownloadState, TrackedDownloadStatus, User,
     };
     use std::sync::{
         Arc,
@@ -1472,6 +1516,43 @@ mod tests {
         }
     }
 
+    struct TestDownloadClientConfigRepo {
+        configs: Vec<DownloadClientConfig>,
+    }
+
+    #[async_trait]
+    impl DownloadClientConfigRepository for TestDownloadClientConfigRepo {
+        async fn list(
+            &self,
+            _provider_type: Option<String>,
+        ) -> AppResult<Vec<DownloadClientConfig>> {
+            Ok(self.configs.clone())
+        }
+
+        async fn get_by_id(&self, id: &str) -> AppResult<Option<DownloadClientConfig>> {
+            Ok(self.configs.iter().find(|config| config.id == id).cloned())
+        }
+
+        async fn create(&self, _config: DownloadClientConfig) -> AppResult<DownloadClientConfig> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn update(
+            &self,
+            _update: crate::DownloadClientConfigUpdate,
+        ) -> AppResult<DownloadClientConfig> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn delete(&self, _id: &str) -> AppResult<()> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn reorder(&self, _ordered_ids: Vec<String>) -> AppResult<()> {
+            Err(AppError::Repository("not needed in test".into()))
+        }
+    }
+
     #[derive(Default)]
     struct TestIndexerConfigRepo;
 
@@ -1749,6 +1830,24 @@ mod tests {
         artifacts: Vec<ImportArtifact>,
         download_client: Arc<dyn DownloadClient>,
     ) -> AppUseCase {
+        build_app_with_download_client_and_configs(
+            titles,
+            collections,
+            episodes,
+            artifacts,
+            download_client,
+            Arc::new(NullDownloadClientConfigRepository),
+        )
+    }
+
+    fn build_app_with_download_client_and_configs(
+        titles: Vec<Title>,
+        collections: Vec<Collection>,
+        episodes: Vec<Episode>,
+        artifacts: Vec<ImportArtifact>,
+        download_client: Arc<dyn DownloadClient>,
+        download_client_configs: Arc<dyn DownloadClientConfigRepository>,
+    ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(TestTitleRepo {
                 titles: Arc::new(Mutex::new(titles)),
@@ -1761,7 +1860,7 @@ mod tests {
             Arc::new(TestIndexerConfigRepo),
             Arc::new(NullIndexerClient),
             download_client,
-            Arc::new(NullDownloadClientConfigRepository),
+            download_client_configs,
             Arc::new(NullReleaseAttemptRepository),
             Arc::new(crate::null_repositories::NullSettingsRepository),
             Arc::new(TestQualityProfileRepo),
@@ -2079,6 +2178,56 @@ mod tests {
         assert_eq!(td.status, TrackedDownloadStatus::Ok);
 
         std::fs::remove_dir_all(&existing_dir).expect("remove temp dir");
+    }
+
+    #[tokio::test]
+    async fn check_with_lookup_remaps_remote_completed_download_paths_before_readiness_checks() {
+        let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+        let local_root =
+            std::env::temp_dir().join(format!("scryer-remote-path-map-{}", Id::new().0));
+        let local_download_dir = local_root.join("Paper.Lantern.2012.1080p");
+        std::fs::create_dir_all(&local_download_dir).expect("create mapped download directory");
+
+        let remote_completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            "/downloads/Paper.Lantern.2012.1080p",
+            Some("movie"),
+        );
+        let lookup = index_completed_downloads(vec![remote_completed]);
+        let download_client = Arc::new(TestDownloadClient::default());
+        let app = build_app_with_download_client_and_configs(
+            vec![title.clone()],
+            vec![],
+            vec![],
+            vec![],
+            download_client,
+            Arc::new(TestDownloadClientConfigRepo {
+                configs: vec![DownloadClientConfig {
+                    id: "client-1".to_string(),
+                    name: "qBittorrent".to_string(),
+                    client_type: "qbittorrent".to_string(),
+                    config_json: format!(
+                        r#"{{"remote_path_mappings":"/downloads => {}"}}"#,
+                        local_root.to_string_lossy()
+                    ),
+                    is_enabled: true,
+                    status: scryer_domain::DownloadClientStatus::Healthy,
+                    last_error: None,
+                    last_seen_at: None,
+                    client_priority: 0,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                }],
+            }),
+        );
+        let mut td = build_tracked_download(&title.id, "movie", "Paper.Lantern.2012.1080p");
+
+        check_with_lookup(&app, &mut td, Some(&lookup)).await;
+
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert!(td.status_messages.is_empty());
+
+        std::fs::remove_dir_all(&local_root).expect("remove mapped download directory");
     }
 
     #[tokio::test]

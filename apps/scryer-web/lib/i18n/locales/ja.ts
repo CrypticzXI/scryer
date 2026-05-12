@@ -1535,6 +1535,10 @@ const ja: LocaleDictionary = {
   "settings.notificationProviderType": "プロバイダータイプ",
   "settings.notificationNoProviders":
     "通知プラグインがインストールされていません。先にプラグインページから通知プラグインをインストールしてください。",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "リリース取得",
   "settings.notificationEvent.download": "ダウンロードに失敗しました",
   "settings.notificationEvent.upgrade": "インポートされたアップグレード",

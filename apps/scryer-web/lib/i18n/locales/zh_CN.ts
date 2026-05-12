@@ -355,6 +355,9 @@ const zh_CN: LocaleDictionary = {
     "从下载客户端历史中移除失败的下载。",
   "settings.downloadClientEnabledInfo":
     "禁用后，此客户端在下载路由中将被跳过。",
+  "settings.downloadClientRemotePathMappings": "远程路径映射",
+  "settings.downloadClientRemotePathMappingsHelp":
+    "将下载客户端在其容器或主机内报告的路径映射到 Scryer 可读取的本地路径。每行输入一条规则，格式为 REMOTE => LOCAL。",
   "settings.downloadClientNamePlaceholder": "我的下载客户端",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "例如 api",
@@ -1440,6 +1443,10 @@ const zh_CN: LocaleDictionary = {
   "settings.notificationProviderType": "提供者类型",
   "settings.notificationNoProviders":
     "未安装通知插件。请先在插件页面安装通知插件。",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "已抓取发布",
   "settings.notificationEvent.download": "下载失败",
   "settings.notificationEvent.upgrade": "升级进口",

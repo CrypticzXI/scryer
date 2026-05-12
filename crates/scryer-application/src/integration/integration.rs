@@ -2804,6 +2804,7 @@ impl AppUseCase {
 
         let client_type = self.normalize_download_client_type(input.client_type)?;
         let config_json = self.normalize_download_client_config_json(input.config_json)?;
+        crate::parse_download_client_remote_path_mappings(&config_json)?;
 
         let existing = self
             .services
@@ -2880,7 +2881,11 @@ impl AppUseCase {
             None => None,
         };
         let normalized_config_json = match update.config_json {
-            Some(value) => Some(self.normalize_download_client_config_json(value)?),
+            Some(value) => {
+                let normalized = self.normalize_download_client_config_json(value)?;
+                crate::parse_download_client_remote_path_mappings(&normalized)?;
+                Some(normalized)
+            }
             None => None,
         };
 
