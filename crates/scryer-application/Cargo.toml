@@ -45,6 +45,8 @@ blake3 = "1"
 const-oid = "0.9"
 sigstore = { version = "0.13", default-features = false, features = ["cosign", "sigstore-trust-root", "rustls-tls"] }
 base64 = "0.22"
+age = "0.11.3"
+sqlx = { workspace = true }
 rustls-pki-types = "1"
 rustls-webpki = "0.103"
 x509-cert = "0.2"

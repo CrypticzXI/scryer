@@ -91,6 +91,7 @@ const en: LocaleDictionary = {
   settings: "Settings",
   "settings.profile": "Profile",
   "settings.general": "General",
+  "settings.backups": "Backups",
   "settings.security": "Security",
   "settings.securityDescription":
     "Choose whether Scryer requires a signed-in user session.",
@@ -1979,6 +1980,9 @@ const en: LocaleDictionary = {
   "setup.importSetup": "Import from Sonarr / Radarr",
   "setup.importSetupDescription":
     "Bring your existing configuration into Scryer.",
+  "setup.restoreSetup": "Restore from Backup",
+  "setup.restoreSetupDescription":
+    "Upload a Scryer backup bundle and restore this fresh instance.",
   "setup.stepPersona": "Persona",
   "setup.stepMediaPaths": "Media Paths",
   "setup.stepPlugins": "Plugins",
@@ -1987,6 +1991,26 @@ const en: LocaleDictionary = {
   "setup.stepSummary": "Summary",
   "setup.stepConnect": "Connect",
   "setup.stepReview": "Review",
+  "setup.stepRestore": "Restore",
+  "setup.restoreTitle": "Restore from a backup bundle",
+  "setup.restoreDescription":
+    "Upload a Scryer backup bundle, inspect its manifest, and restore it into this fresh instance.",
+  "setup.restoreSelectBundle": "Backup bundle",
+  "setup.restorePasswordHelp":
+    "Encrypted bundles use the .scryer-backup.age extension and require the password used during backup creation.",
+  "setup.restoreNoFile": "Choose a backup bundle to continue.",
+  "setup.restorePasswordRequired": "Enter the bundle password before continuing.",
+  "setup.restoreInspect": "Inspect bundle",
+  "setup.restoreApply": "Restore now",
+  "setup.restoreChooseAnother": "Choose another bundle",
+  "setup.restoreSummaryTitle": "Bundle contents",
+  "setup.restoreConfirmDescription":
+    "This replaces the fresh setup database, writes restored instance secrets, and restarts Scryer into the restored instance.",
+  "setup.restoreCreatedAt": "Created",
+  "setup.restoreSourceVersion": "Source version",
+  "setup.restoreSourceEngine": "Source engine",
+  "setup.restoreMigrationKey": "Source migration key",
+  "setup.restoreTotalRows": "Total rows",
 
   "setup.personaTitle": "Quality Preferences",
   "setup.personaDescription":
@@ -2140,6 +2164,29 @@ const en: LocaleDictionary = {
     "Releases without these audio languages will be blocked. Creates a managed rule visible in Settings > Rules.",
 
   // Recycle Bin
+  "settings.backupsSection":
+    "Create restorable Scryer bundle backups. Manual backups run in the background so you can keep working while the bundle is prepared.",
+  "settings.backupsEmpty": "No backups created yet.",
+  "settings.backupsCreate": "Create backup",
+  "settings.backupsCreateTitle": "Create backup bundle",
+  "settings.backupsCreateDescription":
+    "Optionally protect this backup with a password. Encrypted bundles use age and require the same password during restore.",
+  "settings.backupsOptionalPassword": "Optional password protection",
+  "settings.backupsPasswordHelp":
+    "Leave this blank to create a plaintext bundle. Auto-generated backups remain plaintext.",
+  "settings.backupsQueued": "Backup creation started in the background.",
+  "settings.backupsDeleted": "Backup deleted.",
+  "settings.backupsCreating": "Creating",
+  "settings.backupsReady": "Ready",
+  "settings.backupsFailed": "Failed",
+  "settings.backupsEncrypted": "Encrypted",
+  "settings.backupsPlaintext": "Plaintext",
+  "settings.backupsDownload": "Download",
+  "settings.backupsDelete": "Delete",
+  "settings.backupsDeleteConfirm":
+    "Delete this backup bundle from the server? Any downloaded copy will be unaffected.",
+  "settings.backupsTables": "{{count}} tables",
+  "settings.backupsRows": "{{count}} rows",
   "settings.recycleBin": "Recycle Bin",
   "settings.recycleBinSection": "Manage recycled media files",
   "settings.recycleBinEmpty": "The recycle bin is empty.",

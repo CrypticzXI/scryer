@@ -631,6 +631,9 @@ pub struct AppConfigServices {
     pub(crate) quality_profiles: Arc<dyn QualityProfileRepository>,
     pub(crate) system_info: Arc<dyn SystemInfoProvider>,
     pub(crate) db_path: String,
+    pub(crate) smg_registration_secret: Option<String>,
+    pub(crate) smg_ca_cert: Option<String>,
+    pub(crate) smg_gateway_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -832,6 +835,9 @@ impl AppServices {
                 quality_profiles,
                 system_info: Arc::new(NullSystemInfoProvider),
                 db_path,
+                smg_registration_secret: None,
+                smg_ca_cert: None,
+                smg_gateway_url: None,
             },
             customization: AppCustomizationServices {
                 rule_sets: Arc::new(NullRuleSetRepository),
@@ -1190,6 +1196,13 @@ impl AppServicesBuilder {
         system_info,
         Arc<dyn SystemInfoProvider>
     );
+    app_services_builder_setter!(
+        with_smg_registration_secret,
+        config.smg_registration_secret,
+        Option<String>
+    );
+    app_services_builder_setter!(with_smg_ca_cert, config.smg_ca_cert, Option<String>);
+    app_services_builder_setter!(with_smg_gateway_url, config.smg_gateway_url, Option<String>);
     app_services_builder_required_setter!(
         with_job_runs,
         events.job_runs,

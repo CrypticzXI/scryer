@@ -673,6 +673,9 @@ impl SystemInfoProvider for NullSystemInfoProvider {
     async fn current_migration_version(&self) -> AppResult<Option<String>> {
         Ok(None)
     }
+    async fn current_encryption_key_base64(&self) -> AppResult<Option<String>> {
+        Ok(None)
+    }
     async fn vacuum_into(&self, _dest_path: &str) -> AppResult<()> {
         Ok(())
     }

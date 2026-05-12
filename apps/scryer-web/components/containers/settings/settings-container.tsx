@@ -18,6 +18,7 @@ import { SettingsNotificationsContainer } from "@/components/containers/settings
 import { SettingsPostProcessingContainer } from "@/components/containers/settings/settings-post-processing-container";
 import { SettingsSubtitlesContainer } from "@/components/containers/settings/settings-subtitles-container";
 import { SettingsRecycleBinContainer } from "@/components/containers/settings/settings-recycle-bin-container";
+import { SettingsBackupsContainer } from "@/components/containers/settings/settings-backups-container";
 import type { SettingsSection } from "@/components/root/types";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -88,7 +89,9 @@ export const SettingsContainer = memo(function SettingsContainer({
               settingsSection === "profile"
                 ? t("settings.profile")
                 : settingsSection === "general"
-                  ? t("settings.general")
+                ? t("settings.general")
+                : settingsSection === "backups"
+                  ? t("settings.backups")
                 : settingsSection === "security"
                   ? t("settings.security")
                 : settingsSection === "users"
@@ -135,6 +138,8 @@ export const SettingsContainer = memo(function SettingsContainer({
             uiLanguage={uiLanguage}
             onSelectLanguage={onSelectLanguage}
           />
+        ) : settingsSection === "backups" ? (
+          <SettingsBackupsContainer />
         ) : settingsSection === "security" ? (
           <SettingsSecurityContainer />
         ) : settingsSection === "users" ? (

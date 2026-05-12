@@ -41,7 +41,7 @@ rand_core = "0.10"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "json", "macros", "migrate"] }
 argon2 = "0.5"
 ring = "0.17"
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 toml = "1"
 quick-xml = "0.39.2"
 extism = "1.21"

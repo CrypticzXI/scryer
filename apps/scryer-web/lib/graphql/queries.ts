@@ -375,6 +375,21 @@ const NOTIFICATION_SUBSCRIPTION_FIELDS = `
     createdAt
     updatedAt`;
 
+export const BACKUP_INFO_FIELDS = `
+    filename
+    sizeBytes
+    createdAt
+    formatVersion
+    sourceEngine
+    sourceMigrationKey
+    encrypted
+    rowCounts {
+      table
+      rowCount
+    }
+    status
+    errorMessage`;
+
 const DELETE_PREVIEW_FIELDS = `
     fingerprint
     totalFileCount
@@ -1830,6 +1845,11 @@ export const pluginsQuery = `query Plugins {
     outageMessage
     blockedActions
     lastError
+  }
+}`;
+
+export const backupsQuery = `query Backups {
+  backups {${BACKUP_INFO_FIELDS}
   }
 }`;
 

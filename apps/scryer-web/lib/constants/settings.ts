@@ -87,6 +87,7 @@ export const URL_PATH_SEGMENTS: ViewId[] = [
 export const SETTINGS_SECTION_PATH_TO_ID: Record<string, SettingsSection> = {
   profile: "profile",
   general: "general",
+  backups: "backups",
   security: "security",
   users: "users",
   indexers: "indexers",

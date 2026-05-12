@@ -2,6 +2,7 @@
 #![recursion_limit = "256"]
 
 mod admin_routes;
+mod backup_routes;
 mod base_path;
 mod init;
 mod log_buffer;
@@ -51,6 +52,10 @@ use tower_http::compression::CompressionLayer;
 use admin_routes::{
     AdminSettingsQuery, admin_migrations_handler, admin_settings_list, bootstrap_admin_password,
     seed_indexer_configs_from_env,
+};
+use backup_routes::{
+    BackupRouteState, download_backup_handler, finalize_pending_restore_if_present,
+    setup_restore_apply_handler, setup_restore_inspect_handler,
 };
 use base_path::BasePath;
 use middleware::{
@@ -193,24 +198,13 @@ async fn main() {
 
     let data_dir = resolve_data_dir(data_dir_override.as_deref());
 
-    load_env_file(Some(&data_dir));
+    load_env_file(Some(&data_dir), false);
 
     // Install ring as the default rustls crypto provider (needed for TLS support)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let db_path = std::env::var("SCRYER_DB_PATH")
+    let pre_restore_db_path = std::env::var("SCRYER_DB_PATH")
         .unwrap_or_else(|_| format!("sqlite://{}", data_dir.join("scryer.db").display()));
-    // Ensure the database directory exists regardless of how db_path was resolved.
-    if let Some(path) = db_path.strip_prefix("sqlite://")
-        && let Some(parent) = std::path::Path::new(path).parent()
-    {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let jwt_issuer = std::env::var("SCRYER_JWT_ISSUER").unwrap_or_else(|_| "scryer".to_string());
-    let jwt_access_ttl_seconds = parse_env_u64("SCRYER_JWT_ACCESS_TTL_SECONDS", 86_400);
-    let migration_mode = parse_migration_mode(std::env::var("SCRYER_DB_MIGRATION_MODE").ok());
-    let bind = std::env::var("SCRYER_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let base_path = BasePath::from_env();
 
     let log_ring_buffer = log_buffer::LogRingBuffer::with_default_capacity();
 
@@ -232,6 +226,27 @@ async fn main() {
             .with(buffer_layer)
             .init();
     }
+
+    if let Err(error) = finalize_pending_restore_if_present(&data_dir, &pre_restore_db_path) {
+        tracing::error!(error = %error, "failed to finalize pending restore");
+        std::process::exit(1);
+    }
+
+    load_env_file(Some(&data_dir), true);
+
+    let db_path = std::env::var("SCRYER_DB_PATH")
+        .unwrap_or_else(|_| format!("sqlite://{}", data_dir.join("scryer.db").display()));
+    // Ensure the database directory exists regardless of how db_path was resolved.
+    if let Some(path) = db_path.strip_prefix("sqlite://")
+        && let Some(parent) = std::path::Path::new(path).parent()
+    {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let jwt_issuer = std::env::var("SCRYER_JWT_ISSUER").unwrap_or_else(|_| "scryer".to_string());
+    let jwt_access_ttl_seconds = parse_env_u64("SCRYER_JWT_ACCESS_TTL_SECONDS", 86_400);
+    let migration_mode = parse_migration_mode(std::env::var("SCRYER_DB_MIGRATION_MODE").ok());
+    let bind = std::env::var("SCRYER_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let base_path = BasePath::from_env();
 
     // Install Prometheus metrics recorder when enabled.
     // The `metrics` crate uses a global facade — once installed, `metrics::counter!()`
@@ -641,15 +656,20 @@ async fn bootstrap_application(
         .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
         .filter(|s| !s.is_empty());
 
-    // JWT signing salt: use the registration secret (baked into the binary) when
-    // available. Otherwise create a persistent per-install secret beside app data
-    // so tokens cannot be forged from a hardcoded fallback.
-    let jwt_signing_salt = match &smg_registration_secret {
-        Some(secret) => secret.clone(),
-        None => {
-            tracing::warn!("no SMG registration secret available; using persistent local JWT salt");
-            load_or_create_persistent_jwt_signing_salt(&data_dir)?
-        }
+    // Prefer an explicit managed JWT signing secret so restored bundles can
+    // preserve instance identity across environments. Fall back to the SMG
+    // registration secret or a persistent local secret for fresh installs.
+    let jwt_signing_salt = match normalize_env_option("SCRYER_JWT_SIGNING_SECRET") {
+        Some(secret) => secret,
+        None => match &smg_registration_secret {
+            Some(secret) => secret.clone(),
+            None => {
+                tracing::warn!(
+                    "no SMG registration secret available; using persistent local JWT salt"
+                );
+                load_or_create_persistent_jwt_signing_salt(&data_dir)?
+            }
+        },
     };
 
     let smg_ca_cert = SMG_CA_CERT
@@ -752,6 +772,25 @@ async fn bootstrap_application(
     .with_job_runs(workflow_store.clone())
     .with_notification_store(notification_store)
     .with_system_info(settings_store.clone())
+    .with_smg_registration_secret(
+        SMG_REGISTRATION_SECRET
+            .map(String::from)
+            .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
+            .filter(|value| !value.is_empty()),
+    )
+    .with_smg_ca_cert(
+        SMG_CA_CERT
+            .map(String::from)
+            .or_else(|| std::env::var("SCRYER_SMG_CA_CERT").ok())
+            .filter(|value| !value.is_empty()),
+    )
+    .with_smg_gateway_url(Some(
+        std::env::var("SCRYER_METADATA_GATEWAY_GRAPHQL_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| SMG_GRAPHQL_URL.map(String::from))
+            .unwrap_or_else(|| "http://127.0.0.1:8090/graphql".to_string()),
+    ))
     .with_metadata_gateway(metadata_gateway)
     .with_library_scanner(library_scanner)
     .with_library_renamer(library_renamer)
@@ -951,6 +990,12 @@ async fn bootstrap_application(
     let admin_settings_db = settings_store.as_ref().clone();
     let admin_settings_app = app_use_case.clone();
     let admin_settings_auth_runtime = auth_runtime.clone();
+    let backup_route_state = BackupRouteState {
+        app: app_use_case.clone(),
+        auth_runtime: auth_runtime.clone(),
+        data_dir: data_dir.clone(),
+        migration_mode,
+    };
     let ws_auth_state = auth_state.clone();
 
     // WebSocket route must be outside CompressionLayer — compression wraps the
@@ -991,6 +1036,18 @@ async fn bootstrap_application(
                     )
                 },
             ),
+        )
+        .route(
+            "/admin/backups/{filename}/download",
+            get(download_backup_handler).with_state(backup_route_state.clone()),
+        )
+        .route(
+            "/setup/restore/inspect",
+            post(setup_restore_inspect_handler).with_state(backup_route_state.clone()),
+        )
+        .route(
+            "/setup/restore/apply",
+            post(setup_restore_apply_handler).with_state(backup_route_state),
         )
         .fallback(get(ui_fallback))
         .layer(axum::middleware::from_fn_with_state(
@@ -1201,7 +1258,7 @@ fn resolve_data_dir(cli_override: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn load_env_file(data_dir: Option<&Path>) {
+fn load_env_file(data_dir: Option<&Path>, include_managed_instance_secrets: bool) {
     // Load in reverse priority order: dotenvy skips vars already set, so the
     // last file loaded has lowest priority.  Load the crate-local file first
     // (highest priority), then cwd .env, then data-dir .env (lowest priority).
@@ -1219,6 +1276,13 @@ fn load_env_file(data_dir: Option<&Path>) {
         if env_path.exists() {
             let _ = dotenvy::from_path(env_path);
             loaded = true;
+        }
+        if include_managed_instance_secrets {
+            let secrets_path = dir.join("instance-secrets.env");
+            if secrets_path.exists() {
+                let _ = dotenvy::from_path_override(secrets_path);
+                loaded = true;
+            }
         }
     }
     if !loaded {

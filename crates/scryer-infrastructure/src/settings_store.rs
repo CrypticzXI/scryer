@@ -261,6 +261,10 @@ impl SystemInfoProvider for SqliteSettingsStore {
         }))
     }
 
+    async fn current_encryption_key_base64(&self) -> AppResult<Option<String>> {
+        Ok(self.encryption_key().map(|key| key.to_base64()))
+    }
+
     async fn vacuum_into(&self, dest_path: &str) -> AppResult<()> {
         self.db.vacuum_into(dest_path).await
     }

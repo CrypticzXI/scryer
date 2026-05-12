@@ -1,7 +1,15 @@
+use super::backup_bundle::{
+    BACKUP_ENCRYPTED_EXTENSION, BACKUP_FORMAT_VERSION, BACKUP_PLAINTEXT_EXTENSION,
+    BACKUP_SOURCE_ENGINE_SQLITE, BackupExportSecrets, export_backup_bundle,
+};
 use super::*;
+use crate::types::BackupStatus;
 use scryer_domain::ConfigurationChangeAction;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
+
+const BACKUP_METADATA_EXTENSION: &str = ".metadata.json";
 
 /// Resolves the backup directory from the configured database path.
 fn backup_dir_from_db_path(db_path: &str) -> PathBuf {
@@ -11,39 +19,219 @@ fn backup_dir_from_db_path(db_path: &str) -> PathBuf {
     db_file.parent().unwrap_or(Path::new(".")).join("backups")
 }
 
-/// Helper: list backup files sorted newest-first.
-fn list_backup_files(backup_dir: &Path) -> Vec<(String, u64, String)> {
+fn metadata_filename(filename: &str) -> String {
+    format!("{filename}{BACKUP_METADATA_EXTENSION}")
+}
+
+fn metadata_path(backup_dir: &Path, filename: &str) -> PathBuf {
+    backup_dir.join(metadata_filename(filename))
+}
+
+fn bundle_path(backup_dir: &Path, filename: &str) -> PathBuf {
+    backup_dir.join(filename)
+}
+
+fn is_supported_backup_filename(filename: &str) -> bool {
+    filename.starts_with("scryer_backup_")
+        && !filename.contains('/')
+        && !filename.contains('\\')
+        && (filename.ends_with(BACKUP_PLAINTEXT_EXTENSION)
+            || filename.ends_with(BACKUP_ENCRYPTED_EXTENSION))
+}
+
+fn build_backup_filename(encrypted: bool) -> String {
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
+    let extension = if encrypted {
+        BACKUP_ENCRYPTED_EXTENSION
+    } else {
+        BACKUP_PLAINTEXT_EXTENSION
+    };
+    format!("scryer_backup_{timestamp}{extension}")
+}
+
+fn creating_backup_info(
+    filename: String,
+    created_at: String,
+    source_migration_key: Option<String>,
+    encrypted: bool,
+) -> BackupInfo {
+    BackupInfo {
+        filename,
+        size_bytes: 0,
+        created_at,
+        format_version: BACKUP_FORMAT_VERSION.to_string(),
+        source_engine: BACKUP_SOURCE_ENGINE_SQLITE.to_string(),
+        source_migration_key,
+        encrypted,
+        row_counts: BTreeMap::new(),
+        status: BackupStatus::Creating,
+        error_message: None,
+    }
+}
+
+fn failed_backup_info(base: BackupInfo, error_message: String) -> BackupInfo {
+    BackupInfo {
+        status: BackupStatus::Failed,
+        error_message: Some(error_message),
+        ..base
+    }
+}
+
+fn normalize_backup_info(mut info: BackupInfo, backup_dir: &Path) -> BackupInfo {
+    let path = bundle_path(backup_dir, &info.filename);
+    match info.status {
+        BackupStatus::Ready => match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                info.size_bytes = metadata.len();
+            }
+            Err(_) => {
+                info.size_bytes = 0;
+                info.status = BackupStatus::Failed;
+                if info.error_message.is_none() {
+                    info.error_message = Some("backup bundle file is missing".to_string());
+                }
+            }
+        },
+        BackupStatus::Creating | BackupStatus::Failed => {
+            info.size_bytes = std::fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+        }
+    }
+    info
+}
+
+fn list_backup_files(backup_dir: &Path) -> Vec<BackupInfo> {
     let mut entries = Vec::new();
     let Ok(read_dir) = std::fs::read_dir(backup_dir) else {
         return entries;
     };
+
     for entry in read_dir.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("db") {
-            continue;
-        }
-        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !filename.starts_with("scryer_backup_") {
+        let Some(bundle_filename) = filename.strip_suffix(BACKUP_METADATA_EXTENSION) else {
+            continue;
+        };
+        if !is_supported_backup_filename(bundle_filename) {
             continue;
         }
-        let meta = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let mtime = meta
-            .modified()
+
+        match std::fs::read(&path)
             .ok()
-            .map(|t| {
-                let dt: chrono::DateTime<chrono::Utc> = t.into();
-                dt.to_rfc3339()
-            })
-            .unwrap_or_default();
-        entries.push((filename.to_string(), meta.len(), mtime));
+            .and_then(|bytes| serde_json::from_slice::<BackupInfo>(&bytes).ok())
+        {
+            Some(info) => entries.push(normalize_backup_info(info, backup_dir)),
+            None => warn!(path = %path.display(), "failed to load backup metadata entry"),
+        }
     }
-    entries.sort_by(|a, b| b.2.cmp(&a.2)); // newest first
+
+    entries.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.filename.cmp(&a.filename))
+    });
     entries
+}
+
+fn write_backup_metadata(backup_dir: &Path, info: &BackupInfo) -> AppResult<()> {
+    let path = metadata_path(backup_dir, &info.filename);
+    let temp_path = path.with_extension("metadata.json.tmp");
+    let payload = serde_json::to_vec_pretty(info).map_err(|error| {
+        AppError::Repository(format!("failed to encode backup metadata: {error}"))
+    })?;
+
+    std::fs::write(&temp_path, payload).map_err(|error| {
+        AppError::Repository(format!("failed to write backup metadata: {error}"))
+    })?;
+    ensure_owner_only_permissions(&temp_path)?;
+    std::fs::rename(&temp_path, &path).map_err(|error| {
+        AppError::Repository(format!("failed to finalize backup metadata: {error}"))
+    })?;
+    ensure_owner_only_permissions(&path)?;
+    Ok(())
+}
+
+fn remove_backup_artifacts(backup_dir: &Path, filename: &str) -> AppResult<bool> {
+    let bundle = bundle_path(backup_dir, filename);
+    let metadata = metadata_path(backup_dir, filename);
+    let bundle_exists = bundle.exists();
+    let metadata_exists = metadata.exists();
+    if !bundle_exists && !metadata_exists {
+        return Ok(false);
+    }
+
+    if bundle_exists {
+        std::fs::remove_file(&bundle).map_err(|error| {
+            AppError::Repository(format!("failed to delete backup bundle: {error}"))
+        })?;
+    }
+    if metadata_exists {
+        std::fs::remove_file(&metadata).map_err(|error| {
+            AppError::Repository(format!("failed to delete backup metadata: {error}"))
+        })?;
+    }
+
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn ensure_owner_only_permissions(path: &Path) -> AppResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !path.exists() {
+        return Ok(());
+    }
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|error| {
+        AppError::Repository(format!("failed to set backup permissions: {error}"))
+    })?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_owner_only_permissions(_path: &Path) -> AppResult<()> {
+    Ok(())
+}
+
+async fn export_backup_file(
+    db_path: &str,
+    backup_dir: &Path,
+    filename: &str,
+    passphrase: Option<&str>,
+    source_migration_key: Option<String>,
+    secrets: BackupExportSecrets,
+) -> AppResult<BackupInfo> {
+    let output_path = bundle_path(backup_dir, filename);
+    let outcome = export_backup_bundle(
+        db_path,
+        &output_path,
+        passphrase,
+        source_migration_key,
+        env!("CARGO_PKG_VERSION"),
+        secrets,
+    )
+    .await?;
+
+    let size_bytes = std::fs::metadata(&output_path)
+        .map_err(|error| AppError::Repository(format!("failed to stat backup bundle: {error}")))?
+        .len();
+    let summary = outcome.summary;
+
+    Ok(BackupInfo {
+        filename: filename.to_string(),
+        size_bytes,
+        created_at: summary.created_at,
+        format_version: summary.format_version,
+        source_engine: summary.source_engine,
+        source_migration_key: summary.source_migration_key,
+        encrypted: summary.encrypted,
+        row_counts: summary.row_counts,
+        status: BackupStatus::Ready,
+        error_message: None,
+    })
 }
 
 pub trait BackupService {
@@ -57,85 +245,138 @@ impl BackupService for AppUseCase {
 }
 
 impl AppUseCase {
-    pub async fn create_backup(&self, actor: &User) -> AppResult<BackupInfo> {
+    async fn collect_backup_export_secrets(&self) -> AppResult<BackupExportSecrets> {
+        let encryption_master_key = self
+            .services
+            .config
+            .system_info
+            .current_encryption_key_base64()
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "backup export requires a configured encryption master key".into(),
+                )
+            })?;
+
+        Ok(BackupExportSecrets {
+            encryption_master_key,
+            jwt_signing_secret: self.auth.jwt_signing_salt.clone(),
+            smg_registration_secret: self.services.config.smg_registration_secret.clone(),
+            smg_ca_cert: self.services.config.smg_ca_cert.clone(),
+            smg_gateway_url: self.services.config.smg_gateway_url.clone(),
+        })
+    }
+
+    pub async fn create_backup(
+        &self,
+        actor: &User,
+        passphrase: Option<&str>,
+    ) -> AppResult<BackupInfo> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
         let dir = self.backup_dir();
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| AppError::Repository(format!("failed to create backup directory: {e}")))?;
+        std::fs::create_dir_all(&dir).map_err(|error| {
+            AppError::Repository(format!("failed to create backup directory: {error}"))
+        })?;
 
-        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("scryer_backup_{timestamp}.db");
-        let dest = dir.join(&filename);
-        let dest_str = dest
-            .to_str()
-            .ok_or_else(|| AppError::Repository("backup path is not valid UTF-8".into()))?
-            .to_string();
-
-        self.services
+        let source_migration_key = self
+            .services
             .config
             .system_info
-            .vacuum_into(&dest_str)
+            .current_migration_version()
             .await?;
+        let secrets = self.collect_backup_export_secrets().await?;
+        let queued = creating_backup_info(
+            build_backup_filename(passphrase.is_some()),
+            chrono::Utc::now().to_rfc3339(),
+            source_migration_key.clone(),
+            passphrase.is_some(),
+        );
+        write_backup_metadata(&dir, &queued)?;
 
-        let meta = std::fs::metadata(&dest)
-            .map_err(|e| AppError::Repository(format!("failed to stat backup file: {e}")))?;
-        let size_bytes = meta.len();
-        let created_at = chrono::Utc::now().to_rfc3339();
+        let filename = queued.filename.clone();
+        let app = self.clone();
+        let actor_id = actor.id.clone();
+        let db_path = self.services.config.db_path.clone();
+        let queued_for_task = queued.clone();
+        let dir_for_task = dir.clone();
+        let passphrase_for_task = passphrase.map(str::to_string);
 
-        info!(filename = %filename, size_bytes, "database backup created");
-        self.emit_configuration_changed_event(
-            Some(actor.id.clone()),
-            "backup",
-            Some(filename.clone()),
-            ConfigurationChangeAction::Saved,
-        )
-        .await;
+        info!(filename = %filename, encrypted = queued.encrypted, "backup bundle scheduled");
 
-        Ok(BackupInfo {
-            filename,
-            size_bytes,
-            created_at,
-        })
+        tokio::spawn(async move {
+            let result = export_backup_file(
+                &db_path,
+                &dir_for_task,
+                &filename,
+                passphrase_for_task.as_deref(),
+                source_migration_key,
+                secrets,
+            )
+            .await;
+
+            let next_info = match result {
+                Ok(info) => {
+                    info!(
+                        filename = %info.filename,
+                        size_bytes = info.size_bytes,
+                        encrypted = info.encrypted,
+                        "backup bundle created"
+                    );
+                    info
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = std::fs::remove_file(bundle_path(&dir_for_task, &filename));
+                    error!(
+                        filename = %filename,
+                        error = %message,
+                        "backup bundle creation failed"
+                    );
+                    failed_backup_info(queued_for_task, message)
+                }
+            };
+
+            if let Err(error) = write_backup_metadata(&dir_for_task, &next_info) {
+                error!(
+                    filename = %filename,
+                    error = %error,
+                    "failed to persist backup bundle metadata"
+                );
+            }
+
+            app.emit_configuration_changed_event(
+                Some(actor_id),
+                "backup",
+                Some(filename),
+                ConfigurationChangeAction::Saved,
+            )
+            .await;
+        });
+
+        Ok(queued)
     }
 
     pub async fn list_backups(&self, actor: &User) -> AppResult<Vec<BackupInfo>> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
-        let dir = self.backup_dir();
-        let entries = list_backup_files(&dir);
-        Ok(entries
-            .into_iter()
-            .map(|(filename, size_bytes, created_at)| BackupInfo {
-                filename,
-                size_bytes,
-                created_at,
-            })
-            .collect())
+        Ok(list_backup_files(&self.backup_dir()))
     }
 
     pub async fn delete_backup(&self, actor: &User, filename: &str) -> AppResult<bool> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
-        // Sanitize filename — must match expected pattern
-        if !filename.starts_with("scryer_backup_")
-            || !filename.ends_with(".db")
-            || filename.contains('/')
-            || filename.contains('\\')
-        {
+        if !is_supported_backup_filename(filename) {
             return Err(AppError::Validation("invalid backup filename".into()));
         }
 
-        let path = self.backup_dir().join(filename);
-        if !path.exists() {
+        let deleted = remove_backup_artifacts(&self.backup_dir(), filename)?;
+        if !deleted {
             return Ok(false);
         }
-
-        std::fs::remove_file(&path)
-            .map_err(|e| AppError::Repository(format!("failed to delete backup: {e}")))?;
 
         info!(filename, "backup deleted");
         self.emit_configuration_changed_event(
@@ -148,28 +389,37 @@ impl AppUseCase {
         Ok(true)
     }
 
-    /// Enforce backup retention: delete oldest backups exceeding the retention count.
+    /// Enforce backup retention: delete oldest ready backups exceeding the retention count.
     pub async fn enforce_backup_retention(&self, retention_count: usize) -> AppResult<u32> {
         let dir = self.backup_dir();
         let entries = list_backup_files(&dir);
+        let ready_entries = entries
+            .into_iter()
+            .filter(|entry| entry.status == BackupStatus::Ready)
+            .collect::<Vec<_>>();
         let mut deleted = 0u32;
-        if entries.len() > retention_count {
-            for entry in &entries[retention_count..] {
-                let path = dir.join(&entry.0);
-                if let Err(e) = std::fs::remove_file(&path) {
-                    warn!(filename = %entry.0, error = %e, "failed to remove old backup");
-                } else {
-                    deleted += 1;
+
+        if ready_entries.len() > retention_count {
+            for entry in &ready_entries[retention_count..] {
+                match remove_backup_artifacts(&dir, &entry.filename) {
+                    Ok(true) => deleted += 1,
+                    Ok(false) => {}
+                    Err(error) => warn!(
+                        filename = %entry.filename,
+                        error = %error,
+                        "failed to remove old backup"
+                    ),
                 }
             }
         }
+
         if deleted > 0 {
             info!(deleted, "old backups pruned by retention policy");
         }
         Ok(deleted)
     }
 
-    /// Auto-backup if enough time has passed since the last backup.
+    /// Auto-backup if enough time has passed since the last completed backup.
     pub async fn auto_backup_if_due(&self) -> AppResult<()> {
         let interval_hours: u64 = self
             .read_setting_string_value_for_scope(
@@ -178,11 +428,11 @@ impl AppUseCase {
                 None,
             )
             .await?
-            .and_then(|v| v.parse().ok())
+            .and_then(|value| value.parse().ok())
             .unwrap_or(24);
 
         if interval_hours == 0 {
-            return Ok(()); // disabled
+            return Ok(());
         }
 
         let retention_count: usize = self
@@ -192,28 +442,62 @@ impl AppUseCase {
                 None,
             )
             .await?
-            .and_then(|v| v.parse().ok())
+            .and_then(|value| value.parse().ok())
             .unwrap_or(7);
 
         let dir = self.backup_dir();
         let entries = list_backup_files(&dir);
+        if entries
+            .iter()
+            .any(|entry| entry.status == BackupStatus::Creating)
+        {
+            return Ok(());
+        }
 
-        // Check if a recent enough backup exists
-        let needs_backup = if let Some(newest) = entries.first() {
-            if let Ok(last_time) = chrono::DateTime::parse_from_rfc3339(&newest.2) {
+        let newest_ready = entries
+            .iter()
+            .find(|entry| entry.status == BackupStatus::Ready);
+        let needs_backup = if let Some(newest) = newest_ready {
+            if let Ok(last_time) = chrono::DateTime::parse_from_rfc3339(&newest.created_at) {
                 let elapsed = chrono::Utc::now() - last_time.with_timezone(&chrono::Utc);
                 elapsed > chrono::Duration::hours(interval_hours as i64)
             } else {
                 true
             }
         } else {
-            true // no backups exist
+            true
         };
 
         if needs_backup {
-            // Use a system actor for auto-backup
             let actor = self.find_or_create_default_user().await?;
-            self.create_backup(&actor).await?;
+            std::fs::create_dir_all(&dir).map_err(|error| {
+                AppError::Repository(format!("failed to create backup directory: {error}"))
+            })?;
+
+            let filename = build_backup_filename(false);
+            let source_migration_key = self
+                .services
+                .config
+                .system_info
+                .current_migration_version()
+                .await?;
+            let info = export_backup_file(
+                &self.services.config.db_path,
+                &dir,
+                &filename,
+                None,
+                source_migration_key,
+                self.collect_backup_export_secrets().await?,
+            )
+            .await?;
+            write_backup_metadata(&dir, &info)?;
+            self.emit_configuration_changed_event(
+                Some(actor.id.clone()),
+                "backup",
+                Some(info.filename.clone()),
+                ConfigurationChangeAction::Saved,
+            )
+            .await;
             self.enforce_backup_retention(retention_count).await?;
         }
 

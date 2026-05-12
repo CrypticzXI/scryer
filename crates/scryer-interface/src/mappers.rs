@@ -1874,6 +1874,20 @@ pub(crate) fn from_backup_info(info: BackupInfo) -> BackupInfoPayload {
         filename: info.filename,
         size_bytes: info.size_bytes.to_string(),
         created_at: info.created_at,
+        format_version: info.format_version,
+        source_engine: info.source_engine,
+        source_migration_key: info.source_migration_key,
+        encrypted: info.encrypted,
+        row_counts: info
+            .row_counts
+            .into_iter()
+            .map(|(table, row_count)| BackupRowCountPayload {
+                table,
+                row_count: row_count.to_string(),
+            })
+            .collect(),
+        status: info.status.as_str().to_string(),
+        error_message: info.error_message,
     }
 }
 
