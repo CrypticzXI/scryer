@@ -539,6 +539,9 @@ pub(crate) fn from_indexer_config_with_fields(
     config: IndexerConfig,
     config_fields: &[ConfigFieldDef],
 ) -> IndexerConfigPayload {
+    let is_managed = config.managed_parent_config_id.is_some();
+    let managed_parent_config_id = config.managed_parent_config_id.clone();
+    let supports_managed_children_sync = config.provider_type.eq_ignore_ascii_case("prowlarr");
     let (config_json, stored_secret_keys) =
         redact_indexer_config_json(config.config_json, config_fields);
     let has_api_key = stored_secret_keys.iter().any(|key| key == "api_key")
@@ -552,6 +555,9 @@ pub(crate) fn from_indexer_config_with_fields(
         provider_type: config.provider_type,
         base_url: config.base_url,
         has_api_key,
+        is_managed,
+        managed_parent_config_id,
+        supports_managed_children_sync,
         stored_secret_keys,
         rate_limit_seconds: config.rate_limit_seconds,
         rate_limit_burst: config.rate_limit_burst,
@@ -565,6 +571,17 @@ pub(crate) fn from_indexer_config_with_fields(
         config_json,
         created_at: config.created_at.to_rfc3339(),
         updated_at: config.updated_at.to_rfc3339(),
+    }
+}
+
+pub(crate) fn from_indexer_config_sync_result(
+    result: scryer_application::IndexerConfigSyncResult,
+) -> IndexerConfigSyncPayload {
+    IndexerConfigSyncPayload {
+        parent_config_id: result.parent_config_id,
+        created_ids: result.created_ids,
+        updated_ids: result.updated_ids,
+        deleted_ids: result.deleted_ids,
     }
 }
 

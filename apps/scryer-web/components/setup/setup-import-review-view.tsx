@@ -20,6 +20,7 @@ interface SetupImportReviewViewProps {
   selectedDcKeys: Set<string>;
   selectedIdxKeys: Set<string>;
   dcApiKeyOverrides: Map<string, string>;
+  idxApiKeyOverrides: Map<string, string>;
   onToggleMoviesPath: (path: string) => void;
   onToggleSeriesPath: (path: string) => void;
   onToggleAnimePath: (path: string) => void;
@@ -32,6 +33,7 @@ interface SetupImportReviewViewProps {
   onToggleDc: (dedupKey: string) => void;
   onToggleIdx: (dedupKey: string) => void;
   onSetDcApiKey: (dedupKey: string, apiKey: string) => void;
+  onSetIdxApiKey: (dedupKey: string, apiKey: string) => void;
   onImport: () => void;
   onBack: () => void;
   importing: boolean;
@@ -50,6 +52,7 @@ export function SetupImportReviewView({
   selectedDcKeys,
   selectedIdxKeys,
   dcApiKeyOverrides,
+  idxApiKeyOverrides,
   onToggleMoviesPath,
   onToggleSeriesPath,
   onToggleAnimePath,
@@ -62,6 +65,7 @@ export function SetupImportReviewView({
   onToggleDc,
   onToggleIdx,
   onSetDcApiKey,
+  onSetIdxApiKey,
   onImport,
   onBack,
   importing,
@@ -251,34 +255,70 @@ export function SetupImportReviewView({
 
       {preview.indexers.length > 0 ? (
         <Section title={t("setup.indexersSection")}>
-          {preview.indexers.map((idx) => (
-            <label
-              key={idx.dedupKey}
-              className={`flex items-center gap-3 rounded px-2 py-2 text-sm ${
-                idx.supported ? "cursor-pointer hover:bg-muted" : "cursor-not-allowed opacity-50"
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={selectedIdxKeys.has(idx.dedupKey)}
-                onChange={() => onToggleIdx(idx.dedupKey)}
-                disabled={!idx.supported}
-                className="accent-primary"
-              />
-              <div className="flex-1">
-                <span className="font-medium">{idx.name}</span>
-                <span className="ml-2 text-xs text-muted-foreground">
-                  {idx.implementation}
-                </span>
+          {preview.indexers.map((idx) => {
+            const isSelected = selectedIdxKeys.has(idx.dedupKey);
+            const isProwlarr = idx.scryerProviderType === "prowlarr";
+            return (
+              <div key={idx.dedupKey}>
+                <label
+                  className={`flex items-center gap-3 rounded px-2 py-2 text-sm ${
+                    idx.supported ? "cursor-pointer hover:bg-muted" : "cursor-not-allowed opacity-50"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onToggleIdx(idx.dedupKey)}
+                    disabled={!idx.supported}
+                    className="accent-primary"
+                  />
+                  <div className="flex-1">
+                    <span className="font-medium">{idx.name}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {idx.implementation}
+                      {idx.baseUrl ? ` @ ${idx.baseUrl}` : ""}
+                    </span>
+                    {isProwlarr ? (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {t("setup.prowlarrManagedChildren")}: {idx.childCount}
+                        {idx.childNames.length > 0 ? ` · ${idx.childNames.join(", ")}` : ""}
+                      </div>
+                    ) : null}
+                  </div>
+                  <SourceBadges sources={idx.sources} t={t} />
+                  {!idx.supported ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {t("setup.notSupported")}
+                    </span>
+                  ) : null}
+                </label>
+                {idx.requiresApiKeyOverride && isSelected ? (
+                  <div className="mb-1 ml-8 space-y-1">
+                    <p className="text-xs text-muted-foreground">
+                      {t("setup.prowlarrApiKeyMasked")}
+                    </p>
+                    <input
+                      type="text"
+                      value={idxApiKeyOverrides.get(idx.dedupKey) ?? ""}
+                      onChange={(e) => onSetIdxApiKey(idx.dedupKey, e.target.value)}
+                      placeholder={t("setup.apiKeyPlaceholder")}
+                      className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+                    />
+                    {idx.apiKeyHelpUrl ? (
+                      <a
+                        href={idx.apiKeyHelpUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block text-xs text-primary underline underline-offset-2"
+                      >
+                        {t("setup.prowlarrApiKeyHelpLink")}
+                      </a>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
-              <SourceBadges sources={idx.sources} t={t} />
-              {!idx.supported ? (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  {t("setup.notSupported")}
-                </span>
-              ) : null}
-            </label>
-          ))}
+            );
+          })}
         </Section>
       ) : null}
 

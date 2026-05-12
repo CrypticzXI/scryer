@@ -12,6 +12,7 @@ apps/scryer-web/package
 crates/scryer/ui
 tmp
 .claude
+.github/copilot-instructions.md
 *.pem
 *.sqlite
 *.sqlite-*

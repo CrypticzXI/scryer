@@ -1211,6 +1211,9 @@ export const indexersQuery = `query Indexers($providerType: String) {
     rateLimitBurst
     disabledUntil
     isEnabled
+    isManaged
+    managedParentConfigId
+    supportsManagedChildrenSync
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
@@ -1311,10 +1314,14 @@ const indexerFieldSelection = `
     rateLimitBurst
     disabledUntil
     isEnabled
+    isManaged
+    managedParentConfigId
+    supportsManagedChildrenSync
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
     lastErrorAt
+    lastQueryAt
     configJson
     createdAt
     updatedAt`;

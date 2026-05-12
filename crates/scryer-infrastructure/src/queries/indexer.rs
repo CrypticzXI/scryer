@@ -41,6 +41,11 @@ fn row_to_indexer_config(
         .map_err(|err| AppError::Repository(err.to_string()))?;
     let enable_interactive_search: i64 = row.try_get("enable_interactive_search").unwrap_or(1);
     let enable_auto_search: i64 = row.try_get("enable_auto_search").unwrap_or(1);
+    let managed_parent_config_id: Option<String> =
+        row.try_get("managed_parent_config_id").unwrap_or(None);
+    let managed_child_key: Option<String> = row.try_get("managed_child_key").unwrap_or(None);
+    let managed_metadata_json: Option<String> =
+        row.try_get("managed_metadata_json").unwrap_or(None);
     let last_health_status: Option<String> = row
         .try_get("last_health_status")
         .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -97,6 +102,9 @@ fn row_to_indexer_config(
         is_enabled: is_enabled != 0,
         enable_interactive_search: enable_interactive_search != 0,
         enable_auto_search: enable_auto_search != 0,
+        managed_parent_config_id,
+        managed_child_key,
+        managed_metadata_json,
         last_health_status,
         last_error_at,
         config_json,
@@ -128,7 +136,8 @@ pub(crate) async fn list_indexer_configs_query(
     let mut sql = String::from(
         "SELECT id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
                 rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
-                enable_auto_search, last_health_status, last_error_at, config_json, created_at, updated_at
+                enable_auto_search, managed_parent_config_id, managed_child_key,
+                managed_metadata_json, last_health_status, last_error_at, config_json, created_at, updated_at
          FROM indexers",
     );
 
@@ -164,7 +173,8 @@ pub(crate) async fn get_indexer_config_query(
     let row = sqlx::query(
         "SELECT id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
                 rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
-                enable_auto_search, last_health_status, last_error_at, config_json, created_at, updated_at
+                enable_auto_search, managed_parent_config_id, managed_child_key,
+                managed_metadata_json, last_health_status, last_error_at, config_json, created_at, updated_at
          FROM indexers WHERE id = ?",
     )
     .bind(id)
@@ -184,7 +194,8 @@ async fn get_indexer_config_tx(
     let row = sqlx::query(
         "SELECT id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
                 rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
-                enable_auto_search, last_health_status, last_error_at, config_json, created_at, updated_at
+                enable_auto_search, managed_parent_config_id, managed_child_key,
+                managed_metadata_json, last_health_status, last_error_at, config_json, created_at, updated_at
          FROM indexers WHERE id = ?",
     )
     .bind(id)
@@ -307,8 +318,9 @@ pub(crate) async fn create_indexer_config_query(
         "INSERT INTO indexers
          (id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
           rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
-          enable_auto_search, last_health_status, last_error_at, config_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            enable_auto_search, managed_parent_config_id, managed_child_key,
+            managed_metadata_json, last_health_status, last_error_at, config_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&config.id)
     .bind(&config.name)
@@ -326,6 +338,9 @@ pub(crate) async fn create_indexer_config_query(
     .bind(if config.is_enabled { 1_i64 } else { 0_i64 })
     .bind(if config.enable_interactive_search { 1_i64 } else { 0_i64 })
     .bind(if config.enable_auto_search { 1_i64 } else { 0_i64 })
+    .bind(&config.managed_parent_config_id)
+    .bind(&config.managed_child_key)
+    .bind(&config.managed_metadata_json)
     .bind(&config.last_health_status)
     .bind(
         config
@@ -374,6 +389,15 @@ pub(crate) async fn update_indexer_config_query(
     if update.enable_auto_search.is_some() {
         assignments.push("enable_auto_search = ?".to_string());
     }
+    if update.managed_parent_config_id.is_some() {
+        assignments.push("managed_parent_config_id = ?".to_string());
+    }
+    if update.managed_child_key.is_some() {
+        assignments.push("managed_child_key = ?".to_string());
+    }
+    if update.managed_metadata_json.is_some() {
+        assignments.push("managed_metadata_json = ?".to_string());
+    }
     if update.config_json.is_some() {
         assignments.push("config_json = ?".to_string());
     }
@@ -418,6 +442,15 @@ pub(crate) async fn update_indexer_config_query(
     }
     if let Some(enable_auto_search) = update.enable_auto_search {
         statement = statement.bind(if enable_auto_search { 1_i64 } else { 0_i64 });
+    }
+    if let Some(managed_parent_config_id) = update.managed_parent_config_id.as_ref() {
+        statement = statement.bind(managed_parent_config_id.as_deref());
+    }
+    if let Some(managed_child_key) = update.managed_child_key.as_ref() {
+        statement = statement.bind(managed_child_key.as_deref());
+    }
+    if let Some(managed_metadata_json) = update.managed_metadata_json.as_ref() {
+        statement = statement.bind(managed_metadata_json.as_deref());
     }
     if let Some(config_json) = update.config_json.as_ref() {
         let stored =
@@ -568,6 +601,9 @@ mod tests {
                 is_enabled INTEGER NOT NULL DEFAULT 1,
                 enable_interactive_search INTEGER NOT NULL DEFAULT 1,
                 enable_auto_search INTEGER NOT NULL DEFAULT 1,
+                managed_parent_config_id TEXT,
+                managed_child_key TEXT,
+                managed_metadata_json TEXT,
                 last_health_status TEXT,
                 last_error_at TEXT,
                 config_json TEXT,

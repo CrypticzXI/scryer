@@ -1519,6 +1519,14 @@ fn validate_indexer_descriptor(
     descriptor: &PluginDescriptor,
     load_source: PluginLoadSource,
 ) -> bool {
+    if descriptor.provider_type().eq_ignore_ascii_case("prowlarr") {
+        warn!(
+            plugin = descriptor.id.as_str(),
+            provider_type = descriptor.provider_type(),
+            "skipping plugin: prowlarr is reserved for the first-party provider"
+        );
+        return false;
+    }
     validate_descriptor_for_type(descriptor, None, load_source)
         && is_indexer_plugin_type(descriptor.plugin_type())
         && validate_indexer_config_contract(descriptor)

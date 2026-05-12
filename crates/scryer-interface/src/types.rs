@@ -1731,6 +1731,9 @@ pub struct IndexerConfigPayload {
     pub provider_type: String,
     pub base_url: String,
     pub has_api_key: bool,
+    pub is_managed: bool,
+    pub managed_parent_config_id: Option<String>,
+    pub supports_managed_children_sync: bool,
     pub stored_secret_keys: Vec<String>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
@@ -1744,6 +1747,14 @@ pub struct IndexerConfigPayload {
     pub config_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerConfigSyncPayload {
+    pub parent_config_id: String,
+    pub created_ids: Vec<String>,
+    pub updated_ids: Vec<String>,
+    pub deleted_ids: Vec<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3826,6 +3837,14 @@ pub struct DownloadClientApiKeyOverrideInput {
     pub api_key: String,
 }
 
+/// API key supplied by the user for a grouped Prowlarr import candidate whose
+/// key was masked or conflicted in Sonarr/Radarr.
+#[derive(InputObject)]
+pub struct IndexerApiKeyOverrideInput {
+    pub dedup_key: String,
+    pub api_key: String,
+}
+
 #[derive(InputObject)]
 pub struct ExecuteExternalImportInput {
     pub sonarr: Option<ExternalImportConnectionInput>,
@@ -3838,6 +3857,8 @@ pub struct ExecuteExternalImportInput {
     /// User-supplied API keys for download clients whose keys were masked by
     /// Sonarr/Radarr.  Keyed by the client's `dedup_key`.
     pub download_client_api_key_overrides: Vec<DownloadClientApiKeyOverrideInput>,
+    /// User-supplied API keys for grouped indexer import candidates.
+    pub indexer_api_key_overrides: Vec<IndexerApiKeyOverrideInput>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3883,6 +3904,10 @@ pub struct ExternalImportIndexerPayload {
     pub api_key: Option<String>,
     pub dedup_key: String,
     pub supported: bool,
+    pub child_count: i32,
+    pub child_names: Vec<String>,
+    pub requires_api_key_override: bool,
+    pub api_key_help_url: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]

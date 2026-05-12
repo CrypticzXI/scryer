@@ -1209,6 +1209,12 @@ pub trait IndexerClient: Send + Sync {
 
 pub trait IndexerPluginProvider: Send + Sync {
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>>;
+    fn management_client_for_provider(
+        &self,
+        _config: &IndexerConfig,
+    ) -> Option<Arc<dyn IndexerManagementClient>> {
+        None
+    }
     fn available_provider_types(&self) -> Vec<String>;
     fn builtin_provider_types(&self) -> Vec<String> {
         vec![]
@@ -1272,6 +1278,12 @@ pub trait IndexerPluginProvider: Send + Sync {
     fn rate_limit_seconds_for_provider(&self, _provider_type: &str) -> Option<i64> {
         None
     }
+    fn management_capabilities_for_provider(
+        &self,
+        _provider_type: &str,
+    ) -> scryer_domain::IndexerManagementCapabilities {
+        scryer_domain::IndexerManagementCapabilities::default()
+    }
     fn capabilities_for_provider(
         &self,
         _provider_type: &str,
@@ -1293,6 +1305,17 @@ pub trait IndexerPluginProvider: Send + Sync {
             ..Default::default()
         }
     }
+}
+
+#[async_trait]
+pub trait IndexerManagementClient: Send + Sync {
+    async fn validate_connection(&self) -> AppResult<IndexerValidationResult>;
+    async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
+        Err(AppError::Repository(
+            "managed child sync is not supported for this provider".to_string(),
+        ))
+    }
+    fn name(&self) -> &str;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

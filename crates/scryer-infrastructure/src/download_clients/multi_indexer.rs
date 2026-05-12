@@ -8,6 +8,7 @@ use scryer_application::{
     ReleaseCandidateProvenance, ReleaseSearchSubjectKind, SearchMode,
 };
 use scryer_domain::IndexerConfig;
+use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -35,6 +36,12 @@ struct StrategyExecutionOutcome {
 enum TitleGuardMode {
     SkipTitleMatch,
     ExactTitleMatch,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ManagedIndexerAutoModeMetadata {
+    enable_rss: Option<bool>,
+    enable_automatic_search: Option<bool>,
 }
 
 struct FilterStrategyContext<'a> {
@@ -441,6 +448,25 @@ impl MultiIndexerSearchClient {
             && episode.is_none()
     }
 
+    fn auto_mode_enabled(config: &IndexerConfig, is_rss_request: bool) -> bool {
+        if !config.enable_auto_search {
+            return false;
+        }
+
+        let Some(raw) = config.managed_metadata_json.as_deref() else {
+            return true;
+        };
+        let Ok(metadata) = serde_json::from_str::<ManagedIndexerAutoModeMetadata>(raw) else {
+            return true;
+        };
+
+        if is_rss_request {
+            metadata.enable_rss.unwrap_or(true)
+        } else {
+            metadata.enable_automatic_search.unwrap_or(true)
+        }
+    }
+
     fn split_rss_category_requests(categories: Option<Vec<String>>) -> Vec<Option<Vec<String>>> {
         let normalized: Vec<String> = categories
             .unwrap_or_default()
@@ -605,7 +631,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             }
             let mode_ok = match mode {
                 SearchMode::Interactive => c.enable_interactive_search,
-                SearchMode::Auto => c.enable_auto_search,
+                SearchMode::Auto => Self::auto_mode_enabled(c, is_rss_request),
             };
             if mode_ok {
                 enabled.push(c);
@@ -1614,12 +1640,23 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    fn managed_auto_mode_metadata(enable_rss: bool, enable_automatic_search: bool) -> String {
+        serde_json::json!({
+            "enable_rss": enable_rss,
+            "enable_automatic_search": enable_automatic_search,
+        })
+        .to_string()
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1864,6 +1901,80 @@ mod tests {
             )
             .await
             .expect("rss sync search should succeed");
+
+        assert!(response.results.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn rss_sync_search_skips_managed_indexers_when_metadata_disables_rss() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut config = mock_indexer_config();
+        config.managed_metadata_json = Some(managed_auto_mode_metadata(false, true));
+        let client = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(MockIndexerPluginProvider {
+                rss: true,
+                calls: calls.clone(),
+            }),
+        );
+
+        let response = client
+            .search(
+                String::new(),
+                HashMap::new(),
+                None,
+                None,
+                None,
+                None,
+                SearchMode::Auto,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("rss sync search should succeed");
+
+        assert!(response.results.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn automatic_search_skips_managed_indexers_when_metadata_disables_automatic_search() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut config = mock_indexer_config();
+        config.managed_metadata_json = Some(managed_auto_mode_metadata(true, false));
+        let client = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(MockIndexerPluginProvider {
+                rss: true,
+                calls: calls.clone(),
+            }),
+        );
+
+        let response = client
+            .search(
+                "Example Show".to_string(),
+                HashMap::new(),
+                None,
+                Some("series".to_string()),
+                None,
+                None,
+                SearchMode::Auto,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("automatic search should succeed");
 
         assert!(response.results.is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 0);

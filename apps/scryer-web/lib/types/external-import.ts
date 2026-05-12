@@ -27,6 +27,10 @@ export type ExternalImportIndexer = {
   apiKey: string | null;
   dedupKey: string;
   supported: boolean;
+  childCount: number;
+  childNames: string[];
+  requiresApiKeyOverride: boolean;
+  apiKeyHelpUrl: string | null;
 };
 
 export type ExternalImportPreview = {

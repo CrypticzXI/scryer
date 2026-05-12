@@ -7,6 +7,7 @@ edition.workspace = true
 scryer-domain = { path = "../scryer-domain" }
 scryer-application = { path = "../scryer-application" }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
+scryer-rules = { path = "../scryer-rules" }
 async-trait = { workspace = true }
 base64 = "0.22"
 serde_json = { workspace = true }
@@ -50,7 +51,6 @@ windows-native-keyring-store = { workspace = true }
 
 [dev-dependencies]
 scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
-scryer-rules = { path = "../scryer-rules" }
 tempfile = "3"
 wiremock = { workspace = true }
 
