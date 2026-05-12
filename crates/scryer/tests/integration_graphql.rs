@@ -11119,38 +11119,64 @@ async fn graphql_metadata_series() {
     assert_eq!(series["episodes"].as_array().unwrap().len(), 3);
 }
 
-#[tokio::test]
-async fn graphql_fix_title_match_movie_updates_identity_and_history() {
-    Box::pin(async {
-        let ctx = TestContext::new().await;
-        mount_smg_mocks(&ctx, "smg/get_movie.json").await;
+const LARGE_GRAPHQL_TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
-        let title = create_catalog_title(
-            &ctx,
-            "Broken Movie Match",
-            MediaFacet::Movie,
-            vec![
-                ExternalId {
-                    source: "tvdb".to_string(),
-                    value: "999".to_string(),
-                },
-                ExternalId {
-                    source: "imdb".to_string(),
-                    value: "tt0000999".to_string(),
-                },
-                ExternalId {
-                    source: "tmdb".to_string(),
-                    value: "4444".to_string(),
-                },
-            ],
-            vec!["scryer:quality-profile:4k".to_string()],
-            true,
-        )
-        .await;
+fn run_large_stack_graphql_test<F, Fut>(name: &str, test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(LARGE_GRAPHQL_TEST_STACK_SIZE_BYTES)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build tokio runtime for large-stack GraphQL test");
+            runtime.block_on(test());
+        })
+        .expect("spawn large-stack GraphQL test thread");
 
-        let body = gql(
-            &ctx,
-            r#"
+    if let Err(panic) = handle.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[test]
+fn graphql_fix_title_match_movie_updates_identity_and_history() {
+    run_large_stack_graphql_test(
+        "graphql_fix_title_match_movie_updates_identity_and_history",
+        || async {
+            let ctx = TestContext::new().await;
+            mount_smg_mocks(&ctx, "smg/get_movie.json").await;
+
+            let title = create_catalog_title(
+                &ctx,
+                "Broken Movie Match",
+                MediaFacet::Movie,
+                vec![
+                    ExternalId {
+                        source: "tvdb".to_string(),
+                        value: "999".to_string(),
+                    },
+                    ExternalId {
+                        source: "imdb".to_string(),
+                        value: "tt0000999".to_string(),
+                    },
+                    ExternalId {
+                        source: "tmdb".to_string(),
+                        value: "4444".to_string(),
+                    },
+                ],
+                vec!["scryer:quality-profile:4k".to_string()],
+                true,
+            )
+            .await;
+
+            let body = gql(
+                &ctx,
+                r#"
         mutation FixTitleMatch($input: FixTitleMatchInput!) {
           fixTitleMatch(input: $input) {
             hydrated
@@ -11168,46 +11194,46 @@ async fn graphql_fix_title_match_movie_updates_identity_and_history() {
           }
         }
         "#,
-            json!({ "input": { "titleId": title.id, "tvdbId": "123456" } }),
-        )
-        .await;
-        assert_no_errors(&body);
+                json!({ "input": { "titleId": title.id, "tvdbId": "123456" } }),
+            )
+            .await;
+            assert_no_errors(&body);
 
-        let payload = &body["data"]["fixTitleMatch"];
-        assert_eq!(payload["hydrated"], true);
-        assert_eq!(payload["warnings"], json!([]));
-        assert!(payload["libraryScan"].is_null());
-        assert_eq!(payload["title"]["name"], "Test Movie Title");
-        assert_eq!(payload["title"]["slug"], "test-movie-title");
-        assert_eq!(payload["title"]["imdbId"], "tt1234567");
-        assert!(payload["title"]["metadataFetchedAt"].is_string());
+            let payload = &body["data"]["fixTitleMatch"];
+            assert_eq!(payload["hydrated"], true);
+            assert_eq!(payload["warnings"], json!([]));
+            assert!(payload["libraryScan"].is_null());
+            assert_eq!(payload["title"]["name"], "Test Movie Title");
+            assert_eq!(payload["title"]["slug"], "test-movie-title");
+            assert_eq!(payload["title"]["imdbId"], "tt1234567");
+            assert!(payload["title"]["metadataFetchedAt"].is_string());
 
-        let tags = payload["title"]["tags"].as_array().expect("tags array");
-        assert!(tags.contains(&json!("scryer:quality-profile:4k")));
+            let tags = payload["title"]["tags"].as_array().expect("tags array");
+            assert!(tags.contains(&json!("scryer:quality-profile:4k")));
 
-        let external_ids = payload["title"]["externalIds"]
-            .as_array()
-            .expect("external ids array");
-        assert!(
-            external_ids
-                .iter()
-                .any(|value| { value["source"] == "tvdb" && value["value"] == "123456" })
-        );
-        assert!(
-            external_ids
-                .iter()
-                .any(|value| { value["source"] == "imdb" && value["value"] == "tt1234567" })
-        );
-        assert!(
-            !external_ids
-                .iter()
-                .any(|value| { value["source"] == "tvdb" && value["value"] == "999" })
-        );
-        assert!(!external_ids.iter().any(|value| value["source"] == "tmdb"));
+            let external_ids = payload["title"]["externalIds"]
+                .as_array()
+                .expect("external ids array");
+            assert!(
+                external_ids
+                    .iter()
+                    .any(|value| { value["source"] == "tvdb" && value["value"] == "123456" })
+            );
+            assert!(
+                external_ids
+                    .iter()
+                    .any(|value| { value["source"] == "imdb" && value["value"] == "tt1234567" })
+            );
+            assert!(
+                !external_ids
+                    .iter()
+                    .any(|value| { value["source"] == "tvdb" && value["value"] == "999" })
+            );
+            assert!(!external_ids.iter().any(|value| value["source"] == "tmdb"));
 
-        let events = gql(
-            &ctx,
-            r#"
+            let events = gql(
+                &ctx,
+                r#"
         query TitleEvents($titleId: String!) {
           titleEvents(titleId: $titleId, limit: 10) {
             eventType
@@ -11215,28 +11241,28 @@ async fn graphql_fix_title_match_movie_updates_identity_and_history() {
           }
         }
         "#,
-            json!({ "titleId": title.id }),
-        )
-        .await;
-        assert_no_errors(&events);
-        let rematch_events = events["data"]["titleEvents"]
-            .as_array()
-            .expect("title events array");
-        let rematch_event = rematch_events
-            .iter()
-            .find(|event| event["eventType"] == "rematched")
-            .expect("rematched history event");
-        let data_json = rematch_event["dataJson"]
-            .as_str()
-            .expect("rematch data json");
-        let data_value: Value = serde_json::from_str(data_json).expect("parse rematch data");
-        assert_eq!(data_value["old_tvdb_id"], "999");
-        assert_eq!(data_value["new_tvdb_id"], "123456");
-        assert_eq!(data_value["source"], "manual");
+                json!({ "titleId": title.id }),
+            )
+            .await;
+            assert_no_errors(&events);
+            let rematch_events = events["data"]["titleEvents"]
+                .as_array()
+                .expect("title events array");
+            let rematch_event = rematch_events
+                .iter()
+                .find(|event| event["eventType"] == "rematched")
+                .expect("rematched history event");
+            let data_json = rematch_event["dataJson"]
+                .as_str()
+                .expect("rematch data json");
+            let data_value: Value = serde_json::from_str(data_json).expect("parse rematch data");
+            assert_eq!(data_value["old_tvdb_id"], "999");
+            assert_eq!(data_value["new_tvdb_id"], "123456");
+            assert_eq!(data_value["source"], "manual");
 
-        let history = gql(
-            &ctx,
-            r#"
+            let history = gql(
+                &ctx,
+                r#"
         query TitleHistory($titleId: String!) {
           titleHistory(filter: { titleIds: [$titleId], eventTypes: ["rematched"], limit: 10 }) {
             totalCount
@@ -11246,133 +11272,135 @@ async fn graphql_fix_title_match_movie_updates_identity_and_history() {
           }
         }
         "#,
-            json!({ "titleId": title.id }),
-        )
-        .await;
-        assert_no_errors(&history);
-        assert_eq!(history["data"]["titleHistory"]["totalCount"], 1);
-        assert_eq!(
-            history["data"]["titleHistory"]["records"][0]["eventType"],
-            "rematched"
-        );
+                json!({ "titleId": title.id }),
+            )
+            .await;
+            assert_no_errors(&history);
+            assert_eq!(history["data"]["titleHistory"]["totalCount"], 1);
+            assert_eq!(
+                history["data"]["titleHistory"]["records"][0]["eventType"],
+                "rematched"
+            );
 
-        let activity_kinds = activity_kinds_for_title(&ctx, &title.id).await;
-        assert!(
-            activity_kinds
-                .iter()
-                .any(|kind| kind == "metadata_hydration_started")
-        );
-        assert!(
-            activity_kinds
-                .iter()
-                .any(|kind| kind == "metadata_hydration_completed")
-        );
-        assert!(activity_kinds.iter().any(|kind| kind == "title_updated"));
-    })
-    .await;
+            let activity_kinds = activity_kinds_for_title(&ctx, &title.id).await;
+            assert!(
+                activity_kinds
+                    .iter()
+                    .any(|kind| kind == "metadata_hydration_started")
+            );
+            assert!(
+                activity_kinds
+                    .iter()
+                    .any(|kind| kind == "metadata_hydration_completed")
+            );
+            assert!(activity_kinds.iter().any(|kind| kind == "title_updated"));
+        },
+    );
 }
 
-#[tokio::test]
-async fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
-    Box::pin(async {
-        let ctx = TestContext::new().await;
-        mount_smg_mocks(&ctx, "smg/get_series.json").await;
+#[test]
+fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
+    run_large_stack_graphql_test(
+        "graphql_fix_title_match_series_rebuilds_and_relinks_library",
+        || async {
+            let ctx = TestContext::new().await;
+            mount_smg_mocks(&ctx, "smg/get_series.json").await;
 
-        let media_root = tempfile::tempdir().expect("media root tempdir");
-        let title_name = "Broken Series Match";
-        let title = create_catalog_title(
-            &ctx,
-            title_name,
-            MediaFacet::Series,
-            vec![
-                ExternalId {
-                    source: "tvdb".to_string(),
-                    value: "999".to_string(),
-                },
-                ExternalId {
-                    source: "mal".to_string(),
-                    value: "5555".to_string(),
-                },
-            ],
-            vec![
-                format!("scryer:root-folder:{}", media_root.path().display()),
-                "scryer:season-folder:enabled".to_string(),
-                "scryer:anime-status:finished".to_string(),
-            ],
-            true,
-        )
-        .await;
+            let media_root = tempfile::tempdir().expect("media root tempdir");
+            let title_name = "Broken Series Match";
+            let title = create_catalog_title(
+                &ctx,
+                title_name,
+                MediaFacet::Series,
+                vec![
+                    ExternalId {
+                        source: "tvdb".to_string(),
+                        value: "999".to_string(),
+                    },
+                    ExternalId {
+                        source: "mal".to_string(),
+                        value: "5555".to_string(),
+                    },
+                ],
+                vec![
+                    format!("scryer:root-folder:{}", media_root.path().display()),
+                    "scryer:season-folder:enabled".to_string(),
+                    "scryer:anime-status:finished".to_string(),
+                ],
+                true,
+            )
+            .await;
 
-        let old_collection = ctx
-            .catalog
-            .create_collection(Collection {
-                id: Id::new().0,
-                title_id: title.id.clone(),
-                collection_type: scryer_domain::CollectionType::Season,
-                collection_index: "99".to_string(),
-                label: Some("Legacy Season".to_string()),
-                ordered_path: None,
-                narrative_order: None,
-                first_episode_number: Some("1".to_string()),
-                last_episode_number: Some("1".to_string()),
-                interstitial_movie: None,
-                specials_movies: vec![],
-                interstitial_season_episode: None,
-                monitored: true,
-                created_at: chrono::Utc::now(),
-            })
-            .await
-            .expect("create old collection");
+            let old_collection = ctx
+                .catalog
+                .create_collection(Collection {
+                    id: Id::new().0,
+                    title_id: title.id.clone(),
+                    collection_type: scryer_domain::CollectionType::Season,
+                    collection_index: "99".to_string(),
+                    label: Some("Legacy Season".to_string()),
+                    ordered_path: None,
+                    narrative_order: None,
+                    first_episode_number: Some("1".to_string()),
+                    last_episode_number: Some("1".to_string()),
+                    interstitial_movie: None,
+                    specials_movies: vec![],
+                    interstitial_season_episode: None,
+                    monitored: true,
+                    created_at: chrono::Utc::now(),
+                })
+                .await
+                .expect("create old collection");
 
-        let old_episode = ctx
-            .catalog
-            .create_episode(Episode {
-                id: Id::new().0,
-                title_id: title.id.clone(),
-                collection_id: Some(old_collection.id.clone()),
-                episode_type: scryer_domain::EpisodeType::Standard,
-                episode_number: Some("1".to_string()),
-                season_number: Some("99".to_string()),
-                episode_label: Some("S99E01".to_string()),
-                title: Some("Legacy Pilot".to_string()),
-                air_date: None,
-                duration_seconds: Some(1440),
-                has_multi_audio: false,
-                has_subtitle: false,
-                is_filler: false,
-                is_recap: false,
-                absolute_number: None,
-                overview: Some("Legacy episode".to_string()),
-                tvdb_id: Some("9999001".to_string()),
-                monitored: true,
-                created_at: chrono::Utc::now(),
-            })
-            .await
-            .expect("create old episode");
+            let old_episode = ctx
+                .catalog
+                .create_episode(Episode {
+                    id: Id::new().0,
+                    title_id: title.id.clone(),
+                    collection_id: Some(old_collection.id.clone()),
+                    episode_type: scryer_domain::EpisodeType::Standard,
+                    episode_number: Some("1".to_string()),
+                    season_number: Some("99".to_string()),
+                    episode_label: Some("S99E01".to_string()),
+                    title: Some("Legacy Pilot".to_string()),
+                    air_date: None,
+                    duration_seconds: Some(1440),
+                    has_multi_audio: false,
+                    has_subtitle: false,
+                    is_filler: false,
+                    is_recap: false,
+                    absolute_number: None,
+                    overview: Some("Legacy episode".to_string()),
+                    tvdb_id: Some("9999001".to_string()),
+                    monitored: true,
+                    created_at: chrono::Utc::now(),
+                })
+                .await
+                .expect("create old episode");
 
-        let season_dir = media_root.path().join(title_name).join("Season 01");
-        std::fs::create_dir_all(&season_dir).expect("create season dir");
-        let file_path = season_dir.join("Broken.Series.Match.S01E01.1080p.WEB-DL.mkv");
-        std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
-        let file_id = ctx
-            .library_state
-            .insert_media_file(&InsertMediaFileInput {
-                title_id: title.id.clone(),
-                file_path: file_path.to_string_lossy().to_string(),
-                size_bytes: 1024,
-                quality_label: Some("1080p".to_string()),
-                ..Default::default()
-            })
-            .await
-            .expect("insert media file");
-        ctx.db
-            .link_file_to_episode(&file_id, &old_episode.id)
-            .await
-            .expect("link file to legacy episode");
+            let season_dir = media_root.path().join(title_name).join("Season 01");
+            std::fs::create_dir_all(&season_dir).expect("create season dir");
+            let file_path = season_dir.join("Broken.Series.Match.S01E01.1080p.WEB-DL.mkv");
+            std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
+            let file_id = ctx
+                .library_state
+                .insert_media_file(&InsertMediaFileInput {
+                    title_id: title.id.clone(),
+                    file_path: file_path.to_string_lossy().to_string(),
+                    size_bytes: 1024,
+                    quality_label: Some("1080p".to_string()),
+                    ..Default::default()
+                })
+                .await
+                .expect("insert media file");
+            ctx.db
+                .link_file_to_episode(&file_id, &old_episode.id)
+                .await
+                .expect("link file to legacy episode");
 
-        let body = gql(
-            &ctx,
-            r#"
+            let body = gql(
+                &ctx,
+                r#"
         mutation FixTitleMatch($input: FixTitleMatchInput!) {
           fixTitleMatch(input: $input) {
             hydrated
@@ -11407,72 +11435,72 @@ async fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
           }
         }
         "#,
-            json!({ "input": { "titleId": title.id, "tvdbId": "345678" } }),
-        )
-        .await;
-        assert_no_errors(&body);
+                json!({ "input": { "titleId": title.id, "tvdbId": "345678" } }),
+            )
+            .await;
+            assert_no_errors(&body);
 
-        let payload = &body["data"]["fixTitleMatch"];
-        assert_eq!(payload["hydrated"], true);
-        assert_eq!(payload["warnings"], json!([]));
-        assert_eq!(payload["title"]["name"], "Test Show Name");
-        assert_eq!(payload["libraryScan"]["scanned"], 1);
-        assert_eq!(payload["libraryScan"]["unmatched"], 0);
+            let payload = &body["data"]["fixTitleMatch"];
+            assert_eq!(payload["hydrated"], true);
+            assert_eq!(payload["warnings"], json!([]));
+            assert_eq!(payload["title"]["name"], "Test Show Name");
+            assert_eq!(payload["libraryScan"]["scanned"], 1);
+            assert_eq!(payload["libraryScan"]["unmatched"], 0);
 
-        let tags = payload["title"]["tags"].as_array().expect("tags array");
-        assert!(tags.contains(&json!(format!(
-            "scryer:root-folder:{}",
-            media_root.path().display()
-        ))));
-        assert!(tags.contains(&json!("scryer:season-folder:enabled")));
-        assert!(!tags.contains(&json!("scryer:anime-status:finished")));
+            let tags = payload["title"]["tags"].as_array().expect("tags array");
+            assert!(tags.contains(&json!(format!(
+                "scryer:root-folder:{}",
+                media_root.path().display()
+            ))));
+            assert!(tags.contains(&json!("scryer:season-folder:enabled")));
+            assert!(!tags.contains(&json!("scryer:anime-status:finished")));
 
-        let external_ids = payload["title"]["externalIds"]
-            .as_array()
-            .expect("external ids array");
-        assert!(
-            external_ids
+            let external_ids = payload["title"]["externalIds"]
+                .as_array()
+                .expect("external ids array");
+            assert!(
+                external_ids
+                    .iter()
+                    .any(|value| { value["source"] == "tvdb" && value["value"] == "345678" })
+            );
+            assert!(!external_ids.iter().any(|value| value["source"] == "mal"));
+
+            let collections = payload["title"]["collections"]
+                .as_array()
+                .expect("collections array");
+            assert_eq!(collections.len(), 2);
+            assert!(
+                !collections
+                    .iter()
+                    .any(|collection| collection["id"] == old_collection.id)
+            );
+            let rebuilt_episode_count: usize = collections
                 .iter()
-                .any(|value| { value["source"] == "tvdb" && value["value"] == "345678" })
-        );
-        assert!(!external_ids.iter().any(|value| value["source"] == "mal"));
+                .map(|collection| {
+                    collection["episodes"]
+                        .as_array()
+                        .expect("episodes array")
+                        .len()
+                })
+                .sum();
+            assert_eq!(rebuilt_episode_count, 3);
 
-        let collections = payload["title"]["collections"]
-            .as_array()
-            .expect("collections array");
-        assert_eq!(collections.len(), 2);
-        assert!(
-            !collections
-                .iter()
-                .any(|collection| collection["id"] == old_collection.id)
-        );
-        let rebuilt_episode_count: usize = collections
-            .iter()
-            .map(|collection| {
-                collection["episodes"]
-                    .as_array()
-                    .expect("episodes array")
-                    .len()
-            })
-            .sum();
-        assert_eq!(rebuilt_episode_count, 3);
+            let media_files = payload["title"]["mediaFiles"]
+                .as_array()
+                .expect("media files array");
+            assert_eq!(media_files.len(), 1);
+            assert_eq!(
+                media_files[0]["filePath"],
+                file_path.to_string_lossy().to_string()
+            );
+            let relinked_episode_id = media_files[0]["episodeId"]
+                .as_str()
+                .expect("media file should relink to rebuilt episode");
+            assert_ne!(relinked_episode_id, old_episode.id);
 
-        let media_files = payload["title"]["mediaFiles"]
-            .as_array()
-            .expect("media files array");
-        assert_eq!(media_files.len(), 1);
-        assert_eq!(
-            media_files[0]["filePath"],
-            file_path.to_string_lossy().to_string()
-        );
-        let relinked_episode_id = media_files[0]["episodeId"]
-            .as_str()
-            .expect("media file should relink to rebuilt episode");
-        assert_ne!(relinked_episode_id, old_episode.id);
-
-        let events = gql(
-            &ctx,
-            r#"
+            let events = gql(
+                &ctx,
+                r#"
         query TitleEvents($titleId: String!) {
           titleEvents(titleId: $titleId, limit: 10) {
             eventType
@@ -11480,38 +11508,38 @@ async fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
           }
         }
         "#,
-            json!({ "titleId": title.id }),
-        )
-        .await;
-        assert_no_errors(&events);
-        let rematch_events = events["data"]["titleEvents"]
-            .as_array()
-            .expect("title events array");
-        let rematch_event = rematch_events
-            .iter()
-            .find(|event| event["eventType"] == "rematched")
-            .expect("rematched history event");
-        let data_json = rematch_event["dataJson"]
-            .as_str()
-            .expect("rematch data json");
-        let data_value: Value = serde_json::from_str(data_json).expect("parse rematch data");
-        assert_eq!(data_value["old_tvdb_id"], "999");
-        assert_eq!(data_value["new_tvdb_id"], "345678");
+                json!({ "titleId": title.id }),
+            )
+            .await;
+            assert_no_errors(&events);
+            let rematch_events = events["data"]["titleEvents"]
+                .as_array()
+                .expect("title events array");
+            let rematch_event = rematch_events
+                .iter()
+                .find(|event| event["eventType"] == "rematched")
+                .expect("rematched history event");
+            let data_json = rematch_event["dataJson"]
+                .as_str()
+                .expect("rematch data json");
+            let data_value: Value = serde_json::from_str(data_json).expect("parse rematch data");
+            assert_eq!(data_value["old_tvdb_id"], "999");
+            assert_eq!(data_value["new_tvdb_id"], "345678");
 
-        let activity_kinds = activity_kinds_for_title(&ctx, &title.id).await;
-        assert!(
-            activity_kinds
-                .iter()
-                .any(|kind| kind == "metadata_hydration_started")
-        );
-        assert!(
-            activity_kinds
-                .iter()
-                .any(|kind| kind == "metadata_hydration_completed")
-        );
-        assert!(activity_kinds.iter().any(|kind| kind == "title_updated"));
-    })
-    .await;
+            let activity_kinds = activity_kinds_for_title(&ctx, &title.id).await;
+            assert!(
+                activity_kinds
+                    .iter()
+                    .any(|kind| kind == "metadata_hydration_started")
+            );
+            assert!(
+                activity_kinds
+                    .iter()
+                    .any(|kind| kind == "metadata_hydration_completed")
+            );
+            assert!(activity_kinds.iter().any(|kind| kind == "title_updated"));
+        },
+    );
 }
 
 #[tokio::test]
