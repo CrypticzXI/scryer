@@ -3,13 +3,8 @@ use crate::events::retention::{
     OPERATIONAL_DOMAIN_EVENT_RETENTION_DAYS, operational_domain_event_types,
     user_facing_domain_event_types,
 };
-use tracing::info;
+use tracing::{info, warn};
 
-const MEDIA_ROOT_KEYS: [(&str, &str); 3] = [
-    ("series.path", "/data/series"),
-    ("anime.path", "/data/anime"),
-    ("movies.path", "/data/movies"),
-];
 const RELEASE_DECISION_RETENTION_DAYS: i64 = 30;
 const RELEASE_ATTEMPT_RETENTION_DAYS: i64 = 90;
 const DOWNLOAD_DELETE_RETENTION_DAYS: i64 = 7;
@@ -19,16 +14,29 @@ impl AppUseCase {
     async fn resolve_all_recycle_configs(
         &self,
     ) -> Vec<(String, crate::recycle_bin::RecycleBinConfig)> {
-        let mut configs = Vec::with_capacity(MEDIA_ROOT_KEYS.len());
-        for (key, default) in &MEDIA_ROOT_KEYS {
-            let media_root = self
-                .read_setting_string_value_for_scope(super::SETTINGS_SCOPE_MEDIA, key, None)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| default.to_string());
-            let config = crate::recycle_bin::resolve_recycle_config(self, Some(&media_root)).await;
-            configs.push((media_root, config));
+        let mut configs = Vec::new();
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            let root_folders = match self.root_folders_for_facet(&facet).await {
+                Ok(root_folders) => root_folders,
+                Err(error) => {
+                    warn!(
+                        facet = facet.as_str(),
+                        error = %error,
+                        "failed to resolve canonical roots for recycle bin housekeeping"
+                    );
+                    continue;
+                }
+            };
+
+            for root in root_folders {
+                let media_root = root.path.trim();
+                if media_root.is_empty() {
+                    continue;
+                }
+                let config =
+                    crate::recycle_bin::resolve_recycle_config(self, Some(media_root)).await;
+                configs.push((media_root.to_string(), config));
+            }
         }
         configs
     }

@@ -1088,46 +1088,52 @@ impl AppUseCase {
 
     /// Return the configured root folders for a facet.
     ///
-    /// Reads the `<facet>.root_folders` JSON setting.  When absent or empty,
-    /// falls back to the single `<facet>.path` setting and returns it as the
-    /// sole default entry.
+    /// Reads canonical roots from the facet's default library. Legacy
+    /// `<facet>.root_folders` and `<facet>.path` settings are maintained only
+    /// as compatibility mirrors and are reconciled during startup.
     pub async fn root_folders_for_facet(
         &self,
         facet: &scryer_domain::MediaFacet,
     ) -> AppResult<Vec<scryer_domain::RootFolderEntry>> {
         let handler = self.facet_registry.get(facet);
-        let root_folders_key = handler.map(|h| h.root_folders_key());
-        let library_path_key = handler.map(|h| h.library_path_key());
         let default_path = handler.map(|h| h.default_library_path()).unwrap_or("/data");
 
-        // Try the root_folders JSON array first.
-        if let Some(key) = root_folders_key
-            && let Some(raw) = self
-                .read_setting_string_value_for_scope(super::SETTINGS_SCOPE_MEDIA, key, None)
-                .await?
+        if let Some(library) = self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
         {
-            let trimmed = raw.trim();
-            if !trimmed.is_empty()
-                && trimmed != "[]"
-                && let Ok(entries) =
-                    serde_json::from_str::<Vec<scryer_domain::RootFolderEntry>>(trimmed)
-                && !entries.is_empty()
+            let mut entries = library
+                .roots
+                .iter()
+                .filter_map(|root| {
+                    let path = root.path.trim();
+                    if path.is_empty() {
+                        None
+                    } else {
+                        Some(scryer_domain::RootFolderEntry {
+                            path: path.to_string(),
+                            is_default: root.is_default,
+                        })
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            if !entries.iter().any(|entry| entry.is_default)
+                && let Some(first) = entries.first_mut()
             {
+                first.is_default = true;
+            }
+
+            if !entries.is_empty() {
                 return Ok(entries);
             }
         }
 
-        // Fall back to the single path setting.
-        let path = if let Some(key) = library_path_key {
-            self.read_setting_string_value_for_scope(super::SETTINGS_SCOPE_MEDIA, key, None)
-                .await?
-                .unwrap_or_else(|| default_path.to_string())
-        } else {
-            default_path.to_string()
-        };
-
         Ok(vec![scryer_domain::RootFolderEntry {
-            path,
+            path: default_path.to_string(),
             is_default: true,
         }])
     }

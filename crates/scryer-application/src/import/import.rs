@@ -44,8 +44,6 @@ fn maybe_trigger_subtitle_search(app: &AppUseCase, title_id: &str, media_file_id
 
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
 const MANUAL_IMPORT_STALE_RECOVERY_SECONDS: i64 = 120;
-const SERIES_PATH_KEY: &str = "series.path";
-
 fn base_completed_import_result(
     import_id: &str,
     completed: &CompletedDownload,
@@ -3206,17 +3204,17 @@ pub(crate) async fn resolve_import_paths(
 ) -> AppResult<(String, String)> {
     let handler = app.facet_registry.get(&title.facet);
     let rename_settings = crate::facet_handler::rename_facet_settings(&title.facet);
-    let media_root_key = handler
-        .map(|h| h.library_path_key())
-        .unwrap_or(SERIES_PATH_KEY);
     let media_root_default = handler
         .map(|h| h.default_library_path())
         .unwrap_or("/data/series");
 
     let media_root = {
-        let default_root = app
-            .read_setting_string_value_for_scope(super::SETTINGS_SCOPE_MEDIA, media_root_key, None)
-            .await?
+        let root_folders = app.root_folders_for_facet(&title.facet).await?;
+        let default_root = root_folders
+            .iter()
+            .find(|entry| entry.is_default)
+            .or_else(|| root_folders.first())
+            .map(|entry| entry.path.clone())
             .unwrap_or_else(|| media_root_default.to_string());
 
         title

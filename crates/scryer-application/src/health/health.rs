@@ -7,6 +7,14 @@ fn to_u64<T: Into<u64>>(value: T) -> u64 {
     value.into()
 }
 
+fn health_root_label(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => "Movies",
+        MediaFacet::Series => "Series",
+        MediaFacet::Anime => "Anime",
+    }
+}
+
 impl AppUseCase {
     /// Run all health checks and return results.
     pub async fn run_health_checks(&self) -> Vec<HealthCheckResult> {
@@ -120,38 +128,44 @@ impl AppUseCase {
     }
 
     async fn check_root_folders(&self) -> Vec<HealthCheckResult> {
-        let path_keys = [
-            ("series.path", "/data/series", "Series"),
-            ("anime.path", "/data/anime", "Anime"),
-            ("movies.path", "/data/movies", "Movies"),
-        ];
-
         let mut results = Vec::new();
-        for (key, default, label) in &path_keys {
-            let path = self
-                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, key, None)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| default.to_string());
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            let label = health_root_label(&facet);
+            let root_folders = match self.root_folders_for_facet(&facet).await {
+                Ok(root_folders) => root_folders,
+                Err(error) => {
+                    results.push(HealthCheckResult {
+                        source: "RootFolder".into(),
+                        status: HealthCheckStatus::Error,
+                        message: format!("Failed to resolve {label} roots: {error}"),
+                    });
+                    continue;
+                }
+            };
 
-            let p = std::path::Path::new(&path);
-            if !p.exists() {
-                results.push(HealthCheckResult {
-                    source: "RootFolder".into(),
-                    status: HealthCheckStatus::Error,
-                    message: format!("{label} root folder does not exist: {path}"),
-                });
-            } else if p
-                .metadata()
-                .map(|m| m.permissions().readonly())
-                .unwrap_or(true)
-            {
-                results.push(HealthCheckResult {
-                    source: "RootFolder".into(),
-                    status: HealthCheckStatus::Warning,
-                    message: format!("{label} root folder is read-only: {path}"),
-                });
+            for root in root_folders {
+                let path = root.path.trim();
+                if path.is_empty() {
+                    continue;
+                }
+                let p = std::path::Path::new(path);
+                if !p.exists() {
+                    results.push(HealthCheckResult {
+                        source: "RootFolder".into(),
+                        status: HealthCheckStatus::Error,
+                        message: format!("{label} root folder does not exist: {path}"),
+                    });
+                } else if p
+                    .metadata()
+                    .map(|m| m.permissions().readonly())
+                    .unwrap_or(true)
+                {
+                    results.push(HealthCheckResult {
+                        source: "RootFolder".into(),
+                        status: HealthCheckStatus::Warning,
+                        message: format!("{label} root folder is read-only: {path}"),
+                    });
+                }
             }
         }
 
@@ -159,51 +173,54 @@ impl AppUseCase {
     }
 
     async fn check_disk_space_health(&self) -> Vec<HealthCheckResult> {
-        let path_keys = [
-            ("series.path", "/data/series", "Series"),
-            ("anime.path", "/data/anime", "Anime"),
-            ("movies.path", "/data/movies", "Movies"),
-        ];
-
         let mut seen = HashSet::new();
         let mut results = Vec::new();
 
-        for (key, default, label) in &path_keys {
-            let path = self
-                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, key, None)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| default.to_string());
-
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-
-            #[cfg(unix)]
-            if let Some(stat) = statvfs_path(&path) {
-                let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
-                let mb_100 = 100 * 1024 * 1024;
-                let mb_500 = 500 * 1024 * 1024;
-
-                if free < mb_100 {
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            let label = health_root_label(&facet);
+            let root_folders = match self.root_folders_for_facet(&facet).await {
+                Ok(root_folders) => root_folders,
+                Err(error) => {
                     results.push(HealthCheckResult {
                         source: "DiskSpace".into(),
                         status: HealthCheckStatus::Error,
-                        message: format!(
-                            "{label} disk space critically low: {} MB free at {path}",
-                            free / (1024 * 1024)
-                        ),
+                        message: format!("Failed to resolve {label} roots: {error}"),
                     });
-                } else if free < mb_500 {
-                    results.push(HealthCheckResult {
-                        source: "DiskSpace".into(),
-                        status: HealthCheckStatus::Warning,
-                        message: format!(
-                            "{label} disk space low: {} MB free at {path}",
-                            free / (1024 * 1024)
-                        ),
-                    });
+                    continue;
+                }
+            };
+
+            for root in root_folders {
+                let path = root.path.trim();
+                if path.is_empty() || !seen.insert(path.to_string()) {
+                    continue;
+                }
+
+                #[cfg(unix)]
+                if let Some(stat) = statvfs_path(path) {
+                    let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
+                    let mb_100 = 100 * 1024 * 1024;
+                    let mb_500 = 500 * 1024 * 1024;
+
+                    if free < mb_100 {
+                        results.push(HealthCheckResult {
+                            source: "DiskSpace".into(),
+                            status: HealthCheckStatus::Error,
+                            message: format!(
+                                "{label} disk space critically low: {} MB free at {path}",
+                                free / (1024 * 1024)
+                            ),
+                        });
+                    } else if free < mb_500 {
+                        results.push(HealthCheckResult {
+                            source: "DiskSpace".into(),
+                            status: HealthCheckStatus::Warning,
+                            message: format!(
+                                "{label} disk space low: {} MB free at {path}",
+                                free / (1024 * 1024)
+                            ),
+                        });
+                    }
                 }
             }
         }

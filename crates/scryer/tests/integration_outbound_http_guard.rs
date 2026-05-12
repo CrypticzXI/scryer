@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 const ALLOWED_DIRECT_SEND_FILES: &[&str] = &["crates/scryer-outbound-http/src/lib.rs"];
 
 const ALLOWED_CLIENT_CONSTRUCTION_FILES: &[&str] = &["crates/scryer-outbound-http/src/lib.rs"];
+const REQUIRED_HTTP2_MANIFESTS: &[&str] = &[
+    "crates/scryer-outbound-http/Cargo.toml",
+    "crates/scryer-infrastructure/Cargo.toml",
+];
 
 #[test]
 fn native_outbound_http_uses_canonical_transport() {
@@ -17,6 +21,22 @@ fn native_outbound_http_uses_canonical_transport() {
         "native outbound HTTP guard failed:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn canonical_outbound_http_reqwest_enables_http2() {
+    let repo_root = repo_root();
+
+    for manifest in REQUIRED_HTTP2_MANIFESTS {
+        let path = repo_root.join(manifest);
+        let content = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {manifest}: {error}"));
+
+        assert!(
+            content.contains("\"http2\""),
+            "{manifest} must enable reqwest http2 when default features are disabled"
+        );
+    }
 }
 
 fn collect_violations(path: &Path, repo_root: &Path, violations: &mut Vec<String>) {

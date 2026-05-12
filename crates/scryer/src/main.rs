@@ -781,6 +781,10 @@ async fn bootstrap_application(
 
     app_use_case.connect_library_scan_tracker().await;
 
+    if let Err(e) = app_use_case.reconcile_default_library_roots().await {
+        tracing::warn!(error = %e, "failed to reconcile default library roots on startup");
+    }
+
     if let Err(e) = app_use_case.refresh_plugin_catalog_internal().await {
         tracing::warn!(error = %e, "failed to refresh plugin catalog on startup");
     }

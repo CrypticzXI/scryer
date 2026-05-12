@@ -3,7 +3,7 @@ use std::path::Path;
 
 use scryer_domain::RootFolderEntry;
 use serde::{Serialize, de::DeserializeOwned};
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::*;
 use crate::acquisition_policy::AcquisitionThresholds;
@@ -604,6 +604,73 @@ fn normalize_root_folders(entries: Vec<RootFolderEntry>) -> AppResult<Vec<RootFo
     Ok(normalized)
 }
 
+pub(crate) fn root_folder_entries_from_library_roots(
+    roots: &[scryer_domain::LibraryRoot],
+) -> Vec<RootFolderEntry> {
+    let mut entries = roots
+        .iter()
+        .filter_map(|root| {
+            let path = root.path.trim();
+            if path.is_empty() {
+                None
+            } else {
+                Some(RootFolderEntry {
+                    path: path.to_string(),
+                    is_default: root.is_default,
+                })
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !entries.iter().any(|entry| entry.is_default)
+        && let Some(first) = entries.first_mut()
+    {
+        first.is_default = true;
+    }
+
+    entries
+}
+
+fn root_folder_entries_to_library_root_drafts(
+    entries: &[RootFolderEntry],
+) -> AppResult<Vec<LibraryRootDraft>> {
+    crate::library::workflow::normalize_library_root_drafts(
+        entries
+            .iter()
+            .map(|entry| LibraryRootDraft {
+                path: entry.path.clone(),
+                is_default: entry.is_default,
+            })
+            .collect(),
+    )
+}
+
+fn default_root_folder_entry(facet: &MediaFacet) -> RootFolderEntry {
+    RootFolderEntry {
+        path: default_library_path(facet).to_string(),
+        is_default: true,
+    }
+}
+
+fn default_path_from_root_folders(facet: &MediaFacet, root_folders: &[RootFolderEntry]) -> String {
+    root_folders
+        .iter()
+        .find(|entry| entry.is_default)
+        .or_else(|| root_folders.first())
+        .map(|entry| entry.path.clone())
+        .unwrap_or_else(|| default_library_path(facet).to_string())
+}
+
+fn normalize_root_path_for_compare(path: &str) -> String {
+    path.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn is_bootstrap_default_root_set(facet: &MediaFacet, root_folders: &[RootFolderEntry]) -> bool {
+    root_folders.len() == 1
+        && normalize_root_path_for_compare(&root_folders[0].path)
+            == normalize_root_path_for_compare(default_library_path(facet))
+}
+
 fn normalize_external_import_root_folders(
     paths: Vec<String>,
 ) -> AppResult<Option<Vec<RootFolderEntry>>> {
@@ -828,11 +895,54 @@ impl AppUseCase {
         Ok(())
     }
 
-    async fn prepare_default_library_root_sync(
+    pub(crate) async fn mirror_default_library_roots_to_legacy_settings(
         &self,
         facet: &MediaFacet,
         root_folders: &[RootFolderEntry],
-    ) -> AppResult<Option<(String, String, String, Vec<LibraryRootDraft>)>> {
+        source: &str,
+        actor_id: Option<String>,
+    ) -> AppResult<Vec<String>> {
+        let normalized = normalize_root_folders(root_folders.to_vec())?;
+        let default_path = default_path_from_root_folders(facet, &normalized);
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_MEDIA,
+                root_folders_key(facet),
+                None,
+                encode_setting_json(&normalized)?,
+                source,
+                actor_id.clone(),
+            )
+            .await?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_MEDIA,
+                library_path_key(facet),
+                None,
+                encode_setting_json(&default_path)?,
+                source,
+                actor_id,
+            )
+            .await?;
+
+        Ok(vec![
+            root_folders_key(facet).to_string(),
+            library_path_key(facet).to_string(),
+        ])
+    }
+
+    async fn update_default_library_roots_from_entries(
+        &self,
+        facet: &MediaFacet,
+        root_folders: &[RootFolderEntry],
+        source: &str,
+        actor_id: Option<String>,
+    ) -> AppResult<Vec<String>> {
         let Some(library) = self
             .services
             .catalog
@@ -840,20 +950,158 @@ impl AppUseCase {
             .default_for_facet(facet.clone())
             .await?
         else {
-            return Ok(None);
+            return Err(AppError::NotFound(format!(
+                "default {} library",
+                facet.as_str()
+            )));
         };
 
-        let roots = root_folders
-            .iter()
-            .map(|root| LibraryRootDraft {
-                path: root.path.clone(),
-                is_default: root.is_default,
-            })
-            .collect::<Vec<_>>();
+        let roots = root_folder_entries_to_library_root_drafts(root_folders)?;
         self.validate_library_root_conflicts(Some(&library.id), &roots)
             .await?;
 
-        Ok(Some((library.id, library.name, library.slug, roots)))
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .update(&library.id, library.name, library.slug, roots)
+            .await?;
+        let canonical_roots = root_folder_entries_from_library_roots(&library.roots);
+        self.mirror_default_library_roots_to_legacy_settings(
+            facet,
+            &canonical_roots,
+            source,
+            actor_id,
+        )
+        .await
+    }
+
+    async fn read_legacy_root_folders_for_facet(
+        &self,
+        facet: &MediaFacet,
+    ) -> AppResult<Option<Vec<RootFolderEntry>>> {
+        if let Some(raw) = self
+            .read_setting_string_value_for_scope_explicit(
+                SETTINGS_SCOPE_MEDIA,
+                root_folders_key(facet),
+                None,
+            )
+            .await?
+        {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() && trimmed != "[]" {
+                match serde_json::from_str::<Vec<RootFolderEntry>>(trimmed) {
+                    Ok(entries) if !entries.is_empty() => {
+                        return normalize_root_folders(entries).map(Some);
+                    }
+                    Ok(_) => {}
+                    Err(error) => warn!(
+                        facet = facet.as_str(),
+                        error = %error,
+                        "failed to parse legacy root_folders setting during root reconciliation"
+                    ),
+                }
+            }
+        }
+
+        let Some(path) = self
+            .read_setting_string_value_for_scope_explicit(
+                SETTINGS_SCOPE_MEDIA,
+                library_path_key(facet),
+                None,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let path = path.trim();
+        if path.is_empty() {
+            return Ok(None);
+        }
+
+        normalize_root_folders(vec![RootFolderEntry {
+            path: path.to_string(),
+            is_default: true,
+        }])
+        .map(Some)
+    }
+
+    pub async fn reconcile_default_library_roots(&self) -> AppResult<()> {
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            let Some(library) = self
+                .services
+                .catalog
+                .libraries
+                .default_for_facet(facet.clone())
+                .await?
+            else {
+                warn!(
+                    facet = facet.as_str(),
+                    "skipping root reconciliation because the default library is missing"
+                );
+                continue;
+            };
+
+            let canonical_roots = root_folder_entries_from_library_roots(&library.roots);
+            let legacy_roots = self.read_legacy_root_folders_for_facet(&facet).await?;
+            let canonical_is_empty_or_bootstrap = canonical_roots.is_empty()
+                || is_bootstrap_default_root_set(&facet, &canonical_roots);
+            let legacy_roots_are_non_bootstrap = legacy_roots.as_ref().is_some_and(|roots| {
+                !roots.is_empty() && !is_bootstrap_default_root_set(&facet, roots)
+            });
+
+            if canonical_is_empty_or_bootstrap && legacy_roots_are_non_bootstrap {
+                let legacy_roots = legacy_roots.expect("checked legacy root presence");
+                self.update_default_library_roots_from_entries(
+                    &facet,
+                    &legacy_roots,
+                    "startup_reconciliation",
+                    None,
+                )
+                .await?;
+                info!(
+                    facet = facet.as_str(),
+                    root_count = legacy_roots.len(),
+                    "backfilled default library roots from legacy facet root settings"
+                );
+                continue;
+            }
+
+            let roots_to_mirror = if canonical_roots.is_empty() {
+                vec![default_root_folder_entry(&facet)]
+            } else {
+                canonical_roots
+            };
+
+            if roots_to_mirror != root_folder_entries_from_library_roots(&library.roots) {
+                self.update_default_library_roots_from_entries(
+                    &facet,
+                    &roots_to_mirror,
+                    "startup_reconciliation",
+                    None,
+                )
+                .await?;
+                info!(
+                    facet = facet.as_str(),
+                    "initialized empty default library roots from the bootstrap default"
+                );
+            } else {
+                self.mirror_default_library_roots_to_legacy_settings(
+                    &facet,
+                    &roots_to_mirror,
+                    "startup_reconciliation",
+                    None,
+                )
+                .await?;
+                info!(
+                    facet = facet.as_str(),
+                    root_count = roots_to_mirror.len(),
+                    "mirrored canonical default library roots to legacy facet settings"
+                );
+            }
+        }
+
+        Ok(())
     }
 
     async fn load_download_client_routing_json(&self, scope_id: &str) -> AppResult<Option<String>> {
@@ -2628,15 +2876,8 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
 
-        let library_path = self
-            .read_setting_string_value_for_scope(
-                SETTINGS_SCOPE_MEDIA,
-                library_path_key(&facet),
-                None,
-            )
-            .await?
-            .unwrap_or_else(|| default_library_path(&facet).to_string());
         let root_folders = self.root_folders_for_facet(&facet).await?;
+        let library_path = default_path_from_root_folders(&facet, &root_folders);
         let scoped_rename_template = self
             .read_setting_string_value(RENAME_TEMPLATE_KEY, Some(facet.as_str()))
             .await?;
@@ -2762,76 +3003,41 @@ impl AppUseCase {
             .clone()
             .map(normalize_root_folders)
             .transpose()?;
-        let default_library_root_sync = match root_folder_update.as_ref() {
-            Some(root_folders) => {
-                self.prepare_default_library_root_sync(&facet, root_folders)
-                    .await?
-            }
-            None => None,
-        };
 
         let mut changed_keys = Vec::new();
 
         if let Some(normalized) = root_folder_update {
-            self.services
-                .config
-                .settings
-                .upsert_setting_json(
-                    SETTINGS_SCOPE_MEDIA,
-                    root_folders_key(&facet),
-                    None,
-                    encode_setting_json(&normalized)?,
+            warn!(
+                facet = facet.as_str(),
+                "UpdateMediaSettings.root_folders is deprecated; updating default library roots"
+            );
+            changed_keys.extend(
+                self.update_default_library_roots_from_entries(
+                    &facet,
+                    &normalized,
                     SETTINGS_SOURCE_TYPED_GRAPHQL,
                     Some(actor.id.clone()),
                 )
-                .await?;
-            changed_keys.push(root_folders_key(&facet).to_string());
-
-            let default_path = normalized
-                .iter()
-                .find(|entry| entry.is_default)
-                .map(|entry| entry.path.clone())
-                .unwrap_or_else(|| normalized[0].path.clone());
-            self.services
-                .config
-                .settings
-                .upsert_setting_json(
-                    SETTINGS_SCOPE_MEDIA,
-                    library_path_key(&facet),
-                    None,
-                    encode_setting_json(&default_path)?,
-                    SETTINGS_SOURCE_TYPED_GRAPHQL,
-                    Some(actor.id.clone()),
-                )
-                .await?;
-            if !changed_keys
-                .iter()
-                .any(|key| key == library_path_key(&facet))
-            {
-                changed_keys.push(library_path_key(&facet).to_string());
-            }
-
-            if let Some((library_id, name, slug, roots)) = default_library_root_sync {
-                self.services
-                    .catalog
-                    .libraries
-                    .update(&library_id, name, slug, roots)
-                    .await?;
-            }
+                .await?,
+            );
         } else if let Some(library_path) = normalize_optional_string(input.library_path) {
-            self.services
-                .config
-                .settings
-                .upsert_setting_json(
-                    SETTINGS_SCOPE_MEDIA,
-                    library_path_key(&facet),
-                    None,
-                    encode_setting_json(&library_path)?,
+            warn!(
+                facet = facet.as_str(),
+                "UpdateMediaSettings.library_path is deprecated; updating default library roots"
+            );
+            let root_folders = normalize_root_folders(vec![RootFolderEntry {
+                path: library_path,
+                is_default: true,
+            }])?;
+            changed_keys.extend(
+                self.update_default_library_roots_from_entries(
+                    &facet,
+                    &root_folders,
                     SETTINGS_SOURCE_TYPED_GRAPHQL,
                     Some(actor.id.clone()),
                 )
-                .await?;
-            changed_keys.push(library_path_key(&facet).to_string());
+                .await?,
+            );
         }
 
         if let Some(rename_template) = normalize_optional_string(input.rename_template) {
@@ -3048,20 +3254,14 @@ impl AppUseCase {
     pub async fn get_library_paths(&self, actor: &User) -> AppResult<LibraryPathsSettings> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        let movie_roots = self.root_folders_for_facet(&MediaFacet::Movie).await?;
+        let series_roots = self.root_folders_for_facet(&MediaFacet::Series).await?;
+        let anime_roots = self.root_folders_for_facet(&MediaFacet::Anime).await?;
 
         Ok(LibraryPathsSettings {
-            movie_path: self
-                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, MOVIES_PATH_KEY, None)
-                .await?
-                .unwrap_or_else(|| DEFAULT_MOVIE_LIBRARY_PATH.to_string()),
-            series_path: self
-                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, SERIES_PATH_KEY, None)
-                .await?
-                .unwrap_or_else(|| DEFAULT_SERIES_LIBRARY_PATH.to_string()),
-            anime_path: self
-                .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, ANIME_PATH_KEY, None)
-                .await?
-                .unwrap_or_else(|| DEFAULT_ANIME_LIBRARY_PATH.to_string()),
+            movie_path: default_path_from_root_folders(&MediaFacet::Movie, &movie_roots),
+            series_path: default_path_from_root_folders(&MediaFacet::Series, &series_roots),
+            anime_path: default_path_from_root_folders(&MediaFacet::Anime, &anime_roots),
         })
     }
 
@@ -3092,56 +3292,57 @@ impl AppUseCase {
 
         let mut changed_keys = Vec::new();
         if let Some(movie_path) = normalize_optional_string(Some(input.movie_path)) {
-            self.services
-                .config
-                .settings
-                .upsert_setting_json(
-                    SETTINGS_SCOPE_MEDIA,
-                    MOVIES_PATH_KEY,
-                    None,
-                    encode_setting_json(&movie_path)?,
+            let root_folders = normalize_root_folders(vec![RootFolderEntry {
+                path: movie_path,
+                is_default: true,
+            }])?;
+            changed_keys.extend(
+                self.update_default_library_roots_from_entries(
+                    &MediaFacet::Movie,
+                    &root_folders,
                     SETTINGS_SOURCE_TYPED_GRAPHQL,
                     Some(actor.id.clone()),
                 )
-                .await?;
-            changed_keys.push(MOVIES_PATH_KEY.to_string());
+                .await?,
+            );
         }
 
         if let Some(series_path) = normalize_optional_string(Some(input.series_path)) {
-            self.services
-                .config
-                .settings
-                .upsert_setting_json(
-                    SETTINGS_SCOPE_MEDIA,
-                    SERIES_PATH_KEY,
-                    None,
-                    encode_setting_json(&series_path)?,
+            let root_folders = normalize_root_folders(vec![RootFolderEntry {
+                path: series_path,
+                is_default: true,
+            }])?;
+            changed_keys.extend(
+                self.update_default_library_roots_from_entries(
+                    &MediaFacet::Series,
+                    &root_folders,
                     SETTINGS_SOURCE_TYPED_GRAPHQL,
                     Some(actor.id.clone()),
                 )
-                .await?;
-            changed_keys.push(SERIES_PATH_KEY.to_string());
+                .await?,
+            );
         }
 
         if let Some(anime_path) = normalize_optional_string(input.anime_path) {
-            self.services
-                .config
-                .settings
-                .upsert_setting_json(
-                    SETTINGS_SCOPE_MEDIA,
-                    ANIME_PATH_KEY,
-                    None,
-                    encode_setting_json(&anime_path)?,
+            let root_folders = normalize_root_folders(vec![RootFolderEntry {
+                path: anime_path,
+                is_default: true,
+            }])?;
+            changed_keys.extend(
+                self.update_default_library_roots_from_entries(
+                    &MediaFacet::Anime,
+                    &root_folders,
                     SETTINGS_SOURCE_TYPED_GRAPHQL,
                     Some(actor.id.clone()),
                 )
-                .await?;
-            changed_keys.push(ANIME_PATH_KEY.to_string());
+                .await?,
+            );
         }
 
         if changed_keys.is_empty() {
             return self.get_library_paths(actor).await;
         }
+        warn!("updateLibraryPaths is deprecated; updated default library roots instead");
 
         for (facet, previous) in previous_roots {
             let current = self.effective_scan_roots_for_facet(&facet).await?;

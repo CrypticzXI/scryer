@@ -6559,6 +6559,9 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
         library_scanner.clone(),
         unmatched_items.clone(),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
 
     let first_summary = app
         .scan_library(&user, MediaFacet::Movie)
@@ -6616,6 +6619,9 @@ async fn movie_title_scan_removes_missing_tracked_movie_file() {
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
     let (app, user) =
         bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items);
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
 
     app.create_download_client_config(
         &user,
@@ -6755,6 +6761,9 @@ async fn movie_full_scan_title_create_failure_from_nfo_persists_unmatched_item()
         unmatched_items.clone(),
         Arc::new(EmptySearchMetadataGateway),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
     titles
         .fail_create_or_get_existing("forced movie title creation failure from nfo")
         .await;
@@ -6816,6 +6825,9 @@ async fn movie_full_scan_title_create_failure_from_search_persists_unmatched_ite
             }],
         }),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
     titles
         .fail_create_or_get_existing("forced movie title creation failure from search")
         .await;
@@ -6866,6 +6878,9 @@ async fn series_full_scan_persists_unmatched_folders() {
         unmatched_items.clone(),
         Arc::new(EmptySearchMetadataGateway),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy series root");
 
     let summary = app
         .scan_library(&user, MediaFacet::Series)
@@ -7037,6 +7052,9 @@ async fn movie_full_scan_marks_title_match_total_known_before_completion() {
         Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
         metadata_gateway.clone(),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
 
     let session_id = "movie-title-match-known-before-complete";
     let app_for_scan = app.clone();
@@ -7094,6 +7112,9 @@ async fn series_full_scan_marks_title_match_total_known_before_completion() {
         Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
         metadata_gateway.clone(),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy series root");
 
     let session_id = "series-title-match-known-before-complete";
     let app_for_scan = app.clone();
@@ -7394,6 +7415,9 @@ async fn cancel_full_library_scan_marks_session_canceled_and_allows_restart() {
         Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
         metadata_gateway.clone(),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy series root");
 
     let session_id = "cancel-full-library-scan";
     let app_for_scan = app.clone();
@@ -7873,6 +7897,172 @@ async fn update_media_settings_root_folders_sync_default_library_roots() {
 }
 
 #[tokio::test]
+async fn reconcile_default_library_roots_backfills_legacy_root_folders_when_bootstrap() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let legacy_roots = vec![
+        RootFolderEntry {
+            path: "/mnt/anime-main".to_string(),
+            is_default: true,
+        },
+        RootFolderEntry {
+            path: "/mnt/anime-archive".to_string(),
+            is_default: false,
+        },
+    ];
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "anime.root_folders",
+            &serde_json::to_string(&legacy_roots).expect("serialize legacy roots"),
+        )
+        .await;
+
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings.clone(),
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+    );
+    let anime_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+    let anime_library = app
+        .services
+        .catalog
+        .libraries
+        .get_by_id(&anime_library_id)
+        .await
+        .expect("library lookup")
+        .expect("default anime library");
+    app.services
+        .catalog
+        .libraries
+        .update(
+            &anime_library_id,
+            anime_library.name.clone(),
+            anime_library.slug.clone(),
+            vec![LibraryRootDraft {
+                path: "/data/anime".to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("seed bootstrap root");
+
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile roots");
+
+    let media_settings = app
+        .get_media_settings(&user, MediaFacet::Anime)
+        .await
+        .expect("anime settings");
+    assert_eq!(media_settings.library_path, "/mnt/anime-main");
+    assert_eq!(media_settings.root_folders, legacy_roots);
+}
+
+#[tokio::test]
+async fn reconcile_default_library_roots_keeps_non_bootstrap_canonical_roots() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_MEDIA, "movies.path", "/legacy/movies")
+        .await;
+
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings.clone(),
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+    );
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let movie_library = app
+        .services
+        .catalog
+        .libraries
+        .get_by_id(&movie_library_id)
+        .await
+        .expect("library lookup")
+        .expect("default movie library");
+    app.services
+        .catalog
+        .libraries
+        .update(
+            &movie_library_id,
+            movie_library.name.clone(),
+            movie_library.slug.clone(),
+            vec![LibraryRootDraft {
+                path: "/canonical/movies".to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("seed canonical root");
+
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile roots");
+
+    let paths = app.get_library_paths(&user).await.expect("library paths");
+    assert_eq!(paths.movie_path, "/canonical/movies");
+    assert_eq!(
+        app.read_setting_string_value_for_scope_explicit(
+            SETTINGS_SCOPE_MEDIA,
+            "movies.path",
+            None,
+        )
+        .await
+        .expect("read mirror"),
+        Some("/canonical/movies".to_string())
+    );
+}
+
+#[tokio::test]
+async fn update_default_library_roots_updates_all_facet_root_read_paths() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let expected_roots = vec![
+        RootFolderEntry {
+            path: "/library/movies-main".to_string(),
+            is_default: true,
+        },
+        RootFolderEntry {
+            path: "/library/movies-archive".to_string(),
+            is_default: false,
+        },
+    ];
+
+    app.update_library(
+        &user,
+        &movie_library_id,
+        None,
+        Some(
+            expected_roots
+                .iter()
+                .map(|root| LibraryRootDraft {
+                    path: root.path.clone(),
+                    is_default: root.is_default,
+                })
+                .collect(),
+        ),
+        None,
+    )
+    .await
+    .expect("update canonical roots");
+
+    let media_settings = app
+        .get_media_settings(&user, MediaFacet::Movie)
+        .await
+        .expect("movie settings");
+    assert_eq!(media_settings.library_path, "/library/movies-main");
+    assert_eq!(media_settings.root_folders, expected_roots);
+
+    let library_paths = app.get_library_paths(&user).await.expect("library paths");
+    assert_eq!(library_paths.movie_path, "/library/movies-main");
+
+    let root_folders = app
+        .root_folders_for_facet(&MediaFacet::Movie)
+        .await
+        .expect("root folders");
+    assert_eq!(root_folders, media_settings.root_folders);
+}
+
+#[tokio::test]
 async fn update_library_paths_removing_root_clears_pending_imports_for_removed_root() {
     let settings = Arc::new(StoredSettingsRepo::default());
     settings
@@ -7891,6 +8081,9 @@ async fn update_library_paths_removing_root_clears_pending_imports_for_removed_r
         Arc::new(MutableLibraryScanner::default()),
         unmatched_items.clone(),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy roots");
 
     unmatched_items
         .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
@@ -7953,6 +8146,9 @@ async fn update_library_paths_allows_partial_wizard_paths() {
         Arc::new(MutableLibraryScanner::default()),
         unmatched_items,
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy roots");
 
     let updated = app
         .update_library_paths(
@@ -7991,6 +8187,9 @@ async fn save_external_import_library_paths_removing_root_clears_pending_imports
         Arc::new(MutableLibraryScanner::default()),
         unmatched_items.clone(),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy roots");
 
     unmatched_items
         .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
@@ -8263,6 +8462,9 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item(
             )]),
         }),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
 
     unmatched_items
         .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
@@ -8346,6 +8548,9 @@ async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clea
             )]),
         }),
     );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
 
     let mut ignored_item = build_test_unmatched_item(
         "movie-resolve-ignored-1",
@@ -8396,6 +8601,9 @@ async fn resolve_pending_import_failure_keeps_pending_item() {
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
     let (app, user) =
         bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
 
     unmatched_items
         .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
@@ -8700,6 +8908,9 @@ async fn resolve_pending_import_failure_restores_existing_title_folder_path() {
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
     let (app, user) =
         bootstrap_with_scan_unmatched_tracking(settings, library_scanner, unmatched_items.clone());
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile legacy movie root");
 
     let existing_title = app
         .create_title_without_hydration(

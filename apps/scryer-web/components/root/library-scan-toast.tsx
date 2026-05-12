@@ -385,28 +385,30 @@ export function LibraryScanToast({
                 >
                   {t("settings.libraryScanCancel")}
                 </Button>
-                {onRunInBackground ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 shrink-0 px-2 text-xs"
-                    onClick={onRunInBackground}
-                    disabled={cancelPending}
-                  >
-                    {t("settings.libraryScanRunInBackground")}
-                  </Button>
-                ) : null}
               </div>
             ) : null}
           </div>
-          <p className="text-xs text-muted-foreground">
-            {session.foundTitles > 0 || terminal
-              ? t("settings.libraryScanFoundTitles", {
-                  count: session.foundTitles,
-                })
-              : t("settings.libraryScanDiscovering")}
-          </p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0 text-xs text-muted-foreground">
+              {session.foundTitles > 0 || terminal
+                ? t("settings.libraryScanFoundTitles", {
+                    count: session.foundTitles,
+                  })
+                : t("settings.libraryScanDiscovering")}
+            </p>
+            {showCancel && onRunInBackground ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 px-2 text-xs"
+                onClick={onRunInBackground}
+                disabled={cancelPending}
+              >
+                {t("settings.libraryScanRunInBackground")}
+              </Button>
+            ) : null}
+          </div>
         </div>
 
         <div className="space-y-3">

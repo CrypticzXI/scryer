@@ -851,21 +851,6 @@ export function useMediaSettings({
   const updateCategoryMediaProfileSettings = React.useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      const path =
-        view === "movies"
-          ? moviesPath.trim()
-          : view === "series"
-            ? seriesPath.trim()
-            : "";
-      if ((view === "movies" || view === "series") && !path) {
-        const requiredMessage =
-          view === "movies"
-            ? t("settings.moviesPathRequired")
-            : t("settings.seriesPathRequired");
-        setGlobalStatus(requiredMessage);
-        return;
-      }
-
       const renameTemplate =
         categoryRenameTemplates[activeQualityScopeId].trim();
       const renameCollisionPolicy = normalizeRenameCollisionPolicy(
@@ -889,15 +874,6 @@ export function useMediaSettings({
               scope: activeQualityScopeId,
               requiredAudioLanguages:
                 categoryRequiredAudioLanguages[activeQualityScopeId] ?? [],
-              ...(view === "movies" || view === "series"
-                ? {
-                    libraryPath: path,
-                    rootFolders: rootFolders.map((folder) => ({
-                      path: folder.path,
-                      isDefault: folder.isDefault,
-                    })),
-                  }
-                : {}),
               renameTemplate,
               renameCollisionPolicy,
               renameMissingMetadataPolicy,
@@ -965,9 +941,6 @@ export function useMediaSettings({
       setGlobalStatus,
       t,
       view,
-      moviesPath,
-      seriesPath,
-      rootFolders,
     ],
   );
 

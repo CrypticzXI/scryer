@@ -39,6 +39,7 @@ use crate::library_scan_unmatched::{
     normalize_library_scan_item_path, persist_library_scan_unmatched_item,
     reconcile_library_scan_unmatched_items,
 };
+use crate::settings::settings::root_folder_entries_from_library_roots;
 use tracing::{debug, info, warn};
 
 const LIBRARY_METADATA_LOOKUP_CONCURRENCY: usize = 4;
@@ -284,7 +285,7 @@ fn slug_from_library_name(name: &str) -> String {
     }
 }
 
-fn normalize_library_root_drafts(
+pub(crate) fn normalize_library_root_drafts(
     mut roots: Vec<LibraryRootDraft>,
 ) -> AppResult<Vec<LibraryRootDraft>> {
     let mut normalized = Vec::new();
@@ -461,6 +462,7 @@ impl AppUseCase {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| existing.name.clone());
+        let roots_were_provided = roots.is_some();
         let roots = match roots {
             Some(roots) => normalize_library_root_drafts(roots)?,
             None => existing
@@ -488,6 +490,16 @@ impl AppUseCase {
         if let Some(settings) = settings {
             self.update_library_settings(actor, &library.id, settings)
                 .await?;
+        }
+        if roots_were_provided && library.is_default {
+            let root_folders = root_folder_entries_from_library_roots(&library.roots);
+            self.mirror_default_library_roots_to_legacy_settings(
+                &library.facet,
+                &root_folders,
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
         }
         self.services
             .catalog
