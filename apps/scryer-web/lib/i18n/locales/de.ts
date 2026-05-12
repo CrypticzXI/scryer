@@ -1726,7 +1726,7 @@ const de: LocaleDictionary = {
   "setup.summaryImportedClients": "Download-Clients importiert",
   "setup.summaryImportedIndexers": "Indexer importiert",
   "setup.apiKeyMasked":
-    "Sonarr/Radarr verbirgt diesen API-Schlüssel. Gib ihn manuell ein, um diesen Client zu importieren:",
+    "Sonarr/Radarr verbirgt diesen API-Schlüssel. Gib ihn manuell ein, um den Import fortzusetzen:",
   "setup.apiKeyPlaceholder": "API-Schlüssel einfügen…",
   "setup.apiKeyHelpLink": "Finde ihn in SABnzbd → Konfiguration → Allgemein",
   "settings.runSetupWizard": "Einrichtungsassistenten starten",

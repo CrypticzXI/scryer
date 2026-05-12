@@ -1834,7 +1834,7 @@ fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
                 &linux_image,
                 "bash",
                 "-lc",
-                "set -euo pipefail; /usr/local/cargo/bin/rustup component add clippy; toolchain=\"$('/usr/local/cargo/bin/rustup' show active-toolchain | cut -d' ' -f1)\"; toolchain_bin=\"/usr/local/rustup/toolchains/${toolchain}/bin\"; export PATH=\"${toolchain_bin}:$PATH\"; \"${toolchain_bin}/cargo-clippy\" clippy --workspace -- -D warnings",
+                "set -euo pipefail; /usr/local/cargo/bin/rustup component add clippy; toolchain=\"$('/usr/local/cargo/bin/rustup' show active-toolchain | cut -d' ' -f1)\"; toolchain_bin=\"/usr/local/rustup/toolchains/${toolchain}/bin\"; export PATH=\"${toolchain_bin}:$PATH\"; \"${toolchain_bin}/cargo-clippy\" clippy --workspace --locked -- -D warnings",
             ]);
             run_checked(&mut command)?;
         } else if command_available("x86_64-linux-gnu-gcc")? {

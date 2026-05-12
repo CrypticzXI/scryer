@@ -1361,6 +1361,11 @@ export type DownloadClientApiKeyOverride = {
   apiKey: string;
 };
 
+export type IndexerApiKeyOverride = {
+  dedupKey: string;
+  apiKey: string;
+};
+
 // ── Subtitle mutations ──────────────────────────────────────────────────────
 
 export const searchSubtitlesMutation = `mutation SearchSubtitles($input: SearchSubtitlesInput!) {

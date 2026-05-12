@@ -3826,6 +3826,14 @@ pub struct DownloadClientApiKeyOverrideInput {
     pub api_key: String,
 }
 
+/// API key supplied by the user for an indexer whose key was masked by
+/// Sonarr/Radarr and could not be retrieved automatically.
+#[derive(InputObject)]
+pub struct IndexerApiKeyOverrideInput {
+    pub dedup_key: String,
+    pub api_key: String,
+}
+
 #[derive(InputObject)]
 pub struct ExecuteExternalImportInput {
     pub sonarr: Option<ExternalImportConnectionInput>,
@@ -3838,6 +3846,9 @@ pub struct ExecuteExternalImportInput {
     /// User-supplied API keys for download clients whose keys were masked by
     /// Sonarr/Radarr.  Keyed by the client's `dedup_key`.
     pub download_client_api_key_overrides: Vec<DownloadClientApiKeyOverrideInput>,
+    /// User-supplied API keys for indexers whose keys were masked by
+    /// Sonarr/Radarr.  Keyed by the indexer's `dedup_key`.
+    pub indexer_api_key_overrides: Vec<IndexerApiKeyOverrideInput>,
 }
 
 #[derive(SimpleObject, Clone)]

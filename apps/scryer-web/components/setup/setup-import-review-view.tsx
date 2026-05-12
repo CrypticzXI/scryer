@@ -3,10 +3,26 @@ import { ArrowLeft, Ban, Check, FolderOpen, Loader2, Trash2 } from "lucide-react
 
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
+import type { ConfigFieldDef } from "@/lib/types";
 import type { ExternalImportPreview } from "@/lib/types/external-import";
 
 type ImportFacet = "movie" | "series" | "anime";
 type BrowseTarget = ImportFacet | null;
+
+function providerRequiresApiKey(fields: ConfigFieldDef[]): boolean {
+  return fields.some((field) => {
+    const normalizedKey = field.key.trim().toLowerCase();
+    const normalizedFieldType = field.fieldType.trim().toLowerCase();
+    return field.required && (
+      normalizedKey === "api_key" ||
+      normalizedKey === "apikey" ||
+      (
+        (normalizedFieldType === "password" || normalizedFieldType === "secret")
+        && normalizedKey.includes("api")
+      )
+    );
+  });
+}
 
 interface SetupImportReviewViewProps {
   t: (key: string) => string;
@@ -19,7 +35,8 @@ interface SetupImportReviewViewProps {
   customAnimePaths: string[];
   selectedDcKeys: Set<string>;
   selectedIdxKeys: Set<string>;
-  dcApiKeyOverrides: Map<string, string>;
+  apiKeyOverrides: Map<string, string>;
+  indexerProviderConfigFieldsByType: Map<string, ConfigFieldDef[]>;
   onToggleMoviesPath: (path: string) => void;
   onToggleSeriesPath: (path: string) => void;
   onToggleAnimePath: (path: string) => void;
@@ -31,7 +48,7 @@ interface SetupImportReviewViewProps {
   onRemoveCustomAnimePath: (path: string) => void;
   onToggleDc: (dedupKey: string) => void;
   onToggleIdx: (dedupKey: string) => void;
-  onSetDcApiKey: (dedupKey: string, apiKey: string) => void;
+  onSetApiKey: (dedupKey: string, apiKey: string) => void;
   onImport: () => void;
   onBack: () => void;
   importing: boolean;
@@ -49,7 +66,8 @@ export function SetupImportReviewView({
   customAnimePaths,
   selectedDcKeys,
   selectedIdxKeys,
-  dcApiKeyOverrides,
+  apiKeyOverrides,
+  indexerProviderConfigFieldsByType,
   onToggleMoviesPath,
   onToggleSeriesPath,
   onToggleAnimePath,
@@ -61,7 +79,7 @@ export function SetupImportReviewView({
   onRemoveCustomAnimePath,
   onToggleDc,
   onToggleIdx,
-  onSetDcApiKey,
+  onSetApiKey,
   onImport,
   onBack,
   importing,
@@ -225,9 +243,9 @@ export function SetupImportReviewView({
                   <div className="mb-1 ml-8 space-y-1">
                     <p className="text-xs text-muted-foreground">{t("setup.apiKeyMasked")}</p>
                     <input
-                      type="text"
-                      value={dcApiKeyOverrides.get(dc.dedupKey) ?? ""}
-                      onChange={(e) => onSetDcApiKey(dc.dedupKey, e.target.value)}
+                      type="password"
+                      value={apiKeyOverrides.get(dc.dedupKey) ?? ""}
+                      onChange={(e) => onSetApiKey(dc.dedupKey, e.target.value)}
                       placeholder={t("setup.apiKeyPlaceholder")}
                       className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
                     />
@@ -251,34 +269,60 @@ export function SetupImportReviewView({
 
       {preview.indexers.length > 0 ? (
         <Section title={t("setup.indexersSection")}>
-          {preview.indexers.map((idx) => (
-            <label
-              key={idx.dedupKey}
-              className={`flex items-center gap-3 rounded px-2 py-2 text-sm ${
-                idx.supported ? "cursor-pointer hover:bg-muted" : "cursor-not-allowed opacity-50"
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={selectedIdxKeys.has(idx.dedupKey)}
-                onChange={() => onToggleIdx(idx.dedupKey)}
-                disabled={!idx.supported}
-                className="accent-primary"
-              />
-              <div className="flex-1">
-                <span className="font-medium">{idx.name}</span>
-                <span className="ml-2 text-xs text-muted-foreground">
-                  {idx.implementation}
-                </span>
+          {preview.indexers.map((idx) => {
+            const providerConfigFields =
+              idx.scryerProviderType === null
+                ? []
+                : (indexerProviderConfigFieldsByType.get(idx.scryerProviderType) ?? []);
+            const needsApiKey =
+              idx.supported &&
+              idx.apiKey === null &&
+              providerRequiresApiKey(providerConfigFields);
+            const isSelected = selectedIdxKeys.has(idx.dedupKey);
+
+            return (
+              <div key={idx.dedupKey}>
+                <label
+                  className={`flex items-center gap-3 rounded px-2 py-2 text-sm ${
+                    idx.supported ? "cursor-pointer hover:bg-muted" : "cursor-not-allowed opacity-50"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onToggleIdx(idx.dedupKey)}
+                    disabled={!idx.supported}
+                    className="accent-primary"
+                  />
+                  <div className="flex-1">
+                    <span className="font-medium">{idx.name}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {idx.implementation}
+                      {idx.baseUrl ? ` @ ${idx.baseUrl}` : ""}
+                    </span>
+                  </div>
+                  <SourceBadges sources={idx.sources} t={t} />
+                  {!idx.supported ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {t("setup.notSupported")}
+                    </span>
+                  ) : null}
+                </label>
+                {needsApiKey && isSelected ? (
+                  <div className="mb-1 ml-8 space-y-1">
+                    <p className="text-xs text-muted-foreground">{t("setup.apiKeyMasked")}</p>
+                    <input
+                      type="password"
+                      value={apiKeyOverrides.get(idx.dedupKey) ?? ""}
+                      onChange={(e) => onSetApiKey(idx.dedupKey, e.target.value)}
+                      placeholder={t("setup.apiKeyPlaceholder")}
+                      className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  </div>
+                ) : null}
               </div>
-              <SourceBadges sources={idx.sources} t={t} />
-              {!idx.supported ? (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  {t("setup.notSupported")}
-                </span>
-              ) : null}
-            </label>
-          ))}
+            );
+          })}
         </Section>
       ) : null}
 

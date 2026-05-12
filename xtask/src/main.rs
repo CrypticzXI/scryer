@@ -185,6 +185,19 @@ struct StackLogsArgs {
 
 #[derive(Args)]
 struct ServeArgs {
+    #[command(subcommand)]
+    command: Option<ServeCommand>,
+    #[command(flatten)]
+    options: ServeRunArgs,
+}
+
+#[derive(Subcommand)]
+enum ServeCommand {
+    Clean(ServeRunArgs),
+}
+
+#[derive(Args, Clone)]
+struct ServeRunArgs {
     #[arg(
         long,
         default_value = "127.0.0.1:18080",
@@ -233,6 +246,12 @@ struct ProfileHotpathsArgs {
     interval_seconds: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum ServeMode {
+    PreserveDatabase,
+    CleanDatabase,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let ctx = TaskContext::new();
@@ -252,7 +271,12 @@ fn main() -> Result<()> {
             StackCommand::Logs(args) => stack_logs(&ctx, args),
             StackCommand::Restart(args) => stack_restart(&ctx, args),
         },
-        Commands::Serve(args) => serve_local_scryer(&ctx, args),
+        Commands::Serve(args) => match args.command {
+            Some(ServeCommand::Clean(options)) => {
+                serve_local_scryer(&ctx, options, ServeMode::CleanDatabase)
+            }
+            None => serve_local_scryer(&ctx, args.options, ServeMode::PreserveDatabase),
+        },
         Commands::Seed(args) => match args.command {
             SeedCommand::Dev(args) => seed_dev(&ctx, args),
         },
@@ -427,6 +451,27 @@ fn serve_db_path() -> Result<PathBuf> {
     Ok(db_dir.join("scryer.db"))
 }
 
+fn reset_serve_database(db_path: &Path) -> Result<()> {
+    let cleanup_targets = [
+        db_path.to_path_buf(),
+        PathBuf::from(format!("{}-wal", db_path.display())),
+        PathBuf::from(format!("{}-shm", db_path.display())),
+    ];
+
+    step(format!(
+        "Removing xtask serve database files under {}",
+        db_path.display()
+    ));
+    for path in cleanup_targets {
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+    ok("xtask serve database reset");
+    Ok(())
+}
+
 fn serve_encryption_key() -> String {
     let digest = Sha256::digest(b"scryer-xtask-dev-encryption-key");
     base64::engine::general_purpose::STANDARD.encode(digest)
@@ -446,7 +491,7 @@ fn ensure_frontend_dependencies(ctx: &TaskContext, web_dir: &Path) -> Result<()>
     Ok(())
 }
 
-fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
+fn serve_local_scryer(ctx: &TaskContext, args: ServeRunArgs, mode: ServeMode) -> Result<()> {
     require_command("npm")?;
 
     let env_file = ctx.path(".env");
@@ -473,6 +518,9 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs) -> Result<()> {
     let vite_poll_interval =
         std::env::var("SCRYER_VITE_POLL_INTERVAL_MS").unwrap_or_else(|_| "250".to_string());
     let db_path = serve_db_path()?;
+    if matches!(mode, ServeMode::CleanDatabase) {
+        reset_serve_database(&db_path)?;
+    }
     let db_url = format!("sqlite://{}", db_path.display());
     let encryption_key = serve_encryption_key();
     let backend_binary = ctx.path("target/debug/scryer");
@@ -772,7 +820,7 @@ fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
                 &linux_image,
                 "bash",
                 "-lc",
-                "set -euo pipefail; /usr/local/cargo/bin/rustup component add clippy; toolchain=\"$('/usr/local/cargo/bin/rustup' show active-toolchain | cut -d' ' -f1)\"; toolchain_bin=\"/usr/local/rustup/toolchains/${toolchain}/bin\"; export PATH=\"${toolchain_bin}:$PATH\"; \"${toolchain_bin}/cargo-clippy\" clippy --workspace -- -D warnings",
+                "set -euo pipefail; /usr/local/cargo/bin/rustup component add clippy; toolchain=\"$('/usr/local/cargo/bin/rustup' show active-toolchain | cut -d' ' -f1)\"; toolchain_bin=\"/usr/local/rustup/toolchains/${toolchain}/bin\"; export PATH=\"${toolchain_bin}:$PATH\"; \"${toolchain_bin}/cargo-clippy\" clippy --workspace --locked -- -D warnings",
             ]);
             run_checked(&mut command)?;
         } else if command_available("x86_64-linux-gnu-gcc")? {

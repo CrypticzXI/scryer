@@ -303,8 +303,8 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
   const [customSeriesPaths, setCustomSeriesPaths] = useState<string[]>([]);
   const [selectedDcKeys, setSelectedDcKeys] = useState<Set<string>>(new Set());
   const [selectedIdxKeys, setSelectedIdxKeys] = useState<Set<string>>(new Set());
-  // User-supplied API keys for clients whose keys were masked by Sonarr/Radarr.
-  const [dcApiKeyOverrides, setDcApiKeyOverrides] = useState<Map<string, string>>(new Map());
+  // User-supplied API keys for imports whose keys were masked by Sonarr/Radarr.
+  const [apiKeyOverrides, setApiKeyOverrides] = useState<Map<string, string>>(new Map());
   const [selectedAnimePaths, setSelectedAnimePaths] = useState<string[]>([]);
   const [customAnimePaths, setCustomAnimePaths] = useState<string[]>([]);
   const [importExecuting, setImportExecuting] = useState(false);
@@ -458,6 +458,13 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
   const selectedIdxProviderFields = useMemo(
     () => selectedIdxProvider?.configFields ?? [],
     [selectedIdxProvider],
+  );
+  const indexerProviderConfigFieldsByType = useMemo(
+    () =>
+      new Map(
+        idxProviderOptions.map((option) => [option.value, option.configFields] as const),
+      ),
+    [idxProviderOptions],
   );
 
   const resetIndexerSavedState = useCallback(() => {
@@ -990,6 +997,7 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
       }
 
       setImportPreview(preview);
+      setApiKeyOverrides(new Map());
 
       // Auto-select all supported items
       const dcKeys = new Set<string>();
@@ -1065,6 +1073,13 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
         radarrUrl.trim() && radarrApiKey.trim()
           ? { baseUrl: radarrUrl.trim(), apiKey: radarrApiKey.trim() }
           : undefined;
+      const downloadClientDedupKeys = new Set(
+        importPreview?.downloadClients.map((downloadClient) => downloadClient.dedupKey) ?? [],
+      );
+      const indexerDedupKeys = new Set(
+        importPreview?.indexers.map((indexer) => indexer.dedupKey) ?? [],
+      );
+      const apiKeyOverrideEntries = [...apiKeyOverrides.entries()];
 
       const { data, error } = await client
         .mutation(executeExternalImportMutation, {
@@ -1076,9 +1091,12 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
             selectedAnimePaths: finalSelectedAnimePaths,
             selectedDownloadClientDedupKeys: [...selectedDcKeys],
             selectedIndexerDedupKeys: [...selectedIdxKeys],
-            downloadClientApiKeyOverrides: [...dcApiKeyOverrides.entries()].map(
-              ([dedupKey, apiKey]) => ({ dedupKey, apiKey }),
-            ),
+            downloadClientApiKeyOverrides: apiKeyOverrideEntries
+              .filter(([dedupKey]) => downloadClientDedupKeys.has(dedupKey))
+              .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey })),
+            indexerApiKeyOverrides: apiKeyOverrideEntries
+              .filter(([dedupKey]) => indexerDedupKeys.has(dedupKey))
+              .map(([dedupKey, apiKey]) => ({ dedupKey, apiKey })),
           },
         })
         .toPromise();
@@ -1113,7 +1131,8 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
     finalSelectedAnimePaths,
     selectedDcKeys,
     selectedIdxKeys,
-    dcApiKeyOverrides,
+    apiKeyOverrides,
+    importPreview,
     goToStep,
   ]);
 
@@ -1337,8 +1356,8 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
     });
   }, []);
 
-  const setDcApiKey = useCallback((dedupKey: string, apiKey: string) => {
-    setDcApiKeyOverrides((prev) => {
+  const setApiKeyOverride = useCallback((dedupKey: string, apiKey: string) => {
+    setApiKeyOverrides((prev) => {
       const next = new Map(prev);
       if (apiKey) next.set(dedupKey, apiKey);
       else next.delete(dedupKey);
@@ -1524,7 +1543,8 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
           customAnimePaths={customAnimePaths}
           selectedDcKeys={selectedDcKeys}
           selectedIdxKeys={selectedIdxKeys}
-          dcApiKeyOverrides={dcApiKeyOverrides}
+          apiKeyOverrides={apiKeyOverrides}
+          indexerProviderConfigFieldsByType={indexerProviderConfigFieldsByType}
           onToggleMoviesPath={toggleMoviesPath}
           onToggleSeriesPath={toggleSeriesPath}
           onToggleAnimePath={toggleAnimePath}
@@ -1536,7 +1556,7 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
           onRemoveCustomAnimePath={removeCustomAnimePath}
           onToggleDc={toggleDcKey}
           onToggleIdx={toggleIdxKey}
-          onSetDcApiKey={setDcApiKey}
+          onSetApiKey={setApiKeyOverride}
           onImport={handleImportExecute}
           onBack={() => goToStep(1)}
           importing={importExecuting}

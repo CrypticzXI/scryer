@@ -1593,7 +1593,7 @@ const zh_CN: LocaleDictionary = {
   "setup.summaryImportedClients": "已导入下载客户端",
   "setup.summaryImportedIndexers": "已导入索引器",
   "setup.apiKeyMasked":
-    "Sonarr/Radarr 隐藏了此 API 密钥。请手动输入以导入此客户端：",
+    "Sonarr/Radarr 隐藏了此 API 密钥。请手动输入以继续导入：",
   "setup.apiKeyPlaceholder": "粘贴 API 密钥…",
   "setup.apiKeyHelpLink": "在 SABnzbd > 配置 > 通用 中查找",
   "settings.runSetupWizard": "运行设置向导",

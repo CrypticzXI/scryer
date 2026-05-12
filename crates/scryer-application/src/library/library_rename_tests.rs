@@ -193,13 +193,13 @@ fn fingerprint_deterministic() {
     }];
     let fp1 = build_rename_plan_fingerprint(
         &items,
-        "{title} ({year}).{ext}",
+        "{title}.{ext}",
         &RenameCollisionPolicy::Skip,
         &RenameMissingMetadataPolicy::FallbackTitle,
     );
     let fp2 = build_rename_plan_fingerprint(
         &items,
-        "{title} ({year}).{ext}",
+        "{title}.{ext}",
         &RenameCollisionPolicy::Skip,
         &RenameMissingMetadataPolicy::FallbackTitle,
     );
@@ -454,6 +454,44 @@ fn movie_rename_items_use_matched_media_file_analysis_instead_of_path_parse() {
     assert_eq!(
         items[0].normalized_filename.as_deref(),
         Some("Movie (2024) [2160p H.265 DTS X 7.1].mkv")
+    );
+}
+
+#[test]
+fn movie_rename_items_use_saved_hydrated_localized_title_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let current_path = dir.path().join("Dune.2021.1080p.BluRay.x264-GROUP.mkv");
+    std::fs::write(&current_path, b"movie").expect("seed movie file");
+    let current_path = current_path.to_string_lossy().to_string();
+
+    let mut title = test_movie_title("デューン");
+    title.year = Some(2021);
+    title.aliases = vec!["Dune".to_string()];
+    title.metadata_language = Some("jpn".to_string());
+    let collection = test_movie_collection(&current_path);
+    let media_file = test_media_file(&current_path);
+    let mut planned_targets = std::collections::HashSet::new();
+
+    let items = build_movie_rename_plan_items(
+        &title,
+        vec![collection],
+        vec![media_file],
+        "{title}.{ext}",
+        &RenameCollisionPolicy::Skip,
+        &RenameMissingMetadataPolicy::FallbackTitle,
+        &mut planned_targets,
+    );
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].normalized_filename.as_deref(),
+        Some("デューン.mkv")
+    );
+    assert!(
+        items[0]
+            .proposed_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("/デューン.mkv"))
     );
 }
 

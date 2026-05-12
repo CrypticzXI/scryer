@@ -28,6 +28,7 @@ At a high level, it:
 - coordinates downloads and imports
 - organizes files for downstream media servers
 - manages subtitles
+- deeply multi-lingual, when you select your chosen language, your content gets updated as well (limited to upstream language content availability)
 
 Conceptually it is "Sonarr + Radarr, with some extra bits from other *arr tools", however Scryer is a machine-code compiled binary that runs very efficiently compared to the *arr tools.
 

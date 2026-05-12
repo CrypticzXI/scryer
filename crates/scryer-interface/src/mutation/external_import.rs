@@ -179,6 +179,11 @@ impl ExternalImportMutations {
             .into_iter()
             .map(|o| (o.dedup_key, o.api_key))
             .collect();
+        let idx_api_key_overrides: HashMap<String, String> = input
+            .indexer_api_key_overrides
+            .into_iter()
+            .map(|o| (o.dedup_key, o.api_key))
+            .collect();
 
         let mut result = ExternalImportResultPayload {
             media_paths_saved: false,
@@ -372,7 +377,11 @@ impl ExternalImportMutations {
 
             let base_url = external_import::field_str(&idx.fields, "baseUrl").unwrap_or_default();
             let api_path = external_import::field_str(&idx.fields, "apiPath");
-            let api_key = external_import::field_str_sensitive(&idx.fields, "apiKey");
+            let dedup_key = format!("{}:{}", scryer_type, base_url);
+            let api_key = idx_api_key_overrides
+                .get(&dedup_key)
+                .cloned()
+                .or_else(|| external_import::field_str_sensitive(&idx.fields, "apiKey"));
             let fields = match app.indexer_config_fields_for_provider_type(scryer_type) {
                 Ok(fields) => fields,
                 Err(_) => continue,

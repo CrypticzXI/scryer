@@ -2096,7 +2096,7 @@ const en: LocaleDictionary = {
   "setup.summaryImportedClients": "Download clients imported",
   "setup.summaryImportedIndexers": "Indexers imported",
   "setup.apiKeyMasked":
-    "Sonarr/Radarr hides this API key. Enter it manually to import this client:",
+    "Sonarr/Radarr hides this API key. Enter it manually to continue importing:",
   "setup.apiKeyPlaceholder": "Paste API key…",
   "setup.apiKeyHelpLink": "Find it in SABnzbd → Config → General",
 
