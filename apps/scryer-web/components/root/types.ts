@@ -68,6 +68,8 @@ export type IndexerQueryStats = {
 export type SystemHealth = {
   serviceReady: boolean;
   dbPath: string;
+  datastoreEngine: string;
+  datastoreMigrationKey: string | null;
   totalTitles: number;
   monitoredTitles: number;
   totalUsers: number;

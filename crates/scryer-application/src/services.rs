@@ -630,7 +630,8 @@ pub struct AppConfigServices {
     pub(crate) settings: Arc<dyn SettingsRepository>,
     pub(crate) quality_profiles: Arc<dyn QualityProfileRepository>,
     pub(crate) system_info: Arc<dyn SystemInfoProvider>,
-    pub(crate) db_path: String,
+    pub(crate) logical_backup_exporter: Arc<dyn LogicalBackupExporter>,
+    pub(crate) backup_dir: PathBuf,
     pub(crate) smg_registration_secret: Option<String>,
     pub(crate) smg_ca_cert: Option<String>,
     pub(crate) smg_gateway_url: Option<String>,
@@ -735,7 +736,7 @@ impl AppServices {
         release_attempts: Arc<dyn ReleaseAttemptRepository>,
         settings: Arc<dyn SettingsRepository>,
         quality_profiles: Arc<dyn QualityProfileRepository>,
-        db_path: String,
+        backup_dir: impl Into<PathBuf>,
     ) -> AppServicesBuilder {
         AppServicesBuilder {
             services: Self::with_placeholder_defaults(
@@ -749,7 +750,7 @@ impl AppServices {
                 release_attempts,
                 settings,
                 quality_profiles,
-                db_path,
+                backup_dir.into(),
             ),
             runtime: AppRuntimeState::default(),
             configured: AppServicesBuildConfiguration::default(),
@@ -771,7 +772,7 @@ impl AppServices {
         release_attempts: Arc<dyn ReleaseAttemptRepository>,
         settings: Arc<dyn SettingsRepository>,
         quality_profiles: Arc<dyn QualityProfileRepository>,
-        db_path: String,
+        backup_dir: PathBuf,
     ) -> Self {
         Self {
             catalog: AppCatalogServices {
@@ -834,7 +835,8 @@ impl AppServices {
                 settings,
                 quality_profiles,
                 system_info: Arc::new(NullSystemInfoProvider),
-                db_path,
+                logical_backup_exporter: Arc::new(NullLogicalBackupExporter),
+                backup_dir,
                 smg_registration_secret: None,
                 smg_ca_cert: None,
                 smg_gateway_url: None,
@@ -1196,6 +1198,12 @@ impl AppServicesBuilder {
         system_info,
         Arc<dyn SystemInfoProvider>
     );
+    app_services_builder_setter!(
+        with_logical_backup_exporter,
+        config.logical_backup_exporter,
+        Arc<dyn LogicalBackupExporter>
+    );
+    app_services_builder_setter!(with_backup_dir, config.backup_dir, PathBuf);
     app_services_builder_setter!(
         with_smg_registration_secret,
         config.smg_registration_secret,

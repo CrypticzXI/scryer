@@ -2,6 +2,7 @@ mod catalog_store;
 pub(crate) mod commands;
 mod config_store;
 mod customization_store;
+mod datastore;
 mod download_clients;
 pub mod encryption;
 pub mod external_import;
@@ -23,6 +24,7 @@ mod release_store;
 mod settings_store;
 pub mod smg_enrollment;
 mod spellfix;
+mod sqlite_backup;
 mod sqlite_services;
 mod staged_nzb_store;
 mod title_images;
@@ -32,9 +34,28 @@ mod workflow_store;
 #[cfg(test)]
 mod tests;
 
+pub mod sqlite {
+    pub use crate::catalog_store::SqliteCatalogStore;
+    pub use crate::config_store::SqliteConfigStore;
+    pub use crate::customization_store::SqliteCustomizationStore;
+    pub use crate::library_state_store::SqliteLibraryStateStore;
+    pub use crate::notification_store::SqliteNotificationStore;
+    pub use crate::release_store::SqliteReleaseStore;
+    pub use crate::settings_store::SqliteSettingsStore;
+    pub use crate::sqlite_backup::SqliteLogicalBackupExporter;
+    pub use crate::sqlite_services::{DbRuntime, SqliteServices};
+    pub use crate::title_images::SqliteTitleImageProcessor;
+    pub use crate::workflow_store::SqliteWorkflowStore;
+}
+
 pub use catalog_store::SqliteCatalogStore;
 pub use config_store::SqliteConfigStore;
 pub use customization_store::SqliteCustomizationStore;
+pub use datastore::{
+    DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreEngine,
+    DatastoreSettingsStore, datastore_file_path, restore_backup_bundle_to_datastore_path,
+    validate_datastore,
+};
 pub use download_clients::{
     MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
     SabnzbdDownloadClient, WeaverDownloadClient, resolve_base_url_from_config_json,
@@ -53,6 +74,7 @@ pub use prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
 pub use release_store::SqliteReleaseStore;
 pub use settings_store::SqliteSettingsStore;
 pub use spellfix::register_spellfix_auto_extension;
+pub use sqlite_backup::SqliteLogicalBackupExporter;
 pub use sqlite_services::{DbRuntime, SqliteServices};
 pub use staged_nzb_store::FileSystemStagedNzbStore;
 pub use title_images::SqliteTitleImageProcessor;

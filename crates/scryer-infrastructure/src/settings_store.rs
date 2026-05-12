@@ -244,6 +244,13 @@ impl QualityProfileRepository for SqliteSettingsStore {
 
 #[async_trait]
 impl SystemInfoProvider for SqliteSettingsStore {
+    async fn datastore_info(&self) -> AppResult<scryer_application::DatastoreInfo> {
+        Ok(scryer_application::DatastoreInfo {
+            engine: "sqlite".to_string(),
+            current_migration_key: self.current_migration_version().await?,
+        })
+    }
+
     async fn current_migration_version(&self) -> AppResult<Option<String>> {
         let latest = sqlx::query_as::<_, (i64, String)>(
             "SELECT version, description
@@ -263,9 +270,5 @@ impl SystemInfoProvider for SqliteSettingsStore {
 
     async fn current_encryption_key_base64(&self) -> AppResult<Option<String>> {
         Ok(self.encryption_key().map(|key| key.to_base64()))
-    }
-
-    async fn vacuum_into(&self, dest_path: &str) -> AppResult<()> {
-        self.db.vacuum_into(dest_path).await
     }
 }

@@ -1258,6 +1258,8 @@ pub struct DiskSpacePayload {
 pub struct SystemHealthPayload {
     pub service_ready: bool,
     pub db_path: String,
+    pub datastore_engine: String,
+    pub datastore_migration_key: Option<String>,
     pub total_titles: i32,
     pub monitored_titles: i32,
     pub total_users: i32,

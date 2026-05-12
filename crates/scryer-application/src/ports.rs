@@ -383,9 +383,23 @@ pub trait SettingsRepository: Send + Sync {
 
 #[async_trait]
 pub trait SystemInfoProvider: Send + Sync {
+    async fn datastore_info(&self) -> AppResult<DatastoreInfo>;
     async fn current_migration_version(&self) -> AppResult<Option<String>>;
     async fn current_encryption_key_base64(&self) -> AppResult<Option<String>>;
-    async fn vacuum_into(&self, dest_path: &str) -> AppResult<()>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatastoreInfo {
+    pub engine: String,
+    pub current_migration_key: Option<String>,
+}
+
+#[async_trait]
+pub trait LogicalBackupExporter: Send + Sync {
+    async fn export_backup_bundle(
+        &self,
+        request: crate::BackupBundleExportRequest,
+    ) -> AppResult<crate::BackupExportOutcome>;
 }
 
 #[async_trait]

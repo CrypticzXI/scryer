@@ -11,10 +11,11 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use scryer_application::{
     AppError, AppUseCase, BackupInfo, BackupService, BackupStatus, inspect_backup_bundle,
-    restore_backup_bundle_into_pool,
 };
 use scryer_domain::AppPermission;
-use scryer_infrastructure::{MigrationMode, SqliteServices};
+use scryer_infrastructure::{
+    MigrationMode, datastore_file_path, restore_backup_bundle_to_datastore_path,
+};
 use scryer_interface::context::AuthRuntimeStateHandle;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -99,12 +100,6 @@ fn pending_restore_ready_path(data_dir: &Path) -> PathBuf {
 
 fn managed_instance_secrets_path(data_dir: &Path) -> PathBuf {
     data_dir.join(INSTANCE_SECRETS_ENV_FILENAME)
-}
-
-fn sqlite_file_path(db_path: &str) -> PathBuf {
-    let raw = db_path.strip_prefix("sqlite://").unwrap_or(db_path);
-    let raw = raw.split('?').next().unwrap_or(raw);
-    PathBuf::from(raw)
 }
 
 fn metadata_path_for_backup(backup_dir: &Path, filename: &str) -> PathBuf {
@@ -277,23 +272,13 @@ fn stage_restore_bundle(
         })?;
 
     let result = runtime.block_on(async move {
-        let temp_services =
-            SqliteServices::new_with_mode(pending_db_path.to_string_lossy(), migration_mode)
-                .await?;
-
-        let prepared = restore_backup_bundle_into_pool(
-            temp_services.pool(),
+        let prepared = restore_backup_bundle_to_datastore_path(
+            &pending_db_path,
+            migration_mode,
             &bundle_path,
             password.as_deref(),
         )
         .await?;
-
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-            .execute(temp_services.pool())
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!("failed to checkpoint restored database: {error}"))
-            })?;
 
         tokio::fs::write(&pending_secrets_path, prepared.instance_secrets_env())
             .await
@@ -307,8 +292,6 @@ fn stage_restore_bundle(
         })?;
 
         let summary = restore_summary_response(prepared.summary());
-        temp_services.pool().close().await;
-        drop(temp_services);
         ensure_owner_only_permissions(&pending_db_path).map_err(|error| {
             AppError::Repository(format!(
                 "failed to protect pending restore database: {error}"
@@ -626,7 +609,7 @@ pub(crate) fn finalize_pending_restore_if_present(
     std::fs::copy(&pending_secrets, &target_secrets)?;
     ensure_owner_only_permissions(&target_secrets)?;
 
-    let target_db = sqlite_file_path(db_path);
+    let target_db = datastore_file_path(db_path);
     if let Some(parent) = target_db.parent() {
         std::fs::create_dir_all(parent)?;
     }

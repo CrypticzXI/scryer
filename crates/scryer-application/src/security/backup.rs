@@ -1,6 +1,6 @@
 use super::backup_bundle::{
     BACKUP_ENCRYPTED_EXTENSION, BACKUP_FORMAT_VERSION, BACKUP_PLAINTEXT_EXTENSION,
-    BACKUP_SOURCE_ENGINE_SQLITE, BackupExportSecrets, export_backup_bundle,
+    BackupBundleExportRequest, BackupExportSecrets,
 };
 use super::*;
 use crate::types::BackupStatus;
@@ -10,14 +10,6 @@ use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
 const BACKUP_METADATA_EXTENSION: &str = ".metadata.json";
-
-/// Resolves the backup directory from the configured database path.
-fn backup_dir_from_db_path(db_path: &str) -> PathBuf {
-    // db_path is like "sqlite:///data/scryer.db" or "/data/scryer.db"
-    let raw = db_path.strip_prefix("sqlite://").unwrap_or(db_path);
-    let db_file = Path::new(raw);
-    db_file.parent().unwrap_or(Path::new(".")).join("backups")
-}
 
 fn metadata_filename(filename: &str) -> String {
     format!("{filename}{BACKUP_METADATA_EXTENSION}")
@@ -52,6 +44,7 @@ fn build_backup_filename(encrypted: bool) -> String {
 fn creating_backup_info(
     filename: String,
     created_at: String,
+    source_engine: String,
     source_migration_key: Option<String>,
     encrypted: bool,
 ) -> BackupInfo {
@@ -60,7 +53,7 @@ fn creating_backup_info(
         size_bytes: 0,
         created_at,
         format_version: BACKUP_FORMAT_VERSION.to_string(),
-        source_engine: BACKUP_SOURCE_ENGINE_SQLITE.to_string(),
+        source_engine,
         source_migration_key,
         encrypted,
         row_counts: BTreeMap::new(),
@@ -197,23 +190,25 @@ fn ensure_owner_only_permissions(_path: &Path) -> AppResult<()> {
 }
 
 async fn export_backup_file(
-    db_path: &str,
+    exporter: Arc<dyn LogicalBackupExporter>,
     backup_dir: &Path,
     filename: &str,
     passphrase: Option<&str>,
+    source_engine: String,
     source_migration_key: Option<String>,
     secrets: BackupExportSecrets,
 ) -> AppResult<BackupInfo> {
     let output_path = bundle_path(backup_dir, filename);
-    let outcome = export_backup_bundle(
-        db_path,
-        &output_path,
-        passphrase,
-        source_migration_key,
-        env!("CARGO_PKG_VERSION"),
-        secrets,
-    )
-    .await?;
+    let outcome = exporter
+        .export_backup_bundle(BackupBundleExportRequest {
+            output_path: output_path.clone(),
+            passphrase: passphrase.map(str::to_string),
+            source_migration_key,
+            source_scryer_version: env!("CARGO_PKG_VERSION").to_string(),
+            source_engine,
+            secrets,
+        })
+        .await?;
 
     let size_bytes = std::fs::metadata(&output_path)
         .map_err(|error| AppError::Repository(format!("failed to stat backup bundle: {error}")))?
@@ -240,7 +235,7 @@ pub trait BackupService {
 
 impl BackupService for AppUseCase {
     fn backup_dir(&self) -> PathBuf {
-        backup_dir_from_db_path(&self.services.config.db_path)
+        self.services.config.backup_dir.clone()
     }
 }
 
@@ -280,16 +275,13 @@ impl AppUseCase {
             AppError::Repository(format!("failed to create backup directory: {error}"))
         })?;
 
-        let source_migration_key = self
-            .services
-            .config
-            .system_info
-            .current_migration_version()
-            .await?;
+        let datastore_info = self.services.config.system_info.datastore_info().await?;
+        let source_migration_key = datastore_info.current_migration_key.clone();
         let secrets = self.collect_backup_export_secrets().await?;
         let queued = creating_backup_info(
             build_backup_filename(passphrase.is_some()),
             chrono::Utc::now().to_rfc3339(),
+            datastore_info.engine.clone(),
             source_migration_key.clone(),
             passphrase.is_some(),
         );
@@ -298,19 +290,21 @@ impl AppUseCase {
         let filename = queued.filename.clone();
         let app = self.clone();
         let actor_id = actor.id.clone();
-        let db_path = self.services.config.db_path.clone();
+        let exporter = self.services.config.logical_backup_exporter.clone();
         let queued_for_task = queued.clone();
         let dir_for_task = dir.clone();
         let passphrase_for_task = passphrase.map(str::to_string);
+        let source_engine = datastore_info.engine;
 
         info!(filename = %filename, encrypted = queued.encrypted, "backup bundle scheduled");
 
         tokio::spawn(async move {
             let result = export_backup_file(
-                &db_path,
+                exporter,
                 &dir_for_task,
                 &filename,
                 passphrase_for_task.as_deref(),
+                source_engine,
                 source_migration_key,
                 secrets,
             )
@@ -475,18 +469,14 @@ impl AppUseCase {
             })?;
 
             let filename = build_backup_filename(false);
-            let source_migration_key = self
-                .services
-                .config
-                .system_info
-                .current_migration_version()
-                .await?;
+            let datastore_info = self.services.config.system_info.datastore_info().await?;
             let info = export_backup_file(
-                &self.services.config.db_path,
+                self.services.config.logical_backup_exporter.clone(),
                 &dir,
                 &filename,
                 None,
-                source_migration_key,
+                datastore_info.engine,
+                datastore_info.current_migration_key,
                 self.collect_backup_export_secrets().await?,
             )
             .await?;

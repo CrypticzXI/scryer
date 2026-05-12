@@ -1117,6 +1117,8 @@ pub struct DiskSpaceInfo {
 pub struct SystemHealth {
     pub service_ready: bool,
     pub db_path: String,
+    pub datastore_engine: String,
+    pub datastore_migration_key: Option<String>,
     pub total_titles: usize,
     pub monitored_titles: usize,
     pub total_users: usize,

@@ -22,7 +22,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppServices, AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
+    AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
     HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
     NotificationPluginProvider, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
     RuntimePluginLoad, SeriesFacetHandler, SubtitlePluginProvider, TitleImageKind,
@@ -35,12 +35,11 @@ use scryer_application::{
     start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
+    DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreSettingsStore,
     FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
     MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient, NzbgetDownloadClient,
-    PrioritizedDownloadClientRouter, SmgEnrollmentConfig, SqliteCatalogStore, SqliteConfigStore,
-    SqliteCustomizationStore, SqliteLibraryStateStore, SqliteNotificationStore, SqliteReleaseStore,
-    SqliteServices, SqliteSettingsStore, SqliteTitleImageProcessor, SqliteWorkflowStore,
-    WeaverDownloadClient, start_weaver_subscription_bridge,
+    PrioritizedDownloadClientRouter, SmgEnrollmentConfig, WeaverDownloadClient,
+    start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{LogBuffer, build_schema_with_log_buffer};
@@ -404,11 +403,13 @@ async fn bootstrap_application(
 ) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
     let bootstrap_start = std::time::Instant::now();
 
+    let datastore_config =
+        DatastoreConfig::sqlite(db_path.clone(), data_dir.clone(), migration_mode);
     let t = std::time::Instant::now();
-    let db = SqliteServices::new_with_mode(db_path.clone(), migration_mode)
+    let datastore = DatastoreAssembly::connect(datastore_config)
         .await
-        .map_err(|e| format!("failed to initialize sqlite services: {e}"))?;
-    let bootstrap_settings_store = SqliteSettingsStore::new(&db);
+        .map_err(|e| format!("failed to initialize datastore services: {e}"))?;
+    let bootstrap_settings_store = datastore.bootstrap_settings_store();
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "database initialized");
 
     let t = std::time::Instant::now();
@@ -419,19 +420,10 @@ async fn bootstrap_application(
 
     // Bootstrap encryption master key (env > keystore > legacy DB migration > auto-generate).
     let t = std::time::Instant::now();
-    let encryption_key =
-        scryer_infrastructure::encryption::ensure_encryption_key(&db, Some(data_dir.clone()))
-            .await
-            .map_err(|e| format!("failed to ensure encryption master key: {e}"))?;
-
-    // Activate encryption for all subsequent DB operations
-    db.set_encryption_key(encryption_key)
+    let migrated_indexers = datastore
+        .bootstrap_encryption()
         .await
-        .map_err(|e| format!("failed to set encryption key on DB worker: {e}"))?;
-    let migrated_indexers = db
-        .migrate_legacy_indexer_config_sources()
-        .await
-        .map_err(|e| format!("failed to migrate legacy indexer config sources: {e}"))?;
+        .map_err(|e| format!("failed to bootstrap datastore encryption: {e}"))?;
     if migrated_indexers > 0 {
         tracing::info!(
             migrated = migrated_indexers,
@@ -534,40 +526,22 @@ async fn bootstrap_application(
 
     tracing::info!(elapsed_ms = %bootstrap_start.elapsed().as_millis(), "bootstrap complete");
 
-    let catalog_store = Arc::new(SqliteCatalogStore::new(&db));
-    let titles: Arc<dyn scryer_application::TitleRepository> = catalog_store.clone();
-    let users: Arc<dyn scryer_application::UserRepository> = catalog_store.clone();
-    let shows: Arc<dyn scryer_application::ShowRepository> = catalog_store.clone();
-    let libraries: Arc<dyn scryer_application::LibraryRepository> = catalog_store;
-    let config_store = Arc::new(SqliteConfigStore::new(&db));
-    let release_store = Arc::new(SqliteReleaseStore::new(&db));
-    let settings_store = Arc::new(SqliteSettingsStore::new(&db));
-    let indexer_configs: Arc<dyn scryer_application::IndexerConfigRepository> =
-        config_store.clone();
-    let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
-    let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
-        config_store.clone();
-    let subtitle_provider_configs: Arc<dyn scryer_application::SubtitleProviderConfigRepository> =
-        config_store.clone();
-    let settings_for_router: Arc<dyn scryer_application::SettingsRepository> =
-        settings_store.clone();
-    let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
-        settings_store.clone();
-    let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
+    let indexer_configs = datastore.indexer_configs();
+    let download_client_configs = datastore.download_client_configs();
+    let subtitle_provider_configs = datastore.subtitle_provider_configs();
+    let settings_for_router = datastore.settings();
+    let customization_store = datastore.customization_store();
     let staged_nzb_store = Arc::new(
-        FileSystemStagedNzbStore::new_with_startup_purge(
-            FileSystemStagedNzbStore::path_for_main_db(&db_path),
-            true,
-        )
-        .await
-        .map_err(|e| format!("failed to initialize staged nzb store: {e}"))?,
+        FileSystemStagedNzbStore::new_with_startup_purge(datastore.staged_nzb_path(), true)
+            .await
+            .map_err(|e| format!("failed to initialize staged nzb store: {e}"))?,
     );
     let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
-    bootstrap_plugin_installations(customization_store.as_ref())
+    bootstrap_plugin_installations(&customization_store)
         .await
         .map_err(|e| format!("failed to bootstrap plugin installations: {e}"))?;
     let (runtime_plugins, disabled_builtin_plugins) =
-        load_runtime_plugin_state(customization_store.as_ref())
+        load_runtime_plugin_state(&customization_store)
             .await
             .map_err(|e| format!("failed to load runtime plugin state: {e}"))?;
     let indexer_runtime_plugins = runtime_plugins
@@ -613,9 +587,7 @@ async fn bootstrap_application(
         staged_nzb_pipeline_limit.clone(),
         Some(download_client_plugin_provider.clone()),
     ));
-    let indexer_stats: Arc<dyn scryer_application::IndexerStatsTracker> = Arc::new(
-        scryer_infrastructure::InMemoryIndexerStatsTracker::new(Some(db.pool().clone())),
-    );
+    let indexer_stats = datastore.indexer_stats_tracker();
 
     let dynamic_provider = Arc::new(scryer_plugins::DynamicPluginProvider::new(
         scryer_plugins::build_indexer_plugin_provider_from_runtime_plugins(
@@ -641,9 +613,7 @@ async fn bootstrap_application(
     );
 
     let indexer_client = Arc::new(indexer_client);
-    let title_image_processor = Arc::new(SqliteTitleImageProcessor::new());
-    let title_images_for_route: Arc<dyn TitleImageRepository> =
-        Arc::new(SqliteLibraryStateStore::new(&db));
+    let title_images_for_route: Arc<dyn TitleImageRepository> = datastore.title_images();
     let metadata_gateway_url = std::env::var("SCRYER_METADATA_GATEWAY_GRAPHQL_URL")
         .ok()
         .filter(|v| !v.is_empty())
@@ -678,10 +648,9 @@ async fn bootstrap_application(
         .map(String::from)
         .or_else(|| std::env::var("SCRYER_SMG_CA_CERT").ok())
         .filter(|s| !s.is_empty());
-    let metadata_gateway = Arc::new(MetadataGatewayClient::new(
+    let metadata_gateway = Arc::new(datastore.metadata_gateway_client(
         metadata_gateway_url,
         metadata_gateway_insecure,
-        db.clone(),
         SmgEnrollmentConfig {
             registration_secret: smg_registration_secret,
             ca_cert: smg_ca_cert,
@@ -691,7 +660,6 @@ async fn bootstrap_application(
     let library_renamer = Arc::new(FileSystemLibraryRenamer::new());
 
     let (tracked_download_tx, tracked_download_rx) = tokio::sync::mpsc::channel(64);
-    let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
 
     // Warm up SMG enrollment so the mTLS client is ready before the first real
     // metadata query, and check for version incompatibility.
@@ -746,69 +714,41 @@ async fn bootstrap_application(
             &disabled_builtin_plugins,
         ),
     );
-    let notification_store = Arc::new(SqliteNotificationStore::new(&db));
-    let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
-    let services = AppServices::builder(
-        titles,
-        shows,
-        users,
-        indexer_configs,
-        indexer_client,
-        download_client,
-        download_client_configs,
-        release_attempts,
-        settings_for_router.clone(),
-        quality_profiles,
-        db_path.clone(),
-    )
-    .with_libraries(libraries)
-    .with_library_state_store(library_state_store)
-    .with_customization_store(customization_store)
-    .with_acquisition_state(workflow_store.clone())
-    .with_domain_events(workflow_store.clone())
-    .with_download_submissions(workflow_store.clone())
-    .with_download_queue_commands(workflow_store.clone())
-    .with_external_import_monitor_snapshots(workflow_store.clone())
-    .with_import_artifacts(workflow_store.clone())
-    .with_imports(workflow_store.clone())
-    .with_job_runs(workflow_store.clone())
-    .with_notification_store(notification_store)
-    .with_system_info(settings_store.clone())
-    .with_smg_registration_secret(
-        SMG_REGISTRATION_SECRET
-            .map(String::from)
-            .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
-            .filter(|value| !value.is_empty()),
-    )
-    .with_smg_ca_cert(
-        SMG_CA_CERT
-            .map(String::from)
-            .or_else(|| std::env::var("SCRYER_SMG_CA_CERT").ok())
-            .filter(|value| !value.is_empty()),
-    )
-    .with_smg_gateway_url(Some(
-        std::env::var("SCRYER_METADATA_GATEWAY_GRAPHQL_URL")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .or_else(|| SMG_GRAPHQL_URL.map(String::from))
-            .unwrap_or_else(|| "http://127.0.0.1:8090/graphql".to_string()),
-    ))
-    .with_metadata_gateway(metadata_gateway)
-    .with_library_scanner(library_scanner)
-    .with_library_renamer(library_renamer)
-    .with_file_importer(Arc::new(scryer_infrastructure::FsFileImporter::new()))
-    .with_title_image_processor(title_image_processor)
-    .with_staged_nzb_store(staged_nzb_store)
-    .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
-    .with_indexer_stats(indexer_stats)
-    .with_plugin_provider(plugin_provider)
-    .with_download_client_plugin_provider(download_client_plugin_provider.clone())
-    .with_subtitle_provider_configs(subtitle_provider_configs)
-    .with_subtitle_plugin_provider(subtitle_plugin_provider)
-    .with_notification_provider(Arc::new(notif_provider))
-    .with_workflow_operations(workflow_store)
-    .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))
-    .build();
+    let services = datastore
+        .app_services_builder(indexer_client, download_client)
+        .with_smg_registration_secret(
+            SMG_REGISTRATION_SECRET
+                .map(String::from)
+                .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
+                .filter(|value| !value.is_empty()),
+        )
+        .with_smg_ca_cert(
+            SMG_CA_CERT
+                .map(String::from)
+                .or_else(|| std::env::var("SCRYER_SMG_CA_CERT").ok())
+                .filter(|value| !value.is_empty()),
+        )
+        .with_smg_gateway_url(Some(
+            std::env::var("SCRYER_METADATA_GATEWAY_GRAPHQL_URL")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .or_else(|| SMG_GRAPHQL_URL.map(String::from))
+                .unwrap_or_else(|| "http://127.0.0.1:8090/graphql".to_string()),
+        ))
+        .with_metadata_gateway(metadata_gateway)
+        .with_library_scanner(library_scanner)
+        .with_library_renamer(library_renamer)
+        .with_file_importer(Arc::new(scryer_infrastructure::FsFileImporter::new()))
+        .with_staged_nzb_store(staged_nzb_store)
+        .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
+        .with_indexer_stats(indexer_stats)
+        .with_plugin_provider(plugin_provider)
+        .with_download_client_plugin_provider(download_client_plugin_provider.clone())
+        .with_subtitle_provider_configs(subtitle_provider_configs)
+        .with_subtitle_plugin_provider(subtitle_plugin_provider)
+        .with_notification_provider(Arc::new(notif_provider))
+        .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))
+        .build();
 
     let app_use_case = AppUseCase::new(
         services,
@@ -988,8 +928,8 @@ async fn bootstrap_application(
     };
 
     let cors_for_layer = cors.clone();
-    let admin_migrations_db = settings_store.as_ref().clone();
-    let admin_settings_db = settings_store.as_ref().clone();
+    let admin_migrations_db = bootstrap_settings_store.clone();
+    let admin_settings_db = bootstrap_settings_store.clone();
     let admin_settings_app = app_use_case.clone();
     let admin_settings_auth_runtime = auth_runtime.clone();
     let backup_route_state = BackupRouteState {
@@ -1174,7 +1114,9 @@ fn if_none_match_matches(raw_header: &str, quoted_etag: &str, bare_etag: &str) -
 
 /// ValidateOnly mode: check for pending migrations and exit.
 async fn run_validate_only(db_path: &str, migration_mode: MigrationMode) {
-    match SqliteServices::new_with_mode(db_path, migration_mode).await {
+    let data_dir = resolve_data_dir(None);
+    let config = DatastoreConfig::sqlite(db_path.to_string(), data_dir, migration_mode);
+    match validate_datastore(config).await {
         Ok(_) => {}
         Err(error) => {
             let message = error.to_string();
@@ -1423,7 +1365,7 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-async fn check_version_upgrade(settings_store: SqliteSettingsStore) -> VersionLifecycle {
+async fn check_version_upgrade(settings_store: DatastoreSettingsStore) -> VersionLifecycle {
     const SCOPE: &str = "system";
     const KEY: &str = "last_run_version";
 
@@ -1465,7 +1407,7 @@ async fn check_version_upgrade(settings_store: SqliteSettingsStore) -> VersionLi
     lifecycle
 }
 
-async fn clear_legacy_history_retention_forever_override(settings_store: SqliteSettingsStore) {
+async fn clear_legacy_history_retention_forever_override(settings_store: DatastoreSettingsStore) {
     let keep_forever = settings_store
         .get_setting_with_defaults("system", HISTORY_KEEP_FOREVER_KEY, None)
         .await
@@ -1585,7 +1527,7 @@ async fn load_runtime_external_plugin_entry(
 }
 
 async fn load_runtime_plugin_state(
-    customization_store: &SqliteCustomizationStore,
+    customization_store: &DatastoreCustomizationStore,
 ) -> Result<(Vec<RuntimePluginLoad>, Vec<String>), String> {
     let enabled_plugins = customization_store
         .get_enabled_plugin_wasm_bytes()
@@ -1645,7 +1587,7 @@ async fn load_runtime_plugin_state(
 }
 
 async fn bootstrap_plugin_installations(
-    customization_store: &SqliteCustomizationStore,
+    customization_store: &DatastoreCustomizationStore,
 ) -> Result<(), String> {
     let removed = customization_store
         .delete_incompatible_external_plugin_installations()
@@ -1662,7 +1604,7 @@ async fn bootstrap_plugin_installations(
 }
 
 async fn seed_builtin_plugin_installations(
-    customization_store: &SqliteCustomizationStore,
+    customization_store: &DatastoreCustomizationStore,
 ) -> Result<(), String> {
     struct BuiltinPluginSeed {
         name: String,
@@ -1888,7 +1830,8 @@ mod tests {
         TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
     };
     use scryer_infrastructure::{
-        MigrationMode, SqliteCustomizationStore, SqliteServices, SqliteSettingsStore,
+        DatastoreCustomizationStore, DatastoreSettingsStore, MigrationMode,
+        SqliteCustomizationStore, SqliteServices, SqliteSettingsStore,
     };
     use tempfile::tempdir;
     use tower::ServiceExt;
@@ -1978,7 +1921,8 @@ mod tests {
         let services = SqliteServices::new(db_path.to_string_lossy())
             .await
             .unwrap();
-        let customization = SqliteCustomizationStore::new(&services);
+        let customization =
+            DatastoreCustomizationStore::from_sqlite(SqliteCustomizationStore::new(&services));
         let now = Utc::now();
 
         customization
@@ -2042,7 +1986,8 @@ mod tests {
         let services = SqliteServices::new(db_path.to_string_lossy())
             .await
             .unwrap();
-        let customization = SqliteCustomizationStore::new(&services);
+        let customization =
+            DatastoreCustomizationStore::from_sqlite(SqliteCustomizationStore::new(&services));
         let now = Utc::now();
         let compressed = vec![
             0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x00, 0x01, 0x00, 0x00, 0x99, 0xe9, 0xd8, 0x51,
@@ -2263,7 +2208,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    async fn bootstrap_settings_store() -> (tempfile::TempDir, SqliteSettingsStore) {
+    async fn bootstrap_settings_store() -> (tempfile::TempDir, DatastoreSettingsStore) {
         let temp = tempdir().expect("tempdir");
         let db_path = temp.path().join("scryer.db");
         let services = SqliteServices::new_with_mode(
@@ -2272,7 +2217,7 @@ mod tests {
         )
         .await
         .expect("sqlite services");
-        let store = SqliteSettingsStore::new(&services);
+        let store = DatastoreSettingsStore::from_sqlite(SqliteSettingsStore::new(&services));
         seed_service_setting_definitions(store.clone())
             .await
             .expect("seed setting definitions");

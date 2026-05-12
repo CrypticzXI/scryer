@@ -95,19 +95,20 @@ impl AppUseCase {
             recent_event_preview.push(event.message.clone());
         }
 
-        let db_migration_version = self
-            .services
-            .config
-            .system_info
-            .current_migration_version()
-            .await
-            .ok()
-            .flatten();
+        let datastore_info = self.services.config.system_info.datastore_info().await.ok();
+        let db_migration_version = datastore_info
+            .as_ref()
+            .and_then(|info| info.current_migration_key.clone());
+        let datastore_engine = datastore_info
+            .map(|info| info.engine)
+            .unwrap_or_else(|| "unknown".to_string());
         let indexer_stats = self.services.integrations.indexer_stats.all_stats();
 
         Ok(SystemHealth {
             service_ready: true,
-            db_path: self.services.config.db_path.clone(),
+            db_path: datastore_engine.clone(),
+            datastore_engine,
+            datastore_migration_key: db_migration_version.clone(),
             total_titles: titles.len(),
             monitored_titles,
             total_users: users.len(),

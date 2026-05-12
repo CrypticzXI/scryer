@@ -1688,6 +1688,8 @@ export const systemHealthQuery = `query SystemHealth {
   systemHealth {
     serviceReady
     dbPath
+    datastoreEngine
+    datastoreMigrationKey
     totalTitles
     monitoredTitles
     totalUsers

@@ -33,7 +33,8 @@ use crate::{
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
     TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository,
+    WorkflowOperationInfo, WorkflowOperationRepository, ports::DatastoreInfo,
+    ports::LogicalBackupExporter,
 };
 
 #[derive(Default)]
@@ -670,14 +671,33 @@ pub struct NullSystemInfoProvider;
 
 #[async_trait]
 impl SystemInfoProvider for NullSystemInfoProvider {
+    async fn datastore_info(&self) -> AppResult<DatastoreInfo> {
+        Ok(DatastoreInfo {
+            engine: "unknown".to_string(),
+            current_migration_key: None,
+        })
+    }
+
     async fn current_migration_version(&self) -> AppResult<Option<String>> {
         Ok(None)
     }
     async fn current_encryption_key_base64(&self) -> AppResult<Option<String>> {
         Ok(None)
     }
-    async fn vacuum_into(&self, _dest_path: &str) -> AppResult<()> {
-        Ok(())
+}
+
+#[derive(Default)]
+pub struct NullLogicalBackupExporter;
+
+#[async_trait]
+impl LogicalBackupExporter for NullLogicalBackupExporter {
+    async fn export_backup_bundle(
+        &self,
+        _request: crate::BackupBundleExportRequest,
+    ) -> AppResult<crate::BackupExportOutcome> {
+        Err(AppError::Repository(
+            "logical backup exporter is not configured".to_string(),
+        ))
     }
 }
 
