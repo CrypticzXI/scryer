@@ -80,9 +80,13 @@ export const RootHeader = React.memo(function RootHeader({
   const { theme } = useTheme();
   const navigate = useNavigate();
   const { token, user, logout, effectiveFormLoginEnabled } = useAuth();
+  const headerRef = React.useRef<HTMLElement>(null);
   const searchShellRef = React.useRef<HTMLDivElement>(null);
   const searchPanelRef = React.useRef<HTMLDivElement>(null);
+  const lastScrollYRef = React.useRef(0);
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
+  const [mobileHeaderHeight, setMobileHeaderHeight] = React.useState(0);
+  const [isMobileHeaderVisible, setIsMobileHeaderVisible] = React.useState(true);
   const hasAnyMatches =
     catalogSearchResults.length > 0 ||
     FACET_REGISTRY.some((f) => (metadataSearchResults[f.metadataKey] ?? []).length > 0);
@@ -174,6 +178,88 @@ export const RootHeader = React.memo(function RootHeader({
     setGlobalSearch("");
     globalSearchInputRef.current?.focus();
   }, [globalSearchInputRef, setGlobalSearch]);
+
+  React.useEffect(() => {
+    if (!isMobile) {
+      setMobileHeaderHeight(0);
+      return;
+    }
+
+    const headerElement = headerRef.current;
+    if (!headerElement) {
+      return;
+    }
+
+    const updateHeaderHeight = () => {
+      setMobileHeaderHeight(headerElement.getBoundingClientRect().height);
+    };
+
+    updateHeaderHeight();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateHeaderHeight);
+      return () => window.removeEventListener("resize", updateHeaderHeight);
+    }
+
+    const resizeObserver = new ResizeObserver(() => updateHeaderHeight());
+    resizeObserver.observe(headerElement);
+    return () => resizeObserver.disconnect();
+  }, [isMobile]);
+
+  React.useEffect(() => {
+    if (!isMobile || accountMenuOpen || isGlobalSearchPanelOpen) {
+      setIsMobileHeaderVisible(true);
+    }
+  }, [accountMenuOpen, isGlobalSearchPanelOpen, isMobile]);
+
+  React.useEffect(() => {
+    if (!isMobile) {
+      return;
+    }
+
+    lastScrollYRef.current = Math.max(window.scrollY, 0);
+    let frameId: number | null = null;
+
+    const updateHeaderVisibility = () => {
+      frameId = null;
+      const nextScrollY = Math.max(window.scrollY, 0);
+      const previousScrollY = lastScrollYRef.current;
+      const delta = nextScrollY - previousScrollY;
+
+      if (Math.abs(delta) < 12) {
+        return;
+      }
+
+      lastScrollYRef.current = nextScrollY;
+
+      if (nextScrollY <= Math.max(mobileHeaderHeight, 24)) {
+        setIsMobileHeaderVisible(true);
+        return;
+      }
+
+      if (accountMenuOpen || isGlobalSearchPanelOpen) {
+        setIsMobileHeaderVisible(true);
+        return;
+      }
+
+      setIsMobileHeaderVisible(delta < 0);
+    };
+
+    const handleScroll = () => {
+      if (frameId !== null) {
+        return;
+      }
+      frameId = window.requestAnimationFrame(updateHeaderVisibility);
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      window.removeEventListener("scroll", handleScroll);
+    };
+  }, [accountMenuOpen, isGlobalSearchPanelOpen, isMobile, mobileHeaderHeight]);
 
   const renderCatalogSection = React.useCallback(
     (items: import("@/lib/types").TitleRecord[], facet: Facet) => {
@@ -356,8 +442,13 @@ export const RootHeader = React.memo(function RootHeader({
   return (
     <>
       <header
+        ref={headerRef}
         data-slot="root-header"
-        className="relative sticky top-0 z-50 border-b border-border bg-background/90 pt-safe-comfort px-safe backdrop-blur"
+        className={cn(
+          "relative z-50 border-b border-border bg-background/90 pt-safe-comfort px-safe backdrop-blur transition-transform duration-200 ease-out",
+          isMobile ? "fixed inset-x-0 top-0" : "sticky top-0",
+          !isMobileHeaderVisible && isMobile ? "-translate-y-full" : "translate-y-0",
+        )}
       >
         <RouteCommandPalette
           config={routeCommandPalette}
@@ -525,6 +616,13 @@ export const RootHeader = React.memo(function RootHeader({
           ) : null}
         </div>
       </header>
+      {isMobile ? (
+        <div
+          aria-hidden="true"
+          className="shrink-0 transition-[height] duration-200 ease-out"
+          style={{ height: isMobileHeaderVisible ? mobileHeaderHeight : 0 }}
+        />
+      ) : null}
       {isGlobalSearchPanelOpen && !isMobile ? (
         <div
           className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm"

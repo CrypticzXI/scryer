@@ -90,6 +90,9 @@ export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndex
     rateLimitBurst
     disabledUntil
     isEnabled
+    isManaged
+    managedParentConfigId
+    supportsManagedChildrenSync
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
@@ -112,6 +115,9 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     rateLimitBurst
     disabledUntil
     isEnabled
+    isManaged
+    managedParentConfigId
+    supportsManagedChildrenSync
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
@@ -124,6 +130,15 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
 
 export const deleteIndexerMutation = `mutation DeleteIndexer($input: DeleteIndexerConfigInput!) {
   deleteIndexerConfig(input: $input)
+}`;
+
+export const syncIndexerConfigMutation = `mutation SyncIndexerConfig($id: String!) {
+  syncIndexerConfig(id: $id) {
+    parentConfigId
+    createdIds
+    updatedIds
+    deletedIds
+  }
 }`;
 
 export const testIndexerConnectionMutation = `mutation TestIndexerConnection($input: TestIndexerConnectionInput!) {
@@ -1326,6 +1341,7 @@ export const previewExternalImportMutation = `mutation PreviewExternalImport($in
     indexers {
       sources name implementation scryerProviderType
       baseUrl apiKey dedupKey supported
+      childCount childNames requiresApiKeyOverride apiKeyHelpUrl
     }
   }
 }`;

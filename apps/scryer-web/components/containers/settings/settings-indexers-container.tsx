@@ -21,6 +21,7 @@ import {
 import {
   createIndexerMutation,
   deleteIndexerMutation,
+  syncIndexerConfigMutation,
   testIndexerConnectionMutation,
   updateIndexerMutation,
 } from "@/lib/graphql/mutations";
@@ -396,6 +397,10 @@ export function SettingsIndexersContainer({
   };
 
   const editIndexer = (indexer: IndexerRecord) => {
+    if (indexer.isManaged) {
+      setGlobalStatus(t("settings.managedIndexerReadOnly"));
+      return;
+    }
     const selectedProvider =
       providerTypes.find(
         (providerType) =>
@@ -420,11 +425,19 @@ export function SettingsIndexersContainer({
   };
 
   const deleteIndexer = async (indexer: IndexerRecord) => {
+    if (indexer.isManaged) {
+      setGlobalStatus(t("settings.managedIndexerReadOnly"));
+      return;
+    }
     setPendingDeleteIndexer(indexer);
   };
 
   const toggleIndexerEnabled = useCallback(
     async (indexer: IndexerRecord) => {
+      if (indexer.isManaged) {
+        setGlobalStatus(t("settings.managedIndexerReadOnly"));
+        return;
+      }
       const nextIsEnabled = !indexer.isEnabled;
       setMutatingIndexerId(indexer.id);
       try {
@@ -438,6 +451,32 @@ export function SettingsIndexersContainer({
           .toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.indexerUpdated"));
+        await refreshIndexers();
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToUpdate"),
+        );
+      } finally {
+        setMutatingIndexerId(null);
+      }
+    },
+    [client, refreshIndexers, setGlobalStatus, t],
+  );
+
+  const syncIndexer = useCallback(
+    async (indexer: IndexerRecord) => {
+      if (!indexer.supportsManagedChildrenSync || indexer.isManaged) {
+        return;
+      }
+      setMutatingIndexerId(indexer.id);
+      try {
+        const { error } = await client
+          .mutation(syncIndexerConfigMutation, {
+            id: indexer.id,
+          })
+          .toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.indexerSynced", { name: indexer.name }));
         await refreshIndexers();
       } catch (error) {
         setGlobalStatus(
@@ -544,6 +583,7 @@ export function SettingsIndexersContainer({
         editIndexer={editIndexer}
         toggleIndexerEnabled={toggleIndexerEnabled}
         deleteIndexer={deleteIndexer}
+        syncIndexer={syncIndexer}
         providerTypes={providerTypes}
         testIndexerConnection={testIndexerConnection}
         isTestingConnection={isTestingConnection}

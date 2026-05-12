@@ -23,9 +23,9 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
     let db_root = ctx.path("crates/scryer/src/db");
     let baseline_relative = format!("baselines/{:04}_baseline.sql", args.through);
     let baseline_path = db_root.join(&baseline_relative);
-    if baseline_path.exists() && !args.force {
+    if baseline_path.exists() {
         bail!(
-            "{} already exists; pass --force to overwrite",
+            "{} already exists; committed baselines are immutable, so add a new baseline version instead of overwriting it",
             baseline_path.display()
         );
     }

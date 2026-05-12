@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Edit, MonitorCog, Power, PowerOff, Trash2 } from "lucide-react";
+import { Edit, Lock, MonitorCog, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -51,6 +51,7 @@ type SettingsIndexersSectionProps = {
   editIndexer: (indexer: IndexerRecord) => void;
   toggleIndexerEnabled: (indexer: IndexerRecord) => Promise<void> | void;
   deleteIndexer: (indexer: IndexerRecord) => Promise<void> | void;
+  syncIndexer: (indexer: IndexerRecord) => Promise<void> | void;
   providerTypes: ProviderTypeInfo[];
   testIndexerConnection: () => Promise<void> | void;
   isTestingConnection: boolean;
@@ -109,7 +110,10 @@ function IndexerActionButton({
   ...props
 }: React.ComponentProps<typeof Button> & {
   label: string;
-  tone: Extract<BoxedActionButtonTone, "edit" | "enabled" | "disabled" | "delete">;
+  tone: Extract<
+    BoxedActionButtonTone,
+    "edit" | "enabled" | "disabled" | "delete" | "search"
+  >;
 }) {
   return (
     <Button
@@ -344,12 +348,28 @@ export function SettingsIndexersSection({
   editIndexer,
   toggleIndexerEnabled,
   deleteIndexer,
+  syncIndexer,
   providerTypes,
   testIndexerConnection,
   isTestingConnection,
 }: SettingsIndexersSectionProps) {
   const t = useTranslate();
   const normalizedProviderType = indexerDraft.providerType.trim().toLowerCase();
+  const indexersById = React.useMemo(() => {
+    return new Map(settingsIndexers.map((indexer) => [indexer.id, indexer]));
+  }, [settingsIndexers]);
+  const managedChildCounts = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const indexer of settingsIndexers) {
+      if (indexer.managedParentConfigId) {
+        counts.set(
+          indexer.managedParentConfigId,
+          (counts.get(indexer.managedParentConfigId) ?? 0) + 1,
+        );
+      }
+    }
+    return counts;
+  }, [settingsIndexers]);
 
   // Build provider type options from loaded plugins, falling back to hardcoded list
   const providerTypeOptions = React.useMemo(() => {
@@ -479,9 +499,40 @@ export function SettingsIndexersSection({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {settingsIndexers.map((indexer) => (
-                <TableRow key={indexer.id}>
-                  <TableCell>{indexer.name}</TableCell>
+              {settingsIndexers.map((indexer) => {
+                const parentName = indexer.managedParentConfigId
+                  ? indexersById.get(indexer.managedParentConfigId)?.name
+                  : null;
+                const managedChildCount = managedChildCounts.get(indexer.id) ?? 0;
+                return (
+                <TableRow
+                  key={indexer.id}
+                  className={indexer.isManaged ? "bg-muted/25" : undefined}
+                >
+                  <TableCell>
+                    <div className="space-y-1">
+                      <div className="font-medium">{indexer.name}</div>
+                      {indexer.isManaged ? (
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-500/35 dark:bg-amber-500/12 dark:text-amber-200">
+                            <Lock className="h-3 w-3" />
+                            {t("settings.managedIndexerBadge")}
+                          </span>
+                          <span>
+                            {parentName
+                              ? t("settings.managedByIndexer", { name: parentName })
+                              : t("settings.managedByParent")}
+                          </span>
+                        </div>
+                      ) : managedChildCount > 0 ? (
+                        <div className="text-xs text-muted-foreground">
+                          {t("settings.managesIndexerCount", {
+                            count: managedChildCount,
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  </TableCell>
                   <TableCell>
                     <IndexerProviderTypeCell
                       providerType={indexer.providerType}
@@ -513,45 +564,68 @@ export function SettingsIndexersSection({
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
-                      <IndexerActionButton
-                        tone={indexer.isEnabled ? "disabled" : "enabled"}
-                        onClick={() => void toggleIndexerEnabled(indexer)}
-                        disabled={mutatingIndexerId === indexer.id}
-                        label={
-                          indexer.isEnabled
-                            ? t("label.disable")
-                            : t("label.enable")
-                        }
-                      >
-                        {indexer.isEnabled ? (
-                          <PowerOff className="h-4 w-4" />
-                        ) : (
-                          <Power className="h-4 w-4" />
-                        )}
-                      </IndexerActionButton>
-                      <IndexerActionButton
-                        tone="edit"
-                        onClick={() => editIndexer(indexer)}
-                        label={t("label.edit")}
-                      >
-                        <Edit className="h-4 w-4" />
-                      </IndexerActionButton>
-                      <IndexerActionButton
-                        tone="delete"
-                        onClick={() => void deleteIndexer(indexer)}
-                        disabled={mutatingIndexerId === indexer.id}
-                        label={
-                          mutatingIndexerId === indexer.id
-                            ? t("label.deleting")
-                            : t("label.delete")
-                        }
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </IndexerActionButton>
+                      {indexer.isManaged ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                          <Lock className="h-3 w-3" />
+                          {t("settings.managedIndexerReadOnlyShort")}
+                        </span>
+                      ) : (
+                        <>
+                          {indexer.supportsManagedChildrenSync ? (
+                            <IndexerActionButton
+                              tone="search"
+                              onClick={() => void syncIndexer(indexer)}
+                              disabled={mutatingIndexerId === indexer.id}
+                              label={t("settings.indexerSyncNow")}
+                            >
+                              <RefreshCw className={cn(
+                                "h-4 w-4",
+                                mutatingIndexerId === indexer.id && "animate-spin",
+                              )} />
+                            </IndexerActionButton>
+                          ) : null}
+                          <IndexerActionButton
+                            tone={indexer.isEnabled ? "disabled" : "enabled"}
+                            onClick={() => void toggleIndexerEnabled(indexer)}
+                            disabled={mutatingIndexerId === indexer.id}
+                            label={
+                              indexer.isEnabled
+                                ? t("label.disable")
+                                : t("label.enable")
+                            }
+                          >
+                            {indexer.isEnabled ? (
+                              <PowerOff className="h-4 w-4" />
+                            ) : (
+                              <Power className="h-4 w-4" />
+                            )}
+                          </IndexerActionButton>
+                          <IndexerActionButton
+                            tone="edit"
+                            onClick={() => editIndexer(indexer)}
+                            label={t("label.edit")}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </IndexerActionButton>
+                          <IndexerActionButton
+                            tone="delete"
+                            onClick={() => void deleteIndexer(indexer)}
+                            disabled={mutatingIndexerId === indexer.id}
+                            label={
+                              mutatingIndexerId === indexer.id
+                                ? t("label.deleting")
+                                : t("label.delete")
+                            }
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </IndexerActionButton>
+                        </>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
               {settingsIndexers.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8} className="text-muted-foreground">

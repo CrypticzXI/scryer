@@ -73,6 +73,8 @@ const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
+const RELEASE_SIBLING_E2E_TOKENS: &[&str] = &["../e2e/", "..\\e2e\\"];
 
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
 type FulcioTrustAnchors = Vec<TrustAnchor<'static>>;
@@ -730,6 +732,81 @@ fn git_tracked_dirty_paths(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| ctx.path(line))
         .collect())
+}
+
+fn git_tracked_files(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
+    let mut command = ctx.command_in("git", &ctx.repo_root);
+    command.args(["ls-files", "-z"]);
+    let debug = format!("{command:?}");
+    let output = command.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("command failed: {debug}\n{stderr}");
+    }
+
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| ctx.path(String::from_utf8_lossy(entry).as_ref()))
+        .collect())
+}
+
+fn scan_release_hygiene_content(path: &Path, content: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    for (line_number, line) in content.lines().enumerate() {
+        let line_number = line_number + 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if RELEASE_LOCAL_PATH_TOKENS
+            .iter()
+            .any(|token| line.contains(token))
+        {
+            violations.push(format!(
+                "{}:{line_number}: local absolute path reference: {trimmed}",
+                path.display()
+            ));
+        }
+
+        if RELEASE_SIBLING_E2E_TOKENS
+            .iter()
+            .any(|token| line.contains(token))
+        {
+            violations.push(format!(
+                "{}:{line_number}: sibling e2e repo reference: {trimmed}",
+                path.display()
+            ));
+        }
+    }
+
+    violations
+}
+
+fn release_hygiene_violations(ctx: &TaskContext) -> Result<Vec<String>> {
+    let mut violations = Vec::new();
+
+    for path in git_tracked_files(ctx)? {
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(&ctx.repo_root)
+            .unwrap_or(path.as_path())
+            .to_path_buf();
+        let content = String::from_utf8_lossy(&bytes);
+        violations.extend(scan_release_hygiene_content(&relative, &content));
+    }
+
+    violations.sort();
+    Ok(violations)
 }
 
 fn latest_prefixed_tag(ctx: &TaskContext, prefix: &str) -> Result<Option<String>> {
@@ -2019,6 +2096,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
             }
             web_result?;
             rust_result?;
+            run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
             ok("Parallel validation passed");
             Ok::<(Vec<PathBuf>, Vec<String>), anyhow::Error>((
                 refreshed_builtin_paths,
@@ -2026,6 +2104,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                     "builtin_refresh".to_string(),
                     "web_validation".to_string(),
                     "rust_validation".to_string(),
+                    "release_hygiene".to_string(),
                 ],
             ))
         };
@@ -2533,6 +2612,23 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     }
 
     prefixed_ok(prefix, "CI clippy and Rust tests passed");
+    Ok(())
+}
+
+fn run_scryer_release_hygiene_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
+    prefixed_step(prefix, "Checking release hygiene");
+    let violations = release_hygiene_violations(ctx)?;
+    if !violations.is_empty() {
+        bail!(
+            "release hygiene check failed:\n{}",
+            violations
+                .into_iter()
+                .map(|violation| format!("  - {violation}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    prefixed_ok(prefix, "Release hygiene check passed");
     Ok(())
 }
 
@@ -3359,5 +3455,47 @@ mod tests {
             true,
         );
         assert!(reason.is_none());
+    }
+
+    #[test]
+    fn release_hygiene_flags_local_absolute_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-plugin-sdk/src/lib.rs"),
+            "const SDK_ROOT: &str = \"/Users/jeremy/dev/scryer-media/scryer\";",
+        );
+
+        assert_eq!(
+            violations,
+            vec![
+                "crates/scryer-plugin-sdk/src/lib.rs:1: local absolute path reference: const SDK_ROOT: &str = \"/Users/jeremy/dev/scryer-media/scryer\";"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_hygiene_flags_sibling_e2e_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-application/src/lib.rs"),
+            "let fixture = manifest_dir.join(\"../e2e/testdata\").join(name);",
+        );
+
+        assert_eq!(
+            violations,
+            vec![
+                "crates/scryer-application/src/lib.rs:1: sibling e2e repo reference: let fixture = manifest_dir.join(\"../e2e/testdata\").join(name);"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_hygiene_allows_repo_local_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-application/src/lib.rs"),
+            "let fixture = manifest_dir.join(\"tests/fixtures\").join(name);",
+        );
+
+        assert!(violations.is_empty());
     }
 }

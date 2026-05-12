@@ -35,7 +35,8 @@ interface SetupImportReviewViewProps {
   customAnimePaths: string[];
   selectedDcKeys: Set<string>;
   selectedIdxKeys: Set<string>;
-  apiKeyOverrides: Map<string, string>;
+  dcApiKeyOverrides: Map<string, string>;
+  idxApiKeyOverrides: Map<string, string>;
   indexerProviderConfigFieldsByType: Map<string, ConfigFieldDef[]>;
   onToggleMoviesPath: (path: string) => void;
   onToggleSeriesPath: (path: string) => void;
@@ -48,7 +49,8 @@ interface SetupImportReviewViewProps {
   onRemoveCustomAnimePath: (path: string) => void;
   onToggleDc: (dedupKey: string) => void;
   onToggleIdx: (dedupKey: string) => void;
-  onSetApiKey: (dedupKey: string, apiKey: string) => void;
+  onSetDcApiKey: (dedupKey: string, apiKey: string) => void;
+  onSetIdxApiKey: (dedupKey: string, apiKey: string) => void;
   onImport: () => void;
   onBack: () => void;
   importing: boolean;
@@ -66,7 +68,8 @@ export function SetupImportReviewView({
   customAnimePaths,
   selectedDcKeys,
   selectedIdxKeys,
-  apiKeyOverrides,
+  dcApiKeyOverrides,
+  idxApiKeyOverrides,
   indexerProviderConfigFieldsByType,
   onToggleMoviesPath,
   onToggleSeriesPath,
@@ -79,7 +82,8 @@ export function SetupImportReviewView({
   onRemoveCustomAnimePath,
   onToggleDc,
   onToggleIdx,
-  onSetApiKey,
+  onSetDcApiKey,
+  onSetIdxApiKey,
   onImport,
   onBack,
   importing,
@@ -244,8 +248,8 @@ export function SetupImportReviewView({
                     <p className="text-xs text-muted-foreground">{t("setup.apiKeyMasked")}</p>
                     <input
                       type="password"
-                      value={apiKeyOverrides.get(dc.dedupKey) ?? ""}
-                      onChange={(e) => onSetApiKey(dc.dedupKey, e.target.value)}
+                      value={dcApiKeyOverrides.get(dc.dedupKey) ?? ""}
+                      onChange={(e) => onSetDcApiKey(dc.dedupKey, e.target.value)}
                       placeholder={t("setup.apiKeyPlaceholder")}
                       className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
                     />
@@ -274,12 +278,13 @@ export function SetupImportReviewView({
               idx.scryerProviderType === null
                 ? []
                 : (indexerProviderConfigFieldsByType.get(idx.scryerProviderType) ?? []);
-            const needsApiKey =
+            const needsGenericApiKey =
               idx.supported &&
               idx.apiKey === null &&
               providerRequiresApiKey(providerConfigFields);
             const isSelected = selectedIdxKeys.has(idx.dedupKey);
-
+            const isProwlarr = idx.scryerProviderType === "prowlarr";
+            const needsApiKey = idx.requiresApiKeyOverride || needsGenericApiKey;
             return (
               <div key={idx.dedupKey}>
                 <label
@@ -300,6 +305,12 @@ export function SetupImportReviewView({
                       {idx.implementation}
                       {idx.baseUrl ? ` @ ${idx.baseUrl}` : ""}
                     </span>
+                    {isProwlarr ? (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {t("setup.prowlarrManagedChildren")}: {idx.childCount}
+                        {idx.childNames.length > 0 ? ` · ${idx.childNames.join(", ")}` : ""}
+                      </div>
+                    ) : null}
                   </div>
                   <SourceBadges sources={idx.sources} t={t} />
                   {!idx.supported ? (
@@ -310,14 +321,26 @@ export function SetupImportReviewView({
                 </label>
                 {needsApiKey && isSelected ? (
                   <div className="mb-1 ml-8 space-y-1">
-                    <p className="text-xs text-muted-foreground">{t("setup.apiKeyMasked")}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {isProwlarr ? t("setup.prowlarrApiKeyMasked") : t("setup.apiKeyMasked")}
+                    </p>
                     <input
                       type="password"
-                      value={apiKeyOverrides.get(idx.dedupKey) ?? ""}
-                      onChange={(e) => onSetApiKey(idx.dedupKey, e.target.value)}
+                      value={idxApiKeyOverrides.get(idx.dedupKey) ?? ""}
+                      onChange={(e) => onSetIdxApiKey(idx.dedupKey, e.target.value)}
                       placeholder={t("setup.apiKeyPlaceholder")}
                       className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
                     />
+                    {idx.apiKeyHelpUrl ? (
+                      <a
+                        href={idx.apiKeyHelpUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block text-xs text-primary underline underline-offset-2"
+                      >
+                        {isProwlarr ? t("setup.prowlarrApiKeyHelpLink") : t("setup.apiKeyHelpLink")}
+                      </a>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

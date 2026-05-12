@@ -940,12 +940,19 @@ const en: LocaleDictionary = {
   "settings.indexerLastError": "Error {{time}}",
   "settings.indexerLastSearched": "Searched {{time}}",
   "settings.indexerNoActivity": "No activity",
+  "settings.indexerSyncNow": "Sync now",
   "settings.indexerAdd": "Add indexer",
   "settings.indexerUpdate": "Update Indexer",
   "settings.indexerCreate": "Create Indexer",
   "settings.indexerFilterPlaceholder": "Filter by provider type",
   "settings.noIndexersFound": "No indexers found.",
-  "settings.indexerConfig": "Plugin Configuration",
+  "settings.indexerConfig": "Provider Configuration",
+  "settings.managedIndexerBadge": "Managed",
+  "settings.managedByIndexer": "Managed by {{name}}",
+  "settings.managedByParent": "Managed by parent",
+  "settings.managesIndexerCount": "Manages {{count}} indexers",
+  "settings.managedIndexerReadOnly": "Managed indexers are controlled by their parent sync and cannot be edited directly.",
+  "settings.managedIndexerReadOnlyShort": "Read-only",
   "settings.downloadClientsSection": "Download clients",
   "settings.downloadClientFilterPlaceholder": "Filter by client name or type",
   "settings.newPassword": "New Password",
@@ -1725,6 +1732,7 @@ const en: LocaleDictionary = {
   "status.failedToUpdate": "Failed to update item.",
   "status.indexerCreated": "Indexer saved.",
   "status.indexerUpdated": "Indexer updated.",
+  "status.indexerSynced": "Synced indexers managed by {{name}}.",
   "status.searchMonitoredQueued":
     "Queued {{count}} monitored item(s) for background search.",
   "status.searchSkippedInProgress":
@@ -2123,6 +2131,12 @@ const en: LocaleDictionary = {
     "Sonarr/Radarr hides this API key. Enter it manually to continue importing:",
   "setup.apiKeyPlaceholder": "Paste API key…",
   "setup.apiKeyHelpLink": "Find it in SABnzbd → Config → General",
+  "setup.prowlarrManagedChildren": "Managed indexers",
+  "setup.prowlarrApiKeyMasked":
+    "Sonarr/Radarr hides the Prowlarr API key, or the detected keys conflict. Enter the Prowlarr API key from Settings → General:",
+  "setup.prowlarrApiKeyRequired":
+    "Enter the Prowlarr API key for {{name}} before importing.",
+  "setup.prowlarrApiKeyHelpLink": "Find it in Prowlarr → Settings → General",
 
   "settings.runSetupWizard": "Run setup wizard",
 

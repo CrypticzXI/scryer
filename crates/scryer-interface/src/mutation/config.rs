@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
-    from_download_client_config, from_housekeeping_report, from_indexer_config_with_fields,
-    from_rss_sync_report, from_subtitle_provider_config,
+    from_download_client_config, from_housekeeping_report, from_indexer_config_sync_result,
+    from_indexer_config_with_fields, from_rss_sync_report, from_subtitle_provider_config,
 };
 use crate::types::*;
 
@@ -85,6 +85,9 @@ impl ConfigMutations {
                     is_enabled: input.is_enabled,
                     enable_interactive_search: input.enable_interactive_search,
                     enable_auto_search: input.enable_auto_search,
+                    managed_parent_config_id: None,
+                    managed_child_key: None,
+                    managed_metadata_json: None,
                     config_json: input.config_json,
                 },
             )
@@ -393,6 +396,20 @@ impl ConfigMutations {
         .await
         .map_err(to_gql_error)?;
         Ok(true)
+    }
+
+    async fn sync_indexer_config(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> GqlResult<IndexerConfigSyncPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .sync_indexer_config(&actor, &id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_indexer_config_sync_result(result))
     }
 
     async fn run_housekeeping(&self, ctx: &Context<'_>) -> GqlResult<HousekeepingReportPayload> {

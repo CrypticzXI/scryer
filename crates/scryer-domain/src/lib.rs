@@ -603,6 +603,9 @@ pub struct IndexerConfig {
     pub is_enabled: bool,
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
+    pub managed_parent_config_id: Option<String>,
+    pub managed_child_key: Option<String>,
+    pub managed_metadata_json: Option<String>,
     pub last_health_status: Option<String>,
     pub last_error_at: Option<DateTime<Utc>>,
     pub config_json: Option<String>,
@@ -2763,6 +2766,14 @@ pub struct IndexerProviderCapabilities {
     pub torrent: Option<IndexerTorrentCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_features: Option<IndexerResponseFeatures>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerManagementCapabilities {
+    #[serde(default)]
+    pub supports_validate_config: bool,
+    #[serde(default)]
+    pub supports_managed_children_sync: bool,
 }
 
 impl IndexerProviderCapabilities {

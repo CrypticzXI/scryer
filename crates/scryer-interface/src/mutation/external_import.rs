@@ -8,7 +8,8 @@ use scryer_application::{
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
 use scryer_infrastructure::external_import::{
-    self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, ExternalArrClient,
+    self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, DetectedProwlarrIndexer,
+    ExternalArrClient,
 };
 use tokio::task::JoinSet;
 
@@ -19,6 +20,133 @@ use crate::types::*;
 pub(crate) struct ExternalImportMutations;
 
 const SONARR_EPISODE_FETCH_CONCURRENCY: usize = 8;
+
+#[derive(Debug, Clone)]
+struct ProwlarrImportGroup {
+    base_url: String,
+    sources: Vec<String>,
+    child_names: Vec<String>,
+    api_key: Option<String>,
+    api_key_conflict: bool,
+}
+
+impl ProwlarrImportGroup {
+    fn new(detected: DetectedProwlarrIndexer, source: &str) -> Self {
+        let mut group = Self {
+            base_url: detected.base_url.clone(),
+            sources: Vec::new(),
+            child_names: Vec::new(),
+            api_key: None,
+            api_key_conflict: false,
+        };
+        group.merge(detected, source);
+        group
+    }
+
+    fn merge(&mut self, detected: DetectedProwlarrIndexer, source: &str) {
+        push_unique(&mut self.sources, source.to_string());
+        push_unique(&mut self.child_names, detected.child_name);
+        if let Some(api_key) = detected.api_key {
+            match self.api_key.as_deref() {
+                Some(existing) if existing != api_key => {
+                    self.api_key = None;
+                    self.api_key_conflict = true;
+                }
+                None if !self.api_key_conflict => {
+                    self.api_key = Some(api_key);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn requires_api_key_override(&self) -> bool {
+        self.api_key_conflict || self.api_key.is_none()
+    }
+
+    fn dedup_key(&self) -> String {
+        prowlarr_dedup_key(&self.base_url)
+    }
+
+    fn to_payload(&self) -> ExternalImportIndexerPayload {
+        ExternalImportIndexerPayload {
+            sources: self.sources.clone(),
+            name: prowlarr_display_name(&self.base_url),
+            implementation: "Prowlarr".to_string(),
+            scryer_provider_type: Some("prowlarr".to_string()),
+            base_url: Some(self.base_url.clone()),
+            api_key: self.api_key.clone(),
+            dedup_key: self.dedup_key(),
+            supported: true,
+            child_count: i32::try_from(self.child_names.len()).unwrap_or(i32::MAX),
+            child_names: self.child_names.clone(),
+            requires_api_key_override: self.requires_api_key_override(),
+            api_key_help_url: prowlarr_api_key_help_url(&self.base_url),
+        }
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn prowlarr_dedup_key(base_url: &str) -> String {
+    format!("prowlarr:{}", base_url.trim().trim_end_matches('/'))
+}
+
+fn prowlarr_display_name(base_url: &str) -> String {
+    let host = url::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| base_url.trim().trim_end_matches('/').to_string());
+    format!("Prowlarr ({host})")
+}
+
+fn prowlarr_api_key_help_url(base_url: &str) -> Option<String> {
+    let normalized = base_url.trim().trim_end_matches('/');
+    url::Url::parse(normalized).ok()?;
+    Some(format!("{normalized}/settings/general"))
+}
+
+fn prowlarr_parent_config_json(base_url: &str, api_key: &str) -> String {
+    serde_json::json!({
+        "base_url": base_url.trim().trim_end_matches('/'),
+        "api_key": api_key.trim(),
+    })
+    .to_string()
+}
+
+fn indexer_config_base_url(config_json: Option<&str>) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(config_json?).ok()?;
+    value
+        .get("base_url")
+        .or_else(|| value.get("baseUrl"))?
+        .as_str()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn merge_prowlarr_group(
+    groups: &mut HashMap<String, ProwlarrImportGroup>,
+    detected: DetectedProwlarrIndexer,
+    source: &str,
+) {
+    let dedup_key = prowlarr_dedup_key(&detected.base_url);
+    if let Some(group) = groups.get_mut(&dedup_key) {
+        group.merge(detected, source);
+    } else {
+        groups.insert(dedup_key, ProwlarrImportGroup::new(detected, source));
+    }
+}
+
+fn same_base_url(left: &str, right: &str) -> bool {
+    left.trim()
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(right.trim().trim_end_matches('/'))
+}
 
 fn imported_indexer_config_json(
     fields: &[scryer_domain::ConfigFieldDef],
@@ -92,6 +220,7 @@ impl ExternalImportMutations {
             std::collections::HashMap::new();
         let mut idx_key_idx: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
+        let mut prowlarr_groups: HashMap<String, ProwlarrImportGroup> = HashMap::new();
 
         for (conn_opt, source) in [(&input.sonarr, "sonarr"), (&input.radarr, "radarr")] {
             let Some(conn) = conn_opt else { continue };
@@ -134,9 +263,19 @@ impl ExternalImportMutations {
 
                     if let Ok(indexers) = client.list_indexers().await {
                         for idx in indexers {
+                            if let Some(detected) =
+                                external_import::detect_prowlarr_proxy_indexer(&idx)
+                            {
+                                merge_prowlarr_group(&mut prowlarr_groups, detected, source);
+                                continue;
+                            }
+
                             let mapped = map_indexer(&idx, source);
                             if let Some(&existing) = idx_key_idx.get(&mapped.dedup_key) {
-                                payload.indexers[existing].sources.push(source.to_string());
+                                push_unique(
+                                    &mut payload.indexers[existing].sources,
+                                    source.to_string(),
+                                );
                             } else {
                                 idx_key_idx
                                     .insert(mapped.dedup_key.clone(), payload.indexers.len());
@@ -154,6 +293,13 @@ impl ExternalImportMutations {
                 }
             }
         }
+
+        let mut prowlarr_payloads = prowlarr_groups
+            .into_values()
+            .map(|group| group.to_payload())
+            .collect::<Vec<_>>();
+        prowlarr_payloads.sort_by(|left, right| left.dedup_key.cmp(&right.dedup_key));
+        payload.indexers.extend(prowlarr_payloads);
 
         Ok(payload)
     }
@@ -216,6 +362,7 @@ impl ExternalImportMutations {
         let mut all_indexers: Vec<(ArrIndexer, String)> = Vec::new();
         let mut seen_dc_keys: HashSet<String> = HashSet::new();
         let mut seen_idx_keys: HashSet<String> = HashSet::new();
+        let mut prowlarr_groups: HashMap<String, ProwlarrImportGroup> = HashMap::new();
 
         for (conn_opt, source) in [(&input.sonarr, "sonarr"), (&input.radarr, "radarr")] {
             let Some(conn) = conn_opt else { continue };
@@ -240,6 +387,14 @@ impl ExternalImportMutations {
 
             if let Ok(indexers) = client.list_indexers().await {
                 for idx in indexers {
+                    if let Some(detected) = external_import::detect_prowlarr_proxy_indexer(&idx) {
+                        let dedup_key = prowlarr_dedup_key(&detected.base_url);
+                        if selected_idx_keys.contains(&dedup_key) {
+                            merge_prowlarr_group(&mut prowlarr_groups, detected, source);
+                        }
+                        continue;
+                    }
+
                     let mapped = map_indexer(&idx, source);
                     if mapped.supported
                         && seen_idx_keys.insert(mapped.dedup_key.clone())
@@ -325,6 +480,131 @@ impl ExternalImportMutations {
                         dc.name
                     ));
                 }
+            }
+        }
+
+        // ── Create native Prowlarr parents and sync managed children ───────
+        for group in prowlarr_groups.values() {
+            let dedup_key = group.dedup_key();
+            let override_api_key = idx_api_key_overrides
+                .get(&dedup_key)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let api_key = override_api_key.or_else(|| {
+                if group.api_key_conflict {
+                    None
+                } else {
+                    group.api_key.clone()
+                }
+            });
+            let Some(api_key) = api_key else {
+                let help = prowlarr_api_key_help_url(&group.base_url)
+                    .map(|url| format!(" ({url})"))
+                    .unwrap_or_default();
+                let reason = if group.api_key_conflict {
+                    "visible API keys conflicted"
+                } else {
+                    "API key is missing or masked"
+                };
+                result.errors.push(format!(
+                    "failed to import {}: {reason}; enter the Prowlarr API key from Prowlarr -> Settings -> General{help}",
+                    prowlarr_display_name(&group.base_url)
+                ));
+                continue;
+            };
+
+            let name = prowlarr_display_name(&group.base_url);
+            let config_json = prowlarr_parent_config_json(&group.base_url, &api_key);
+            let existing_parents = match app
+                .list_indexer_configs(&actor, Some("prowlarr".to_string()))
+                .await
+            {
+                Ok(configs) => configs,
+                Err(err) => {
+                    result.errors.push(format!(
+                        "failed to inspect existing Prowlarr configs for '{name}': {err}"
+                    ));
+                    continue;
+                }
+            };
+
+            let existing_parent = existing_parents.into_iter().find(|config| {
+                indexer_config_base_url(config.config_json.as_deref()).is_some_and(
+                    |existing_base_url| same_base_url(&existing_base_url, &group.base_url),
+                )
+            });
+
+            let parent_id = if let Some(existing_config) = existing_parent {
+                if existing_config.config_json.as_deref() == Some(config_json.as_str())
+                    && existing_config.is_enabled
+                {
+                    existing_config.id
+                } else {
+                    match app
+                        .update_indexer_config(
+                            &actor,
+                            IndexerConfigUpdate {
+                                id: existing_config.id.clone(),
+                                name: None,
+                                provider_type: None,
+                                derived_base_url: None,
+                                rate_limit_seconds: None,
+                                rate_limit_burst: None,
+                                is_enabled: Some(true),
+                                enable_interactive_search: None,
+                                enable_auto_search: None,
+                                managed_parent_config_id: None,
+                                managed_child_key: None,
+                                managed_metadata_json: None,
+                                config_json: Some(config_json.clone()),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(updated) => updated.id,
+                        Err(err) => {
+                            result
+                                .errors
+                                .push(format!("failed to update Prowlarr config '{name}': {err}"));
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                match app
+                    .create_indexer_config(
+                        &actor,
+                        NewIndexerConfig {
+                            name: name.clone(),
+                            provider_type: "prowlarr".to_string(),
+                            rate_limit_seconds: None,
+                            rate_limit_burst: None,
+                            is_enabled: true,
+                            enable_interactive_search: false,
+                            enable_auto_search: false,
+                            config_json: Some(config_json.clone()),
+                        },
+                    )
+                    .await
+                {
+                    Ok(config) => {
+                        result.indexers_created += 1;
+                        config.id
+                    }
+                    Err(err) => {
+                        result
+                            .errors
+                            .push(format!("failed to create Prowlarr config '{name}': {err}"));
+                        continue;
+                    }
+                }
+            };
+
+            if let Err(err) = app.sync_indexer_config(&actor, &parent_id).await {
+                result.errors.push(format!(
+                    "failed to sync Prowlarr indexers for '{name}': {err}"
+                ));
             }
         }
 
@@ -417,6 +697,9 @@ impl ExternalImportMutations {
                                     is_enabled: None,
                                     enable_interactive_search: None,
                                     enable_auto_search: None,
+                                    managed_parent_config_id: None,
+                                    managed_child_key: None,
+                                    managed_metadata_json: None,
                                     config_json: Some(config_json.clone()),
                                 },
                             )
@@ -837,6 +1120,10 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
         api_key,
         dedup_key,
         supported: scryer_type.is_some(),
+        child_count: 0,
+        child_names: Vec::new(),
+        requires_api_key_override: false,
+        api_key_help_url: None,
     }
 }
 
