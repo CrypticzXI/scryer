@@ -359,7 +359,7 @@ fn conflicting_library_names_for_roots(
 }
 
 impl AppUseCase {
-    async fn validate_library_root_conflicts(
+    pub(crate) async fn validate_library_root_conflicts(
         &self,
         current_library_id: Option<&str>,
         roots: &[LibraryRootDraft],

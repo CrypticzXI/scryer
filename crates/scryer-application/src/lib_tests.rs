@@ -7828,6 +7828,51 @@ async fn update_media_settings_removing_root_clears_pending_imports_for_removed_
 }
 
 #[tokio::test]
+async fn update_media_settings_root_folders_sync_default_library_roots() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root_one = tempdir.path().join("movies-a");
+    let root_two = tempdir.path().join("movies-b");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![
+            build_root_folder_entry(&root_one, true),
+            build_root_folder_entry(&root_two, false),
+        ]),
+    )
+    .await
+    .expect("save movie roots");
+
+    let library = app
+        .services
+        .catalog
+        .libraries
+        .default_for_facet(MediaFacet::Movie)
+        .await
+        .expect("lookup should succeed")
+        .expect("default movie library");
+    assert_eq!(
+        library
+            .roots
+            .iter()
+            .map(|root| (root.path.clone(), root.is_default))
+            .collect::<Vec<_>>(),
+        vec![
+            (root_one.to_string_lossy().to_string(), true),
+            (root_two.to_string_lossy().to_string(), false),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn update_library_paths_removing_root_clears_pending_imports_for_removed_root() {
     let settings = Arc::new(StoredSettingsRepo::default());
     settings
@@ -8052,6 +8097,46 @@ async fn save_external_import_library_paths_persists_multiple_root_folders_per_f
                 path: "/series-archive".to_string(),
                 is_default: false,
             },
+        ]
+    );
+
+    let movie_library = app
+        .services
+        .catalog
+        .libraries
+        .default_for_facet(MediaFacet::Movie)
+        .await
+        .expect("lookup should succeed")
+        .expect("default movie library");
+    assert_eq!(
+        movie_library
+            .roots
+            .iter()
+            .map(|root| (root.path.clone(), root.is_default))
+            .collect::<Vec<_>>(),
+        vec![
+            ("/movies-primary".to_string(), true),
+            ("/movies-secondary".to_string(), false),
+        ]
+    );
+
+    let series_library = app
+        .services
+        .catalog
+        .libraries
+        .default_for_facet(MediaFacet::Series)
+        .await
+        .expect("lookup should succeed")
+        .expect("default series library");
+    assert_eq!(
+        series_library
+            .roots
+            .iter()
+            .map(|root| (root.path.clone(), root.is_default))
+            .collect::<Vec<_>>(),
+        vec![
+            ("/series-main".to_string(), true),
+            ("/series-archive".to_string(), false),
         ]
     );
 }

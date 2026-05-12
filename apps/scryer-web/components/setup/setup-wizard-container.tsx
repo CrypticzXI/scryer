@@ -66,6 +66,10 @@ type SetupIndexerProviderOption = {
 
 const FALLBACK_PROVIDER_OPTIONS: SetupIndexerProviderOption[] = [];
 
+function defaultLibraryIdForFacet(facet: "movie" | "series" | "anime") {
+  return `${facet}_default_library`;
+}
+
 function setupIndexerConfigFields(fields: ConfigFieldDef[]) {
   return fields.filter((field) => field.valueSource !== "host_binding");
 }
@@ -1156,24 +1160,44 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
 
     const selectedFacets = [
       finalSelectedMoviesPaths.length > 0
-        ? { facet: "movie", label: t("setup.facetMovies") }
+        ? {
+            facet: "movie",
+            libraryId: defaultLibraryIdForFacet("movie"),
+            label: t("setup.facetMovies"),
+          }
         : null,
       finalSelectedSeriesPaths.length > 0
-        ? { facet: "series", label: t("setup.facetSeries") }
+        ? {
+            facet: "series",
+            libraryId: defaultLibraryIdForFacet("series"),
+            label: t("setup.facetSeries"),
+          }
         : null,
       finalSelectedAnimePaths.length > 0
-        ? { facet: "anime", label: t("setup.facetAnime") }
+        ? {
+            facet: "anime",
+            libraryId: defaultLibraryIdForFacet("anime"),
+            label: t("setup.facetAnime"),
+          }
         : null,
-    ].filter((value): value is { facet: "movie" | "series" | "anime"; label: string } => value !== null);
+    ].filter(
+      (
+        value,
+      ): value is {
+        facet: "movie" | "series" | "anime";
+        libraryId: string;
+        label: string;
+      } => value !== null,
+    );
 
     try {
       await client.mutation(completeSetupMutation, {}).toPromise();
 
       await Promise.all(
-        selectedFacets.map(async ({ facet, label }) => {
+        selectedFacets.map(async ({ libraryId, label }) => {
           try {
             const result = await client
-              .mutation(scanLibraryMutation, { facet })
+              .mutation(scanLibraryMutation, { libraryId })
               .toPromise();
             if (result.error) throw result.error;
           } catch (error) {

@@ -11,9 +11,9 @@ use crate::scoring_weights::ScoringPersona;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{
     AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY,
-    HISTORY_RETENTION_DAYS_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    HISTORY_RETENTION_DAYS_KEY, LibraryRootDraft, REQUIRED_AUDIO_LANGUAGES_KEY,
+    SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
+    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
 use super::keys::default_indexer_routing_categories_for_scope;
@@ -826,6 +826,34 @@ impl AppUseCase {
         }
 
         Ok(())
+    }
+
+    async fn prepare_default_library_root_sync(
+        &self,
+        facet: &MediaFacet,
+        root_folders: &[RootFolderEntry],
+    ) -> AppResult<Option<(String, String, String, Vec<LibraryRootDraft>)>> {
+        let Some(library) = self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let roots = root_folders
+            .iter()
+            .map(|root| LibraryRootDraft {
+                path: root.path.clone(),
+                is_default: root.is_default,
+            })
+            .collect::<Vec<_>>();
+        self.validate_library_root_conflicts(Some(&library.id), &roots)
+            .await?;
+
+        Ok(Some((library.id, library.name, library.slug, roots)))
     }
 
     async fn load_download_client_routing_json(&self, scope_id: &str) -> AppResult<Option<String>> {
@@ -2729,11 +2757,22 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
         let previous_roots = self.effective_scan_roots_for_facet(&facet).await?;
+        let root_folder_update = input
+            .root_folders
+            .clone()
+            .map(normalize_root_folders)
+            .transpose()?;
+        let default_library_root_sync = match root_folder_update.as_ref() {
+            Some(root_folders) => {
+                self.prepare_default_library_root_sync(&facet, root_folders)
+                    .await?
+            }
+            None => None,
+        };
 
         let mut changed_keys = Vec::new();
 
-        if let Some(root_folders) = input.root_folders {
-            let normalized = normalize_root_folders(root_folders)?;
+        if let Some(normalized) = root_folder_update {
             self.services
                 .config
                 .settings
@@ -2770,6 +2809,14 @@ impl AppUseCase {
                 .any(|key| key == library_path_key(&facet))
             {
                 changed_keys.push(library_path_key(&facet).to_string());
+            }
+
+            if let Some((library_id, name, slug, roots)) = default_library_root_sync {
+                self.services
+                    .catalog
+                    .libraries
+                    .update(&library_id, name, slug, roots)
+                    .await?;
             }
         } else if let Some(library_path) = normalize_optional_string(input.library_path) {
             self.services
