@@ -370,6 +370,7 @@ pub trait SettingsRepository: Send + Sync {
 #[async_trait]
 pub trait SystemInfoProvider: Send + Sync {
     async fn current_migration_version(&self) -> AppResult<Option<String>>;
+    async fn current_encryption_key_base64(&self) -> AppResult<Option<String>>;
     async fn vacuum_into(&self, dest_path: &str) -> AppResult<()>;
 }
 

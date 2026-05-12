@@ -87,6 +87,11 @@ const settingsEntries: Array<{
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
+    id: "backups",
+    label: (t) => t("settings.backups"),
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
+  },
+  {
     id: "security",
     label: (t) => t("settings.security"),
     requiredAnyAppPermission: [APP_PERMISSIONS.manageUsers],

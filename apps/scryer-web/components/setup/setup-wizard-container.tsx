@@ -52,6 +52,7 @@ import { SetupSummaryView } from "./setup-summary-view";
 import { SetupImportConnectView } from "./setup-import-connect-view";
 import { SetupImportReviewView } from "./setup-import-review-view";
 import { SetupPluginsView } from "./setup-plugins-view";
+import { SetupRestoreView } from "./setup-restore-view";
 import type {
   PluginInstallProgressRecord,
   RegistryPluginRecord,
@@ -216,19 +217,29 @@ interface SetupWizardContainerProps {
     values?: Record<string, string | number | boolean | null | undefined>,
   ) => string;
   isReentry?: boolean;
+  onBackendRestarting: () => void;
 }
 
-export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps) {
+export function SetupWizardContainer({
+  t,
+  isReentry,
+  onBackendRestarting,
+}: SetupWizardContainerProps) {
   const client = useClient();
   const navigate = useNavigate();
 
   // ── Wizard path + step (URL-driven for browser back/forward) ──────
   const [searchParams, setSearchParams] = useSearchParams();
-  const wizardPath: "fresh" | "import" = searchParams.get("path") === "import" ? "import" : "fresh";
+  const wizardPath: "fresh" | "import" | "restore" =
+    searchParams.get("path") === "import"
+      ? "import"
+      : searchParams.get("path") === "restore"
+        ? "restore"
+        : "fresh";
   const currentStep = parseInt(searchParams.get("step") || "0", 10);
 
   const goToStep = useCallback(
-    (step: number, path?: "fresh" | "import") => {
+    (step: number, path?: "fresh" | "import" | "restore") => {
       const p = path ?? wizardPath;
       if (step === 0) {
         setSearchParams({});
@@ -683,6 +694,8 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
   const stepLabels =
     wizardPath === "import"
       ? [t("setup.stepConnect"), t("setup.stepReview"), t("setup.stepPersona"), t("setup.stepSummary")]
+      : wizardPath === "restore"
+        ? [t("setup.stepRestore")]
       : [t("setup.stepPersona"), t("setup.stepMediaPaths"), t("setup.stepPlugins"), t("setup.stepDownloadClient"), t("setup.stepIndexer"), t("setup.stepSummary")];
 
   // ── Quality preferences save (per-facet) ────────────────────────────
@@ -1365,6 +1378,7 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
           t={t}
           onFreshSetup={() => goToStep(1, "fresh")}
           onImportSetup={() => goToStep(1, "import")}
+          onRestoreSetup={() => goToStep(1, "restore")}
           onSkip={finishSetup}
           skipping={finishing}
         />
@@ -1493,6 +1507,14 @@ export function SetupWizardContainer({ t, isReentry }: SetupWizardContainerProps
       {/* ════════════════════════════════════════════════════════════════ */}
       {/* IMPORT PATH                                                     */}
       {/* ════════════════════════════════════════════════════════════════ */}
+
+      {currentStep === 1 && wizardPath === "restore" && (
+        <SetupRestoreView
+          t={t}
+          onBack={() => goToStep(0)}
+          onBackendRestarting={onBackendRestarting}
+        />
+      )}
 
       {currentStep === 1 && wizardPath === "import" && (
         <SetupImportConnectView

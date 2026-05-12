@@ -3715,10 +3715,23 @@ pub struct NotificationProviderTypePayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct BackupRowCountPayload {
+    pub table: String,
+    pub row_count: String,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct BackupInfoPayload {
     pub filename: String,
     pub size_bytes: String,
     pub created_at: String,
+    pub format_version: String,
+    pub source_engine: String,
+    pub source_migration_key: Option<String>,
+    pub encrypted: bool,
+    pub row_counts: Vec<BackupRowCountPayload>,
+    pub status: String,
+    pub error_message: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]

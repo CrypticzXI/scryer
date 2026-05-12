@@ -243,6 +243,13 @@ export function buildRouteCommands({
           keywords: ["settings", "general", "preferences", "configuration", "system"],
           icon: Settings,
           onSelect: buildNavigate(onNavigate, "settings", "general"),
+        } satisfies RouteCommand, {
+          id: "settings-backups",
+          label: `${t("nav.settings")} / ${t("settings.backups")}`,
+          description: t("settings.backups"),
+          keywords: ["settings", "backups", "backup", "restore", "bundle", "download"],
+          icon: Settings,
+          onSelect: buildNavigate(onNavigate, "settings", "backups"),
         } satisfies RouteCommand]
       : []),
     {

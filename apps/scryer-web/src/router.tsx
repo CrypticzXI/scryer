@@ -73,6 +73,7 @@ export const router = createBrowserRouter(
         { path: "/settings/quality-profiles", element: <ShellRoute /> },
         { path: "/settings/delay-profiles", element: <ShellRoute /> },
         { path: "/settings/general", element: <ShellRoute /> },
+        { path: "/settings/backups", element: <ShellRoute /> },
         { path: "/settings/users", element: <ShellRoute /> },
         { path: "/settings/acquisition", element: <ShellRoute /> },
         { path: "/settings/post-processing", element: <ShellRoute /> },

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use scryer_domain::DownloadQueueCommandAction;
 use scryer_domain::ExternalId;
@@ -1153,11 +1153,36 @@ pub struct IndexerQueryStats {
     pub grab_max: Option<u32>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupStatus {
+    Creating,
+    Ready,
+    Failed,
+}
+
+impl BackupStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Creating => "creating",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackupInfo {
     pub filename: String,
     pub size_bytes: u64,
     pub created_at: String,
+    pub format_version: String,
+    pub source_engine: String,
+    pub source_migration_key: Option<String>,
+    pub encrypted: bool,
+    pub row_counts: BTreeMap<String, u64>,
+    pub status: BackupStatus,
+    pub error_message: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

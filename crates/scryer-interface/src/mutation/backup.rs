@@ -8,10 +8,17 @@ pub struct BackupMutations;
 
 #[Object]
 impl BackupMutations {
-    async fn create_backup(&self, ctx: &Context<'_>) -> GqlResult<BackupInfoPayload> {
+    async fn create_backup(
+        &self,
+        ctx: &Context<'_>,
+        password: Option<String>,
+    ) -> GqlResult<BackupInfoPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let info = app.create_backup(&actor).await.map_err(to_gql_error)?;
+        let info = app
+            .create_backup(&actor, password.as_deref())
+            .await
+            .map_err(to_gql_error)?;
         Ok(from_backup_info(info))
     }
 

@@ -191,6 +191,10 @@ pub use plugins::plugins::{
     RulePackTemplate,
 };
 pub use security::backup::BackupService;
+pub use security::backup_bundle::{
+    BackupBundleInspectSummary, BackupRestorePreparedBundle, inspect_backup_bundle,
+    restore_backup_bundle_into_pool,
+};
 pub use settings::settings::{
     AcquisitionSettings, DownloadClientRoutingSettingsEntry, ExternalImportLibraryPathsSelection,
     FacetScoringPersonaSelection, GeneralSettings, IndexerRoutingSettingsEntry,
@@ -325,24 +329,24 @@ pub(crate) use types::JwtClaims;
 pub use types::SmgVersionCompatibilityNotice;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupInfo,
-    CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetItem, CutoffUnmetQualitySummary,
-    DecisionCodeCount, DiskSpaceInfo, DownloadActivityFilter, DownloadDisplayState,
-    DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage, DownloadHistorySort,
-    DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage, DownloadQueueCommandRecord,
-    DownloadSourceKind, EpisodeScopedMediaFile, FixTitleMatchResult, HealthCheckResult,
-    HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult, IndexerQueryStats,
-    JwtAuthConfig, LibraryRootDraft, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
-    PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
-    PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingImportStatus,
-    PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,
-    PrimaryCollectionSummary, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    ReleaseDownloadFailureSignature, ResolvePendingImportResult, ScopedExternalId, SortDirection,
-    SystemHealth, TitleAcquisitionDiagnostics, TitleEpisodeProgressSummary, TitleImageBlob,
-    TitleImageKind, TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask,
-    TitleImageVariantRecord, TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate,
-    TitleQualitySummary, TitleReleaseBlocklistEntry, WantedCompleteTransition,
-    WantedGrabTransition, WantedItem, WantedPauseTransition, WantedSearchTransition, WantedStatus,
-    WantedStatusCount,
+    BackupStatus, CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetItem,
+    CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo, DownloadActivityFilter,
+    DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage,
+    DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage,
+    DownloadQueueCommandRecord, DownloadSourceKind, EpisodeScopedMediaFile, FixTitleMatchResult,
+    HealthCheckResult, HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult,
+    IndexerQueryStats, JwtAuthConfig, LibraryRootDraft, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedSearchAttempt, PendingImportBindingFilePreview,
+    PendingImportBindingPreview, PendingImportConnection, PendingImportCounts, PendingImportItem,
+    PendingImportSearchAttempt, PendingImportStatus, PendingRelease, PendingReleaseStatus,
+    PendingReleaseStatusCount, PendingTitleHydration, PrimaryCollectionSummary, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
+    ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord, TitleMediaFile,
+    TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary, TitleReleaseBlocklistEntry,
+    WantedCompleteTransition, WantedGrabTransition, WantedItem, WantedPauseTransition,
+    WantedSearchTransition, WantedStatus, WantedStatusCount,
 };
 pub use types::{
     ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,

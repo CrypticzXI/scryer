@@ -1,4 +1,5 @@
 import {
+  BACKUP_INFO_FIELDS,
   JOB_RUN_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
@@ -403,6 +404,15 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
     keepHistoryForever
     historyRetentionDays
   }
+}`;
+
+export const createBackupMutation = `mutation CreateBackup($password: String) {
+  createBackup(password: $password) {${BACKUP_INFO_FIELDS}
+  }
+}`;
+
+export const deleteBackupMutation = `mutation DeleteBackup($filename: String!) {
+  deleteBackup(filename: $filename)
 }`;
 
 export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($input: UpdateSecuritySettingsInput!) {

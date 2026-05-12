@@ -9,7 +9,7 @@ import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 
 export default function SetupPage() {
-  const { serviceRestarting } = useBackendRestarting();
+  const { serviceRestarting, setServiceRestarting } = useBackendRestarting();
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -41,7 +41,11 @@ export default function SetupPage() {
   return (
     <ScryerGraphqlProvider language={uiLanguage}>
       <div className="min-h-screen bg-background text-foreground">
-        <SetupWizardContainer t={t} isReentry={isReentry} />
+        <SetupWizardContainer
+          t={t}
+          isReentry={isReentry}
+          onBackendRestarting={() => setServiceRestarting(true)}
+        />
       </div>
     </ScryerGraphqlProvider>
   );
