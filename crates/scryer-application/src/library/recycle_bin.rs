@@ -505,24 +505,23 @@ pub async fn purge_all(config: &RecycleBinConfig) -> AppResult<u32> {
 
 /// Resolve the media root path for a title's facet.
 ///
-/// Uses the facet registry to look up the configured path setting.
+/// Uses the title's owning library roots, falling back to the facet default
+/// roots when legacy data points at a missing library.
 pub async fn media_root_for_title(
     app: &crate::AppUseCase,
     title: &scryer_domain::Title,
 ) -> Option<String> {
-    let handler = app.facet_registry.get(&title.facet);
-    let path_key = handler
-        .map(|h| h.library_path_key())
-        .unwrap_or("series.path");
-    let default_path = handler
-        .map(|h| h.default_library_path())
-        .unwrap_or("/data/series");
-
-    app.read_setting_string_value_for_scope(crate::SETTINGS_SCOPE_MEDIA, path_key, None)
+    app.default_media_root_for_title(title)
         .await
+        .map_err(|error| {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                library_id = %title.library_id,
+                "failed to resolve media root for title"
+            );
+        })
         .ok()
-        .flatten()
-        .or_else(|| Some(default_path.to_string()))
 }
 
 /// Resolve recycle bin configuration from application settings.

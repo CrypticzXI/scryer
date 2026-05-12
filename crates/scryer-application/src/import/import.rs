@@ -3202,28 +3202,14 @@ pub(crate) async fn resolve_import_paths(
     app: &AppUseCase,
     title: &scryer_domain::Title,
 ) -> AppResult<(String, String)> {
-    let handler = app.facet_registry.get(&title.facet);
     let rename_settings = crate::facet_handler::rename_facet_settings(&title.facet);
-    let media_root_default = handler
-        .map(|h| h.default_library_path())
-        .unwrap_or("/data/series");
-
-    let media_root = {
-        let root_folders = app.root_folders_for_facet(&title.facet).await?;
-        let default_root = root_folders
-            .iter()
-            .find(|entry| entry.is_default)
-            .or_else(|| root_folders.first())
-            .map(|entry| entry.path.clone())
-            .unwrap_or_else(|| media_root_default.to_string());
-
-        title
-            .tags
-            .iter()
-            .find(|t| t.starts_with("scryer:root-folder:"))
-            .map(|t| t.trim_start_matches("scryer:root-folder:").to_string())
-            .unwrap_or(default_root)
-    };
+    let default_root = app.default_media_root_for_title(title).await?;
+    let media_root = title
+        .tags
+        .iter()
+        .find(|t| t.starts_with("scryer:root-folder:"))
+        .map(|t| t.trim_start_matches("scryer:root-folder:").to_string())
+        .unwrap_or(default_root);
 
     let rename_template = app
         .read_setting_string_value_for_scope(

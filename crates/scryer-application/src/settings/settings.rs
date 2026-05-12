@@ -704,6 +704,24 @@ fn normalize_effective_scan_root(path: &str) -> Option<String> {
     Some(Path::new(trimmed).to_string_lossy().trim().to_string())
 }
 
+pub(crate) fn effective_scan_roots_from_root_folders(
+    root_folders: &[RootFolderEntry],
+) -> Vec<String> {
+    let mut roots = Vec::with_capacity(root_folders.len());
+    let mut seen = HashSet::new();
+
+    for entry in root_folders {
+        let Some(root) = normalize_effective_scan_root(&entry.path) else {
+            continue;
+        };
+        if seen.insert(root.clone()) {
+            roots.push(root);
+        }
+    }
+
+    roots
+}
+
 fn ensure_quality_profiles_exist(
     mut profiles: Vec<crate::QualityProfile>,
 ) -> Vec<crate::QualityProfile> {
@@ -829,22 +847,10 @@ fn extract_languages_from_required_audio_rego(rego: &str) -> Vec<String> {
 impl AppUseCase {
     async fn effective_scan_roots_for_facet(&self, facet: &MediaFacet) -> AppResult<Vec<String>> {
         let root_folders = self.root_folders_for_facet(facet).await?;
-        let mut roots = Vec::with_capacity(root_folders.len());
-        let mut seen = HashSet::new();
-
-        for entry in root_folders {
-            let Some(root) = normalize_effective_scan_root(&entry.path) else {
-                continue;
-            };
-            if seen.insert(root.clone()) {
-                roots.push(root);
-            }
-        }
-
-        Ok(roots)
+        Ok(effective_scan_roots_from_root_folders(&root_folders))
     }
 
-    async fn clear_pending_imports_for_removed_roots(
+    pub(crate) async fn clear_pending_imports_for_removed_roots(
         &self,
         facet: &MediaFacet,
         previous_roots: &[String],

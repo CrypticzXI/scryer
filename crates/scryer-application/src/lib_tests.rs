@@ -8063,6 +8063,137 @@ async fn update_default_library_roots_updates_all_facet_root_read_paths() {
 }
 
 #[tokio::test]
+async fn title_root_resolution_uses_owning_library_roots() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    app.update_library(
+        &user,
+        &movie_library_id,
+        None,
+        Some(vec![LibraryRootDraft {
+            path: "/library/default-movies".to_string(),
+            is_default: true,
+        }]),
+        None,
+    )
+    .await
+    .expect("default movie library roots should update");
+    let kids_library = app
+        .create_library(
+            &user,
+            MediaFacet::Movie,
+            "Kids Movies".to_string(),
+            vec![LibraryRootDraft {
+                path: "/library/kids-movies".to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("custom library should be created");
+    let mut title = make_due_hydration_title("custom-library-title", MediaFacet::Movie, 42);
+    title.library_id = kids_library.id.clone();
+
+    let (import_root, _) = crate::import_workflow::resolve_import_paths(&app, &title)
+        .await
+        .expect("import paths should resolve");
+    assert_eq!(import_root, "/library/kids-movies");
+
+    let recycle_root = crate::recycle_bin::media_root_for_title(&app, &title).await;
+    assert_eq!(recycle_root.as_deref(), Some("/library/kids-movies"));
+}
+
+#[tokio::test]
+async fn update_default_library_rejects_empty_roots_without_persisting_them() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    app.update_library(
+        &user,
+        &movie_library_id,
+        None,
+        Some(vec![LibraryRootDraft {
+            path: "/library/movies-main".to_string(),
+            is_default: true,
+        }]),
+        None,
+    )
+    .await
+    .expect("initial default roots should update");
+
+    let error = app
+        .update_library(&user, &movie_library_id, None, Some(Vec::new()), None)
+        .await
+        .expect_err("empty default roots should be rejected");
+    assert!(
+        matches!(error, AppError::Validation(ref message) if message.contains("default libraries require at least one root folder")),
+        "unexpected error: {error:?}"
+    );
+
+    let library = app
+        .services
+        .catalog
+        .libraries
+        .get_by_id(&movie_library_id)
+        .await
+        .expect("library lookup should succeed")
+        .expect("movie library should exist");
+    assert_eq!(library.roots.len(), 1);
+    assert_eq!(library.roots[0].path, "/library/movies-main");
+}
+
+#[tokio::test]
+async fn update_library_removing_root_clears_pending_imports_for_removed_root() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+    );
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    app.update_library(
+        &user,
+        &movie_library_id,
+        None,
+        Some(vec![LibraryRootDraft {
+            path: "/movies-old".to_string(),
+            is_default: true,
+        }]),
+        None,
+    )
+    .await
+    .expect("initial default roots should update");
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&build_test_unmatched_item(
+            "movie-old-root-canonical",
+            MediaFacet::Movie,
+            "/movies-old",
+            "/movies-old/Unknown.Movie.2020.mkv",
+            "Unknown Movie",
+            "Unknown Movie",
+            Some(2020),
+        ))
+        .await
+        .expect("seed removed-root pending import");
+
+    app.update_library(
+        &user,
+        &movie_library_id,
+        None,
+        Some(vec![LibraryRootDraft {
+            path: "/movies-new".to_string(),
+            is_default: true,
+        }]),
+        None,
+    )
+    .await
+    .expect("canonical roots should update");
+
+    let items = unmatched_items.items().await;
+    assert!(items.is_empty());
+}
+
+#[tokio::test]
 async fn update_library_paths_removing_root_clears_pending_imports_for_removed_root() {
     let settings = Arc::new(StoredSettingsRepo::default());
     settings

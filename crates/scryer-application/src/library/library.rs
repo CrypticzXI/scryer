@@ -39,7 +39,9 @@ use crate::library_scan_unmatched::{
     normalize_library_scan_item_path, persist_library_scan_unmatched_item,
     reconcile_library_scan_unmatched_items,
 };
-use crate::settings::settings::root_folder_entries_from_library_roots;
+use crate::settings::settings::{
+    effective_scan_roots_from_root_folders, root_folder_entries_from_library_roots,
+};
 use tracing::{debug, info, warn};
 
 const LIBRARY_METADATA_LOOKUP_CONCURRENCY: usize = 4;
@@ -474,6 +476,17 @@ impl AppUseCase {
                 })
                 .collect(),
         };
+        if roots_were_provided && existing.is_default && roots.is_empty() {
+            return Err(AppError::Validation(
+                "default libraries require at least one root folder".into(),
+            ));
+        }
+        let previous_roots = if roots_were_provided {
+            let root_folders = root_folder_entries_from_library_roots(&existing.roots);
+            Some(effective_scan_roots_from_root_folders(&root_folders))
+        } else {
+            None
+        };
         self.validate_library_root_conflicts(Some(&existing.id), &roots)
             .await?;
         let slug = if existing.is_default {
@@ -498,6 +511,16 @@ impl AppUseCase {
                 &root_folders,
                 SETTINGS_SOURCE_TYPED_GRAPHQL,
                 Some(actor.id.clone()),
+            )
+            .await?;
+        }
+        if let Some(previous_roots) = previous_roots {
+            let root_folders = root_folder_entries_from_library_roots(&library.roots);
+            let current_roots = effective_scan_roots_from_root_folders(&root_folders);
+            self.clear_pending_imports_for_removed_roots(
+                &library.facet,
+                &previous_roots,
+                &current_roots,
             )
             .await?;
         }

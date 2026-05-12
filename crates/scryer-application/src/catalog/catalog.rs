@@ -12,6 +12,7 @@ use crate::contracts::{
     QueueDownloadOutcome, QueuedDownloadResult, SubmissionConflictPolicy, SubmissionScopeConflict,
 };
 use crate::domain_events::{deleted_media_update, new_title_domain_event, title_context_snapshot};
+use crate::settings::settings::root_folder_entries_from_library_roots;
 use scryer_domain::{
     DomainEventPayload, InterstitialMovieMetadata, MediaFileDeletedEventData,
     MediaFileDeletedReason, MetadataHydrationState, ReleaseGrabbedEventData, TitleAddedEventData,
@@ -1105,27 +1106,7 @@ impl AppUseCase {
             .default_for_facet(facet.clone())
             .await?
         {
-            let mut entries = library
-                .roots
-                .iter()
-                .filter_map(|root| {
-                    let path = root.path.trim();
-                    if path.is_empty() {
-                        None
-                    } else {
-                        Some(scryer_domain::RootFolderEntry {
-                            path: path.to_string(),
-                            is_default: root.is_default,
-                        })
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            if !entries.iter().any(|entry| entry.is_default)
-                && let Some(first) = entries.first_mut()
-            {
-                first.is_default = true;
-            }
+            let entries = root_folder_entries_from_library_roots(&library.roots);
 
             if !entries.is_empty() {
                 return Ok(entries);
@@ -1136,6 +1117,70 @@ impl AppUseCase {
             path: default_path.to_string(),
             is_default: true,
         }])
+    }
+
+    /// Return the configured root folders for a concrete library.
+    ///
+    /// If a stale title points at a missing or empty library, fall back to the
+    /// facet default roots so existing data remains importable.
+    pub(crate) async fn root_folders_for_library(
+        &self,
+        library_id: &str,
+        fallback_facet: &scryer_domain::MediaFacet,
+    ) -> AppResult<Vec<scryer_domain::RootFolderEntry>> {
+        if let Some(library) = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+        {
+            if library.facet != *fallback_facet {
+                warn!(
+                    library_id = %library.id,
+                    library_facet = library.facet.as_str(),
+                    title_facet = fallback_facet.as_str(),
+                    "library facet does not match title facet; falling back to facet default roots"
+                );
+                return self.root_folders_for_facet(fallback_facet).await;
+            }
+
+            let entries = root_folder_entries_from_library_roots(&library.roots);
+            if !entries.is_empty() {
+                return Ok(entries);
+            }
+            warn!(
+                library_id = %library.id,
+                facet = library.facet.as_str(),
+                "library has no roots; falling back to facet default roots"
+            );
+        } else {
+            warn!(
+                library_id,
+                facet = fallback_facet.as_str(),
+                "library is missing; falling back to facet default roots"
+            );
+        }
+
+        self.root_folders_for_facet(fallback_facet).await
+    }
+
+    pub(crate) async fn default_media_root_for_title(
+        &self,
+        title: &scryer_domain::Title,
+    ) -> AppResult<String> {
+        let handler = self.facet_registry.get(&title.facet);
+        let default_path = handler.map(|h| h.default_library_path()).unwrap_or("/data");
+        let root_folders = self
+            .root_folders_for_library(&title.library_id, &title.facet)
+            .await?;
+
+        Ok(root_folders
+            .iter()
+            .find(|entry| entry.is_default)
+            .or_else(|| root_folders.first())
+            .map(|entry| entry.path.clone())
+            .unwrap_or_else(|| default_path.to_string()))
     }
 
     pub async fn add_title_with_outcome(

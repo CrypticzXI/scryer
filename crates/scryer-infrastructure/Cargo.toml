@@ -24,7 +24,7 @@ zstd = "0.13"
 flate2 = "1"
 async-compression = { version = "0.4", features = ["tokio", "zstd", "gzip"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "query", "rustls", "http2", "gzip", "brotli", "zstd", "deflate", "stream"] }
-ml-dsa = "0.1.0-rc.9"
+ml-dsa = "=0.1.0-rc.9"
 ring = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
