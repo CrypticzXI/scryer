@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use common::TestContext;
 use scryer_application::{
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
-    PendingImportStatus, ShowRepository, TitleRepository,
+    LibraryRootDraft, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    MediaFileRepository, PendingImportStatus, ShowRepository, TitleRepository,
 };
 use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title, User};
 use scryer_infrastructure::SettingDefinitionSeed;
@@ -51,6 +51,24 @@ async fn seed_media_path_settings(ctx: &TestContext) {
                 is_sensitive: false,
                 validation_json: None,
             },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "media".into(),
+                key_name: "series.root_folders".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "media".into(),
+                key_name: "anime.root_folders".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
         ])
         .await
         .expect("seed media path setting definitions");
@@ -68,6 +86,23 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
         )
         .await
         .expect("upsert media path setting");
+}
+
+async fn set_default_library_root(ctx: &TestContext, facet: MediaFacet, root: &Path) {
+    let library_id = scryer_domain::default_library_id_for_facet(&facet);
+    ctx.app
+        .update_library(
+            &admin(),
+            &library_id,
+            None,
+            Some(vec![LibraryRootDraft {
+                path: root.to_string_lossy().to_string(),
+                is_default: true,
+            }]),
+            None,
+        )
+        .await
+        .expect("update default library root");
 }
 
 async fn seed_series_title(
@@ -409,6 +444,7 @@ async fn loose_root_series_file_imports_into_existing_title_without_rewriting_fo
     write_fake_media_file(&loose_file);
 
     let actor = admin();
+    set_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
     let summary = ctx
         .app
         .scan_library(&actor, MediaFacet::Series)
