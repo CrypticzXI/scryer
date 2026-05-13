@@ -139,21 +139,30 @@ fn validate_test_flight_url(raw: &str) -> AppResult<url::Url> {
 #[cfg(not(test))]
 async fn preflight_test_flight_url(url: &url::Url) -> AppResult<()> {
     let origin = url.origin().ascii_serialization();
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to build unauthenticated test-flight client: {error}"
-            ))
-        })?;
-
-    client.head(&origin).send().await.map_err(|error| {
-        AppError::Validation(format!(
-            "base URL preflight failed before sending credentials: {error}"
+    let client = scryer_outbound_http::no_redirect_timeout_reqwest_client(Some(
+        std::time::Duration::from_secs(10),
+    ))
+    .map_err(|error| {
+        AppError::Repository(format!(
+            "failed to build unauthenticated test-flight client: {error}"
         ))
     })?;
+    let outbound_http = scryer_outbound_http::OutboundHttpClient::new(
+        client,
+        scryer_outbound_http::RateLimitRegistry::new(),
+    );
+
+    outbound_http
+        .send(
+            scryer_outbound_http::RequestPolicy::no_retry("indexer_preflight", "head_origin"),
+            || outbound_http.client().head(&origin),
+        )
+        .await
+        .map_err(|error| {
+            AppError::Validation(format!(
+                "base URL preflight failed before sending credentials: {error}"
+            ))
+        })?;
 
     Ok(())
 }
@@ -179,7 +188,7 @@ fn build_connection_test_search_request(
     }
 
     let mut supported_facets: Vec<_> = capabilities.supported_ids.iter().collect();
-    supported_facets.sort_by(|(left, _), (right, _)| left.cmp(right));
+    supported_facets.sort_by_key(|(left, _)| *left);
 
     for (facet, id_types) in supported_facets {
         if let Some(id_type) = id_types.iter().find(|id_type| !id_type.is_empty()) {
