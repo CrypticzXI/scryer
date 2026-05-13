@@ -86,6 +86,8 @@ log_startup_diagnostics() {
     else
         print_kv 'CPU info:' 'unavailable'
     fi
+
+    return 0
 }
 
 # If not running as root (e.g. --user flag), skip privilege setup
