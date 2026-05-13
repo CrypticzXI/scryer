@@ -69,6 +69,12 @@ impl SettingsSql for PostgresSettingsSql {
         definitions: Vec<SettingDefinitionSeed>,
     ) -> AppResult<()> {
         for definition in definitions {
+            let id = format!(
+                "{}:{}:{}",
+                definition.category.trim(),
+                definition.scope.trim(),
+                definition.key_name.trim()
+            );
             let default_value_json = parse_json(&definition.default_value_json)?;
             let validation_json = definition
                 .validation_json
@@ -88,7 +94,7 @@ impl SettingsSql for PostgresSettingsSql {
                         validation_json = EXCLUDED.validation_json,
                         updated_at = EXCLUDED.updated_at",
             )
-            .bind(Id::new().0)
+            .bind(id)
             .bind(definition.category)
             .bind(definition.scope)
             .bind(definition.key_name)

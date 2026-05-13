@@ -1353,7 +1353,15 @@ pub fn datastore_file_path(database_url: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scryer_application::{
+        BackupBundleExportRequest, BackupExportSecrets, LogicalBackupExporter, SettingsRepository,
+        SystemInfoProvider, TitleRepository, UserRepository,
+    };
+    use scryer_domain::{ExternalId, Id, MediaFacet, Title, User};
     use std::sync::{Mutex, MutexGuard};
+    use tempfile::TempDir;
+
+    use crate::SettingDefinitionSeed;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
     const DATASTORE_ENV_KEYS: &[&str] = &[
@@ -1583,5 +1591,545 @@ mod tests {
             ))
             .contains("unsupported PostgreSQL sslmode")
         );
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum TestBackupEngine {
+        Sqlite,
+        Postgres,
+    }
+
+    struct TestBackupSource {
+        engine: TestBackupEngine,
+        database_url: String,
+        sqlite: Option<SqliteServices>,
+        postgres: Option<PostgresServices>,
+        admin_pool: Option<sqlx::PgPool>,
+        schema: Option<String>,
+        _temp: TempDir,
+    }
+
+    struct TestBackupTarget {
+        engine: TestBackupEngine,
+        config: DatastoreConfig,
+        admin_pool: Option<sqlx::PgPool>,
+        schema: Option<String>,
+        _temp: TempDir,
+    }
+
+    #[tokio::test]
+    async fn sqlite_logical_backup_restore_round_trip_preserves_setup_data() -> AppResult<()> {
+        run_backup_restore_round_trip(TestBackupEngine::Sqlite, TestBackupEngine::Sqlite, None)
+            .await
+    }
+
+    #[tokio::test]
+    async fn postgres_logical_backup_restore_matrix_from_env() -> AppResult<()> {
+        let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            eprintln!(
+                "skipping PostgreSQL backup/restore matrix; SCRYER_TEST_POSTGRES_URL is not set"
+            );
+            return Ok(());
+        };
+
+        for (source, target) in [
+            (TestBackupEngine::Sqlite, TestBackupEngine::Postgres),
+            (TestBackupEngine::Postgres, TestBackupEngine::Postgres),
+            (TestBackupEngine::Postgres, TestBackupEngine::Sqlite),
+        ] {
+            run_backup_restore_round_trip(source, target, Some(raw_url.as_str())).await?;
+        }
+        Ok(())
+    }
+
+    async fn run_backup_restore_round_trip(
+        source_engine: TestBackupEngine,
+        target_engine: TestBackupEngine,
+        postgres_url: Option<&str>,
+    ) -> AppResult<()> {
+        let source = TestBackupSource::new(source_engine, postgres_url).await?;
+        let target = TestBackupTarget::new(target_engine, postgres_url).await?;
+        let bundle_dir = tempfile::tempdir().map_err(|error| {
+            AppError::Repository(format!("failed to create backup bundle tempdir: {error}"))
+        })?;
+        let bundle_path = bundle_dir.path().join("matrix.scryer-backup.age");
+        let passphrase = "scryer-backup-matrix-passphrase";
+
+        let result = async {
+            source.seed().await?;
+            let outcome = source.export_backup(&bundle_path, passphrase).await?;
+            assert!(outcome.summary.encrypted);
+            assert_eq!(outcome.summary.source_engine, source.engine_name());
+            assert!(
+                outcome.summary.row_counts.contains_key("settings_values"),
+                "backup should include settings JSON rows"
+            );
+            assert!(
+                outcome.summary.row_counts.contains_key("titles"),
+                "backup should include title rows"
+            );
+
+            target.seed_rebuildable_definitions().await?;
+            let prepared = restore_backup_bundle_to_datastore(
+                target.config.clone(),
+                &bundle_path,
+                Some(passphrase),
+            )
+            .await?;
+            assert_eq!(prepared.summary().source_engine, source.engine_name());
+            assert!(prepared.summary().encrypted);
+            assert!(
+                prepared
+                    .instance_secrets_env()
+                    .contains("SCRYER_ENCRYPTION_KEY"),
+                "restore should return restored instance secrets"
+            );
+
+            target.verify_restored().await
+        }
+        .await;
+
+        let source_cleanup = source.cleanup().await;
+        let target_cleanup = target.cleanup().await;
+        result?;
+        source_cleanup?;
+        target_cleanup?;
+        Ok(())
+    }
+
+    impl TestBackupSource {
+        async fn new(engine: TestBackupEngine, postgres_url: Option<&str>) -> AppResult<Self> {
+            let temp = tempfile::tempdir().map_err(|error| {
+                AppError::Repository(format!("failed to create source tempdir: {error}"))
+            })?;
+            let data_dir = temp.path().join("data");
+            std::fs::create_dir_all(&data_dir).map_err(|error| {
+                AppError::Repository(format!("failed to create source data dir: {error}"))
+            })?;
+
+            match engine {
+                TestBackupEngine::Sqlite => {
+                    let db_path = data_dir.join("scryer.db");
+                    let database_url = format!("sqlite://{}", db_path.display());
+                    let sqlite =
+                        SqliteServices::new_with_mode(database_url.clone(), MigrationMode::Apply)
+                            .await?;
+                    Ok(Self {
+                        engine,
+                        database_url,
+                        sqlite: Some(sqlite),
+                        postgres: None,
+                        admin_pool: None,
+                        schema: None,
+                        _temp: temp,
+                    })
+                }
+                TestBackupEngine::Postgres => {
+                    let raw_url = postgres_url.ok_or_else(|| {
+                        AppError::Validation(
+                            "SCRYER_TEST_POSTGRES_URL is required for PostgreSQL backup tests"
+                                .into(),
+                        )
+                    })?;
+                    let admin_pool = sqlx::PgPool::connect(raw_url).await.map_err(|error| {
+                        AppError::Repository(format!("failed to connect to postgres: {error}"))
+                    })?;
+                    let schema = next_backup_matrix_schema_name();
+                    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+                        .execute(&admin_pool)
+                        .await
+                        .map_err(|error| {
+                            AppError::Repository(format!(
+                                "failed to create source schema {schema}: {error}"
+                            ))
+                        })?;
+                    let database_url = postgres_url_with_search_path(raw_url, &schema)?;
+                    let postgres =
+                        PostgresServices::new_with_mode(database_url.clone(), MigrationMode::Apply)
+                            .await?;
+                    Ok(Self {
+                        engine,
+                        database_url,
+                        sqlite: None,
+                        postgres: Some(postgres),
+                        admin_pool: Some(admin_pool),
+                        schema: Some(schema),
+                        _temp: temp,
+                    })
+                }
+            }
+        }
+
+        fn engine_name(&self) -> &'static str {
+            match self.engine {
+                TestBackupEngine::Sqlite => "sqlite",
+                TestBackupEngine::Postgres => "postgres",
+            }
+        }
+
+        async fn seed(&self) -> AppResult<()> {
+            match self.engine {
+                TestBackupEngine::Sqlite => {
+                    let services = self.sqlite.as_ref().expect("sqlite source");
+                    let settings = SqliteSettingsStore::new(services);
+                    let catalog = SqliteCatalogStore::new(services);
+                    settings
+                        .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
+                        .await?;
+                    seed_backup_matrix_data(&settings, &catalog).await
+                }
+                TestBackupEngine::Postgres => {
+                    let services = self.postgres.as_ref().expect("postgres source");
+                    let settings = PostgresSettingsStore::new(services);
+                    let catalog = PostgresCatalogStore::new(services);
+                    settings
+                        .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
+                        .await?;
+                    seed_backup_matrix_data(&settings, &catalog).await
+                }
+            }
+        }
+
+        async fn export_backup(
+            &self,
+            output_path: &Path,
+            passphrase: &str,
+        ) -> AppResult<scryer_application::BackupExportOutcome> {
+            let request = BackupBundleExportRequest {
+                output_path: output_path.to_path_buf(),
+                passphrase: Some(passphrase.to_string()),
+                source_migration_key: self.current_migration_key().await?,
+                source_scryer_version: "backup-matrix-test".to_string(),
+                source_engine: self.engine_name().to_string(),
+                secrets: BackupExportSecrets {
+                    encryption_master_key: "test-master-key".to_string(),
+                    jwt_signing_secret: "test-jwt-secret".to_string(),
+                    smg_registration_secret: Some("test-smg-secret".to_string()),
+                    smg_ca_cert: Some("test-smg-ca".to_string()),
+                    smg_gateway_url: Some("https://smg.example.invalid/graphql".to_string()),
+                },
+            };
+
+            match self.engine {
+                TestBackupEngine::Sqlite => {
+                    SqliteLogicalBackupExporter::new(self.database_url.clone())
+                        .export_backup_bundle(request)
+                        .await
+                }
+                TestBackupEngine::Postgres => {
+                    let services = self.postgres.as_ref().expect("postgres source");
+                    PostgresLogicalBackupExporter::new(services)
+                        .export_backup_bundle(request)
+                        .await
+                }
+            }
+        }
+
+        async fn current_migration_key(&self) -> AppResult<Option<String>> {
+            match self.engine {
+                TestBackupEngine::Sqlite => {
+                    let settings =
+                        SqliteSettingsStore::new(self.sqlite.as_ref().expect("sqlite source"));
+                    settings
+                        .datastore_info()
+                        .await
+                        .map(|info| info.current_migration_key)
+                }
+                TestBackupEngine::Postgres => {
+                    let settings = PostgresSettingsStore::new(
+                        self.postgres.as_ref().expect("postgres source"),
+                    );
+                    settings
+                        .datastore_info()
+                        .await
+                        .map(|info| info.current_migration_key)
+                }
+            }
+        }
+
+        async fn cleanup(self) -> AppResult<()> {
+            if let Some(sqlite) = self.sqlite {
+                sqlite.pool().close().await;
+            }
+            if let Some(postgres) = self.postgres {
+                postgres.pool().close().await;
+            }
+            cleanup_postgres_schema(self.admin_pool, self.schema).await
+        }
+    }
+
+    impl TestBackupTarget {
+        async fn new(engine: TestBackupEngine, postgres_url: Option<&str>) -> AppResult<Self> {
+            let temp = tempfile::tempdir().map_err(|error| {
+                AppError::Repository(format!("failed to create target tempdir: {error}"))
+            })?;
+            let data_dir = temp.path().join("data");
+            std::fs::create_dir_all(&data_dir).map_err(|error| {
+                AppError::Repository(format!("failed to create target data dir: {error}"))
+            })?;
+
+            match engine {
+                TestBackupEngine::Sqlite => {
+                    let db_path = data_dir.join("scryer.db");
+                    let database_url = format!("sqlite://{}", db_path.display());
+                    Ok(Self {
+                        engine,
+                        config: DatastoreConfig::sqlite(
+                            database_url,
+                            data_dir,
+                            MigrationMode::Apply,
+                        ),
+                        admin_pool: None,
+                        schema: None,
+                        _temp: temp,
+                    })
+                }
+                TestBackupEngine::Postgres => {
+                    let raw_url = postgres_url.ok_or_else(|| {
+                        AppError::Validation(
+                            "SCRYER_TEST_POSTGRES_URL is required for PostgreSQL backup tests"
+                                .into(),
+                        )
+                    })?;
+                    let admin_pool = sqlx::PgPool::connect(raw_url).await.map_err(|error| {
+                        AppError::Repository(format!("failed to connect to postgres: {error}"))
+                    })?;
+                    let schema = next_backup_matrix_schema_name();
+                    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+                        .execute(&admin_pool)
+                        .await
+                        .map_err(|error| {
+                            AppError::Repository(format!(
+                                "failed to create target schema {schema}: {error}"
+                            ))
+                        })?;
+                    let database_url = postgres_url_with_search_path(raw_url, &schema)?;
+                    Ok(Self {
+                        engine,
+                        config: DatastoreConfig::postgres(
+                            database_url.clone(),
+                            database_url,
+                            DatastoreConfigSource::EnvDbUrl,
+                            data_dir,
+                            MigrationMode::Apply,
+                        ),
+                        admin_pool: Some(admin_pool),
+                        schema: Some(schema),
+                        _temp: temp,
+                    })
+                }
+            }
+        }
+
+        async fn seed_rebuildable_definitions(&self) -> AppResult<()> {
+            match self.engine {
+                TestBackupEngine::Sqlite => {
+                    let services = SqliteServices::new_with_mode(
+                        self.config.database_url.clone(),
+                        MigrationMode::Apply,
+                    )
+                    .await?;
+                    let settings = SqliteSettingsStore::new(&services);
+                    settings
+                        .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
+                        .await?;
+                    services.pool().close().await;
+                }
+                TestBackupEngine::Postgres => {
+                    let services = PostgresServices::new_with_mode(
+                        self.config.database_url.clone(),
+                        MigrationMode::Apply,
+                    )
+                    .await?;
+                    let settings = PostgresSettingsStore::new(&services);
+                    settings
+                        .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
+                        .await?;
+                    services.pool().close().await;
+                }
+            }
+            Ok(())
+        }
+
+        async fn verify_restored(&self) -> AppResult<()> {
+            match self.engine {
+                TestBackupEngine::Sqlite => {
+                    let services = SqliteServices::new_with_mode(
+                        self.config.database_url.clone(),
+                        MigrationMode::Apply,
+                    )
+                    .await?;
+                    let settings = SqliteSettingsStore::new(&services);
+                    let catalog = SqliteCatalogStore::new(&services);
+                    verify_backup_matrix_data(&settings, &catalog).await?;
+                    services.pool().close().await;
+                }
+                TestBackupEngine::Postgres => {
+                    let services = PostgresServices::new_with_mode(
+                        self.config.database_url.clone(),
+                        MigrationMode::Apply,
+                    )
+                    .await?;
+                    let settings = PostgresSettingsStore::new(&services);
+                    let catalog = PostgresCatalogStore::new(&services);
+                    verify_backup_matrix_data(&settings, &catalog).await?;
+                    services.pool().close().await;
+                }
+            }
+            Ok(())
+        }
+
+        async fn cleanup(self) -> AppResult<()> {
+            cleanup_postgres_schema(self.admin_pool, self.schema).await
+        }
+    }
+
+    async fn seed_backup_matrix_data<S, C>(settings: &S, catalog: &C) -> AppResult<()>
+    where
+        S: SettingsRepository,
+        C: TitleRepository + UserRepository,
+    {
+        settings
+            .upsert_setting_json(
+                "backup_matrix",
+                "json_payload",
+                None,
+                serde_json::json!({
+                    "encrypted_config": {
+                        "secret_ref": "matrix-secret",
+                        "enabled": true
+                    },
+                    "plugin_descriptor": {
+                        "id": "matrix.plugin",
+                        "version": "1.0.0"
+                    },
+                    "search_state": ["alpha", "beta"]
+                })
+                .to_string(),
+                "backup_matrix_test",
+                None,
+            )
+            .await?;
+
+        UserRepository::create(catalog, User::new_admin("backup-matrix-admin")).await?;
+        TitleRepository::create(catalog, backup_matrix_title()).await?;
+        Ok(())
+    }
+
+    fn backup_matrix_setting_definition() -> SettingDefinitionSeed {
+        SettingDefinitionSeed {
+            category: "backup_matrix".to_string(),
+            scope: "backup_matrix".to_string(),
+            key_name: "json_payload".to_string(),
+            data_type: "json".to_string(),
+            default_value_json: "{\"default\":true}".to_string(),
+            is_sensitive: false,
+            validation_json: Some("{\"type\":\"object\"}".to_string()),
+        }
+    }
+
+    async fn verify_backup_matrix_data<S, C>(settings: &S, catalog: &C) -> AppResult<()>
+    where
+        S: SettingsRepository,
+        C: TitleRepository + UserRepository,
+    {
+        let value = settings
+            .get_setting_json("backup_matrix", "json_payload", None)
+            .await?
+            .ok_or_else(|| AppError::Repository("restored setting missing".into()))?;
+        let decoded: serde_json::Value = serde_json::from_str(&value)
+            .map_err(|error| AppError::Repository(format!("invalid restored JSON: {error}")))?;
+        assert_eq!(decoded["plugin_descriptor"]["id"], "matrix.plugin");
+        assert_eq!(decoded["encrypted_config"]["enabled"], true);
+
+        let user = UserRepository::get_by_username(catalog, "backup-matrix-admin").await?;
+        assert!(user.is_some(), "restored admin identity should exist");
+
+        let title = TitleRepository::get_by_id(catalog, "backup-matrix-title").await?;
+        let title = title.expect("restored title should exist");
+        assert_eq!(title.external_ids[0].source, "tmdb");
+        assert_eq!(title.external_ids[0].value, "424242");
+        Ok(())
+    }
+
+    fn backup_matrix_title() -> Title {
+        Title {
+            id: "backup-matrix-title".to_string(),
+            library_id: "movie_default_library".to_string(),
+            name: "Backup Matrix Movie".to_string(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: vec!["backup".to_string(), "matrix".to_string()],
+            external_ids: vec![ExternalId {
+                source: "tmdb".to_string(),
+                value: "424242".to_string(),
+            }],
+            created_by: None,
+            created_at: chrono::Utc::now(),
+            year: Some(2026),
+            overview: Some("Logical backup matrix fixture".to_string()),
+            poster_url: Some("https://example.invalid/poster.jpg".to_string()),
+            poster_source_url: None,
+            banner_url: None,
+            banner_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: Some("Backup Matrix Movie".to_string()),
+            slug: Some("backup-matrix-movie".to_string()),
+            imdb_id: Some("tt4242420".to_string()),
+            runtime_minutes: Some(101),
+            genres: vec!["Drama".to_string()],
+            content_status: Some("released".to_string()),
+            language: Some("eng".to_string()),
+            first_aired: Some("2026-01-01".to_string()),
+            network: None,
+            studio: Some("Scryer Tests".to_string()),
+            country: Some("US".to_string()),
+            aliases: vec!["Matrix Fixture".to_string()],
+            tagged_aliases: Vec::new(),
+            metadata_language: Some("eng".to_string()),
+            metadata_fetched_at: Some(chrono::Utc::now()),
+            min_availability: None,
+            digital_release_date: Some("2026-01-02".to_string()),
+            folder_path: Some("/data/movies/Backup Matrix Movie (2026)".to_string()),
+        }
+    }
+
+    fn postgres_url_with_search_path(raw_url: &str, schema: &str) -> AppResult<String> {
+        let mut url = url::Url::parse(raw_url)
+            .map_err(|error| AppError::Validation(format!("invalid postgres test URL: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
+        Ok(url.to_string())
+    }
+
+    fn next_backup_matrix_schema_name() -> String {
+        format!(
+            "scryer_backup_matrix_{}_{}",
+            std::process::id(),
+            Id::new().0.replace('-', "_")
+        )
+    }
+
+    async fn cleanup_postgres_schema(
+        admin_pool: Option<sqlx::PgPool>,
+        schema: Option<String>,
+    ) -> AppResult<()> {
+        if let (Some(admin_pool), Some(schema)) = (admin_pool, schema) {
+            let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+                .execute(&admin_pool)
+                .await
+                .map(|_| ())
+                .map_err(|error| {
+                    AppError::Repository(format!("failed to drop test schema {schema}: {error}"))
+                });
+            admin_pool.close().await;
+            cleanup?;
+        }
+        Ok(())
     }
 }

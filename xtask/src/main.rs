@@ -23,6 +23,8 @@ mod profile;
 mod seed;
 
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+const DEFAULT_SERVE_BIND: &str = "127.0.0.1:18080";
+const DEFAULT_SERVE_FRONTEND_PORT: u16 = 3000;
 
 #[cfg(unix)]
 struct SignalForwarder {
@@ -212,28 +214,15 @@ struct StackLogsArgs {
 
 #[derive(Args)]
 struct ServeArgs {
-    #[command(subcommand)]
-    command: Option<ServeCommand>,
-    #[command(flatten)]
-    options: ServeRunArgs,
-}
-
-#[derive(Subcommand)]
-enum ServeCommand {
-    Clean(ServeRunArgs),
-}
-
-#[derive(Args, Clone)]
-struct ServeRunArgs {
     #[arg(
         long,
-        default_value = "127.0.0.1:18080",
+        default_value = DEFAULT_SERVE_BIND,
         help = "Bind address for the locally hosted Scryer debug server"
     )]
     bind: String,
     #[arg(
         long,
-        default_value_t = 3000,
+        default_value_t = DEFAULT_SERVE_FRONTEND_PORT,
         help = "Port for the Vite dev server with hot reload"
     )]
     frontend_port: u16,
@@ -242,6 +231,8 @@ struct ServeRunArgs {
         help = "Run xtask serve against a managed PostgreSQL Docker container instead of the default SQLite datastore"
     )]
     postgres: bool,
+    #[arg(long, help = "Reset the selected datastore before starting Scryer")]
+    clean: bool,
 }
 
 #[derive(Args)]
@@ -325,12 +316,14 @@ fn main() -> Result<()> {
             StackCommand::Logs(args) => stack_logs(&ctx, args),
             StackCommand::Restart(args) => stack_restart(&ctx, args),
         },
-        Commands::Serve(args) => match args.command {
-            Some(ServeCommand::Clean(options)) => {
-                serve_local_scryer(&ctx, options, ServeMode::CleanDatabase)
-            }
-            None => serve_local_scryer(&ctx, args.options, ServeMode::PreserveDatabase),
-        },
+        Commands::Serve(args) => {
+            let mode = if args.clean {
+                ServeMode::CleanDatabase
+            } else {
+                ServeMode::PreserveDatabase
+            };
+            serve_local_scryer(&ctx, args, mode)
+        }
         Commands::Seed(args) => match args.command {
             SeedCommand::Dev(args) => seed_dev(&ctx, args),
         },
@@ -691,7 +684,7 @@ fn serve_postgres_config() -> Result<ServePostgresConfig> {
         .unwrap_or(55432);
     Ok(ServePostgresConfig {
         image: std::env::var("SCRYER_XTASK_POSTGRES_IMAGE")
-            .unwrap_or_else(|_| "postgres:18-alpine".to_string()),
+            .unwrap_or_else(|_| "postgres:18".to_string()),
         container_name: std::env::var("SCRYER_XTASK_POSTGRES_CONTAINER")
             .unwrap_or_else(|_| "scryer-xtask-postgres".to_string()),
         volume_name: std::env::var("SCRYER_XTASK_POSTGRES_VOLUME")
@@ -754,17 +747,22 @@ fn wait_for_serve_postgres(ctx: &TaskContext, config: &ServePostgresConfig) -> R
             );
         }
 
-        let mut pg_isready = ctx.command("docker");
-        pg_isready.args([
+        let pg_url = format!(
+            "postgresql://{}@127.0.0.1/{}?sslmode=disable",
+            config.user, config.database
+        );
+        let mut psql = ctx.command("docker");
+        psql.args([
             "exec",
             &config.container_name,
-            "pg_isready",
-            "-U",
-            &config.user,
-            "-d",
-            &config.database,
+            "env",
+            &format!("PGPASSWORD={}", config.password),
+            "psql",
+            &pg_url,
+            "-c",
+            "SELECT 1",
         ]);
-        if run_status(&mut pg_isready)?.success() {
+        if run_status(&mut psql)?.success() {
             return Ok(());
         }
 
@@ -826,7 +824,7 @@ fn ensure_serve_postgres(ctx: &TaskContext, mode: ServeMode) -> Result<ServeData
             "-p",
             &format!("{}:5432", config.host_port),
             "-v",
-            &format!("{}:/var/lib/postgresql/data", config.volume_name),
+            &format!("{}:/var/lib/postgresql", config.volume_name),
             &config.image,
         ]);
         run_checked(&mut run)?;
@@ -864,7 +862,7 @@ fn ensure_serve_postgres(ctx: &TaskContext, mode: ServeMode) -> Result<ServeData
 
 fn prepare_serve_datastore(
     ctx: &TaskContext,
-    args: &ServeRunArgs,
+    args: &ServeArgs,
     mode: ServeMode,
 ) -> Result<ServeDatastore> {
     if args.postgres {
@@ -902,7 +900,7 @@ fn ensure_frontend_dependencies(ctx: &TaskContext, web_dir: &Path) -> Result<()>
     Ok(())
 }
 
-fn serve_local_scryer(ctx: &TaskContext, args: ServeRunArgs, mode: ServeMode) -> Result<()> {
+fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Result<()> {
     require_command("npm")?;
 
     let env_file = ctx.path(".env");

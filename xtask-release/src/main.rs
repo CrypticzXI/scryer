@@ -3485,7 +3485,9 @@ mod tests {
         );
         assert_eq!(
             reason.as_deref(),
-            Some("dry run did not record required release-blocking validations: e2e_datastore_restore_matrix")
+            Some(
+                "dry run did not record required release-blocking validations: e2e_datastore_restore_matrix"
+            )
         );
     }
 

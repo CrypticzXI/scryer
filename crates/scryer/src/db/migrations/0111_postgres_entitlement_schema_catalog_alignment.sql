@@ -1,0 +1,2 @@
+-- SQLite already uses the logical backup entitlement table shape.
+-- This migration keeps engine migration keys aligned with PostgreSQL.

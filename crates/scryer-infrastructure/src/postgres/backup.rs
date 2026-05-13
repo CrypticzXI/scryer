@@ -546,11 +546,12 @@ async fn import_table_part(
                 "invalid backup row for {table}:{line_number}: {error}"
             ))
         })?;
-        let object = value.as_object().ok_or_else(|| {
+        let mut object = value.as_object().cloned().ok_or_else(|| {
             AppError::Validation(format!(
                 "backup row for {table}:{line_number} is not an object"
             ))
         })?;
+        normalize_import_object(table, &mut object)?;
         let columns = target_columns
             .iter()
             .filter(|column| object.contains_key(&column.name))
@@ -589,6 +590,112 @@ async fn import_table_part(
     }
 
     Ok(())
+}
+
+fn normalize_import_object(table: &str, object: &mut JsonMap<String, JsonValue>) -> AppResult<()> {
+    if table == "titles" {
+        ensure_title_record_json(object);
+    }
+    Ok(())
+}
+
+fn ensure_title_record_json(object: &mut JsonMap<String, JsonValue>) {
+    let has_complete_record = object
+        .get("record_json")
+        .and_then(JsonValue::as_object)
+        .is_some_and(|record| record.contains_key("id"));
+    if has_complete_record {
+        return;
+    }
+
+    let mut record = JsonMap::new();
+    for field in [
+        "id",
+        "name",
+        "created_by",
+        "created_at",
+        "year",
+        "overview",
+        "poster_url",
+        "banner_url",
+        "background_url",
+        "sort_title",
+        "slug",
+        "imdb_id",
+        "runtime_minutes",
+        "content_status",
+        "language",
+        "first_aired",
+        "network",
+        "studio",
+        "country",
+        "metadata_language",
+        "metadata_fetched_at",
+        "min_availability",
+        "digital_release_date",
+        "folder_path",
+    ] {
+        record.insert(
+            field.to_string(),
+            object.get(field).cloned().unwrap_or(JsonValue::Null),
+        );
+    }
+
+    record.insert(
+        "library_id".to_string(),
+        object
+            .get("library_id")
+            .cloned()
+            .unwrap_or_else(|| JsonValue::String(String::new())),
+    );
+    record.insert(
+        "facet".to_string(),
+        object
+            .get("facet")
+            .cloned()
+            .unwrap_or_else(|| JsonValue::String("movie".to_string())),
+    );
+    record.insert(
+        "monitored".to_string(),
+        sqlite_bool_value(object.get("monitored")).unwrap_or(JsonValue::Bool(true)),
+    );
+    for (record_field, source_field) in [
+        ("tags", "tags"),
+        ("external_ids", "external_ids"),
+        ("genres", "genres"),
+        ("aliases", "aliases"),
+        ("tagged_aliases", "tagged_aliases_json"),
+    ] {
+        record.insert(
+            record_field.to_string(),
+            object
+                .get(source_field)
+                .and_then(logical_json_value)
+                .unwrap_or_else(|| JsonValue::Array(Vec::new())),
+        );
+    }
+    for field in [
+        "poster_source_url",
+        "banner_source_url",
+        "background_source_url",
+    ] {
+        record.insert(field.to_string(), JsonValue::Null);
+    }
+
+    object.insert("record_json".to_string(), JsonValue::Object(record));
+}
+
+fn sqlite_bool_value(value: Option<&JsonValue>) -> Option<JsonValue> {
+    match value {
+        Some(JsonValue::Bool(value)) => Some(JsonValue::Bool(*value)),
+        Some(JsonValue::Number(value)) => value.as_i64().map(|value| JsonValue::Bool(value != 0)),
+        Some(JsonValue::String(value)) => match value.as_str() {
+            "1" | "true" | "TRUE" => Some(JsonValue::Bool(true)),
+            "0" | "false" | "FALSE" => Some(JsonValue::Bool(false)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 async fn table_columns(
