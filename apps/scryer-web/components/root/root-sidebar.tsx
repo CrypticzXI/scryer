@@ -388,7 +388,7 @@ function RootSidebarContent({
       <Sidebar
         variant="floating"
         collapsible={isMobile ? "offcanvas" : "none"}
-        className="overflow-hidden rounded-xl border border-border md:-ml-4"
+        className="overflow-hidden rounded-xl border border-border md:-ml-4 md:top-[calc(var(--root-header-height,0px)+1rem)] md:bottom-auto md:h-[calc(100svh-var(--root-header-height,0px)-2rem)]"
       >
         <SidebarContent className="overflow-y-auto rounded-lg bg-background">
           <SidebarGroup>

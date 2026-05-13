@@ -152,13 +152,13 @@ fn build_manifest(
 }
 
 fn build_config_entries(
-    _descriptor: &PluginDescriptor,
+    descriptor: &PluginDescriptor,
     indexer_name: &str,
     config: &IndexerConfig,
 ) -> Option<std::collections::HashMap<String, String>> {
     match config.config_json.as_deref() {
         Some(json_str) => match parse_config_json_entries(json_str) {
-            Ok(map) => Some(map),
+            Ok(map) => Some(normalize_indexer_config_entries(descriptor, map)),
             Err(error) => {
                 warn!(
                     indexer = indexer_name,
@@ -172,6 +172,88 @@ fn build_config_entries(
     }
 }
 
+fn normalize_indexer_config_entries(
+    descriptor: &PluginDescriptor,
+    mut entries: std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    if let Some(connection_url_key) = descriptor
+        .config_fields()
+        .iter()
+        .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
+        .map(|field| field.key.as_str())
+    {
+        let normalized_connection_url = entries
+            .get(connection_url_key)
+            .and_then(|value| normalize_connection_url(value));
+
+        match normalized_connection_url {
+            Some(value) => {
+                entries.insert(connection_url_key.to_string(), value);
+            }
+            None => {
+                entries.remove(connection_url_key);
+            }
+        }
+    }
+
+    let normalized_api_path = entries
+        .get("api_path")
+        .and_then(|value| normalize_api_path(value));
+    match normalized_api_path {
+        Some(value) => {
+            entries.insert("api_path".to_string(), value);
+        }
+        None => {
+            entries.remove("api_path");
+        }
+    }
+
+    let normalized_additional_params = entries
+        .get("additional_params")
+        .and_then(|value| normalize_additional_params(value));
+
+    match normalized_additional_params {
+        Some(value) => {
+            entries.insert("additional_params".to_string(), value);
+        }
+        None => {
+            entries.remove("additional_params");
+        }
+    }
+
+    entries
+}
+
+fn normalize_connection_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    (!trimmed.is_empty()).then_some(trimmed.to_string())
+}
+
+fn normalize_api_path(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches('/');
+    (!trimmed.is_empty()).then(|| format!("/{trimmed}"))
+}
+
+fn normalize_additional_params(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_start_matches(['?', '&']).trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let pairs = url::form_urlencoded::parse(trimmed.as_bytes()).collect::<Vec<_>>();
+    if pairs.is_empty() {
+        return None;
+    }
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in pairs {
+        serializer.append_pair(&key, &value);
+    }
+
+    let normalized = serializer.finish();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
 fn resolve_connection_url(
     descriptor: &PluginDescriptor,
     config_entries: Option<&std::collections::HashMap<String, String>>,
@@ -181,10 +263,11 @@ fn resolve_connection_url(
         .iter()
         .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))?;
     config_entries
-        .and_then(|entries| entries.get(&field.key))
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .or_else(|| field.default_value.clone())
+        .and_then(|entries| entries.get(&field.key).map(String::as_str))
+        .or(field.default_value.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn build_search_context(
@@ -634,5 +717,36 @@ mod tests {
             extra.get("provider_specific"),
             Some(&serde_json::Value::from("kept"))
         );
+    }
+
+    #[test]
+    fn normalizes_additional_params_for_safe_query_appending() {
+        assert_eq!(
+            normalize_additional_params(" ?foo=bar baz&zap=1 "),
+            Some("foo=bar+baz&zap=1".to_string())
+        );
+        assert_eq!(
+            normalize_additional_params(" &foo=bar%20baz&zap=1 "),
+            Some("foo=bar+baz&zap=1".to_string())
+        );
+        assert_eq!(
+            normalize_additional_params(" foo=bar%20baz&zap=1 "),
+            Some("foo=bar+baz&zap=1".to_string())
+        );
+        assert_eq!(normalize_additional_params(" ? "), None);
+    }
+
+    #[test]
+    fn normalizes_connection_url_and_api_path_for_sloppy_input() {
+        assert_eq!(
+            normalize_connection_url(" https://indexer.example.com/// "),
+            Some("https://indexer.example.com".to_string())
+        );
+        assert_eq!(normalize_connection_url("   "), None);
+        assert_eq!(
+            normalize_api_path(" /api/v1/api// "),
+            Some("/api/v1/api".to_string())
+        );
+        assert_eq!(normalize_api_path(" /// "), None);
     }
 }

@@ -73,12 +73,11 @@ jobs:
         with:
           name: scryer-web-out-${{ github.run_id }}
           path: scryer-web-out
-      - name: Build release binary (x86 musl + embedded UI)
+      - name: Build release binary (portable x86_64 musl + embedded UI)
         env:
           SCRYER_EMBED_UI_DIR: ${{ github.workspace }}/scryer-web-out
           SCRYER_SMG_REGISTRATION_SECRET: ${{ secrets.SMG_REGISTRATION_SECRET }}
           SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
-          RUSTFLAGS: -C target-cpu=haswell
         run: mold -run cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl
       - name: Package tarball
         run: tar -czf scryer-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-musl/release scryer
@@ -114,12 +113,11 @@ jobs:
         with:
           name: scryer-web-out-${{ github.run_id }}
           path: scryer-web-out
-      - name: Build release binary (arm64 musl + embedded UI)
+      - name: Build release binary (portable arm64 musl + embedded UI)
         env:
           SCRYER_EMBED_UI_DIR: ${{ github.workspace }}/scryer-web-out
           SCRYER_SMG_REGISTRATION_SECRET: ${{ secrets.SMG_REGISTRATION_SECRET }}
           SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
-          RUSTFLAGS: -C target-cpu=cortex-a72 --cfg aes_armv8 --cfg chacha20_force_neon
         run: mold -run cargo build -p scryer --release --locked --target aarch64-unknown-linux-musl
       - name: Package tarball
         run: tar -czf scryer-linux-arm64.tar.gz -C target/aarch64-unknown-linux-musl/release scryer
@@ -632,13 +630,13 @@ jobs:
                 #!/bin/sh
                 CONFIG_FILE="#{etc}/scryer/config.env"
 
-                if [ -f "$CONFIG_FILE" ]; then
+                if [ -f "\$CONFIG_FILE" ]; then
                   set -a
-                  . "$CONFIG_FILE"
+                  . "\$CONFIG_FILE"
                   set +a
                 fi
 
-                exec "#{opt_bin}/scryer" --data-dir "#{var}/scryer" "$@"
+                exec "#{opt_bin}/scryer" --data-dir "#{var}/scryer" "\$@"
               SH
 
               chmod 0755, libexec/"scryer-service"
@@ -674,6 +672,8 @@ jobs:
 
               config_dir = etc/"scryer"
               config_dir.mkpath
+              (var/"scryer").mkpath
+              (var/"log").mkpath
               config_file = config_dir/"config.env"
               unless config_file.exist?
                 config_file.write <<~EOS

@@ -180,18 +180,15 @@ export const RootHeader = React.memo(function RootHeader({
   }, [globalSearchInputRef, setGlobalSearch]);
 
   React.useEffect(() => {
-    if (!isMobile) {
-      setMobileHeaderHeight(0);
-      return;
-    }
-
     const headerElement = headerRef.current;
     if (!headerElement) {
       return;
     }
 
     const updateHeaderHeight = () => {
-      setMobileHeaderHeight(headerElement.getBoundingClientRect().height);
+      const height = headerElement.getBoundingClientRect().height;
+      document.documentElement.style.setProperty("--root-header-height", `${height}px`);
+      setMobileHeaderHeight(isMobile ? height : 0);
     };
 
     updateHeaderHeight();
@@ -203,7 +200,10 @@ export const RootHeader = React.memo(function RootHeader({
 
     const resizeObserver = new ResizeObserver(() => updateHeaderHeight());
     resizeObserver.observe(headerElement);
-    return () => resizeObserver.disconnect();
+    return () => {
+      resizeObserver.disconnect();
+      document.documentElement.style.removeProperty("--root-header-height");
+    };
   }, [isMobile]);
 
   React.useEffect(() => {

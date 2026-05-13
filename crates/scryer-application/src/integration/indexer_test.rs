@@ -34,7 +34,8 @@ impl AppUseCase {
             &fields,
             Some(&normalized_config_json),
         )?;
-        validate_test_flight_url(&base_url)?;
+        let validated_base_url = validate_test_flight_url(&base_url)?;
+        preflight_test_flight_url(&validated_base_url).await?;
 
         let provider = self
             .services
@@ -107,14 +108,16 @@ impl AppUseCase {
                 "no indexer provider available for provider type '{provider_type}'"
             ))
         })?;
+        let capabilities = provider.capabilities_for_provider(provider_type);
+        let (query, ids, facet) = build_connection_test_search_request(&capabilities);
 
-        // Perform a minimal search to validate the full pipeline
+        // Perform a real search request to validate the full pipeline.
         client
             .search(
-                String::new(), // empty query
-                std::collections::HashMap::new(),
+                query,
+                ids,
                 None,
-                None,
+                facet,
                 None,
                 None,
                 SearchMode::Interactive,
@@ -148,7 +151,7 @@ fn validate_indexer_connection_result(result: crate::IndexerValidationResult) ->
     )))
 }
 
-fn validate_test_flight_url(raw: &str) -> AppResult<()> {
+fn validate_test_flight_url(raw: &str) -> AppResult<url::Url> {
     let url = url::Url::parse(raw)
         .map_err(|error| AppError::Validation(format!("invalid base URL: {error}")))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -164,7 +167,84 @@ fn validate_test_flight_url(raw: &str) -> AppResult<()> {
             "base URL must not include embedded credentials".into(),
         ));
     }
+    Ok(url)
+}
+
+#[cfg(not(test))]
+async fn preflight_test_flight_url(url: &url::Url) -> AppResult<()> {
+    let origin = url.origin().ascii_serialization();
+    let client = scryer_outbound_http::no_redirect_timeout_reqwest_client(Some(
+        std::time::Duration::from_secs(10),
+    ))
+    .map_err(|error| {
+        AppError::Repository(format!(
+            "failed to build unauthenticated test-flight client: {error}"
+        ))
+    })?;
+    let outbound_http = scryer_outbound_http::OutboundHttpClient::new(
+        client,
+        scryer_outbound_http::RateLimitRegistry::new(),
+    );
+
+    outbound_http
+        .send(
+            scryer_outbound_http::RequestPolicy::no_retry("indexer_preflight", "head_origin"),
+            || outbound_http.client().head(&origin),
+        )
+        .await
+        .map_err(|error| {
+            AppError::Validation(format!(
+                "base URL preflight failed before sending credentials: {error}"
+            ))
+        })?;
+
     Ok(())
+}
+
+#[cfg(test)]
+async fn preflight_test_flight_url(_url: &url::Url) -> AppResult<()> {
+    Ok(())
+}
+
+fn build_connection_test_search_request(
+    capabilities: &scryer_domain::IndexerProviderCapabilities,
+) -> (
+    String,
+    std::collections::HashMap<String, String>,
+    Option<String>,
+) {
+    if capabilities.query_param.is_some() || capabilities.search {
+        return (
+            "scryer connection test".to_string(),
+            std::collections::HashMap::new(),
+            None,
+        );
+    }
+
+    let mut supported_facets: Vec<_> = capabilities.supported_ids.iter().collect();
+    supported_facets.sort_by_key(|(left, _)| *left);
+
+    for (facet, id_types) in supported_facets {
+        if let Some(id_type) = id_types.iter().find(|id_type| !id_type.is_empty()) {
+            return (
+                String::new(),
+                std::collections::HashMap::from([(
+                    id_type.clone(),
+                    connection_test_id_value(id_type),
+                )]),
+                Some(facet.clone()),
+            );
+        }
+    }
+
+    (String::new(), std::collections::HashMap::new(), None)
+}
+
+fn connection_test_id_value(id_type: &str) -> String {
+    match id_type {
+        "imdb_id" => "tt0000001".to_string(),
+        _ => "1".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -180,6 +260,62 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RecordedSearchCall {
+        query: String,
+        ids: HashMap<String, String>,
+        facet: Option<String>,
+    }
+
+    struct RecordingIndexerClient {
+        calls: Arc<std::sync::Mutex<Vec<RecordedSearchCall>>>,
+        fail_search: bool,
+    }
+
+    impl RecordingIndexerClient {
+        fn new(fail_search: bool) -> Self {
+            Self {
+                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+                fail_search,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl IndexerClient for RecordingIndexerClient {
+        async fn search(
+            &self,
+            query: String,
+            ids: HashMap<String, String>,
+            _category: Option<String>,
+            facet: Option<String>,
+            _newznab_categories: Option<Vec<String>>,
+            _indexer_routing: Option<IndexerRoutingPlan>,
+            _mode: SearchMode,
+            _season: Option<u32>,
+            _episode: Option<u32>,
+            _absolute_episode: Option<u32>,
+            _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+        ) -> AppResult<IndexerSearchResponse> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RecordedSearchCall { query, ids, facet });
+
+            if self.fail_search {
+                return Err(AppError::Repository("forced failure".into()));
+            }
+
+            Ok(IndexerSearchResponse {
+                results: vec![],
+                api_current: None,
+                api_max: None,
+                grab_current: None,
+                grab_max: None,
+            })
+        }
+    }
 
     struct RecordingIndexerConfigRepo {
         created: Arc<Mutex<Vec<IndexerConfig>>>,
@@ -214,7 +350,9 @@ mod tests {
             let config = created
                 .iter_mut()
                 .find(|config| config.id == update.id)
-                .ok_or_else(|| AppError::NotFound(format!("indexer config {}", update.id)))?;
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("indexer config '{}' not found", update.id))
+                })?;
 
             if let Some(name) = update.name {
                 config.name = name;
@@ -252,6 +390,7 @@ mod tests {
             if let Some(config_json) = update.config_json {
                 config.config_json = Some(config_json);
             }
+            config.updated_at = Utc::now();
 
             Ok(config.clone())
         }
@@ -327,16 +466,29 @@ mod tests {
     struct RecordingPluginProvider {
         seen_configs: Arc<std::sync::Mutex<Vec<IndexerConfig>>>,
         seen_management_configs: Arc<std::sync::Mutex<Vec<IndexerConfig>>>,
+        client: Arc<RecordingIndexerClient>,
+        provider_type: String,
+        fields: Vec<scryer_domain::ConfigFieldDef>,
+        capabilities: scryer_domain::IndexerProviderCapabilities,
         supports_validate_config: bool,
         supports_managed_children_sync: bool,
         sync_plan: crate::IndexerSyncPlan,
     }
 
     impl RecordingPluginProvider {
-        fn new() -> Self {
+        fn new(
+            provider_type: &str,
+            fields: Vec<scryer_domain::ConfigFieldDef>,
+            capabilities: scryer_domain::IndexerProviderCapabilities,
+            client: Arc<RecordingIndexerClient>,
+        ) -> Self {
             Self {
                 seen_configs: Arc::new(std::sync::Mutex::new(Vec::new())),
                 seen_management_configs: Arc::new(std::sync::Mutex::new(Vec::new())),
+                client,
+                provider_type: provider_type.to_string(),
+                fields,
+                capabilities,
                 supports_validate_config: false,
                 supports_managed_children_sync: false,
                 sync_plan: crate::IndexerSyncPlan::default(),
@@ -344,18 +496,34 @@ mod tests {
         }
 
         fn with_validate_config_support() -> Self {
-            Self {
-                supports_validate_config: true,
-                ..Self::new()
-            }
+            let mut provider = Self::new(
+                "torrent_rss",
+                vec![string_field(
+                    "feed_url",
+                    "Feed URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                rss_only_capabilities(),
+                Arc::new(RecordingIndexerClient::new(false)),
+            );
+            provider.supports_validate_config = true;
+            provider
         }
 
         fn with_sync_plan(sync_plan: crate::IndexerSyncPlan) -> Self {
-            Self {
-                supports_managed_children_sync: true,
-                sync_plan,
-                ..Self::new()
-            }
+            let mut provider = Self::new(
+                "manager",
+                vec![string_field(
+                    "base_url",
+                    "Base URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                Default::default(),
+                Arc::new(RecordingIndexerClient::new(false)),
+            );
+            provider.supports_managed_children_sync = true;
+            provider.sync_plan = sync_plan;
+            provider
         }
     }
 
@@ -385,7 +553,7 @@ mod tests {
     impl IndexerPluginProvider for RecordingPluginProvider {
         fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
             self.seen_configs.lock().unwrap().push(config.clone());
-            Some(Arc::new(NullIndexerClient))
+            Some(self.client.clone())
         }
 
         fn management_client_for_provider(
@@ -402,67 +570,98 @@ mod tests {
         }
 
         fn available_provider_types(&self) -> Vec<String> {
-            vec!["torrent_rss".to_string(), "manager".to_string()]
+            vec![self.provider_type.clone()]
         }
 
         fn management_capabilities_for_provider(
             &self,
             provider_type: &str,
         ) -> scryer_domain::IndexerManagementCapabilities {
-            if provider_type == "torrent_rss" && self.supports_validate_config {
-                return scryer_domain::IndexerManagementCapabilities {
-                    supports_validate_config: true,
-                    supports_managed_children_sync: false,
-                };
+            if provider_type != self.provider_type {
+                return scryer_domain::IndexerManagementCapabilities::default();
             }
 
-            if provider_type == "manager" && self.supports_managed_children_sync {
-                return scryer_domain::IndexerManagementCapabilities {
-                    supports_validate_config: false,
-                    supports_managed_children_sync: true,
-                };
+            scryer_domain::IndexerManagementCapabilities {
+                supports_validate_config: self.supports_validate_config,
+                supports_managed_children_sync: self.supports_managed_children_sync,
             }
-
-            scryer_domain::IndexerManagementCapabilities::default()
         }
 
         fn config_fields_for_provider(
             &self,
             provider_type: &str,
         ) -> Vec<scryer_domain::ConfigFieldDef> {
-            if provider_type == "manager" {
-                return vec![scryer_domain::ConfigFieldDef {
-                    key: "base_url".to_string(),
-                    label: "Base URL".to_string(),
-                    field_type: scryer_domain::ConfigFieldType::String,
-                    required: true,
-                    default_value: None,
-                    value_source: scryer_domain::ConfigFieldValueSource::User,
-                    role: Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
-                    host_binding: None,
-                    options: vec![],
-                    help_text: None,
-                }];
-            }
-            if provider_type != "torrent_rss" {
+            if provider_type != self.provider_type {
                 return vec![];
             }
-            vec![scryer_domain::ConfigFieldDef {
-                key: "feed_url".to_string(),
-                label: "Feed URL".to_string(),
-                field_type: scryer_domain::ConfigFieldType::String,
-                required: true,
-                default_value: None,
-                value_source: scryer_domain::ConfigFieldValueSource::User,
-                role: Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
-                host_binding: None,
-                options: vec![],
-                help_text: None,
-            }]
+            self.fields.clone()
+        }
+
+        fn capabilities_for_provider(
+            &self,
+            provider_type: &str,
+        ) -> scryer_domain::IndexerProviderCapabilities {
+            if provider_type == self.provider_type {
+                return self.capabilities.clone();
+            }
+
+            Default::default()
         }
 
         fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
             vec![]
+        }
+    }
+
+    fn string_field(
+        key: &str,
+        label: &str,
+        role: Option<scryer_domain::ConfigFieldRole>,
+    ) -> scryer_domain::ConfigFieldDef {
+        scryer_domain::ConfigFieldDef {
+            key: key.to_string(),
+            label: label.to_string(),
+            field_type: scryer_domain::ConfigFieldType::String,
+            required: true,
+            default_value: None,
+            value_source: scryer_domain::ConfigFieldValueSource::User,
+            role,
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        }
+    }
+
+    fn password_field(key: &str, label: &str) -> scryer_domain::ConfigFieldDef {
+        scryer_domain::ConfigFieldDef {
+            key: key.to_string(),
+            label: label.to_string(),
+            field_type: scryer_domain::ConfigFieldType::Password,
+            required: true,
+            default_value: None,
+            value_source: scryer_domain::ConfigFieldValueSource::User,
+            role: None,
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        }
+    }
+
+    fn searchable_capabilities() -> scryer_domain::IndexerProviderCapabilities {
+        scryer_domain::IndexerProviderCapabilities {
+            query_param: Some("q".into()),
+            search: true,
+            ..Default::default()
+        }
+    }
+
+    fn rss_only_capabilities() -> scryer_domain::IndexerProviderCapabilities {
+        scryer_domain::IndexerProviderCapabilities {
+            rss: true,
+            query_param: None,
+            search: false,
+            supported_ids: HashMap::new(),
+            ..Default::default()
         }
     }
 
@@ -516,15 +715,46 @@ mod tests {
         user
     }
 
+    #[test]
+    fn validate_test_flight_url_uses_origin_only_for_preflight() {
+        let url = validate_test_flight_url("https://api.nzbgeek.info/api?t=search&apikey=secret")
+            .expect("valid test-flight URL");
+
+        assert_eq!(
+            url.origin().ascii_serialization(),
+            "https://api.nzbgeek.info"
+        );
+    }
+
+    #[test]
+    fn validate_test_flight_url_rejects_embedded_credentials() {
+        let err = validate_test_flight_url("https://user:secret@api.nzbgeek.info")
+            .expect_err("embedded credentials should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("base URL must not include embedded credentials")
+        );
+    }
+
     #[tokio::test]
     async fn create_indexer_config_derives_base_url_from_feed_url() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let client = Arc::new(RecordingIndexerClient::new(false));
         let app = test_app(
             indexer_repo.clone(),
-            Some(Arc::new(RecordingPluginProvider::new())),
+            Some(Arc::new(RecordingPluginProvider::new(
+                "torrent_rss",
+                vec![string_field(
+                    "feed_url",
+                    "Feed URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                rss_only_capabilities(),
+                client,
+            ))),
             Arc::new(NullSettingsRepository),
         );
-
         let created = app
             .create_indexer_config(
                 &test_admin(),
@@ -548,8 +778,223 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_indexer_config_rejects_invalid_connection_details() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let client = Arc::new(RecordingIndexerClient::new(true));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(Arc::new(RecordingPluginProvider::new(
+                "nzbgeek",
+                vec![
+                    string_field(
+                        "base_url",
+                        "Base URL",
+                        Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                    ),
+                    password_field("api_key", "API Key"),
+                ],
+                searchable_capabilities(),
+                client,
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .create_indexer_config(
+                &test_admin(),
+                NewIndexerConfig {
+                    name: "NZBGeek".to_string(),
+                    provider_type: "nzbgeek".to_string(),
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: true,
+                    config_json: Some(
+                        r#"{"base_url":"https://api.nzbgeek.info/","api_key":"bad-key"}"#
+                            .to_string(),
+                    ),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "repository: indexer connection test failed: repository: forced failure"
+        );
+        assert!(indexer_repo.created.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_indexer_config_rejects_invalid_connection_details() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        indexer_repo.created.lock().await.push(IndexerConfig {
+            id: "cfg-1".to_string(),
+            name: "NZBGeek".to_string(),
+            provider_type: "nzbgeek".to_string(),
+            base_url: "https://api.nzbgeek.info/".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(
+                r#"{"base_url":"https://api.nzbgeek.info/","api_key":"good-key"}"#.to_string(),
+            ),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+        let client = Arc::new(RecordingIndexerClient::new(true));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(Arc::new(RecordingPluginProvider::new(
+                "nzbgeek",
+                vec![
+                    string_field(
+                        "base_url",
+                        "Base URL",
+                        Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                    ),
+                    password_field("api_key", "API Key"),
+                ],
+                searchable_capabilities(),
+                client,
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .update_indexer_config(
+                &test_admin(),
+                crate::IndexerConfigUpdate {
+                    id: "cfg-1".to_string(),
+                    name: None,
+                    provider_type: None,
+                    derived_base_url: None,
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: None,
+                    enable_interactive_search: None,
+                    enable_auto_search: None,
+                    managed_parent_config_id: None,
+                    managed_child_key: None,
+                    managed_metadata_json: None,
+                    config_json: Some(
+                        r#"{"base_url":"https://api.nzbgeek.info/","api_key":"bad-key"}"#
+                            .to_string(),
+                    ),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "repository: indexer connection test failed: repository: forced failure"
+        );
+        let stored = indexer_repo
+            .get_by_id("cfg-1")
+            .await
+            .unwrap()
+            .expect("existing config");
+        assert_eq!(
+            stored.config_json.as_deref(),
+            Some(r#"{"base_url":"https://api.nzbgeek.info/","api_key":"good-key"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn update_indexer_config_skips_connection_test_for_rename_only() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        indexer_repo.created.lock().await.push(IndexerConfig {
+            id: "cfg-1".to_string(),
+            name: "NZBGeek".to_string(),
+            provider_type: "nzbgeek".to_string(),
+            base_url: "https://api.nzbgeek.info/".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(
+                r#"{"base_url":"https://api.nzbgeek.info/","api_key":"good-key"}"#.to_string(),
+            ),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+        let client = Arc::new(RecordingIndexerClient::new(true));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(Arc::new(RecordingPluginProvider::new(
+                "nzbgeek",
+                vec![
+                    string_field(
+                        "base_url",
+                        "Base URL",
+                        Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                    ),
+                    password_field("api_key", "API Key"),
+                ],
+                searchable_capabilities(),
+                client.clone(),
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let updated = app
+            .update_indexer_config(
+                &test_admin(),
+                crate::IndexerConfigUpdate {
+                    id: "cfg-1".to_string(),
+                    name: Some("NZBGeek Mirror".to_string()),
+                    provider_type: None,
+                    derived_base_url: None,
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: None,
+                    enable_interactive_search: None,
+                    enable_auto_search: None,
+                    managed_parent_config_id: None,
+                    managed_child_key: None,
+                    managed_metadata_json: None,
+                    config_json: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.name, "NZBGeek Mirror");
+        assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_indexer_connection_derives_base_url_from_feed_url() {
-        let provider = Arc::new(RecordingPluginProvider::new());
+        let client = Arc::new(RecordingIndexerClient::new(false));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "torrent_rss",
+            vec![string_field(
+                "feed_url",
+                "Feed URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            rss_only_capabilities(),
+            client.clone(),
+        ));
         let app = test_app(
             Arc::new(RecordingIndexerConfigRepo::new()),
             Some(provider.clone()),
@@ -568,6 +1013,159 @@ mod tests {
         let seen = provider.seen_configs.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].base_url, "https://ipt.beelyrics.net");
+
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].query.is_empty());
+        assert!(calls[0].ids.is_empty());
+        assert_eq!(calls[0].facet, None);
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_trims_connection_url_in_config_json() {
+        let client = Arc::new(RecordingIndexerClient::new(false));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "newznab",
+            vec![string_field(
+                "base_url",
+                "Base URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            searchable_capabilities(),
+            client,
+        ));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        app.test_indexer_connection(
+            &test_admin(),
+            "newznab",
+            Some(r#"{"base_url":"  https://api.nzbgeek.info/  \n"}"#),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let seen = provider.seen_configs.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].base_url, "https://api.nzbgeek.info/");
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_uses_non_empty_query_for_searchable_provider() {
+        let client = Arc::new(RecordingIndexerClient::new(false));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "newznab",
+            vec![string_field(
+                "base_url",
+                "Base URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            searchable_capabilities(),
+            client.clone(),
+        ));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
+
+        app.test_indexer_connection(
+            &test_admin(),
+            "newznab",
+            Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].query, "scryer connection test");
+        assert!(calls[0].ids.is_empty());
+        assert_eq!(calls[0].facet, None);
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_uses_id_search_for_id_only_provider() {
+        let client = Arc::new(RecordingIndexerClient::new(false));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "id_only",
+            vec![string_field(
+                "base_url",
+                "Base URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            scryer_domain::IndexerProviderCapabilities {
+                rss: true,
+                supported_ids: HashMap::from([("movie".into(), vec!["imdb_id".into()])]),
+                query_param: None,
+                search: false,
+                ..Default::default()
+            },
+            client.clone(),
+        ));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
+
+        app.test_indexer_connection(
+            &test_admin(),
+            "id_only",
+            Some(r#"{"base_url":"https://example.invalid"}"#),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].query.is_empty());
+        assert_eq!(
+            calls[0].ids,
+            HashMap::from([("imdb_id".to_string(), "tt0000001".to_string())])
+        );
+        assert_eq!(calls[0].facet.as_deref(), Some("movie"));
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_propagates_search_failures() {
+        let client = Arc::new(RecordingIndexerClient::new(true));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "newznab",
+            vec![string_field(
+                "base_url",
+                "Base URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            searchable_capabilities(),
+            client,
+        ));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .test_indexer_connection(
+                &test_admin(),
+                "newznab",
+                Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "repository: indexer connection test failed: repository: forced failure"
+        );
     }
 
     #[tokio::test]
@@ -898,7 +1496,16 @@ mod tests {
             .unwrap();
         let app = test_app(
             indexer_repo,
-            Some(Arc::new(RecordingPluginProvider::new())),
+            Some(Arc::new(RecordingPluginProvider::new(
+                "torrent_rss",
+                vec![string_field(
+                    "feed_url",
+                    "Feed URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                rss_only_capabilities(),
+                Arc::new(RecordingIndexerClient::new(false)),
+            ))),
             Arc::new(NullSettingsRepository),
         );
 

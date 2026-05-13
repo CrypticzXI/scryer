@@ -237,6 +237,16 @@ pub fn timeout_reqwest_client(timeout: Option<Duration>) -> Result<Client, reqwe
     builder.build()
 }
 
+pub fn no_redirect_timeout_reqwest_client(
+    timeout: Option<Duration>,
+) -> Result<Client, reqwest::Error> {
+    let mut builder = reqwest_client_builder().redirect(reqwest::redirect::Policy::none());
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+    builder.build()
+}
+
 pub fn user_agent_reqwest_client(user_agent: &str) -> Result<Client, reqwest::Error> {
     reqwest_client_builder().user_agent(user_agent).build()
 }

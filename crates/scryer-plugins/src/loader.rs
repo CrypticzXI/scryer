@@ -2333,7 +2333,7 @@ pub(crate) fn parse_config_json_entries(json_str: &str) -> Result<HashMap<String
         }
 
         let normalized = match value {
-            serde_json::Value::String(value) => value.clone(),
+            serde_json::Value::String(value) => value.trim().to_string(),
             other => other.to_string(),
         };
         entries.insert(key.clone(), normalized);
@@ -2422,7 +2422,12 @@ pub(crate) fn apply_allowed_hosts(
 }
 
 fn host_from_url(url: &str) -> Option<String> {
-    url::Url::parse(url)
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    url::Url::parse(trimmed)
         .ok()
         .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
 }
@@ -3639,12 +3644,12 @@ mod tests {
     #[test]
     fn parse_config_json_entries_stringifies_scalar_values() {
         let entries = parse_config_json_entries(
-            r#"{"username":"alice","password":"secret","use_ssl":false,"port":8080,"meta":{"tag":"series"}}"#,
+            r#"{"username":" alice ","api_path":" /api ","use_ssl":false,"port":8080,"meta":{"tag":"series"}}"#,
         )
         .unwrap();
 
         assert_eq!(entries.get("username"), Some(&"alice".to_string()));
-        assert_eq!(entries.get("password"), Some(&"secret".to_string()));
+        assert_eq!(entries.get("api_path"), Some(&"/api".to_string()));
         assert_eq!(entries.get("use_ssl"), Some(&"false".to_string()));
         assert_eq!(entries.get("port"), Some(&"8080".to_string()));
         assert_eq!(

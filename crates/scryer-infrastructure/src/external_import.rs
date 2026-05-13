@@ -440,10 +440,7 @@ pub fn map_indexer_provider_type(
 
     match implementation.trim().to_ascii_lowercase().as_str() {
         "newznab" => native_provider.or(Some("newznab")),
-        "torznab" => native_provider.and_then(|provider_type| match provider_type {
-            "animetosho" => Some(provider_type),
-            _ => None,
-        }),
+        "torznab" => None,
         _ => None,
     }
 }
@@ -497,8 +494,6 @@ fn known_native_indexer_provider_type(
 
     if endpoint.contains("nzbgeek.info") {
         Some("nzbgeek")
-    } else if endpoint.contains("animetosho.org") {
-        Some("animetosho")
     } else {
         None
     }
@@ -586,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn map_indexer_provider_type_maps_animetosho_for_newznab() {
+    fn map_indexer_provider_type_does_not_map_animetosho_for_newznab() {
         assert_eq!(
             map_indexer_provider_type(
                 "Newznab",
@@ -595,12 +590,12 @@ mod tests {
                     Value::String("https://feed.animetosho.org".into()),
                 )]),
             ),
-            Some("animetosho")
+            Some("newznab")
         );
     }
 
     #[test]
-    fn map_indexer_provider_type_maps_animetosho_for_torznab() {
+    fn map_indexer_provider_type_does_not_map_animetosho_for_torznab() {
         assert_eq!(
             map_indexer_provider_type(
                 "Torznab",
@@ -609,7 +604,7 @@ mod tests {
                     Value::String("https://feed.animetosho.org".into()),
                 )]),
             ),
-            Some("animetosho")
+            None
         );
     }
 
