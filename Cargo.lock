@@ -5432,7 +5432,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scryer"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "async-graphql",
  "async-graphql-axum",
@@ -5475,7 +5475,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-application"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "alass-core",
  "argon2",
@@ -5528,7 +5528,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-domain"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "chrono",
  "serde",
@@ -5539,7 +5539,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-infrastructure"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -5589,7 +5589,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5606,7 +5606,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-mediainfo"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "bytes",
  "isolang",
@@ -5622,7 +5622,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-mock-apis"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "axum",
  "serde",
@@ -5634,7 +5634,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-outbound-http"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "chrono",
  "metrics",
@@ -5660,7 +5660,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-plugins"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5685,7 +5685,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-release-parser"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -5698,7 +5698,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-rules"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "regorus",
  "serde",
@@ -8769,7 +8769,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8787,7 +8787,7 @@ dependencies = [
 
 [[package]]
 name = "xtask-migrations"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -8799,7 +8799,7 @@ dependencies = [
 
 [[package]]
 name = "xtask-release"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8831,7 +8831,7 @@ dependencies = [
 
 [[package]]
 name = "xtask-support"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "anyhow",
 ]
