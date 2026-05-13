@@ -388,7 +388,7 @@ function RootSidebarContent({
       <Sidebar
         variant="floating"
         collapsible={isMobile ? "offcanvas" : "none"}
-        className="overflow-hidden rounded-xl border border-border md:-ml-4 md:top-[calc(var(--root-header-height,0px)+1rem)] md:bottom-auto md:h-[calc(100svh-var(--root-header-height,0px)-2rem)]"
+        className="overflow-hidden rounded-xl border border-border md:-ml-4 md:sticky md:self-start md:top-[calc(var(--root-header-height,0px)+1rem)] md:max-h-[calc(100svh-var(--root-header-height,0px)-2rem)]"
       >
         <SidebarContent className="overflow-y-auto rounded-lg bg-background">
           <SidebarGroup>
@@ -699,7 +699,14 @@ function RootSidebarContent({
 
 export const RootSidebar = React.memo(function RootSidebar(props: RootSidebarProps) {
   return (
-    <SidebarProvider className="h-full">
+    <SidebarProvider
+      className="h-full"
+      style={
+        {
+          "--sidebar-width": "clamp(14rem, 18vw, 16rem)",
+        } as React.CSSProperties
+      }
+    >
       <RootSidebarContent {...props} />
     </SidebarProvider>
   );
