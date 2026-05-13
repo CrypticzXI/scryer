@@ -14,7 +14,7 @@ Start scryer as a background service:
 brew services start scryer
 ```
 
-Open `http://localhost:8080` to access the web UI.
+Open `http://127.0.0.1:8686` to access the web UI.
 
 To stop the service:
 
