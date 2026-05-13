@@ -6,14 +6,64 @@ use scryer_application::{
 
 use crate::SqliteServices;
 
+#[async_trait]
+pub(crate) trait ReleaseSql: Clone + Send + Sync + 'static {
+    async fn record_release_attempt(
+        &self,
+        title_id: Option<String>,
+        source_hint: Option<String>,
+        source_title: Option<String>,
+        outcome: ReleaseDownloadAttemptOutcome,
+        error_message: Option<String>,
+        source_password: Option<String>,
+    ) -> AppResult<()>;
+
+    async fn list_failed_release_signatures(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<ReleaseDownloadFailureSignature>>;
+
+    async fn list_failed_release_signatures_for_title(
+        &self,
+        title_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>>;
+
+    async fn get_latest_source_password(
+        &self,
+        title_id: Option<&str>,
+        source_hint: Option<&str>,
+        source_title: Option<&str>,
+    ) -> AppResult<Option<String>>;
+}
+
 #[derive(Clone)]
-pub struct SqliteReleaseStore {
+pub struct ReleaseStore<S> {
+    sql: S,
+}
+
+impl<S> ReleaseStore<S> {
+    pub(crate) fn from_sql(sql: S) -> Self {
+        Self { sql }
+    }
+}
+
+pub type SqliteReleaseStore = ReleaseStore<SqliteReleaseSql>;
+
+#[derive(Clone)]
+pub struct SqliteReleaseSql {
     db: SqliteServices,
     pool: sqlx::SqlitePool,
 }
 
 impl SqliteReleaseStore {
     pub fn new(db: &SqliteServices) -> Self {
+        Self::from_sql(SqliteReleaseSql::new(db))
+    }
+}
+
+impl SqliteReleaseSql {
+    fn new(db: &SqliteServices) -> Self {
         Self {
             db: db.clone(),
             pool: db.pool().clone(),
@@ -22,7 +72,7 @@ impl SqliteReleaseStore {
 }
 
 #[async_trait]
-impl ReleaseAttemptRepository for SqliteReleaseStore {
+impl ReleaseSql for SqliteReleaseSql {
     async fn record_release_attempt(
         &self,
         title_id: Option<String>,
@@ -106,5 +156,57 @@ impl ReleaseAttemptRepository for SqliteReleaseStore {
             source_title,
         )
         .await
+    }
+}
+
+#[async_trait]
+impl<S: ReleaseSql> ReleaseAttemptRepository for ReleaseStore<S> {
+    async fn record_release_attempt(
+        &self,
+        title_id: Option<String>,
+        source_hint: Option<String>,
+        source_title: Option<String>,
+        outcome: ReleaseDownloadAttemptOutcome,
+        error_message: Option<String>,
+        source_password: Option<String>,
+    ) -> AppResult<()> {
+        self.sql
+            .record_release_attempt(
+                title_id,
+                source_hint,
+                source_title,
+                outcome,
+                error_message,
+                source_password,
+            )
+            .await
+    }
+
+    async fn list_failed_release_signatures(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<ReleaseDownloadFailureSignature>> {
+        self.sql.list_failed_release_signatures(limit).await
+    }
+
+    async fn list_failed_release_signatures_for_title(
+        &self,
+        title_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
+        self.sql
+            .list_failed_release_signatures_for_title(title_id, limit)
+            .await
+    }
+
+    async fn get_latest_source_password(
+        &self,
+        title_id: Option<&str>,
+        source_hint: Option<&str>,
+        source_title: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        self.sql
+            .get_latest_source_password(title_id, source_hint, source_title)
+            .await
     }
 }

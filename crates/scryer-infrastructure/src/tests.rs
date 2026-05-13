@@ -3463,7 +3463,7 @@ CREATE TABLE _sqlx_migrations (
     assert!(
         err.to_string()
             .contains("0103_custom_migrator_runtime_cutover"),
-        "validate mode should report the pending custom migration"
+        "validate mode should report the pending custom migration, got {err:?}"
     );
 
     let pool = SqlitePoolOptions::new()
@@ -3631,7 +3631,7 @@ version = 2
 description = "bad hook"
 checksum_algo = "blake3"
 steps = [
-  { kind = "rust", hook_id = "missing_hook", scope = "all" },
+  { kind = "rust", hook_id = "missing_hook", engine = "all", scope = "all" },
 ]
 "#,
     )

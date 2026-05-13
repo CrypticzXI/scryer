@@ -38,22 +38,22 @@ pub(crate) struct TitleSearchPlan {
 }
 
 #[derive(Clone, Debug)]
-struct TitleSearchTerm {
-    term_kind: &'static str,
-    raw_term: String,
-    normalized_term: String,
-    weight: i64,
+pub(crate) struct TitleSearchTerm {
+    pub(crate) term_kind: &'static str,
+    pub(crate) raw_term: String,
+    pub(crate) normalized_term: String,
+    pub(crate) weight: i64,
 }
 
 #[derive(Clone, Debug)]
-struct TitleSearchProjectionSource {
-    title_id: String,
-    facet: MediaFacet,
-    name: String,
-    sort_title: Option<String>,
-    slug: Option<String>,
-    aliases: Vec<String>,
-    tagged_aliases: Vec<TaggedAlias>,
+pub(crate) struct TitleSearchProjectionSource {
+    pub(crate) title_id: String,
+    pub(crate) facet: MediaFacet,
+    pub(crate) name: String,
+    pub(crate) sort_title: Option<String>,
+    pub(crate) slug: Option<String>,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) tagged_aliases: Vec<TaggedAlias>,
 }
 
 impl From<&Title> for TitleSearchProjectionSource {
@@ -510,7 +510,9 @@ fn push_term_with_tokens(
     }
 }
 
-fn build_title_search_terms(source: &TitleSearchProjectionSource) -> Vec<TitleSearchTerm> {
+pub(crate) fn build_title_search_terms(
+    source: &TitleSearchProjectionSource,
+) -> Vec<TitleSearchTerm> {
     let mut seen = HashSet::<(&'static str, String)>::new();
     let mut terms = Vec::new();
 
@@ -654,6 +656,10 @@ pub(crate) async fn seed_title_search_projection_if_empty(pool: &SqlitePool) -> 
         return Ok(());
     }
 
+    rebuild_title_search_projection(pool).await
+}
+
+pub(crate) async fn rebuild_title_search_projection(pool: &SqlitePool) -> AppResult<()> {
     let rows = sqlx::query(
         "SELECT id, name, facet, sort_title, slug, aliases, tagged_aliases_json
          FROM titles
@@ -665,6 +671,11 @@ pub(crate) async fn seed_title_search_projection_if_empty(pool: &SqlitePool) -> 
 
     let mut tx = pool
         .begin()
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    sqlx::query("DELETE FROM title_search_terms")
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;
 

@@ -1,6 +1,6 @@
+use aws_lc_rs::aead::{self, AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
+use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use ring::aead::{self, AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
-use ring::rand::{SecureRandom, SystemRandom};
 
 const ENCRYPTED_PREFIX: &str = "enc:v1:";
 
@@ -167,6 +167,56 @@ pub async fn ensure_encryption_key(
     }
 
     // 4. Auto-generate, store in best available keystore, warn user
+    let key = EncryptionKey::generate();
+    let stored_in = try_store_new_key(&stores, &key);
+    match stored_in {
+        Some(name) => {
+            tracing::warn!(
+                "generated new encryption master key and stored in {name} — \
+                 all sensitive settings (passwords, API keys) are encrypted with this key"
+            );
+        }
+        None => {
+            tracing::warn!(
+                "generated new encryption master key (in memory only) — \
+                 set SCRYER_ENCRYPTION_KEY to persist it across restarts\n\n  \
+                 SCRYER_ENCRYPTION_KEY={}\n",
+                key.to_base64()
+            );
+        }
+    }
+    Ok(key)
+}
+
+/// Ensure an encryption key for engines that do not support the legacy
+/// SQLite-only plaintext DB-key migration path.
+pub async fn ensure_encryption_key_without_legacy(
+    data_dir: Option<PathBuf>,
+) -> Result<EncryptionKey, String> {
+    let stores = keystore::platform_keystores(data_dir);
+
+    if let Some(key) = from_env_var()? {
+        opportunistic_store(&stores, &key);
+        tracing::info!("using encryption master key from SCRYER_ENCRYPTION_KEY");
+        return Ok(key);
+    }
+
+    for store in &stores {
+        match store.get_key() {
+            Ok(Some(key_b64)) => {
+                let key = EncryptionKey::from_base64(&key_b64)
+                    .map_err(|e| format!("invalid key in {}: {e}", store.name()))?;
+                tracing::info!("using encryption master key from {}", store.name());
+                return Ok(key);
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!("could not read from {}: {e}", store.name());
+                continue;
+            }
+        }
+    }
+
     let key = EncryptionKey::generate();
     let stored_in = try_store_new_key(&stores, &key);
     match stored_in {

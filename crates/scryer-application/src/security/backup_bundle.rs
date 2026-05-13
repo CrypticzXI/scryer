@@ -43,6 +43,22 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Ignore,
     },
     BackupTableCatalogEntry {
+        table: "import_artifacts",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "job_runs",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "quality_profiles_json",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "subtitle_providers",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
         table: "settings_definitions",
         classification: BackupTableClassification::Rebuild,
     },

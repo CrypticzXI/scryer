@@ -4,7 +4,8 @@ version = "0.14.3"
 edition.workspace = true
 
 [dependencies]
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

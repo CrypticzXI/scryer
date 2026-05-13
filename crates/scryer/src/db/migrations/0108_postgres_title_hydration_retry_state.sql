@@ -1,0 +1,3 @@
+-- SQLite already owns the historical schema for title metadata hydration state.
+-- The PostgreSQL sibling migration adds the retry-state columns that stay
+-- engine-local in the PostgreSQL runtime.

@@ -280,6 +280,10 @@ impl AppUseCase {
         self.ensure_default_admin("admin", "admin").await
     }
 
+    pub async fn find_default_user(&self) -> AppResult<Option<User>> {
+        self.services.identity.users.get_by_username("admin").await
+    }
+
     pub async fn migrate_user_entitlements(&self) -> AppResult<u32> {
         let users = self.services.identity.users.list_all().await?;
         let mut migrated = 0u32;

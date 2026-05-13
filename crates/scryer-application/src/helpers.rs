@@ -113,7 +113,7 @@ pub(crate) fn normalize_release_selection_signature(
 }
 
 pub(crate) fn sha256_hex(input: impl AsRef<str>) -> String {
-    let hash = ring_digest::digest(&ring_digest::SHA256, input.as_ref().as_bytes());
+    let hash = aws_lc_digest::digest(&aws_lc_digest::SHA256, input.as_ref().as_bytes());
     to_hex(hash.as_ref())
 }
 

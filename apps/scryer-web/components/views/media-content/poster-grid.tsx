@@ -52,6 +52,7 @@ function resolveDisplayedQualityLabel(
 
 type PosterGridProps = {
   titles: TitleRecord[];
+  catalogInitialLoadComplete?: boolean;
   isMovieView: boolean;
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
@@ -72,6 +73,7 @@ type PosterGridProps = {
 
 export const PosterGrid = React.memo(function PosterGrid({
   titles,
+  catalogInitialLoadComplete = true,
   isMovieView,
   resolvedProfileName,
   qualityProfiles,
@@ -88,6 +90,10 @@ export const PosterGrid = React.memo(function PosterGrid({
 }: PosterGridProps) {
   const t = useTranslate();
   const isMobile = useIsMobile();
+
+  if (!catalogInitialLoadComplete) {
+    return null;
+  }
 
   if (titles.length === 0) {
     return (

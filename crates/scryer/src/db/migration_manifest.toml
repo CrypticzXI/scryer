@@ -2,7 +2,41 @@ format_version = 1
 
 [legacy_sql]
 path = "migrations"
-through_version = 102
+through_version = 100
+
+[[migration]]
+version = 101
+description = "plugin installation descriptor json"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0101_plugin_installation_descriptor_json.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0101_plugin_installation_descriptor_json.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 102
+description = "release name blocklist watershed"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0102_release_name_blocklist_watershed.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0102_release_name_blocklist_watershed.sql"
+engine = "postgres"
+scope = "all"
 
 [[migration]]
 version = 103
@@ -12,6 +46,7 @@ checksum_algo = "blake3"
 [[migration.steps]]
 kind = "sql"
 file = "migrations/0103_custom_migrator_runtime_cutover.sql"
+engine = "all"
 scope = "all"
 
 [[migration]]
@@ -22,6 +57,13 @@ checksum_algo = "blake3"
 [[migration.steps]]
 kind = "sql"
 file = "migrations/0104_first_class_libraries_and_permissions.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0104_first_class_libraries_and_permissions.sql"
+engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -32,8 +74,106 @@ checksum_algo = "blake3"
 [[migration.steps]]
 kind = "sql"
 file = "migrations/0105_indexer_managed_children.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0105_indexer_managed_children.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 106
+description = "postgres title search projection"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0106_postgres_title_search_projection.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0106_title_search_projection.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 107
+description = "postgres ship ready finish"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0107_postgres_ship_ready_finish.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0107_ship_ready_finish.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 108
+description = "postgres title hydration retry state"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0108_postgres_title_hydration_retry_state.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0108_title_hydration_retry_state.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 109
+description = "postgres parity secondary indexes"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0109_postgres_parity_secondary_indexes.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0109_parity_secondary_indexes.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 110
+description = "postgres library scan unmatched title binding"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0110_postgres_library_scan_unmatched_title_binding.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0110_library_scan_unmatched_title_binding.sql"
+engine = "postgres"
 scope = "all"
 
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"
+engine = "sqlite"
+
+[[baseline]]
+through_version = 100
+file = "postgres/baselines/0100_baseline.sql"
+engine = "postgres"

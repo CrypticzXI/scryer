@@ -38,9 +38,9 @@ async-graphql = { version = "7.2", default-features = false, features = ["chrono
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 rand_core = "0.10"
 # SQLite is compiled in via sqlx-sqlite -> libsqlite3-sys bundled mode for single-executable
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "json", "macros", "migrate"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "sqlite", "postgres", "json", "chrono", "macros", "migrate"] }
 argon2 = "0.5"
-ring = "0.17"
+aws-lc-rs = { version = "1.16", default-features = false, features = ["non-fips"] }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 toml = "1"
 quick-xml = "0.39.2"
@@ -54,6 +54,8 @@ windows-native-keyring-store = "1"
 wiremock = "0.6"
 strum = { version = "0.28", features = ["derive"] }
 governor = "0.10.4"
+criterion = "0.5"
+fixedbitset = "0.5"
 
 [profile.release]
 lto = "fat"

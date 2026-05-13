@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
-use ring::digest as ring_digest;
+use aws_lc_rs::digest as aws_lc_digest;
 use scryer_domain::{
     Collection, CollectionType, DomainEventPayload, Episode, ImportType, MediaFacet,
     MediaFileRenamedEventData, Title, User,
@@ -1052,7 +1052,7 @@ pub fn build_rename_plan_fingerprint(
         items,
     ))
     .unwrap_or_default();
-    let hash = ring_digest::digest(&ring_digest::SHA256, &bytes);
+    let hash = aws_lc_digest::digest(&aws_lc_digest::SHA256, &bytes);
     crate::to_hex(hash.as_ref())
 }
 

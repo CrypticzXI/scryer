@@ -71,6 +71,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         scryer_infrastructure::migration_assets::SourceBaselineEntry {
             through_version: args.through,
             file: baseline_relative,
+            engine: scryer_infrastructure::migration_assets::EngineScope::Sqlite,
         },
     );
     manifest

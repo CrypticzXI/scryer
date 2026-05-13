@@ -1,0 +1,18 @@
+ALTER TABLE plugin_installations
+    ADD COLUMN IF NOT EXISTS descriptor_json JSONB;
+ALTER TABLE plugin_installations
+    ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE plugin_catalog_sources
+    ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE plugin_catalog_status
+    ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE indexers
+    ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE download_clients
+    ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE subtitle_providers
+    ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE titles
+    ADD COLUMN IF NOT EXISTS library_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE titles
+    ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::JSONB;

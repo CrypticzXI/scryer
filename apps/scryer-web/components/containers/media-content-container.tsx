@@ -458,12 +458,18 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
+  const [catalogBootstrapState, setCatalogBootstrapState] = React.useState({
+    facet: activeFacet,
+    loading: false,
+    initialLoadComplete: false,
+  });
   const [rootValidationLibraries, setRootValidationLibraries] = React.useState<LibraryRecord[]>([]);
   const [rootValidationLibrariesLoading, setRootValidationLibrariesLoading] = React.useState(false);
   const [librarySettingsSaving, setLibrarySettingsSaving] = React.useState(false);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const activeCatalogQueryRef = React.useRef("");
   const catalogTitleRequestSeqRef = React.useRef(0);
+  const skipNextCatalogOverviewReloadRef = React.useRef(false);
 
   const {
     titleNameForQueue,
@@ -500,6 +506,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     libraryScanLoading ||
     Boolean(activeLibraryScanSession) ||
     Boolean(startedLibraryScanSessionId && !startedLibraryScanSession);
+  const catalogInitialLoadComplete =
+    shouldLoadCatalogTitles &&
+    catalogBootstrapState.facet === activeFacet &&
+    catalogBootstrapState.initialLoadComplete;
+  const catalogBootstrapInFlight =
+    catalogBootstrapState.facet === activeFacet &&
+    catalogBootstrapState.loading;
+  const catalogBootstrapLoading =
+    shouldLoadCatalogTitles &&
+    !catalogInitialLoadComplete;
   const titleDeletePreviewVariables = React.useMemo(
     () =>
       titleToDelete && deleteFilesOnDisk
@@ -894,10 +910,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [activeFacet, client, refreshRuleSets, ruleSets, setGlobalStatus, t],
   );
   const reloadTitles = React.useCallback(
-    async (queryOverride?: string): Promise<TitleRecord[] | null> => {
+    async (
+      queryOverride?: string,
+      libraryIdsOverride?: string[],
+    ): Promise<TitleRecord[] | null> => {
       setTitleLoading(true);
       setTitleStatus(t("title.loading"));
       const query = (queryOverride ?? activeCatalogQueryRef.current).trim();
+      const libraryIds = libraryIdsOverride ?? selectedLibraryIds;
       const requestSeq = ++catalogTitleRequestSeqRef.current;
 
       try {
@@ -906,7 +926,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             titlesQuery,
             {
               facet: activeFacet,
-              libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
+              libraryIds: selectedLibraryIdsToQueryValue(libraryIds),
               query: query || null,
             },
             { requestPolicy: "network-only" },
@@ -2157,8 +2177,32 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [t, titleStatus, setTitleStatus]);
 
   React.useEffect(() => {
+    if (shouldLoadCatalogTitles) {
+      return;
+    }
     void refreshLibraries();
-  }, [refreshLibraries]);
+  }, [refreshLibraries, shouldLoadCatalogTitles]);
+
+  React.useEffect(() => {
+    if (
+      shouldLoadCatalogTitles ||
+      catalogBootstrapState.facet !== activeFacet ||
+      !catalogBootstrapState.loading
+    ) {
+      return;
+    }
+
+    setCatalogBootstrapState((current) =>
+      current.facet === activeFacet && current.loading
+        ? { ...current, loading: false }
+        : current,
+    );
+  }, [
+    activeFacet,
+    catalogBootstrapState.facet,
+    catalogBootstrapState.loading,
+    shouldLoadCatalogTitles,
+  ]);
 
   React.useEffect(() => {
     if (contentSettingsSection !== "library" || !isMediaView) {
@@ -2194,7 +2238,47 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     const isRoutingSection = contentSettingsSection === "routing";
 
     if (shouldLoadCatalogTitles) {
-      void reloadTitles(debouncedTitleFilter);
+      if (!catalogInitialLoadComplete) {
+        if (catalogBootstrapInFlight) {
+          return;
+        }
+
+        let cancelled = false;
+        skipNextCatalogOverviewReloadRef.current = false;
+        setCatalogBootstrapState({
+          facet: activeFacet,
+          loading: true,
+          initialLoadComplete: false,
+        });
+
+        void Promise.all([
+          refreshLibraries(),
+          reloadTitles(debouncedTitleFilter, []),
+        ]).finally(() => {
+          if (cancelled) {
+            return;
+          }
+
+          skipNextCatalogOverviewReloadRef.current = true;
+          setCatalogBootstrapState({
+            facet: activeFacet,
+            loading: false,
+            initialLoadComplete: true,
+          });
+        });
+
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      if (skipNextCatalogOverviewReloadRef.current) {
+        skipNextCatalogOverviewReloadRef.current = false;
+      } else {
+        void reloadTitles(debouncedTitleFilter);
+      }
+      setRoutingInitLoading(false);
+      return;
     }
     if (isRoutingSection) {
       let cancelled = false;
@@ -2241,9 +2325,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       void refreshRuleSets();
     }
   }, [
+    activeFacet,
     activeQualityScopeId,
+    catalogBootstrapInFlight,
+    catalogBootstrapLoading,
+    catalogInitialLoadComplete,
     client,
     contentSettingsSection,
+    refreshLibraries,
     hydrateDownloadClientRouting,
     hydrateIndexerRouting,
     isMediaView,
@@ -2324,6 +2413,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           setTitleFilter,
           refreshTitles,
           titleLoading,
+          catalogBootstrapLoading,
+          catalogInitialLoadComplete,
           monitoredTitles: visibleTitles,
           titleQuickFilters,
           toggleTitleQuickMonitoringFilter,

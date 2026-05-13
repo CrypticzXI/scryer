@@ -414,6 +414,9 @@ const en: LocaleDictionary = {
   "settings.downloadClientPriorityPlaceholder": "Default",
   "settings.downloadClientCategoryPlaceholder": "series",
   "settings.downloadClientStatus": "Status",
+  "settings.downloadClientLastError": "Error",
+  "settings.downloadClientLastSeen": "Seen {{time}}",
+  "settings.downloadClientNoActivity": "No activity",
   "settings.existingDownloadClients": "Existing download clients",
   "settings.downloadClientRoutingScope":
     "Download client metadata for {{scope}}",
@@ -939,7 +942,7 @@ const en: LocaleDictionary = {
   "settings.indexerInteractiveSearch": "Interactive",
   "settings.indexerAutoSearch": "Auto",
   "settings.indexerStatus": "Status",
-  "settings.indexerDisabledUntil": "Backoff {{time}}",
+  "settings.indexerDisabledUntil": "Disabled until {{time}}",
   "settings.indexerLastError": "Error {{time}}",
   "settings.indexerLastSearched": "Searched {{time}}",
   "settings.indexerNoActivity": "No activity",

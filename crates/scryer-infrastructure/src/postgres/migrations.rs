@@ -1,0 +1,421 @@
+use std::collections::HashSet;
+use std::time::Instant;
+
+use scryer_application::{AppError, AppResult};
+use sqlx::{PgPool, Row};
+
+use crate::migration_assets::{
+    self, CompiledBaseline, CompiledMigration, CompiledMigrationCatalog, CompiledMigrationStep,
+    EngineScope, MigrationInstallKind,
+};
+use crate::{MigrationMode, MigrationStatus};
+
+pub(crate) async fn run_migrations(pool: &PgPool, mode: MigrationMode) -> AppResult<()> {
+    let catalog = crate::migrations::embedded_catalog()?;
+
+    if !matches!(mode, MigrationMode::ValidateOnly) {
+        ensure_migration_ledger_shape(pool).await?;
+    }
+
+    let applied = load_applied_migrations(pool).await?;
+    validate_known_migrations(&applied, &catalog)?;
+    let pending = list_pending_migrations_from_applied(&applied, &catalog);
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    if matches!(mode, MigrationMode::ValidateOnly) {
+        return Err(AppError::Validation(format!(
+            "database migration check failed; pending PostgreSQL migrations: {}",
+            pending.join(", ")
+        )));
+    }
+
+    let install_kind = detect_install_kind(pool, &applied).await?;
+    let payload_bytes = crate::migrations::embedded_payload_bytes()?;
+    match install_kind {
+        MigrationInstallKind::FreshInstall => {
+            let baseline = catalog
+                .latest_baseline_at_or_below(100, EngineScope::Postgres)
+                .ok_or_else(|| {
+                    AppError::Repository("missing PostgreSQL baseline through 0100".to_string())
+                })?;
+            apply_postgres_baseline(pool, &catalog, &payload_bytes, baseline).await?;
+            apply_version_range(
+                pool,
+                &catalog,
+                &payload_bytes,
+                MigrationInstallKind::FreshInstall,
+                101,
+                catalog.max_version(),
+            )
+            .await?;
+        }
+        MigrationInstallKind::Upgrade => {
+            apply_version_range(
+                pool,
+                &catalog,
+                &payload_bytes,
+                MigrationInstallKind::Upgrade,
+                1,
+                catalog.max_version(),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn ensure_migration_ledger_shape(pool: &PgPool) -> AppResult<()> {
+    sqlx::raw_sql(
+        r#"
+CREATE TABLE IF NOT EXISTS _sqlx_migrations (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    installed_on TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    success BOOLEAN NOT NULL,
+    checksum BYTEA NOT NULL,
+    execution_time BIGINT NOT NULL,
+    checksum_algo TEXT NOT NULL DEFAULT 'sha384',
+    runtime_version TEXT NOT NULL DEFAULT '',
+    error_message TEXT
+)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::Repository(error.to_string()))?;
+
+    Ok(())
+}
+
+async fn migration_table_exists(pool: &PgPool) -> AppResult<bool> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1
+              FROM information_schema.tables
+             WHERE table_schema = current_schema()
+               AND table_name = '_sqlx_migrations'
+        )",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::Repository(error.to_string()))?;
+
+    Ok(exists)
+}
+
+#[derive(Clone, Debug)]
+struct MigrationLedgerRow {
+    version: i64,
+    description: String,
+    installed_on: String,
+    success: bool,
+    checksum_algo: String,
+    checksum: Vec<u8>,
+}
+
+async fn load_applied_migrations(pool: &PgPool) -> AppResult<Vec<MigrationLedgerRow>> {
+    if !migration_table_exists(pool).await? {
+        return Ok(Vec::new());
+    }
+
+    let rows = sqlx::query(
+        "SELECT
+             version,
+             description,
+             installed_on::TEXT AS installed_on,
+             success,
+             checksum,
+             COALESCE(NULLIF(BTRIM(checksum_algo), ''), 'sha384') AS checksum_algo
+         FROM _sqlx_migrations
+         ORDER BY version",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::Repository(error.to_string()))?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(MigrationLedgerRow {
+                version: row
+                    .try_get("version")
+                    .map_err(|error| AppError::Repository(error.to_string()))?,
+                description: row
+                    .try_get("description")
+                    .map_err(|error| AppError::Repository(error.to_string()))?,
+                installed_on: row
+                    .try_get("installed_on")
+                    .map_err(|error| AppError::Repository(error.to_string()))?,
+                success: row
+                    .try_get("success")
+                    .map_err(|error| AppError::Repository(error.to_string()))?,
+                checksum: row
+                    .try_get("checksum")
+                    .map_err(|error| AppError::Repository(error.to_string()))?,
+                checksum_algo: row
+                    .try_get("checksum_algo")
+                    .map_err(|error| AppError::Repository(error.to_string()))?,
+            })
+        })
+        .collect()
+}
+
+fn list_pending_migrations_from_applied(
+    applied: &[MigrationLedgerRow],
+    catalog: &CompiledMigrationCatalog,
+) -> Vec<String> {
+    let applied_versions: HashSet<i64> = applied
+        .iter()
+        .filter(|row| row.success)
+        .map(|row| row.version)
+        .collect();
+
+    catalog
+        .migrations
+        .iter()
+        .filter(|migration| !applied_versions.contains(&migration.version))
+        .map(|migration| migration.key.clone())
+        .collect()
+}
+
+fn validate_known_migrations(
+    applied: &[MigrationLedgerRow],
+    catalog: &CompiledMigrationCatalog,
+) -> AppResult<()> {
+    let max_supported_version = catalog.max_version();
+    let mut unknown = Vec::new();
+    let mut invalid_checksum = Vec::new();
+
+    for row in applied {
+        if !row.success {
+            return Err(AppError::Repository(format!(
+                "PostgreSQL migration {} was not applied successfully",
+                migration_assets::migration_key_from_version_and_desc(
+                    row.version,
+                    &row.description
+                )
+            )));
+        }
+
+        let key =
+            migration_assets::migration_key_from_version_and_desc(row.version, &row.description);
+        let Some(expected) = catalog.find_migration(row.version) else {
+            if row.version > max_supported_version {
+                unknown.push(key);
+            }
+            continue;
+        };
+
+        if row.checksum_algo != expected.checksum_algo.as_str() || row.checksum != expected.checksum
+        {
+            invalid_checksum.push(key);
+        }
+    }
+
+    if !invalid_checksum.is_empty() {
+        return Err(AppError::Repository(format!(
+            "checksum mismatch for PostgreSQL migrations: {}",
+            invalid_checksum.join(", ")
+        )));
+    }
+
+    if !unknown.is_empty() {
+        return Err(AppError::Repository(format!(
+            "PostgreSQL migrations newer than supported ({max_supported_version}): {}. Please update scryer.",
+            unknown.join(", ")
+        )));
+    }
+
+    Ok(())
+}
+
+async fn detect_install_kind(
+    pool: &PgPool,
+    applied: &[MigrationLedgerRow],
+) -> AppResult<MigrationInstallKind> {
+    if !applied.is_empty() {
+        return Ok(MigrationInstallKind::Upgrade);
+    }
+
+    let app_objects: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM information_schema.tables
+          WHERE table_schema = current_schema()
+            AND table_name NOT LIKE '_sqlx_%'",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::Repository(error.to_string()))?;
+
+    if app_objects == 0 {
+        Ok(MigrationInstallKind::FreshInstall)
+    } else {
+        Err(AppError::Repository(
+            "PostgreSQL database contains application schema or data but has no applied migration ledger".to_string(),
+        ))
+    }
+}
+
+async fn apply_postgres_baseline(
+    pool: &PgPool,
+    catalog: &CompiledMigrationCatalog,
+    payload_bytes: &[u8],
+    baseline: &CompiledBaseline,
+) -> AppResult<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+    let baseline_sql = baseline
+        .payload
+        .text(payload_bytes)
+        .map_err(AppError::Repository)?;
+
+    sqlx::raw_sql(baseline_sql)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+    for migration in catalog
+        .migrations
+        .iter()
+        .filter(|migration| migration.version <= baseline.through_version)
+    {
+        insert_applied_migration(&mut tx, migration, 0).await?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+    Ok(())
+}
+
+async fn apply_version_range(
+    pool: &PgPool,
+    catalog: &CompiledMigrationCatalog,
+    payload_bytes: &[u8],
+    install_kind: MigrationInstallKind,
+    start_version: i64,
+    target_version: i64,
+) -> AppResult<()> {
+    let applied_versions: HashSet<i64> = load_applied_migrations(pool)
+        .await?
+        .into_iter()
+        .filter(|row| row.success)
+        .map(|row| row.version)
+        .collect();
+
+    for migration in catalog.migrations.iter().filter(|migration| {
+        migration.version >= start_version && migration.version <= target_version
+    }) {
+        if applied_versions.contains(&migration.version) {
+            continue;
+        }
+        apply_single_migration(pool, migration, payload_bytes, install_kind).await?;
+    }
+
+    Ok(())
+}
+
+async fn apply_single_migration(
+    pool: &PgPool,
+    migration: &CompiledMigration,
+    payload_bytes: &[u8],
+    install_kind: MigrationInstallKind,
+) -> AppResult<()> {
+    let start = Instant::now();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+    for step in &migration.steps {
+        if !step.engine().applies_to(EngineScope::Postgres)
+            || !step.scope().applies_to(install_kind)
+        {
+            continue;
+        }
+
+        match step {
+            CompiledMigrationStep::Sql { payload, .. } => {
+                let sql = payload
+                    .text(payload_bytes)
+                    .map_err(AppError::Repository)?
+                    .to_owned();
+                if sql.trim().is_empty() {
+                    continue;
+                }
+                sqlx::raw_sql(&sql)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| {
+                        AppError::Repository(format!(
+                            "failed to apply PostgreSQL migration {:04}: {error}",
+                            migration.version
+                        ))
+                    })?;
+            }
+            CompiledMigrationStep::Rust { hook_id, .. } => {
+                return Err(AppError::Repository(format!(
+                    "PostgreSQL migration {:04} references unsupported Rust hook '{hook_id}'",
+                    migration.version
+                )));
+            }
+        }
+    }
+
+    let elapsed_ns = start.elapsed().as_nanos().min(i64::MAX as u128) as i64;
+    insert_applied_migration(&mut tx, migration, elapsed_ns).await?;
+    tx.commit()
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+    Ok(())
+}
+
+async fn insert_applied_migration(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    migration: &CompiledMigration,
+    execution_time: i64,
+) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations
+            (version, description, success, checksum, execution_time, checksum_algo, runtime_version)
+         VALUES ($1, $2, TRUE, $3, $4, $5, $6)
+         ON CONFLICT (version) DO NOTHING",
+    )
+    .bind(migration.version)
+    .bind(&migration.description)
+    .bind(&migration.checksum)
+    .bind(execution_time)
+    .bind(migration.checksum_algo.as_str())
+    .bind(env!("CARGO_PKG_VERSION"))
+    .execute(&mut **tx)
+    .await
+    .map_err(|error| AppError::Repository(error.to_string()))?;
+    Ok(())
+}
+
+pub(crate) async fn list_applied_migrations(pool: &PgPool) -> AppResult<Vec<MigrationStatus>> {
+    let rows = load_applied_migrations(pool).await?;
+    let mut out = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        out.push(MigrationStatus {
+            migration_key: migration_assets::migration_key_from_version_and_desc(
+                row.version,
+                &row.description,
+            ),
+            migration_checksum_algo: row.checksum_algo,
+            migration_checksum: migration_assets::checksum_hex(&row.checksum),
+            applied_at: row.installed_on,
+            success: row.success,
+            error_message: None,
+            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+        });
+    }
+
+    Ok(out)
+}

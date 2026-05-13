@@ -1,6 +1,6 @@
 use crate::migration_assets::{
     self, ChecksumAlgorithm, CompiledBaseline, CompiledMigration, CompiledMigrationBundle,
-    CompiledMigrationCatalog, CompiledMigrationStep, MigrationInstallKind,
+    CompiledMigrationCatalog, CompiledMigrationStep, EngineScope, MigrationInstallKind,
 };
 use crate::migration_hook_ids;
 use crate::{EmbeddedMigrationDescriptor, MigrationMode, MigrationStatus};
@@ -23,6 +23,7 @@ struct MigrationLedgerRow {
     installed_on: String,
     success: bool,
     checksum_algo: String,
+    checksum_algo_inferred: bool,
     checksum: Vec<u8>,
 }
 
@@ -96,7 +97,9 @@ pub async fn replay_catalog_into_fresh_db(
     }
 
     let mut start_version = 1;
-    if enable_baselines && let Some(baseline) = catalog.latest_baseline_at_or_below(target_version)
+    if enable_baselines
+        && let Some(baseline) =
+            catalog.latest_baseline_at_or_below(target_version, EngineScope::Sqlite)
     {
         apply_baseline(pool, catalog, payload_bytes, baseline).await?;
         start_version = baseline.through_version + 1;
@@ -115,12 +118,13 @@ pub async fn replay_catalog_into_fresh_db(
 
 pub(crate) async fn run_migrations(pool: &SqlitePool, mode: MigrationMode) -> AppResult<()> {
     let catalog = embedded_catalog()?;
+    let payload_bytes = embedded_payload_bytes()?;
     if !matches!(mode, MigrationMode::ValidateOnly) {
         ensure_migration_ledger_shape(pool).await?;
     }
 
     let applied = load_applied_migrations(pool).await?;
-    validate_known_migrations(&applied, &catalog)?;
+    validate_known_migrations(&applied, &catalog, &payload_bytes)?;
     let pending = list_pending_migrations_from_applied(&applied, &catalog);
     if pending.is_empty() {
         return Ok(());
@@ -133,7 +137,6 @@ pub(crate) async fn run_migrations(pool: &SqlitePool, mode: MigrationMode) -> Ap
         )));
     }
 
-    let payload_bytes = embedded_payload_bytes()?;
     let install_kind = detect_install_kind(pool, &applied).await?;
     match install_kind {
         MigrationInstallKind::FreshInstall => {
@@ -159,7 +162,7 @@ fn source_db_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scryer/src/db")
 }
 
-fn embedded_catalog() -> AppResult<CompiledMigrationCatalog> {
+pub(crate) fn embedded_catalog() -> AppResult<CompiledMigrationCatalog> {
     let bytes = zstd::stream::decode_all(EMBEDDED_MIGRATION_CATALOG).map_err(|error| {
         AppError::Repository(format!("failed to decompress migration catalog: {error}"))
     })?;
@@ -167,7 +170,7 @@ fn embedded_catalog() -> AppResult<CompiledMigrationCatalog> {
     migration_assets::decode_catalog(&bytes).map_err(AppError::Repository)
 }
 
-fn embedded_payload_bytes() -> AppResult<Vec<u8>> {
+pub(crate) fn embedded_payload_bytes() -> AppResult<Vec<u8>> {
     zstd::stream::decode_all(EMBEDDED_MIGRATION_PAYLOAD).map_err(|error| {
         AppError::Repository(format!("failed to decompress migration payload: {error}"))
     })
@@ -268,7 +271,8 @@ async fn load_applied_migrations(pool: &SqlitePool) -> AppResult<Vec<MigrationLe
                  installed_on,
                  success,
                  checksum,
-                 COALESCE(NULLIF(TRIM(checksum_algo), ''), 'sha384') AS checksum_algo
+                 COALESCE(NULLIF(TRIM(checksum_algo), ''), 'sha384') AS checksum_algo,
+                 CASE WHEN COALESCE(TRIM(checksum_algo), '') = '' THEN 1 ELSE 0 END AS checksum_algo_inferred
              FROM _sqlx_migrations
              ORDER BY version",
         )
@@ -283,7 +287,8 @@ async fn load_applied_migrations(pool: &SqlitePool) -> AppResult<Vec<MigrationLe
                  installed_on,
                  success,
                  checksum,
-                 'sha384' AS checksum_algo
+                 'sha384' AS checksum_algo,
+                 1 AS checksum_algo_inferred
              FROM _sqlx_migrations
              ORDER BY version",
         )
@@ -316,6 +321,10 @@ async fn load_applied_migrations(pool: &SqlitePool) -> AppResult<Vec<MigrationLe
                 checksum_algo: row
                     .try_get("checksum_algo")
                     .map_err(|error| AppError::Repository(error.to_string()))?,
+                checksum_algo_inferred: row
+                    .try_get::<i64, _>("checksum_algo_inferred")
+                    .map_err(|error| AppError::Repository(error.to_string()))?
+                    != 0,
             })
         })
         .collect()
@@ -342,6 +351,7 @@ fn list_pending_migrations_from_applied(
 fn validate_known_migrations(
     applied: &[MigrationLedgerRow],
     catalog: &CompiledMigrationCatalog,
+    payload_bytes: &[u8],
 ) -> AppResult<()> {
     let max_supported_version = catalog.max_version();
     let mut unknown = Vec::new();
@@ -378,7 +388,19 @@ fn validate_known_migrations(
             }
         };
 
-        if row_algo != expected.checksum_algo || row.checksum != expected.checksum {
+        if row_algo == expected.checksum_algo && row.checksum == expected.checksum {
+            continue;
+        }
+
+        if row.checksum_algo_inferred && row.checksum == expected.checksum {
+            continue;
+        }
+
+        if legacy_sqlite_checksum_matches(row_algo, &row.checksum, expected, payload_bytes) {
+            continue;
+        }
+
+        {
             invalid_checksum.push(key);
         }
     }
@@ -411,6 +433,41 @@ fn validate_known_migrations(
     }
 
     Ok(())
+}
+
+fn legacy_sqlite_checksum_matches(
+    row_algo: ChecksumAlgorithm,
+    row_checksum: &[u8],
+    expected: &CompiledMigration,
+    payload_bytes: &[u8],
+) -> bool {
+    if row_algo != ChecksumAlgorithm::Sha384 {
+        return false;
+    }
+
+    let mut sqlite_sql_step = None;
+    for step in &expected.steps {
+        match step {
+            CompiledMigrationStep::Sql {
+                engine, payload, ..
+            } if engine.applies_to(EngineScope::Sqlite) => {
+                if sqlite_sql_step.is_some() {
+                    return false;
+                }
+                sqlite_sql_step = Some(payload);
+            }
+            CompiledMigrationStep::Rust { engine, .. }
+                if engine.applies_to(EngineScope::Sqlite) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+
+    sqlite_sql_step
+        .and_then(|payload| payload.bytes(payload_bytes).ok())
+        .is_some_and(|bytes| ChecksumAlgorithm::Sha384.digest(bytes) == row_checksum)
 }
 
 async fn detect_install_kind(
@@ -531,6 +588,10 @@ async fn apply_single_migration(
         .map_err(|error| AppError::Repository(error.to_string()))?;
 
     for step in &migration.steps {
+        if !step.engine().applies_to(EngineScope::Sqlite) {
+            continue;
+        }
+
         if !step.scope().applies_to(install_kind) {
             continue;
         }

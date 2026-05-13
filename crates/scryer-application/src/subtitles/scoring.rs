@@ -77,43 +77,138 @@ pub enum SubtitleScoreKind {
     Episode,
 }
 
-/// Compute a subtitle match score given which factors matched.
-pub fn compute_score(weights: &ScoreWeights, matches: &HashMap<String, bool>) -> i32 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MatchFlag {
+    Hash = 0,
+    Title = 1,
+    Series = 2,
+    Year = 3,
+    Season = 4,
+    Episode = 5,
+    ReleaseGroup = 6,
+    Source = 7,
+    AudioCodec = 8,
+    Resolution = 9,
+    VideoCodec = 10,
+    HearingImpaired = 11,
+    ImdbId = 12,
+    ExternalId = 13,
+    SeriesImdbId = 14,
+    AbsoluteEpisode = 15,
+}
+
+impl MatchFlag {
+    const fn bit(self) -> u16 {
+        1u16 << (self as u8)
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "hash" => Some(Self::Hash),
+            "title" => Some(Self::Title),
+            "series" => Some(Self::Series),
+            "year" => Some(Self::Year),
+            "season" => Some(Self::Season),
+            "episode" => Some(Self::Episode),
+            "release_group" => Some(Self::ReleaseGroup),
+            "source" => Some(Self::Source),
+            "audio_codec" => Some(Self::AudioCodec),
+            "resolution" => Some(Self::Resolution),
+            "video_codec" => Some(Self::VideoCodec),
+            "hearing_impaired" => Some(Self::HearingImpaired),
+            "imdb_id" => Some(Self::ImdbId),
+            "external_id" => Some(Self::ExternalId),
+            "series_imdb_id" => Some(Self::SeriesImdbId),
+            "absolute_episode" => Some(Self::AbsoluteEpisode),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct MatchBits(u16);
+
+impl MatchBits {
+    pub(crate) fn insert(&mut self, flag: MatchFlag) {
+        self.0 |= flag.bit();
+    }
+
+    pub(crate) fn contains(self, flag: MatchFlag) -> bool {
+        self.0 & flag.bit() != 0
+    }
+
+    pub(crate) fn remove(&mut self, flag: MatchFlag) {
+        self.0 &= !flag.bit();
+    }
+
+    fn from_flag(flag: MatchFlag) -> Self {
+        let mut bits = Self::default();
+        bits.insert(flag);
+        bits
+    }
+
+    fn from_bool_map(matches: &HashMap<String, bool>) -> Self {
+        let mut bits = Self::default();
+        for (key, matched) in matches {
+            if *matched && let Some(flag) = MatchFlag::from_key(key) {
+                bits.insert(flag);
+            }
+        }
+        bits
+    }
+
+    fn from_match_set(matches: &HashSet<String>) -> Self {
+        let mut bits = Self::default();
+        for key in matches {
+            if let Some(flag) = MatchFlag::from_key(key) {
+                bits.insert(flag);
+            }
+        }
+        bits
+    }
+}
+
+fn compute_score_bits(weights: &ScoreWeights, matches: MatchBits) -> i32 {
     let mut score = 0i32;
-    if *matches.get("hash").unwrap_or(&false) {
+    if matches.contains(MatchFlag::Hash) {
         score += weights.hash;
     }
-    if *matches.get("title").unwrap_or(&false) || *matches.get("series").unwrap_or(&false) {
+    if matches.contains(MatchFlag::Title) || matches.contains(MatchFlag::Series) {
         score += weights.title;
     }
-    if *matches.get("year").unwrap_or(&false) {
+    if matches.contains(MatchFlag::Year) {
         score += weights.year;
     }
-    if *matches.get("season").unwrap_or(&false) {
+    if matches.contains(MatchFlag::Season) {
         score += weights.season;
     }
-    if *matches.get("episode").unwrap_or(&false) {
+    if matches.contains(MatchFlag::Episode) {
         score += weights.episode;
     }
-    if *matches.get("release_group").unwrap_or(&false) {
+    if matches.contains(MatchFlag::ReleaseGroup) {
         score += weights.release_group;
     }
-    if *matches.get("source").unwrap_or(&false) {
+    if matches.contains(MatchFlag::Source) {
         score += weights.source;
     }
-    if *matches.get("audio_codec").unwrap_or(&false) {
+    if matches.contains(MatchFlag::AudioCodec) {
         score += weights.audio_codec;
     }
-    if *matches.get("resolution").unwrap_or(&false) {
+    if matches.contains(MatchFlag::Resolution) {
         score += weights.resolution;
     }
-    if *matches.get("video_codec").unwrap_or(&false) {
+    if matches.contains(MatchFlag::VideoCodec) {
         score += weights.video_codec;
     }
-    if *matches.get("hearing_impaired").unwrap_or(&false) {
+    if matches.contains(MatchFlag::HearingImpaired) {
         score += weights.hearing_impaired;
     }
     score
+}
+
+/// Compute a subtitle match score given which factors matched.
+pub fn compute_score(weights: &ScoreWeights, matches: &HashMap<String, bool>) -> i32 {
+    compute_score_bits(weights, MatchBits::from_bool_map(matches))
 }
 
 pub fn compute_verified_score(
@@ -122,68 +217,84 @@ pub fn compute_verified_score(
     matches: &HashSet<String>,
     is_special: bool,
 ) -> i32 {
-    let mut verified = matches.clone();
+    compute_verified_score_bits(
+        weights,
+        kind,
+        MatchBits::from_match_set(matches),
+        is_special,
+    )
+}
 
-    if verified.contains("hash") {
-        let required: &[&str] = match kind {
-            SubtitleScoreKind::Movie => &["source", "video_codec"],
-            SubtitleScoreKind::Episode => &["series", "season", "episode", "source"],
+pub(crate) fn compute_verified_score_bits(
+    weights: &ScoreWeights,
+    kind: SubtitleScoreKind,
+    matches: MatchBits,
+    is_special: bool,
+) -> i32 {
+    let mut verified = matches;
+
+    if verified.contains(MatchFlag::Hash) {
+        let required: &[MatchFlag] = match kind {
+            SubtitleScoreKind::Movie => &[MatchFlag::Source, MatchFlag::VideoCodec],
+            SubtitleScoreKind::Episode => &[
+                MatchFlag::Series,
+                MatchFlag::Season,
+                MatchFlag::Episode,
+                MatchFlag::Source,
+            ],
         };
 
         if matches!(kind, SubtitleScoreKind::Movie) || !is_special {
-            if required.iter().all(|key| verified.contains(*key)) {
-                verified.retain(|key| key == "hash");
+            if required.iter().all(|flag| verified.contains(*flag)) {
+                verified = MatchBits::from_flag(MatchFlag::Hash);
             } else {
-                verified.remove("hash");
+                verified.remove(MatchFlag::Hash);
             }
         }
     }
 
-    let mut expanded = verified.clone();
+    let mut expanded = verified;
 
     match kind {
         SubtitleScoreKind::Movie => {
-            if expanded.contains("imdb_id") || expanded.contains("external_id") {
-                expanded.insert("title".to_string());
-                expanded.insert("year".to_string());
+            if expanded.contains(MatchFlag::ImdbId) || expanded.contains(MatchFlag::ExternalId) {
+                expanded.insert(MatchFlag::Title);
+                expanded.insert(MatchFlag::Year);
             }
         }
         SubtitleScoreKind::Episode => {
-            if expanded.contains("title") {
-                expanded.insert("episode".to_string());
+            if expanded.contains(MatchFlag::Title) {
+                expanded.insert(MatchFlag::Episode);
             }
-            if expanded.contains("series_imdb_id") {
-                expanded.insert("series".to_string());
-                expanded.insert("year".to_string());
+            if expanded.contains(MatchFlag::SeriesImdbId) {
+                expanded.insert(MatchFlag::Series);
+                expanded.insert(MatchFlag::Year);
             }
-            if expanded.contains("imdb_id") {
-                expanded.insert("series".to_string());
-                expanded.insert("year".to_string());
-                expanded.insert("season".to_string());
-                expanded.insert("episode".to_string());
+            if expanded.contains(MatchFlag::ImdbId) {
+                expanded.insert(MatchFlag::Series);
+                expanded.insert(MatchFlag::Year);
+                expanded.insert(MatchFlag::Season);
+                expanded.insert(MatchFlag::Episode);
             }
-            if expanded.contains("external_id") {
-                expanded.insert("series".to_string());
-                expanded.insert("year".to_string());
+            if expanded.contains(MatchFlag::ExternalId) {
+                expanded.insert(MatchFlag::Series);
+                expanded.insert(MatchFlag::Year);
             }
-            if expanded.contains("absolute_episode") {
-                expanded.insert("episode".to_string());
+            if expanded.contains(MatchFlag::AbsoluteEpisode) {
+                expanded.insert(MatchFlag::Episode);
             }
             if is_special
-                && expanded.contains("title")
-                && expanded.contains("series")
-                && expanded.contains("year")
+                && expanded.contains(MatchFlag::Title)
+                && expanded.contains(MatchFlag::Series)
+                && expanded.contains(MatchFlag::Year)
             {
-                expanded.insert("season".to_string());
-                expanded.insert("episode".to_string());
+                expanded.insert(MatchFlag::Season);
+                expanded.insert(MatchFlag::Episode);
             }
         }
     }
 
-    let score_matches: HashMap<String, bool> =
-        expanded.into_iter().map(|key| (key, true)).collect();
-
-    compute_score(weights, &score_matches)
+    compute_score_bits(weights, expanded)
 }
 
 #[cfg(test)]
@@ -559,6 +670,49 @@ mod tests {
         assert_eq!(
             compute_verified_score(&w, SubtitleScoreKind::Episode, &matches, false),
             w.title + w.year + w.episode
+        );
+    }
+
+    #[test]
+    fn compute_score_bits_matches_hashmap_wrapper() {
+        let w = SERIES_WEIGHTS.weights();
+        let mut matches = HashMap::new();
+        matches.insert("series".to_string(), true);
+        matches.insert("year".to_string(), true);
+        matches.insert("season".to_string(), true);
+        matches.insert("episode".to_string(), true);
+        matches.insert("source".to_string(), true);
+        matches.insert("video_codec".to_string(), true);
+
+        let mut bits = MatchBits::default();
+        bits.insert(MatchFlag::Series);
+        bits.insert(MatchFlag::Year);
+        bits.insert(MatchFlag::Season);
+        bits.insert(MatchFlag::Episode);
+        bits.insert(MatchFlag::Source);
+        bits.insert(MatchFlag::VideoCodec);
+
+        assert_eq!(compute_score(&w, &matches), compute_score_bits(&w, bits));
+    }
+
+    #[test]
+    fn verified_score_bits_matches_hashset_wrapper() {
+        let w = SERIES_WEIGHTS.weights();
+        let mut matches = HashSet::new();
+        matches.insert("series_imdb_id".to_string());
+        matches.insert("source".to_string());
+        matches.insert("resolution".to_string());
+        matches.insert("audio_codec".to_string());
+
+        let mut bits = MatchBits::default();
+        bits.insert(MatchFlag::SeriesImdbId);
+        bits.insert(MatchFlag::Source);
+        bits.insert(MatchFlag::Resolution);
+        bits.insert(MatchFlag::AudioCodec);
+
+        assert_eq!(
+            compute_verified_score(&w, SubtitleScoreKind::Episode, &matches, false),
+            compute_verified_score_bits(&w, SubtitleScoreKind::Episode, bits, false)
         );
     }
 }

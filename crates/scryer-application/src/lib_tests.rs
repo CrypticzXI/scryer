@@ -19100,7 +19100,7 @@ fn validate_password_unknown_version_returns_error() {
 
 /// Derive a per-user JWT signing key (mirrors `AppUseCase::derive_jwt_key`).
 fn test_derive_jwt_key(salt: &str, password_hash: &str, entitlements: &[Entitlement]) -> Vec<u8> {
-    use ring::hmac;
+    use aws_lc_rs::hmac;
     let mut entitlement_claims = entitlements
         .iter()
         .map(AppUseCase::entitlement_claim_string)

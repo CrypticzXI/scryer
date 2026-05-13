@@ -44,10 +44,13 @@ impl WasmDownloadClient {
             descriptor,
             client_name,
             client_id,
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            http: {
+                scryer_outbound_http::install_default_rustls_provider();
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30))
+                    .build()
+                    .unwrap_or_default()
+            },
         }
     }
 }

@@ -235,6 +235,7 @@ impl TestContext {
 
     /// Build a reqwest client suitable for hitting the test server.
     pub fn http_client(&self) -> reqwest::Client {
+        scryer_outbound_http::install_default_rustls_provider();
         reqwest::Client::builder()
             .build()
             .expect("failed to build reqwest client")

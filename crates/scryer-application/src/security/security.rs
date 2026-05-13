@@ -1,7 +1,7 @@
 use argon2::password_hash::SaltString;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use ring::hmac;
+use aws_lc_rs::hmac;
 
 use super::*;
 use crate::services::AppAssembly;

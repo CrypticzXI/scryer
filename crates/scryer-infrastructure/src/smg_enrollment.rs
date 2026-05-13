@@ -2,9 +2,10 @@ use std::sync::{LazyLock, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use aws_lc_rs::{digest, hmac, rand::SecureRandom};
 use base64::Engine as _;
 use ml_dsa::{KeyGen, MlDsa65};
-use ring::{hmac, rand::SecureRandom};
+use scryer_application::SettingsRepository;
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
     enrollment_reqwest_client, parse_retry_after,
@@ -18,6 +19,7 @@ const PQ_CLIENT_FAMILY: &str = "scryer-stable";
 // Keep that work off Tokio runtime threads and on a dedicated thread with an explicit stack.
 const PQ_CRYPTO_THREAD_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
+const SCRYER_SMG_USER_AGENT: &str = concat!("Scryer-", env!("CARGO_PKG_VERSION"));
 
 static SMG_ENROLLMENT_RATE_LIMITS: LazyLock<RateLimitRegistry> =
     LazyLock::new(RateLimitRegistry::new);
@@ -96,7 +98,7 @@ struct PqRegisterResponse {
 }
 
 /// Load or generate the instance ID (UUIDv4) for this Scryer instance.
-pub async fn ensure_instance_id(db: &crate::SqliteServices) -> Result<String, String> {
+pub async fn ensure_instance_id(db: &dyn SettingsRepository) -> Result<String, String> {
     let existing = load_setting(db, "smg.instance_id").await?;
 
     if let Some(id) = existing
@@ -115,7 +117,7 @@ pub async fn ensure_instance_id(db: &crate::SqliteServices) -> Result<String, St
 
 /// Clear cached enrollment data from the database so the next call to
 /// `ensure_enrolled` performs a fresh registration.
-pub async fn clear_enrollment_cache(db: &crate::SqliteServices) -> Result<(), String> {
+pub async fn clear_enrollment_cache(db: &dyn SettingsRepository) -> Result<(), String> {
     for key in &[
         "smg.client_key",
         "smg.client_cert",
@@ -133,7 +135,7 @@ pub async fn clear_enrollment_cache(db: &crate::SqliteServices) -> Result<(), St
 
 /// Load existing PQ enrollment from DB, or enroll with SMG if missing.
 pub async fn ensure_enrolled(
-    db: &crate::SqliteServices,
+    db: &dyn SettingsRepository,
     registration_url: &str,
     registration_secret: &str,
     ca_cert_override: Option<&str>,
@@ -181,7 +183,7 @@ pub async fn ensure_enrolled(
 }
 
 async fn enroll_pq_with_smg(
-    db: &crate::SqliteServices,
+    db: &dyn SettingsRepository,
     instance_id: &str,
     registration_url: &str,
     registration_secret: &str,
@@ -298,7 +300,7 @@ async fn enroll_pq_with_smg(
 }
 
 pub async fn rotate_pq_enrollment(
-    db: &crate::SqliteServices,
+    db: &dyn SettingsRepository,
     instance_id: &str,
     current_seed_b64: &str,
     current_key_id: &str,
@@ -512,7 +514,7 @@ async fn generate_pq_keypair() -> Result<PqKeypair, EnrollmentError> {
 fn generate_pq_keypair_sync() -> Result<PqKeypair, EnrollmentError> {
     use ml_dsa::signature::Keypair;
 
-    let rng = ring::rand::SystemRandom::new();
+    let rng = aws_lc_rs::rand::SystemRandom::new();
     let mut seed_bytes = [0u8; 32];
     rng.fill(&mut seed_bytes)
         .map_err(|_| EnrollmentError::Other("failed to generate ML-DSA seed".to_string()))?;
@@ -552,9 +554,10 @@ fn enrollment_outbound_http_client(
             )?),
             None => None,
         };
-    let client = enrollment_reqwest_client(ca_cert_override).map_err(|e| {
-        EnrollmentError::Other(format!("failed to build HTTP client for enrollment: {e}"))
-    })?;
+    let client =
+        enrollment_reqwest_client(ca_cert_override, SCRYER_SMG_USER_AGENT).map_err(|e| {
+            EnrollmentError::Other(format!("failed to build HTTP client for enrollment: {e}"))
+        })?;
     Ok(OutboundHttpClient::new(
         client,
         SMG_ENROLLMENT_RATE_LIMITS.clone(),
@@ -787,20 +790,16 @@ fn canonical_pq_request_message(
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn load_setting(db: &crate::SqliteServices, key: &str) -> Result<Option<String>, String> {
-    let settings_store = crate::SqliteSettingsStore::new(db);
-    let record = settings_store
-        .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, key, None)
+async fn load_setting(db: &dyn SettingsRepository, key: &str) -> Result<Option<String>, String> {
+    let raw = db
+        .get_setting_json(SETTINGS_SCOPE_SYSTEM, key, None)
         .await
         .map_err(|e| format!("failed to read {key}: {e}"))?;
-    Ok(record
-        .as_ref()
-        .and_then(|r| r.value_json.as_deref())
-        .and_then(parse_string_json))
+    Ok(raw.as_deref().and_then(parse_string_json))
 }
 
 pub async fn load_pq_enrollment_generation(
-    db: &crate::SqliteServices,
+    db: &dyn SettingsRepository,
 ) -> Result<Option<i64>, String> {
     let Some(raw) = load_setting(db, "smg.pq_enrollment_generation").await? else {
         return Ok(None);
@@ -811,21 +810,21 @@ pub async fn load_pq_enrollment_generation(
 }
 
 pub async fn persist_pq_enrollment_generation(
-    db: &crate::SqliteServices,
+    db: &dyn SettingsRepository,
     generation: i64,
 ) -> Result<(), String> {
     persist_setting(db, "smg.pq_enrollment_generation", &generation.to_string()).await
 }
 
 pub async fn persist_version_compatibility_notice(
-    db: &crate::SqliteServices,
+    db: &dyn SettingsRepository,
     notice: Option<&VersionIncompatible>,
 ) -> Result<(), String> {
     persist_setting_json(db, SMG_VERSION_COMPATIBILITY_NOTICE_KEY, &notice).await
 }
 
 async fn persist_pq_enrollment_state(
-    db: &crate::SqliteServices,
+    db: &dyn SettingsRepository,
     seed_b64: &str,
     public_key_b64: &str,
     key_id: &str,
@@ -841,29 +840,32 @@ async fn persist_pq_enrollment_state(
     persist_pq_enrollment_generation(db, enrollment_generation).await
 }
 
-async fn persist_setting(db: &crate::SqliteServices, key: &str, value: &str) -> Result<(), String> {
+async fn persist_setting(
+    db: &dyn SettingsRepository,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
     persist_setting_json(db, key, value).await
 }
 
 async fn persist_setting_json<T: Serialize + ?Sized>(
-    db: &crate::SqliteServices,
+    db: &dyn SettingsRepository,
     key: &str,
     value: &T,
 ) -> Result<(), String> {
     let value_json =
         serde_json::to_string(value).map_err(|e| format!("failed to encode {key}: {e}"))?;
-    crate::SqliteSettingsStore::new(db)
-        .upsert_setting_value(
-            SETTINGS_SCOPE_SYSTEM,
-            key,
-            None,
-            value_json,
-            "smg-enrollment",
-            None,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("failed to persist {key}: {e}"))
+    db.upsert_setting_json(
+        SETTINGS_SCOPE_SYSTEM,
+        key,
+        None,
+        value_json,
+        "smg-enrollment",
+        None,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("failed to persist {key}: {e}"))
 }
 
 fn parse_string_json(raw: &str) -> Option<String> {
@@ -878,7 +880,7 @@ fn parse_string_json(raw: &str) -> Option<String> {
 }
 
 fn sha256_bytes(data: &[u8]) -> [u8; 32] {
-    let digest = ring::digest::digest(&ring::digest::SHA256, data);
+    let digest = digest::digest(&digest::SHA256, data);
     let mut out = [0u8; 32];
     out.copy_from_slice(digest.as_ref());
     out

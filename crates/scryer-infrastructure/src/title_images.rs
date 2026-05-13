@@ -1,11 +1,11 @@
 use std::io::Cursor;
 
 use async_trait::async_trait;
+use aws_lc_rs::digest;
 use fast_image_resize as fir;
 use image::codecs::avif::AvifEncoder;
 use image::{DynamicImage, ImageEncoder, ImageFormat, RgbaImage};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED};
-use ring::digest;
 use scryer_application::{
     AppError, AppResult, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,

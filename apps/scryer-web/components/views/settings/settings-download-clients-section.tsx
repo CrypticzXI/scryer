@@ -154,6 +154,55 @@ function DownloadClientActionButton({
   );
 }
 
+function formatRelativeTime(isoDate: string): string {
+  const date = new Date(isoDate);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const isFuture = diffMs < 0;
+  const absMs = Math.abs(diffMs);
+  const minutes = Math.max(1, Math.floor(absMs / 60000));
+  const hours = Math.floor(absMs / 3600000);
+  const days = Math.floor(absMs / 86400000);
+
+  const amount = minutes < 60
+    ? `${minutes}m`
+    : hours < 24
+      ? `${hours}h`
+      : `${days}d`;
+
+  return isFuture ? `in ${amount}` : `${amount} ago`;
+}
+
+function DownloadClientStatusCell({ client }: { client: DownloadClientRecord }) {
+  const t = useTranslate();
+  if (!client.isEnabled) {
+    return <span className="text-muted-foreground">{t("label.disabled")}</span>;
+  }
+
+  if (client.lastError || client.status === "error" || client.status === "failed") {
+    return (
+      <span
+        className="text-red-600 dark:text-red-400"
+        title={client.lastError ?? client.status}
+      >
+        {t("settings.downloadClientLastError")}
+      </span>
+    );
+  }
+
+  if (client.lastSeenAt) {
+    return (
+      <span title={client.lastSeenAt}>
+        {t("settings.downloadClientLastSeen", {
+          time: formatRelativeTime(client.lastSeenAt),
+        })}
+      </span>
+    );
+  }
+
+  return <span className="text-muted-foreground">{t("settings.downloadClientNoActivity")}</span>;
+}
+
 export type SettingsDownloadClientsSectionProps = {
   editingDownloadClientId: string | null;
   downloadClientTypeOptions: DownloadClientTypeOption[];
@@ -339,6 +388,7 @@ export function SettingsDownloadClientsSection({
                   </TableHead>
                   <TableHead>{t("settings.baseUrl")}</TableHead>
                   <TableHead className="text-center">{t("label.enabled")}</TableHead>
+                  <TableHead>{t("settings.downloadClientStatus")}</TableHead>
                   <TableHead className="text-right">{t("label.actions")}</TableHead>
                 </TableRow>
             </TableHeader>
@@ -387,6 +437,9 @@ export function SettingsDownloadClientsSection({
                       label={`${t("label.enabled")}: ${client.name}`}
                     />
                   </TableCell>
+                  <TableCell>
+                    <DownloadClientStatusCell client={client} />
+                  </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
                       <DownloadClientActionButton
@@ -423,7 +476,7 @@ export function SettingsDownloadClientsSection({
               })}
               {orderedClients.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-muted-foreground">
+                  <TableCell colSpan={7} className="text-muted-foreground">
                     {t("settings.noDownloadClientsFound")}
                   </TableCell>
                 </TableRow>

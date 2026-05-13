@@ -284,7 +284,7 @@ pub(crate) async fn graphql_ws_handler(
     let mut initial_data = Data::default();
     initial_data.insert(ConnectionAuthEpoch(connection_epoch));
     if (!auth_enabled || local_bypass_active)
-        && let Ok(user) = app.find_or_create_default_user().await
+        && let Some(user) = resolve_default_user(&app).await
     {
         initial_data.insert(user);
     }
@@ -424,15 +424,15 @@ async fn resolve_actor(
     let snapshot = state.auth_runtime.snapshot();
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
     let actor = if !snapshot.effective_form_login_enabled {
-        state.app.find_or_create_default_user().await.ok()
+        resolve_default_user(&state.app).await
     } else {
         match authorization_token_from_headers(headers) {
             Ok(Some(token)) => match state.app.authenticate_token(token).await {
                 Ok(user) => Some(user),
-                Err(_) if local_bypass => state.app.find_or_create_default_user().await.ok(),
+                Err(_) if local_bypass => resolve_default_user(&state.app).await,
                 Err(_) => None,
             },
-            Ok(None) | Err(_) if local_bypass => state.app.find_or_create_default_user().await.ok(),
+            Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app).await,
             Ok(None) | Err(_) => None,
         }
     };
@@ -440,6 +440,14 @@ async fn resolve_actor(
     match actor {
         Some(user) => state.app.attach_user_authorization(user).await.ok(),
         None => None,
+    }
+}
+
+async fn resolve_default_user(app_use_case: &AppUseCase) -> Option<scryer_domain::User> {
+    match app_use_case.find_default_user().await {
+        Ok(Some(user)) => Some(user),
+        Ok(None) => app_use_case.find_or_create_default_user().await.ok(),
+        Err(_) => None,
     }
 }
 
@@ -481,17 +489,17 @@ pub(crate) async fn resolve_actor_with_app_permission(
     let snapshot = auth_runtime.snapshot();
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
     let actor = if !snapshot.effective_form_login_enabled {
-        app_use_case.find_or_create_default_user().await?
+        resolve_default_user_required(app_use_case).await?
     } else {
         match authorization_token_from_headers(headers) {
             Ok(Some(token)) => match app_use_case.authenticate_token(token).await {
                 Ok(actor) => actor,
-                Err(_) if local_bypass => app_use_case.find_or_create_default_user().await?,
+                Err(_) if local_bypass => resolve_default_user_required(app_use_case).await?,
                 Err(error) => return Err(error),
             },
-            Ok(None) if local_bypass => app_use_case.find_or_create_default_user().await?,
+            Ok(None) if local_bypass => resolve_default_user_required(app_use_case).await?,
             Ok(None) => return Err(AppError::Unauthorized("authorization required".into())),
-            Err(_) if local_bypass => app_use_case.find_or_create_default_user().await?,
+            Err(_) if local_bypass => resolve_default_user_required(app_use_case).await?,
             Err(error) => return Err(error),
         }
     };
@@ -502,6 +510,15 @@ pub(crate) async fn resolve_actor_with_app_permission(
         .await?;
 
     Ok(actor.id)
+}
+
+async fn resolve_default_user_required(
+    app_use_case: &AppUseCase,
+) -> Result<scryer_domain::User, AppError> {
+    match app_use_case.find_default_user().await? {
+        Some(user) => Ok(user),
+        None => app_use_case.find_or_create_default_user().await,
+    }
 }
 
 fn local_ip_bypass_active(

@@ -196,6 +196,8 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
         ));
     }
 
+    crate::queries::title_search::rebuild_title_search_projection(pool).await?;
+
     for (table, expected_rows) in &payload.manifest().row_counts {
         let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
         let actual_rows: i64 = sqlx::query_scalar(&sql)
@@ -525,19 +527,7 @@ async fn import_table_part(
     table: &str,
     part_path: &Path,
 ) -> AppResult<()> {
-    let columns = table_columns(conn, table).await?;
-    let insert_sql = format!(
-        "INSERT INTO {} ({}) VALUES ({})",
-        quote_identifier(table),
-        columns
-            .iter()
-            .map(|column| quote_identifier(column))
-            .collect::<Vec<_>>()
-            .join(", "),
-        std::iter::repeat_n("?", columns.len())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    let target_columns = table_columns(conn, table).await?;
 
     let file = File::open(part_path).map_err(|error| {
         AppError::Validation(format!("backup table payload missing for {table}: {error}"))
@@ -568,6 +558,28 @@ async fn import_table_part(
                 "backup row for {table}:{line_number} is not an object"
             ))
         })?;
+
+        let columns = target_columns
+            .iter()
+            .filter(|column| object.contains_key(*column))
+            .cloned()
+            .collect::<Vec<_>>();
+        if columns.is_empty() {
+            continue;
+        }
+
+        let insert_sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            quote_identifier(table),
+            columns
+                .iter()
+                .map(|column| quote_identifier(column))
+                .collect::<Vec<_>>()
+                .join(", "),
+            std::iter::repeat_n("?", columns.len())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
 
         let mut query = sqlx::query(&insert_sql);
         for column in &columns {
@@ -643,11 +655,7 @@ fn bind_json_value<'q>(
             })?;
             query.bind(bytes)
         }
-        _ => {
-            return Err(AppError::Validation(
-                "backup row contains an unsupported JSON value".into(),
-            ));
-        }
+        JsonValue::Array(_) | JsonValue::Object(_) => query.bind(value.to_string()),
     })
 }
 

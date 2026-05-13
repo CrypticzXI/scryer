@@ -14,14 +14,579 @@ use scryer_domain::{
 
 use crate::SqliteServices;
 
+#[async_trait]
+pub trait WorkflowSql: Clone + Send + Sync + 'static {
+    async fn commit_successful_grab(&self, commit: &SuccessfulGrabCommit) -> AppResult<()>;
+    async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent>;
+    async fn append_many(&self, events: Vec<NewDomainEvent>) -> AppResult<Vec<DomainEvent>>;
+    async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>>;
+    async fn count_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+    ) -> AppResult<i64>;
+    async fn list_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<Vec<DomainEvent>>;
+    async fn list_after_sequence(
+        &self,
+        after_sequence: i64,
+        limit: usize,
+    ) -> AppResult<Vec<DomainEvent>>;
+    async fn delete_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
+    async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64>;
+    async fn set_subscriber_offset(&self, subscriber: &str, sequence: i64) -> AppResult<()>;
+    async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()>;
+    async fn find_by_client_item_id(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmission>>;
+    async fn list_for_client_items(
+        &self,
+        client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<DownloadSubmission>>;
+    async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>>;
+    async fn find_by_title_and_request_signature(
+        &self,
+        title_id: &str,
+        request_signature: &str,
+    ) -> AppResult<Option<DownloadSubmission>>;
+    async fn delete_for_title(&self, title_id: &str) -> AppResult<()>;
+    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()>;
+    async fn update_tracked_state(
+        &self,
+        identity: &DownloadSourceIdentity,
+        tracked_state: &str,
+    ) -> AppResult<()>;
+    async fn get_tracked_state(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<String>>;
+    async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()>;
+    async fn list_by_source_ref(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+    ) -> AppResult<Vec<ImportArtifact>>;
+    async fn count_by_result(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+        result: &str,
+    ) -> AppResult<u64>;
+    async fn create_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord>;
+    async fn update_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord>;
+    async fn get_job_run(&self, run_id: &str) -> AppResult<Option<JobRunRecord>>;
+    async fn list_job_runs(
+        &self,
+        job_key: Option<JobKey>,
+        limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>>;
+    async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>>;
+    async fn queue_import_request(
+        &self,
+        source_system: String,
+        source_ref: String,
+        import_type: String,
+        payload_json: String,
+    ) -> AppResult<String>;
+    async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>>;
+    async fn get_import_by_source_ref(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+    ) -> AppResult<Option<ImportRecord>>;
+    async fn get_import_by_source_ref_and_type(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+        import_type: ImportType,
+    ) -> AppResult<Option<ImportRecord>>;
+    async fn update_import_status(
+        &self,
+        import_id: &str,
+        status: ImportStatus,
+        result_json: Option<String>,
+    ) -> AppResult<()>;
+    async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64>;
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        import_type: ImportType,
+        stale_seconds: i64,
+    ) -> AppResult<u64>;
+    async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>>;
+    async fn list_pending_imports_for_type(
+        &self,
+        import_type: ImportType,
+    ) -> AppResult<Vec<ImportRecord>>;
+    async fn list_imports_for_sources(
+        &self,
+        sources: &[(String, String)],
+    ) -> AppResult<Vec<ImportRecord>>;
+    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool>;
+    async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>>;
+    async fn upsert_external_import_monitor_snapshot(
+        &self,
+        snapshot: &ExternalImportMonitorSnapshot,
+    ) -> AppResult<()>;
+    async fn get_external_import_monitor_snapshot(
+        &self,
+        facet: &scryer_domain::MediaFacet,
+    ) -> AppResult<Option<ExternalImportMonitorSnapshot>>;
+    async fn delete_external_import_monitor_snapshot(
+        &self,
+        facet: &scryer_domain::MediaFacet,
+    ) -> AppResult<()>;
+    async fn queue_delete_command(
+        &self,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_client_item_id: &str,
+        is_history: bool,
+        requested_by_user_id: Option<&str>,
+    ) -> AppResult<DownloadQueueCommandRecord>;
+    async fn recover_stale_running_delete_commands(&self, stale_seconds: i64) -> AppResult<u64>;
+    async fn list_pending_delete_commands(&self) -> AppResult<Vec<DownloadQueueCommandRecord>>;
+    async fn mark_delete_command_running(&self, id: &str) -> AppResult<()>;
+    async fn mark_delete_command_completed(&self, id: &str) -> AppResult<()>;
+    async fn mark_delete_command_failed(&self, id: &str, error_text: Option<&str>)
+    -> AppResult<()>;
+    async fn list_latest_delete_commands_for_sources(
+        &self,
+        sources: &[(Option<String>, String, String, bool)],
+    ) -> AppResult<Vec<DownloadQueueCommandRecord>>;
+    async fn prune_terminal_delete_commands_older_than(&self, days: i64) -> AppResult<u32>;
+    async fn create_workflow_operation(
+        &self,
+        operation_type: String,
+        status: String,
+        actor_user_id: Option<String>,
+        progress_json: Option<String>,
+        started_at: Option<String>,
+        completed_at: Option<String>,
+    ) -> AppResult<WorkflowOperationInfo>;
+}
+
 #[derive(Clone)]
-pub struct SqliteWorkflowStore {
+pub struct WorkflowStore<S> {
+    sql: S,
+}
+
+impl<S> WorkflowStore<S> {
+    pub(crate) fn from_sql(sql: S) -> Self {
+        Self { sql }
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> AcquisitionStateRepository for WorkflowStore<S> {
+    async fn commit_successful_grab(&self, commit: &SuccessfulGrabCommit) -> AppResult<()> {
+        self.sql.commit_successful_grab(commit).await
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> DomainEventRepository for WorkflowStore<S> {
+    async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
+        self.sql.append(event).await
+    }
+
+    async fn append_many(&self, events: Vec<NewDomainEvent>) -> AppResult<Vec<DomainEvent>> {
+        self.sql.append_many(events).await
+    }
+
+    async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
+        self.sql.list(filter).await
+    }
+
+    async fn count_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+    ) -> AppResult<i64> {
+        self.sql
+            .count_title_history_page_events(event_types, title_ids, download_id)
+            .await
+    }
+
+    async fn list_title_history_page_events(
+        &self,
+        event_types: Option<&[TitleHistoryEventType]>,
+        title_ids: Option<&[String]>,
+        download_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<Vec<DomainEvent>> {
+        self.sql
+            .list_title_history_page_events(event_types, title_ids, download_id, limit, offset)
+            .await
+    }
+
+    async fn list_after_sequence(
+        &self,
+        after_sequence: i64,
+        limit: usize,
+    ) -> AppResult<Vec<DomainEvent>> {
+        self.sql.list_after_sequence(after_sequence, limit).await
+    }
+
+    async fn delete_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
+        self.sql.delete_for_title_ids(title_ids).await
+    }
+
+    async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64> {
+        self.sql.get_subscriber_offset(subscriber).await
+    }
+
+    async fn set_subscriber_offset(&self, subscriber: &str, sequence: i64) -> AppResult<()> {
+        self.sql.set_subscriber_offset(subscriber, sequence).await
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> DownloadSubmissionRepository for WorkflowStore<S> {
+    async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        self.sql.record_submission(submission).await
+    }
+
+    async fn find_by_client_item_id(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        self.sql.find_by_client_item_id(identity).await
+    }
+
+    async fn list_for_client_items(
+        &self,
+        client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        self.sql.list_for_client_items(client_items).await
+    }
+
+    async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
+        self.sql.list_for_title(title_id).await
+    }
+
+    async fn find_by_title_and_request_signature(
+        &self,
+        title_id: &str,
+        request_signature: &str,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        self.sql
+            .find_by_title_and_request_signature(title_id, request_signature)
+            .await
+    }
+
+    async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
+        self.sql.delete_for_title(title_id).await
+    }
+
+    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+        self.sql.delete_by_client_item_id(identity).await
+    }
+
+    async fn update_tracked_state(
+        &self,
+        identity: &DownloadSourceIdentity,
+        tracked_state: &str,
+    ) -> AppResult<()> {
+        self.sql.update_tracked_state(identity, tracked_state).await
+    }
+
+    async fn get_tracked_state(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<String>> {
+        self.sql.get_tracked_state(identity).await
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> ImportArtifactRepository for WorkflowStore<S> {
+    async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()> {
+        self.sql.insert_artifact(artifact).await
+    }
+
+    async fn list_by_source_ref(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+    ) -> AppResult<Vec<ImportArtifact>> {
+        self.sql.list_by_source_ref(source_system, source_ref).await
+    }
+
+    async fn count_by_result(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+        result: &str,
+    ) -> AppResult<u64> {
+        self.sql
+            .count_by_result(source_system, source_ref, result)
+            .await
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> JobRunRepository for WorkflowStore<S> {
+    async fn create_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
+        self.sql.create_job_run(run).await
+    }
+
+    async fn update_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
+        self.sql.update_job_run(run).await
+    }
+
+    async fn get_job_run(&self, run_id: &str) -> AppResult<Option<JobRunRecord>> {
+        self.sql.get_job_run(run_id).await
+    }
+
+    async fn list_job_runs(
+        &self,
+        job_key: Option<JobKey>,
+        limit: usize,
+    ) -> AppResult<Vec<JobRunRecord>> {
+        self.sql.list_job_runs(job_key, limit).await
+    }
+
+    async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
+        self.sql.list_active_job_runs().await
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> ImportRepository for WorkflowStore<S> {
+    async fn queue_import_request(
+        &self,
+        source_system: String,
+        source_ref: String,
+        import_type: String,
+        payload_json: String,
+    ) -> AppResult<String> {
+        self.sql
+            .queue_import_request(source_system, source_ref, import_type, payload_json)
+            .await
+    }
+
+    async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
+        self.sql.get_import_by_id(id).await
+    }
+
+    async fn get_import_by_source_ref(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+    ) -> AppResult<Option<ImportRecord>> {
+        self.sql
+            .get_import_by_source_ref(source_system, source_ref)
+            .await
+    }
+
+    async fn get_import_by_source_ref_and_type(
+        &self,
+        source_system: &str,
+        source_ref: &str,
+        import_type: ImportType,
+    ) -> AppResult<Option<ImportRecord>> {
+        self.sql
+            .get_import_by_source_ref_and_type(source_system, source_ref, import_type)
+            .await
+    }
+
+    async fn update_import_status(
+        &self,
+        import_id: &str,
+        status: ImportStatus,
+        result_json: Option<String>,
+    ) -> AppResult<()> {
+        self.sql
+            .update_import_status(import_id, status, result_json)
+            .await
+    }
+
+    async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64> {
+        self.sql
+            .recover_stale_processing_imports(stale_seconds)
+            .await
+    }
+
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        import_type: ImportType,
+        stale_seconds: i64,
+    ) -> AppResult<u64> {
+        self.sql
+            .recover_stale_processing_imports_for_type(import_type, stale_seconds)
+            .await
+    }
+
+    async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
+        self.sql.list_pending_imports().await
+    }
+
+    async fn list_pending_imports_for_type(
+        &self,
+        import_type: ImportType,
+    ) -> AppResult<Vec<ImportRecord>> {
+        self.sql.list_pending_imports_for_type(import_type).await
+    }
+
+    async fn list_imports_for_sources(
+        &self,
+        sources: &[(String, String)],
+    ) -> AppResult<Vec<ImportRecord>> {
+        self.sql.list_imports_for_sources(sources).await
+    }
+
+    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
+        self.sql
+            .is_already_imported(source_system, source_ref)
+            .await
+    }
+
+    async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
+        self.sql.list_imports(limit).await
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> ExternalImportMonitorSnapshotRepository for WorkflowStore<S> {
+    async fn upsert_external_import_monitor_snapshot(
+        &self,
+        snapshot: &ExternalImportMonitorSnapshot,
+    ) -> AppResult<()> {
+        self.sql
+            .upsert_external_import_monitor_snapshot(snapshot)
+            .await
+    }
+
+    async fn get_external_import_monitor_snapshot(
+        &self,
+        facet: &scryer_domain::MediaFacet,
+    ) -> AppResult<Option<ExternalImportMonitorSnapshot>> {
+        self.sql.get_external_import_monitor_snapshot(facet).await
+    }
+
+    async fn delete_external_import_monitor_snapshot(
+        &self,
+        facet: &scryer_domain::MediaFacet,
+    ) -> AppResult<()> {
+        self.sql
+            .delete_external_import_monitor_snapshot(facet)
+            .await
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> DownloadQueueCommandRepository for WorkflowStore<S> {
+    async fn queue_delete_command(
+        &self,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_client_item_id: &str,
+        is_history: bool,
+        requested_by_user_id: Option<&str>,
+    ) -> AppResult<DownloadQueueCommandRecord> {
+        self.sql
+            .queue_delete_command(
+                client_id,
+                client_type,
+                download_client_item_id,
+                is_history,
+                requested_by_user_id,
+            )
+            .await
+    }
+
+    async fn recover_stale_running_delete_commands(&self, stale_seconds: i64) -> AppResult<u64> {
+        self.sql
+            .recover_stale_running_delete_commands(stale_seconds)
+            .await
+    }
+
+    async fn list_pending_delete_commands(&self) -> AppResult<Vec<DownloadQueueCommandRecord>> {
+        self.sql.list_pending_delete_commands().await
+    }
+
+    async fn mark_delete_command_running(&self, id: &str) -> AppResult<()> {
+        self.sql.mark_delete_command_running(id).await
+    }
+
+    async fn mark_delete_command_completed(&self, id: &str) -> AppResult<()> {
+        self.sql.mark_delete_command_completed(id).await
+    }
+
+    async fn mark_delete_command_failed(
+        &self,
+        id: &str,
+        error_text: Option<&str>,
+    ) -> AppResult<()> {
+        self.sql.mark_delete_command_failed(id, error_text).await
+    }
+
+    async fn list_latest_delete_commands_for_sources(
+        &self,
+        sources: &[(Option<String>, String, String, bool)],
+    ) -> AppResult<Vec<DownloadQueueCommandRecord>> {
+        self.sql
+            .list_latest_delete_commands_for_sources(sources)
+            .await
+    }
+
+    async fn prune_terminal_delete_commands_older_than(&self, days: i64) -> AppResult<u32> {
+        self.sql
+            .prune_terminal_delete_commands_older_than(days)
+            .await
+    }
+}
+
+#[async_trait]
+impl<S: WorkflowSql> WorkflowOperationRepository for WorkflowStore<S> {
+    async fn create_workflow_operation(
+        &self,
+        operation_type: String,
+        status: String,
+        actor_user_id: Option<String>,
+        progress_json: Option<String>,
+        started_at: Option<String>,
+        completed_at: Option<String>,
+    ) -> AppResult<WorkflowOperationInfo> {
+        self.sql
+            .create_workflow_operation(
+                operation_type,
+                status,
+                actor_user_id,
+                progress_json,
+                started_at,
+                completed_at,
+            )
+            .await
+    }
+}
+
+pub type SqliteWorkflowStore = WorkflowStore<SqliteWorkflowSql>;
+
+#[derive(Clone)]
+pub struct SqliteWorkflowSql {
     db: SqliteServices,
     pool: sqlx::SqlitePool,
 }
 
 impl SqliteWorkflowStore {
     pub fn new(db: &SqliteServices) -> Self {
+        Self::from_sql(SqliteWorkflowSql::new(db))
+    }
+}
+
+impl SqliteWorkflowSql {
+    fn new(db: &SqliteServices) -> Self {
         Self {
             db: db.clone(),
             pool: db.pool().clone(),
@@ -74,14 +639,10 @@ fn job_run_record_from_workflow(record: crate::WorkflowOperationRecord) -> AppRe
 }
 
 #[async_trait]
-impl AcquisitionStateRepository for SqliteWorkflowStore {
+impl WorkflowSql for SqliteWorkflowSql {
     async fn commit_successful_grab(&self, commit: &SuccessfulGrabCommit) -> AppResult<()> {
         self.db.commit_successful_grab(commit).await
     }
-}
-
-#[async_trait]
-impl DomainEventRepository for SqliteWorkflowStore {
     async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
         self.db.append_domain_event(&event).await
     }
@@ -158,10 +719,6 @@ impl DomainEventRepository for SqliteWorkflowStore {
             .set_event_subscriber_offset(subscriber, sequence)
             .await
     }
-}
-
-#[async_trait]
-impl DownloadSubmissionRepository for SqliteWorkflowStore {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
         self.db.record_download_submission(&submission).await
     }
@@ -228,10 +785,6 @@ impl DownloadSubmissionRepository for SqliteWorkflowStore {
     ) -> AppResult<Option<String>> {
         crate::queries::workflow::get_tracked_state_query(&self.pool, identity).await
     }
-}
-
-#[async_trait]
-impl ImportArtifactRepository for SqliteWorkflowStore {
     async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()> {
         self.db.insert_import_artifact(&artifact).await
     }
@@ -263,10 +816,6 @@ impl ImportArtifactRepository for SqliteWorkflowStore {
         )
         .await
     }
-}
-
-#[async_trait]
-impl JobRunRepository for SqliteWorkflowStore {
     async fn create_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
         let record = self
             .db
@@ -335,10 +884,6 @@ impl JobRunRepository for SqliteWorkflowStore {
             .map(job_run_record_from_workflow)
             .collect()
     }
-}
-
-#[async_trait]
-impl ImportRepository for SqliteWorkflowStore {
     async fn queue_import_request(
         &self,
         source_system: String,
@@ -448,10 +993,6 @@ impl ImportRepository for SqliteWorkflowStore {
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
         crate::queries::workflow::list_imports_query(&self.pool, limit as i64).await
     }
-}
-
-#[async_trait]
-impl ExternalImportMonitorSnapshotRepository for SqliteWorkflowStore {
     async fn upsert_external_import_monitor_snapshot(
         &self,
         snapshot: &ExternalImportMonitorSnapshot,
@@ -477,10 +1018,6 @@ impl ExternalImportMonitorSnapshotRepository for SqliteWorkflowStore {
             .delete_external_import_monitor_snapshot(facet.clone())
             .await
     }
-}
-
-#[async_trait]
-impl DownloadQueueCommandRepository for SqliteWorkflowStore {
     async fn queue_delete_command(
         &self,
         client_id: Option<&str>,
@@ -551,10 +1088,6 @@ impl DownloadQueueCommandRepository for SqliteWorkflowStore {
             .prune_terminal_delete_download_commands_older_than(days)
             .await
     }
-}
-
-#[async_trait]
-impl WorkflowOperationRepository for SqliteWorkflowStore {
     async fn create_workflow_operation(
         &self,
         operation_type: String,

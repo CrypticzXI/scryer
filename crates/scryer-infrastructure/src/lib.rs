@@ -18,6 +18,7 @@ pub mod migration_assets;
 mod migration_hook_ids;
 pub mod migrations;
 mod notification_store;
+pub mod postgres;
 mod prowlarr;
 pub mod queries;
 mod release_store;
@@ -52,9 +53,10 @@ pub use catalog_store::SqliteCatalogStore;
 pub use config_store::SqliteConfigStore;
 pub use customization_store::SqliteCustomizationStore;
 pub use datastore::{
-    DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreEngine,
-    DatastoreSettingsStore, datastore_file_path, restore_backup_bundle_to_datastore_path,
-    validate_datastore,
+    DatastoreAssembly, DatastoreConfig, DatastoreConfigSource, DatastoreCustomizationStore,
+    DatastoreEngine, DatastoreSettingsStore, datastore_file_path,
+    resolve_datastore_config_from_env, restore_backup_bundle_to_datastore,
+    restore_backup_bundle_to_datastore_path, validate_datastore,
 };
 pub use download_clients::{
     MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
@@ -70,6 +72,10 @@ pub use library_state_store::SqliteLibraryStateStore;
 pub use metadata_gateway::{MetadataGatewayClient, SmgEnrollmentConfig};
 pub use migrations::{list_embedded_migration_keys, list_embedded_migrations};
 pub use notification_store::SqliteNotificationStore;
+pub use postgres::{
+    PostgresCatalogStore, PostgresConfigStore, PostgresCustomizationStore,
+    PostgresLogicalBackupExporter, PostgresReleaseStore, PostgresServices, PostgresSettingsStore,
+};
 pub use prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
 pub use release_store::SqliteReleaseStore;
 pub use settings_store::SqliteSettingsStore;

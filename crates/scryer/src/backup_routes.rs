@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,7 +15,8 @@ use scryer_application::{
 };
 use scryer_domain::AppPermission;
 use scryer_infrastructure::{
-    MigrationMode, datastore_file_path, restore_backup_bundle_to_datastore_path,
+    DatastoreConfig, DatastoreEngine, datastore_file_path, restore_backup_bundle_to_datastore,
+    restore_backup_bundle_to_datastore_path,
 };
 use scryer_interface::context::AuthRuntimeStateHandle;
 use serde::{Deserialize, Serialize};
@@ -37,7 +39,8 @@ pub(crate) struct BackupRouteState {
     pub(crate) app: AppUseCase,
     pub(crate) auth_runtime: AuthRuntimeStateHandle,
     pub(crate) data_dir: PathBuf,
-    pub(crate) migration_mode: MigrationMode,
+    pub(crate) datastore_engine: DatastoreEngine,
+    pub(crate) datastore_config: DatastoreConfig,
 }
 
 #[derive(Serialize)]
@@ -185,6 +188,58 @@ fn ensure_owner_only_dir_permissions(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn write_owner_only_file_atomically(path: &Path, contents: &str) -> Result<(), AppError> {
+    let parent = path.parent().ok_or_else(|| {
+        AppError::Repository(format!(
+            "cannot resolve parent directory for {}",
+            path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to create parent directory for {}: {error}",
+            path.display()
+        ))
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            AppError::Repository(format!("invalid restore secrets path {}", path.display()))
+        })?;
+    let temp_path = parent.join(format!(
+        ".{file_name}.tmp.{}.{}",
+        std::process::id(),
+        next_restore_upload_id()
+    ));
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp_path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        ensure_owner_only_permissions(&temp_path)?;
+        std::fs::rename(&temp_path, path)?;
+        ensure_owner_only_permissions(path)
+    })();
+
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(AppError::Repository(format!(
+            "failed to write restore secrets atomically: {error}"
+        )));
+    }
+
+    Ok(())
+}
+
 fn remove_sqlite_sidecars(db_file: &Path) -> std::io::Result<()> {
     for suffix in ["", "-wal", "-shm"] {
         let path = if suffix.is_empty() {
@@ -213,6 +268,10 @@ async fn ensure_setup_mode(app: &AppUseCase) -> Result<(), AppError> {
             "restore is only available while setup is still incomplete".into(),
         ));
     }
+    Ok(())
+}
+
+fn ensure_restore_supported(_engine: DatastoreEngine) -> Result<(), AppError> {
     Ok(())
 }
 
@@ -245,9 +304,32 @@ fn prune_stale_restore_uploads(data_dir: &Path) {
 fn stage_restore_bundle(
     data_dir: PathBuf,
     bundle_path: PathBuf,
-    migration_mode: MigrationMode,
+    datastore_config: DatastoreConfig,
     password: Option<String>,
 ) -> Result<RestoreSummaryResponse, AppError> {
+    if datastore_config.engine == DatastoreEngine::Postgres {
+        let secrets_path = managed_instance_secrets_path(&data_dir);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                AppError::Repository(format!("failed to start restore runtime: {error}"))
+            })?;
+
+        return runtime.block_on(async move {
+            let prepared = restore_backup_bundle_to_datastore(
+                datastore_config,
+                &bundle_path,
+                password.as_deref(),
+            )
+            .await?;
+
+            write_owner_only_file_atomically(&secrets_path, &prepared.instance_secrets_env())?;
+
+            Ok::<_, AppError>(restore_summary_response(prepared.summary()))
+        });
+    }
+
     let pending_dir = pending_restore_dir(&data_dir);
     let pending_db_path = pending_restore_db_path(&data_dir);
     let pending_secrets_path = pending_restore_instance_secrets_path(&data_dir);
@@ -274,22 +356,13 @@ fn stage_restore_bundle(
     let result = runtime.block_on(async move {
         let prepared = restore_backup_bundle_to_datastore_path(
             &pending_db_path,
-            migration_mode,
+            datastore_config.migration_mode,
             &bundle_path,
             password.as_deref(),
         )
         .await?;
 
-        tokio::fs::write(&pending_secrets_path, prepared.instance_secrets_env())
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!("failed to write pending restore secrets: {error}"))
-            })?;
-        ensure_owner_only_permissions(&pending_secrets_path).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to protect pending restore secrets: {error}"
-            ))
-        })?;
+        write_owner_only_file_atomically(&pending_secrets_path, &prepared.instance_secrets_env())?;
 
         let summary = restore_summary_response(prepared.summary());
         ensure_owner_only_permissions(&pending_db_path).map_err(|error| {
@@ -472,6 +545,9 @@ pub(crate) async fn setup_restore_inspect_handler(
     if let Err(error) = ensure_setup_mode(&state.app).await {
         return map_app_error(error);
     }
+    if let Err(error) = ensure_restore_supported(state.datastore_engine) {
+        return map_app_error(error);
+    }
 
     prune_stale_restore_uploads(&state.data_dir);
     let upload_id = next_restore_upload_id();
@@ -530,6 +606,9 @@ pub(crate) async fn setup_restore_apply_handler(
     if let Err(error) = ensure_setup_mode(&state.app).await {
         return map_app_error(error);
     }
+    if let Err(error) = ensure_restore_supported(state.datastore_engine) {
+        return map_app_error(error);
+    }
 
     let request = match serde_json::from_slice::<RestoreApplyRequest>(&body) {
         Ok(request) => request,
@@ -554,9 +633,9 @@ pub(crate) async fn setup_restore_apply_handler(
 
     let password = normalize_password(request.password);
     let data_dir = state.data_dir.clone();
-    let migration_mode = state.migration_mode;
+    let datastore_config = state.datastore_config.clone();
     let summary = match tokio::task::spawn_blocking(move || {
-        stage_restore_bundle(data_dir, bundle_path, migration_mode, password)
+        stage_restore_bundle(data_dir, bundle_path, datastore_config, password)
     })
     .await
     {

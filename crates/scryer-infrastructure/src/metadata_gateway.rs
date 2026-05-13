@@ -5,12 +5,13 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
+use aws_lc_rs::digest;
 use reqwest::Client;
-use ring::digest;
 use scryer_application::{
     AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult, BulkMetadataResult,
     EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
     MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesMetadata,
+    SettingsRepository,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
@@ -190,6 +191,7 @@ const METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL: Duration = Duration::from_se
 const METADATA_GATEWAY_COMPATIBILITY_STARTUP_GUARD: Duration = Duration::from_secs(30 * 60);
 const METADATA_GATEWAY_VERSION_COMPATIBILITY_PATH: &str = "/api/version-compatibility";
 const SCRYER_RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
+const SCRYER_SMG_USER_AGENT: &str = concat!("Scryer-", env!("CARGO_PKG_VERSION"));
 
 #[derive(Deserialize)]
 struct VersionCompatibilitySuccessResponse {
@@ -283,7 +285,7 @@ pub struct MetadataGatewayClient {
     endpoint: String,
     registration_url: String,
     enrollment_config: SmgEnrollmentConfig,
-    db: crate::SqliteServices,
+    enrollment_store: Option<Arc<dyn SettingsRepository>>,
     mtls_state: tokio::sync::RwLock<MtlsState>,
     last_reenrollment: tokio::sync::Mutex<Option<Instant>>,
     pq_rotation: tokio::sync::Mutex<()>,
@@ -302,6 +304,20 @@ impl MetadataGatewayClient {
         endpoint: String,
         accept_invalid_certs: bool,
         db: crate::SqliteServices,
+        enrollment_config: SmgEnrollmentConfig,
+    ) -> Self {
+        Self::new_with_enrollment_store(
+            endpoint,
+            accept_invalid_certs,
+            Arc::new(crate::SqliteSettingsStore::new(&db)),
+            enrollment_config,
+        )
+    }
+
+    pub fn new_with_enrollment_store(
+        endpoint: String,
+        accept_invalid_certs: bool,
+        enrollment_store: Arc<dyn SettingsRepository>,
         enrollment_config: SmgEnrollmentConfig,
     ) -> Self {
         if accept_invalid_certs {
@@ -336,7 +352,7 @@ impl MetadataGatewayClient {
             "metadata gateway client initialized (APQ enabled)"
         );
 
-        let http = metadata_gateway_reqwest_client(accept_invalid_certs)
+        let http = metadata_gateway_reqwest_client(accept_invalid_certs, SCRYER_SMG_USER_AGENT)
             .expect("failed to build HTTP client");
 
         Self {
@@ -349,7 +365,58 @@ impl MetadataGatewayClient {
             pq_rotation: tokio::sync::Mutex::new(()),
             compatibility_refresh: tokio::sync::Mutex::new(()),
             version_incompatible: tokio::sync::Mutex::new(None),
-            db,
+            enrollment_store: Some(enrollment_store),
+            mtls_state: tokio::sync::RwLock::new(MtlsState::NotAttempted),
+            search_hash,
+            search_rich_hash,
+            search_multi_hash,
+            movie_hash,
+            series_hash,
+            apq_cache: RwLock::new(ApqCache::new()),
+        }
+    }
+
+    pub fn new_without_enrollment_store(
+        endpoint: String,
+        accept_invalid_certs: bool,
+        enrollment_config: SmgEnrollmentConfig,
+    ) -> Self {
+        if accept_invalid_certs {
+            warn!("metadata gateway client: TLS certificate verification DISABLED");
+        }
+        if enrollment_config.registration_secret.is_some() {
+            warn!(
+                "SMG enrollment is not available for this datastore engine in the PostgreSQL blank-install slice"
+            );
+        }
+
+        let search_hash = apq_hash(graphql_docs::SEARCH_TVDB_QUERY);
+        let search_rich_hash = apq_hash(graphql_docs::SEARCH_TVDB_RICH_QUERY);
+        let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
+        let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
+        let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
+        let registration_url = if endpoint.ends_with("/graphql") {
+            format!(
+                "{}/api/register",
+                &endpoint[..endpoint.len() - "/graphql".len()]
+            )
+        } else {
+            format!("{}/api/register", endpoint.trim_end_matches('/'))
+        };
+        let http = metadata_gateway_reqwest_client(accept_invalid_certs, SCRYER_SMG_USER_AGENT)
+            .expect("failed to build HTTP client");
+
+        Self {
+            outbound_http: OutboundHttpClient::new(http.clone(), RateLimitRegistry::new()),
+            http,
+            endpoint,
+            registration_url,
+            enrollment_config,
+            last_reenrollment: tokio::sync::Mutex::new(None),
+            pq_rotation: tokio::sync::Mutex::new(()),
+            compatibility_refresh: tokio::sync::Mutex::new(()),
+            version_incompatible: tokio::sync::Mutex::new(None),
+            enrollment_store: None,
             mtls_state: tokio::sync::RwLock::new(MtlsState::NotAttempted),
             search_hash,
             search_rich_hash,
@@ -439,8 +506,14 @@ impl MetadataGatewayClient {
         &self,
         registration_secret: &str,
     ) -> Result<(Client, InstanceAuth), smg_enrollment::EnrollmentError> {
+        let db = self.enrollment_store.as_ref().ok_or_else(|| {
+            smg_enrollment::EnrollmentError::Other(
+                "SMG enrollment persistence is not implemented for this datastore engine"
+                    .to_string(),
+            )
+        })?;
         let state = match smg_enrollment::ensure_enrolled(
-            &self.db,
+            &**db,
             &self.registration_url,
             registration_secret,
             self.enrollment_config.ca_cert.as_deref(),
@@ -495,8 +568,14 @@ impl MetadataGatewayClient {
         drop(last);
 
         warn!("SMG rejected instance auth — clearing cached enrollment for re-registration");
-        if let Err(e) = smg_enrollment::clear_enrollment_cache(&self.db).await {
-            warn!(error = %e, "failed to clear enrollment cache from SQLite");
+        if let Some(db) = self.enrollment_store.as_ref() {
+            if let Err(e) = smg_enrollment::clear_enrollment_cache(&**db).await {
+                warn!(error = %e, "failed to clear enrollment cache from SQLite");
+            }
+        } else {
+            warn!(
+                "SMG enrollment cache clear skipped because this datastore engine has no enrollment store"
+            );
         }
         let mut guard = self.mtls_state.write().await;
         *guard = MtlsState::NotAttempted;
@@ -507,7 +586,13 @@ impl MetadataGatewayClient {
         &self,
         notice: Option<smg_enrollment::VersionIncompatible>,
     ) -> AppResult<()> {
-        smg_enrollment::persist_version_compatibility_notice(&self.db, notice.as_ref())
+        let db = self.enrollment_store.as_ref().ok_or_else(|| {
+            AppError::Repository(
+                "SMG compatibility notice persistence is not implemented for this datastore engine"
+                    .to_string(),
+            )
+        })?;
+        smg_enrollment::persist_version_compatibility_notice(&**db, notice.as_ref())
             .await
             .map_err(AppError::Repository)?;
         *self.version_incompatible.lock().await = notice;
@@ -518,9 +603,10 @@ impl MetadataGatewayClient {
         &self,
         incompatibility: &smg_enrollment::VersionIncompatible,
     ) {
-        if let Err(error) =
-            smg_enrollment::persist_version_compatibility_notice(&self.db, Some(incompatibility))
-                .await
+        if let Some(db) = self.enrollment_store.as_ref()
+            && let Err(error) =
+                smg_enrollment::persist_version_compatibility_notice(&**db, Some(incompatibility))
+                    .await
         {
             warn!(
                 error = %error,
@@ -550,7 +636,13 @@ impl MetadataGatewayClient {
     }
 
     pub async fn version_compatibility_poll_phase(&self) -> AppResult<Duration> {
-        let instance_id = smg_enrollment::ensure_instance_id(&self.db)
+        let db = self.enrollment_store.as_ref().ok_or_else(|| {
+            AppError::Repository(
+                "SMG compatibility polling is not implemented for this datastore engine"
+                    .to_string(),
+            )
+        })?;
+        let instance_id = smg_enrollment::ensure_instance_id(&**db)
             .await
             .map_err(AppError::Repository)?;
         Ok(compatibility_poll_phase(&instance_id))
@@ -1024,10 +1116,16 @@ impl MetadataGatewayClient {
         }
 
         let _rotation_guard = self.pq_rotation.lock().await;
+        let Some(db) = self.enrollment_store.as_ref() else {
+            warn!(
+                "SMG PQ enrollment rotation skipped because this datastore engine has no enrollment store"
+            );
+            return;
+        };
 
         if enrollment_generation.is_none() && server_generation == 1 {
             if let Err(error) =
-                smg_enrollment::persist_pq_enrollment_generation(&self.db, server_generation).await
+                smg_enrollment::persist_pq_enrollment_generation(&**db, server_generation).await
             {
                 warn!(
                     error = %error,
@@ -1043,7 +1141,7 @@ impl MetadataGatewayClient {
         }
 
         match smg_enrollment::rotate_pq_enrollment(
-            &self.db,
+            &**db,
             instance_id,
             seed_b64,
             key_id,

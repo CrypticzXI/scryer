@@ -194,6 +194,8 @@ export function MediaContentView({
     setTitleFilter: (value: string) => void;
     refreshTitles: (query?: string) => Promise<void> | void;
     titleLoading: boolean;
+    catalogBootstrapLoading: boolean;
+    catalogInitialLoadComplete: boolean;
     monitoredTitles: TitleRecord[];
     titleQuickFilters: TitleQuickFilters;
     toggleTitleQuickMonitoringFilter: (
@@ -325,6 +327,8 @@ export function MediaContentView({
     setTitleFilter,
     refreshTitles,
     titleLoading,
+    catalogBootstrapLoading,
+    catalogInitialLoadComplete,
     monitoredTitles,
     titleQuickFilters,
     toggleTitleQuickMonitoringFilter,
@@ -401,17 +405,20 @@ export function MediaContentView({
         ? t("search.facetSeries")
         : t("search.facetAnime");
   const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
-  const hasConfiguredRootFolders = mediaSettingsLoading || librariesLoading
+  const hasConfiguredRootFolders =
+    !catalogInitialLoadComplete || mediaSettingsLoading || librariesLoading
     ? null
     : libraries.some((library) =>
         library.roots.some((folder) => folder.path.trim().length > 0),
       );
   const showInitialScanAction =
     canManageConfig &&
+    catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
     hasConfiguredRootFolders === true;
   const showConfigureRootFoldersAction =
     canManageConfig &&
+    catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
     hasConfiguredRootFolders === false;
   const configureRootFoldersHref =
@@ -850,6 +857,7 @@ export function MediaContentView({
                   return (
                     <PosterGrid
                       titles={deferredMonitoredTitles}
+                      catalogInitialLoadComplete={catalogInitialLoadComplete}
                       isMovieView={isMovieView}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
@@ -877,7 +885,7 @@ export function MediaContentView({
                     <CompactTitleTable
                       view={view}
                       titles={deferredMonitoredTitles}
-                      titleLoading={titleLoading}
+                      titleLoading={titleLoading || catalogBootstrapLoading}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
                       qualityProfilesLoading={mediaSettingsLoading}
@@ -910,7 +918,7 @@ export function MediaContentView({
                   <TitleTable
                     view={view}
                     titles={deferredMonitoredTitles}
-                    titleLoading={titleLoading}
+                    titleLoading={titleLoading || catalogBootstrapLoading}
                     resolvedProfileName={resolvedProfileName}
                     qualityProfiles={qualityProfiles}
                     qualityProfilesLoading={mediaSettingsLoading}

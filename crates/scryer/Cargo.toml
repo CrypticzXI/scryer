@@ -8,13 +8,14 @@ scryer-application = { path = "../scryer-application" }
 scryer-domain = { path = "../scryer-domain" }
 scryer-interface = { path = "../scryer-interface" }
 scryer-infrastructure = { path = "../scryer-infrastructure" }
+scryer-outbound-http = { path = "../scryer-outbound-http" }
 scryer-plugins = { path = "../scryer-plugins" }
 async-graphql = { workspace = true }
 async-graphql-axum = { version = "7.0" }
 axum = { version = "0.8", features = ["macros", "http1", "http2", "json", "multipart", "ws"] }
 futures-util = "0.3"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["compression-full"] }
 http = "1.1"
@@ -26,6 +27,7 @@ tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+aws-lc-rs = { workspace = true }
 brotli = "8"
 flate2 = "1"
 percent-encoding = "2"
@@ -34,12 +36,11 @@ metrics-exporter-prometheus = "0.18"
 directories = "6"
 open = "5"
 governor = { workspace = true }
-ring = { workspace = true }
 
 [dev-dependencies]
 scryer-rules = { path = "../scryer-rules" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 wiremock = { workspace = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "gzip", "brotli", "zstd", "deflate"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "http2", "gzip", "brotli", "zstd", "deflate"] }
 tempfile = "3"

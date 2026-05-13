@@ -25,8 +25,8 @@ use scryer_application::{
     AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
     HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
     NotificationPluginProvider, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
-    RuntimePluginLoad, SeriesFacetHandler, SubtitlePluginProvider, TitleImageKind,
-    TitleImageRepository, load_runtime_plugin_from_persisted_installation_payload,
+    RuntimePluginLoad, SeriesFacetHandler, SubtitlePluginProvider, SystemInfoProvider,
+    TitleImageKind, TitleImageRepository, load_runtime_plugin_from_persisted_installation_payload,
     start_background_acquisition_poller, start_background_banner_loop,
     start_background_download_delete_poller, start_background_fanart_loop,
     start_background_library_refresh_loop, start_background_manual_import_poller,
@@ -35,11 +35,12 @@ use scryer_application::{
     start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
-    DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreSettingsStore,
-    FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
-    MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient, NzbgetDownloadClient,
-    PrioritizedDownloadClientRouter, SmgEnrollmentConfig, WeaverDownloadClient,
-    start_weaver_subscription_bridge, validate_datastore,
+    DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreEngine,
+    DatastoreSettingsStore, FileSystemLibraryRenamer, FileSystemLibraryScanner,
+    FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient,
+    NzbgetDownloadClient, PrioritizedDownloadClientRouter, SmgEnrollmentConfig,
+    WeaverDownloadClient, resolve_datastore_config_from_env, start_weaver_subscription_bridge,
+    validate_datastore,
 };
 use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{LogBuffer, build_schema_with_log_buffer};
@@ -199,11 +200,17 @@ async fn main() {
 
     load_env_file(Some(&data_dir), false);
 
-    // Install ring as the default rustls crypto provider (needed for TLS support)
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    scryer_outbound_http::install_default_rustls_provider();
 
-    let pre_restore_db_path = std::env::var("SCRYER_DB_PATH")
-        .unwrap_or_else(|_| format!("sqlite://{}", data_dir.join("scryer.db").display()));
+    let migration_mode = parse_migration_mode(std::env::var("SCRYER_DB_MIGRATION_MODE").ok());
+    let pre_restore_datastore_config =
+        match resolve_datastore_config_from_env(data_dir.clone(), migration_mode) {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
 
     let log_ring_buffer = log_buffer::LogRingBuffer::with_default_capacity();
 
@@ -226,24 +233,42 @@ async fn main() {
             .init();
     }
 
-    if let Err(error) = finalize_pending_restore_if_present(&data_dir, &pre_restore_db_path) {
-        tracing::error!(error = %error, "failed to finalize pending restore");
-        std::process::exit(1);
+    if matches!(pre_restore_datastore_config.engine, DatastoreEngine::Sqlite) {
+        if let Err(error) = finalize_pending_restore_if_present(
+            &data_dir,
+            &pre_restore_datastore_config.database_url,
+        ) {
+            tracing::error!(error = %error, "failed to finalize pending restore");
+            std::process::exit(1);
+        }
     }
 
     load_env_file(Some(&data_dir), true);
 
-    let db_path = std::env::var("SCRYER_DB_PATH")
-        .unwrap_or_else(|_| format!("sqlite://{}", data_dir.join("scryer.db").display()));
-    // Ensure the database directory exists regardless of how db_path was resolved.
-    if let Some(path) = db_path.strip_prefix("sqlite://")
+    let datastore_config = match resolve_datastore_config_from_env(data_dir.clone(), migration_mode)
+    {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::error!(error = %error, "failed to resolve datastore configuration");
+            std::process::exit(1);
+        }
+    };
+    tracing::info!(
+        engine = datastore_config.engine.as_str(),
+        config_source = datastore_config.source.as_str(),
+        database_url = datastore_config.safe_database_url(),
+        "datastore configuration resolved"
+    );
+
+    // Ensure the database directory exists for SQLite file URLs.
+    if matches!(datastore_config.engine, DatastoreEngine::Sqlite)
+        && let Some(path) = datastore_config.database_url.strip_prefix("sqlite://")
         && let Some(parent) = std::path::Path::new(path).parent()
     {
         let _ = std::fs::create_dir_all(parent);
     }
     let jwt_issuer = std::env::var("SCRYER_JWT_ISSUER").unwrap_or_else(|_| "scryer".to_string());
     let jwt_access_ttl_seconds = parse_env_u64("SCRYER_JWT_ACCESS_TTL_SECONDS", 86_400);
-    let migration_mode = parse_migration_mode(std::env::var("SCRYER_DB_MIGRATION_MODE").ok());
     let bind = std::env::var("SCRYER_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let base_path = BasePath::from_env();
 
@@ -267,7 +292,7 @@ async fn main() {
 
     // ValidateOnly mode: check for pending migrations and exit immediately (no server).
     if matches!(migration_mode, MigrationMode::ValidateOnly) {
-        run_validate_only(&db_path, migration_mode).await;
+        run_validate_only(datastore_config).await;
         return;
     }
 
@@ -301,7 +326,7 @@ async fn main() {
         .spawn(move || {
             runtime_handle.block_on(async move {
                 match bootstrap_application(
-                    db_path,
+                    datastore_config,
                     migration_mode,
                     jwt_issuer,
                     jwt_access_ttl_seconds,
@@ -390,8 +415,8 @@ async fn main() {
 /// building. Returns the fully-constructed Axum router or an error.
 #[expect(clippy::too_many_arguments)]
 async fn bootstrap_application(
-    db_path: String,
-    migration_mode: MigrationMode,
+    datastore_config: DatastoreConfig,
+    _migration_mode: MigrationMode,
     jwt_issuer: String,
     jwt_access_ttl_seconds: u64,
     bind: String,
@@ -403,14 +428,22 @@ async fn bootstrap_application(
 ) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
     let bootstrap_start = std::time::Instant::now();
 
-    let datastore_config =
-        DatastoreConfig::sqlite(db_path.clone(), data_dir.clone(), migration_mode);
     let t = std::time::Instant::now();
+    let backup_datastore_config = datastore_config.clone();
     let datastore = DatastoreAssembly::connect(datastore_config)
         .await
         .map_err(|e| format!("failed to initialize datastore services: {e}"))?;
     let bootstrap_settings_store = datastore.bootstrap_settings_store();
-    tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "database initialized");
+    let datastore_info = bootstrap_settings_store
+        .datastore_info()
+        .await
+        .map_err(|e| format!("failed to read datastore info: {e}"))?;
+    tracing::info!(
+        elapsed_ms = %t.elapsed().as_millis(),
+        engine = datastore_info.engine,
+        migration_key = ?datastore_info.current_migration_key,
+        "database initialized"
+    );
 
     let t = std::time::Instant::now();
     seed_service_setting_definitions(bootstrap_settings_store.clone())
@@ -909,6 +942,12 @@ async fn bootstrap_application(
         tracing::info!("running with authentication enabled");
         bootstrap_admin_password(&app_use_case).await;
     } else {
+        app_use_case
+            .find_or_create_default_user()
+            .await
+            .map_err(|error| {
+                format!("failed to ensure default admin for disabled-auth mode: {error}")
+            })?;
         let addr: SocketAddr = bind.parse().expect("invalid bind address");
         if !addr.ip().is_loopback() && !addr.ip().is_unspecified() {
             tracing::warn!(
@@ -936,7 +975,8 @@ async fn bootstrap_application(
         app: app_use_case.clone(),
         auth_runtime: auth_runtime.clone(),
         data_dir: data_dir.clone(),
-        migration_mode,
+        datastore_engine: datastore.engine(),
+        datastore_config: backup_datastore_config,
     };
     let ws_auth_state = auth_state.clone();
 
@@ -1113,9 +1153,13 @@ fn if_none_match_matches(raw_header: &str, quoted_etag: &str, bare_etag: &str) -
 }
 
 /// ValidateOnly mode: check for pending migrations and exit.
-async fn run_validate_only(db_path: &str, migration_mode: MigrationMode) {
-    let data_dir = resolve_data_dir(None);
-    let config = DatastoreConfig::sqlite(db_path.to_string(), data_dir, migration_mode);
+async fn run_validate_only(config: DatastoreConfig) {
+    tracing::info!(
+        engine = config.engine.as_str(),
+        config_source = config.source.as_str(),
+        database_url = config.safe_database_url(),
+        "validating datastore"
+    );
     match validate_datastore(config).await {
         Ok(_) => {}
         Err(error) => {
@@ -1263,7 +1307,7 @@ pub(crate) fn normalize_env_option(name: &str) -> Option<String> {
 }
 
 fn load_or_create_persistent_jwt_signing_salt(data_dir: &Path) -> std::io::Result<String> {
-    use ring::rand::{SecureRandom, SystemRandom};
+    use aws_lc_rs::rand::{SecureRandom, SystemRandom};
     use std::io::Write;
 
     std::fs::create_dir_all(data_dir)?;

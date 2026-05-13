@@ -18,7 +18,7 @@ use sigstore::{
     crypto::{CosignVerificationKey, SigningScheme},
     trust::{TrustRoot, sigstore::SigstoreTrustRoot},
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
@@ -75,6 +75,14 @@ const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
 const RELEASE_SIBLING_E2E_TOKENS: &[&str] = &["../e2e/", "..\\e2e\\"];
+const REQUIRED_SCRYER_DRY_RUN_STEPS: &[&str] = &[
+    "builtin_refresh",
+    "web_validation",
+    "rust_validation",
+    "release_hygiene",
+    "e2e_datastore_matrix",
+    "e2e_datastore_restore_matrix",
+];
 
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
 type FulcioTrustAnchors = Vec<TrustAnchor<'static>>;
@@ -1133,6 +1141,22 @@ fn release_dry_run_cache_rejection_reason(
     if cache.catalog_checksum_sha256.as_deref() != Some(expected.catalog_checksum_sha256) {
         return Some("published plugin catalog checksum changed since dry run".to_string());
     }
+    let validated_steps = cache
+        .validated_steps
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let missing_steps = REQUIRED_SCRYER_DRY_RUN_STEPS
+        .iter()
+        .copied()
+        .filter(|step| !validated_steps.contains(step))
+        .collect::<Vec<_>>();
+    if !missing_steps.is_empty() {
+        return Some(format!(
+            "dry run did not record required release-blocking validations: {}",
+            missing_steps.join(", ")
+        ));
+    }
     if !builtins_present {
         return Some("cached builtin artifacts are missing or digest-mismatched".to_string());
     }
@@ -2097,15 +2121,15 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
             web_result?;
             rust_result?;
             run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
+            run_scryer_e2e_datastore_matrix_validation(ctx, "[e2e] ")?;
+            run_scryer_e2e_datastore_restore_matrix_validation(ctx, "[e2e-restore] ")?;
             ok("Parallel validation passed");
             Ok::<(Vec<PathBuf>, Vec<String>), anyhow::Error>((
                 refreshed_builtin_paths,
-                vec![
-                    "builtin_refresh".to_string(),
-                    "web_validation".to_string(),
-                    "rust_validation".to_string(),
-                    "release_hygiene".to_string(),
-                ],
+                REQUIRED_SCRYER_DRY_RUN_STEPS
+                    .iter()
+                    .map(|step| (*step).to_string())
+                    .collect(),
             ))
         };
 
@@ -2629,6 +2653,64 @@ fn run_scryer_release_hygiene_validation(ctx: &TaskContext, prefix: &'static str
         );
     }
     prefixed_ok(prefix, "Release hygiene check passed");
+    Ok(())
+}
+
+fn run_scryer_e2e_datastore_matrix_validation(
+    ctx: &TaskContext,
+    prefix: &'static str,
+) -> Result<()> {
+    let e2e_dir = ctx.repo_root.parent().unwrap_or(&ctx.repo_root).join("e2e");
+    let runner = e2e_dir.join("cmd/scryer-e2e");
+    if !runner.is_dir() {
+        bail!(
+            "release-blocking PostgreSQL e2e datastore matrix is unavailable: {} does not exist",
+            runner.display()
+        );
+    }
+
+    prefixed_step(
+        prefix,
+        "Running release-blocking Scryer e2e datastore matrix",
+    );
+    let mut command = ctx.release_command_in("go", &e2e_dir);
+    command.args([
+        "run",
+        "./cmd/scryer-e2e",
+        "release-gate",
+        "datastore-matrix",
+    ]);
+    run_streaming(&mut command, prefix)?;
+    prefixed_ok(prefix, "Scryer e2e datastore matrix passed");
+    Ok(())
+}
+
+fn run_scryer_e2e_datastore_restore_matrix_validation(
+    ctx: &TaskContext,
+    prefix: &'static str,
+) -> Result<()> {
+    let e2e_dir = ctx.repo_root.parent().unwrap_or(&ctx.repo_root).join("e2e");
+    let runner = e2e_dir.join("cmd/scryer-e2e");
+    if !runner.is_dir() {
+        bail!(
+            "release-blocking PostgreSQL e2e restore matrix is unavailable: {} does not exist",
+            runner.display()
+        );
+    }
+
+    prefixed_step(
+        prefix,
+        "Running release-blocking Scryer e2e cross-engine restore matrix",
+    );
+    let mut command = ctx.release_command_in("go", &e2e_dir);
+    command.args([
+        "run",
+        "./cmd/scryer-e2e",
+        "release-gate",
+        "datastore-restore-matrix",
+    ]);
+    run_streaming(&mut command, prefix)?;
+    prefixed_ok(prefix, "Scryer e2e cross-engine restore matrix passed");
     Ok(())
 }
 
@@ -3205,7 +3287,10 @@ mod tests {
             tag_name: "scryer-v0.13.2".to_string(),
             catalog_url: OFFICIAL_PLUGIN_CATALOG_URL.to_string(),
             catalog_checksum_sha256: Some("deadbeef".to_string()),
-            validated_steps: vec!["builtin_refresh".to_string()],
+            validated_steps: REQUIRED_SCRYER_DRY_RUN_STEPS
+                .iter()
+                .map(|step| (*step).to_string())
+                .collect(),
             cached_builtins_dir: Some("tmp/cache".to_string()),
             cached_builtins_sha256: BTreeMap::from([(
                 "nzbgeek.wasm".to_string(),
@@ -3384,6 +3469,23 @@ mod tests {
         assert_eq!(
             reason.as_deref(),
             Some("release arguments changed since dry run")
+        );
+    }
+
+    #[test]
+    fn release_dry_run_cache_rejects_missing_datastore_restore_gate() {
+        let mut cache = sample_release_dry_run_cache();
+        cache
+            .validated_steps
+            .retain(|step| step != "e2e_datastore_restore_matrix");
+        let reason = release_dry_run_cache_rejection_reason(
+            &cache,
+            &sample_release_dry_run_expectations(),
+            true,
+        );
+        assert_eq!(
+            reason.as_deref(),
+            Some("dry run did not record required release-blocking validations: e2e_datastore_restore_matrix")
         );
     }
 

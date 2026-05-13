@@ -1,0 +1,2 @@
+-- SQLite already owns the historical schema for these logical tables. The
+-- PostgreSQL sibling migration brings its baseline up to the same catalog.

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_MANIFEST_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChecksumAlgorithm {
     Sha384,
@@ -62,6 +62,20 @@ impl StepScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineScope {
+    All,
+    Sqlite,
+    Postgres,
+}
+
+impl EngineScope {
+    pub fn applies_to(self, engine: EngineScope) -> bool {
+        matches!(self, Self::All) || self == engine
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMigrationManifest {
     #[serde(default = "default_manifest_version")]
@@ -94,11 +108,13 @@ pub struct SourceExplicitMigration {
 pub enum SourceMigrationStep {
     Sql {
         file: String,
+        engine: EngineScope,
         #[serde(default)]
         scope: StepScope,
     },
     Rust {
         hook_id: String,
+        engine: EngineScope,
         #[serde(default)]
         scope: StepScope,
     },
@@ -108,6 +124,7 @@ pub enum SourceMigrationStep {
 pub struct SourceBaselineEntry {
     pub through_version: i64,
     pub file: String,
+    pub engine: EngineScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,10 +154,15 @@ impl CompiledMigrationCatalog {
             .find(|migration| migration.version == version)
     }
 
-    pub fn latest_baseline_at_or_below(&self, version: i64) -> Option<&CompiledBaseline> {
+    pub fn latest_baseline_at_or_below(
+        &self,
+        version: i64,
+        engine: EngineScope,
+    ) -> Option<&CompiledBaseline> {
         self.baselines
             .iter()
             .filter(|baseline| baseline.through_version <= version)
+            .filter(|baseline| baseline.engine.applies_to(engine))
             .max_by_key(|baseline| baseline.through_version)
     }
 }
@@ -161,11 +183,13 @@ pub struct CompiledMigration {
 pub enum CompiledMigrationStep {
     Sql {
         file: String,
+        engine: EngineScope,
         scope: StepScope,
         payload: PayloadSlice,
     },
     Rust {
         hook_id: String,
+        engine: EngineScope,
         scope: StepScope,
     },
 }
@@ -176,12 +200,19 @@ impl CompiledMigrationStep {
             Self::Sql { scope, .. } | Self::Rust { scope, .. } => *scope,
         }
     }
+
+    pub fn engine(&self) -> EngineScope {
+        match self {
+            Self::Sql { engine, .. } | Self::Rust { engine, .. } => *engine,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledBaseline {
     pub through_version: i64,
     pub file: String,
+    pub engine: EngineScope,
     pub payload: PayloadSlice,
 }
 
@@ -219,8 +250,16 @@ struct CanonicalMigration {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CanonicalStep {
-    Sql { scope: StepScope, sql: String },
-    Rust { scope: StepScope, hook_id: String },
+    Sql {
+        engine: EngineScope,
+        scope: StepScope,
+        sql: String,
+    },
+    Rust {
+        engine: EngineScope,
+        scope: StepScope,
+        hook_id: String,
+    },
 }
 
 fn default_manifest_version() -> u32 {
@@ -291,10 +330,10 @@ pub fn compile_source_bundle(db_root: &Path) -> Result<CompiledMigrationBundle, 
     let mut baselines = Vec::new();
     let mut baseline_versions = std::collections::HashSet::new();
     for baseline in manifest.baselines {
-        if !baseline_versions.insert(baseline.through_version) {
+        if !baseline_versions.insert((baseline.through_version, baseline.engine)) {
             return Err(format!(
-                "duplicate baseline entry for version {:04}",
-                baseline.through_version
+                "duplicate baseline entry for version {:04} and engine {:?}",
+                baseline.through_version, baseline.engine
             ));
         }
         if migrations
@@ -313,10 +352,11 @@ pub fn compile_source_bundle(db_root: &Path) -> Result<CompiledMigrationBundle, 
         baselines.push(CompiledBaseline {
             through_version: baseline.through_version,
             file: baseline.file,
+            engine: baseline.engine,
             payload,
         });
     }
-    baselines.sort_by_key(|baseline| baseline.through_version);
+    baselines.sort_by_key(|baseline| (baseline.through_version, baseline.file.clone()));
 
     Ok(CompiledMigrationBundle {
         catalog: CompiledMigrationCatalog {
@@ -382,6 +422,7 @@ fn compile_legacy_migrations(
             checksum: ChecksumAlgorithm::Sha384.digest(sql.as_bytes()),
             steps: vec![CompiledMigrationStep::Sql {
                 file: normalize_relative_path(db_root, &path),
+                engine: EngineScope::Sqlite,
                 scope: StepScope::All,
                 payload,
             }],
@@ -415,25 +456,40 @@ fn compile_explicit_migration(
 
     for step in &migration.steps {
         match step {
-            SourceMigrationStep::Sql { file, scope } => {
+            SourceMigrationStep::Sql {
+                file,
+                engine,
+                scope,
+            } => {
                 let path = db_root.join(file);
                 let sql = fs::read_to_string(&path)
                     .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
                 let payload = push_payload(sql.as_bytes(), payload_bytes);
                 compiled_steps.push(CompiledMigrationStep::Sql {
                     file: file.clone(),
+                    engine: *engine,
                     scope: *scope,
                     payload,
                 });
-                canonical_steps.push(CanonicalStep::Sql { scope: *scope, sql });
+                canonical_steps.push(CanonicalStep::Sql {
+                    engine: *engine,
+                    scope: *scope,
+                    sql,
+                });
             }
-            SourceMigrationStep::Rust { hook_id, scope } => {
+            SourceMigrationStep::Rust {
+                hook_id,
+                engine,
+                scope,
+            } => {
                 migration_hook_ids::validate_migration_hook_id(hook_id)?;
                 compiled_steps.push(CompiledMigrationStep::Rust {
                     hook_id: hook_id.clone(),
+                    engine: *engine,
                     scope: *scope,
                 });
                 canonical_steps.push(CanonicalStep::Rust {
+                    engine: *engine,
                     scope: *scope,
                     hook_id: hook_id.clone(),
                 });
@@ -547,12 +603,143 @@ mod tests {
     }
 
     #[test]
-    fn source_bundle_registers_migration_0105() {
+    fn source_bundle_registers_latest_migration_and_engine_baselines() {
         let bundle =
             compile_source_bundle(&source_db_root()).expect("compile source migration bundle");
         assert!(
-            bundle.catalog.find_migration(105).is_some(),
-            "migration 0105 must be registered in migration_manifest.toml"
+            bundle.catalog.find_migration(110).is_some(),
+            "migration 0110 must be registered in migration_manifest.toml"
+        );
+        assert!(
+            bundle
+                .catalog
+                .latest_baseline_at_or_below(100, EngineScope::Sqlite)
+                .is_some_and(|baseline| baseline.file == "baselines/0100_baseline.sql"),
+            "SQLite baseline must remain manifest-owned"
+        );
+        assert!(
+            bundle
+                .catalog
+                .latest_baseline_at_or_below(100, EngineScope::Postgres)
+                .is_some_and(|baseline| baseline.file == "postgres/baselines/0100_baseline.sql"),
+            "PostgreSQL baseline must be manifest-owned"
+        );
+    }
+
+    #[test]
+    fn postgres_parity_secondary_index_migration_keeps_expected_coverage() {
+        let sql = fs::read_to_string(
+            source_db_root().join("postgres/migrations/0109_parity_secondary_indexes.sql"),
+        )
+        .expect("read PostgreSQL parity secondary-index migration");
+        let index_statement_count = sql
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with("CREATE INDEX IF NOT EXISTS ")
+                    || trimmed.starts_with("CREATE UNIQUE INDEX IF NOT EXISTS ")
+            })
+            .count();
+        assert_eq!(
+            index_statement_count, 88,
+            "PostgreSQL parity secondary-index migration should preserve the audited index set"
+        );
+
+        for index_name in [
+            "idx_titles_facet_normalized_slug",
+            "idx_pending_releases_wanted",
+            "idx_domain_events_stream_sequence",
+            "idx_download_queue_commands_source",
+            "idx_external_subtitle_probe_cache_file_path",
+            "idx_history_events_title_time",
+            "idx_notification_subscriptions_channel_scope",
+            "idx_release_download_attempts_outcome_attempted",
+            "idx_subtitle_provider_configs_provider_type",
+            "idx_wanted_items_next_search",
+            "idx_workflow_operations_job_key_status",
+        ] {
+            assert!(
+                sql.contains(index_name),
+                "expected PostgreSQL parity secondary-index migration to include {index_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_baseline_0100_keeps_library_scan_unmatched_title_binding() {
+        let sql = fs::read_to_string(source_db_root().join("postgres/baselines/0100_baseline.sql"))
+            .expect("read PostgreSQL baseline 0100");
+        assert!(
+            sql.contains("title_id TEXT"),
+            "PostgreSQL baseline 0100 must include library_scan_unmatched_items.title_id"
+        );
+    }
+
+    #[test]
+    fn postgres_library_scan_unmatched_title_binding_migration_keeps_index() {
+        let sql = fs::read_to_string(
+            source_db_root()
+                .join("postgres/migrations/0110_library_scan_unmatched_title_binding.sql"),
+        )
+        .expect("read PostgreSQL library-scan unmatched title binding migration");
+        assert!(
+            sql.contains("ADD COLUMN IF NOT EXISTS title_id TEXT"),
+            "PostgreSQL migration 0110 must add library_scan_unmatched_items.title_id"
+        );
+        assert!(
+            sql.contains("idx_library_scan_unmatched_items_facet_title_status_updated"),
+            "PostgreSQL migration 0110 must restore the title-aware unmatched-items index"
+        );
+    }
+
+    #[test]
+    fn explicit_migrations_after_postgres_baseline_treat_both_engines() {
+        let bundle =
+            compile_source_bundle(&source_db_root()).expect("compile source migration bundle");
+        for migration in bundle
+            .catalog
+            .migrations
+            .iter()
+            .filter(|migration| migration.version >= 101)
+        {
+            let treats_sqlite = migration
+                .steps
+                .iter()
+                .any(|step| step.engine().applies_to(EngineScope::Sqlite));
+            let treats_postgres = migration
+                .steps
+                .iter()
+                .any(|step| step.engine().applies_to(EngineScope::Postgres));
+            assert!(
+                treats_sqlite && treats_postgres,
+                "migration {} must explicitly treat both sqlite and postgres",
+                migration.key
+            );
+        }
+    }
+
+    #[test]
+    fn source_manifest_requires_step_engine_scope() {
+        let manifest = r#"
+format_version = 1
+
+[legacy_sql]
+path = "migrations"
+through_version = 0
+
+[[migration]]
+version = 1
+description = "missing engine"
+
+[[migration.steps]]
+kind = "sql"
+file = "0001_missing_engine.sql"
+"#;
+        let error = toml::from_str::<SourceMigrationManifest>(manifest)
+            .expect_err("manifest without step engine must fail");
+        assert!(
+            error.to_string().contains("engine"),
+            "expected missing engine field error, got {error}"
         );
     }
 }
