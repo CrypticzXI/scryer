@@ -3559,10 +3559,8 @@ async fn finalize_tracked_terminal_state(
     let cleanup =
         crate::import::import::reconcile_terminal_download_cleanup_for_tracked(app, td, state)
             .await;
-    if crate::import::import::terminal_download_cleanup_is_complete(cleanup)
-        && let Some(tracked) = tracker.find_mut(id)
-    {
-        tracked.is_trackable = false;
+    if crate::import::import::terminal_download_cleanup_is_complete(cleanup) {
+        tracker.stop_tracking(id);
     }
 }
 

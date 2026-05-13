@@ -308,20 +308,143 @@ async fn nzbgeek_builtin_rss_search_uses_category_only_request() {
 
 #[tokio::test]
 async fn newznab_builtin_full_search_trims_whitespace_padded_config_values() {
+    let request = run_newznab_builtin_full_search(Some(" ?foo=bar baz&zap=1 ")).await;
+
+    assert!(request.starts_with("GET /api?"), "request was {request}");
+    assert_eq!(
+        request_query_value(&request, "apikey").as_deref(),
+        Some("test-key")
+    );
+    assert_eq!(
+        request_query_value(&request, "q").as_deref(),
+        Some("scryer connection test")
+    );
+    assert_eq!(
+        request_query_value(&request, "foo").as_deref(),
+        Some("bar baz")
+    );
+    assert_eq!(request_query_value(&request, "zap").as_deref(), Some("1"));
+}
+
+#[tokio::test]
+async fn newznab_builtin_full_search_succeeds_without_additional_params() {
+    let request = run_newznab_builtin_full_search(None).await;
+
+    assert!(request.starts_with("GET /api?"), "request was {request}");
+    assert_eq!(
+        request_query_value(&request, "apikey").as_deref(),
+        Some("test-key")
+    );
+    assert_eq!(
+        request_query_value(&request, "q").as_deref(),
+        Some("scryer connection test")
+    );
+    assert_eq!(request_query_value(&request, "foo").as_deref(), None);
+    assert_eq!(request_query_value(&request, "zap").as_deref(), None);
+}
+
+#[tokio::test]
+async fn newznab_builtin_full_search_accepts_percent_encoded_additional_params() {
+    let request = run_newznab_builtin_full_search(Some(" ?foo=bar%20baz&zap=1 ")).await;
+
+    assert!(request.starts_with("GET /api?"), "request was {request}");
+    assert_eq!(
+        request_query_value(&request, "apikey").as_deref(),
+        Some("test-key")
+    );
+    assert_eq!(
+        request_query_value(&request, "q").as_deref(),
+        Some("scryer connection test")
+    );
+    assert_eq!(
+        request_query_value(&request, "foo").as_deref(),
+        Some("bar baz"),
+        "request was {request}"
+    );
+    assert_eq!(
+        request_query_value(&request, "zap").as_deref(),
+        Some("1"),
+        "request was {request}"
+    );
+}
+
+#[tokio::test]
+async fn newznab_builtin_full_search_accepts_ampersand_prefixed_additional_params() {
+    let request = run_newznab_builtin_full_search(Some(" &foo=bar%20baz&zap=1 ")).await;
+
+    assert!(request.starts_with("GET /api?"), "request was {request}");
+    assert_eq!(
+        request_query_value(&request, "apikey").as_deref(),
+        Some("test-key")
+    );
+    assert_eq!(
+        request_query_value(&request, "q").as_deref(),
+        Some("scryer connection test")
+    );
+    assert_eq!(
+        request_query_value(&request, "foo").as_deref(),
+        Some("bar baz"),
+        "request was {request}"
+    );
+    assert_eq!(
+        request_query_value(&request, "zap").as_deref(),
+        Some("1"),
+        "request was {request}"
+    );
+}
+
+#[tokio::test]
+async fn newznab_builtin_full_search_accepts_unprefixed_additional_params() {
+    let request = run_newznab_builtin_full_search(Some(" foo=bar%20baz&zap=1 ")).await;
+
+    assert!(request.starts_with("GET /api?"), "request was {request}");
+    assert_eq!(
+        request_query_value(&request, "apikey").as_deref(),
+        Some("test-key")
+    );
+    assert_eq!(
+        request_query_value(&request, "q").as_deref(),
+        Some("scryer connection test")
+    );
+    assert_eq!(
+        request_query_value(&request, "foo").as_deref(),
+        Some("bar baz"),
+        "request was {request}"
+    );
+    assert_eq!(
+        request_query_value(&request, "zap").as_deref(),
+        Some("1"),
+        "request was {request}"
+    );
+}
+
+async fn run_newznab_builtin_full_search(additional_params: Option<&str>) -> String {
     let (base_url, request_rx) = spawn_newznab_response_server();
     let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
         .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
 
     let mut config = test_config("newznab");
-    config.config_json = Some(
-        serde_json::json!({
-            "base_url": format!("  {base_url}/  "),
-            "api_key": " test-key \n",
-            "api_path": " /api ",
-            "additional_params": " ?foo=bar baz&zap=1 ",
-        })
-        .to_string(),
-    );
+    let mut config_json = serde_json::Map::from_iter([
+        (
+            "base_url".to_string(),
+            serde_json::Value::String(format!("  {base_url}/  ")),
+        ),
+        (
+            "api_key".to_string(),
+            serde_json::Value::String(" test-key \n".to_string()),
+        ),
+        (
+            "api_path".to_string(),
+            serde_json::Value::String(" /api ".to_string()),
+        ),
+    ]);
+    if let Some(additional_params) = additional_params {
+        config_json.insert(
+            "additional_params".to_string(),
+            serde_json::Value::String(additional_params.to_string()),
+        );
+    }
+    config.config_json = Some(serde_json::Value::Object(config_json).to_string());
 
     let client = provider.client_for_provider(&config).unwrap();
     let response = client
@@ -343,23 +466,9 @@ async fn newznab_builtin_full_search_trims_whitespace_padded_config_values() {
 
     assert_eq!(response.results.len(), 1);
 
-    let request = request_rx
+    request_rx
         .recv_timeout(Duration::from_secs(10))
-        .expect("mock Newznab server should receive a request");
-    assert!(request.starts_with("GET /api?"), "request was {request}");
-    assert_eq!(
-        request_query_value(&request, "apikey").as_deref(),
-        Some("test-key")
-    );
-    assert_eq!(
-        request_query_value(&request, "q").as_deref(),
-        Some("scryer connection test")
-    );
-    assert_eq!(
-        request_query_value(&request, "foo").as_deref(),
-        Some("bar baz")
-    );
-    assert_eq!(request_query_value(&request, "zap").as_deref(), Some("1"));
+        .expect("mock Newznab server should receive a request")
 }
 
 fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
