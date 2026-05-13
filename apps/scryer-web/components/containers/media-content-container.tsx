@@ -469,6 +469,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const activeCatalogQueryRef = React.useRef("");
   const catalogTitleRequestSeqRef = React.useRef(0);
+  const catalogBootstrapRequestSeqRef = React.useRef(0);
   const skipNextCatalogOverviewReloadRef = React.useRef(false);
 
   const {
@@ -2243,7 +2244,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           return;
         }
 
-        let cancelled = false;
+        // Keep bootstrap completion stable across rerenders while loading.
+        // Effect-local cleanup would cancel the bootstrap as soon as the
+        // loading state rerendered, leaving the catalog permanently blank.
+        const requestSeq = ++catalogBootstrapRequestSeqRef.current;
         skipNextCatalogOverviewReloadRef.current = false;
         setCatalogBootstrapState({
           facet: activeFacet,
@@ -2255,7 +2259,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           refreshLibraries(),
           reloadTitles(debouncedTitleFilter, []),
         ]).finally(() => {
-          if (cancelled) {
+          if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
             return;
           }
 
@@ -2266,10 +2270,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             initialLoadComplete: true,
           });
         });
-
-        return () => {
-          cancelled = true;
-        };
       }
 
       if (skipNextCatalogOverviewReloadRef.current) {

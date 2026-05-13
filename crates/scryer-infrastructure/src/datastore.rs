@@ -5,11 +5,10 @@ use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
     DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
-    LibraryRepository, LogicalBackupExporter, NullTitleImageProcessor,
-    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfile,
-    QualityProfileRepository, RuleSetRepository, SettingsRepository, ShowRepository,
-    SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageRepository, TitleRepository,
-    UserRepository,
+    LibraryRepository, LogicalBackupExporter, PluginInstallationRepository,
+    PostProcessingScriptRepository, QualityProfile, QualityProfileRepository, RuleSetRepository,
+    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, SystemInfoProvider,
+    TitleImageRepository, TitleRepository, UserRepository,
 };
 
 use crate::postgres::{
@@ -1260,7 +1259,7 @@ impl DatastoreAssembly {
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())
-                .with_title_image_processor(Arc::new(NullTitleImageProcessor))
+                .with_title_image_processor(Arc::new(SqliteTitleImageProcessor::new()))
                 .with_workflow_operations(workflow_store.clone())
             }
         }
