@@ -280,55 +280,26 @@ pub(crate) async fn graphql_ws_handler(
     let auth_enabled = auth_snapshot.effective_form_login_enabled;
     let local_bypass_active = local_ip_bypass_active(&auth_snapshot, &headers, Some(remote_addr));
     let connection_epoch = auth_snapshot.epoch;
-
-    let mut initial_data = Data::default();
-    initial_data.insert(ConnectionAuthEpoch(connection_epoch));
-    if (!auth_enabled || local_bypass_active)
-        && let Ok(user) = app.find_or_create_default_user().await
-    {
-        initial_data.insert(user);
-    }
+    let initial_actor = resolve_actor(&state, &headers, Some(remote_addr)).await;
+    let initial_data = graphql_ws_connection_data(connection_epoch, initial_actor.clone());
 
     ws.protocols(ALL_WEBSOCKET_PROTOCOLS)
         .on_upgrade(move |stream| async move {
             let app_for_init = app.clone();
+            let initial_actor = initial_actor.clone();
             GraphQLWebSocket::new(stream, schema, protocol)
                 .with_data(initial_data)
                 .on_connection_init(move |value: serde_json::Value| async move {
-                    let mut data = Data::default();
-                    data.insert(ConnectionAuthEpoch(connection_epoch));
-                    if !auth_enabled {
-                        return Ok(data);
-                    }
                     let auth_value = value.get("Authorization").and_then(|v| v.as_str());
-                    if let Some(raw) = auth_value {
-                        match parse_bearer_token(raw) {
-                            Some(token) => match app_for_init.authenticate_token(token).await {
-                                Ok(user) => {
-                                    data.insert(user);
-                                }
-                                Err(_) if local_bypass_active => {
-                                    return Ok(data);
-                                }
-                                Err(e) => {
-                                    return Err(async_graphql::Error::new(format!(
-                                        "authentication failed: {e}"
-                                    )));
-                                }
-                            },
-                            None if local_bypass_active => {
-                                return Ok(data);
-                            }
-                            None => {
-                                return Err(async_graphql::Error::new(
-                                    "invalid authorization header",
-                                ));
-                            }
-                        }
-                    } else if local_bypass_active {
-                        return Ok(data);
-                    }
-                    Ok(data)
+                    let actor = resolve_ws_connection_init_actor(
+                        &app_for_init,
+                        auth_enabled,
+                        local_bypass_active,
+                        initial_actor.clone(),
+                        auth_value,
+                    )
+                    .await?;
+                    Ok(graphql_ws_connection_data(connection_epoch, actor))
                 })
                 .serve()
                 .await;
@@ -414,6 +385,47 @@ pub(crate) async fn graphql_handler(
 fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCode {
     let _ = batch;
     StatusCode::OK
+}
+
+fn graphql_ws_connection_data(connection_epoch: u64, actor: Option<scryer_domain::User>) -> Data {
+    let mut data = Data::default();
+    data.insert(ConnectionAuthEpoch(connection_epoch));
+    if let Some(user) = actor {
+        data.insert(user);
+    }
+    data
+}
+
+async fn resolve_ws_connection_init_actor(
+    app: &AppUseCase,
+    auth_enabled: bool,
+    local_bypass_active: bool,
+    initial_actor: Option<scryer_domain::User>,
+    auth_value: Option<&str>,
+) -> Result<Option<scryer_domain::User>, async_graphql::Error> {
+    if !auth_enabled {
+        return Ok(initial_actor);
+    }
+
+    let Some(raw) = auth_value else {
+        return Ok(initial_actor);
+    };
+
+    match parse_bearer_token(raw) {
+        Some(token) => match app.authenticate_token(token).await {
+            Ok(user) => app
+                .attach_user_authorization(user)
+                .await
+                .map(Some)
+                .map_err(|e| async_graphql::Error::new(format!("authentication failed: {e}"))),
+            Err(_) if local_bypass_active => Ok(initial_actor),
+            Err(e) => Err(async_graphql::Error::new(format!(
+                "authentication failed: {e}"
+            ))),
+        },
+        None if local_bypass_active => Ok(initial_actor),
+        None => Err(async_graphql::Error::new("invalid authorization header")),
+    }
 }
 
 async fn resolve_actor(

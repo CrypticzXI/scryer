@@ -1,66 +1,15 @@
 {
   "id": "nzbgeek",
   "name": "NZBGeek Indexer",
+  "version": "0.2.7",
+  "sdk_version": "1.5.0",
+  "sdk_constraint": ">=1.5.0, <1.6.0",
   "provider": {
+    "kind": "indexer",
+    "provider_type": "nzbgeek",
+    "source_kind": "usenet",
     "capabilities": {
-      "anidb_search": false,
-      "category_model": {
-        "provider_category_metadata": true,
-        "separate_anime_categories": true,
-        "value_kinds": [
-          "numeric"
-        ]
-      },
-      "deduplicates_aliases": false,
-      "episode_param": "ep",
-      "feed_modes": [
-        "recent",
-        "rss",
-        "automatic_search",
-        "interactive_search"
-      ],
-      "imdb_search": true,
-      "limits": {
-        "api_quota_supported": true,
-        "grab_quota_supported": true,
-        "max_page_size": 100,
-        "max_pages": 10,
-        "page_size": 100
-      },
-      "protocols": [
-        "usenet"
-      ],
-      "query_param": "q",
-      "response_features": {
-        "comments": true,
-        "grabs": true,
-        "guid": true,
-        "info_url": true,
-        "languages": true,
-        "password_hint": true,
-        "protection_hint": true,
-        "raw_provider_metadata": true,
-        "subtitles": true,
-        "votes": false
-      },
       "rss": true,
-      "search": true,
-      "search_inputs": [
-        "title_query",
-        "id_query",
-        "season",
-        "episode",
-        "category",
-        "limit"
-      ],
-      "season_param": "season",
-      "supported_external_ids": [
-        "imdb_id",
-        "tvdb_id",
-        "tmdb_id",
-        "tvmaze_id",
-        "tvrage_id"
-      ],
       "supported_ids": {
         "anime": [
           "tvdb_id"
@@ -72,10 +21,65 @@
           "tvdb_id"
         ]
       },
-      "tvdb_search": true
+      "deduplicates_aliases": false,
+      "season_param": "season",
+      "episode_param": "ep",
+      "query_param": "q",
+      "search": true,
+      "imdb_search": true,
+      "tvdb_search": true,
+      "anidb_search": false,
+      "protocols": [
+        "usenet"
+      ],
+      "feed_modes": [
+        "recent",
+        "rss",
+        "automatic_search",
+        "interactive_search"
+      ],
+      "search_inputs": [
+        "title_query",
+        "id_query",
+        "season",
+        "episode",
+        "category",
+        "limit"
+      ],
+      "supported_external_ids": [
+        "imdb_id",
+        "tvdb_id",
+        "tmdb_id",
+        "tvmaze_id",
+        "tvrage_id"
+      ],
+      "category_model": {
+        "value_kinds": [
+          "numeric"
+        ],
+        "separate_anime_categories": true,
+        "provider_category_metadata": true
+      },
+      "limits": {
+        "page_size": 100,
+        "max_page_size": 100,
+        "max_pages": 10,
+        "api_quota_supported": true,
+        "grab_quota_supported": true
+      },
+      "response_features": {
+        "languages": true,
+        "subtitles": true,
+        "grabs": true,
+        "votes": false,
+        "comments": true,
+        "info_url": true,
+        "guid": true,
+        "raw_provider_metadata": true,
+        "password_hint": true,
+        "protection_hint": true
+      }
     },
-    "kind": "indexer",
-    "provider_type": "nzbgeek",
     "scoring_policies": [
       {
         "name": "nzbgeek_vote_penalty",
@@ -86,9 +90,41 @@
         "rego_source": "package scryer.rules.user.plugin_nzbgeek_language_bonus\nimport rego.v1\n\nscore_entry[\"nzbgeek_english_confirmed\"] := 200 if {\n    langs := input.release.extra.languages\n    count(langs) > 0\n    some lang in langs\n    lower(lang) == \"english\"\n}\n"
       }
     ],
-    "source_kind": "usenet"
-  },
-  "sdk_constraint": ">=1.5.0, <1.6.0",
-  "sdk_version": "1.5.0",
-  "version": "0.2.7"
+    "config_fields": [
+      {
+        "key": "base_url",
+        "label": "Base URL",
+        "field_type": "string",
+        "required": true,
+        "value_source": "user",
+        "role": "connection_url",
+        "help_text": "Indexer site URL, for example https://indexer.example"
+      },
+      {
+        "key": "api_key",
+        "label": "API Key",
+        "field_type": "password",
+        "required": true,
+        "value_source": "user",
+        "help_text": "Indexer API key"
+      },
+      {
+        "key": "api_path",
+        "label": "API Path",
+        "field_type": "string",
+        "required": false,
+        "default_value": "/api",
+        "value_source": "user",
+        "help_text": "API endpoint path (e.g. /api, /api/v1/api, /nabapi)"
+      },
+      {
+        "key": "additional_params",
+        "label": "Additional Parameters",
+        "field_type": "string",
+        "required": false,
+        "value_source": "user",
+        "help_text": "Extra query parameters appended to every request (e.g. &dl=1&attrs=poster)"
+      }
+    ]
+  }
 }

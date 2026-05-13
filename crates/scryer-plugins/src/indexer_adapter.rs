@@ -181,10 +181,11 @@ fn resolve_connection_url(
         .iter()
         .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))?;
     config_entries
-        .and_then(|entries| entries.get(&field.key))
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .or_else(|| field.default_value.clone())
+        .and_then(|entries| entries.get(&field.key).map(String::as_str))
+        .or(field.default_value.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn build_search_context(

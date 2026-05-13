@@ -1191,6 +1191,8 @@ impl AppUseCase {
             normalize_indexer_config_json(&fields, input.config_json.as_deref(), None)?;
         let base_url =
             derive_indexer_base_url_from_config_fields(&fields, Some(&normalized_config_json))?;
+        self.test_indexer_connection(actor, &provider_type, Some(&normalized_config_json), None)
+            .await?;
 
         let config = IndexerConfig {
             id: Id::new().0,
@@ -1282,6 +1284,17 @@ impl AppUseCase {
             } else {
                 None
             };
+        let should_validate_connection = normalized_provider.is_some()
+            || normalized_config_json.is_some()
+            || matches!(update.is_enabled, Some(true)) && !existing.is_enabled;
+
+        if should_validate_connection {
+            let validation_config_json = normalized_config_json
+                .as_deref()
+                .or(existing.config_json.as_deref());
+            self.test_indexer_connection(actor, &effective_provider, validation_config_json, None)
+                .await?;
+        }
 
         let updated = self
             .services

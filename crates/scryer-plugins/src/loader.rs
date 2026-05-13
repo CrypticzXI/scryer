@@ -2414,7 +2414,12 @@ pub(crate) fn apply_allowed_hosts(
 }
 
 fn host_from_url(url: &str) -> Option<String> {
-    url::Url::parse(url)
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    url::Url::parse(trimmed)
         .ok()
         .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
 }

@@ -306,10 +306,74 @@ async fn nzbgeek_builtin_rss_search_uses_category_only_request() {
     );
 }
 
+#[tokio::test]
+async fn newznab_builtin_full_search_trims_whitespace_padded_config_values() {
+    let (base_url, request_rx) = spawn_newznab_response_server();
+    let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
+
+    let mut config = test_config("newznab");
+    config.config_json = Some(
+        serde_json::json!({
+            "base_url": format!("  {base_url}/  "),
+            "api_key": " test-key \n",
+            "api_path": " /api ",
+            "additional_params": " ?foo=bar baz&zap=1 ",
+        })
+        .to_string(),
+    );
+
+    let client = provider.client_for_provider(&config).unwrap();
+    let response = client
+        .search(
+            "scryer connection test".to_string(),
+            std::collections::HashMap::new(),
+            None,
+            None,
+            None,
+            None,
+            scryer_application::SearchMode::Interactive,
+            None,
+            None,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.results.len(), 1);
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("mock Newznab server should receive a request");
+    assert!(request.starts_with("GET /api?"), "request was {request}");
+    assert_eq!(
+        request_query_value(&request, "apikey").as_deref(),
+        Some("test-key")
+    );
+    assert_eq!(
+        request_query_value(&request, "q").as_deref(),
+        Some("scryer connection test")
+    );
+    assert_eq!(
+        request_query_value(&request, "foo").as_deref(),
+        Some("bar baz")
+    );
+    assert_eq!(request_query_value(&request, "zap").as_deref(), Some("1"));
+}
+
 fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle)
+}
+
+fn request_query_value(request: &str, key: &str) -> Option<String> {
+    let request_line = request.lines().next()?;
+    let path = request_line.split_whitespace().nth(1)?;
+    let url = url::Url::parse(&format!("http://example.test{path}")).ok()?;
+    url.query_pairs()
+        .find_map(|(candidate, value)| (candidate == key).then(|| value.into_owned()))
 }
 
 fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {

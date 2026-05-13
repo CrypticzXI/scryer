@@ -871,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn map_indexer_marks_sonarr_animetosho_as_supported() {
+    fn map_indexer_marks_sonarr_animetosho_as_unsupported() {
         let payload = map_indexer(
             &ArrIndexer {
                 id: 1,
@@ -885,9 +885,9 @@ mod tests {
             "sonarr",
         );
 
-        assert!(payload.supported);
-        assert_eq!(payload.scryer_provider_type.as_deref(), Some("animetosho"));
-        assert_eq!(payload.dedup_key, "animetosho:https://feed.animetosho.org");
+        assert!(!payload.supported);
+        assert_eq!(payload.scryer_provider_type, None);
+        assert_eq!(payload.dedup_key, "unsupported:https://feed.animetosho.org");
     }
 
     #[test]
