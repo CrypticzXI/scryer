@@ -81,9 +81,7 @@ commands:
           command: |
             mkdir -p "$HOME/.cargo/bin" "$HOME/.rustup"
             if [ ! -f "$HOME/.cargo/env" ]; then
-              cat > "$HOME/.cargo/env" <<'EOF'
-              export PATH="$HOME/.cargo/bin:$PATH"
-              EOF
+              printf '%s\n' 'export PATH="$HOME/.cargo/bin:$PATH"' > "$HOME/.cargo/env"
             fi
             if [ ! -x "$HOME/.cargo/bin/rustup" ]; then
               curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
