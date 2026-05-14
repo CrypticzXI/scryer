@@ -260,10 +260,11 @@ function RootSidebarContent({
     () =>
       topNav.filter(
         (item) =>
+          (!isMobile || item.id !== "calendar") &&
           (item.id !== "system" || canManageSystemSettings) &&
           (item.id !== "activity" || canResolveImports || canManageTitle),
       ),
-    [canManageSystemSettings, canManageTitle, canResolveImports, topNav],
+    [canManageSystemSettings, canManageTitle, canResolveImports, isMobile, topNav],
   );
 
   const hasImportsForView = React.useCallback(

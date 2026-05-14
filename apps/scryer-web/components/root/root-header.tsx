@@ -87,6 +87,18 @@ export const RootHeader = React.memo(function RootHeader({
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
   const [mobileHeaderHeight, setMobileHeaderHeight] = React.useState(0);
   const [isMobileHeaderVisible, setIsMobileHeaderVisible] = React.useState(true);
+  const readPageScrollTop = React.useCallback(() => {
+    if (typeof window === "undefined") {
+      return 0;
+    }
+
+    return Math.max(
+      window.scrollY,
+      document.scrollingElement?.scrollTop ?? 0,
+      document.documentElement?.scrollTop ?? 0,
+      document.body?.scrollTop ?? 0,
+    );
+  }, []);
   const hasAnyMatches =
     catalogSearchResults.length > 0 ||
     FACET_REGISTRY.some((f) => (metadataSearchResults[f.metadataKey] ?? []).length > 0);
@@ -217,12 +229,12 @@ export const RootHeader = React.memo(function RootHeader({
       return;
     }
 
-    lastScrollYRef.current = Math.max(window.scrollY, 0);
+    lastScrollYRef.current = readPageScrollTop();
     let frameId: number | null = null;
 
     const updateHeaderVisibility = () => {
       frameId = null;
-      const nextScrollY = Math.max(window.scrollY, 0);
+      const nextScrollY = readPageScrollTop();
       const previousScrollY = lastScrollYRef.current;
       const delta = nextScrollY - previousScrollY;
 
@@ -252,14 +264,29 @@ export const RootHeader = React.memo(function RootHeader({
       frameId = window.requestAnimationFrame(updateHeaderVisibility);
     };
 
-    window.addEventListener("scroll", handleScroll, { passive: true });
+    const scrollTargets = new Set<EventTarget>([window, document]);
+    if (document.scrollingElement) {
+      scrollTargets.add(document.scrollingElement);
+    }
+    for (const target of scrollTargets) {
+      target.addEventListener("scroll", handleScroll, { passive: true });
+    }
+
     return () => {
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
-      window.removeEventListener("scroll", handleScroll);
+      for (const target of scrollTargets) {
+        target.removeEventListener("scroll", handleScroll);
+      }
     };
-  }, [accountMenuOpen, isGlobalSearchPanelOpen, isMobile, mobileHeaderHeight]);
+  }, [
+    accountMenuOpen,
+    isGlobalSearchPanelOpen,
+    isMobile,
+    mobileHeaderHeight,
+    readPageScrollTop,
+  ]);
 
   const renderCatalogSection = React.useCallback(
     (items: import("@/lib/types").TitleRecord[], facet: Facet) => {
