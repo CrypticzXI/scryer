@@ -79,11 +79,18 @@ commands:
       - run:
           name: Install Rust << parameters.toolchain >>
           command: |
+            mkdir -p "$HOME/.cargo/bin" "$HOME/.rustup"
+            if [ ! -f "$HOME/.cargo/env" ]; then
+              cat > "$HOME/.cargo/env" <<'EOF'
+              export PATH="$HOME/.cargo/bin:$PATH"
+              EOF
+            fi
             if [ ! -x "$HOME/.cargo/bin/rustup" ]; then
               curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
             fi
             {
-              echo '. "$HOME/.cargo/env"'
+              echo 'export PATH="$HOME/.cargo/bin:$PATH"'
+              echo '[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"'
             } >> "$BASH_ENV"
             . "$BASH_ENV"
             rustup set profile minimal
@@ -99,22 +106,74 @@ commands:
             rustc --version
 
   restore_rust_cache_unix:
+    parameters:
+      key_prefix:
+        type: string
     steps:
       - restore_cache:
           keys:
-            - v1-rust-unix-{{ arch }}-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}
-            - v1-rust-unix-{{ arch }}-{{ checksum "rust-toolchain.toml" }}
-            - v1-rust-unix-{{ arch }}
+            - v1-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}
+            - v1-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}
+            - v1-rust-unix-<< parameters.key_prefix >>
 
   save_rust_cache_unix:
+    parameters:
+      key_prefix:
+        type: string
     steps:
       - save_cache:
-          key: v1-rust-unix-{{ arch }}-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}
+          key: v1-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}
           paths:
+            - ~/.cargo/env
             - ~/.cargo/bin
             - ~/.cargo/git
             - ~/.cargo/registry
             - ~/.rustup
+            - ~/.cache/sccache
+
+  setup_sccache_unix:
+    parameters:
+      asset_name:
+        type: string
+      sha256:
+        type: string
+    steps:
+      - run:
+          name: Install sccache
+          command: |
+            mkdir -p "$HOME/.cargo/bin" "$HOME/.cache/sccache"
+            if [ ! -x "$HOME/.cargo/bin/sccache" ]; then
+              rm -rf /tmp/sccache-install
+              mkdir -p /tmp/sccache-install
+              curl -fsSL -o /tmp/sccache.tar.gz "https://github.com/mozilla/sccache/releases/download/v0.15.0/<< parameters.asset_name >>"
+              if command -v sha256sum >/dev/null 2>&1; then
+                echo "<< parameters.sha256 >>  /tmp/sccache.tar.gz" | sha256sum -c -
+              else
+                echo "<< parameters.sha256 >>  /tmp/sccache.tar.gz" | shasum -a 256 -c -
+              fi
+              tar -xzf /tmp/sccache.tar.gz -C /tmp/sccache-install
+              SCCACHE_BIN=$(find /tmp/sccache-install -type f -name sccache | head -n 1)
+              install "$SCCACHE_BIN" "$HOME/.cargo/bin/sccache"
+            fi
+            {
+              echo 'export RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"'
+              echo 'export SCCACHE_DIR="$HOME/.cache/sccache"'
+              echo 'export SCCACHE_CACHE_SIZE="10G"'
+              echo 'export CARGO_INCREMENTAL=0'
+            } >> "$BASH_ENV"
+            . "$BASH_ENV"
+            sccache --start-server || true
+            sccache --version
+
+  show_sccache_stats_unix:
+    steps:
+      - run:
+          name: Show sccache stats
+          command: |
+            . "$BASH_ENV"
+            if command -v sccache >/dev/null 2>&1; then
+              sccache --show-stats || true
+            fi
 
   restore_rust_cache_windows:
     steps:
@@ -220,11 +279,15 @@ jobs:
       - checkout
       - fetch_full_history
       - attach_repo_workspace
-      - restore_rust_cache_unix
+      - restore_rust_cache_unix:
+          key_prefix: linux-check
       - restore_target_cache:
           key_prefix: linux-check
       - setup_rust_unix:
           component: clippy
+      - setup_sccache_unix:
+          asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+          sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
       - run:
           name: Install system dependencies
           command: sudo apt-get update && sudo apt-get install -y --no-install-recommends nasm
@@ -278,79 +341,186 @@ jobs:
       - save_target_cache:
           key_prefix: linux-check
           path: target/ci-linux-check
-      - save_rust_cache_unix
+      - show_sccache_stats_unix
+      - save_rust_cache_unix:
+          key_prefix: linux-check
 
-  rust-build-linux-x86_64:
+  rust-build-linux-x86_64-portable:
     executor: linux-medium
     working_directory: ~/project
     steps:
       - checkout
       - fetch_full_history
       - attach_repo_workspace
-      - restore_rust_cache_unix
+      - restore_rust_cache_unix:
+          key_prefix: linux-x86_64-portable-release
       - restore_target_cache:
-          key_prefix: linux-x86_64-release
+          key_prefix: linux-x86_64-portable-release
       - setup_rust_unix
+      - setup_sccache_unix:
+          asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+          sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
       - run:
           name: Install system dependencies
           command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold nasm
       - run:
-          name: Build release binary (Linux x86_64 + embedded UI)
+          name: Build portable release binary (Linux x86_64 + embedded UI)
           no_output_timeout: 30m
           environment:
-            CARGO_TARGET_DIR: target/ci-linux-x86_64-release
+            CARGO_TARGET_DIR: target/ci-linux-x86_64-portable-release
             SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
             mold -run cargo build -p scryer --release --locked
       - save_target_cache:
-          key_prefix: linux-x86_64-release
-          path: target/ci-linux-x86_64-release
-      - save_rust_cache_unix
+          key_prefix: linux-x86_64-portable-release
+          path: target/ci-linux-x86_64-portable-release
+      - show_sccache_stats_unix
+      - save_rust_cache_unix:
+          key_prefix: linux-x86_64-portable-release
       - run:
-          name: Package tarball
+          name: Package portable tarballs
           command: |
             mkdir -p release-artifacts
-            tar -czf release-artifacts/scryer-linux-x86_64.tar.gz -C target/ci-linux-x86_64-release/release scryer
+            tar -czf release-artifacts/scryer-linux-x86_64-portable.tar.gz -C target/ci-linux-x86_64-portable-release/release scryer
+            cp release-artifacts/scryer-linux-x86_64-portable.tar.gz release-artifacts/scryer-linux-x86_64.tar.gz
       - persist_release_artifact:
           path: release-artifacts/scryer-linux-x86_64.tar.gz
+      - persist_release_artifact:
+          path: release-artifacts/scryer-linux-x86_64-portable.tar.gz
 
-  rust-build-linux-arm64:
+  rust-build-linux-x86_64-haswell:
+    executor: linux-medium
+    working_directory: ~/project
+    steps:
+      - checkout
+      - fetch_full_history
+      - attach_repo_workspace
+      - restore_rust_cache_unix:
+          key_prefix: linux-x86_64-haswell-release
+      - restore_target_cache:
+          key_prefix: linux-x86_64-haswell-release
+      - setup_rust_unix
+      - setup_sccache_unix:
+          asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+          sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
+      - run:
+          name: Install system dependencies
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold nasm
+      - run:
+          name: Build optimized release binary (Linux x86_64 haswell + embedded UI)
+          no_output_timeout: 30m
+          environment:
+            CARGO_TARGET_DIR: target/ci-linux-x86_64-haswell-release
+            SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
+            RUSTFLAGS: -C target-cpu=haswell
+          command: |
+            . "$BASH_ENV"
+            export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
+            mold -run cargo build -p scryer --release --locked
+      - save_target_cache:
+          key_prefix: linux-x86_64-haswell-release
+          path: target/ci-linux-x86_64-haswell-release
+      - show_sccache_stats_unix
+      - save_rust_cache_unix:
+          key_prefix: linux-x86_64-haswell-release
+      - run:
+          name: Package optimized tarball
+          command: |
+            mkdir -p release-artifacts
+            tar -czf release-artifacts/scryer-linux-x86_64-haswell.tar.gz -C target/ci-linux-x86_64-haswell-release/release scryer
+      - persist_release_artifact:
+          path: release-artifacts/scryer-linux-x86_64-haswell.tar.gz
+
+  rust-build-linux-arm64-portable:
     executor: linux-arm-medium
     working_directory: ~/project
     steps:
       - checkout
       - fetch_full_history
       - attach_repo_workspace
-      - restore_rust_cache_unix
+      - restore_rust_cache_unix:
+          key_prefix: linux-arm64-portable-release
       - restore_target_cache:
-          key_prefix: linux-arm64-release
+          key_prefix: linux-arm64-portable-release
       - setup_rust_unix
+      - setup_sccache_unix:
+          asset_name: sccache-v0.15.0-aarch64-unknown-linux-musl.tar.gz
+          sha256: 3a6a3712b49da3d263bf2d30d702de4302793016019e800bfb81c0c69401d8f8
       - run:
           name: Install system dependencies
           command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold nasm
       - run:
-          name: Build release binary (Linux arm64 + embedded UI)
+          name: Build portable release binary (Linux arm64 + embedded UI)
           no_output_timeout: 30m
           environment:
-            CARGO_TARGET_DIR: target/ci-linux-arm64-release
+            CARGO_TARGET_DIR: target/ci-linux-arm64-portable-release
             SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
+            RUSTFLAGS: --cfg aes_armv8 --cfg chacha20_force_neon
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
             mold -run cargo build -p scryer --release --locked
       - save_target_cache:
-          key_prefix: linux-arm64-release
-          path: target/ci-linux-arm64-release
-      - save_rust_cache_unix
+          key_prefix: linux-arm64-portable-release
+          path: target/ci-linux-arm64-portable-release
+      - show_sccache_stats_unix
+      - save_rust_cache_unix:
+          key_prefix: linux-arm64-portable-release
       - run:
-          name: Package tarball
+          name: Package portable tarballs
           command: |
             mkdir -p release-artifacts
-            tar -czf release-artifacts/scryer-linux-arm64.tar.gz -C target/ci-linux-arm64-release/release scryer
+            tar -czf release-artifacts/scryer-linux-arm64-portable.tar.gz -C target/ci-linux-arm64-portable-release/release scryer
+            cp release-artifacts/scryer-linux-arm64-portable.tar.gz release-artifacts/scryer-linux-arm64.tar.gz
       - persist_release_artifact:
           path: release-artifacts/scryer-linux-arm64.tar.gz
+      - persist_release_artifact:
+          path: release-artifacts/scryer-linux-arm64-portable.tar.gz
+
+  rust-build-linux-arm64-cortex-a76:
+    executor: linux-arm-medium
+    working_directory: ~/project
+    steps:
+      - checkout
+      - fetch_full_history
+      - attach_repo_workspace
+      - restore_rust_cache_unix:
+          key_prefix: linux-arm64-cortex-a76-release
+      - restore_target_cache:
+          key_prefix: linux-arm64-cortex-a76-release
+      - setup_rust_unix
+      - setup_sccache_unix:
+          asset_name: sccache-v0.15.0-aarch64-unknown-linux-musl.tar.gz
+          sha256: 3a6a3712b49da3d263bf2d30d702de4302793016019e800bfb81c0c69401d8f8
+      - run:
+          name: Install system dependencies
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold nasm
+      - run:
+          name: Build optimized release binary (Linux arm64 cortex-a76 + embedded UI)
+          no_output_timeout: 30m
+          environment:
+            CARGO_TARGET_DIR: target/ci-linux-arm64-cortex-a76-release
+            SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
+            RUSTFLAGS: -C target-cpu=cortex-a76 --cfg aes_armv8 --cfg chacha20_force_neon
+          command: |
+            . "$BASH_ENV"
+            export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
+            mold -run cargo build -p scryer --release --locked
+      - save_target_cache:
+          key_prefix: linux-arm64-cortex-a76-release
+          path: target/ci-linux-arm64-cortex-a76-release
+      - show_sccache_stats_unix
+      - save_rust_cache_unix:
+          key_prefix: linux-arm64-cortex-a76-release
+      - run:
+          name: Package optimized tarball
+          command: |
+            mkdir -p release-artifacts
+            tar -czf release-artifacts/scryer-linux-arm64-cortex-a76.tar.gz -C target/ci-linux-arm64-cortex-a76-release/release scryer
+      - persist_release_artifact:
+          path: release-artifacts/scryer-linux-arm64-cortex-a76.tar.gz
 
   rust-build-macos-arm64:
     executor: macos-medium
@@ -359,10 +529,14 @@ jobs:
       - checkout
       - fetch_full_history
       - attach_repo_workspace
-      - restore_rust_cache_unix
+      - restore_rust_cache_unix:
+          key_prefix: macos-arm64-release
       - restore_target_cache:
           key_prefix: macos-arm64-release
       - setup_rust_unix
+      - setup_sccache_unix:
+          asset_name: sccache-v0.15.0-aarch64-apple-darwin.tar.gz
+          sha256: 430ef7b5f54256d3ed5bfe77e8b0afc51aa209aeebe4f95b69c3a52ce3acc6e9
       - run:
           name: Install system dependencies
           command: brew install nasm
@@ -380,7 +554,9 @@ jobs:
       - save_target_cache:
           key_prefix: macos-arm64-release
           path: target/ci-macos-arm64-release
-      - save_rust_cache_unix
+      - show_sccache_stats_unix
+      - save_rust_cache_unix:
+          key_prefix: macos-arm64-release
       - run:
           name: Codesign binary
           command: |
@@ -389,7 +565,8 @@ jobs:
             security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
             security set-keychain-settings -lut 900 "$KEYCHAIN"
             security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
-            echo -n "$APPLE_SIGNING_CERT_P12" | base64 --decode > /tmp/cert.p12
+            printf '%s' "$APPLE_SIGNING_CERT_P12" | tr -d '\r\n' | base64 --decode > /tmp/cert.p12
+            openssl pkcs12 -in /tmp/cert.p12 -passin env:APPLE_SIGNING_CERT_PASSWORD -info -noout
             security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
             security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
             security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
@@ -426,8 +603,9 @@ jobs:
             $Env:Path = "$HOME\.cargo\bin;$Env:Path"
             [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
             rustup set profile minimal
-            rustup toolchain install 1.95.0
-            rustup default 1.95.0
+            rustup toolchain install 1.95.0-x86_64-pc-windows-msvc
+            rustup default 1.95.0-x86_64-pc-windows-msvc
+            rustup show active-toolchain
             cargo --version
             rustc --version
       - run:
@@ -451,8 +629,8 @@ jobs:
             CARGO_TARGET_DIR: C:\Users\circleci\project\target\ci-windows-x86_64-release
             SCRYER_EMBED_UI_DIR: C:\Users\circleci\project\apps\scryer-web\dist
             SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
-            RUSTFLAGS: -C target-cpu=haswell -C linker=rust-lld
-          command: rustup run 1.95.0 cargo build -p scryer --release --locked
+            RUSTFLAGS: -C target-cpu=haswell
+          command: rustup run 1.95.0-x86_64-pc-windows-msvc cargo build -p scryer --release --locked --target x86_64-pc-windows-msvc
       - save_target_cache:
           key_prefix: windows-x86_64-release
           path: C:\Users\circleci\project\target\ci-windows-x86_64-release
@@ -514,13 +692,128 @@ jobs:
           name: Package zip
           command: |
             New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-            Compress-Archive -Path target\ci-windows-x86_64-release\release\scryer.exe,README.txt -DestinationPath release-artifacts\scryer-windows-x86_64.zip
+            Compress-Archive -Path target\ci-windows-x86_64-release\x86_64-pc-windows-msvc\release\scryer.exe,README.txt -DestinationPath release-artifacts\scryer-windows-x86_64.zip
       - persist_to_workspace:
           root: .
           paths:
             - release-artifacts/scryer-windows-x86_64.zip
       - store_artifacts:
           path: release-artifacts/scryer-windows-x86_64.zip
+
+  docker-validate-amd64:
+    executor: linux-medium
+    working_directory: ~/project
+    steps:
+      - checkout
+      - fetch_full_history
+      - attach_repo_workspace
+      - run:
+          name: Configure docker buildx
+          command: |
+            docker buildx rm scryer-circleci-validate-amd64 >/dev/null 2>&1 || true
+            docker buildx create --use --name scryer-circleci-validate-amd64
+      - run:
+          name: Validate Docker runtime selector
+          command: sh docker/test_runtime_select.sh
+      - run:
+          name: Validate Docker docs contract
+          command: sh docker/test_docs_contract.sh
+      - run:
+          name: Prepare build context
+          command: sh docker/prepare-build-context.sh release-artifacts docker-ctx
+      - run:
+          name: Build base validation image
+          command: |
+            docker buildx build \
+              --platform linux/amd64 \
+              --tag scryer:test-amd64 \
+              --file docker/scryer.Dockerfile \
+              --load \
+              docker-ctx
+      - run:
+          name: Smoke test base image runtime
+          command: sh docker/test_image_runtime.sh scryer:test-amd64 linux/amd64
+      - run:
+          name: Build slim validation image
+          command: |
+            docker buildx build \
+              --platform linux/amd64 \
+              --tag scryer:test-amd64-slim \
+              --file docker/scryer.Dockerfile \
+              --load \
+              docker-ctx
+      - run:
+          name: Smoke test slim image runtime
+          command: sh docker/test_image_runtime.sh scryer:test-amd64-slim linux/amd64
+      - run:
+          name: Build modern validation image
+          command: |
+            docker buildx build \
+              --build-arg SCRYER_RUNTIME_MODE=modern \
+              --platform linux/amd64 \
+              --tag scryer:test-amd64-modern \
+              --file docker/scryer.Dockerfile \
+              --load \
+              docker-ctx
+      - run:
+          name: Smoke test modern image runtime
+          command: sh docker/test_modern_image_runtime.sh scryer:test-amd64-modern linux/amd64 amd64
+
+  docker-validate-arm64:
+    executor: linux-arm-medium
+    working_directory: ~/project
+    steps:
+      - checkout
+      - fetch_full_history
+      - attach_repo_workspace
+      - run:
+          name: Configure docker buildx
+          command: |
+            docker buildx rm scryer-circleci-validate-arm64 >/dev/null 2>&1 || true
+            docker buildx create --use --name scryer-circleci-validate-arm64
+      - run:
+          name: Validate Docker runtime selector
+          command: sh docker/test_runtime_select.sh
+      - run:
+          name: Prepare build context
+          command: sh docker/prepare-build-context.sh release-artifacts docker-ctx
+      - run:
+          name: Build base validation image
+          command: |
+            docker buildx build \
+              --platform linux/arm64 \
+              --tag scryer:test-arm64 \
+              --file docker/scryer.Dockerfile \
+              --load \
+              docker-ctx
+      - run:
+          name: Smoke test base image runtime
+          command: sh docker/test_image_runtime.sh scryer:test-arm64 linux/arm64
+      - run:
+          name: Build slim validation image
+          command: |
+            docker buildx build \
+              --platform linux/arm64 \
+              --tag scryer:test-arm64-slim \
+              --file docker/scryer.Dockerfile \
+              --load \
+              docker-ctx
+      - run:
+          name: Smoke test slim image runtime
+          command: sh docker/test_image_runtime.sh scryer:test-arm64-slim linux/arm64
+      - run:
+          name: Build modern validation image
+          command: |
+            docker buildx build \
+              --build-arg SCRYER_RUNTIME_MODE=modern \
+              --platform linux/arm64 \
+              --tag scryer:test-arm64-modern \
+              --file docker/scryer.Dockerfile \
+              --load \
+              docker-ctx
+      - run:
+          name: Smoke test modern image runtime
+          command: sh docker/test_modern_image_runtime.sh scryer:test-arm64-modern linux/arm64 arm64
 
   docker-publish:
     executor: linux-medium
@@ -530,55 +823,81 @@ jobs:
       - fetch_full_history
       - attach_repo_workspace
       - run:
+          name: Validate Docker runtime selector
+          command: sh docker/test_runtime_select.sh
+      - run:
+          name: Validate Docker docs contract
+          command: sh docker/test_docs_contract.sh
+      - run:
           name: Prepare build context
           command: |
-            mkdir -p docker-ctx/amd64 docker-ctx/arm64
-            tar -xzf release-artifacts/scryer-linux-x86_64.tar.gz -C docker-ctx/amd64
-            tar -xzf release-artifacts/scryer-linux-arm64.tar.gz -C docker-ctx/arm64
-            cp docker/entrypoint.sh docker-ctx/entrypoint.sh
+            sh docker/prepare-build-context.sh release-artifacts docker-ctx
       - run:
           name: Compute docker tags
           command: |
-            TAG_VERSION="${CIRCLE_TAG#scryer-v}"
+            case "$CIRCLE_TAG" in
+              cci-scryer-v*) TAG_VERSION="${CIRCLE_TAG#cci-scryer-v}" ;;
+              scryer-v*) TAG_VERSION="${CIRCLE_TAG#scryer-v}" ;;
+              *) TAG_VERSION="$CIRCLE_TAG" ;;
+            esac
             SHORT_SHA="$(printf '%s' "$CIRCLE_SHA1" | cut -c1-7)"
+            IMAGE_NAME="ghcr.io/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
             {
               echo "export SCRYER_DOCKER_TAG_VERSION=$TAG_VERSION"
               echo "export SCRYER_DOCKER_TAG_SHA=sha-$SHORT_SHA"
+              echo "export SCRYER_DOCKER_IMAGE_NAME=$IMAGE_NAME"
             } >> "$BASH_ENV"
       - run:
-          name: Verify docker build without push
+          name: Build and push docker images
           command: |
             . "$BASH_ENV"
             if [ "${SCRYER_CIRCLECI_ENABLE_DOCKER_PUBLISH:-false}" = "true" ]; then
-              echo "Docker publish enabled; skipping dry-run smoke build."
+              USERNAME="${GHCR_USERNAME:-$CIRCLE_PROJECT_USERNAME}"
+              echo "$GHCR_TOKEN" | docker login ghcr.io -u "$USERNAME" --password-stdin
+              docker run --privileged --rm tonistiigi/binfmt --install amd64,arm64
+              docker buildx rm scryer-circleci-publisher >/dev/null 2>&1 || true
+              docker buildx create --use --name scryer-circleci-publisher
+
+              base_tags=(
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:latest"
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:${SCRYER_DOCKER_TAG_SHA}"
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:${SCRYER_DOCKER_TAG_VERSION}"
+              )
+              slim_tags=(
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:latest-slim"
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:${SCRYER_DOCKER_TAG_SHA}-slim"
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:${SCRYER_DOCKER_TAG_VERSION}-slim"
+              )
+              modern_tags=(
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:latest-modern"
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:${SCRYER_DOCKER_TAG_SHA}-modern"
+                --tag "${SCRYER_DOCKER_IMAGE_NAME}:${SCRYER_DOCKER_TAG_VERSION}-modern"
+              )
+
+              docker buildx build \
+                --platform linux/amd64,linux/arm64 \
+                "${base_tags[@]}" \
+                --file docker/scryer.Dockerfile \
+                --push \
+                docker-ctx
+
+              docker buildx build \
+                --platform linux/amd64,linux/arm64 \
+                "${slim_tags[@]}" \
+                --file docker/scryer.Dockerfile \
+                --output type=image,push=true,oci-mediatypes=true,compression=zstd,compression-level=19,force-compression=true \
+                docker-ctx
+
+              docker buildx build \
+                --platform linux/amd64,linux/arm64 \
+                "${modern_tags[@]}" \
+                --file docker/scryer.Dockerfile \
+                --build-arg SCRYER_RUNTIME_MODE=modern \
+                --output type=image,push=true,oci-mediatypes=true,compression=zstd,compression-level=19,force-compression=true \
+                docker-ctx
               exit 0
             fi
-            docker buildx create --use --name scryer-circleci-builder
-            docker buildx build \
-              --platform linux/amd64 \
-              --tag scryer-circleci-verify:${SCRYER_DOCKER_TAG_SHA} \
-              --file docker/scryer.Dockerfile \
-              --load \
-              docker-ctx
-      - run:
-          name: Build and push docker image
-          command: |
-            . "$BASH_ENV"
-            if [ "${SCRYER_CIRCLECI_ENABLE_DOCKER_PUBLISH:-false}" != "true" ]; then
-              echo "SCRYER_CIRCLECI_ENABLE_DOCKER_PUBLISH is not true; skipping docker push."
-              exit 0
-            fi
-            USERNAME="${GHCR_USERNAME:-$CIRCLE_PROJECT_USERNAME}"
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$USERNAME" --password-stdin
-            docker buildx create --use --name scryer-circleci-publisher
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              --tag ghcr.io/${CIRCLE_PROJECT_USERNAME}/scryer:latest \
-              --tag ghcr.io/${CIRCLE_PROJECT_USERNAME}/scryer:${SCRYER_DOCKER_TAG_SHA} \
-              --tag ghcr.io/${CIRCLE_PROJECT_USERNAME}/scryer:${SCRYER_DOCKER_TAG_VERSION} \
-              --file docker/scryer.Dockerfile \
-              --push \
-              docker-ctx
+            echo "SCRYER_CIRCLECI_ENABLE_DOCKER_PUBLISH is not true; skipping docker push."
 
   publish-release:
     executor: linux-medium
@@ -761,12 +1080,22 @@ workflows:
           requires:
             - web
           filters: *release_tag_filters
-      - rust-build-linux-x86_64:
+      - rust-build-linux-x86_64-portable:
           context: scryer-build
           requires:
             - web
           filters: *release_tag_filters
-      - rust-build-linux-arm64:
+      - rust-build-linux-x86_64-haswell:
+          context: scryer-build
+          requires:
+            - web
+          filters: *release_tag_filters
+      - rust-build-linux-arm64-portable:
+          context: scryer-build
+          requires:
+            - web
+          filters: *release_tag_filters
+      - rust-build-linux-arm64-cortex-a76:
           context: scryer-build
           requires:
             - web
@@ -781,18 +1110,34 @@ workflows:
           requires:
             - web
           filters: *release_tag_filters
+      - docker-validate-amd64:
+          context: scryer-release
+          requires:
+            - rust-build-linux-x86_64-portable
+            - rust-build-linux-x86_64-haswell
+            - rust-build-linux-arm64-portable
+            - rust-build-linux-arm64-cortex-a76
+          filters: *release_tag_filters
+      - docker-validate-arm64:
+          context: scryer-release
+          requires:
+            - rust-build-linux-x86_64-portable
+            - rust-build-linux-x86_64-haswell
+            - rust-build-linux-arm64-portable
+            - rust-build-linux-arm64-cortex-a76
+          filters: *release_tag_filters
       - docker-publish:
           context: scryer-release
           requires:
-            - rust-build-linux-x86_64
-            - rust-build-linux-arm64
+            - docker-validate-amd64
+            - docker-validate-arm64
             - rust-check
           filters: *release_tag_filters
       - publish-release:
           context: scryer-release
           requires:
-            - rust-build-linux-x86_64
-            - rust-build-linux-arm64
+            - rust-build-linux-x86_64-portable
+            - rust-build-linux-arm64-portable
             - rust-build-macos-arm64
             - rust-build-windows-x86_64
             - rust-check

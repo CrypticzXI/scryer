@@ -92,6 +92,12 @@ docker compose up -d
 
 Open `http://localhost:8080` to access the web UI.
 
+Published container variants:
+
+- `ghcr.io/scryer-media/scryer:latest` auto-selects the best embedded Linux payload for the host CPU
+- `ghcr.io/scryer-media/scryer:latest-slim` keeps the same runtime behavior with zstd-compressed OCI image layers
+- `ghcr.io/scryer-media/scryer:latest-modern` only ships the optimized Linux payload for each architecture and fails fast on older CPUs
+
 ## Manual Setup
 
 If you prefer to create the compose file yourself:
