@@ -603,6 +603,7 @@ jobs:
             rustup set profile minimal
             rustup toolchain install 1.95.0-x86_64-pc-windows-msvc
             rustup default 1.95.0-x86_64-pc-windows-msvc
+            rustup target add x86_64-pc-windows-msvc --toolchain 1.95.0-x86_64-pc-windows-msvc
             rustup show active-toolchain
             cargo --version
             rustc --version
