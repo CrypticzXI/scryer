@@ -305,6 +305,11 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
+            export RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"
+            export SCCACHE_DIR="$HOME/.cache/sccache"
+            export SCCACHE_CACHE_SIZE="10G"
+            export CARGO_INCREMENTAL=0
+            sccache --zero-stats || true
             cargo clippy --locked \
               -p scryer \
               -p scryer-application \
@@ -326,6 +331,10 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
+            export RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"
+            export SCCACHE_DIR="$HOME/.cache/sccache"
+            export SCCACHE_CACHE_SIZE="10G"
+            export CARGO_INCREMENTAL=0
             cargo nextest run --locked \
               -p scryer \
               -p scryer-application \
@@ -336,10 +345,10 @@ jobs:
               -p scryer-plugins \
               -p scryer-release-parser \
               -p scryer-rules
+            sccache --show-stats || true
       - save_target_cache:
           key_prefix: linux-check
           path: target/ci-linux-check
-      - show_sccache_stats_unix
       - save_rust_cache_unix:
           key_prefix: linux-check
 
@@ -371,11 +380,16 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
+            export RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"
+            export SCCACHE_DIR="$HOME/.cache/sccache"
+            export SCCACHE_CACHE_SIZE="10G"
+            export CARGO_INCREMENTAL=0
+            sccache --zero-stats || true
             mold -run cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl
+            sccache --show-stats || true
       - save_target_cache:
           key_prefix: linux-x86_64-portable-release
           path: target/ci-linux-x86_64-portable-release
-      - show_sccache_stats_unix
       - save_rust_cache_unix:
           key_prefix: linux-x86_64-portable-release
       - run:
@@ -418,11 +432,16 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
+            export RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"
+            export SCCACHE_DIR="$HOME/.cache/sccache"
+            export SCCACHE_CACHE_SIZE="10G"
+            export CARGO_INCREMENTAL=0
+            sccache --zero-stats || true
             mold -run cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl
+            sccache --show-stats || true
       - save_target_cache:
           key_prefix: linux-x86_64-haswell-release
           path: target/ci-linux-x86_64-haswell-release
-      - show_sccache_stats_unix
       - save_rust_cache_unix:
           key_prefix: linux-x86_64-haswell-release
       - run:
@@ -462,11 +481,16 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
+            export RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"
+            export SCCACHE_DIR="$HOME/.cache/sccache"
+            export SCCACHE_CACHE_SIZE="10G"
+            export CARGO_INCREMENTAL=0
+            sccache --zero-stats || true
             mold -run cargo build -p scryer --release --locked --target aarch64-unknown-linux-musl
+            sccache --show-stats || true
       - save_target_cache:
           key_prefix: linux-arm64-portable-release
           path: target/ci-linux-arm64-portable-release
-      - show_sccache_stats_unix
       - save_rust_cache_unix:
           key_prefix: linux-arm64-portable-release
       - run:
@@ -509,11 +533,16 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
+            export RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"
+            export SCCACHE_DIR="$HOME/.cache/sccache"
+            export SCCACHE_CACHE_SIZE="10G"
+            export CARGO_INCREMENTAL=0
+            sccache --zero-stats || true
             mold -run cargo build -p scryer --release --locked --target aarch64-unknown-linux-musl
+            sccache --show-stats || true
       - save_target_cache:
           key_prefix: linux-arm64-cortex-a76-release
           path: target/ci-linux-arm64-cortex-a76-release
-      - show_sccache_stats_unix
       - save_rust_cache_unix:
           key_prefix: linux-arm64-cortex-a76-release
       - run:
@@ -604,9 +633,8 @@ jobs:
             $Env:Path = "$HOME\.cargo\bin;$Env:Path"
             [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
             rustup set profile minimal
-            rustup toolchain install 1.95.0
-            rustup default 1.95.0
-            rustup target add x86_64-pc-windows-msvc --toolchain 1.95.0
+            rustup toolchain install 1.95.0-x86_64-pc-windows-msvc
+            rustup default 1.95.0-x86_64-pc-windows-msvc
             rustup show active-toolchain
             cargo --version
             rustc --version
@@ -632,7 +660,7 @@ jobs:
             SCRYER_EMBED_UI_DIR: C:\Users\circleci\project\apps\scryer-web\dist
             SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
             RUSTFLAGS: -C target-cpu=haswell
-          command: rustup run 1.95.0 cargo build -p scryer --release --locked --target x86_64-pc-windows-msvc
+          command: rustup run 1.95.0-x86_64-pc-windows-msvc cargo build -p scryer --release --locked
       - save_target_cache:
           key_prefix: windows-x86_64-release
           path: C:\Users\circleci\project\target\ci-windows-x86_64-release
@@ -694,7 +722,7 @@ jobs:
           name: Package zip
           command: |
             New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-            Compress-Archive -Path target\ci-windows-x86_64-release\x86_64-pc-windows-msvc\release\scryer.exe,README.txt -DestinationPath release-artifacts\scryer-windows-x86_64.zip
+            Compress-Archive -Path target\ci-windows-x86_64-release\release\scryer.exe,README.txt -DestinationPath release-artifacts\scryer-windows-x86_64.zip
       - persist_to_workspace:
           root: .
           paths:
