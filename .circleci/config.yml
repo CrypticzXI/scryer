@@ -376,28 +376,21 @@ jobs:
     steps:
       - checkout
       - fetch_full_history
-      - attach_repo_workspace
       - restore_rust_cache_unix:
-          key_prefix: linux-x86_64-portable-release
+          key_prefix: linux-xtask
       - restore_sccache_unix:
-          key_prefix: linux-x86_64-portable-release
-      - setup_rust_unix:
-          target: x86_64-unknown-linux-musl
+          key_prefix: linux-xtask
+      - setup_rust_unix
       - setup_sccache_unix:
           asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
           sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
       - run:
-          name: Install system dependencies
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold musl-tools nasm
-      - run:
-          name: Build portable release binary (Linux x86_64 + embedded UI)
+          name: Build xtask with sccache
           no_output_timeout: 30m
           environment:
-            CARGO_TARGET_DIR: target/ci-linux-x86_64-portable-release
-            SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
+            CARGO_TARGET_DIR: target/ci-linux-xtask
           command: |
             . "$BASH_ENV"
-            export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
             export RUSTC_WRAPPER="sccache"
             export CARGO_BUILD_RUSTC_WRAPPER="sccache"
             export SCCACHE_DIR="$HOME/.cache/sccache"
@@ -407,22 +400,12 @@ jobs:
             sccache --start-server || true
             sccache --zero-stats || true
             printf '%s\n' '[build]' 'rustc-wrapper = "sccache"' > /tmp/cargo-sccache-config.toml
-            cargo --config /tmp/cargo-sccache-config.toml build -p scryer --release --locked --target x86_64-unknown-linux-musl
+            cargo --config /tmp/cargo-sccache-config.toml build -p xtask --locked
             sccache --show-stats || true
       - save_sccache_unix:
-          key_prefix: linux-x86_64-portable-release
+          key_prefix: linux-xtask
       - save_rust_cache_unix:
-          key_prefix: linux-x86_64-portable-release
-      - run:
-          name: Package portable tarballs
-          command: |
-            mkdir -p release-artifacts
-            tar -czf release-artifacts/scryer-linux-x86_64-portable.tar.gz -C target/ci-linux-x86_64-portable-release/x86_64-unknown-linux-musl/release scryer
-            cp release-artifacts/scryer-linux-x86_64-portable.tar.gz release-artifacts/scryer-linux-x86_64.tar.gz
-      - persist_release_artifact:
-          path: release-artifacts/scryer-linux-x86_64.tar.gz
-      - persist_release_artifact:
-          path: release-artifacts/scryer-linux-x86_64-portable.tar.gz
+          key_prefix: linux-xtask
 
   rust-build-linux-x86_64-haswell:
     executor: linux-medium
@@ -1138,15 +1121,10 @@ jobs:
 workflows:
   scryer:
     jobs:
-      - web:
+      - rust-build-linux-x86_64-portable:
           context: scryer-build
-          filters: &release_tag_filters
+          filters:
             tags:
               only: /^(scryer-v|cci-scryer-v).*/
             branches:
               ignore: /.*/
-      - rust-build-linux-x86_64-portable:
-          context: scryer-build
-          requires:
-            - web
-          filters: *release_tag_filters
