@@ -666,6 +666,25 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn scan_library_includes_stream_pointer_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let episode_path = dir.path().join("Show - S01E01.strm");
+        tokio::fs::write(&episode_path, b"https://nzbdav.example/stream/Show.S01E01")
+            .await
+            .expect("write episode");
+
+        let scanner = FileSystemLibraryScanner::new();
+        let files = scanner
+            .scan_library(dir.path().to_string_lossy().as_ref())
+            .await
+            .expect("scan library");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, episode_path.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn scan_library_follows_symlinked_directories() {
         use std::os::unix::fs::symlink;
 

@@ -162,6 +162,17 @@ pub(crate) async fn probe_and_validate(
     existing_score: Option<i32>,
     is_filler: bool,
 ) -> ImportedFileGateDecision {
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("strm"))
+    {
+        return ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
+            analysis: None,
+            scan_error: None,
+        }));
+    }
+
     let analysis = match scryer_mediainfo::analyze_file(path) {
         Ok(analysis) => analysis,
         Err(error) => {

@@ -247,6 +247,15 @@ mod tests {
     }
 
     #[test]
+    fn valid_extension_accepts_strm() {
+        let parsed = parse_release_metadata("Movie.2024.1080p.BluRay.x264");
+        let src = PathBuf::from("/tmp/Movie.2024.1080p.BluRay.x264.strm");
+        let dst = PathBuf::from("/data/Movie (2024)/Movie.2024.1080p.BluRay.x264.strm");
+        let ctx = dummy_ctx(&src, &dst, 1_024, &parsed, &[]);
+        assert!(check_valid_extension(&ctx).is_accept());
+    }
+
+    #[test]
     fn valid_extension_rejects_txt() {
         let parsed = parse_release_metadata("readme");
         let src = PathBuf::from("/tmp/readme.txt");

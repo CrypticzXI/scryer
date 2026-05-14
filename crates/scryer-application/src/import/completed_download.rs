@@ -25,6 +25,7 @@ use crate::{
 const PATH_WAITING_MESSAGE: &str =
     "Completed download path is not available yet. Retrying for up to 10 minutes.";
 const PATH_BLOCKED_MESSAGE: &str = "Completed download path is still unavailable. Check remote path mappings, volume mounts, or download paths, then retry manually.";
+const PATH_URL_UNSUPPORTED_MESSAGE: &str = "Completed download path is a URL, not a local filesystem path. Mount it locally or use remote path mappings before retrying.";
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
@@ -677,6 +678,13 @@ fn evaluate_completed_download_path(
     completed: &CompletedDownload,
     now: DateTime<Utc>,
 ) -> CompletedDownloadPathState {
+    if completed_download_path_is_unsupported_url(&completed.dest_dir) {
+        td.path_missing_since = None;
+        td.status = TrackedDownloadStatus::Warning;
+        td.status_messages = vec![PATH_URL_UNSUPPORTED_MESSAGE.to_string()];
+        return CompletedDownloadPathState::Blocked;
+    }
+
     let path_available =
         !completed.dest_dir.trim().is_empty() && Path::new(&completed.dest_dir).exists();
 
@@ -699,9 +707,17 @@ fn evaluate_completed_download_path(
     CompletedDownloadPathState::Blocked
 }
 
+fn completed_download_path_is_unsupported_url(dest_dir: &str) -> bool {
+    let normalized = dest_dir.trim().to_ascii_lowercase();
+    normalized.contains("://") || normalized.starts_with("webdav:")
+}
+
 fn clear_path_warnings(td: &mut TrackedDownload) {
-    td.status_messages
-        .retain(|message| message != PATH_WAITING_MESSAGE && message != PATH_BLOCKED_MESSAGE);
+    td.status_messages.retain(|message| {
+        message != PATH_WAITING_MESSAGE
+            && message != PATH_BLOCKED_MESSAGE
+            && message != PATH_URL_UNSUPPORTED_MESSAGE
+    });
     if td.status_messages.is_empty() && td.status == TrackedDownloadStatus::Warning {
         td.status = TrackedDownloadStatus::Ok;
     }
@@ -2182,6 +2198,26 @@ mod tests {
         assert_eq!(td.status, TrackedDownloadStatus::Ok);
 
         std::fs::remove_dir_all(&existing_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn completed_download_path_blocks_immediately_for_url_sources() {
+        let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+        let completed = build_completed_download(
+            "Paper.Lantern.2012.1080p",
+            "https://nzbdav.example/remote/completed-symlinks/Paper.Lantern.2012.1080p",
+            Some("movie"),
+        );
+
+        assert_eq!(
+            evaluate_completed_download_path(&mut td, &completed, Utc::now()),
+            CompletedDownloadPathState::Blocked
+        );
+        assert!(td.path_missing_since.is_none());
+        assert_eq!(
+            td.status_messages,
+            vec![PATH_URL_UNSUPPORTED_MESSAGE.to_string()]
+        );
     }
 
     #[tokio::test]

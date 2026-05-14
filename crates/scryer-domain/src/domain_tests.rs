@@ -29,6 +29,11 @@ fn video_file_webm() {
 }
 
 #[test]
+fn video_file_strm() {
+    assert!(is_video_file(Path::new("/mounts/nzbdav/Show.S01E01.strm")));
+}
+
+#[test]
 fn video_file_case_insensitive() {
     assert!(is_video_file(Path::new("movie.MKV")));
     assert!(is_video_file(Path::new("movie.Mp4")));

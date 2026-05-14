@@ -926,7 +926,7 @@ impl DownloadQueueDeleteStatus {
 }
 
 pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "wmv", "mov", "m4v", "ts", "m2ts", "webm", "flv", "ogv",
+    "mkv", "mp4", "avi", "wmv", "mov", "m4v", "ts", "m2ts", "webm", "flv", "ogv", "strm",
 ];
 
 pub const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "sub", "vtt", "idx"];

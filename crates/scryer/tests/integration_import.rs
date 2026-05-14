@@ -488,6 +488,52 @@ async fn import_fails_when_no_video_files_in_dest_dir() {
     assert_eq!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles));
 }
 
+#[tokio::test]
+async fn import_movie_strm_file_is_treated_as_video_artifact() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let strm = source_dir
+        .path()
+        .join("Test.Movie.2024.1080p.WEB-DL.H264.strm");
+    std::fs::write(
+        &strm,
+        b"https://nzbdav.example/stream/Test.Movie.2024.1080p.WEB-DL.H264",
+    )
+    .expect("write strm");
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_movie_title(
+        &ctx,
+        "title-movie-strm-1",
+        "Test Movie",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+
+    let completed = scryer_completed(
+        "dl-movie-strm-1",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "movie",
+    );
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("import_completed_download");
+
+    assert_eq!(result.decision, ImportDecision::Imported);
+    let dest_path = result.dest_path.expect("dest path");
+    assert!(dest_path.ends_with(".strm"));
+    assert!(std::path::Path::new(&dest_path).exists());
+    assert_eq!(
+        std::fs::read_to_string(&dest_path).expect("read imported strm"),
+        "https://nzbdav.example/stream/Test.Movie.2024.1080p.WEB-DL.H264"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Happy path: movie import
 // ---------------------------------------------------------------------------
