@@ -380,11 +380,14 @@ jobs:
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
             export RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"
+            export CARGO_BUILD_RUSTC_WRAPPER="$HOME/.cargo/bin/sccache"
             export SCCACHE_DIR="$HOME/.cache/sccache"
             export SCCACHE_CACHE_SIZE="10G"
             export CARGO_INCREMENTAL=0
+            sccache --stop-server || true
+            sccache --start-server || true
             sccache --zero-stats || true
-            mold -run cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl
+            cargo --config "build.rustc-wrapper=\"$HOME/.cargo/bin/sccache\"" build -p scryer --release --locked --target x86_64-unknown-linux-musl
             sccache --show-stats || true
       - save_rust_cache_unix:
           key_prefix: linux-x86_64-portable-release
