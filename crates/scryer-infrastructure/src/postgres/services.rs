@@ -80,7 +80,7 @@ impl PostgresServices {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
     use super::*;
@@ -153,6 +153,7 @@ mod tests {
                 "expected PostgreSQL blank install to apply through 0111+, got {current_migration_key}",
             );
             assert_postgres_runtime_schema_columns(services.pool()).await?;
+            assert_schema_parity_owned_tables_match_sqlite(services.pool()).await?;
 
             let title = sample_title("pg-blank-install-movie");
             TitleRepository::create(&catalog, title.clone()).await?;
@@ -973,13 +974,46 @@ mod tests {
                 ))
             })
             .collect::<AppResult<_>>()?;
+        let actual_tables: BTreeSet<String> = actual_columns
+            .iter()
+            .map(|(table, _)| table.clone())
+            .collect();
 
         let expected_columns = [
             ("titles", "library_id"),
-            ("titles", "record_json"),
+            ("titles", "name"),
+            ("titles", "facet"),
+            ("titles", "monitored"),
+            ("titles", "tags"),
+            ("titles", "external_ids"),
+            ("titles", "created_by"),
+            ("titles", "created_at"),
+            ("titles", "year"),
+            ("titles", "overview"),
+            ("titles", "poster_url"),
             ("titles", "poster_local_path"),
+            ("titles", "banner_url"),
             ("titles", "banner_local_path"),
+            ("titles", "background_url"),
             ("titles", "background_local_path"),
+            ("titles", "sort_title"),
+            ("titles", "slug"),
+            ("titles", "imdb_id"),
+            ("titles", "runtime_minutes"),
+            ("titles", "genres"),
+            ("titles", "content_status"),
+            ("titles", "language"),
+            ("titles", "first_aired"),
+            ("titles", "network"),
+            ("titles", "studio"),
+            ("titles", "country"),
+            ("titles", "aliases"),
+            ("titles", "metadata_language"),
+            ("titles", "metadata_fetched_at"),
+            ("titles", "min_availability"),
+            ("titles", "digital_release_date"),
+            ("titles", "folder_path"),
+            ("titles", "tagged_aliases_json"),
             ("titles", "metadata_hydration_next_attempt_at"),
             ("titles", "metadata_hydration_attempt_count"),
             ("libraries", "is_default"),
@@ -1002,14 +1036,29 @@ mod tests {
             ("media_files", "analysis_json"),
             ("pending_releases", "scoring_log_json"),
             ("post_processing_scripts", "priority"),
-            ("post_processing_scripts", "record_json"),
-            ("post_processing_script_runs", "record_json"),
-            ("rule_sets", "record_json"),
+            ("post_processing_scripts", "script_content"),
+            ("post_processing_scripts", "applied_facets"),
+            ("post_processing_scripts", "enabled"),
+            ("post_processing_scripts", "debug"),
+            ("post_processing_script_runs", "script_name"),
+            ("post_processing_script_runs", "stdout_tail"),
+            ("post_processing_script_runs", "stderr_tail"),
+            ("post_processing_script_runs", "started_at"),
+            ("post_processing_script_runs", "completed_at"),
+            ("rule_sets", "rego_source"),
+            ("rule_sets", "applied_facets"),
+            ("rule_sets", "is_managed"),
             ("history_events", "event_json"),
             ("event_outboxes", "payload_json"),
             ("collection_external_ids", "provenance"),
             ("episode_external_ids", "provenance"),
-            ("subtitle_provider_configs", "record_json"),
+            ("indexers", "api_key_encrypted"),
+            ("indexers", "config_json"),
+            ("download_clients", "config_json"),
+            ("subtitle_provider_configs", "config_json"),
+            ("subtitle_provider_configs", "enabled_facets"),
+            ("plugin_catalog_status", "status_json"),
+            ("plugin_catalog_status", "checked_at"),
             ("subtitle_downloads", "source_kind"),
             ("user_app_permission_masks", "permission_mask"),
             ("user_library_permission_masks", "permission_mask"),
@@ -1028,7 +1077,144 @@ mod tests {
             "expected PostgreSQL blank install to include runtime schema columns; missing {missing_columns:?}"
         );
 
+        let forbidden_columns = [
+            ("titles", "record_json"),
+            ("titles", "metadata_json"),
+            ("indexers", "record_json"),
+            ("indexers", "api_key"),
+            ("download_clients", "record_json"),
+            ("subtitle_provider_configs", "record_json"),
+            ("subtitle_provider_configs", "status"),
+            ("subtitle_provider_configs", "last_seen_at"),
+            ("rule_sets", "record_json"),
+            ("rule_sets", "rule_json"),
+            ("post_processing_scripts", "record_json"),
+            ("post_processing_scripts", "script_path"),
+            ("post_processing_scripts", "is_enabled"),
+            ("post_processing_script_runs", "record_json"),
+            ("post_processing_script_runs", "output_text"),
+            ("plugin_installations", "record_json"),
+            ("plugin_catalog_sources", "record_json"),
+            ("plugin_catalog_status", "record_json"),
+            ("plugin_catalog_status", "catalog_json"),
+        ];
+        let unexpected_columns: Vec<String> = forbidden_columns
+            .into_iter()
+            .filter(|(table, column)| {
+                actual_columns.contains(&(table.to_string(), column.to_string()))
+            })
+            .map(|(table, column)| format!("{table}.{column}"))
+            .collect();
+
+        assert!(
+            unexpected_columns.is_empty(),
+            "PostgreSQL blank install still exposes legacy compatibility columns: {unexpected_columns:?}"
+        );
+
+        assert!(
+            !actual_tables.contains("subtitle_providers"),
+            "PostgreSQL blank install still exposes legacy subtitle_providers table"
+        );
+
         Ok(())
+    }
+
+    async fn assert_schema_parity_owned_tables_match_sqlite(
+        postgres_pool: &sqlx::PgPool,
+    ) -> AppResult<()> {
+        let sqlite = crate::sqlite_services::SqliteServices::new_with_mode(
+            "sqlite://:memory:",
+            MigrationMode::Apply,
+        )
+        .await?;
+
+        let sqlite_schema = sqlite_table_columns(sqlite.pool()).await?;
+        let postgres_schema = postgres_table_columns(postgres_pool).await?;
+        let parity_tables = [
+            "titles",
+            "indexers",
+            "download_clients",
+            "subtitle_provider_configs",
+            "rule_sets",
+            "post_processing_scripts",
+            "post_processing_script_runs",
+            "plugin_installations",
+            "plugin_catalog_sources",
+            "plugin_catalog_status",
+        ];
+
+        let mut mismatches = Vec::new();
+        for table in parity_tables {
+            let sqlite_columns = sqlite_schema.get(table).cloned().unwrap_or_default();
+            let postgres_columns = postgres_schema.get(table).cloned().unwrap_or_default();
+            if sqlite_columns != postgres_columns {
+                mismatches.push(format!(
+                    "{table}: sqlite={sqlite_columns:?} postgres={postgres_columns:?}"
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "SQLite/PostgreSQL logical schema parity mismatch: {mismatches:#?}"
+        );
+        Ok(())
+    }
+
+    async fn sqlite_table_columns(
+        pool: &sqlx::SqlitePool,
+    ) -> AppResult<BTreeMap<String, BTreeSet<String>>> {
+        let rows = sqlx::query(
+            "SELECT m.name AS table_name, p.name AS column_name
+               FROM sqlite_master m
+               JOIN pragma_table_info(m.name) p
+              WHERE m.type = 'table'
+                AND m.name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let mut schema = BTreeMap::new();
+        for row in rows {
+            let table_name: String = row
+                .try_get("table_name")
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            let column_name: String = row
+                .try_get("column_name")
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            schema
+                .entry(table_name)
+                .or_insert_with(BTreeSet::new)
+                .insert(column_name);
+        }
+        Ok(schema)
+    }
+
+    async fn postgres_table_columns(
+        pool: &sqlx::PgPool,
+    ) -> AppResult<BTreeMap<String, BTreeSet<String>>> {
+        let rows = sqlx::query(
+            "SELECT table_name, column_name
+               FROM information_schema.columns
+              WHERE table_schema = current_schema()",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let mut schema = BTreeMap::new();
+        for row in rows {
+            let table_name: String = row
+                .try_get("table_name")
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            let column_name: String = row
+                .try_get("column_name")
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            schema
+                .entry(table_name)
+                .or_insert_with(BTreeSet::new)
+                .insert(column_name);
+        }
+        Ok(schema)
     }
 
     fn sample_title(id: &str) -> Title {

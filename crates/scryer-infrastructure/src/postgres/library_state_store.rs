@@ -2090,7 +2090,7 @@ impl TitleImageRepository for PostgresLibraryStateSql {
             TitleImageKind::Banner => "banner_url",
             TitleImageKind::Fanart => "background_url",
         };
-        let source_expr = format!("t.record_json ->> '{source_key}'");
+        let source_expr = format!("t.{source_key}");
         let sql = format!(
             "SELECT t.id AS title_id, {source_expr} AS source_url, ti.source_url AS cached_source_url
                FROM titles t

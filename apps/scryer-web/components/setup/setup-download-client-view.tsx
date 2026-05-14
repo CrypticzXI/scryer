@@ -72,7 +72,13 @@ export function SetupDownloadClientView({
   error,
 }: SetupDownloadClientViewProps) {
   const showApiKey = draft.clientType === "sabnzbd" || draft.clientType === "weaver";
-  const showCredentials = draft.clientType === "nzbget" || draft.clientType === "qbittorrent";
+  const showCredentials =
+    draft.clientType === "nzbget" ||
+    draft.clientType === "qbittorrent" ||
+    draft.clientType === "sabnzbd";
+  const showSabAlternativeAuth = draft.clientType === "sabnzbd";
+  const showDecypharrFilesystemHelp =
+    draft.clientType === "sabnzbd" || draft.clientType === "qbittorrent";
   const weaverApiKeyUrl = draft.clientType === "weaver" ? buildWeaverApiKeyUrl(draft) : "";
   const normalizedClientType = draft.clientType.trim().toLowerCase();
   const selectedDownloadClientLabel =
@@ -179,13 +185,20 @@ export function SetupDownloadClientView({
                   <span>finish the Weaver URL above to generate the link.</span>
                 )}
               </p>
+            ) : draft.clientType === "sabnzbd" ? (
+              <p className="text-xs text-muted-foreground">
+                {t("settings.downloadClientSabnzbdAuthHelp")}
+              </p>
             ) : null}
           </div>
         )}
         {showCredentials && (
           <>
             <div className="space-y-2">
-              <Label htmlFor="dc-username">{t("settings.username")}</Label>
+              <Label htmlFor="dc-username">
+                {t("settings.username")}
+                {showSabAlternativeAuth ? " (optional)" : ""}
+              </Label>
               <Input
                 id="dc-username"
                 value={draft.username}
@@ -193,7 +206,10 @@ export function SetupDownloadClientView({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="dc-password">{t("settings.password")}</Label>
+              <Label htmlFor="dc-password">
+                {t("settings.password")}
+                {showSabAlternativeAuth ? " (optional)" : ""}
+              </Label>
               <Input
                 id="dc-password"
                 type="password"
@@ -201,13 +217,24 @@ export function SetupDownloadClientView({
                 onChange={(e) => onDraftChange({ password: e.target.value })}
               />
             </div>
+            {draft.clientType === "qbittorrent" ? (
+              <p className="text-xs text-muted-foreground">
+                {t("settings.downloadClientQbittorrentDecypharrHelp")}
+              </p>
+            ) : null}
           </>
         )}
+        {showDecypharrFilesystemHelp ? (
+          <p className="text-xs text-muted-foreground">
+            {t("settings.downloadClientDecypharrFilesystemHelp")}
+          </p>
+        ) : null}
         <DownloadClientRemotePathMappingsField
           fieldKey="remote_path_mappings"
           label={t("settings.downloadClientRemotePathMappings")}
           value={draft.remotePathMappings}
           helpText={t("settings.downloadClientRemotePathMappingsHelp")}
+          translate={t}
           onChange={(_, value) => onDraftChange({ remotePathMappings: value })}
         />
         <div className="flex items-center gap-3">

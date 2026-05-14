@@ -27,6 +27,7 @@ mod library_scan_unmatched;
 mod media;
 mod notifications;
 mod null_repositories;
+pub mod persisted_records;
 mod plugins;
 mod polling_worker;
 mod ports;

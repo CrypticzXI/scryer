@@ -1,4 +1,7 @@
-use scryer_application::AppResult;
+use scryer_application::{
+    AppResult,
+    persisted_records::external_plugin_installation_is_supported_shape as shared_external_plugin_installation_is_supported_shape,
+};
 use scryer_domain::{
     PersistedPluginWasmPayload, PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation,
     PluginSourceKind, PluginSupportTier, PluginWasmEncoding,
@@ -119,7 +122,6 @@ pub(crate) async fn list_plugin_installations_query(
                 docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
                 installed_at, updated_at
          FROM plugin_installations
-         WHERE plugin_type != '__cache'
          ORDER BY is_builtin DESC, name ASC",
     )
     .fetch_all(pool)
@@ -421,7 +423,7 @@ pub(crate) async fn get_enabled_plugin_wasm_bytes_query(
                 docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
                 installed_at, updated_at
          FROM plugin_installations
-         WHERE is_enabled = 1 AND plugin_type != '__cache'",
+         WHERE is_enabled = 1",
     )
     .fetch_all(pool)
     .await
@@ -449,7 +451,7 @@ pub(crate) async fn get_plugin_installation_wasm_payload_query(
     let row = sqlx::query(
         "SELECT wasm_bytes, wasm_encoding
          FROM plugin_installations
-         WHERE plugin_id = ? AND plugin_type != '__cache'",
+         WHERE plugin_id = ?",
     )
     .bind(plugin_id)
     .fetch_optional(pool)
@@ -529,14 +531,13 @@ fn external_installation_is_supported_shape(
     wasm_digest: Option<&str>,
     descriptor_json: Option<&str>,
 ) -> bool {
-    wasm_bytes.is_some()
-        && wasm_encoding == "zstd"
-        && matches!(
-            wasm_digest_algo.map(|value| value.trim().to_ascii_lowercase()),
-            Some(value) if value == "blake3"
-        )
-        && wasm_digest.is_some_and(is_hex_digest)
-        && descriptor_json.is_some_and(|value| !value.trim().is_empty())
+    shared_external_plugin_installation_is_supported_shape(
+        wasm_bytes,
+        wasm_encoding,
+        wasm_digest_algo,
+        wasm_digest,
+        descriptor_json.is_some_and(|value| !value.trim().is_empty()),
+    )
 }
 
 fn row_is_incompatible_external_installation(row: &sqlx::sqlite::SqliteRow) -> bool {
@@ -565,11 +566,6 @@ fn row_is_incompatible_external_installation(row: &sqlx::sqlite::SqliteRow) -> b
         wasm_digest.as_deref(),
         descriptor_json.as_deref(),
     )
-}
-
-fn is_hex_digest(value: &str) -> bool {
-    let trimmed = value.trim();
-    !trimmed.is_empty() && trimmed.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn parse_optional_datetime(value: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {

@@ -15,6 +15,100 @@ fn health_root_label(facet: &MediaFacet) -> &'static str {
     }
 }
 
+fn normalize_health_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    #[cfg(windows)]
+    {
+        trimmed
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+
+    #[cfg(not(windows))]
+    {
+        trimmed.replace('\\', "/").trim_end_matches('/').to_string()
+    }
+}
+
+fn path_overlaps(left: &str, right: &str) -> bool {
+    let left = normalize_health_path(left);
+    let right = normalize_health_path(right);
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+
+    left == right
+        || left
+            .strip_prefix(&right)
+            .is_some_and(|suffix| suffix.starts_with('/') || suffix.starts_with('\\'))
+        || right
+            .strip_prefix(&left)
+            .is_some_and(|suffix| suffix.starts_with('/') || suffix.starts_with('\\'))
+}
+
+fn download_client_status_health_results(
+    config_name: &str,
+    status: &DownloadClientStatus,
+    has_remote_path_mappings: bool,
+    library_roots: &[String],
+) -> Vec<HealthCheckResult> {
+    let unresolved_roots = status
+        .remote_output_roots
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .filter(|path| !std::path::Path::new(path).exists())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    let overlapping_roots = status
+        .remote_output_roots
+        .iter()
+        .filter_map(|download_root| {
+            library_roots
+                .iter()
+                .find(|library_root| path_overlaps(download_root, library_root))
+                .map(|library_root| {
+                    format!("{} overlaps {}", download_root.trim(), library_root.trim())
+                })
+        })
+        .collect::<Vec<_>>();
+
+    let mut results = Vec::new();
+    if !unresolved_roots.is_empty()
+        && (status.is_localhost == Some(false) || has_remote_path_mappings)
+    {
+        results.push(HealthCheckResult {
+            source: "DownloadClient".into(),
+            status: HealthCheckStatus::Warning,
+            message: format!(
+                "Download client '{}' reports output paths that Scryer still cannot access after remote path mapping: {}. Check remote path mappings and container volume mounts.",
+                config_name,
+                unresolved_roots.join(", ")
+            ),
+        });
+    }
+
+    if !overlapping_roots.is_empty() {
+        results.push(HealthCheckResult {
+            source: "DownloadClient".into(),
+            status: HealthCheckStatus::Warning,
+            message: format!(
+                "Download client '{}' reports output roots that overlap library roots: {}. Separate download and library folders to avoid blocked completed-download imports.",
+                config_name,
+                overlapping_roots.join(", ")
+            ),
+        });
+    }
+
+    results
+}
+
 impl AppUseCase {
     /// Run all health checks and return results.
     pub async fn run_health_checks(&self) -> Vec<HealthCheckResult> {
@@ -78,6 +172,28 @@ impl AppUseCase {
             }];
         }
 
+        let mut library_roots = Vec::new();
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            let roots = match self.root_folders_for_facet(&facet).await {
+                Ok(roots) => roots,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        facet = ?facet,
+                        "health check: failed to resolve library roots while checking download clients"
+                    );
+                    Vec::new()
+                }
+            };
+
+            for root in roots {
+                let path = root.path.trim();
+                if !path.is_empty() {
+                    library_roots.push(path.to_string());
+                }
+            }
+        }
+
         let mut results = Vec::new();
         for config in enabled {
             let has_remote_path_mappings =
@@ -107,32 +223,12 @@ impl AppUseCase {
                 Err(_) => continue,
             };
 
-            let unresolved_roots = status
-                .remote_output_roots
-                .iter()
-                .map(|path| path.trim())
-                .filter(|path| !path.is_empty())
-                .filter(|path| !std::path::Path::new(path).exists())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
-
-            if unresolved_roots.is_empty() {
-                continue;
-            }
-
-            if status.is_localhost != Some(false) && !has_remote_path_mappings {
-                continue;
-            }
-
-            results.push(HealthCheckResult {
-                source: "DownloadClient".into(),
-                status: HealthCheckStatus::Warning,
-                message: format!(
-                    "Download client '{}' reports output paths that Scryer still cannot access after remote path mapping: {}. Check remote path mappings and container volume mounts.",
-                    config.name,
-                    unresolved_roots.join(", ")
-                ),
-            });
+            results.extend(download_client_status_health_results(
+                &config.name,
+                &status,
+                has_remote_path_mappings,
+                &library_roots,
+            ));
         }
 
         results
@@ -283,5 +379,67 @@ impl AppUseCase {
         }
 
         results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn download_client_health_warns_for_inaccessible_mapped_roots() {
+        let missing_root = std::env::temp_dir().join(format!(
+            "scryer-health-missing-{}",
+            scryer_domain::Id::new().0
+        ));
+        let status = DownloadClientStatus {
+            is_localhost: Some(true),
+            remote_output_roots: vec![missing_root.display().to_string()],
+            ..DownloadClientStatus::default()
+        };
+
+        let results = download_client_status_health_results("Decypharr SAB", &status, true, &[]);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source, "DownloadClient");
+        assert_eq!(results[0].status, HealthCheckStatus::Warning);
+        assert!(results[0].message.contains("Decypharr SAB"));
+        assert!(
+            results[0]
+                .message
+                .contains("still cannot access after remote path mapping")
+        );
+        assert!(
+            results[0]
+                .message
+                .contains(missing_root.display().to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn download_client_health_warns_for_overlapping_library_roots() {
+        let status = DownloadClientStatus {
+            is_localhost: Some(true),
+            remote_output_roots: vec!["/srv/downloads/complete/series".to_string()],
+            ..DownloadClientStatus::default()
+        };
+
+        let results = download_client_status_health_results(
+            "Decypharr qBittorrent",
+            &status,
+            false,
+            &["/srv/downloads/complete/series".to_string()],
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source, "DownloadClient");
+        assert_eq!(results[0].status, HealthCheckStatus::Warning);
+        assert!(results[0].message.contains("Decypharr qBittorrent"));
+        assert!(results[0].message.contains("overlap library roots"));
+        assert!(
+            results[0]
+                .message
+                .contains("/srv/downloads/complete/series overlaps /srv/downloads/complete/series")
+        );
     }
 }

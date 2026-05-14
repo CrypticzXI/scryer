@@ -4,7 +4,8 @@ import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useTranslate } from "@/lib/context/translate-context";
+import type { Translate } from "@/components/root/types";
+import { TranslateContext } from "@/lib/context/translate-context";
 
 type PathMappingRow = {
   localPath: string;
@@ -21,6 +22,7 @@ export type LocalRemotePathMappingsFieldProps = {
   required?: boolean;
   maxRows?: number;
   direction?: PathMappingDirection;
+  translate?: Translate;
   onChange: (key: string, value: string) => void;
 };
 
@@ -75,9 +77,14 @@ export function LocalRemotePathMappingsField({
   required = false,
   maxRows = DEFAULT_MAX_ROWS,
   direction = "local-to-remote",
+  translate,
   onChange,
 }: LocalRemotePathMappingsFieldProps) {
-  const t = useTranslate();
+  const translateFromContext = React.useContext(TranslateContext);
+  const t =
+    translate ??
+    translateFromContext ??
+    ((key: string) => key);
   const [rows, setRows] = React.useState<PathMappingRow[]>(() =>
     parsePathMappings(value, direction),
   );

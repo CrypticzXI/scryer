@@ -645,16 +645,20 @@ impl PrioritizedDownloadClientRouter {
                             config.id
                         ))
                     })?;
-                let api_key = read_config_string(&parsed_config, &["api_key", "apiKey", "apikey"])
-                    .ok_or_else(|| {
-                        AppError::Validation(format!(
-                            "download client {} (sabnzbd) requires an API key",
-                            config.id
-                        ))
-                    })?;
-                let client = SabnzbdDownloadClient::with_staged_nzb_store(
+                let api_key = read_config_string(&parsed_config, &["api_key", "apiKey", "apikey"]);
+                let username = read_config_string(&parsed_config, &["username"]);
+                let password = read_config_string(&parsed_config, &["password"]);
+                if api_key.is_none() && (username.is_none() || password.is_none()) {
+                    return Err(AppError::Validation(format!(
+                        "download client {} (sabnzbd) requires an API key or username/password",
+                        config.id
+                    )));
+                }
+                let client = SabnzbdDownloadClient::with_auth_and_staged_nzb_store(
                     base_url,
                     api_key,
+                    username,
+                    password,
                     staged_nzb_store,
                     staged_nzb_pipeline_limit,
                 );

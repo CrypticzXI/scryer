@@ -369,6 +369,15 @@ const ko: LocaleDictionary = {
     "다운로드 클라이언트 기록에서 실패한 다운로드를 제거합니다.",
   "settings.downloadClientEnabledInfo":
     "비활성화하면 다운로드 라우팅에서 이 클라이언트를 건너뜁니다.",
+  "settings.downloadClientRemotePathMappings": "Remote Path Mappings",
+  "settings.downloadClientRemotePathMappingsHelp":
+    "Map download-client paths reported inside its container or host to local paths Scryer can read. Enter one rule per line as REMOTE => LOCAL.",
+  "settings.downloadClientSabnzbdAuthHelp":
+    "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientQbittorrentDecypharrHelp":
+    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
+  "settings.downloadClientDecypharrFilesystemHelp":
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "내 다운로드 클라이언트",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "예: api",

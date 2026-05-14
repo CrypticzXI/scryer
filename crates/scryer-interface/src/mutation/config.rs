@@ -250,13 +250,30 @@ impl ConfigMutations {
                     .or_else(|| config.get("apikey"))
                     .and_then(Value::as_str)
                     .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| Error::new("sabnzbd requires an API key"))?;
+                    .filter(|value| !value.is_empty());
+                let username = config
+                    .get("username")
+                    .and_then(Value::as_str)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                let password = config
+                    .get("password")
+                    .and_then(Value::as_str)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
 
-                scryer_infrastructure::SabnzbdDownloadClient::new(base_url, api_key)
-                    .test_connection()
-                    .await
-                    .map_err(to_gql_error)?;
+                if api_key.is_none() && (username.is_none() || password.is_none()) {
+                    return Err(Error::new(
+                        "sabnzbd requires an API key or username/password",
+                    ));
+                }
+
+                scryer_infrastructure::SabnzbdDownloadClient::with_auth(
+                    base_url, api_key, username, password,
+                )
+                .test_connection()
+                .await
+                .map_err(to_gql_error)?;
             }
             "weaver" => {
                 let api_key = config

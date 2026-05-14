@@ -322,6 +322,10 @@ export function SettingsDownloadClientsSection({
     (configuredClientLabel || "Download client");
   const hasApiKeyField =
     normalizedClientType === "sabnzbd" || normalizedClientType === "weaver";
+  const showCredentialFields =
+    normalizedClientType === "nzbget" ||
+    normalizedClientType === "qbittorrent" ||
+    normalizedClientType === "sabnzbd";
   const weaverApiKeyUrl =
     normalizedClientType === "weaver" ? buildWeaverApiKeyUrl(downloadClientDraft) : "";
 
@@ -366,7 +370,8 @@ export function SettingsDownloadClientsSection({
     }
     return ordered;
   }, [downloadClientOrder, clientById, settingsDownloadClients]);
-  const hasOptionalCredentials = normalizedClientType === "nzbget";
+  const hasOptionalCredentials =
+    normalizedClientType === "nzbget" || normalizedClientType === "sabnzbd";
   const optionalCredentialLabel = hasOptionalCredentials ? " (optional)" : "";
 
   return (
@@ -638,10 +643,14 @@ export function SettingsDownloadClientsSection({
                         <span>finish the Weaver URL above to generate the link.</span>
                       )}
                     </p>
+                  ) : normalizedClientType === "sabnzbd" ? (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {t("settings.downloadClientSabnzbdAuthHelp")}
+                    </p>
                   ) : null}
                 </label>
               ) : null}
-              {!hasApiKeyField ? (
+              {showCredentialFields ? (
                 <>
                   <label>
                     <Label className="mb-2 block">
@@ -676,7 +685,17 @@ export function SettingsDownloadClientsSection({
                       type="password"
                     />
                   </label>
+                  {normalizedClientType === "qbittorrent" ? (
+                    <p className="md:col-span-3 text-xs text-muted-foreground">
+                      {t("settings.downloadClientQbittorrentDecypharrHelp")}
+                    </p>
+                  ) : null}
                 </>
+              ) : null}
+              {normalizedClientType === "sabnzbd" || normalizedClientType === "qbittorrent" ? (
+                <p className="md:col-span-3 text-xs text-muted-foreground">
+                  {t("settings.downloadClientDecypharrFilesystemHelp")}
+                </p>
               ) : null}
               <details className="md:col-span-3 rounded-xl border border-border bg-card p-3" open>
                 <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">

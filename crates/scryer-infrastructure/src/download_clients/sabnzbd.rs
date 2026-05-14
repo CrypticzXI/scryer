@@ -6,13 +6,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::multipart;
 use scryer_application::{
-    AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadGrabResult,
-    NullStagedNzbStore, StagedNzbRef, StagedNzbStore,
+    AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadClientStatus,
+    DownloadGrabResult, NullStagedNzbStore, StagedNzbRef, StagedNzbStore,
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, default_reqwest_client,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::fs::File;
@@ -28,17 +29,103 @@ use super::{
 #[derive(Clone)]
 pub struct SabnzbdDownloadClient {
     base_url: String,
-    api_key: String,
+    api_key: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
     outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SabnzbdConfigEnvelope {
+    config: SabnzbdConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SabnzbdConfig {
+    #[serde(default)]
+    misc: SabnzbdConfigMisc,
+    #[serde(default)]
+    categories: Vec<SabnzbdCategory>,
+    #[serde(default)]
+    sorters: Vec<SabnzbdSorter>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SabnzbdConfigMisc {
+    #[serde(default)]
+    complete_dir: String,
+    #[serde(default, deserialize_with = "deserialize_sab_string_list")]
+    tv_categories: Vec<String>,
+    #[serde(default)]
+    enable_tv_sorting: bool,
+    #[serde(default, deserialize_with = "deserialize_sab_string_list")]
+    movie_categories: Vec<String>,
+    #[serde(default)]
+    enable_movie_sorting: bool,
+    #[serde(default, deserialize_with = "deserialize_sab_string_list")]
+    date_categories: Vec<String>,
+    #[serde(default)]
+    enable_date_sorting: bool,
+    #[serde(default)]
+    history_retention: String,
+    #[serde(default)]
+    history_retention_option: String,
+    #[serde(default)]
+    history_retention_number: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SabnzbdCategory {
+    #[serde(default, alias = "Name")]
+    _name: String,
+    #[serde(default, alias = "Dir")]
+    dir: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SabnzbdSorter {
+    #[serde(default, deserialize_with = "deserialize_sab_string_list")]
+    sort_cats: Vec<String>,
+    #[serde(default)]
+    is_active: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SabnzbdFullStatusEnvelope {
+    status: SabnzbdFullStatus,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SabnzbdFullStatus {
+    #[serde(default, rename = "completedir")]
+    complete_dir: String,
+}
+
 impl SabnzbdDownloadClient {
     pub fn new(base_url: String, api_key: String) -> Self {
-        Self::with_staged_nzb_store(
+        Self::with_auth_and_staged_nzb_store(
+            base_url,
+            Some(api_key),
+            None,
+            None,
+            Arc::new(NullStagedNzbStore),
+            Arc::new(Semaphore::new(4)),
+        )
+    }
+
+    pub fn with_auth(
+        base_url: String,
+        api_key: Option<String>,
+        username: Option<String>,
+        password: Option<String>,
+    ) -> Self {
+        Self::with_auth_and_staged_nzb_store(
             base_url,
             api_key,
+            username,
+            password,
             Arc::new(NullStagedNzbStore),
             Arc::new(Semaphore::new(4)),
         )
@@ -50,10 +137,30 @@ impl SabnzbdDownloadClient {
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
     ) -> Self {
+        Self::with_auth_and_staged_nzb_store(
+            base_url,
+            Some(api_key),
+            None,
+            None,
+            staged_nzb_store,
+            staged_nzb_pipeline_limit,
+        )
+    }
+
+    pub fn with_auth_and_staged_nzb_store(
+        base_url: String,
+        api_key: Option<String>,
+        username: Option<String>,
+        password: Option<String>,
+        staged_nzb_store: Arc<dyn StagedNzbStore>,
+        staged_nzb_pipeline_limit: Arc<Semaphore>,
+    ) -> Self {
         let http_client = default_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key,
+            api_key: normalize_optional_auth_value(api_key),
+            username: normalize_optional_auth_value(username),
+            password: normalize_optional_auth_value(password),
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             staged_nzb_store,
             staged_nzb_pipeline_limit,
@@ -140,10 +247,8 @@ impl SabnzbdDownloadClient {
         policy: RequestPolicy,
     ) -> AppResult<Value> {
         let url = self.api_url();
-        let mut query = vec![
-            ("apikey".to_string(), self.api_key.clone()),
-            ("output".to_string(), "json".to_string()),
-        ];
+        let mut query = self.auth_query_params()?;
+        query.push(("output".to_string(), "json".to_string()));
         query.extend(
             params
                 .iter()
@@ -206,6 +311,106 @@ impl SabnzbdDownloadClient {
             .cloned()
             .unwrap_or_default())
     }
+
+    async fn get_config(&self) -> AppResult<SabnzbdConfig> {
+        let json = self.api_get(&[("mode", "get_config")]).await?;
+        serde_json::from_value::<SabnzbdConfigEnvelope>(json)
+            .map(|response| response.config)
+            .map_err(|error| {
+                AppError::Repository(format!("sabnzbd config response parse failed: {error}"))
+            })
+    }
+
+    async fn get_full_status(&self) -> AppResult<SabnzbdFullStatus> {
+        let json = self
+            .api_get(&[("mode", "fullstatus"), ("skip_dashboard", "1")])
+            .await?;
+        serde_json::from_value::<SabnzbdFullStatusEnvelope>(json)
+            .map(|response| response.status)
+            .map_err(|error| {
+                AppError::Repository(format!("sabnzbd fullstatus response parse failed: {error}"))
+            })
+    }
+
+    fn auth_query_params(&self) -> AppResult<Vec<(String, String)>> {
+        if let Some(api_key) = self.api_key.as_ref() {
+            return Ok(vec![("apikey".to_string(), api_key.clone())]);
+        }
+
+        match (self.username.as_ref(), self.password.as_ref()) {
+            (Some(username), Some(password)) => Ok(vec![
+                ("ma_username".to_string(), username.clone()),
+                ("ma_password".to_string(), password.clone()),
+            ]),
+            _ => Err(AppError::Validation(
+                "sabnzbd requires an API key or username/password".to_string(),
+            )),
+        }
+    }
+
+    fn derive_sorting_mode(config: &SabnzbdConfig) -> Option<String> {
+        if config
+            .sorters
+            .iter()
+            .any(|sorter| sorter.is_active && !sorter.sort_cats.is_empty())
+            || (config.misc.enable_tv_sorting && !config.misc.tv_categories.is_empty())
+        {
+            return Some("TV".to_string());
+        }
+
+        if config.misc.enable_movie_sorting && !config.misc.movie_categories.is_empty() {
+            return Some("Movie".to_string());
+        }
+
+        if config.misc.enable_date_sorting && !config.misc.date_categories.is_empty() {
+            return Some("Date".to_string());
+        }
+
+        None
+    }
+
+    fn removes_completed_downloads(config: &SabnzbdConfig) -> bool {
+        match config.misc.history_retention_option.as_str() {
+            "all" => false,
+            "number-archive" | "number-delete" | "all-archive" | "all-delete" => true,
+            "days-archive" | "days-delete" => config.misc.history_retention_number < 14,
+            _ => {
+                let retention = config.misc.history_retention.trim();
+                if retention.is_empty() {
+                    return false;
+                }
+
+                if let Some(days) = retention.strip_suffix('d') {
+                    return days.parse::<i64>().unwrap_or(i64::MAX) < 14;
+                }
+
+                retention != "0"
+            }
+        }
+    }
+
+    fn output_roots_from_config(
+        &self,
+        config: &SabnzbdConfig,
+        full_status: Option<&SabnzbdFullStatus>,
+    ) -> Vec<String> {
+        let complete_dir = resolved_complete_dir(&config.misc.complete_dir, full_status);
+        let mut roots = Vec::new();
+
+        if !complete_dir.is_empty() {
+            roots.push(complete_dir.clone());
+        }
+
+        for category in &config.categories {
+            let path = category_output_root(&complete_dir, &category.dir);
+            if !path.is_empty() {
+                roots.push(path);
+            }
+        }
+
+        dedupe_strings(roots)
+    }
+
     pub async fn test_connection(&self) -> AppResult<String> {
         // First check connectivity with unauthenticated version call
         let url = self.api_url();
@@ -256,7 +461,7 @@ impl SabnzbdDownloadClient {
         self.api_get(&[("mode", "queue"), ("limit", "0")])
             .await
             .map_err(|err| {
-                AppError::Repository(format!("sabnzbd api key validation failed: {err}"))
+                AppError::Repository(format!("sabnzbd authentication validation failed: {err}"))
             })?;
 
         if warnings.is_empty() {
@@ -310,7 +515,6 @@ impl DownloadClient for SabnzbdDownloadClient {
                 .map(str::trim)
                 .filter(|value| !value.is_empty() && *value != "0")
                 .map(str::to_string);
-            let api_key = self.api_key.clone();
             let nzb_name_owned = nzb_name.to_string();
             let queue_priority =
                 sabnzbd_queue_priority(request.queue_priority.as_deref()).to_string();
@@ -324,13 +528,15 @@ impl DownloadClient for SabnzbdDownloadClient {
                 .outbound_http
                 .send_async(self.mutation_policy("sabnzbd_addfile"), || {
                     let url = url.clone();
-                    let api_key = api_key.clone();
                     let nzb_name_owned = nzb_name_owned.clone();
                     let queue_priority = queue_priority.clone();
                     let gzip_path_for_request = gzip_path_for_request.clone();
                     let nzb_filename_for_request = nzb_filename_for_request.clone();
                     let cat = cat.clone();
                     let password = password.clone();
+                    let auth_api_key = self.api_key.clone();
+                    let auth_username = self.username.clone();
+                    let auth_password = self.password.clone();
                     async move {
                         let gzip_file =
                             File::open(&gzip_path_for_request).await.map_err(|error| {
@@ -350,12 +556,23 @@ impl DownloadClient for SabnzbdDownloadClient {
                         })?;
 
                         let mut form = multipart::Form::new()
-                            .text("apikey", api_key)
                             .text("output", "json")
                             .text("mode", "addfile")
                             .text("nzbname", nzb_name_owned)
                             .text("priority", queue_priority)
                             .part("nzbfile", nzb_part);
+                        form = if let Some(api_key) = auth_api_key {
+                            form.text("apikey", api_key)
+                        } else if let (Some(username), Some(password)) =
+                            (auth_username, auth_password)
+                        {
+                            form.text("ma_username", username)
+                                .text("ma_password", password)
+                        } else {
+                            return Err(AppError::Validation(
+                                "sabnzbd requires an API key or username/password".to_string(),
+                            ));
+                        };
 
                         if let Some(cat) = cat {
                             form = form.text("cat", cat);
@@ -793,6 +1010,20 @@ impl DownloadClient for SabnzbdDownloadClient {
             .collect())
     }
 
+    async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {
+        let config = self.get_config().await?;
+        let full_status = self.get_full_status().await.ok();
+
+        Ok(DownloadClientStatus {
+            version: None,
+            is_localhost: is_localhost_base_url(&self.base_url),
+            remote_output_roots: self.output_roots_from_config(&config, full_status.as_ref()),
+            removes_completed_downloads: Some(Self::removes_completed_downloads(&config)),
+            sorting_mode: Self::derive_sorting_mode(&config),
+            warnings: Vec::new(),
+        })
+    }
+
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
         self.api_get_mutation(
             &[("mode", "queue"), ("name", "pause"), ("value", id)],
@@ -936,4 +1167,105 @@ fn sabnzbd_history_state(status: &str) -> (DownloadQueueState, Option<String>) {
             }
         }
     }
+}
+
+fn deserialize_sab_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::Null => Vec::new(),
+        Value::String(value) => value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
+fn normalize_optional_auth_value(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if deduped.iter().any(|existing| existing == trimmed) {
+            continue;
+        }
+        deduped.push(trimmed.to_string());
+    }
+    deduped
+}
+
+fn resolved_complete_dir(
+    configured_complete_dir: &str,
+    full_status: Option<&SabnzbdFullStatus>,
+) -> String {
+    let complete_dir = configured_complete_dir.trim();
+    if complete_dir.is_empty() {
+        return full_status
+            .map(|status| status.complete_dir.trim().to_string())
+            .unwrap_or_default();
+    }
+
+    let configured_path = std::path::Path::new(complete_dir);
+    if configured_path.is_absolute() {
+        return complete_dir.to_string();
+    }
+
+    full_status
+        .map(|status| status.complete_dir.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| complete_dir.to_string())
+}
+
+fn category_output_root(complete_dir: &str, category_dir: &str) -> String {
+    let trimmed_dir = category_dir.trim().trim_end_matches('*');
+    if trimmed_dir.is_empty() {
+        return complete_dir.trim().to_string();
+    }
+    if complete_dir.trim().is_empty() {
+        return trimmed_dir.to_string();
+    }
+
+    join_output_root(complete_dir, trimmed_dir)
+}
+
+fn join_output_root(base: &str, suffix: &str) -> String {
+    let base = base.trim().trim_end_matches(['/', '\\']);
+    let suffix = suffix.trim().trim_start_matches(['/', '\\']);
+    if base.is_empty() {
+        return suffix.to_string();
+    }
+    if suffix.is_empty() {
+        return base.to_string();
+    }
+    format!("{base}/{suffix}")
+}
+
+fn is_localhost_base_url(base_url: &str) -> Option<bool> {
+    let parsed = reqwest::Url::parse(base_url).ok()?;
+    let host = parsed.host_str()?;
+    Some(matches!(
+        host,
+        "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" | "host.docker.internal"
+    ))
 }

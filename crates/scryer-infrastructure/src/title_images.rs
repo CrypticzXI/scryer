@@ -334,14 +334,6 @@ pub(crate) fn materialize_local_title_image_path(
     synthesize_local_title_image_url("", title_id, kind, variant_key, version_hash)
 }
 
-pub(crate) fn prefix_local_title_image_path(base_path: &str, local_path: &str) -> String {
-    if base_path.is_empty() {
-        local_path.to_string()
-    } else {
-        format!("{base_path}{local_path}")
-    }
-}
-
 pub(crate) async fn list_titles_requiring_image_refresh_query(
     pool: &SqlitePool,
     kind: TitleImageKind,

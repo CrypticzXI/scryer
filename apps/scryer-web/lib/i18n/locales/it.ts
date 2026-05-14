@@ -386,6 +386,12 @@ const it: LocaleDictionary = {
   "settings.downloadClientRemotePathMappings": "Mappature percorsi remoti",
   "settings.downloadClientRemotePathMappingsHelp":
     "Mappa i percorsi segnalati dal client di download nel suo container o host verso percorsi locali che Scryer può leggere. Inserisci una regola per riga come REMOTE => LOCAL.",
+  "settings.downloadClientSabnzbdAuthHelp":
+    "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientQbittorrentDecypharrHelp":
+    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
+  "settings.downloadClientDecypharrFilesystemHelp":
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "Il mio client di download",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "es. api",

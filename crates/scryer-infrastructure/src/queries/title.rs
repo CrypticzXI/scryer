@@ -1,6 +1,9 @@
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate,
     PendingTitleHydration, PrimaryCollectionSummary, ScopedExternalId, TitleMetadataUpdate,
+    persisted_records::{
+        PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
+    },
 };
 use scryer_domain::{
     CalendarEpisode, Collection, CollectionType, Episode, ExternalId, InterstitialMovieMetadata,
@@ -11,7 +14,7 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
 use super::common::{parse_utc_datetime, repository_error_from_sqlx};
-use crate::title_images::{normalized_base_path_from_env, prefix_local_title_image_path};
+use crate::title_images::normalized_base_path_from_env;
 
 const TITLE_COLUMNS: &str = "id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at, \
     year, overview, poster_url, poster_local_path, banner_url, banner_local_path, background_url, background_local_path, \
@@ -652,7 +655,7 @@ fn row_to_title(
         None => None,
     };
 
-    let mut title = Title {
+    let title = Title {
         id,
         library_id,
         name,
@@ -695,22 +698,20 @@ fn row_to_title(
         folder_path,
     };
 
-    if mode == TitleReadMode::Presentation {
-        if let Some(local_path) = poster_local_path.as_deref() {
-            title.poster_source_url = title.poster_url.take();
-            title.poster_url = Some(prefix_local_title_image_path(base_path, local_path));
-        }
-        if let Some(local_path) = banner_local_path.as_deref() {
-            title.banner_source_url = title.banner_url.take();
-            title.banner_url = Some(prefix_local_title_image_path(base_path, local_path));
-        }
-        if let Some(local_path) = background_local_path.as_deref() {
-            title.background_source_url = title.background_url.take();
-            title.background_url = Some(prefix_local_title_image_path(base_path, local_path));
-        }
-    }
-
-    Ok(title)
+    Ok(finalize_persisted_title(
+        title,
+        PersistedTitleDecodeOptions {
+            mode: match mode {
+                TitleReadMode::Presentation => PersistedTitleReadMode::Presentation,
+                TitleReadMode::Matching => PersistedTitleReadMode::Matching,
+            },
+            include_external_ids: true,
+            base_path,
+            poster_local_path: poster_local_path.as_deref(),
+            banner_local_path: banner_local_path.as_deref(),
+            background_local_path: background_local_path.as_deref(),
+        },
+    ))
 }
 
 pub(crate) async fn list_collections_for_title_query(

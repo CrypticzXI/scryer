@@ -219,6 +219,23 @@ file = "postgres/migrations/0113_title_read_indexes.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 114
+description = "postgres schema parity hard cutover"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0114_postgres_schema_parity_hard_cutover.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0114_schema_parity_hard_cutover.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"
@@ -228,3 +245,8 @@ engine = "sqlite"
 through_version = 100
 file = "postgres/baselines/0100_baseline.sql"
 engine = "postgres"
+
+[[baseline]]
+through_version = 114
+file = "baselines/0114_baseline.sql"
+engine = "sqlite"

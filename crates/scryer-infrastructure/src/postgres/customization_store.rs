@@ -1,13 +1,13 @@
 use async_trait::async_trait;
-use chrono::Utc;
-use scryer_application::{AppError, AppResult};
+use chrono::{DateTime, Utc};
+use scryer_application::{
+    AppError, AppResult, persisted_records::external_plugin_installation_is_supported_shape,
+};
 use scryer_domain::{
-    Id, PersistedPluginWasmPayload, PluginCatalogSource, PluginCatalogStatusRecord,
+    Id, MediaFacet, PersistedPluginWasmPayload, PluginCatalogSource, PluginCatalogStatusRecord,
     PluginInstallation, PluginSourceKind, PluginSupportTier, PluginWasmEncoding,
     PostProcessingScript, PostProcessingScriptRun, RuleSet,
 };
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::Row;
 
@@ -33,34 +33,19 @@ impl PostgresCustomizationSql {
     }
 
     async fn prune_incompatible_external_plugin_installations(&self) -> AppResult<Vec<String>> {
-        let rows = sqlx::query(
-            "SELECT plugin_id, wasm_bytes, wasm_encoding, wasm_digest_algo, wasm_digest, descriptor_json
-             FROM plugin_installations
-             WHERE is_builtin = FALSE AND source_kind IN ('downloaded', 'manual')",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {PLUGIN_INSTALLATION_COLUMNS}, wasm_bytes
+               FROM plugin_installations
+              WHERE is_builtin = FALSE AND source_kind IN ('downloaded', 'manual')"
+        ))
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
 
         let mut removed_plugin_ids = Vec::new();
         for row in rows {
-            let plugin_id: String = row.try_get("plugin_id").map_err(repo_err)?;
-            let wasm_bytes: Option<Vec<u8>> = row.try_get("wasm_bytes").map_err(repo_err)?;
-            let wasm_encoding: String = row.try_get("wasm_encoding").map_err(repo_err)?;
-            let wasm_digest_algo: Option<String> =
-                row.try_get("wasm_digest_algo").map_err(repo_err)?;
-            let wasm_digest: Option<String> = row.try_get("wasm_digest").map_err(repo_err)?;
-            let descriptor_json: Option<Value> =
-                row.try_get("descriptor_json").map_err(repo_err)?;
-
-            if !external_installation_is_supported_shape(
-                wasm_bytes.as_deref(),
-                &wasm_encoding,
-                wasm_digest_algo.as_deref(),
-                wasm_digest.as_deref(),
-                descriptor_json.as_ref(),
-            ) {
-                removed_plugin_ids.push(plugin_id);
+            if row_is_incompatible_external_installation(&row) {
+                removed_plugin_ids.push(row.try_get("plugin_id").map_err(repo_err)?);
             }
         }
 
@@ -80,7 +65,6 @@ impl PostgresCustomizationSql {
         installation: &PluginInstallation,
         wasm_bytes: Option<&[u8]>,
     ) -> AppResult<PluginInstallation> {
-        let record_json = serde_json::to_value(installation).map_err(repo_err)?;
         let descriptor_json = optional_json_value(installation.descriptor_json.as_deref())?;
         sqlx::query(
             "INSERT INTO plugin_installations (
@@ -88,14 +72,14 @@ impl PostgresCustomizationSql {
                 scryer_constraint, plugin_type, provider_type, source_kind, is_enabled,
                 is_builtin, wasm_bytes, wasm_encoding, wasm_digest_algo, source_url,
                 support_tier, publisher, docs_url, source_repo, manifest_url, wasm_digest,
-                artifact_digest, descriptor_json, record_json, installed_at, updated_at
+                artifact_digest, descriptor_json, installed_at, updated_at
              )
              VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, $11, $12,
                 $13, $14, $15, $16, $17,
                 $18, $19, $20, $21, $22, $23,
-                $24, $25::jsonb, $26::jsonb, $27, $28
+                $24, $25::jsonb, $26, $27
              )
              ON CONFLICT (plugin_id) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -121,7 +105,6 @@ impl PostgresCustomizationSql {
                 wasm_digest = EXCLUDED.wasm_digest,
                 artifact_digest = EXCLUDED.artifact_digest,
                 descriptor_json = EXCLUDED.descriptor_json,
-                record_json = EXCLUDED.record_json,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(&installation.id)
@@ -134,14 +117,14 @@ impl PostgresCustomizationSql {
         .bind(&installation.scryer_constraint)
         .bind(&installation.plugin_type)
         .bind(&installation.provider_type)
-        .bind(enum_json_string(&installation.source_kind)?)
+        .bind(source_kind_label(installation.source_kind))
         .bind(installation.is_enabled)
         .bind(installation.is_builtin)
         .bind(wasm_bytes.map(|bytes| bytes.to_vec()))
-        .bind(enum_json_string(&installation.wasm_encoding)?)
+        .bind(wasm_encoding_label(installation.wasm_encoding))
         .bind(&installation.wasm_digest_algo)
         .bind(&installation.source_url)
-        .bind(enum_json_string(&installation.support_tier)?)
+        .bind(support_tier_label(installation.support_tier))
         .bind(&installation.publisher)
         .bind(&installation.docs_url)
         .bind(&installation.source_repo)
@@ -149,7 +132,6 @@ impl PostgresCustomizationSql {
         .bind(&installation.wasm_digest)
         .bind(&installation.artifact_digest)
         .bind(descriptor_json)
-        .bind(record_json)
         .bind(installation.installed_at)
         .bind(installation.updated_at)
         .execute(&self.pool)
@@ -159,27 +141,38 @@ impl PostgresCustomizationSql {
     }
 
     async fn upsert_post_processing_script(&self, script: &PostProcessingScript) -> AppResult<()> {
-        let record_json = serde_json::to_value(script).map_err(repo_err)?;
+        let applied_facets = serde_json::to_value(&script.applied_facets).map_err(repo_err)?;
         sqlx::query(
             "INSERT INTO post_processing_scripts
-             (id, name, script_path, is_enabled, created_at, updated_at, record_json, priority)
-             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+             (id, name, description, script_type, script_content, applied_facets,
+              execution_mode, timeout_secs, priority, enabled, debug, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
-                script_path = EXCLUDED.script_path,
-                is_enabled = EXCLUDED.is_enabled,
-                updated_at = EXCLUDED.updated_at,
-                record_json = EXCLUDED.record_json,
-                priority = EXCLUDED.priority",
+                description = EXCLUDED.description,
+                script_type = EXCLUDED.script_type,
+                script_content = EXCLUDED.script_content,
+                applied_facets = EXCLUDED.applied_facets,
+                execution_mode = EXCLUDED.execution_mode,
+                timeout_secs = EXCLUDED.timeout_secs,
+                priority = EXCLUDED.priority,
+                enabled = EXCLUDED.enabled,
+                debug = EXCLUDED.debug,
+                updated_at = EXCLUDED.updated_at",
         )
         .bind(&script.id)
         .bind(&script.name)
+        .bind(&script.description)
+        .bind(script.script_type.as_str())
         .bind(&script.script_content)
+        .bind(applied_facets)
+        .bind(script.execution_mode.as_str())
+        .bind(script.timeout_secs)
+        .bind(script.priority)
         .bind(script.enabled)
+        .bind(script.debug)
         .bind(script.created_at)
         .bind(script.updated_at)
-        .bind(record_json)
-        .bind(script.priority)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -195,63 +188,75 @@ impl CustomizationSql for PostgresCustomizationSql {
     }
 
     async fn list_rule_sets(&self) -> AppResult<Vec<RuleSet>> {
-        let rows =
-            sqlx::query("SELECT record_json FROM rule_sets ORDER BY priority DESC, name ASC")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
-    }
-    async fn list_enabled_rule_sets(&self) -> AppResult<Vec<RuleSet>> {
-        let rows = sqlx::query(
-            "SELECT record_json FROM rule_sets WHERE enabled = TRUE ORDER BY priority DESC, name ASC",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {RULE_SET_COLUMNS} FROM rule_sets ORDER BY priority DESC, name ASC"
+        ))
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
+        rows.iter().map(row_to_rule_set).collect()
     }
+
+    async fn list_enabled_rule_sets(&self) -> AppResult<Vec<RuleSet>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {RULE_SET_COLUMNS} FROM rule_sets WHERE enabled = TRUE ORDER BY priority DESC, name ASC"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter().map(row_to_rule_set).collect()
+    }
+
     async fn get_rule_set(&self, id: &str) -> AppResult<Option<RuleSet>> {
-        let row = sqlx::query("SELECT record_json FROM rule_sets WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        row.as_ref().map(record_from_row).transpose()
+        let row = sqlx::query(&format!(
+            "SELECT {RULE_SET_COLUMNS} FROM rule_sets WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(row_to_rule_set).transpose()
     }
+
     async fn create_rule_set(&self, rule_set: &RuleSet) -> AppResult<()> {
         self.update_rule_set(rule_set).await
     }
+
     async fn update_rule_set(&self, rule_set: &RuleSet) -> AppResult<()> {
-        let record_json = serde_json::to_value(rule_set).map_err(repo_err)?;
+        let applied_facets = serde_json::to_value(&rule_set.applied_facets).map_err(repo_err)?;
         sqlx::query(
             "INSERT INTO rule_sets
-             (id, name, managed_key, rule_json, record_json, enabled, priority, created_at, updated_at, is_managed)
-             VALUES ($1, $2, $3, $4::jsonb, $4::jsonb, $5, $6, $7, $8, $9)
+             (id, name, description, rego_source, enabled, priority, applied_facets,
+              created_at, updated_at, is_managed, managed_key)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
-                managed_key = EXCLUDED.managed_key,
-                rule_json = EXCLUDED.rule_json,
-                record_json = EXCLUDED.record_json,
+                description = EXCLUDED.description,
+                rego_source = EXCLUDED.rego_source,
                 enabled = EXCLUDED.enabled,
                 priority = EXCLUDED.priority,
+                applied_facets = EXCLUDED.applied_facets,
                 updated_at = EXCLUDED.updated_at,
-                is_managed = EXCLUDED.is_managed",
+                is_managed = EXCLUDED.is_managed,
+                managed_key = EXCLUDED.managed_key",
         )
         .bind(&rule_set.id)
         .bind(&rule_set.name)
-        .bind(&rule_set.managed_key)
-        .bind(record_json)
+        .bind(&rule_set.description)
+        .bind(&rule_set.rego_source)
         .bind(rule_set.enabled)
         .bind(rule_set.priority)
+        .bind(applied_facets)
         .bind(rule_set.created_at)
         .bind(rule_set.updated_at)
         .bind(rule_set.is_managed)
+        .bind(&rule_set.managed_key)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
         Ok(())
     }
+
     async fn delete_rule_set(&self, id: &str) -> AppResult<()> {
         sqlx::query("DELETE FROM rule_sets WHERE id = $1")
             .bind(id)
@@ -260,6 +265,7 @@ impl CustomizationSql for PostgresCustomizationSql {
             .map_err(repo_err)?;
         Ok(())
     }
+
     async fn record_rule_set_history(
         &self,
         rule_set_id: &str,
@@ -284,14 +290,18 @@ impl CustomizationSql for PostgresCustomizationSql {
         .map_err(repo_err)?;
         Ok(())
     }
+
     async fn get_rule_set_by_managed_key(&self, key: &str) -> AppResult<Option<RuleSet>> {
-        let row = sqlx::query("SELECT record_json FROM rule_sets WHERE managed_key = $1 LIMIT 1")
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        row.as_ref().map(record_from_row).transpose()
+        let row = sqlx::query(&format!(
+            "SELECT {RULE_SET_COLUMNS} FROM rule_sets WHERE managed_key = $1 LIMIT 1"
+        ))
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(row_to_rule_set).transpose()
     }
+
     async fn delete_rule_set_by_managed_key(&self, key: &str) -> AppResult<()> {
         sqlx::query("DELETE FROM rule_sets WHERE managed_key = $1")
             .bind(key)
@@ -300,42 +310,50 @@ impl CustomizationSql for PostgresCustomizationSql {
             .map_err(repo_err)?;
         Ok(())
     }
+
     async fn list_rule_sets_by_managed_key_prefix(&self, prefix: &str) -> AppResult<Vec<RuleSet>> {
         let pattern = format!("{prefix}%");
-        let rows = sqlx::query(
-            "SELECT record_json FROM rule_sets WHERE managed_key LIKE $1 ORDER BY managed_key",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {RULE_SET_COLUMNS} FROM rule_sets WHERE managed_key LIKE $1 ORDER BY managed_key"
+        ))
         .bind(pattern)
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
+        rows.iter().map(row_to_rule_set).collect()
     }
+
     async fn list_scripts(&self) -> AppResult<Vec<PostProcessingScript>> {
-        let rows = sqlx::query(
-            "SELECT record_json FROM post_processing_scripts ORDER BY priority DESC, name ASC",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {POST_PROCESSING_SCRIPT_COLUMNS} FROM post_processing_scripts ORDER BY priority ASC, name"
+        ))
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
+        rows.iter().map(row_to_post_processing_script).collect()
     }
+
     async fn get_script(&self, id: &str) -> AppResult<Option<PostProcessingScript>> {
-        let row = sqlx::query("SELECT record_json FROM post_processing_scripts WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        row.as_ref().map(record_from_row).transpose()
+        let row = sqlx::query(&format!(
+            "SELECT {POST_PROCESSING_SCRIPT_COLUMNS} FROM post_processing_scripts WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(row_to_post_processing_script).transpose()
     }
+
     async fn create_script(&self, script: PostProcessingScript) -> AppResult<PostProcessingScript> {
         self.upsert_post_processing_script(&script).await?;
         Ok(script)
     }
+
     async fn update_script(&self, script: PostProcessingScript) -> AppResult<PostProcessingScript> {
         self.upsert_post_processing_script(&script).await?;
         Ok(script)
     }
+
     async fn delete_script(&self, id: &str) -> AppResult<()> {
         sqlx::query("DELETE FROM post_processing_scripts WHERE id = $1")
             .bind(id)
@@ -344,106 +362,143 @@ impl CustomizationSql for PostgresCustomizationSql {
             .map_err(repo_err)?;
         Ok(())
     }
+
     async fn list_enabled_for_facet(&self, facet: &str) -> AppResult<Vec<PostProcessingScript>> {
-        let rows = sqlx::query(
-            "SELECT record_json
+        let rows = sqlx::query(&format!(
+            "SELECT {POST_PROCESSING_SCRIPT_COLUMNS}
                FROM post_processing_scripts
-              WHERE is_enabled = TRUE
-                AND (record_json->'applied_facets' = '[]'::jsonb OR record_json->'applied_facets' ? $1)
-              ORDER BY priority DESC, name ASC",
-        )
+              WHERE enabled = TRUE
+                AND (applied_facets = '[]'::jsonb OR applied_facets ? $1)
+              ORDER BY priority ASC, name"
+        ))
         .bind(facet)
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
+        rows.iter().map(row_to_post_processing_script).collect()
     }
+
     async fn record_run(&self, run: PostProcessingScriptRun) -> AppResult<()> {
-        let record_json = serde_json::to_value(&run).map_err(repo_err)?;
         let started_at =
             parse_rfc3339_timestamp(&run.started_at, "post_processing_script_runs.started_at")?;
         let completed_at = parse_optional_rfc3339_timestamp(
             run.completed_at.as_deref(),
-            "post_processing_script_runs.finished_at",
+            "post_processing_script_runs.completed_at",
         )?;
         sqlx::query(
             "INSERT INTO post_processing_script_runs
-             (id, script_id, status, output_text, started_at, finished_at, created_at, record_json)
-             VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz, NOW(), $7::jsonb)
+             (id, script_id, script_name, title_id, title_name, facet, file_path,
+              status, exit_code, stdout_tail, stderr_tail, duration_ms, env_payload_json,
+              started_at, completed_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              ON CONFLICT (id) DO UPDATE SET
+                script_name = EXCLUDED.script_name,
+                title_id = EXCLUDED.title_id,
+                title_name = EXCLUDED.title_name,
+                facet = EXCLUDED.facet,
+                file_path = EXCLUDED.file_path,
                 status = EXCLUDED.status,
-                output_text = EXCLUDED.output_text,
-                finished_at = EXCLUDED.finished_at,
-                record_json = EXCLUDED.record_json",
+                exit_code = EXCLUDED.exit_code,
+                stdout_tail = EXCLUDED.stdout_tail,
+                stderr_tail = EXCLUDED.stderr_tail,
+                duration_ms = EXCLUDED.duration_ms,
+                env_payload_json = EXCLUDED.env_payload_json,
+                started_at = EXCLUDED.started_at,
+                completed_at = EXCLUDED.completed_at",
         )
         .bind(&run.id)
         .bind(&run.script_id)
+        .bind(&run.script_name)
+        .bind(&run.title_id)
+        .bind(&run.title_name)
+        .bind(&run.facet)
+        .bind(&run.file_path)
         .bind(run.status.as_str())
-        .bind(run.stderr_tail.as_deref().or(run.stdout_tail.as_deref()))
+        .bind(run.exit_code)
+        .bind(&run.stdout_tail)
+        .bind(&run.stderr_tail)
+        .bind(run.duration_ms)
+        .bind(&run.env_payload_json)
         .bind(started_at)
         .bind(completed_at)
-        .bind(record_json)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
         Ok(())
     }
+
     async fn list_runs_for_script(
         &self,
         script_id: &str,
         limit: usize,
     ) -> AppResult<Vec<PostProcessingScriptRun>> {
-        let rows = sqlx::query(
-            "SELECT record_json FROM post_processing_script_runs
+        let rows = sqlx::query(&format!(
+            "SELECT {POST_PROCESSING_RUN_COLUMNS}
+               FROM post_processing_script_runs
               WHERE script_id = $1
               ORDER BY started_at DESC
-              LIMIT $2",
-        )
+              LIMIT $2"
+        ))
         .bind(script_id)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
+        rows.iter().map(row_to_post_processing_run).collect()
     }
+
     async fn list_runs_for_title(
         &self,
         title_id: &str,
         limit: usize,
     ) -> AppResult<Vec<PostProcessingScriptRun>> {
-        let rows = sqlx::query(
-            "SELECT record_json FROM post_processing_script_runs
-              WHERE record_json->>'title_id' = $1
+        let rows = sqlx::query(&format!(
+            "SELECT {POST_PROCESSING_RUN_COLUMNS}
+               FROM post_processing_script_runs
+              WHERE title_id = $1
               ORDER BY started_at DESC
-              LIMIT $2",
-        )
+              LIMIT $2"
+        ))
         .bind(title_id)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
+        rows.iter().map(row_to_post_processing_run).collect()
     }
+
     async fn list_plugin_installations(&self) -> AppResult<Vec<PluginInstallation>> {
-        let rows = sqlx::query(
-            "SELECT record_json FROM plugin_installations ORDER BY is_builtin DESC, name, plugin_id",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {PLUGIN_INSTALLATION_COLUMNS}, wasm_bytes
+               FROM plugin_installations
+              ORDER BY is_builtin DESC, name, plugin_id"
+        ))
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
+        rows.iter()
+            .filter(|row| !row_is_incompatible_external_installation(row))
+            .map(row_to_plugin_installation)
+            .collect()
     }
 
     async fn get_plugin_installation(
         &self,
         plugin_id: &str,
     ) -> AppResult<Option<PluginInstallation>> {
-        let row = sqlx::query("SELECT record_json FROM plugin_installations WHERE plugin_id = $1")
-            .bind(plugin_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        row.as_ref().map(record_from_row).transpose()
+        let row = sqlx::query(&format!(
+            "SELECT {PLUGIN_INSTALLATION_COLUMNS}, wasm_bytes
+               FROM plugin_installations
+              WHERE plugin_id = $1"
+        ))
+        .bind(plugin_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref()
+            .filter(|row| !row_is_incompatible_external_installation(row))
+            .map(row_to_plugin_installation)
+            .transpose()
     }
 
     async fn create_plugin_installation(
@@ -476,19 +531,19 @@ impl CustomizationSql for PostgresCustomizationSql {
     async fn get_enabled_plugin_wasm_bytes(
         &self,
     ) -> AppResult<Vec<(PluginInstallation, Option<PersistedPluginWasmPayload>)>> {
-        let rows = sqlx::query(
-            "SELECT record_json, wasm_bytes
+        let rows = sqlx::query(&format!(
+            "SELECT {PLUGIN_INSTALLATION_COLUMNS}, wasm_bytes
                FROM plugin_installations
               WHERE is_enabled = TRUE
-              ORDER BY is_builtin DESC, name, plugin_id",
-        )
+              ORDER BY is_builtin DESC, name, plugin_id"
+        ))
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
 
         rows.iter()
             .map(|row| {
-                let installation: PluginInstallation = record_from_row(row)?;
+                let installation = row_to_plugin_installation(row)?;
                 let bytes: Option<Vec<u8>> = row.try_get("wasm_bytes").map_err(repo_err)?;
                 let payload = bytes.map(|bytes| PersistedPluginWasmPayload {
                     encoding: installation.wasm_encoding,
@@ -504,7 +559,7 @@ impl CustomizationSql for PostgresCustomizationSql {
         plugin_id: &str,
     ) -> AppResult<Option<PersistedPluginWasmPayload>> {
         let row = sqlx::query(
-            "SELECT record_json, wasm_bytes FROM plugin_installations WHERE plugin_id = $1",
+            "SELECT wasm_bytes, wasm_encoding FROM plugin_installations WHERE plugin_id = $1",
         )
         .bind(plugin_id)
         .fetch_optional(&self.pool)
@@ -514,10 +569,10 @@ impl CustomizationSql for PostgresCustomizationSql {
         let Some(row) = row else {
             return Ok(None);
         };
-        let installation: PluginInstallation = record_from_row(&row)?;
         let bytes: Option<Vec<u8>> = row.try_get("wasm_bytes").map_err(repo_err)?;
+        let encoding_raw: String = row.try_get("wasm_encoding").map_err(repo_err)?;
         Ok(bytes.map(|bytes| PersistedPluginWasmPayload {
-            encoding: installation.wasm_encoding,
+            encoding: parse_wasm_encoding(&encoding_raw),
             bytes,
         }))
     }
@@ -581,21 +636,18 @@ impl CustomizationSql for PostgresCustomizationSql {
     }
 
     async fn upsert_plugin_catalog_source(&self, source: &PluginCatalogSource) -> AppResult<()> {
-        let record_json = serde_json::to_value(source).map_err(repo_err)?;
-        let catalog_json = optional_json_value(source.catalog_json.as_deref())?;
         sqlx::query(
             "INSERT INTO plugin_catalog_sources (
                 source_key, source_kind, source_url, github_repo, support_tier,
-                catalog_json, record_json, last_success_at, last_error, updated_at
+                catalog_json, last_success_at, last_error, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (source_key) DO UPDATE SET
                 source_kind = EXCLUDED.source_kind,
                 source_url = EXCLUDED.source_url,
                 github_repo = EXCLUDED.github_repo,
                 support_tier = EXCLUDED.support_tier,
                 catalog_json = EXCLUDED.catalog_json,
-                record_json = EXCLUDED.record_json,
                 last_success_at = EXCLUDED.last_success_at,
                 last_error = EXCLUDED.last_error,
                 updated_at = EXCLUDED.updated_at",
@@ -604,9 +656,8 @@ impl CustomizationSql for PostgresCustomizationSql {
         .bind(&source.source_kind)
         .bind(&source.source_url)
         .bind(&source.github_repo)
-        .bind(enum_json_string(&source.support_tier)?)
-        .bind(catalog_json)
-        .bind(record_json)
+        .bind(support_tier_label(source.support_tier))
+        .bind(&source.catalog_json)
         .bind(source.last_success_at)
         .bind(&source.last_error)
         .bind(source.updated_at)
@@ -617,48 +668,46 @@ impl CustomizationSql for PostgresCustomizationSql {
     }
 
     async fn list_plugin_catalog_sources(&self) -> AppResult<Vec<PluginCatalogSource>> {
-        let rows =
-            sqlx::query("SELECT record_json FROM plugin_catalog_sources ORDER BY source_key")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(repo_err)?;
-        rows.iter().map(record_from_row).collect()
+        let rows = sqlx::query(&format!(
+            "SELECT {PLUGIN_CATALOG_SOURCE_COLUMNS}
+               FROM plugin_catalog_sources
+              ORDER BY source_kind ASC, source_key ASC"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter().map(row_to_plugin_catalog_source).collect()
     }
 
     async fn get_plugin_catalog_source(
         &self,
         source_key: &str,
     ) -> AppResult<Option<PluginCatalogSource>> {
-        let row =
-            sqlx::query("SELECT record_json FROM plugin_catalog_sources WHERE source_key = $1")
-                .bind(source_key)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(repo_err)?;
-        row.as_ref().map(record_from_row).transpose()
+        let row = sqlx::query(&format!(
+            "SELECT {PLUGIN_CATALOG_SOURCE_COLUMNS}
+               FROM plugin_catalog_sources
+              WHERE source_key = $1"
+        ))
+        .bind(source_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(row_to_plugin_catalog_source).transpose()
     }
 
     async fn upsert_plugin_catalog_status(
         &self,
         status: &PluginCatalogStatusRecord,
     ) -> AppResult<()> {
-        let record_json = serde_json::to_value(status).map_err(repo_err)?;
-        let status_json = json_value(&status.status_json)?;
         sqlx::query(
-            "INSERT INTO plugin_catalog_status (
-                status_key, catalog_json, record_json, last_success_at, updated_at
-             )
-             VALUES ($1, $2::jsonb, $3::jsonb, $4, $5)
+            "INSERT INTO plugin_catalog_status (status_key, status_json, checked_at)
+             VALUES ($1, $2, $3)
              ON CONFLICT (status_key) DO UPDATE SET
-                catalog_json = EXCLUDED.catalog_json,
-                record_json = EXCLUDED.record_json,
-                last_success_at = EXCLUDED.last_success_at,
-                updated_at = EXCLUDED.updated_at",
+                status_json = EXCLUDED.status_json,
+                checked_at = EXCLUDED.checked_at",
         )
         .bind(&status.status_key)
-        .bind(status_json)
-        .bind(record_json)
-        .bind(status.checked_at)
+        .bind(&status.status_json)
         .bind(status.checked_at)
         .execute(&self.pool)
         .await
@@ -670,19 +719,165 @@ impl CustomizationSql for PostgresCustomizationSql {
         &self,
         status_key: &str,
     ) -> AppResult<Option<PluginCatalogStatusRecord>> {
-        let row =
-            sqlx::query("SELECT record_json FROM plugin_catalog_status WHERE status_key = $1")
-                .bind(status_key)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(repo_err)?;
-        row.as_ref().map(record_from_row).transpose()
+        let row = sqlx::query(
+            "SELECT status_key, status_json, checked_at
+               FROM plugin_catalog_status
+              WHERE status_key = $1",
+        )
+        .bind(status_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(row_to_plugin_catalog_status).transpose()
     }
 }
 
-fn record_from_row<T: DeserializeOwned>(row: &sqlx::postgres::PgRow) -> AppResult<T> {
-    let value: Value = row.try_get("record_json").map_err(repo_err)?;
-    serde_json::from_value(value).map_err(repo_err)
+const RULE_SET_COLUMNS: &str = "id, name, description, rego_source, enabled, priority,
+    applied_facets, created_at, updated_at, is_managed, managed_key";
+
+const POST_PROCESSING_SCRIPT_COLUMNS: &str = "id, name, description, script_type, script_content,
+    applied_facets, execution_mode, timeout_secs, priority, enabled, debug, created_at, updated_at";
+
+const POST_PROCESSING_RUN_COLUMNS: &str = "id, script_id, script_name, title_id, title_name, facet,
+    file_path, status, exit_code, stdout_tail, stderr_tail, duration_ms, env_payload_json,
+    started_at, completed_at";
+
+const PLUGIN_INSTALLATION_COLUMNS: &str = "id, plugin_id, name, description, version, sdk_version,
+    sdk_constraint, scryer_constraint, plugin_type, provider_type, is_enabled, is_builtin,
+    source_kind, wasm_encoding, wasm_digest_algo, source_url, support_tier, publisher,
+    docs_url, source_repo, manifest_url, wasm_digest, artifact_digest, descriptor_json,
+    installed_at, updated_at";
+
+const PLUGIN_CATALOG_SOURCE_COLUMNS: &str = "source_key, source_kind, source_url, github_repo,
+    support_tier, catalog_json, last_success_at, last_error, updated_at";
+
+fn row_to_rule_set(row: &sqlx::postgres::PgRow) -> AppResult<RuleSet> {
+    let facets_value: Value = row.try_get("applied_facets").map_err(repo_err)?;
+    let applied_facets = serde_json::from_value::<Vec<MediaFacet>>(facets_value)
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+    Ok(RuleSet {
+        id: row.try_get("id").map_err(repo_err)?,
+        name: row.try_get("name").map_err(repo_err)?,
+        description: row.try_get("description").map_err(repo_err)?,
+        rego_source: row.try_get("rego_source").map_err(repo_err)?,
+        enabled: row.try_get("enabled").map_err(repo_err)?,
+        priority: row.try_get("priority").map_err(repo_err)?,
+        applied_facets,
+        created_at: row.try_get("created_at").map_err(repo_err)?,
+        updated_at: row.try_get("updated_at").map_err(repo_err)?,
+        is_managed: row.try_get("is_managed").map_err(repo_err)?,
+        managed_key: row.try_get("managed_key").map_err(repo_err)?,
+    })
+}
+
+fn row_to_post_processing_script(row: &sqlx::postgres::PgRow) -> AppResult<PostProcessingScript> {
+    let facets_value: Value = row.try_get("applied_facets").map_err(repo_err)?;
+    let applied_facets = serde_json::from_value(facets_value).unwrap_or_default();
+    let script_type_raw: String = row.try_get("script_type").map_err(repo_err)?;
+    let execution_mode_raw: String = row.try_get("execution_mode").map_err(repo_err)?;
+    Ok(PostProcessingScript {
+        id: row.try_get("id").map_err(repo_err)?,
+        name: row.try_get("name").map_err(repo_err)?,
+        description: row.try_get("description").map_err(repo_err)?,
+        script_type: scryer_domain::ScriptType::parse(&script_type_raw).ok_or_else(|| {
+            AppError::Repository(format!("invalid script_type: {script_type_raw}"))
+        })?,
+        script_content: row.try_get("script_content").map_err(repo_err)?,
+        applied_facets,
+        execution_mode: scryer_domain::ExecutionMode::parse(&execution_mode_raw).ok_or_else(
+            || AppError::Repository(format!("invalid execution_mode: {execution_mode_raw}")),
+        )?,
+        timeout_secs: row.try_get("timeout_secs").map_err(repo_err)?,
+        priority: row.try_get("priority").map_err(repo_err)?,
+        enabled: row.try_get("enabled").map_err(repo_err)?,
+        debug: row.try_get("debug").map_err(repo_err)?,
+        created_at: row.try_get("created_at").map_err(repo_err)?,
+        updated_at: row.try_get("updated_at").map_err(repo_err)?,
+    })
+}
+
+fn row_to_post_processing_run(row: &sqlx::postgres::PgRow) -> AppResult<PostProcessingScriptRun> {
+    let status_raw: String = row.try_get("status").map_err(repo_err)?;
+    let started_at: DateTime<Utc> = row.try_get("started_at").map_err(repo_err)?;
+    let completed_at: Option<DateTime<Utc>> = row.try_get("completed_at").map_err(repo_err)?;
+    Ok(PostProcessingScriptRun {
+        id: row.try_get("id").map_err(repo_err)?,
+        script_id: row.try_get("script_id").map_err(repo_err)?,
+        script_name: row.try_get("script_name").map_err(repo_err)?,
+        title_id: row.try_get("title_id").map_err(repo_err)?,
+        title_name: row.try_get("title_name").map_err(repo_err)?,
+        facet: row.try_get("facet").map_err(repo_err)?,
+        file_path: row.try_get("file_path").map_err(repo_err)?,
+        status: scryer_domain::ScriptRunStatus::parse(&status_raw)
+            .unwrap_or(scryer_domain::ScriptRunStatus::Failed),
+        exit_code: row.try_get("exit_code").map_err(repo_err)?,
+        stdout_tail: row.try_get("stdout_tail").map_err(repo_err)?,
+        stderr_tail: row.try_get("stderr_tail").map_err(repo_err)?,
+        duration_ms: row.try_get("duration_ms").map_err(repo_err)?,
+        env_payload_json: row.try_get("env_payload_json").map_err(repo_err)?,
+        started_at: started_at.to_rfc3339(),
+        completed_at: completed_at.map(|value| value.to_rfc3339()),
+    })
+}
+
+fn row_to_plugin_installation(row: &sqlx::postgres::PgRow) -> AppResult<PluginInstallation> {
+    let source_kind_raw: String = row.try_get("source_kind").map_err(repo_err)?;
+    let wasm_encoding_raw: String = row.try_get("wasm_encoding").map_err(repo_err)?;
+    let support_tier_raw: String = row.try_get("support_tier").map_err(repo_err)?;
+    let descriptor_json: Option<Value> = row.try_get("descriptor_json").map_err(repo_err)?;
+    Ok(PluginInstallation {
+        id: row.try_get("id").map_err(repo_err)?,
+        plugin_id: row.try_get("plugin_id").map_err(repo_err)?,
+        name: row.try_get("name").map_err(repo_err)?,
+        description: row.try_get("description").map_err(repo_err)?,
+        version: row.try_get("version").map_err(repo_err)?,
+        sdk_version: row.try_get("sdk_version").map_err(repo_err)?,
+        sdk_constraint: row.try_get("sdk_constraint").map_err(repo_err)?,
+        scryer_constraint: row.try_get("scryer_constraint").map_err(repo_err)?,
+        plugin_type: row.try_get("plugin_type").map_err(repo_err)?,
+        provider_type: row.try_get("provider_type").map_err(repo_err)?,
+        is_enabled: row.try_get("is_enabled").map_err(repo_err)?,
+        is_builtin: row.try_get("is_builtin").map_err(repo_err)?,
+        source_kind: parse_source_kind(&source_kind_raw),
+        wasm_encoding: parse_wasm_encoding(&wasm_encoding_raw),
+        wasm_digest_algo: row.try_get("wasm_digest_algo").map_err(repo_err)?,
+        source_url: row.try_get("source_url").map_err(repo_err)?,
+        support_tier: parse_support_tier(&support_tier_raw),
+        publisher: row.try_get("publisher").map_err(repo_err)?,
+        docs_url: row.try_get("docs_url").map_err(repo_err)?,
+        source_repo: row.try_get("source_repo").map_err(repo_err)?,
+        manifest_url: row.try_get("manifest_url").map_err(repo_err)?,
+        wasm_digest: row.try_get("wasm_digest").map_err(repo_err)?,
+        artifact_digest: row.try_get("artifact_digest").map_err(repo_err)?,
+        descriptor_json: descriptor_json.map(|value| value.to_string()),
+        installed_at: row.try_get("installed_at").map_err(repo_err)?,
+        updated_at: row.try_get("updated_at").map_err(repo_err)?,
+    })
+}
+
+fn row_to_plugin_catalog_source(row: &sqlx::postgres::PgRow) -> AppResult<PluginCatalogSource> {
+    let support_tier_raw: String = row.try_get("support_tier").map_err(repo_err)?;
+    Ok(PluginCatalogSource {
+        source_key: row.try_get("source_key").map_err(repo_err)?,
+        source_kind: row.try_get("source_kind").map_err(repo_err)?,
+        source_url: row.try_get("source_url").map_err(repo_err)?,
+        github_repo: row.try_get("github_repo").map_err(repo_err)?,
+        support_tier: parse_support_tier(&support_tier_raw),
+        catalog_json: row.try_get("catalog_json").map_err(repo_err)?,
+        last_success_at: row.try_get("last_success_at").map_err(repo_err)?,
+        last_error: row.try_get("last_error").map_err(repo_err)?,
+        updated_at: row.try_get("updated_at").map_err(repo_err)?,
+    })
+}
+
+fn row_to_plugin_catalog_status(
+    row: &sqlx::postgres::PgRow,
+) -> AppResult<PluginCatalogStatusRecord> {
+    Ok(PluginCatalogStatusRecord {
+        status_key: row.try_get("status_key").map_err(repo_err)?,
+        status_json: row.try_get("status_json").map_err(repo_err)?,
+        checked_at: row.try_get("checked_at").map_err(repo_err)?,
+    })
 }
 
 fn optional_json_value(raw: Option<&str>) -> AppResult<Option<Value>> {
@@ -694,28 +889,6 @@ fn json_value(raw: &str) -> AppResult<Value> {
         .map_err(|error| AppError::Validation(format!("invalid logical JSON value: {error}")))
 }
 
-fn external_installation_is_supported_shape(
-    wasm_bytes: Option<&[u8]>,
-    wasm_encoding: &str,
-    wasm_digest_algo: Option<&str>,
-    wasm_digest: Option<&str>,
-    descriptor_json: Option<&Value>,
-) -> bool {
-    wasm_bytes.is_some()
-        && wasm_encoding == "zstd"
-        && matches!(
-            wasm_digest_algo.map(|value| value.trim().to_ascii_lowercase()),
-            Some(value) if value == "blake3"
-        )
-        && wasm_digest.is_some_and(is_hex_digest)
-        && descriptor_json.is_some_and(descriptor_json_is_supported)
-}
-
-fn is_hex_digest(value: &str) -> bool {
-    let trimmed = value.trim();
-    !trimmed.is_empty() && trimmed.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 fn descriptor_json_is_supported(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -724,11 +897,80 @@ fn descriptor_json_is_supported(value: &Value) -> bool {
     }
 }
 
-fn enum_json_string<T: Serialize>(value: &T) -> AppResult<String> {
-    let value = serde_json::to_value(value).map_err(repo_err)?;
-    value.as_str().map(str::to_string).ok_or_else(|| {
-        AppError::Repository("expected enum to serialize as a JSON string".to_string())
-    })
+fn row_is_incompatible_external_installation(row: &sqlx::postgres::PgRow) -> bool {
+    let is_builtin: bool = row.try_get("is_builtin").unwrap_or(false);
+    if is_builtin {
+        return false;
+    }
+
+    let source_kind: String = row
+        .try_get("source_kind")
+        .unwrap_or_else(|_| "downloaded".to_string());
+    if !matches!(source_kind.as_str(), "downloaded" | "manual") {
+        return false;
+    }
+
+    let wasm_bytes: Option<Vec<u8>> = row.try_get("wasm_bytes").unwrap_or(None);
+    let wasm_encoding: String = row
+        .try_get("wasm_encoding")
+        .unwrap_or_else(|_| "identity".to_string());
+    let wasm_digest_algo: Option<String> = row.try_get("wasm_digest_algo").unwrap_or(None);
+    let wasm_digest: Option<String> = row.try_get("wasm_digest").unwrap_or(None);
+    let descriptor_json: Option<Value> = row.try_get("descriptor_json").unwrap_or(None);
+
+    !external_plugin_installation_is_supported_shape(
+        wasm_bytes.as_deref(),
+        &wasm_encoding,
+        wasm_digest_algo.as_deref(),
+        wasm_digest.as_deref(),
+        descriptor_json.is_some_and(|value| descriptor_json_is_supported(&value)),
+    )
+}
+
+fn parse_source_kind(value: &str) -> PluginSourceKind {
+    match value {
+        "bundled" => PluginSourceKind::Bundled,
+        "manual" => PluginSourceKind::Manual,
+        _ => PluginSourceKind::Downloaded,
+    }
+}
+
+fn source_kind_label(value: PluginSourceKind) -> &'static str {
+    match value {
+        PluginSourceKind::Bundled => "bundled",
+        PluginSourceKind::Downloaded => "downloaded",
+        PluginSourceKind::Manual => "manual",
+    }
+}
+
+fn parse_support_tier(value: &str) -> PluginSupportTier {
+    match value {
+        "verified_community" => PluginSupportTier::VerifiedCommunity,
+        "unverified" => PluginSupportTier::Unverified,
+        _ => PluginSupportTier::Official,
+    }
+}
+
+fn support_tier_label(value: PluginSupportTier) -> &'static str {
+    match value {
+        PluginSupportTier::Official => "official",
+        PluginSupportTier::VerifiedCommunity => "verified_community",
+        PluginSupportTier::Unverified => "unverified",
+    }
+}
+
+fn parse_wasm_encoding(value: &str) -> PluginWasmEncoding {
+    match value {
+        "zstd" => PluginWasmEncoding::Zstd,
+        _ => PluginWasmEncoding::Identity,
+    }
+}
+
+fn wasm_encoding_label(value: PluginWasmEncoding) -> &'static str {
+    match value {
+        PluginWasmEncoding::Identity => "identity",
+        PluginWasmEncoding::Zstd => "zstd",
+    }
 }
 
 fn repo_err(error: impl ToString) -> AppError {

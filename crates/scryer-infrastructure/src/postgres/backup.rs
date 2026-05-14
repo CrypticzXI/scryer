@@ -14,7 +14,7 @@ use scryer_application::{
     BackupExportOutcome, BackupRestorePreparedBundle, BackupTableClassification,
     LogicalBackupExporter, prepare_backup_restore_payload,
 };
-use scryer_domain::Title;
+use scryer_domain::MediaFacet;
 
 use crate::postgres::PostgresServices;
 use crate::queries::title_search::{self, TitleSearchProjectionSource};
@@ -594,21 +594,18 @@ async fn import_table_part(
 
 fn normalize_import_object(table: &str, object: &mut JsonMap<String, JsonValue>) -> AppResult<()> {
     if table == "titles" {
-        ensure_title_record_json(object);
+        normalize_title_import_object(object);
     }
     Ok(())
 }
 
-fn ensure_title_record_json(object: &mut JsonMap<String, JsonValue>) {
-    let has_complete_record = object
+fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
+    let record = object
         .get("record_json")
         .and_then(JsonValue::as_object)
-        .is_some_and(|record| record.contains_key("id"));
-    if has_complete_record {
-        return;
-    }
+        .cloned()
+        .unwrap_or_default();
 
-    let mut record = JsonMap::new();
     for field in [
         "id",
         "name",
@@ -635,30 +632,27 @@ fn ensure_title_record_json(object: &mut JsonMap<String, JsonValue>) {
         "digital_release_date",
         "folder_path",
     ] {
-        record.insert(
-            field.to_string(),
-            object.get(field).cloned().unwrap_or(JsonValue::Null),
-        );
+        copy_title_record_field(object, &record, field, field);
     }
 
-    record.insert(
-        "library_id".to_string(),
-        object
-            .get("library_id")
-            .cloned()
-            .unwrap_or_else(|| JsonValue::String(String::new())),
-    );
-    record.insert(
-        "facet".to_string(),
-        object
-            .get("facet")
-            .cloned()
-            .unwrap_or_else(|| JsonValue::String("movie".to_string())),
-    );
-    record.insert(
-        "monitored".to_string(),
-        sqlite_bool_value(object.get("monitored")).unwrap_or(JsonValue::Bool(true)),
-    );
+    copy_title_record_field(object, &record, "library_id", "library_id");
+    copy_title_record_field(object, &record, "facet", "facet");
+
+    object
+        .entry("library_id".to_string())
+        .or_insert_with(|| JsonValue::String(String::new()));
+    object
+        .entry("facet".to_string())
+        .or_insert_with(|| JsonValue::String("movie".to_string()));
+    let monitored = sqlite_bool_value(object.get("monitored"))
+        .or_else(|| {
+            record
+                .get("monitored")
+                .and_then(|value| sqlite_bool_value(Some(value)))
+        })
+        .unwrap_or(JsonValue::Bool(true));
+    object.insert("monitored".to_string(), monitored);
+
     for (record_field, source_field) in [
         ("tags", "tags"),
         ("external_ids", "external_ids"),
@@ -666,23 +660,29 @@ fn ensure_title_record_json(object: &mut JsonMap<String, JsonValue>) {
         ("aliases", "aliases"),
         ("tagged_aliases", "tagged_aliases_json"),
     ] {
-        record.insert(
-            record_field.to_string(),
-            object
-                .get(source_field)
-                .and_then(logical_json_value)
-                .unwrap_or_else(|| JsonValue::Array(Vec::new())),
-        );
+        if object.contains_key(source_field) {
+            continue;
+        }
+        let value = record
+            .get(record_field)
+            .and_then(logical_json_value)
+            .unwrap_or_else(|| JsonValue::Array(Vec::new()));
+        object.insert(source_field.to_string(), value);
     }
-    for field in [
-        "poster_source_url",
-        "banner_source_url",
-        "background_source_url",
-    ] {
-        record.insert(field.to_string(), JsonValue::Null);
-    }
+}
 
-    object.insert("record_json".to_string(), JsonValue::Object(record));
+fn copy_title_record_field(
+    object: &mut JsonMap<String, JsonValue>,
+    record: &JsonMap<String, JsonValue>,
+    record_field: &str,
+    column: &str,
+) {
+    if object.contains_key(column) {
+        return;
+    }
+    if let Some(value) = record.get(record_field).filter(|value| !value.is_null()) {
+        object.insert(column.to_string(), value.clone());
+    }
 }
 
 fn sqlite_bool_value(value: Option<&JsonValue>) -> Option<JsonValue> {
@@ -879,14 +879,18 @@ async fn repair_sequences(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> App
 async fn rebuild_title_search_projection(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> AppResult<()> {
-    let rows = sqlx::query("SELECT record_json FROM titles ORDER BY id")
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to read restored titles for PostgreSQL search rebuild: {error}"
-            ))
-        })?;
+    let rows = sqlx::query(
+        "SELECT id, facet, name, sort_title, slug, aliases, tagged_aliases_json
+           FROM titles
+          ORDER BY id",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|error| {
+        AppError::Repository(format!(
+            "failed to read restored titles for PostgreSQL search rebuild: {error}"
+        ))
+    })?;
 
     sqlx::query("DELETE FROM title_search_terms")
         .execute(&mut **tx)
@@ -898,9 +902,18 @@ async fn rebuild_title_search_projection(
         })?;
 
     for row in rows {
-        let record_json: JsonValue = row.try_get("record_json").map_err(repo_err)?;
-        let title: Title = serde_json::from_value(record_json).map_err(repo_err)?;
-        let source = TitleSearchProjectionSource::from(&title);
+        let facet_raw: String = row.try_get("facet").map_err(repo_err)?;
+        let facet = MediaFacet::parse(&facet_raw)
+            .ok_or_else(|| AppError::Repository(format!("unknown media facet '{facet_raw}'")))?;
+        let source = TitleSearchProjectionSource {
+            title_id: row.try_get("id").map_err(repo_err)?,
+            facet,
+            name: row.try_get("name").map_err(repo_err)?,
+            sort_title: row.try_get("sort_title").unwrap_or(None),
+            slug: row.try_get("slug").unwrap_or(None),
+            aliases: json_row_value(&row, "aliases")?,
+            tagged_aliases: json_row_value(&row, "tagged_aliases_json")?,
+        };
         for term in title_search::build_title_search_terms(&source) {
             sqlx::query(
                 "INSERT INTO title_search_terms
@@ -911,8 +924,8 @@ async fn rebuild_title_search_projection(
                     weight = EXCLUDED.weight,
                     updated_at = EXCLUDED.updated_at",
             )
-            .bind(&title.id)
-            .bind(title.facet.as_str())
+            .bind(&source.title_id)
+            .bind(source.facet.as_str())
             .bind(term.term_kind)
             .bind(&term.raw_term)
             .bind(&term.normalized_term)
@@ -922,7 +935,7 @@ async fn rebuild_title_search_projection(
             .map_err(|error| {
                 AppError::Repository(format!(
                     "failed to rebuild PostgreSQL title search projection for {}: {error}",
-                    title.id
+                    source.title_id
                 ))
             })?;
         }
@@ -938,4 +951,12 @@ fn quote_identifier(value: &str) -> String {
 
 fn repo_err(error: impl std::fmt::Display) -> AppError {
     AppError::Repository(error.to_string())
+}
+
+fn json_row_value<T>(row: &PgRow, column: &str) -> AppResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let value: JsonValue = row.try_get(column).map_err(repo_err)?;
+    serde_json::from_value(value).map_err(repo_err)
 }

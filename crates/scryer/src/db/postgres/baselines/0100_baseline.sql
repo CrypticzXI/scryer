@@ -59,21 +59,41 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS titles (
     id TEXT PRIMARY KEY,
     library_id TEXT NOT NULL DEFAULT '',
-    facet TEXT NOT NULL,
     name TEXT NOT NULL,
-    slug TEXT,
+    monitored BOOLEAN NOT NULL DEFAULT TRUE,
+    facet TEXT NOT NULL,
     tags JSONB NOT NULL DEFAULT '[]'::JSONB,
     external_ids JSONB NOT NULL DEFAULT '[]'::JSONB,
-    metadata_json JSONB,
-    record_json JSONB NOT NULL DEFAULT '{}'::JSONB,
-    folder_path TEXT,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    year INTEGER,
+    overview TEXT,
+    poster_url TEXT,
     poster_local_path TEXT,
+    banner_url TEXT,
     banner_local_path TEXT,
+    background_url TEXT,
     background_local_path TEXT,
-    monitored BOOLEAN NOT NULL DEFAULT TRUE,
+    sort_title TEXT,
+    slug TEXT,
+    imdb_id TEXT,
+    runtime_minutes INTEGER,
+    genres JSONB NOT NULL DEFAULT '[]'::JSONB,
+    content_status TEXT,
+    language TEXT,
+    first_aired TEXT,
+    network TEXT,
+    studio TEXT,
+    country TEXT,
+    aliases JSONB NOT NULL DEFAULT '[]'::JSONB,
+    metadata_language TEXT,
+    metadata_fetched_at TIMESTAMPTZ,
+    min_availability TEXT,
+    digital_release_date TEXT,
+    folder_path TEXT,
+    tagged_aliases_json JSONB NOT NULL DEFAULT '[]'::JSONB,
     metadata_hydration_next_attempt_at TIMESTAMPTZ,
     metadata_hydration_attempt_count BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -175,14 +195,20 @@ CREATE TABLE IF NOT EXISTS indexers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     provider_type TEXT NOT NULL,
-    base_url TEXT,
-    api_key TEXT,
-    config_json JSONB,
-    record_json JSONB NOT NULL DEFAULT '{}'::JSONB,
+    base_url TEXT NOT NULL,
+    api_key_encrypted TEXT,
+    rate_limit_seconds BIGINT,
+    rate_limit_burst BIGINT,
+    disabled_until TIMESTAMPTZ,
     is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    status TEXT NOT NULL DEFAULT 'idle',
-    last_error TEXT,
-    last_seen_at TIMESTAMPTZ,
+    enable_interactive_search BOOLEAN NOT NULL DEFAULT TRUE,
+    enable_auto_search BOOLEAN NOT NULL DEFAULT TRUE,
+    managed_parent_config_id TEXT,
+    managed_child_key TEXT,
+    managed_metadata_json TEXT,
+    last_health_status TEXT,
+    last_error_at TIMESTAMPTZ,
+    config_json TEXT,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );
@@ -192,8 +218,7 @@ CREATE TABLE IF NOT EXISTS download_clients (
     name TEXT NOT NULL,
     client_type TEXT NOT NULL,
     base_url TEXT,
-    config_json JSONB,
-    record_json JSONB NOT NULL DEFAULT '{}'::JSONB,
+    config_json TEXT,
     is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     status TEXT NOT NULL DEFAULT 'idle',
     last_error TEXT,
@@ -201,6 +226,21 @@ CREATE TABLE IF NOT EXISTS download_clients (
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     client_priority BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS subtitle_provider_configs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider_type TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    enabled_facets JSONB NOT NULL DEFAULT '[]'::JSONB,
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_error TEXT,
+    last_health_status TEXT,
+    last_error_at TIMESTAMPTZ,
+    disabled_until TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS subtitle_providers (
@@ -243,7 +283,6 @@ CREATE TABLE IF NOT EXISTS plugin_installations (
     wasm_digest TEXT,
     artifact_digest TEXT,
     descriptor_json JSONB,
-    record_json JSONB NOT NULL DEFAULT '{}'::JSONB,
     installed_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );
@@ -254,8 +293,7 @@ CREATE TABLE IF NOT EXISTS plugin_catalog_sources (
     source_url TEXT NOT NULL,
     github_repo TEXT,
     support_tier TEXT NOT NULL,
-    catalog_json JSONB,
-    record_json JSONB NOT NULL DEFAULT '{}'::JSONB,
+    catalog_json TEXT,
     last_success_at TIMESTAMPTZ,
     last_error TEXT,
     updated_at TIMESTAMPTZ NOT NULL
@@ -263,11 +301,8 @@ CREATE TABLE IF NOT EXISTS plugin_catalog_sources (
 
 CREATE TABLE IF NOT EXISTS plugin_catalog_status (
     status_key TEXT PRIMARY KEY,
-    catalog_json JSONB,
-    record_json JSONB NOT NULL DEFAULT '{}'::JSONB,
-    last_success_at TIMESTAMPTZ,
-    last_error TEXT,
-    updated_at TIMESTAMPTZ NOT NULL
+    status_json TEXT NOT NULL,
+    checked_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS blocklist (
