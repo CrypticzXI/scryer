@@ -376,24 +376,28 @@ jobs:
     steps:
       - checkout
       - fetch_full_history
+      - attach_repo_workspace
       - restore_rust_cache_unix:
-          key_prefix: linux-xtask
+          key_prefix: linux-x86_64-portable-release
       - restore_sccache_unix:
-          key_prefix: linux-xtask
-      - setup_rust_unix
+          key_prefix: linux-x86_64-portable-release
+      - setup_rust_unix:
+          target: x86_64-unknown-linux-musl
       - setup_sccache_unix:
           asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
           sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
       - run:
           name: Install mold
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold musl-tools nasm
       - run:
-          name: Build xtask with sccache and mold
+          name: Build portable release binary (Linux x86_64 + embedded UI)
           no_output_timeout: 30m
           environment:
-            CARGO_TARGET_DIR: target/ci-linux-xtask
+            CARGO_TARGET_DIR: target/ci-linux-x86_64-portable-release
+            SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
           command: |
             . "$BASH_ENV"
+            export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
             export RUSTC_WRAPPER="sccache"
             export CARGO_BUILD_RUSTC_WRAPPER="sccache"
             export SCCACHE_DIR="$HOME/.cache/sccache"
@@ -402,14 +406,13 @@ jobs:
             sccache --stop-server || true
             sccache --start-server || true
             sccache --zero-stats || true
-            mold --version
             printf '%s\n' '[build]' 'rustc-wrapper = "sccache"' 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]' > /tmp/cargo-sccache-config.toml
-            cargo -vv --config /tmp/cargo-sccache-config.toml build -p xtask --locked
+            cargo --config /tmp/cargo-sccache-config.toml build -p scryer --release --locked --target x86_64-unknown-linux-musl
             sccache --show-stats || true
       - save_sccache_unix:
-          key_prefix: linux-xtask
+          key_prefix: linux-x86_64-portable-release
       - save_rust_cache_unix:
-          key_prefix: linux-xtask
+          key_prefix: linux-x86_64-portable-release
 
   rust-build-linux-x86_64-haswell:
     executor: linux-medium
@@ -1125,10 +1128,15 @@ jobs:
 workflows:
   scryer:
     jobs:
-      - rust-build-linux-x86_64-portable:
+      - web:
           context: scryer-build
-          filters:
+          filters: &release_tag_filters
             tags:
               only: /^(scryer-v|cci-scryer-v).*/
             branches:
               ignore: /.*/
+      - rust-build-linux-x86_64-portable:
+          context: scryer-build
+          requires:
+            - web
+          filters: *release_tag_filters
