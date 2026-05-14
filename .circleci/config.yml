@@ -385,7 +385,10 @@ jobs:
           asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
           sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
       - run:
-          name: Build xtask with sccache
+          name: Install mold
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+      - run:
+          name: Build xtask with sccache and mold
           no_output_timeout: 30m
           environment:
             CARGO_TARGET_DIR: target/ci-linux-xtask
@@ -399,7 +402,7 @@ jobs:
             sccache --stop-server || true
             sccache --start-server || true
             sccache --zero-stats || true
-            printf '%s\n' '[build]' 'rustc-wrapper = "sccache"' > /tmp/cargo-sccache-config.toml
+            printf '%s\n' '[build]' 'rustc-wrapper = "sccache"' 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]' > /tmp/cargo-sccache-config.toml
             cargo --config /tmp/cargo-sccache-config.toml build -p xtask --locked
             sccache --show-stats || true
       - save_sccache_unix:
