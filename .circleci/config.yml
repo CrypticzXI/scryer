@@ -354,13 +354,14 @@ jobs:
           key_prefix: linux-x86_64-portable-release
       - restore_target_cache:
           key_prefix: linux-x86_64-portable-release
-      - setup_rust_unix
+      - setup_rust_unix:
+          target: x86_64-unknown-linux-musl
       - setup_sccache_unix:
           asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
           sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
       - run:
           name: Install system dependencies
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold nasm
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold musl-tools nasm
       - run:
           name: Build portable release binary (Linux x86_64 + embedded UI)
           no_output_timeout: 30m
@@ -370,7 +371,7 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
-            mold -run cargo build -p scryer --release --locked
+            mold -run cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl
       - save_target_cache:
           key_prefix: linux-x86_64-portable-release
           path: target/ci-linux-x86_64-portable-release
@@ -381,7 +382,7 @@ jobs:
           name: Package portable tarballs
           command: |
             mkdir -p release-artifacts
-            tar -czf release-artifacts/scryer-linux-x86_64-portable.tar.gz -C target/ci-linux-x86_64-portable-release/release scryer
+            tar -czf release-artifacts/scryer-linux-x86_64-portable.tar.gz -C target/ci-linux-x86_64-portable-release/x86_64-unknown-linux-musl/release scryer
             cp release-artifacts/scryer-linux-x86_64-portable.tar.gz release-artifacts/scryer-linux-x86_64.tar.gz
       - persist_release_artifact:
           path: release-artifacts/scryer-linux-x86_64.tar.gz
@@ -399,13 +400,14 @@ jobs:
           key_prefix: linux-x86_64-haswell-release
       - restore_target_cache:
           key_prefix: linux-x86_64-haswell-release
-      - setup_rust_unix
+      - setup_rust_unix:
+          target: x86_64-unknown-linux-musl
       - setup_sccache_unix:
           asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
           sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
       - run:
           name: Install system dependencies
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold nasm
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold musl-tools nasm
       - run:
           name: Build optimized release binary (Linux x86_64 haswell + embedded UI)
           no_output_timeout: 30m
@@ -416,7 +418,7 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
-            mold -run cargo build -p scryer --release --locked
+            mold -run cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl
       - save_target_cache:
           key_prefix: linux-x86_64-haswell-release
           path: target/ci-linux-x86_64-haswell-release
@@ -427,7 +429,7 @@ jobs:
           name: Package optimized tarball
           command: |
             mkdir -p release-artifacts
-            tar -czf release-artifacts/scryer-linux-x86_64-haswell.tar.gz -C target/ci-linux-x86_64-haswell-release/release scryer
+            tar -czf release-artifacts/scryer-linux-x86_64-haswell.tar.gz -C target/ci-linux-x86_64-haswell-release/x86_64-unknown-linux-musl/release scryer
       - persist_release_artifact:
           path: release-artifacts/scryer-linux-x86_64-haswell.tar.gz
 
@@ -442,13 +444,14 @@ jobs:
           key_prefix: linux-arm64-portable-release
       - restore_target_cache:
           key_prefix: linux-arm64-portable-release
-      - setup_rust_unix
+      - setup_rust_unix:
+          target: aarch64-unknown-linux-musl
       - setup_sccache_unix:
           asset_name: sccache-v0.15.0-aarch64-unknown-linux-musl.tar.gz
           sha256: 3a6a3712b49da3d263bf2d30d702de4302793016019e800bfb81c0c69401d8f8
       - run:
           name: Install system dependencies
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold nasm
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold musl-tools nasm
       - run:
           name: Build portable release binary (Linux arm64 + embedded UI)
           no_output_timeout: 30m
@@ -459,7 +462,7 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
-            mold -run cargo build -p scryer --release --locked
+            mold -run cargo build -p scryer --release --locked --target aarch64-unknown-linux-musl
       - save_target_cache:
           key_prefix: linux-arm64-portable-release
           path: target/ci-linux-arm64-portable-release
@@ -470,7 +473,7 @@ jobs:
           name: Package portable tarballs
           command: |
             mkdir -p release-artifacts
-            tar -czf release-artifacts/scryer-linux-arm64-portable.tar.gz -C target/ci-linux-arm64-portable-release/release scryer
+            tar -czf release-artifacts/scryer-linux-arm64-portable.tar.gz -C target/ci-linux-arm64-portable-release/aarch64-unknown-linux-musl/release scryer
             cp release-artifacts/scryer-linux-arm64-portable.tar.gz release-artifacts/scryer-linux-arm64.tar.gz
       - persist_release_artifact:
           path: release-artifacts/scryer-linux-arm64.tar.gz
@@ -488,13 +491,14 @@ jobs:
           key_prefix: linux-arm64-cortex-a76-release
       - restore_target_cache:
           key_prefix: linux-arm64-cortex-a76-release
-      - setup_rust_unix
+      - setup_rust_unix:
+          target: aarch64-unknown-linux-musl
       - setup_sccache_unix:
           asset_name: sccache-v0.15.0-aarch64-unknown-linux-musl.tar.gz
           sha256: 3a6a3712b49da3d263bf2d30d702de4302793016019e800bfb81c0c69401d8f8
       - run:
           name: Install system dependencies
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold nasm
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold musl-tools nasm
       - run:
           name: Build optimized release binary (Linux arm64 cortex-a76 + embedded UI)
           no_output_timeout: 30m
@@ -505,7 +509,7 @@ jobs:
           command: |
             . "$BASH_ENV"
             export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
-            mold -run cargo build -p scryer --release --locked
+            mold -run cargo build -p scryer --release --locked --target aarch64-unknown-linux-musl
       - save_target_cache:
           key_prefix: linux-arm64-cortex-a76-release
           path: target/ci-linux-arm64-cortex-a76-release
@@ -516,7 +520,7 @@ jobs:
           name: Package optimized tarball
           command: |
             mkdir -p release-artifacts
-            tar -czf release-artifacts/scryer-linux-arm64-cortex-a76.tar.gz -C target/ci-linux-arm64-cortex-a76-release/release scryer
+            tar -czf release-artifacts/scryer-linux-arm64-cortex-a76.tar.gz -C target/ci-linux-arm64-cortex-a76-release/aarch64-unknown-linux-musl/release scryer
       - persist_release_artifact:
           path: release-artifacts/scryer-linux-arm64-cortex-a76.tar.gz
 
@@ -564,7 +568,6 @@ jobs:
             security set-keychain-settings -lut 900 "$KEYCHAIN"
             security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
             printf '%s' "$APPLE_SIGNING_CERT_P12" | tr -d '\r\n' | base64 --decode > /tmp/cert.p12
-            openssl pkcs12 -in /tmp/cert.p12 -passin env:APPLE_SIGNING_CERT_PASSWORD -info -noout
             security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$APPLE_SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
             security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
             security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
@@ -601,9 +604,9 @@ jobs:
             $Env:Path = "$HOME\.cargo\bin;$Env:Path"
             [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
             rustup set profile minimal
-            rustup toolchain install 1.95.0-x86_64-pc-windows-msvc
-            rustup default 1.95.0-x86_64-pc-windows-msvc
-            rustup target add x86_64-pc-windows-msvc --toolchain 1.95.0-x86_64-pc-windows-msvc
+            rustup toolchain install 1.95.0
+            rustup default 1.95.0
+            rustup target add x86_64-pc-windows-msvc --toolchain 1.95.0
             rustup show active-toolchain
             cargo --version
             rustc --version
@@ -629,7 +632,7 @@ jobs:
             SCRYER_EMBED_UI_DIR: C:\Users\circleci\project\apps\scryer-web\dist
             SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
             RUSTFLAGS: -C target-cpu=haswell
-          command: rustup run 1.95.0-x86_64-pc-windows-msvc cargo build -p scryer --release --locked --target x86_64-pc-windows-msvc
+          command: rustup run 1.95.0 cargo build -p scryer --release --locked --target x86_64-pc-windows-msvc
       - save_target_cache:
           key_prefix: windows-x86_64-release
           path: C:\Users\circleci\project\target\ci-windows-x86_64-release
