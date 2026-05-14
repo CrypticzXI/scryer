@@ -634,6 +634,7 @@ jobs:
             [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
             rustup set profile minimal
             rustup toolchain install 1.95.0-x86_64-pc-windows-msvc
+            rustup target add --toolchain 1.95.0-x86_64-pc-windows-msvc x86_64-pc-windows-msvc
             rustup default 1.95.0-x86_64-pc-windows-msvc
             rustup show active-toolchain
             cargo --version
@@ -659,8 +660,26 @@ jobs:
             CARGO_TARGET_DIR: C:\Users\circleci\project\target\ci-windows-x86_64-release
             SCRYER_EMBED_UI_DIR: C:\Users\circleci\project\apps\scryer-web\dist
             SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
-            RUSTFLAGS: -C target-cpu=haswell
-          command: rustup run 1.95.0-x86_64-pc-windows-msvc cargo build -p scryer --release --locked
+            RUSTFLAGS: -C target-cpu=haswell -C linker=link.exe -C linker-flavor=msvc
+          command: |
+            $vswhere = Join-Path ${Env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+            $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $vsPath) {
+              throw "Unable to locate a Visual Studio installation with MSVC build tools"
+            }
+            $vsDevCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
+            cmd.exe /s /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && set" |
+              ForEach-Object {
+                if ($_ -match '^(.*?)=(.*)$') {
+                  [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+                }
+              }
+            $Env:CARGO_BUILD_TARGET = "x86_64-pc-windows-msvc"
+            $Env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = "link.exe"
+            Remove-Item Env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER -ErrorAction SilentlyContinue
+            where.exe link
+            rustup run 1.95.0-x86_64-pc-windows-msvc rustc -vV
+            rustup run 1.95.0-x86_64-pc-windows-msvc cargo build -p scryer --release --locked --target x86_64-pc-windows-msvc
       - save_target_cache:
           key_prefix: windows-x86_64-release
           path: C:\Users\circleci\project\target\ci-windows-x86_64-release
