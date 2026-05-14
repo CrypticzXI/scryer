@@ -369,6 +369,8 @@ jobs:
             if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
               choco install rustup.install -y
             }
+            $Env:Path = "$HOME\.cargo\bin;$Env:Path"
+            [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
             rustup set profile minimal
             rustup toolchain install 1.95.0
             rustup default 1.95.0
@@ -394,7 +396,7 @@ jobs:
             SCRYER_EMBED_UI_DIR: C:\Users\circleci\project\apps\scryer-web\dist
             SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
             RUSTFLAGS: -C target-cpu=haswell -C linker=rust-lld
-          command: cargo build -p scryer --release --locked
+          command: rustup run 1.95.0 cargo build -p scryer --release --locked
       - run:
           name: Create README.txt
           command: |
@@ -475,6 +477,8 @@ jobs:
             if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
               choco install rustup.install -y
             }
+            $Env:Path = "$HOME\.cargo\bin;$Env:Path"
+            [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
             rustup set profile minimal
             rustup toolchain install 1.95.0
             rustup target add aarch64-pc-windows-msvc
@@ -488,7 +492,7 @@ jobs:
             SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
             RUSTFLAGS: -C target-cpu=cortex-a76 -C linker=rust-lld
             CC: clang-cl
-          command: cargo build -p scryer --release --locked --target aarch64-pc-windows-msvc
+          command: rustup run 1.95.0 cargo build -p scryer --release --locked --target aarch64-pc-windows-msvc
       - run:
           name: Create README.txt
           command: |
