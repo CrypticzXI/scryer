@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS titles (
     metadata_json JSONB,
     record_json JSONB NOT NULL DEFAULT '{}'::JSONB,
     folder_path TEXT,
+    poster_local_path TEXT,
+    banner_local_path TEXT,
+    background_local_path TEXT,
     monitored BOOLEAN NOT NULL DEFAULT TRUE,
     metadata_hydration_next_attempt_at TIMESTAMPTZ,
     metadata_hydration_attempt_count BIGINT NOT NULL DEFAULT 0,
@@ -115,6 +118,45 @@ CREATE TABLE IF NOT EXISTS episodes (
     monitored BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS title_images (
+    id TEXT PRIMARY KEY,
+    title_id TEXT,
+    provider TEXT,
+    provider_image_id TEXT,
+    kind TEXT,
+    source_url TEXT,
+    source_etag TEXT,
+    source_last_modified TEXT,
+    source_format TEXT,
+    source_width BIGINT,
+    source_height BIGINT,
+    storage_mode TEXT,
+    master_path TEXT,
+    master_format TEXT,
+    master_sha256 TEXT,
+    master_width BIGINT,
+    master_height BIGINT,
+    bytes BYTEA,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (title_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS title_image_variants (
+    id TEXT PRIMARY KEY,
+    title_image_id TEXT,
+    variant_key TEXT,
+    path TEXT,
+    format TEXT,
+    width BIGINT,
+    height BIGINT,
+    bytes BYTEA,
+    sha256 TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (title_image_id, variant_key)
 );
 
 CREATE TABLE IF NOT EXISTS library_scan_unmatched_items (

@@ -6,6 +6,7 @@ use crate::{
     JobRun, JobRunStatus, JobTriggerSource, LibraryScanSession, LibraryScanStatus,
 };
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use scryer_domain::{
     ConfigurationChangeAction, DomainEvent, DomainEventPayload, DownloadQueueItemRemovedEventData,
     DownloadQueueItemUpsertedEventData, DownloadQueueState, EventType, HistoryEvent,
@@ -13,7 +14,8 @@ use scryer_domain::{
     MediaFacet, MediaFileDeletedReason, MetadataHydrationState, PostProcessingResult,
     TitleHistoryEventType, TitleHistoryRecord,
 };
-use std::{cmp::Ordering, collections::HashMap};
+use serde_json::Value;
+use std::{cmp::Ordering, collections::HashMap, sync::OnceLock};
 
 fn default_activity_channels() -> Vec<ActivityChannel> {
     vec![ActivityChannel::WebUi]
@@ -276,6 +278,71 @@ pub(crate) fn title_history_records_from_domain_event(
         .collect()
 }
 
+const REDACTED_HISTORY_SECRET: &str = "[redacted]";
+
+fn history_api_key_query_param_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r#"(?i)(?P<prefix>\b(?:api_?key)=)(?P<value>[^&#\s"'<>),\]}]+)"#)
+            .expect("history api key regex should compile")
+    })
+}
+
+fn looks_like_history_secret_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect::<String>();
+
+    normalized == "apikey" || normalized.ends_with("apikey")
+}
+
+fn redact_history_api_keys(raw: &str) -> String {
+    history_api_key_query_param_regex()
+        .replace_all(raw, format!("${{prefix}}{REDACTED_HISTORY_SECRET}"))
+        .into_owned()
+}
+
+fn sanitize_history_string(value: Option<String>) -> Option<String> {
+    value.map(|value| redact_history_api_keys(&value))
+}
+
+fn sanitize_history_json_value(value: Value) -> Value {
+    match value {
+        Value::String(value) => Value::String(redact_history_api_keys(&value)),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(sanitize_history_json_value)
+                .collect(),
+        ),
+        Value::Object(values) => Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = if looks_like_history_secret_key(&key) {
+                        Value::String(REDACTED_HISTORY_SECRET.to_string())
+                    } else {
+                        sanitize_history_json_value(value)
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn serialize_title_history_data(payload: &DomainEventPayload) -> Option<String> {
+    let value = match payload {
+        DomainEventPayload::TitleRematched(data) => serde_json::to_value(data).ok()?,
+        _ => serde_json::to_value(payload).ok()?,
+    };
+
+    serde_json::to_string(&sanitize_history_json_value(value)).ok()
+}
+
 pub(crate) fn title_history_record_from_domain_event(
     event: &DomainEvent,
 ) -> Option<TitleHistoryRecord> {
@@ -509,10 +576,16 @@ pub(crate) fn title_history_record_from_domain_event(
         _ => return None,
     };
 
-    let data_json = match &event.payload {
-        DomainEventPayload::TitleRematched(data) => serde_json::to_string(data).ok(),
-        _ => serde_json::to_string(&event.payload).ok(),
-    };
+    let source_title = sanitize_history_string(source_title);
+    let display_title = sanitize_history_string(display_title);
+    let source_system = sanitize_history_string(source_system);
+    let source_ref = sanitize_history_string(source_ref);
+    let source_hint = sanitize_history_string(source_hint);
+    let failure_reason = sanitize_history_string(failure_reason);
+    let blocklist_reason = sanitize_history_string(blocklist_reason);
+    let source_path = sanitize_history_string(source_path);
+    let dest_path = sanitize_history_string(dest_path);
+    let data_json = serialize_title_history_data(&event.payload);
     let episode_ids = event_episode_ids(event);
     let collection_id = event_collection_id(event);
 
@@ -1030,10 +1103,10 @@ mod tests {
     use super::*;
     use chrono::{Duration, Utc};
     use scryer_domain::{
-        DomainEventStream, DomainExternalIds, DownloadQueueState, ImportCompletedEventData,
-        JobRunStartedEventData, LibraryScanCompletedEventData, LibraryScanProgressedEventData,
-        MediaFacet, MediaFileAnalyzedEventData, MediaPathUpdate, MediaUpdateType,
-        TitleContextSnapshot,
+        DomainEventStream, DomainExternalIds, DownloadFailedEventData, DownloadQueueState,
+        ImportCompletedEventData, JobRunStartedEventData, LibraryScanCompletedEventData,
+        LibraryScanProgressedEventData, MediaFacet, MediaFileAnalyzedEventData, MediaPathUpdate,
+        MediaUpdateType, TitleContextSnapshot,
     };
 
     fn title_snapshot(name: &str, facet: MediaFacet) -> TitleContextSnapshot {
@@ -1064,6 +1137,68 @@ mod tests {
             stream: DomainEventStream::Global,
             payload,
         }
+    }
+
+    #[test]
+    fn sanitize_history_json_redacts_api_key_fields_and_query_params() {
+        let sanitized = sanitize_history_json_value(serde_json::json!({
+            "api_key": "super-secret",
+            "nested": {
+                "provider_api_key": "also-secret",
+                "source_hint": "http://api.nzbgeek.info/api?t=get&id=abc123&apikey=third-secret",
+            },
+        }));
+
+        assert_eq!(sanitized["api_key"], REDACTED_HISTORY_SECRET);
+        assert_eq!(
+            sanitized["nested"]["provider_api_key"],
+            REDACTED_HISTORY_SECRET
+        );
+        assert_eq!(
+            sanitized["nested"]["source_hint"],
+            "http://api.nzbgeek.info/api?t=get&id=abc123&apikey=[redacted]"
+        );
+    }
+
+    #[test]
+    fn title_history_record_redacts_api_keys_before_reaching_ui() {
+        let source_hint =
+            "http://api.nzbgeek.info/api?t=get&id=abc123&apikey=super-secret".to_string();
+        let failure_reason = format!("grab failed while fetching {source_hint}");
+        let record = title_history_record_from_domain_event(&event(
+            1,
+            Utc::now(),
+            DomainEventPayload::DownloadFailed(DownloadFailedEventData {
+                title: Some(title_snapshot("Planetes", MediaFacet::Anime)),
+                source_title: None,
+                source_hint: Some(source_hint),
+                download_id: None,
+                client_id: None,
+                client_name: None,
+                client_type: None,
+                quality: Some("1080p".to_string()),
+                reason: Some(failure_reason),
+                episode_ids: vec!["ep-1".to_string()],
+                collection_id: None,
+            }),
+        ))
+        .expect("download failed event should project to title history");
+
+        let expected_hint = "http://api.nzbgeek.info/api?t=get&id=abc123&apikey=[redacted]";
+        assert_eq!(record.source_hint.as_deref(), Some(expected_hint));
+        assert_eq!(record.display_title.as_deref(), Some(expected_hint));
+        assert_eq!(
+            record.failure_reason.as_deref(),
+            Some(
+                "grab failed while fetching http://api.nzbgeek.info/api?t=get&id=abc123&apikey=[redacted]"
+            )
+        );
+
+        let data_json = record
+            .data_json
+            .expect("history payload should be serialized");
+        assert!(data_json.contains(expected_hint));
+        assert!(!data_json.contains("super-secret"));
     }
 
     fn queue_item(

@@ -87,13 +87,16 @@ mod tests {
     use scryer_application::{
         LibraryRepository, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
         LibraryScanUnmatchedSearchAttempt, PendingImportStatus, QualityProfileRepository,
-        SettingsRepository, SystemInfoProvider, TitleImageKind, TitleImageRepository,
-        TitleMetadataUpdate, TitleRepository, UserRepository, default_quality_profile_for_search,
+        SettingsRepository, ShowRepository, SystemInfoProvider, TitleImageKind,
+        TitleImageReplacement, TitleImageRepository, TitleImageStorageMode,
+        TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository, UserRepository,
+        default_quality_profile_for_search,
     };
     use scryer_domain::{
-        ExternalId, Id, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title,
-        User,
+        Collection, CollectionType, ExternalId, Id, LibraryGrant, LibraryPermission,
+        LibraryPermissionMask, MediaFacet, Title, User,
     };
+    use sqlx::Row;
     use tokio::task::JoinSet;
 
     use crate::SettingDefinitionSeed;
@@ -130,13 +133,26 @@ mod tests {
             let settings = super::super::PostgresSettingsStore::new(&services);
             let info = settings.datastore_info().await?;
             assert_eq!(info.engine, "postgres");
+            let current_migration_key = info.current_migration_key.as_deref().ok_or_else(|| {
+                AppError::Repository(
+                    "expected PostgreSQL blank install to record a current migration key"
+                        .to_string(),
+                )
+            })?;
+            let current_migration_version = current_migration_key
+                .split('_')
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .ok_or_else(|| {
+                    AppError::Repository(format!(
+                        "failed to parse PostgreSQL migration key {current_migration_key}"
+                    ))
+                })?;
             assert!(
-                info.current_migration_key
-                    .as_deref()
-                    .is_some_and(|key| key.starts_with("0110_")),
-                "expected PostgreSQL blank install to apply through 0110, got {:?}",
-                info.current_migration_key
+                current_migration_version >= 111,
+                "expected PostgreSQL blank install to apply through 0111+, got {current_migration_key}",
             );
+            assert_postgres_runtime_schema_columns(services.pool()).await?;
 
             let title = sample_title("pg-blank-install-movie");
             TitleRepository::create(&catalog, title.clone()).await?;
@@ -196,6 +212,61 @@ mod tests {
                 poster_tasks[0].source_url,
                 "https://example.com/poster.jpg".to_string()
             );
+
+            images
+                .replace_title_image(
+                    &title.id,
+                    TitleImageReplacement {
+                        kind: TitleImageKind::Poster,
+                        source_url: "https://example.com/poster.jpg".to_string(),
+                        source_etag: Some("source-etag".to_string()),
+                        source_last_modified: Some("Wed, 14 May 2026 03:00:00 GMT".to_string()),
+                        source_format: "jpeg".to_string(),
+                        source_width: 1200,
+                        source_height: 1800,
+                        storage_mode: TitleImageStorageMode::Original,
+                        master_format: "jpeg".to_string(),
+                        master_sha256: "poster-master-sha256".to_string(),
+                        master_width: 1200,
+                        master_height: 1800,
+                        master_bytes: vec![1, 2, 3, 4],
+                        variants: vec![TitleImageVariantRecord {
+                            variant_key: "thumb".to_string(),
+                            format: "avif".to_string(),
+                            width: 240,
+                            height: 360,
+                            bytes: vec![5, 6, 7, 8],
+                            sha256: "poster-thumb-sha256".to_string(),
+                        }],
+                    },
+                )
+                .await?;
+
+            let original_blob = images
+                .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
+                .await?
+                .ok_or_else(|| {
+                    AppError::Repository(
+                        "expected PostgreSQL blank install to persist title image master blob"
+                            .to_string(),
+                    )
+                })?;
+            assert_eq!(original_blob.content_type, "image/jpeg");
+            assert_eq!(original_blob.etag, "poster-master-sha256");
+            assert_eq!(original_blob.bytes, vec![1, 2, 3, 4]);
+
+            let thumb_blob = images
+                .get_title_image_blob(&title.id, TitleImageKind::Poster, "thumb")
+                .await?
+                .ok_or_else(|| {
+                    AppError::Repository(
+                        "expected PostgreSQL blank install to persist title image variants"
+                            .to_string(),
+                    )
+                })?;
+            assert_eq!(thumb_blob.content_type, "image/avif");
+            assert_eq!(thumb_blob.etag, "poster-thumb-sha256");
+            assert_eq!(thumb_blob.bytes, vec![5, 6, 7, 8]);
 
             services.pool().close().await;
             Ok::<_, AppError>(())
@@ -303,6 +374,108 @@ mod tests {
                 Some("\"preferred-profile\"".to_string()),
                 "explicit raw string writes should round-trip as JSON strings so application readers stay engine-neutral",
             );
+
+            services.pool().close().await;
+            Ok::<_, AppError>(())
+        }
+        .await;
+
+        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin_pool)
+            .await;
+        admin_pool.close().await;
+        if let Err(error) = cleanup {
+            return Err(AppError::Repository(format!(
+                "failed to drop test schema {schema}: {error}"
+            )));
+        }
+        result
+    }
+
+    #[tokio::test]
+    async fn postgres_collection_reader_treats_json_null_interstitial_fields_as_missing()
+    -> AppResult<()> {
+        let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            eprintln!(
+                "skipping PostgreSQL collection-null compatibility test; SCRYER_TEST_POSTGRES_URL is not set"
+            );
+            return Ok(());
+        };
+
+        let admin_pool = sqlx::PgPool::connect(&raw_url).await.map_err(|error| {
+            AppError::Repository(format!("failed to connect to postgres: {error}"))
+        })?;
+        let schema = next_test_schema_name();
+
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin_pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to create test schema: {error}"))
+            })?;
+
+        let result = async {
+            let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
+            let services =
+                PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
+            let catalog = super::super::PostgresCatalogStore::new(&services);
+
+            let mut title = sample_title("pg-collection-json-null");
+            title.facet = MediaFacet::Anime;
+            TitleRepository::create(&catalog, title.clone()).await?;
+
+            let collection = Collection {
+                id: "pg-collection-json-null-season-1".to_string(),
+                title_id: title.id.clone(),
+                collection_type: CollectionType::Season,
+                collection_index: "1".to_string(),
+                label: Some("Season 1".to_string()),
+                ordered_path: None,
+                narrative_order: Some("1".to_string()),
+                first_episode_number: Some("1".to_string()),
+                last_episode_number: Some("12".to_string()),
+                interstitial_movie: None,
+                specials_movies: Vec::new(),
+                interstitial_season_episode: None,
+                monitored: true,
+                created_at: chrono::Utc::now(),
+            };
+            ShowRepository::create_collection(&catalog, collection.clone()).await?;
+
+            sqlx::query(
+                "UPDATE collections
+                    SET interstitial_movie_json = 'null'::jsonb,
+                        specials_movies_json = 'null'::jsonb
+                  WHERE id = $1",
+            )
+            .bind(&collection.id)
+            .execute(services.pool())
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+
+            let listed = ShowRepository::list_collections_for_title(&catalog, &title.id).await?;
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, collection.id);
+            assert!(
+                listed[0].interstitial_movie.is_none(),
+                "expected JSON null interstitial movie payloads to deserialize as missing"
+            );
+            assert!(
+                listed[0].specials_movies.is_empty(),
+                "expected JSON null specials payloads to deserialize as empty collections"
+            );
+
+            let loaded = ShowRepository::get_collection_by_id(&catalog, &collection.id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Repository("expected collection to be readable by id".to_string())
+                })?;
+            assert!(loaded.interstitial_movie.is_none());
+            assert!(loaded.specials_movies.is_empty());
 
             services.pool().close().await;
             Ok::<_, AppError>(())
@@ -777,6 +950,85 @@ mod tests {
     fn postgres_parity_index_migration_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../scryer/src/db/postgres/migrations/0109_parity_secondary_indexes.sql")
+    }
+
+    async fn assert_postgres_runtime_schema_columns(pool: &sqlx::PgPool) -> AppResult<()> {
+        let rows = sqlx::query(
+            "SELECT table_name, column_name
+               FROM information_schema.columns
+              WHERE table_schema = current_schema()",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+        let actual_columns: BTreeSet<(String, String)> = rows
+            .into_iter()
+            .map(|row| {
+                Ok::<_, AppError>((
+                    row.try_get("table_name")
+                        .map_err(|error| AppError::Repository(error.to_string()))?,
+                    row.try_get("column_name")
+                        .map_err(|error| AppError::Repository(error.to_string()))?,
+                ))
+            })
+            .collect::<AppResult<_>>()?;
+
+        let expected_columns = [
+            ("titles", "library_id"),
+            ("titles", "record_json"),
+            ("titles", "poster_local_path"),
+            ("titles", "banner_local_path"),
+            ("titles", "background_local_path"),
+            ("titles", "metadata_hydration_next_attempt_at"),
+            ("titles", "metadata_hydration_attempt_count"),
+            ("libraries", "is_default"),
+            ("library_roots", "is_default"),
+            ("library_scan_unmatched_items", "title_id"),
+            ("library_scan_unmatched_items", "library_id"),
+            ("library_scan_unmatched_items", "scan_session_id"),
+            ("library_scan_unmatched_items", "display_name"),
+            ("library_scan_unmatched_items", "query"),
+            ("library_scan_unmatched_items", "year_hint"),
+            ("library_scan_unmatched_items", "reason_code"),
+            ("library_scan_unmatched_items", "error_message"),
+            ("library_scan_unmatched_items", "search_attempts_json"),
+            ("title_images", "master_sha256"),
+            ("title_images", "bytes"),
+            ("title_image_variants", "variant_key"),
+            ("title_image_variants", "bytes"),
+            ("download_jobs", "progress_json"),
+            ("download_submissions", "episode_set_ids"),
+            ("media_files", "analysis_json"),
+            ("pending_releases", "scoring_log_json"),
+            ("post_processing_scripts", "priority"),
+            ("post_processing_scripts", "record_json"),
+            ("post_processing_script_runs", "record_json"),
+            ("rule_sets", "record_json"),
+            ("history_events", "event_json"),
+            ("event_outboxes", "payload_json"),
+            ("collection_external_ids", "provenance"),
+            ("episode_external_ids", "provenance"),
+            ("subtitle_provider_configs", "record_json"),
+            ("subtitle_downloads", "source_kind"),
+            ("user_app_permission_masks", "permission_mask"),
+            ("user_library_permission_masks", "permission_mask"),
+        ];
+
+        let missing_columns: Vec<String> = expected_columns
+            .into_iter()
+            .filter(|(table, column)| {
+                !actual_columns.contains(&(table.to_string(), column.to_string()))
+            })
+            .map(|(table, column)| format!("{table}.{column}"))
+            .collect();
+
+        assert!(
+            missing_columns.is_empty(),
+            "expected PostgreSQL blank install to include runtime schema columns; missing {missing_columns:?}"
+        );
+
+        Ok(())
     }
 
     fn sample_title(id: &str) -> Title {

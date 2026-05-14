@@ -727,6 +727,37 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn list_titles_without_external_ids(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        let mut library_ids = self
+            .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
+            .await?;
+        let requested_library_ids = requested_library_ids
+            .as_ref()
+            .map(|requested| {
+                requested
+                    .iter()
+                    .map(|library_id| library_id.trim())
+                    .filter(|library_id| !library_id.is_empty())
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_library_ids.is_empty() {
+            library_ids.retain(|library_id| requested_library_ids.contains(library_id));
+        }
+        self.services
+            .catalog
+            .titles
+            .list_for_libraries_without_external_ids(facet, &library_ids, query)
+            .await
+    }
+
     pub async fn list_titles_by_external_ids(
         &self,
         actor: &User,
@@ -4417,6 +4448,28 @@ impl AppUseCase {
 
     pub async fn get_title(&self, actor: &User, id: &str) -> AppResult<Option<Title>> {
         let title = self.services.catalog.titles.get_by_id(id).await?;
+        if let Some(title) = title.as_ref() {
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
+        Ok(title)
+    }
+
+    pub async fn get_title_without_external_ids(
+        &self,
+        actor: &User,
+        id: &str,
+    ) -> AppResult<Option<Title>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id_without_external_ids(id)
+            .await?;
         if let Some(title) = title.as_ref() {
             self.require_library_permission(
                 actor,

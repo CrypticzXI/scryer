@@ -313,6 +313,10 @@ async fn title_payloads_from_titles(
         .collect())
 }
 
+fn title_external_ids_requested(ctx: &Context<'_>) -> bool {
+    ctx.look_ahead().field("externalIds").exists()
+}
+
 #[derive(Copy, Clone)]
 pub struct QueryRoot;
 
@@ -332,10 +336,14 @@ impl QueryRoot {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let parsed_facet = facet.map(MediaFacetValue::into_domain);
-        let titles = app
-            .list_titles(&actor, parsed_facet, library_ids, query)
-            .await
-            .map_err(to_gql_error)?;
+        let titles = if title_external_ids_requested(ctx) {
+            app.list_titles(&actor, parsed_facet, library_ids, query)
+                .await
+        } else {
+            app.list_titles_without_external_ids(&actor, parsed_facet, library_ids, query)
+                .await
+        }
+        .map_err(to_gql_error)?;
 
         title_payloads_from_titles(&app, &actor, titles).await
     }
@@ -394,7 +402,13 @@ impl QueryRoot {
     async fn title(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let Some(title) = app.get_title(&actor, &id).await.map_err(to_gql_error)? else {
+        let title = if title_external_ids_requested(ctx) {
+            app.get_title(&actor, &id).await
+        } else {
+            app.get_title_without_external_ids(&actor, &id).await
+        }
+        .map_err(to_gql_error)?;
+        let Some(title) = title else {
             return Ok(None);
         };
         let mut payloads = title_payloads_from_titles(&app, &actor, vec![title]).await?;

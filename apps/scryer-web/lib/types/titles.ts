@@ -20,7 +20,7 @@ export type TitleRecord = {
   sortTitle?: string | null;
   slug?: string | null;
   imdbId?: string | null;
-  externalIds: ExternalId[];
+  externalIds?: ExternalId[] | null;
   qualityTier?: string | null;
   currentQualityTier?: string | null;
   sizeBytes?: number | null;

@@ -292,7 +292,7 @@ export const RootHeader = React.memo(function RootHeader({
     (items: import("@/lib/types").TitleRecord[], facet: Facet) => {
       return items.map((title) => {
         const targetView: ViewId = viewFromFacet(facet);
-        const tvdbId = title.externalIds
+        const tvdbId = (title.externalIds ?? [])
           .find((externalId) => externalId.source.toLowerCase() === "tvdb")
           ?.value.trim();
         const posterUrl = selectPosterVariantUrl(title.posterUrl, "w70");

@@ -566,6 +566,20 @@ export function TitleTableEmptyState({
   );
 }
 
+export function TitleTableLoadingState({
+  colSpan,
+}: {
+  colSpan: number;
+}) {
+  return (
+    <TableRow>
+      <TableCell colSpan={colSpan} className="py-10">
+        <TitleCollectionLoadingState />
+      </TableCell>
+    </TableRow>
+  );
+}
+
 type TitleCollectionEmptyStateProps = {
   t: Translate;
   showScanAction?: boolean;
@@ -576,6 +590,24 @@ type TitleCollectionEmptyStateProps = {
   scanNotice?: string | null;
   onScan?: () => Promise<void> | void;
 };
+
+export function TitleCollectionLoadingState() {
+  return (
+    <div
+      className="mx-auto flex max-w-sm items-center justify-center gap-3 rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <Loader2 className="h-5 w-5 animate-spin text-primary" />
+      <div className="text-left">
+        <p className="text-sm font-medium text-foreground">Loading library...</p>
+        <p className="text-sm text-muted-foreground">
+          Checking your titles and library setup.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 export function TitleCollectionEmptyState({
   t,

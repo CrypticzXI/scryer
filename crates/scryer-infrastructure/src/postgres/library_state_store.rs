@@ -7,6 +7,7 @@ use sqlx::{Postgres, QueryBuilder, Row};
 
 use crate::library_state_store::LibraryStateStore;
 use crate::postgres::PostgresServices;
+use crate::postgres::timestamp::{parse_optional_rfc3339_timestamp, parse_rfc3339_timestamp};
 
 pub type PostgresLibraryStateStore = LibraryStateStore<PostgresLibraryStateSql>;
 
@@ -673,6 +674,10 @@ fn row_to_title_media_file(row: &sqlx::postgres::PgRow) -> AppResult<TitleMediaF
 impl MediaFileRepository for PostgresLibraryStateSql {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
         let id = Id::new().0;
+        let grabbed_at = parse_optional_rfc3339_timestamp(
+            input.grabbed_at.as_deref(),
+            "media_files.grabbed_at",
+        )?;
         sqlx::query(
             "INSERT INTO media_files (
                 id, title_id, file_path, size_bytes, quality_id, scan_status, created_at,
@@ -682,7 +687,7 @@ impl MediaFileRepository for PostgresLibraryStateSql {
                 grabbed_release_title, grabbed_at, edition, original_file_path, release_hash
              )
              VALUES ($1, $2, $3, $4, $5, 'pending', NOW(), $6, $7, $8, $9, $10, $11,
-                     $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+                     $12, $13, $14, $15, $16, $17, $18, $19::timestamptz, $20, $21, $22)
              ON CONFLICT (file_path) DO UPDATE SET
                 title_id = EXCLUDED.title_id,
                 size_bytes = EXCLUDED.size_bytes,
@@ -709,7 +714,7 @@ impl MediaFileRepository for PostgresLibraryStateSql {
         .bind(&input.scoring_log)
         .bind(&input.indexer_source)
         .bind(&input.grabbed_release_title)
-        .bind(&input.grabbed_at)
+        .bind(grabbed_at)
         .bind(&input.edition)
         .bind(&input.original_file_path)
         .bind(&input.release_hash)
@@ -1049,6 +1054,18 @@ impl WantedItemRepository for PostgresLibraryStateSql {
         } else {
             "(title_id) WHERE episode_id IS NULL AND collection_id IS NULL"
         };
+        let next_search_at = parse_optional_rfc3339_timestamp(
+            item.next_search_at.as_deref(),
+            "wanted_items.next_search_at",
+        )?;
+        let last_search_at = parse_optional_rfc3339_timestamp(
+            item.last_search_at.as_deref(),
+            "wanted_items.last_search_at",
+        )?;
+        let baseline_date = parse_optional_rfc3339_timestamp(
+            item.baseline_date.as_deref(),
+            "wanted_items.baseline_date",
+        )?;
         let sql = format!(
             "INSERT INTO wanted_items
              (id, title_id, episode_id, collection_id, media_type, search_phase, next_search_at,
@@ -1081,10 +1098,10 @@ impl WantedItemRepository for PostgresLibraryStateSql {
             .bind(&item.collection_id)
             .bind(&item.media_type)
             .bind(&item.search_phase)
-            .bind(&item.next_search_at)
-            .bind(&item.last_search_at)
+            .bind(next_search_at)
+            .bind(last_search_at)
             .bind(item.search_count)
-            .bind(&item.baseline_date)
+            .bind(baseline_date)
             .bind(item.status.as_str())
             .bind(&item.grabbed_release)
             .bind(item.current_score)
@@ -1151,6 +1168,10 @@ impl WantedItemRepository for PostgresLibraryStateSql {
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
+        let next_search_at =
+            parse_optional_rfc3339_timestamp(next_search_at, "wanted_items.next_search_at")?;
+        let last_search_at =
+            parse_optional_rfc3339_timestamp(last_search_at, "wanted_items.last_search_at")?;
         sqlx::query(
             "UPDATE wanted_items
                 SET status = $1, next_search_at = $2::timestamptz, last_search_at = $3::timestamptz,
@@ -1216,6 +1237,7 @@ impl WantedItemRepository for PostgresLibraryStateSql {
         Ok(())
     }
     async fn reset_fruitless_wanted_items(&self, now: &str) -> AppResult<u64> {
+        let next_search_at = parse_rfc3339_timestamp(now, "wanted_items.next_search_at")?;
         let result = sqlx::query(
             "UPDATE wanted_items
                 SET next_search_at = $1::timestamptz, updated_at = $1::timestamptz
@@ -1224,13 +1246,15 @@ impl WantedItemRepository for PostgresLibraryStateSql {
                 AND current_score IS NULL
                 AND (media_type != 'episode' OR baseline_date IS NOT NULL)",
         )
-        .bind(now)
+        .bind(next_search_at)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
         Ok(result.rows_affected())
     }
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String> {
+        let created_at =
+            parse_rfc3339_timestamp(&decision.created_at, "release_decisions.created_at")?;
         sqlx::query(
             "INSERT INTO release_decisions
              (id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
@@ -1248,7 +1272,7 @@ impl WantedItemRepository for PostgresLibraryStateSql {
         .bind(decision.current_score)
         .bind(decision.score_delta)
         .bind(&decision.explanation_json)
-        .bind(&decision.created_at)
+        .bind(created_at)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -1345,6 +1369,17 @@ impl WantedItemRepository for PostgresLibraryStateSql {
 #[async_trait]
 impl PendingReleaseRepository for PostgresLibraryStateSql {
     async fn insert_pending_release(&self, release: &PendingRelease) -> AppResult<String> {
+        let added_at = parse_rfc3339_timestamp(&release.added_at, "pending_releases.added_at")?;
+        let delay_until =
+            parse_rfc3339_timestamp(&release.delay_until, "pending_releases.delay_until")?;
+        let grabbed_at = parse_optional_rfc3339_timestamp(
+            release.grabbed_at.as_deref(),
+            "pending_releases.grabbed_at",
+        )?;
+        let published_at = parse_optional_rfc3339_timestamp(
+            release.published_at.as_deref(),
+            "pending_releases.published_at",
+        )?;
         sqlx::query(
             "INSERT INTO pending_releases
              (id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
@@ -1366,12 +1401,12 @@ impl PendingReleaseRepository for PostgresLibraryStateSql {
         .bind(&release.scoring_log_json)
         .bind(&release.indexer_source)
         .bind(&release.release_guid)
-        .bind(&release.added_at)
-        .bind(&release.delay_until)
+        .bind(added_at)
+        .bind(delay_until)
         .bind(release.status.as_str())
-        .bind(&release.grabbed_at)
+        .bind(grabbed_at)
         .bind(&release.source_password)
-        .bind(&release.published_at)
+        .bind(published_at)
         .bind(&release.info_hash)
         .execute(&self.pool)
         .await
@@ -1446,6 +1481,8 @@ impl PendingReleaseRepository for PostgresLibraryStateSql {
         status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
     ) -> AppResult<()> {
+        let grabbed_at =
+            parse_optional_rfc3339_timestamp(grabbed_at, "pending_releases.grabbed_at")?;
         sqlx::query(
             "UPDATE pending_releases SET status = $2, grabbed_at = $3::timestamptz WHERE id = $1",
         )
@@ -1503,6 +1540,8 @@ impl PendingReleaseRepository for PostgresLibraryStateSql {
         next_status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
     ) -> AppResult<bool> {
+        let grabbed_at =
+            parse_optional_rfc3339_timestamp(grabbed_at, "pending_releases.grabbed_at")?;
         let result = sqlx::query(
             "UPDATE pending_releases
                 SET status = $2, grabbed_at = $3::timestamptz
@@ -1874,6 +1913,10 @@ impl LibraryScanUnmatchedItemRepository for PostgresLibraryStateSql {
         item: &LibraryScanUnmatchedItem,
     ) -> AppResult<String> {
         let attempts = serde_json::to_value(&item.search_attempts).map_err(repo_err)?;
+        let created_at =
+            parse_rfc3339_timestamp(&item.created_at, "library_scan_unmatched_items.created_at")?;
+        let updated_at =
+            parse_rfc3339_timestamp(&item.updated_at, "library_scan_unmatched_items.updated_at")?;
         sqlx::query(
             "INSERT INTO library_scan_unmatched_items
              (id, library_id, facet, title_id, scan_session_id, scan_root, item_path, display_name,
@@ -1915,8 +1958,8 @@ impl LibraryScanUnmatchedItemRepository for PostgresLibraryStateSql {
         .bind(&item.error_message)
         .bind(attempts)
         .bind(item.status.as_str())
-        .bind(&item.created_at)
-        .bind(&item.updated_at)
+        .bind(created_at)
+        .bind(updated_at)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -2239,6 +2282,8 @@ impl SubtitleDownloadRepository for PostgresLibraryStateSql {
             .collect()
     }
     async fn insert(&self, download: &SubtitleDownload) -> AppResult<()> {
+        let downloaded_at =
+            parse_rfc3339_timestamp(&download.downloaded_at, "subtitle_downloads.downloaded_at")?;
         sqlx::query(
             "INSERT INTO subtitle_downloads
              (id, media_file_id, title_id, episode_id, source_kind, language, provider,
@@ -2283,7 +2328,7 @@ impl SubtitleDownloadRepository for PostgresLibraryStateSql {
         .bind(&download.uploader)
         .bind(&download.release_info)
         .bind(download.synced)
-        .bind(&download.downloaded_at)
+        .bind(downloaded_at)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -2293,6 +2338,14 @@ impl SubtitleDownloadRepository for PostgresLibraryStateSql {
         &self,
         entry: &scryer_application::subtitles::ExternalSubtitleProbeCacheEntry,
     ) -> AppResult<()> {
+        let modified_at = parse_optional_rfc3339_timestamp(
+            entry.modified_at.as_deref(),
+            "external_subtitle_probe_cache.modified_at",
+        )?;
+        let updated_at = parse_rfc3339_timestamp(
+            &entry.updated_at,
+            "external_subtitle_probe_cache.updated_at",
+        )?;
         sqlx::query(
             "INSERT INTO external_subtitle_probe_cache
              (media_file_id, file_path, size_bytes, modified_at, language,
@@ -2312,13 +2365,13 @@ impl SubtitleDownloadRepository for PostgresLibraryStateSql {
         .bind(&entry.media_file_id)
         .bind(&entry.file_path)
         .bind(entry.size_bytes)
-        .bind(&entry.modified_at)
+        .bind(modified_at)
         .bind(&entry.language)
         .bind(entry.hearing_impaired)
         .bind(entry.detection_source_language.as_str())
         .bind(entry.detection_source_hi.as_str())
         .bind(entry.probe_version)
-        .bind(&entry.updated_at)
+        .bind(updated_at)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;

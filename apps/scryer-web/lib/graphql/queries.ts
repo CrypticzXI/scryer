@@ -732,7 +732,9 @@ export const TITLE_LIST_FIELDS = `
     episodesTotal
     contentStatus
     metadataFetchedAt
-    createdAt
+    createdAt`;
+
+export const TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS = `${TITLE_LIST_FIELDS}
     externalIds {
       source
       value
@@ -799,9 +801,15 @@ ${TITLE_LIST_FIELDS}
   }
 }`;
 
+export const catalogSearchTitlesQuery = `query CatalogSearchTitles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
+  titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
+${TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS}
+  }
+}`;
+
 export const titlesByExternalIdsQuery = `query TitlesByExternalIds($source: String!, $values: [String!]!) {
   titlesByExternalIds(source: $source, values: $values) {
-${TITLE_LIST_FIELDS}
+${TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS}
   }
 }`;
 

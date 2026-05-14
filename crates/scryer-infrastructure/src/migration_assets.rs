@@ -607,8 +607,8 @@ mod tests {
         let bundle =
             compile_source_bundle(&source_db_root()).expect("compile source migration bundle");
         assert!(
-            bundle.catalog.find_migration(110).is_some(),
-            "migration 0110 must be registered in migration_manifest.toml"
+            bundle.catalog.find_migration(113).is_some(),
+            "migration 0113 must be registered in migration_manifest.toml"
         );
         assert!(
             bundle
@@ -690,6 +690,43 @@ mod tests {
             sql.contains("idx_library_scan_unmatched_items_facet_title_status_updated"),
             "PostgreSQL migration 0110 must restore the title-aware unmatched-items index"
         );
+    }
+
+    #[test]
+    fn postgres_title_image_schema_alignment_migration_keeps_runtime_columns() {
+        let sql = fs::read_to_string(
+            source_db_root().join("postgres/migrations/0112_title_image_schema_alignment.sql"),
+        )
+        .expect("read PostgreSQL title image schema alignment migration");
+        for expected in [
+            "ADD COLUMN IF NOT EXISTS poster_local_path TEXT",
+            "ADD COLUMN IF NOT EXISTS banner_local_path TEXT",
+            "ADD COLUMN IF NOT EXISTS background_local_path TEXT",
+            "CREATE TABLE IF NOT EXISTS title_images",
+            "CREATE TABLE IF NOT EXISTS title_image_variants",
+        ] {
+            assert!(
+                sql.contains(expected),
+                "expected PostgreSQL migration 0112 to include {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_title_read_indexes_migration_keeps_title_listing_indexes() {
+        let sql = fs::read_to_string(
+            source_db_root().join("postgres/migrations/0113_title_read_indexes.sql"),
+        )
+        .expect("read PostgreSQL title read indexes migration");
+        for expected in [
+            "idx_titles_facet_library_name_id",
+            "idx_titles_facet_slug_library_id",
+        ] {
+            assert!(
+                sql.contains(expected),
+                "expected PostgreSQL migration 0113 to include {expected}"
+            );
+        }
     }
 
     #[test]

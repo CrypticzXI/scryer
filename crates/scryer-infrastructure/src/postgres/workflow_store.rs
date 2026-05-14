@@ -13,6 +13,7 @@ use scryer_domain::{
 use sqlx::{QueryBuilder, Row};
 
 use crate::postgres::PostgresServices;
+use crate::postgres::timestamp::{parse_optional_rfc3339_timestamp, parse_rfc3339_or_now};
 use crate::workflow_store::{WorkflowSql, WorkflowStore};
 
 pub type PostgresWorkflowStore = WorkflowStore<PostgresWorkflowSql>;
@@ -39,6 +40,14 @@ impl WorkflowSql for PostgresWorkflowSql {
     async fn commit_successful_grab(&self, commit: &SuccessfulGrabCommit) -> AppResult<()> {
         self.record_submission(commit.download_submission.clone())
             .await?;
+        let last_search_at = parse_optional_rfc3339_timestamp(
+            commit.last_search_at.as_deref(),
+            "wanted_items.last_search_at",
+        )?;
+        let grabbed_at = parse_optional_rfc3339_timestamp(
+            commit.grabbed_at.as_deref(),
+            "pending_releases.grabbed_at",
+        )?;
 
         let mut wanted_ids = Vec::with_capacity(commit.covered_wanted_item_ids.len() + 1);
         wanted_ids.push(commit.wanted_item_id.clone());
@@ -51,7 +60,7 @@ impl WorkflowSql for PostgresWorkflowSql {
             "UPDATE wanted_items
                 SET status = 'grabbed',
                     next_search_at = NULL,
-                    last_search_at = $2,
+                    last_search_at = $2::timestamptz,
                     search_count = $3,
                     current_score = $4,
                     grabbed_release = $5,
@@ -59,7 +68,7 @@ impl WorkflowSql for PostgresWorkflowSql {
               WHERE id = ANY($1)",
         )
         .bind(&wanted_ids)
-        .bind(&commit.last_search_at)
+        .bind(last_search_at)
         .bind(commit.search_count)
         .bind(commit.current_score)
         .bind(&commit.grabbed_release)
@@ -71,11 +80,11 @@ impl WorkflowSql for PostgresWorkflowSql {
             sqlx::query(
                 "UPDATE pending_releases
                     SET status = 'grabbed',
-                        grabbed_at = COALESCE($2, grabbed_at)
+                        grabbed_at = COALESCE($2::timestamptz, grabbed_at)
                   WHERE id = $1",
             )
             .bind(pending_id)
-            .bind(&commit.grabbed_at)
+            .bind(grabbed_at)
             .execute(&mut *tx)
             .await
             .map_err(repo_err)?;
@@ -1414,12 +1423,6 @@ async fn list_imports_where(
         .await
         .map_err(repo_err)?;
     rows.iter().map(import_record_from_row).collect()
-}
-
-fn parse_rfc3339_or_now(value: impl AsRef<str>) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(value.as_ref())
-        .map(|value| value.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now())
 }
 
 fn json_value_as_string(value: serde_json::Value) -> String {

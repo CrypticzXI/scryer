@@ -17,6 +17,13 @@ use crate::queries::{library, title, user};
 pub trait TitleSql: Clone + Send + Sync + 'static {
     async fn list(&self, facet: Option<MediaFacet>, query: Option<String>)
     -> AppResult<Vec<Title>>;
+    async fn list_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        self.list(facet, query).await
+    }
     async fn list_for_libraries(
         &self,
         facet: Option<MediaFacet>,
@@ -33,6 +40,22 @@ pub trait TitleSql: Clone + Send + Sync + 'static {
             .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
             .collect())
     }
+    async fn list_for_libraries_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let titles = self.list_without_external_ids(facet, query).await?;
+        Ok(titles
+            .into_iter()
+            .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
+            .collect())
+    }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
     async fn list_for_matching(
         &self,
@@ -40,6 +63,9 @@ pub trait TitleSql: Clone + Send + Sync + 'static {
         query: Option<String>,
     ) -> AppResult<Vec<Title>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>>;
+    async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
+        self.get_by_id(id).await
+    }
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,
@@ -752,6 +778,14 @@ impl<S: TitleSql> TitleRepository for CatalogStore<S> {
         self.sql.list(facet, query).await
     }
 
+    async fn list_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        self.sql.list_without_external_ids(facet, query).await
+    }
+
     async fn list_for_libraries(
         &self,
         facet: Option<MediaFacet>,
@@ -759,6 +793,17 @@ impl<S: TitleSql> TitleRepository for CatalogStore<S> {
         query: Option<String>,
     ) -> AppResult<Vec<Title>> {
         self.sql.list_for_libraries(facet, library_ids, query).await
+    }
+
+    async fn list_for_libraries_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        self.sql
+            .list_for_libraries_without_external_ids(facet, library_ids, query)
+            .await
     }
 
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>> {
@@ -775,6 +820,10 @@ impl<S: TitleSql> TitleRepository for CatalogStore<S> {
 
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>> {
         self.sql.get_by_id(id).await
+    }
+
+    async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
+        self.sql.get_by_id_without_external_ids(id).await
     }
 
     async fn get_by_facet_and_slug(

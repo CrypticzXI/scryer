@@ -9,7 +9,10 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
-import { TitleCollectionEmptyState } from "./title-table-shared";
+import {
+  TitleCollectionEmptyState,
+  TitleCollectionLoadingState,
+} from "./title-table-shared";
 
 const QP_TAG_PREFIX = "scryer:quality-profile:";
 
@@ -92,7 +95,7 @@ export const PosterGrid = React.memo(function PosterGrid({
   const isMobile = useIsMobile();
 
   if (!catalogInitialLoadComplete) {
-    return null;
+    return <TitleCollectionLoadingState />;
   }
 
   if (titles.length === 0) {

@@ -2114,7 +2114,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         .toPromise();
       if (result.error) throw result.error;
       const sessionId = result.data?.scanLibrary?.sessionId ?? null;
-      setLibraryScanNotice(t("settings.libraryScanRunning"));
       setStartedLibraryScanSessionId(sessionId);
       void refreshLibraryScanSessions().catch((error) => {
         console.error("[library-scan] failed to refresh active scan sessions:", error);
@@ -2255,10 +2254,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           initialLoadComplete: false,
         });
 
-        void Promise.all([
-          refreshLibraries(),
-          reloadTitles(debouncedTitleFilter, []),
-        ]).finally(() => {
+        const finalizeBootstrap = () => {
           if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
             return;
           }
@@ -2269,6 +2265,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             loading: false,
             initialLoadComplete: true,
           });
+        };
+
+        const librariesPromise = refreshLibraries();
+        void reloadTitles(debouncedTitleFilter, []).then((nextTitles) => {
+          if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+
+          if ((nextTitles?.length ?? 0) > 0) {
+            finalizeBootstrap();
+            return;
+          }
+
+          void librariesPromise.finally(finalizeBootstrap);
         });
       }
 

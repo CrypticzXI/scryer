@@ -1,4 +1,5 @@
 import type { TitleHistoryEvent } from "@/lib/types";
+import { formatSanitizedHistoryValue } from "@/lib/utils/history-redaction";
 
 const friendlyKeys: Record<string, string> = {
   import_id: "Import ID",
@@ -50,12 +51,8 @@ function formatKey(key: string): string {
   return friendlyKeys[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return "\u2014";
-  if (typeof value === "string") return value;
-  if (typeof value === "number") return String(value);
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  return JSON.stringify(value);
+function formatValue(value: unknown, key?: string): string {
+  return formatSanitizedHistoryValue(value, key);
 }
 
 function parseDataJson(raw: string | null): Record<string, unknown> | null {
@@ -124,13 +121,13 @@ export function HistoryEventDetailContent({ event }: { event: TitleHistoryEvent 
       {structuredDetails.map(({ key, value }) => (
         <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
           <span className="whitespace-nowrap text-muted-foreground">{formatKey(key)}</span>
-          <span className="break-all text-foreground">{formatValue(value)}</span>
+          <span className="break-all text-foreground">{formatValue(value, key)}</span>
         </div>
       ))}
       {rawDetails.map(([key, value]) => (
         <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
           <span className="whitespace-nowrap text-muted-foreground">{formatKey(key)}</span>
-          <span className="break-all text-foreground">{formatValue(value)}</span>
+          <span className="break-all text-foreground">{formatValue(value, key)}</span>
         </div>
       ))}
     </div>

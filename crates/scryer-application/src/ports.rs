@@ -9,6 +9,13 @@ pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub trait TitleRepository: Send + Sync {
     async fn list(&self, facet: Option<MediaFacet>, query: Option<String>)
     -> AppResult<Vec<Title>>;
+    async fn list_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        self.list(facet, query).await
+    }
     async fn list_for_libraries(
         &self,
         facet: Option<MediaFacet>,
@@ -25,6 +32,22 @@ pub trait TitleRepository: Send + Sync {
             .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
             .collect())
     }
+    async fn list_for_libraries_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let titles = self.list_without_external_ids(facet, query).await?;
+        Ok(titles
+            .into_iter()
+            .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
+            .collect())
+    }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
     async fn list_for_matching(
         &self,
@@ -32,6 +55,9 @@ pub trait TitleRepository: Send + Sync {
         query: Option<String>,
     ) -> AppResult<Vec<Title>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>>;
+    async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
+        self.get_by_id(id).await
+    }
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,

@@ -37,6 +37,7 @@ import {
   TitleEpisodeProgressBar,
   TitleTableActionButton,
   TitleTableEmptyState,
+  TitleTableLoadingState,
   type TitleTableSortDirection,
   type TitleTableSortKey,
 } from "./title-table-shared";
@@ -567,7 +568,11 @@ export function TitleTable({
               </tbody>
             ) : null}
           </>
-          ) : !titleLoading ? (
+          ) : titleLoading ? (
+            <TableBody>
+              <TitleTableLoadingState colSpan={columnCount} />
+            </TableBody>
+          ) : (
             <TableBody>
               <TitleTableEmptyState
                 colSpan={columnCount}
@@ -581,7 +586,7 @@ export function TitleTable({
                 scanNotice={scanLibraryNotice}
               />
             </TableBody>
-          ) : null}
+          )}
       </table>
     </div>
   );

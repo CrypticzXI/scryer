@@ -12,6 +12,7 @@ use serde_json::Value;
 use sqlx::Row;
 
 use crate::customization_store::{CustomizationSql, CustomizationStore};
+use crate::postgres::timestamp::{parse_optional_rfc3339_timestamp, parse_rfc3339_timestamp};
 
 pub type PostgresCustomizationStore = CustomizationStore<PostgresCustomizationSql>;
 
@@ -359,6 +360,12 @@ impl CustomizationSql for PostgresCustomizationSql {
     }
     async fn record_run(&self, run: PostProcessingScriptRun) -> AppResult<()> {
         let record_json = serde_json::to_value(&run).map_err(repo_err)?;
+        let started_at =
+            parse_rfc3339_timestamp(&run.started_at, "post_processing_script_runs.started_at")?;
+        let completed_at = parse_optional_rfc3339_timestamp(
+            run.completed_at.as_deref(),
+            "post_processing_script_runs.finished_at",
+        )?;
         sqlx::query(
             "INSERT INTO post_processing_script_runs
              (id, script_id, status, output_text, started_at, finished_at, created_at, record_json)
@@ -373,8 +380,8 @@ impl CustomizationSql for PostgresCustomizationSql {
         .bind(&run.script_id)
         .bind(run.status.as_str())
         .bind(run.stderr_tail.as_deref().or(run.stdout_tail.as_deref()))
-        .bind(&run.started_at)
-        .bind(&run.completed_at)
+        .bind(started_at)
+        .bind(completed_at)
         .bind(record_json)
         .execute(&self.pool)
         .await

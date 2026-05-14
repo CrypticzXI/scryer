@@ -14,6 +14,7 @@ use serde_json::Value;
 use sqlx::Row;
 
 use crate::catalog_store::{CatalogStore, LibrarySql, ShowSql, TitleSql, UserSql};
+use crate::postgres::timestamp::parse_rfc3339_timestamp;
 use crate::queries::title_search::{self, TitleSearchProjectionSource};
 
 pub type PostgresCatalogStore = CatalogStore<PostgresCatalogSql>;
@@ -32,6 +33,127 @@ impl PostgresCatalogStore {
 impl PostgresCatalogSql {
     fn new(pool: sqlx::PgPool) -> Self {
         Self { pool }
+    }
+
+    async fn list_for_libraries_internal(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+        include_external_ids: bool,
+    ) -> AppResult<Vec<Title>> {
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let query = normalized_query(query);
+        let rows = match (facet, query.as_deref()) {
+            (Some(facet), Some(query)) => {
+                let normalized = title_search::normalize_title_search_text(query);
+                let pattern = format!("%{normalized}%");
+                let projection = title_record_projection("t.record_json", include_external_ids);
+                sqlx::query(&format!(
+                    "SELECT {projection}
+                       FROM titles t
+                       JOIN (
+                            SELECT title_id,
+                                   MIN(
+                                     CASE
+                                       WHEN normalized_term = $3 THEN 0
+                                       WHEN normalized_term LIKE $3 || '%' THEN 1000
+                                       WHEN normalized_term LIKE '%' || $3 || '%' THEN 2000
+                                       ELSE 3000
+                                     END + weight
+                                   ) AS rank
+                              FROM title_search_terms
+                             WHERE facet = $1
+                               AND normalized_term ILIKE $2
+                             GROUP BY title_id
+                       ) search ON search.title_id = t.id
+                      WHERE t.library_id = ANY($4)
+                      ORDER BY search.rank, lower(t.name), t.id"
+                ))
+                .bind(facet.as_str())
+                .bind(pattern)
+                .bind(normalized)
+                .bind(library_ids)
+                .fetch_all(&self.pool)
+                .await
+            }
+            (Some(facet), None) => {
+                let projection = title_record_projection("record_json", include_external_ids);
+                sqlx::query(&format!(
+                    "SELECT {projection}
+                       FROM titles
+                      WHERE facet = $1
+                        AND library_id = ANY($2)
+                      ORDER BY lower(name), id"
+                ))
+                .bind(facet.as_str())
+                .bind(library_ids)
+                .fetch_all(&self.pool)
+                .await
+            }
+            (None, Some(query)) => {
+                let normalized = title_search::normalize_title_search_text(query);
+                let pattern = format!("%{normalized}%");
+                let projection = title_record_projection("t.record_json", include_external_ids);
+                sqlx::query(&format!(
+                    "SELECT {projection}
+                       FROM titles t
+                       JOIN (
+                            SELECT title_id,
+                                   MIN(
+                                     CASE
+                                       WHEN normalized_term = $2 THEN 0
+                                       WHEN normalized_term LIKE $2 || '%' THEN 1000
+                                       WHEN normalized_term LIKE '%' || $2 || '%' THEN 2000
+                                       ELSE 3000
+                                     END + weight
+                                   ) AS rank
+                              FROM title_search_terms
+                             WHERE normalized_term ILIKE $1
+                             GROUP BY title_id
+                       ) search ON search.title_id = t.id
+                      WHERE t.library_id = ANY($3)
+                      ORDER BY search.rank, lower(t.name), t.id"
+                ))
+                .bind(pattern)
+                .bind(normalized)
+                .bind(library_ids)
+                .fetch_all(&self.pool)
+                .await
+            }
+            (None, None) => {
+                let projection = title_record_projection("record_json", include_external_ids);
+                sqlx::query(&format!(
+                    "SELECT {projection}
+                       FROM titles
+                      WHERE library_id = ANY($1)
+                      ORDER BY lower(name), id"
+                ))
+                .bind(library_ids)
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
+        .map_err(repo_err)?;
+
+        rows.iter().map(title_from_record_row).collect()
+    }
+
+    async fn get_by_id_internal(
+        &self,
+        id: &str,
+        include_external_ids: bool,
+    ) -> AppResult<Option<Title>> {
+        let projection = title_record_projection("record_json", include_external_ids);
+        let row = sqlx::query(&format!("SELECT {projection} FROM titles WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        row.as_ref().map(title_from_record_row).transpose()
     }
 }
 
@@ -647,6 +769,26 @@ impl TitleSql for PostgresCatalogSql {
         rows.iter().map(title_from_record_row).collect()
     }
 
+    async fn list_for_libraries(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        self.list_for_libraries_internal(facet, library_ids, query, true)
+            .await
+    }
+
+    async fn list_for_libraries_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        self.list_for_libraries_internal(facet, library_ids, query, false)
+            .await
+    }
+
     async fn list_for_matching(
         &self,
         facet: Option<MediaFacet>,
@@ -656,12 +798,11 @@ impl TitleSql for PostgresCatalogSql {
     }
 
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>> {
-        let row = sqlx::query("SELECT record_json FROM titles WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        row.as_ref().map(title_from_record_row).transpose()
+        self.get_by_id_internal(id, true).await
+    }
+
+    async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
+        self.get_by_id_internal(id, false).await
     }
 
     async fn get_by_facet_and_slug(
@@ -678,6 +819,34 @@ impl TitleSql for PostgresCatalogSql {
         )
         .bind(facet.as_str())
         .bind(slug)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        row.as_ref().map(title_from_record_row).transpose()
+    }
+
+    async fn get_by_facet_libraries_and_slug(
+        &self,
+        facet: MediaFacet,
+        library_ids: &[String],
+        slug: &str,
+    ) -> AppResult<Option<Title>> {
+        if library_ids.is_empty() {
+            return Ok(None);
+        }
+
+        let row = sqlx::query(
+            "SELECT record_json
+               FROM titles
+              WHERE facet = $1
+                AND lower(slug) = lower($2)
+                AND library_id = ANY($3)
+              ORDER BY lower(name), id
+              LIMIT 1",
+        )
+        .bind(facet.as_str())
+        .bind(slug)
+        .bind(library_ids)
         .fetch_optional(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -891,6 +1060,8 @@ impl TitleSql for PostgresCatalogSql {
         next_attempt_at: &str,
         attempt_count: i64,
     ) -> AppResult<()> {
+        let next_attempt_at =
+            parse_rfc3339_timestamp(next_attempt_at, "titles.metadata_hydration_next_attempt_at")?;
         sqlx::query(
             "UPDATE titles
                 SET metadata_hydration_next_attempt_at = $2::timestamptz,
@@ -1156,7 +1327,14 @@ impl ShowSql for PostgresCatalogSql {
         .bind(&collection.narrative_order)
         .bind(&collection.first_episode_number)
         .bind(&collection.last_episode_number)
-        .bind(serde_json::to_value(&collection.interstitial_movie).map_err(repo_err)?)
+        .bind(
+            collection
+                .interstitial_movie
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(repo_err)?,
+        )
         .bind(serde_json::to_value(&collection.specials_movies).map_err(repo_err)?)
         .bind(&collection.interstitial_season_episode)
         .bind(collection.monitored)
@@ -1624,6 +1802,14 @@ fn title_from_record_row(row: &sqlx::postgres::PgRow) -> AppResult<Title> {
     serde_json::from_value(value).map_err(repo_err)
 }
 
+fn title_record_projection(column: &str, include_external_ids: bool) -> String {
+    if include_external_ids {
+        format!("{column} AS record_json")
+    } else {
+        format!("jsonb_set({column}, '{{external_ids}}', '[]'::jsonb, true) AS record_json")
+    }
+}
+
 fn normalized_query(query: Option<String>) -> Option<String> {
     query
         .map(|value| value.trim().to_string())
@@ -1689,6 +1875,7 @@ fn row_to_collection(row: &sqlx::postgres::PgRow) -> AppResult<Collection> {
         .try_get::<Option<Value>, _>("interstitial_movie_json")
         .ok()
         .flatten()
+        .and_then(json_value_unless_null)
         .map(serde_json::from_value)
         .transpose()
         .map_err(repo_err)?;
@@ -1696,6 +1883,7 @@ fn row_to_collection(row: &sqlx::postgres::PgRow) -> AppResult<Collection> {
         .try_get::<Option<Value>, _>("specials_movies_json")
         .ok()
         .flatten()
+        .and_then(json_value_unless_null)
         .map(serde_json::from_value)
         .transpose()
         .map_err(repo_err)?
@@ -1716,6 +1904,10 @@ fn row_to_collection(row: &sqlx::postgres::PgRow) -> AppResult<Collection> {
         monitored: row.try_get("monitored").unwrap_or(true),
         created_at: row_timestamp(row, "created_at")?,
     })
+}
+
+fn json_value_unless_null(value: Value) -> Option<Value> {
+    (!value.is_null()).then_some(value)
 }
 
 fn row_to_episode(row: &sqlx::postgres::PgRow) -> AppResult<Episode> {

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/table";
 import type { TitleHistoryEvent } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { redactHistoryApiKeys } from "@/lib/utils/history-redaction";
 import { HistoryEventIcon } from "./history-event-icon";
 import {
   HistoryEventDetailContent,
@@ -47,12 +48,12 @@ function formatFacetLabel(facet: string | null): string {
 }
 
 function primarySourceLabel(event: TitleHistoryEvent): string {
-  return (
+  return redactHistoryApiKeys(
     event.displayTitle ??
     event.sourceTitle ??
     event.sourcePath ??
     event.destPath ??
-    "\u2014"
+    "\u2014",
   );
 }
 
@@ -61,7 +62,9 @@ function secondarySourceLabel(event: TitleHistoryEvent): string | null {
     event.sourceSystem,
     event.sourceRef,
     event.sourceHint,
-  ].filter((value): value is string => Boolean(value));
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => redactHistoryApiKeys(value));
   return values.length > 0 ? values.join(" • ") : null;
 }
 

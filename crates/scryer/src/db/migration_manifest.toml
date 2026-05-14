@@ -185,6 +185,40 @@ file = "postgres/migrations/0111_entitlement_schema_catalog_alignment.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 112
+description = "postgres title image schema alignment"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0112_postgres_title_image_schema_alignment.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0112_title_image_schema_alignment.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 113
+description = "postgres title read indexes"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0113_postgres_title_read_indexes.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0113_title_read_indexes.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"

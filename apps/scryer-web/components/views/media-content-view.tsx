@@ -406,7 +406,7 @@ export function MediaContentView({
         : t("search.facetAnime");
   const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
   const hasConfiguredRootFolders =
-    !catalogInitialLoadComplete || mediaSettingsLoading || librariesLoading
+    !catalogInitialLoadComplete || librariesLoading
     ? null
     : libraries.some((library) =>
         library.roots.some((folder) => folder.path.trim().length > 0),

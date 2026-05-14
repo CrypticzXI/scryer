@@ -8,6 +8,7 @@ mod notification_store;
 mod release_store;
 mod services;
 mod settings_store;
+mod timestamp;
 mod workflow_store;
 
 pub use backup::{PostgresLogicalBackupExporter, restore_backup_bundle_into_postgres_pool};

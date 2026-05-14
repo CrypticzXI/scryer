@@ -1,0 +1,2 @@
+-- SQLite already has the title-list indexes and normalized projections this
+-- PostgreSQL-only migration depends on, so this step is intentionally a no-op.
