@@ -402,8 +402,9 @@ jobs:
             sccache --stop-server || true
             sccache --start-server || true
             sccache --zero-stats || true
+            mold --version
             printf '%s\n' '[build]' 'rustc-wrapper = "sccache"' 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]' > /tmp/cargo-sccache-config.toml
-            cargo --config /tmp/cargo-sccache-config.toml build -p xtask --locked
+            cargo -vv --config /tmp/cargo-sccache-config.toml build -p xtask --locked
             sccache --show-stats || true
       - save_sccache_unix:
           key_prefix: linux-xtask
