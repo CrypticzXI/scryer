@@ -592,10 +592,11 @@ fn verify_signed_blob_blocking(
 ) -> AppResult<()> {
     let bundle_text = std::str::from_utf8(bundle_raw)
         .map_err(|e| AppError::Validation(format!("invalid Sigstore bundle UTF-8: {e}")))?;
+    let bundle_text = normalize_sigstore_bundle(bundle_text)?;
     let rekor_keys = cached_rekor_verification_keys()?;
 
-    let bundle =
-        SignedArtifactBundle::new_verified(bundle_text, rekor_keys.as_ref()).map_err(|e| {
+    let bundle = SignedArtifactBundle::new_verified(bundle_text.as_str(), rekor_keys.as_ref())
+        .map_err(|e| {
             AppError::Validation(format!("Sigstore Rekor bundle verification failed: {e}"))
         })?;
     let cert_pem = normalize_bundle_cert(&bundle.cert)?;
@@ -751,6 +752,132 @@ fn verify_signer_identity(cert_pem: &str, required_signer: &RequiredSigner) -> A
     Ok(())
 }
 
+fn normalize_sigstore_bundle(bundle_text: &str) -> AppResult<String> {
+    let Ok(bundle_json) = serde_json::from_str::<serde_json::Value>(bundle_text) else {
+        return Ok(bundle_text.to_string());
+    };
+    if bundle_json.get("base64Signature").is_some() || bundle_json.get("messageSignature").is_none()
+    {
+        return Ok(bundle_text.to_string());
+    }
+
+    let tlog_entry = sigstore_bundle_value(&bundle_json, &["verificationMaterial", "tlogEntries"])
+        .and_then(|value| value.as_array())
+        .and_then(|entries| entries.first())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "Sigstore bundle missing verificationMaterial.tlogEntries[0]".to_string(),
+            )
+        })?;
+    let cert_pem = normalize_bundle_cert(sigstore_bundle_string_field(
+        &bundle_json,
+        &["verificationMaterial", "certificate", "rawBytes"],
+        "verificationMaterial.certificate.rawBytes",
+    )?)?;
+
+    serde_json::to_string(&serde_json::json!({
+        "base64Signature": sigstore_bundle_string_field(
+            &bundle_json,
+            &["messageSignature", "signature"],
+            "messageSignature.signature",
+        )?,
+        "cert": cert_pem,
+        "rekorBundle": {
+            "SignedEntryTimestamp": sigstore_bundle_string_field(
+                tlog_entry,
+                &["inclusionPromise", "signedEntryTimestamp"],
+                "verificationMaterial.tlogEntries[0].inclusionPromise.signedEntryTimestamp",
+            )?,
+            "Payload": {
+                "body": sigstore_bundle_string_field(
+                    tlog_entry,
+                    &["canonicalizedBody"],
+                    "verificationMaterial.tlogEntries[0].canonicalizedBody",
+                )?,
+                "integratedTime": sigstore_bundle_i64_field(
+                    tlog_entry,
+                    &["integratedTime"],
+                    "verificationMaterial.tlogEntries[0].integratedTime",
+                )?,
+                "logIndex": sigstore_bundle_i64_field(
+                    tlog_entry,
+                    &["logIndex"],
+                    "verificationMaterial.tlogEntries[0].logIndex",
+                )?,
+                "logID": sigstore_bundle_string_field(
+                    tlog_entry,
+                    &["logId", "keyId"],
+                    "verificationMaterial.tlogEntries[0].logId.keyId",
+                )
+                .map(normalize_rekor_log_id)?,
+            }
+        }
+    }))
+    .map_err(|e| AppError::Validation(format!("failed to normalize Sigstore bundle: {e}")))
+}
+
+fn sigstore_bundle_value<'a>(
+    value: &'a serde_json::Value,
+    path: &[&str],
+) -> Option<&'a serde_json::Value> {
+    path.iter()
+        .try_fold(value, |current, segment| current.get(*segment))
+}
+
+fn sigstore_bundle_string_field<'a>(
+    value: &'a serde_json::Value,
+    path: &[&str],
+    label: &str,
+) -> AppResult<&'a str> {
+    sigstore_bundle_value(value, path)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| AppError::Validation(format!("Sigstore bundle missing {label}")))
+}
+
+fn sigstore_bundle_i64_field(
+    value: &serde_json::Value,
+    path: &[&str],
+    label: &str,
+) -> AppResult<i64> {
+    let Some(value) = sigstore_bundle_value(value, path) else {
+        return Err(AppError::Validation(format!(
+            "Sigstore bundle missing {label}"
+        )));
+    };
+    if let Some(number) = value.as_i64() {
+        return Ok(number);
+    }
+    let Some(number) = value.as_str() else {
+        return Err(AppError::Validation(format!(
+            "Sigstore bundle {label} is not an integer"
+        )));
+    };
+    number.parse::<i64>().map_err(|e| {
+        AppError::Validation(format!(
+            "Sigstore bundle {label} is not a valid integer: {e}"
+        ))
+    })
+}
+
+fn normalize_rekor_log_id(key_id: &str) -> String {
+    if key_id.len().is_multiple_of(2) && key_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return key_id.to_ascii_lowercase();
+    }
+
+    match base64::engine::general_purpose::STANDARD.decode(key_id.as_bytes()) {
+        Ok(decoded) => {
+            use std::fmt::Write as _;
+
+            let mut hex = String::with_capacity(decoded.len() * 2);
+            for byte in decoded {
+                let _ = write!(&mut hex, "{byte:02x}");
+            }
+            hex
+        }
+        Err(_) => key_id.to_string(),
+    }
+}
+
 fn normalize_bundle_cert(cert: &str) -> AppResult<String> {
     if cert.contains("-----BEGIN CERTIFICATE-----") {
         return Ok(cert.to_string());
@@ -758,8 +885,23 @@ fn normalize_bundle_cert(cert: &str) -> AppResult<String> {
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(cert.as_bytes())
         .map_err(|e| AppError::Validation(format!("invalid base64 Sigstore certificate: {e}")))?;
-    String::from_utf8(decoded)
-        .map_err(|e| AppError::Validation(format!("invalid Sigstore certificate UTF-8: {e}")))
+    if let Ok(decoded_text) = String::from_utf8(decoded.clone())
+        && decoded_text.contains("-----BEGIN CERTIFICATE-----")
+    {
+        return Ok(decoded_text);
+    }
+    Ok(pem_encode_certificate(&decoded))
+}
+
+fn pem_encode_certificate(der: &[u8]) -> String {
+    let base64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in base64.as_bytes().chunks(64) {
+        pem.push_str(&String::from_utf8_lossy(chunk));
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    pem
 }
 
 fn cert_extension_utf8(cert: &Certificate, oid: &str) -> AppResult<Option<String>> {
@@ -946,6 +1088,60 @@ mod tests {
         }"#;
         let err = parse_and_validate_child_catalog(raw, None, None).unwrap_err();
         assert!(err.to_string().contains("duplicate release version"));
+    }
+
+    #[test]
+    fn normalize_bundle_cert_wraps_base64_der_as_pem() {
+        let der_base64 =
+            base64::engine::general_purpose::STANDARD.encode([0x30, 0x03, 0x02, 0x01, 0x05]);
+        let pem = normalize_bundle_cert(&der_base64).expect("DER certificate should normalize");
+        assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"));
+        assert!(pem.contains(&der_base64));
+        assert!(pem.ends_with("-----END CERTIFICATE-----\n"));
+    }
+
+    #[test]
+    fn normalize_sigstore_bundle_rewrites_v03_payloads() {
+        let der_base64 = base64::engine::general_purpose::STANDARD.encode([1_u8, 2, 3, 4]);
+        let key_id_base64 = base64::engine::general_purpose::STANDARD.encode([0_u8, 1, 2, 3]);
+        let bundle = serde_json::json!({
+            "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+            "messageSignature": {
+                "signature": "sig=="
+            },
+            "verificationMaterial": {
+                "certificate": {
+                    "rawBytes": der_base64
+                },
+                "tlogEntries": [
+                    {
+                        "logIndex": "12",
+                        "logId": {
+                            "keyId": key_id_base64
+                        },
+                        "integratedTime": "34",
+                        "inclusionPromise": {
+                            "signedEntryTimestamp": "set=="
+                        },
+                        "canonicalizedBody": "body=="
+                    }
+                ]
+            }
+        });
+
+        let normalized =
+            normalize_sigstore_bundle(&bundle.to_string()).expect("bundle should normalize");
+        let parsed: SignedArtifactBundle =
+            serde_json::from_str(&normalized).expect("bundle should parse in legacy shape");
+        assert_eq!(parsed.base64_signature, "sig==");
+        assert_eq!(
+            parsed.cert.lines().next(),
+            Some("-----BEGIN CERTIFICATE-----")
+        );
+        assert_eq!(parsed.rekor_bundle.payload.log_index, 12);
+        assert_eq!(parsed.rekor_bundle.payload.integrated_time, 34);
+        assert_eq!(parsed.rekor_bundle.payload.log_id, "00010203");
+        assert_eq!(parsed.rekor_bundle.payload.body, "body==");
     }
 
     #[tokio::test]
