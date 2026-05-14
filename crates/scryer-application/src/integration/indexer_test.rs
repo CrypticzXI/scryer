@@ -407,8 +407,11 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingSettingsRepository {
-        values: Arc<Mutex<HashMap<(String, String, Option<String>), String>>>,
+        values: RecordingSettingsValues,
     }
+
+    type RecordingSettingsKey = (String, String, Option<String>);
+    type RecordingSettingsValues = Arc<Mutex<HashMap<RecordingSettingsKey, String>>>;
 
     #[async_trait]
     impl SettingsRepository for RecordingSettingsRepository {

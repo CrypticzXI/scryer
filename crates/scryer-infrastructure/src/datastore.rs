@@ -1655,7 +1655,7 @@ mod tests {
         let bundle_dir = tempfile::tempdir().map_err(|error| {
             AppError::Repository(format!("failed to create backup bundle tempdir: {error}"))
         })?;
-        let bundle_path = bundle_dir.path().join("matrix.scryer-backup.age");
+        let bundle_path = bundle_dir.path().join("matrix.scryer-backup.enc");
         let passphrase = "scryer-backup-matrix-passphrase";
 
         let result = async {

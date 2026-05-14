@@ -3689,7 +3689,7 @@ fn sort_and_dedup<T: Ord>(values: &mut Vec<T>) {
 fn build_context_index(context: &ReleaseParseContext) -> ContextIndex {
     let mut index = ContextIndex {
         facet_hint: context.facet_hint,
-        years: context.known_years.iter().copied().collect(),
+        years: context.known_years.to_vec(),
         ..Default::default()
     };
 

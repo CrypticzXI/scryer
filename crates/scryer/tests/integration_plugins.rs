@@ -66,6 +66,10 @@ fn load_wasm_fixture(path: &std::path::Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test helper mirrors catalog entry fields"
+)]
 fn catalog_plugin_entry(
     plugin_id: &str,
     name: &str,

@@ -75,6 +75,10 @@ pub trait CustomizationSql: Clone + Send + Sync + 'static {
         &self,
         plugin_id: &str,
     ) -> AppResult<Option<PersistedPluginWasmPayload>>;
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "builtin plugin metadata is stored as discrete descriptor fields"
+    )]
     async fn seed_builtin(
         &self,
         plugin_id: &str,

@@ -640,6 +640,10 @@ fn indexer_config_key_is_secret(key: &str) -> bool {
         || normalized.ends_with("token")
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "provider type payload is assembled from discrete application fields"
+)]
 pub(crate) fn from_provider_type(
     provider_type: String,
     name: String,
@@ -1467,48 +1471,6 @@ pub(crate) fn from_import_record(record: scryer_domain::ImportRecord) -> ImportR
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::from_import_record;
-    use crate::types::MediaFacetValue;
-    use scryer_domain::{CompletedDownload, ImportRecord, ImportStatus, ImportType};
-
-    #[test]
-    fn from_import_record_uses_release_folder_for_numeric_weaver_job_name() {
-        let payload = CompletedDownload {
-            client_type: "weaver".to_string(),
-            client_id: String::new(),
-            download_client_item_id: "10495".to_string(),
-            name: "10495".to_string(),
-            dest_dir: "/downloads/Example.Show.S01E01.1080p.WEB-DL".to_string(),
-            category: Some("anime".to_string()),
-            size_bytes: None,
-            completed_at: None,
-            parameters: vec![("*scryer_facet".to_string(), "anime".to_string())],
-        };
-        let record = ImportRecord {
-            id: "import-1".to_string(),
-            source_system: "weaver".to_string(),
-            source_ref: "10495".to_string(),
-            import_type: ImportType::SeriesDownload,
-            status: ImportStatus::Completed,
-            payload_json: serde_json::to_string(&payload).expect("serialize completed download"),
-            result_json: None,
-            started_at: None,
-            finished_at: None,
-            created_at: "2026-04-27T20:17:00Z".to_string(),
-            updated_at: "2026-04-27T20:17:00Z".to_string(),
-        };
-
-        let mapped = from_import_record(record);
-        assert_eq!(
-            mapped.source_title.as_deref(),
-            Some("Example.Show.S01E01.1080p.WEB-DL")
-        );
-        assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
-    }
-}
-
 pub(crate) fn from_policy(policy: PolicyOutput) -> PolicyOutputPayload {
     PolicyOutputPayload {
         decision: policy.decision,
@@ -2044,5 +2006,47 @@ pub(crate) fn from_title_history_page(page: TitleHistoryPage) -> TitleHistoryPag
             .map(from_title_history_record)
             .collect(),
         total_count: page.total_count,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_import_record;
+    use crate::types::MediaFacetValue;
+    use scryer_domain::{CompletedDownload, ImportRecord, ImportStatus, ImportType};
+
+    #[test]
+    fn from_import_record_uses_release_folder_for_numeric_weaver_job_name() {
+        let payload = CompletedDownload {
+            client_type: "weaver".to_string(),
+            client_id: String::new(),
+            download_client_item_id: "10495".to_string(),
+            name: "10495".to_string(),
+            dest_dir: "/downloads/Example.Show.S01E01.1080p.WEB-DL".to_string(),
+            category: Some("anime".to_string()),
+            size_bytes: None,
+            completed_at: None,
+            parameters: vec![("*scryer_facet".to_string(), "anime".to_string())],
+        };
+        let record = ImportRecord {
+            id: "import-1".to_string(),
+            source_system: "weaver".to_string(),
+            source_ref: "10495".to_string(),
+            import_type: ImportType::SeriesDownload,
+            status: ImportStatus::Completed,
+            payload_json: serde_json::to_string(&payload).expect("serialize completed download"),
+            result_json: None,
+            started_at: None,
+            finished_at: None,
+            created_at: "2026-04-27T20:17:00Z".to_string(),
+            updated_at: "2026-04-27T20:17:00Z".to_string(),
+        };
+
+        let mapped = from_import_record(record);
+        assert_eq!(
+            mapped.source_title.as_deref(),
+            Some("Example.Show.S01E01.1080p.WEB-DL")
+        );
+        assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
     }
 }

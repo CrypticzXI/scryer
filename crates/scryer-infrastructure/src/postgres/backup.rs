@@ -300,7 +300,7 @@ async fn export_table_part(
     table: &str,
     tables_dir: &Path,
 ) -> AppResult<u64> {
-    let order_by = table_row_order_clause(&mut **tx, table).await?;
+    let order_by = table_row_order_clause(tx, table).await?;
     let sql = format!(
         "SELECT * FROM {} ORDER BY {} LIMIT $1 OFFSET $2",
         quote_identifier(table),
@@ -521,7 +521,7 @@ async fn import_table_part(
     table: &str,
     part_path: &Path,
 ) -> AppResult<()> {
-    let target_columns = table_columns(&mut **tx, table).await?;
+    let target_columns = table_columns(tx, table).await?;
     let file = File::open(part_path).map_err(|error| {
         AppError::Validation(format!("backup table payload missing for {table}: {error}"))
     })?;
@@ -717,15 +717,14 @@ async fn table_columns(
             "failed to inspect PostgreSQL table columns for {table}: {error}"
         ))
     })?;
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .map(|row| {
             Ok(PgColumnInfo {
                 name: row.try_get("column_name").map_err(repo_err)?,
                 udt_name: row.try_get("udt_name").map_err(repo_err)?,
             })
         })
-        .collect::<AppResult<Vec<_>>>()?)
+        .collect::<AppResult<Vec<_>>>()
 }
 
 fn bind_pg_value<'q>(

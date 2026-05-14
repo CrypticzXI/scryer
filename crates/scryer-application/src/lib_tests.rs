@@ -10,11 +10,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
+type DeleteOperationLog = Arc<Mutex<Vec<String>>>;
+type OptionalDeleteOperationLog = Arc<Mutex<Option<DeleteOperationLog>>>;
+type TrackedDownloadStateKey = (String, String, String);
+type TrackedDownloadStates = Arc<Mutex<HashMap<TrackedDownloadStateKey, String>>>;
+type DeletedDownloadRequest = (Option<String>, Option<String>, String, bool);
+type DeletedDownloadRequests = Arc<Mutex<Vec<DeletedDownloadRequest>>>;
+
 #[derive(Default)]
 struct MockTitleRepo {
     store: Arc<Mutex<Vec<Title>>>,
     create_or_get_existing_error: Arc<Mutex<Option<String>>>,
-    delete_operation_log: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
+    delete_operation_log: OptionalDeleteOperationLog,
 }
 
 impl MockTitleRepo {
@@ -983,7 +990,7 @@ impl UserRepository for MockUserRepo {
 struct MockDomainEventRepo {
     events: Arc<Mutex<Vec<DomainEvent>>>,
     subscriber_offsets: Arc<Mutex<HashMap<String, i64>>>,
-    delete_operation_log: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
+    delete_operation_log: OptionalDeleteOperationLog,
 }
 
 impl MockDomainEventRepo {
@@ -3279,7 +3286,7 @@ impl BlocklistRepository for MockBlocklistRepo {
 #[derive(Default, Clone)]
 struct TrackingDownloadSubmissionRepo {
     store: Arc<Mutex<Vec<DownloadSubmission>>>,
-    tracked_states: Arc<Mutex<HashMap<(String, String, String), String>>>,
+    tracked_states: TrackedDownloadStates,
     deleted_title_ids: Arc<Mutex<Vec<String>>>,
     list_for_title_calls: Arc<Mutex<Vec<String>>>,
 }
@@ -3479,10 +3486,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
                 (statuses.is_empty()
                     || statuses.iter().any(|status| item.status.as_str() == status))
-                    && (media_types.is_empty()
-                        || media_types
-                            .iter()
-                            .any(|media_type| item.media_type == *media_type))
+                    && (media_types.is_empty() || media_types.contains(&item.media_type))
                     && title_id
                         .as_deref()
                         .is_none_or(|title_id| item.title_id == title_id)
@@ -3528,10 +3532,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
                 (statuses.is_empty()
                     || statuses.iter().any(|status| item.status.as_str() == status))
-                    && (media_types.is_empty()
-                        || media_types
-                            .iter()
-                            .any(|media_type| item.media_type == *media_type))
+                    && (media_types.is_empty() || media_types.contains(&item.media_type))
                     && title_id
                         .as_deref()
                         .is_none_or(|title_id| item.title_id == title_id)
@@ -4105,7 +4106,7 @@ struct StubDownloadClient {
     history_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
-    deleted_requests: Arc<Mutex<Vec<(Option<String>, Option<String>, String, bool)>>>,
+    deleted_requests: DeletedDownloadRequests,
     delete_error: Arc<Mutex<Option<String>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
     queue_calls: Arc<Mutex<usize>>,

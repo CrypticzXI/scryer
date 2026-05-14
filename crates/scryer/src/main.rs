@@ -233,14 +233,14 @@ async fn main() {
             .init();
     }
 
-    if matches!(pre_restore_datastore_config.engine, DatastoreEngine::Sqlite) {
-        if let Err(error) = finalize_pending_restore_if_present(
+    if matches!(pre_restore_datastore_config.engine, DatastoreEngine::Sqlite)
+        && let Err(error) = finalize_pending_restore_if_present(
             &data_dir,
             &pre_restore_datastore_config.database_url,
-        ) {
-            tracing::error!(error = %error, "failed to finalize pending restore");
-            std::process::exit(1);
-        }
+        )
+    {
+        tracing::error!(error = %error, "failed to finalize pending restore");
+        std::process::exit(1);
     }
 
     load_env_file(Some(&data_dir), true);

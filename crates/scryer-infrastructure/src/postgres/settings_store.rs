@@ -248,7 +248,6 @@ impl SettingsSql for PostgresSettingsSql {
             .transpose()
     }
 
-    #[expect(clippy::too_many_arguments)]
     async fn upsert_setting_value(
         &self,
         scope: String,

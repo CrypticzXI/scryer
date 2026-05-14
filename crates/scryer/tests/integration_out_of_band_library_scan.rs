@@ -312,7 +312,7 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
         )
         .await
         .expect("bind title-bound pending import");
-    assert_eq!(bind_result.created, false);
+    assert!(!bind_result.created);
 
     let pending_after = ctx
         .app

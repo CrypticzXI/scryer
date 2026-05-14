@@ -92,7 +92,8 @@ export function SetupRestoreView({
   const [uploadId, setUploadId] = React.useState<string | null>(null);
   const [summary, setSummary] = React.useState<RestoreSummaryPayload | null>(null);
 
-  const bundleLooksEncrypted = selectedBundle?.name.toLowerCase().endsWith(".age") ?? false;
+  const bundleLooksEncrypted
+    = selectedBundle?.name.toLowerCase().endsWith(".scryer-backup.enc") ?? false;
   const requiresPassword = summary?.encrypted ?? bundleLooksEncrypted;
   const rowCounts = summary
     ? Object.entries(summary.row_counts).sort((left, right) => left[0].localeCompare(right[0]))
@@ -112,7 +113,7 @@ export function SetupRestoreView({
       setError(t("setup.restoreNoFile"));
       return;
     }
-    if (requiresPassword && password.trim().length === 0) {
+    if (requiresPassword && password.length === 0) {
       setError(t("setup.restorePasswordRequired"));
       return;
     }
@@ -122,8 +123,8 @@ export function SetupRestoreView({
     try {
       const formData = new FormData();
       formData.set("bundle", selectedBundle);
-      if (password.trim()) {
-        formData.set("password", password.trim());
+      if (password.length > 0) {
+        formData.set("password", password);
       }
 
       const response = await scryerFetch(buildAppUrl("/setup/restore/inspect"), {
@@ -166,7 +167,7 @@ export function SetupRestoreView({
         }),
         body: JSON.stringify({
           upload_id: uploadId,
-          password: summary.encrypted ? password.trim() : undefined,
+          password: summary.encrypted ? password : undefined,
         }),
       });
       if (!response.ok) {
@@ -202,7 +203,7 @@ export function SetupRestoreView({
               <Input
                 key={fileInputKey}
                 type="file"
-                accept=".scryer-backup.tar.zst,.scryer-backup.age,.age,.zst"
+                accept=".scryer-backup.tar.zst,.scryer-backup.enc,.zst"
                 onChange={(event) => {
                   setError(null);
                   setSelectedBundle(event.target.files?.[0] ?? null);
@@ -363,7 +364,7 @@ export function SetupRestoreView({
               disabled={
                 inspecting
                 || !selectedBundle
-                || (requiresPassword && password.trim().length === 0)
+                || (requiresPassword && password.length === 0)
               }
             >
               {inspecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}

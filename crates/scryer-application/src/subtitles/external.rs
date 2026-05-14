@@ -577,16 +577,16 @@ mod tests {
 
     fn build_test_app(subtitle_repo: Arc<TestSubtitleDownloadRepository>) -> AppUseCase {
         let services = AppServices::builder(
-            Arc::new(NullTitleRepository::default()),
-            Arc::new(NullShowRepository::default()),
-            Arc::new(NullUserRepository::default()),
+            Arc::new(NullTitleRepository),
+            Arc::new(NullShowRepository),
+            Arc::new(NullUserRepository),
             Arc::new(TestIndexerConfigRepository),
-            Arc::new(NullIndexerClient::default()),
-            Arc::new(NullDownloadClient::default()),
-            Arc::new(NullDownloadClientConfigRepository::default()),
-            Arc::new(NullReleaseAttemptRepository::default()),
+            Arc::new(NullIndexerClient),
+            Arc::new(NullDownloadClient),
+            Arc::new(NullDownloadClientConfigRepository),
+            Arc::new(NullReleaseAttemptRepository),
             Arc::new(crate::NullSettingsRepository),
-            Arc::new(NullQualityProfileRepository::default()),
+            Arc::new(NullQualityProfileRepository),
             String::new(),
         )
         .with_subtitle_downloads(subtitle_repo)

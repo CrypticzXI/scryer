@@ -1,7 +1,8 @@
 use scryer_domain::Title;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PersistedTitleReadMode {
+    #[default]
     Presentation,
     Matching,
 }
@@ -14,12 +15,6 @@ pub struct PersistedTitleDecodeOptions<'a> {
     pub poster_local_path: Option<&'a str>,
     pub banner_local_path: Option<&'a str>,
     pub background_local_path: Option<&'a str>,
-}
-
-impl Default for PersistedTitleReadMode {
-    fn default() -> Self {
-        Self::Presentation
-    }
 }
 
 pub fn finalize_persisted_title(

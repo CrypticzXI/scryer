@@ -649,6 +649,21 @@ fn config_json_value_with_default(entry: &Value, default: &str) -> Value {
     }
 }
 
+fn slugify(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            last_dash = false;
+        } else if !last_dash && !slug.is_empty() {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::indexer_config_json_value;
@@ -697,19 +712,4 @@ mod tests {
             })
         );
     }
-}
-
-fn slugify(value: &str) -> String {
-    let mut slug = String::new();
-    let mut last_dash = false;
-    for character in value.chars().flat_map(char::to_lowercase) {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character);
-            last_dash = false;
-        } else if !last_dash && !slug.is_empty() {
-            slug.push('-');
-            last_dash = true;
-        }
-    }
-    slug.trim_matches('-').to_string()
 }

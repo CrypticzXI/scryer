@@ -2021,7 +2021,7 @@ const en: LocaleDictionary = {
     "Upload a Scryer backup bundle, inspect its manifest, and restore it into this fresh instance.",
   "setup.restoreSelectBundle": "Backup bundle",
   "setup.restorePasswordHelp":
-    "Encrypted bundles use the .scryer-backup.age extension and require the password used during backup creation.",
+    "Encrypted bundles use the .scryer-backup.enc extension and require the password used during backup creation.",
   "setup.restoreNoFile": "Choose a backup bundle to continue.",
   "setup.restorePasswordRequired": "Enter the bundle password before continuing.",
   "setup.restoreInspect": "Inspect bundle",

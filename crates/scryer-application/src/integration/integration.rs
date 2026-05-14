@@ -1781,9 +1781,7 @@ impl AppUseCase {
         mut routing_by_scope: HashMap<String, Vec<IndexerRoutingSettingsEntry>>,
     ) -> AppResult<()> {
         for scope_id in MANAGED_INDEXER_SCOPE_IDS {
-            let entries = routing_by_scope
-                .remove(&scope_id.to_string())
-                .unwrap_or_default();
+            let entries = routing_by_scope.remove(*scope_id).unwrap_or_default();
             self.update_indexer_routing(actor, scope_id, entries)
                 .await?;
         }

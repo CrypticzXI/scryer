@@ -259,7 +259,7 @@ export function SettingsBackupsContainer() {
   const handleCreateBackup = React.useCallback(async () => {
     setCreatingRequest(true);
     try {
-      const nextPassword = password.trim();
+      const nextPassword = password;
       const { data, error } = await client
         .mutation<CreateBackupMutationResult>(createBackupMutation, {
           password: nextPassword.length > 0 ? nextPassword : null,

@@ -1962,6 +1962,10 @@ mod tests {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test fixture helper mirrors the episode fields under test"
+    )]
     fn build_episode_with_details(
         id: &str,
         title_id: &str,

@@ -560,13 +560,9 @@ fn http_request(port: u16, request: &str) -> Option<(String, String)> {
         return None;
     }
 
-    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
-        return None;
-    };
+    let (headers, body) = response.split_once("\r\n\r\n")?;
     let mut header_lines = headers.lines();
-    let Some(status_line) = header_lines.next() else {
-        return None;
-    };
+    let status_line = header_lines.next()?;
 
     let body = if headers
         .to_ascii_lowercase()

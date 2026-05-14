@@ -1465,7 +1465,7 @@ mod tests {
             },
         ];
 
-        matches.sort_by(|a, b| b.score.cmp(&a.score));
+        matches.sort_by_key(|entry| std::cmp::Reverse(entry.score));
         assert_eq!(matches[0].provider_file_id, "2");
     }
 

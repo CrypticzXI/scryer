@@ -179,9 +179,7 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
             ))
         });
 
-    if let Err(error) = restore_result {
-        return Err(error);
-    }
+    restore_result?;
     enable_foreign_keys_result?;
 
     let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")

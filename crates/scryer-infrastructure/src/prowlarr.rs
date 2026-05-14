@@ -301,10 +301,6 @@ pub struct ProwlarrSearchStub;
 
 #[async_trait]
 impl IndexerClient for ProwlarrSearchStub {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "trait signature mirrors concrete indexer clients"
-    )]
     async fn search(
         &self,
         _query: String,

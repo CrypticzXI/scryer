@@ -114,13 +114,11 @@ fn is_supported_backup_filename(filename: &str) -> bool {
         && !filename.contains('/')
         && !filename.contains('\\')
         && (filename.ends_with(".scryer-backup.tar.zst")
-            || filename.ends_with(".scryer-backup.age"))
+            || filename.ends_with(".scryer-backup.enc"))
 }
 
 fn normalize_password(password: Option<String>) -> Option<String> {
     password
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn next_restore_upload_id() -> String {
@@ -758,5 +756,25 @@ mod tests {
             "SCRYER_ENCRYPTION_KEY=\"restored\"\n",
         );
         assert!(!pending_dir.exists());
+    }
+
+    #[test]
+    fn supported_backup_filenames_use_new_encrypted_extension() {
+        assert!(is_supported_backup_filename(
+            "scryer_backup_20260514_010203_123.scryer-backup.tar.zst"
+        ));
+        assert!(is_supported_backup_filename(
+            "scryer_backup_20260514_010203_123.scryer-backup.enc"
+        ));
+        assert!(!is_supported_backup_filename("random-backup.bin"));
+    }
+
+    #[test]
+    fn normalize_password_preserves_exact_bytes() {
+        assert_eq!(
+            normalize_password(Some("  exact password  ".to_string())),
+            Some("  exact password  ".to_string())
+        );
+        assert_eq!(normalize_password(Some(String::new())), Some(String::new()));
     }
 }

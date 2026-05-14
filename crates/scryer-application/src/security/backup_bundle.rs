@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use age::secrecy::SecretString;
+use argon2::{Algorithm, Argon2, Params, Version};
+use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
@@ -11,7 +13,7 @@ use crate::{AppError, AppResult};
 
 pub const BACKUP_FORMAT_VERSION: &str = "scryer-backup-bundle-v1";
 pub const BACKUP_PLAINTEXT_EXTENSION: &str = ".scryer-backup.tar.zst";
-pub const BACKUP_ENCRYPTED_EXTENSION: &str = ".scryer-backup.age";
+pub const BACKUP_ENCRYPTED_EXTENSION: &str = ".scryer-backup.enc";
 
 const INSTANCE_SECRETS_FILENAME: &str = "instance-secrets.json";
 const MANIFEST_FILENAME: &str = "manifest.json";
@@ -19,6 +21,20 @@ const TABLES_DIRNAME: &str = "tables";
 pub const BLOB_MARKER_TYPE: &str = "__scryer_type";
 pub const BLOB_MARKER_BASE64: &str = "base64";
 pub const EXPORT_BATCH_SIZE: i64 = 1_000;
+const ENCRYPTED_BUNDLE_MAGIC: [u8; 8] = [0x53, 0x42, 0x45, 0x5f, 0x96, 0x31, 0xc4, 0x2a];
+const BACKUP_ENCRYPTION_VERSION_1: u8 = 1;
+const BACKUP_ENCRYPTION_CHUNK_SIZE: usize = 1024 * 1024;
+const BACKUP_ENCRYPTION_TAG_LEN: usize = 16;
+const BACKUP_ENCRYPTION_MAX_CIPHERTEXT_CHUNK_LEN: usize =
+    BACKUP_ENCRYPTION_CHUNK_SIZE + BACKUP_ENCRYPTION_TAG_LEN;
+const BACKUP_ENCRYPTION_SALT_LEN: usize = 16;
+const BACKUP_ENCRYPTION_NONCE_PREFIX_LEN: usize = 4;
+const BACKUP_ENCRYPTION_METADATA_V1_LEN: usize =
+    BACKUP_ENCRYPTION_SALT_LEN + BACKUP_ENCRYPTION_NONCE_PREFIX_LEN;
+const BACKUP_ENCRYPTION_KEY_LEN: usize = 32;
+const BACKUP_ENCRYPTION_ARGON2_M_COST_KIB: u32 = 65_536;
+const BACKUP_ENCRYPTION_ARGON2_T_COST: u32 = 3;
+const BACKUP_ENCRYPTION_ARGON2_P_COST: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackupTableClassification {
@@ -31,6 +47,57 @@ pub enum BackupTableClassification {
 pub struct BackupTableCatalogEntry {
     pub table: &'static str,
     pub classification: BackupTableClassification,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackupEncryptionMetadataV1 {
+    salt: [u8; BACKUP_ENCRYPTION_SALT_LEN],
+    nonce_prefix: [u8; BACKUP_ENCRYPTION_NONCE_PREFIX_LEN],
+}
+
+impl BackupEncryptionMetadataV1 {
+    fn generate() -> AppResult<Self> {
+        let rng = SystemRandom::new();
+        let mut salt = [0_u8; BACKUP_ENCRYPTION_SALT_LEN];
+        let mut nonce_prefix = [0_u8; BACKUP_ENCRYPTION_NONCE_PREFIX_LEN];
+        rng.fill(&mut salt).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to generate backup encryption salt: {error}"
+            ))
+        })?;
+        rng.fill(&mut nonce_prefix).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to generate backup encryption nonce prefix: {error}"
+            ))
+        })?;
+        Ok(Self { salt, nonce_prefix })
+    }
+
+    fn to_bytes(self) -> [u8; BACKUP_ENCRYPTION_METADATA_V1_LEN] {
+        let mut bytes = [0_u8; BACKUP_ENCRYPTION_METADATA_V1_LEN];
+        bytes[..BACKUP_ENCRYPTION_SALT_LEN].copy_from_slice(&self.salt);
+        bytes[BACKUP_ENCRYPTION_SALT_LEN..].copy_from_slice(&self.nonce_prefix);
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> AppResult<Self> {
+        if bytes.len() != BACKUP_ENCRYPTION_METADATA_V1_LEN {
+            return Err(AppError::Validation(
+                "backup encryption metadata is invalid".into(),
+            ));
+        }
+
+        let mut salt = [0_u8; BACKUP_ENCRYPTION_SALT_LEN];
+        salt.copy_from_slice(&bytes[..BACKUP_ENCRYPTION_SALT_LEN]);
+        let mut nonce_prefix = [0_u8; BACKUP_ENCRYPTION_NONCE_PREFIX_LEN];
+        nonce_prefix.copy_from_slice(&bytes[BACKUP_ENCRYPTION_SALT_LEN..]);
+        Ok(Self { salt, nonce_prefix })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EncryptedBundleHeaderV1 {
+    metadata: BackupEncryptionMetadataV1,
 }
 
 pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
@@ -543,7 +610,7 @@ impl BackupBundleStaging {
         write_bundle_payload(self.staging.path(), &temp_payload_path)?;
 
         if let Some(passphrase) = request.passphrase.as_deref() {
-            encrypt_payload_with_age(&temp_payload_path, &request.output_path, passphrase)?;
+            encrypt_payload_with_aead(&temp_payload_path, &request.output_path, passphrase)?;
         } else {
             move_with_permissions(&temp_payload_path, &request.output_path)?;
         }
@@ -704,7 +771,7 @@ fn write_bundle_payload(stage_dir: &Path, output_path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn encrypt_payload_with_age(
+fn encrypt_payload_with_aead(
     input_path: &Path,
     output_path: &Path,
     passphrase: &str,
@@ -721,15 +788,74 @@ fn encrypt_payload_with_age(
             output_path.display()
         ))
     })?;
-    let encryptor =
-        age::Encryptor::with_user_passphrase(SecretString::from(passphrase.to_string()));
-    let mut writer = encryptor
-        .wrap_output(BufWriter::new(output))
-        .map_err(|error| AppError::Repository(format!("failed to wrap age output: {error}")))?;
-    std::io::copy(&mut BufReader::new(input), &mut writer).map_err(|error| {
-        AppError::Repository(format!("failed to write encrypted bundle: {error}"))
+    let header = EncryptedBundleHeaderV1 {
+        metadata: BackupEncryptionMetadataV1::generate()?,
+    };
+    let version = BACKUP_ENCRYPTION_VERSION_1;
+    let metadata_bytes = header.metadata.to_bytes();
+    let key_bytes = derive_backup_encryption_key(passphrase, &header.metadata.salt)?;
+    let key = make_backup_aead_key(&key_bytes)?;
+
+    let mut reader = BufReader::new(input);
+    let mut writer = BufWriter::new(output);
+    writer.write_all(&ENCRYPTED_BUNDLE_MAGIC).map_err(|error| {
+        AppError::Repository(format!("failed to write encrypted backup header: {error}"))
     })?;
-    writer.finish().map_err(|error| {
+    writer.write_all(&[version]).map_err(|error| {
+        AppError::Repository(format!("failed to write encrypted backup version: {error}"))
+    })?;
+    writer
+        .write_all(&(metadata_bytes.len() as u32).to_be_bytes())
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to write encrypted backup metadata length: {error}"
+            ))
+        })?;
+    writer.write_all(&metadata_bytes).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to write encrypted backup metadata: {error}"
+        ))
+    })?;
+
+    let mut buffer = vec![0_u8; BACKUP_ENCRYPTION_CHUNK_SIZE];
+    let mut chunk_index = 0_u64;
+    loop {
+        let read = reader.read(&mut buffer).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to read staged payload for encryption: {error}"
+            ))
+        })?;
+        if read == 0 {
+            break;
+        }
+
+        let mut in_out = buffer[..read].to_vec();
+        let nonce = chunk_nonce(header.metadata.nonce_prefix, chunk_index);
+        let aad = chunk_aad(version, &metadata_bytes, chunk_index);
+        key.seal_in_place_append_tag(nonce, Aad::from(aad.as_slice()), &mut in_out)
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to encrypt backup chunk {chunk_index}: {error}"
+                ))
+            })?;
+
+        let chunk_len = u32::try_from(in_out.len()).map_err(|_| {
+            AppError::Repository("encrypted backup chunk length exceeds u32".into())
+        })?;
+        writer
+            .write_all(&chunk_len.to_be_bytes())
+            .and_then(|_| writer.write_all(&in_out))
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to write encrypted backup chunk {chunk_index}: {error}"
+                ))
+            })?;
+        chunk_index = chunk_index
+            .checked_add(1)
+            .ok_or_else(|| AppError::Repository("backup chunk index overflowed".into()))?;
+    }
+
+    writer.flush().map_err(|error| {
         AppError::Repository(format!("failed to finalize encrypted bundle: {error}"))
     })?;
     Ok(())
@@ -743,11 +869,11 @@ fn extract_bundle_to_tempdir(bundle_path: &Path, passphrase: Option<&str>) -> Ap
     })?;
 
     let payload_path = tempdir.path().join("payload.tar.zst");
-    if is_age_bundle(bundle_path)? {
+    if parse_encrypted_bundle_header(bundle_path)?.is_some() {
         let passphrase = passphrase.ok_or_else(|| {
             AppError::Validation("this backup bundle is encrypted and requires a password".into())
         })?;
-        decrypt_payload_with_age(bundle_path, &payload_path, passphrase)?;
+        decrypt_payload_with_aead(bundle_path, &payload_path, passphrase)?;
     } else {
         std::fs::copy(bundle_path, &payload_path).map_err(|error| {
             AppError::Repository(format!(
@@ -776,7 +902,7 @@ fn extract_bundle_to_tempdir(bundle_path: &Path, passphrase: Option<&str>) -> Ap
     Ok(tempdir)
 }
 
-fn decrypt_payload_with_age(
+fn decrypt_payload_with_aead(
     input_path: &Path,
     output_path: &Path,
     passphrase: &str,
@@ -787,22 +913,13 @@ fn decrypt_payload_with_age(
             input_path.display()
         ))
     })?;
-    let decryptor = age::Decryptor::new(BufReader::new(input)).map_err(|error| {
-        AppError::Validation(format!("backup bundle is not a valid age payload: {error}"))
+    let mut reader = BufReader::new(input);
+    let header = parse_encrypted_bundle_header_from_reader(&mut reader)?.ok_or_else(|| {
+        AppError::Validation("backup bundle is not a supported encrypted backup".into())
     })?;
-
-    if !decryptor.is_scrypt() {
-        return Err(AppError::Validation(
-            "backup bundle uses an unsupported age recipient type".into(),
-        ));
-    }
-
-    let identity = age::scrypt::Identity::new(SecretString::from(passphrase.to_string()));
-    let mut reader = decryptor
-        .decrypt(std::iter::once(&identity as &dyn age::Identity))
-        .map_err(|error| {
-            AppError::Validation(format!("failed to decrypt backup bundle: {error}"))
-        })?;
+    let metadata_bytes = header.metadata.to_bytes();
+    let key_bytes = derive_backup_encryption_key(passphrase, &header.metadata.salt)?;
+    let key = make_backup_aead_key(&key_bytes)?;
 
     let output = File::create(output_path).map_err(|error| {
         AppError::Repository(format!(
@@ -810,28 +927,176 @@ fn decrypt_payload_with_age(
             output_path.display()
         ))
     })?;
-    std::io::copy(&mut reader, &mut BufWriter::new(output)).map_err(|error| {
+    let mut writer = BufWriter::new(output);
+    let mut chunk_index = 0_u64;
+
+    while let Some(ciphertext_len) = read_encrypted_chunk_len(&mut reader)? {
+        let mut in_out = vec![0_u8; ciphertext_len];
+        reader.read_exact(&mut in_out).map_err(|error| {
+            AppError::Validation(format!(
+                "encrypted backup payload is truncated or invalid: {error}"
+            ))
+        })?;
+
+        let nonce = chunk_nonce(header.metadata.nonce_prefix, chunk_index);
+        let aad = chunk_aad(BACKUP_ENCRYPTION_VERSION_1, &metadata_bytes, chunk_index);
+        let plaintext = key
+            .open_in_place(nonce, Aad::from(aad.as_slice()), &mut in_out)
+            .map_err(|_| {
+                AppError::Validation(
+                    "failed to decrypt backup bundle: wrong password or corrupted data".into(),
+                )
+            })?;
+
+        writer.write_all(plaintext).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to write decrypted backup payload chunk {chunk_index}: {error}"
+            ))
+        })?;
+        chunk_index = chunk_index
+            .checked_add(1)
+            .ok_or_else(|| AppError::Repository("backup chunk index overflowed".into()))?;
+    }
+
+    writer.flush().map_err(|error| {
         AppError::Repository(format!("failed to write decrypted backup payload: {error}"))
     })?;
     Ok(())
 }
 
-fn is_age_bundle(bundle_path: &Path) -> AppResult<bool> {
-    let mut file = File::open(bundle_path).map_err(|error| {
+fn parse_encrypted_bundle_header(bundle_path: &Path) -> AppResult<Option<EncryptedBundleHeaderV1>> {
+    let input = File::open(bundle_path).map_err(|error| {
         AppError::Repository(format!(
             "failed to open bundle {}: {error}",
             bundle_path.display()
         ))
     })?;
-    let mut prefix = [0_u8; 32];
-    let read = file.read(&mut prefix).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to read bundle {}: {error}",
-            bundle_path.display()
+    let mut reader = BufReader::new(input);
+    parse_encrypted_bundle_header_from_reader(&mut reader)
+}
+
+fn parse_encrypted_bundle_header_from_reader(
+    reader: &mut impl Read,
+) -> AppResult<Option<EncryptedBundleHeaderV1>> {
+    let mut magic = [0_u8; ENCRYPTED_BUNDLE_MAGIC.len()];
+    let read = reader.read(&mut magic).map_err(|error| {
+        AppError::Repository(format!("failed to read encrypted backup header: {error}"))
+    })?;
+    if read != ENCRYPTED_BUNDLE_MAGIC.len() || magic != ENCRYPTED_BUNDLE_MAGIC {
+        return Ok(None);
+    }
+
+    let mut version = [0_u8; 1];
+    reader.read_exact(&mut version).map_err(|error| {
+        AppError::Validation(format!("encrypted backup header is truncated: {error}"))
+    })?;
+    if version[0] != BACKUP_ENCRYPTION_VERSION_1 {
+        return Err(AppError::Validation(format!(
+            "unsupported encrypted backup version {}",
+            version[0]
+        )));
+    }
+
+    let mut metadata_len = [0_u8; 4];
+    reader.read_exact(&mut metadata_len).map_err(|error| {
+        AppError::Validation(format!(
+            "encrypted backup metadata header is truncated: {error}"
         ))
     })?;
-    let prefix = String::from_utf8_lossy(&prefix[..read]);
-    Ok(prefix.starts_with("age-encryption.org/"))
+    let metadata_len = u32::from_be_bytes(metadata_len) as usize;
+    if metadata_len != BACKUP_ENCRYPTION_METADATA_V1_LEN {
+        return Err(AppError::Validation(
+            "backup encryption metadata is invalid".into(),
+        ));
+    }
+
+    let mut metadata_bytes = [0_u8; BACKUP_ENCRYPTION_METADATA_V1_LEN];
+    reader.read_exact(&mut metadata_bytes).map_err(|error| {
+        AppError::Validation(format!("encrypted backup metadata is truncated: {error}"))
+    })?;
+
+    Ok(Some(EncryptedBundleHeaderV1 {
+        metadata: BackupEncryptionMetadataV1::from_bytes(&metadata_bytes)?,
+    }))
+}
+
+fn derive_backup_encryption_key(
+    passphrase: &str,
+    salt: &[u8; BACKUP_ENCRYPTION_SALT_LEN],
+) -> AppResult<[u8; BACKUP_ENCRYPTION_KEY_LEN]> {
+    let params = Params::new(
+        BACKUP_ENCRYPTION_ARGON2_M_COST_KIB,
+        BACKUP_ENCRYPTION_ARGON2_T_COST,
+        BACKUP_ENCRYPTION_ARGON2_P_COST,
+        Some(BACKUP_ENCRYPTION_KEY_LEN),
+    )
+    .map_err(|error| {
+        AppError::Repository(format!(
+            "failed to configure backup encryption KDF parameters: {error}"
+        ))
+    })?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = [0_u8; BACKUP_ENCRYPTION_KEY_LEN];
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .map_err(|error| {
+            AppError::Validation(format!(
+                "failed to derive backup encryption key from password: {error}"
+            ))
+        })?;
+    Ok(key)
+}
+
+fn make_backup_aead_key(key_bytes: &[u8; BACKUP_ENCRYPTION_KEY_LEN]) -> AppResult<LessSafeKey> {
+    let unbound = UnboundKey::new(&AES_256_GCM, key_bytes).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to construct backup encryption key: {error}"
+        ))
+    })?;
+    Ok(LessSafeKey::new(unbound))
+}
+
+fn chunk_nonce(nonce_prefix: [u8; BACKUP_ENCRYPTION_NONCE_PREFIX_LEN], chunk_index: u64) -> Nonce {
+    let mut nonce = [0_u8; 12];
+    nonce[..BACKUP_ENCRYPTION_NONCE_PREFIX_LEN].copy_from_slice(&nonce_prefix);
+    nonce[BACKUP_ENCRYPTION_NONCE_PREFIX_LEN..].copy_from_slice(&chunk_index.to_be_bytes());
+    Nonce::assume_unique_for_key(nonce)
+}
+
+fn chunk_aad(version: u8, metadata_bytes: &[u8], chunk_index: u64) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(ENCRYPTED_BUNDLE_MAGIC.len() + 1 + metadata_bytes.len() + 8);
+    aad.extend_from_slice(&ENCRYPTED_BUNDLE_MAGIC);
+    aad.push(version);
+    aad.extend_from_slice(metadata_bytes);
+    aad.extend_from_slice(&chunk_index.to_be_bytes());
+    aad
+}
+
+fn read_encrypted_chunk_len(reader: &mut impl Read) -> AppResult<Option<usize>> {
+    let mut len = [0_u8; 4];
+    let read = reader.read(&mut len[..1]).map_err(|error| {
+        AppError::Validation(format!(
+            "encrypted backup payload length is invalid: {error}"
+        ))
+    })?;
+    if read == 0 {
+        return Ok(None);
+    }
+
+    reader.read_exact(&mut len[1..]).map_err(|error| {
+        AppError::Validation(format!(
+            "encrypted backup payload length is truncated: {error}"
+        ))
+    })?;
+    let chunk_len = u32::from_be_bytes(len) as usize;
+    if !(BACKUP_ENCRYPTION_TAG_LEN..=BACKUP_ENCRYPTION_MAX_CIPHERTEXT_CHUNK_LEN)
+        .contains(&chunk_len)
+    {
+        return Err(AppError::Validation(
+            "encrypted backup payload length is invalid".into(),
+        ));
+    }
+    Ok(Some(chunk_len))
 }
 
 fn load_manifest(root: &Path) -> AppResult<BackupBundleManifest> {
@@ -892,6 +1157,7 @@ fn ensure_owner_only_permissions(path: &Path) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Seek, SeekFrom, Write};
 
     #[test]
     fn env_file_writer_escapes_multiline_values() {
@@ -906,5 +1172,226 @@ mod tests {
         let env_file = secrets.to_env_file();
         assert!(env_file.contains("SCRYER_ENCRYPTION_KEY=\"enc\""));
         assert!(env_file.contains("SCRYER_SMG_CA_CERT=\"line1\\nline2\""));
+    }
+
+    #[test]
+    fn encrypted_backup_round_trip_uses_versioned_header() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("roundtrip.scryer-backup.enc");
+        let passphrase = "backup-passphrase";
+        write_test_bundle(&bundle_path, Some(passphrase)).expect("write bundle");
+
+        let summary = inspect_backup_bundle(&bundle_path, Some(passphrase)).expect("inspect");
+        assert!(summary.encrypted);
+
+        let bytes = std::fs::read(&bundle_path).expect("read bundle");
+        assert_eq!(
+            &bytes[..ENCRYPTED_BUNDLE_MAGIC.len()],
+            &ENCRYPTED_BUNDLE_MAGIC
+        );
+        assert_eq!(
+            bytes[ENCRYPTED_BUNDLE_MAGIC.len()],
+            BACKUP_ENCRYPTION_VERSION_1
+        );
+    }
+
+    #[test]
+    fn encrypted_backup_rejects_wrong_passphrase() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("wrong-pass.scryer-backup.enc");
+        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+
+        let error = inspect_backup_bundle(&bundle_path, Some("wrong"))
+            .expect_err("wrong password should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to decrypt backup bundle")
+        );
+    }
+
+    #[test]
+    fn encrypted_backup_rejects_unknown_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("unknown-version.scryer-backup.enc");
+        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&bundle_path)
+            .expect("open bundle");
+        file.seek(SeekFrom::Start(ENCRYPTED_BUNDLE_MAGIC.len() as u64))
+            .expect("seek");
+        file.write_all(&[BACKUP_ENCRYPTION_VERSION_1 + 1])
+            .expect("write version");
+
+        let error = inspect_backup_bundle(&bundle_path, Some("correct"))
+            .expect_err("unknown version should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported encrypted backup version")
+        );
+    }
+
+    #[test]
+    fn encrypted_backup_rejects_truncated_metadata() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("truncated-metadata.scryer-backup.enc");
+        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+
+        let mut bytes = std::fs::read(&bundle_path).expect("read bundle");
+        bytes.truncate(ENCRYPTED_BUNDLE_MAGIC.len() + 1 + 4 + 3);
+        std::fs::write(&bundle_path, bytes).expect("rewrite bundle");
+
+        let error = inspect_backup_bundle(&bundle_path, Some("correct"))
+            .expect_err("truncated metadata should fail");
+        assert!(error.to_string().contains("metadata is truncated"));
+    }
+
+    #[test]
+    fn encrypted_backup_rejects_invalid_metadata_length() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp
+            .path()
+            .join("invalid-metadata-length.scryer-backup.enc");
+        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&bundle_path)
+            .expect("open bundle");
+        file.seek(SeekFrom::Start((ENCRYPTED_BUNDLE_MAGIC.len() + 1) as u64))
+            .expect("seek");
+        file.write_all(&(0_u32).to_be_bytes())
+            .expect("write metadata length");
+
+        let error = inspect_backup_bundle(&bundle_path, Some("correct"))
+            .expect_err("invalid metadata length should fail");
+        assert!(error.to_string().contains("metadata is invalid"));
+    }
+
+    #[test]
+    fn encrypted_backup_rejects_truncated_chunk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("truncated-chunk.scryer-backup.enc");
+        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+
+        let mut bytes = std::fs::read(&bundle_path).expect("read bundle");
+        bytes.pop();
+        std::fs::write(&bundle_path, bytes).expect("rewrite bundle");
+
+        let error = inspect_backup_bundle(&bundle_path, Some("correct"))
+            .expect_err("truncated chunk should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("payload is truncated or invalid")
+        );
+    }
+
+    #[test]
+    fn encrypted_backup_round_trip_handles_exact_chunk_boundary() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("exact-boundary.scryer-backup.enc");
+        let passphrase = "exact-boundary-pass";
+        write_test_bundle_with_payload_size(
+            &bundle_path,
+            Some(passphrase),
+            BACKUP_ENCRYPTION_CHUNK_SIZE,
+        )
+        .expect("write bundle");
+
+        let summary = inspect_backup_bundle(&bundle_path, Some(passphrase)).expect("inspect");
+        assert_eq!(summary.row_counts.get("titles"), Some(&1));
+    }
+
+    #[test]
+    fn encrypted_backup_round_trip_spans_multiple_chunks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("multi-chunk.scryer-backup.enc");
+        let passphrase = "multi-chunk-pass";
+        write_test_bundle_with_payload_size(
+            &bundle_path,
+            Some(passphrase),
+            BACKUP_ENCRYPTION_CHUNK_SIZE + 1,
+        )
+        .expect("write bundle");
+
+        let summary = inspect_backup_bundle(&bundle_path, Some(passphrase)).expect("inspect");
+        assert_eq!(summary.row_counts.get("titles"), Some(&1));
+    }
+
+    #[test]
+    fn encrypted_backup_rejects_oversized_chunk_length() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("oversized-chunk.scryer-backup.enc");
+        write_test_bundle(&bundle_path, Some("correct")).expect("write bundle");
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&bundle_path)
+            .expect("open bundle");
+        let chunk_len_offset =
+            (ENCRYPTED_BUNDLE_MAGIC.len() + 1 + 4 + BACKUP_ENCRYPTION_METADATA_V1_LEN) as u64;
+        file.seek(SeekFrom::Start(chunk_len_offset)).expect("seek");
+        file.write_all(
+            &(u32::try_from(BACKUP_ENCRYPTION_MAX_CIPHERTEXT_CHUNK_LEN).unwrap() + 1).to_be_bytes(),
+        )
+        .expect("write chunk length");
+
+        let error = inspect_backup_bundle(&bundle_path, Some("correct"))
+            .expect_err("oversized chunk should fail");
+        assert!(error.to_string().contains("payload length is invalid"));
+    }
+
+    fn write_test_bundle(output_path: &Path, passphrase: Option<&str>) -> AppResult<()> {
+        write_test_bundle_with_payload_size(output_path, passphrase, 64)
+    }
+
+    fn write_test_bundle_with_payload_size(
+        output_path: &Path,
+        passphrase: Option<&str>,
+        payload_size: usize,
+    ) -> AppResult<()> {
+        let mut staging = BackupBundleStaging::new()?;
+        let table_path = staging.tables_dir().join("titles.ndjson.zst");
+        write_zstd_payload(&table_path, payload_size)?;
+        staging.record_table_part("titles", 1)?;
+        staging.finish(BackupBundleExportRequest {
+            output_path: output_path.to_path_buf(),
+            passphrase: passphrase.map(str::to_string),
+            source_migration_key: Some("0112".to_string()),
+            source_scryer_version: "test".to_string(),
+            source_engine: "sqlite".to_string(),
+            secrets: BackupExportSecrets {
+                encryption_master_key: "master-key".to_string(),
+                jwt_signing_secret: "jwt-secret".to_string(),
+                smg_registration_secret: Some("smg-secret".to_string()),
+                smg_ca_cert: None,
+                smg_gateway_url: None,
+            },
+        })?;
+        Ok(())
+    }
+
+    fn write_zstd_payload(path: &Path, payload_size: usize) -> AppResult<()> {
+        let file = File::create(path).map_err(|error| {
+            AppError::Repository(format!("failed to create test payload: {error}"))
+        })?;
+        let mut encoder = zstd::Encoder::new(file, 1).map_err(|error| {
+            AppError::Repository(format!("failed to create test zstd encoder: {error}"))
+        })?;
+        let payload = vec![b'x'; payload_size];
+        encoder.write_all(&payload).map_err(|error| {
+            AppError::Repository(format!("failed to write test payload: {error}"))
+        })?;
+        encoder.finish().map_err(|error| {
+            AppError::Repository(format!("failed to finish test payload: {error}"))
+        })?;
+        Ok(())
     }
 }
