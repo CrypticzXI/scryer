@@ -110,9 +110,10 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - v1-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}
-            - v1-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}
-            - v1-rust-unix-<< parameters.key_prefix >>
+            - v2-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}-{{ .Branch }}-
+            - v2-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}-
+            - v2-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}-
+            - v2-rust-unix-<< parameters.key_prefix >>-
 
   save_rust_cache_unix:
     parameters:
@@ -120,7 +121,7 @@ commands:
         type: string
     steps:
       - save_cache:
-          key: v1-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}
+          key: v2-rust-unix-<< parameters.key_prefix >>-{{ checksum "rust-toolchain.toml" }}-{{ checksum "Cargo.lock" }}-{{ .Branch }}-{{ .Revision }}
           paths:
             - ~/.cargo/env
             - ~/.cargo/bin
@@ -361,8 +362,6 @@ jobs:
       - attach_repo_workspace
       - restore_rust_cache_unix:
           key_prefix: linux-x86_64-portable-release
-      - restore_target_cache:
-          key_prefix: linux-x86_64-portable-release
       - setup_rust_unix:
           target: x86_64-unknown-linux-musl
       - setup_sccache_unix:
@@ -387,9 +386,6 @@ jobs:
             sccache --zero-stats || true
             mold -run cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl
             sccache --show-stats || true
-      - save_target_cache:
-          key_prefix: linux-x86_64-portable-release
-          path: target/ci-linux-x86_64-portable-release
       - save_rust_cache_unix:
           key_prefix: linux-x86_64-portable-release
       - run:
@@ -1124,70 +1120,8 @@ workflows:
               only: /^(scryer-v|cci-scryer-v).*/
             branches:
               ignore: /.*/
-      - rust-check:
-          context: scryer-build
-          requires:
-            - web
-          filters: *release_tag_filters
       - rust-build-linux-x86_64-portable:
           context: scryer-build
           requires:
             - web
-          filters: *release_tag_filters
-      - rust-build-linux-x86_64-haswell:
-          context: scryer-build
-          requires:
-            - web
-          filters: *release_tag_filters
-      - rust-build-linux-arm64-portable:
-          context: scryer-build
-          requires:
-            - web
-          filters: *release_tag_filters
-      - rust-build-linux-arm64-cortex-a76:
-          context: scryer-build
-          requires:
-            - web
-          filters: *release_tag_filters
-      - rust-build-macos-arm64:
-          context: scryer-build
-          requires:
-            - web
-          filters: *release_tag_filters
-      - rust-build-windows-x86_64:
-          context: scryer-build
-          requires:
-            - web
-          filters: *release_tag_filters
-      - docker-validate-amd64:
-          context: scryer-release
-          requires:
-            - rust-build-linux-x86_64-portable
-            - rust-build-linux-x86_64-haswell
-            - rust-build-linux-arm64-portable
-            - rust-build-linux-arm64-cortex-a76
-          filters: *release_tag_filters
-      - docker-validate-arm64:
-          context: scryer-release
-          requires:
-            - rust-build-linux-x86_64-portable
-            - rust-build-linux-x86_64-haswell
-            - rust-build-linux-arm64-portable
-            - rust-build-linux-arm64-cortex-a76
-          filters: *release_tag_filters
-      - docker-publish:
-          context: scryer-release
-          requires:
-            - docker-validate-amd64
-            - docker-validate-arm64
-            - rust-check
-          filters: *release_tag_filters
-      - publish-release:
-          context: scryer-release
-          requires:
-            - rust-build-linux-x86_64-portable
-            - rust-build-linux-arm64-portable
-            - rust-build-macos-arm64
-            - rust-build-windows-x86_64
-            - rust-check
           filters: *release_tag_filters
