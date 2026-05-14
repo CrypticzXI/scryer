@@ -423,8 +423,8 @@ async fn multi_indexer_url_trace_series_episode() {
         tosho_urls.is_empty(),
         "AnimeTosho should not handle series searches"
     );
-    assert_id_only_then_fallback(&nzbgeek_urls, "tvdbid=81189", "q=Cinder%20Line");
-    assert_id_only_then_fallback(&torznab_urls, "tvdbid=81189", "q=Cinder%20Line");
+    assert_id_only_then_fallback(&nzbgeek_urls, "tvdbid=81189", "q=Cinder+Line");
+    assert_id_only_then_fallback(&torznab_urls, "tvdbid=81189", "q=Cinder+Line");
 }
 
 // ---------------------------------------------------------------------------
@@ -459,8 +459,8 @@ async fn multi_indexer_url_trace_movie() {
         tosho_urls.is_empty(),
         "AnimeTosho should not handle non-anime movie searches"
     );
-    assert_id_only_then_fallback(&nzbgeek_urls, "imdbid=000133093", "q=Lattice%20Zero");
-    assert_id_only_then_fallback(&torznab_urls, "imdbid=000133093", "q=Lattice%20Zero");
+    assert_id_only_then_fallback(&nzbgeek_urls, "imdbid=000133093", "q=Lattice+Zero");
+    assert_id_only_then_fallback(&torznab_urls, "imdbid=000133093", "q=Lattice+Zero");
 }
 
 // ---------------------------------------------------------------------------

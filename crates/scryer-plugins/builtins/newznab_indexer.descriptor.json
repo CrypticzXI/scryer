@@ -76,6 +76,23 @@
     },
     "config_fields": [
       {
+        "field_type": "string",
+        "help_text": "Indexer site URL, for example https://indexer.example",
+        "key": "base_url",
+        "label": "Base URL",
+        "required": true,
+        "role": "connection_url",
+        "value_source": "user"
+      },
+      {
+        "field_type": "password",
+        "help_text": "Indexer API key",
+        "key": "api_key",
+        "label": "API Key",
+        "required": true,
+        "value_source": "user"
+      },
+      {
         "default_value": "/api",
         "field_type": "string",
         "help_text": "API endpoint path (e.g. /api, /api/v1/api, /nabapi)",
@@ -97,7 +114,7 @@
     "provider_type": "newznab",
     "source_kind": "usenet"
   },
-  "sdk_constraint": ">=1.6.0, <1.7.0",
-  "sdk_version": "1.6.0",
-  "version": "0.2.6"
+  "sdk_constraint": ">=1.5.0, <1.6.0",
+  "sdk_version": "1.5.0",
+  "version": "0.2.7"
 }
