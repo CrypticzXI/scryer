@@ -663,7 +663,7 @@ jobs:
             DARWIN_X86_SHA=$(shasum -a 256 release-output/scryer-darwin-x86_64.tar.gz | cut -d ' ' -f1)
             REPO="${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
             mkdir -p tap/Formula
-            cat > tap/Formula/scryer.rb <<FORMULA
+            cat > tap/Formula/scryer.rb \<<FORMULA
             class Scryer < Formula
               desc "Self-hosted media acquisition and management platform"
               homepage "https://github.com/${REPO}"
@@ -671,12 +671,12 @@ jobs:
               license "MIT"
 
               def install_support_files
-                (pkgshare/"config.env.example").write <<~EOS
+                (pkgshare/"config.env.example").write \<<~EOS
                   # Homebrew-managed Scryer service overrides.
                   SCRYER_BIND=127.0.0.1:8686
                 EOS
 
-                (libexec/"scryer-service").write <<~SH
+                (libexec/"scryer-service").write \<<~SH
                   #!/bin/sh
                   CONFIG_FILE="#{etc}/scryer/config.env"
 
@@ -726,14 +726,14 @@ jobs:
                 (var/"log").mkpath
                 config_file = config_dir/"config.env"
                 unless config_file.exist?
-                  config_file.write <<~EOS
+                  config_file.write \<<~EOS
                     SCRYER_BIND=127.0.0.1:8686
                   EOS
                 end
               end
 
               def caveats
-                <<~EOS
+                \<<~EOS
                   Edit #{etc}/scryer/config.env to customize the Homebrew-managed service,
                   then restart it with:
                     brew services restart scryer
