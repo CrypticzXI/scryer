@@ -402,6 +402,9 @@ jobs:
             export SCCACHE_LOG="debug"
             export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
             : > /tmp/sccache.log
+            : > /tmp/sccache-watchdog.log
+            sccache --stop-server >/dev/null 2>&1 || true
+            sccache --start-server || true
             {
               echo '=== toolchain ==='
               rustc --version
@@ -425,8 +428,26 @@ jobs:
               pgrep -af sccache || true
               ps -o pid,ppid,etimes,%mem,rss,vsz,command -C sccache || true
             } | tee /tmp/sccache-diagnostics.txt
+            (
+              while true; do
+                ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                pid="$(pgrep -xo sccache || true)"
+                if [ -n "$pid" ]; then
+                  echo "[$ts] pid=$pid alive" >> /tmp/sccache-watchdog.log
+                  ps -o pid,ppid,etimes,%mem,rss,vsz,command -p "$pid" >> /tmp/sccache-watchdog.log || true
+                else
+                  echo "[$ts] pid-missing" >> /tmp/sccache-watchdog.log
+                  break
+                fi
+                sleep 15
+              done
+            ) &
+            WATCHDOG_PID=$!
+            trap 'kill "$WATCHDOG_PID" >/dev/null 2>&1 || true' EXIT
             sccache --zero-stats || true
             /usr/bin/time -v cargo build -vv -p scryer --release --locked --target x86_64-unknown-linux-musl 2>&1 | tee /tmp/scryer-build.log
+            kill "$WATCHDOG_PID" >/dev/null 2>&1 || true
+            wait "$WATCHDOG_PID" 2>/dev/null || true
             {
               echo
               echo '=== sccache-after ==='
@@ -453,6 +474,8 @@ jobs:
           path: /tmp/sccache-diagnostics.txt
       - store_artifacts:
           path: /tmp/sccache.log
+      - store_artifacts:
+          path: /tmp/sccache-watchdog.log
       - save_sccache_unix:
           key_prefix: linux-x86_64-portable-release
       - save_rust_cache_unix:
