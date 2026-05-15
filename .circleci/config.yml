@@ -787,10 +787,18 @@ jobs:
               throw "Visual Studio installer not found at $vsInstaller"
             }
             "Installing Spectre-mitigated MSVC runtime libs into $vsPath" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            $spectreComponents = @(
+              "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
+              "Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64.Spectre"
+            )
             $spectreArgs = @(
               "modify",
-              "--installPath", $vsPath,
-              "--add", "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
+              "--installPath", $vsPath
+            )
+            foreach ($component in $spectreComponents) {
+              $spectreArgs += @("--add", $component)
+            }
+            $spectreArgs += @(
               "--quiet",
               "--wait",
               "--norestart"
