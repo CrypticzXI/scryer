@@ -771,6 +771,7 @@ jobs:
             SCCACHE_BASEDIRS: C:\Users\circleci\project
             CARGO_INCREMENTAL: "0"
           command: |
+            $ErrorActionPreference = "Stop"
             New-Item -ItemType Directory -Force -Path C:\Users\circleci\project\tmp | Out-Null
             "" | Set-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             "" | Set-Content -Path C:\Users\circleci\project\tmp\sccache.log
@@ -793,6 +794,10 @@ jobs:
               throw "sccache.exe not found at $sccacheBin"
             }
             $Env:RUSTC_WRAPPER = $sccacheBin
+            $Env:CARGO_BUILD_TARGET = "x86_64-pc-windows-msvc"
+            $Env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = "link.exe"
+            $Env:RUSTFLAGS = "-C linker=link.exe -C linker-flavor=msvc"
+            Remove-Item Env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER -ErrorAction SilentlyContinue
             "=== before build ===" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-Date -Format o | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             "RUSTC_WRAPPER=$Env:RUSTC_WRAPPER" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
@@ -821,6 +826,9 @@ jobs:
               rustup run 1.95.0-x86_64-pc-windows-msvc cargo build -vv -p xtask --locked 2>&1 |
                 Tee-Object -FilePath C:\Users\circleci\project\tmp\windows-xtask-build.log
             } | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            if ($LASTEXITCODE -ne 0) {
+              throw "cargo build failed with exit code $LASTEXITCODE"
+            }
 
             Stop-Job $watchdog -ErrorAction SilentlyContinue
             Receive-Job $watchdog -ErrorAction SilentlyContinue | Out-Null
