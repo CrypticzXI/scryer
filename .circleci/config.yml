@@ -809,11 +809,7 @@ jobs:
             Get-Process sccache -ErrorAction SilentlyContinue | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | Format-List | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
 
-            $stopOutput = & $sccacheBin --stop-server 2>&1
-            if ($LASTEXITCODE -ne 0) {
-              "sccache --stop-server exited $LASTEXITCODE" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
-              $stopOutput | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
-            }
+            "Skipping sccache --stop-server on Windows to avoid PowerShell native-command stderr termination." | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             & $sccacheBin --start-server | Out-Null
             if ($LASTEXITCODE -ne 0) {
               throw "sccache --start-server failed with exit code $LASTEXITCODE"
