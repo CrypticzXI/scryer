@@ -751,16 +751,19 @@ jobs:
             Remove-Item -Recurse -Force C:\sccache-install -ErrorAction SilentlyContinue
             Expand-Archive sccache.zip -DestinationPath C:\sccache-install
             $dir = (Get-ChildItem C:\sccache-install -Directory | Select-Object -First 1).FullName
-            $Env:Path = "$dir;$Env:Path"
+            $bin = Join-Path $dir "sccache.exe"
+            if (-not (Test-Path $bin)) {
+              throw "sccache.exe not found under $dir"
+            }
+            $Env:Path = "$dir;$HOME\.cargo\bin;$Env:Path"
             [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
             New-Item -ItemType Directory -Force -Path "$Env:LOCALAPPDATA\Mozilla\sccache" | Out-Null
-            sccache --version
+            $bin --version
       - run:
           name: Build xtask with sccache (Windows x86_64)
           no_output_timeout: 30m
           environment:
             CARGO_TARGET_DIR: C:\Users\circleci\project\target\ci-windows-xtask
-            RUSTC_WRAPPER: sccache
             SCCACHE_DIR: C:\Users\circleci\AppData\Local\Mozilla\sccache
             SCCACHE_CACHE_SIZE: 10G
             SCCACHE_LOG: debug
@@ -784,20 +787,26 @@ jobs:
                   [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
                 }
               }
+            $sccacheDir = (Get-ChildItem C:\sccache-install -Directory | Select-Object -First 1).FullName
+            $sccacheBin = Join-Path $sccacheDir "sccache.exe"
+            if (-not (Test-Path $sccacheBin)) {
+              throw "sccache.exe not found at $sccacheBin"
+            }
+            $Env:RUSTC_WRAPPER = $sccacheBin
             "=== before build ===" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-Date -Format o | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             "RUSTC_WRAPPER=$Env:RUSTC_WRAPPER" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             "SCCACHE_DIR=$Env:SCCACHE_DIR" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
-            where.exe sccache | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            "$sccacheBin" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             where.exe rustc | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             where.exe cargo | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             where.exe link | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-Process sccache -ErrorAction SilentlyContinue | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | Format-List | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
 
-            sccache --stop-server *> $null
-            sccache --start-server
-            sccache --zero-stats
+            & $sccacheBin --stop-server *> $null
+            & $sccacheBin --start-server
+            & $sccacheBin --zero-stats
 
             $watchdog = Start-Job -ScriptBlock {
               while ($true) {
@@ -822,7 +831,7 @@ jobs:
             Get-Process sccache -ErrorAction SilentlyContinue | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | Format-List | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-ChildItem Env: | Where-Object { $_.Name -like "SCCACHE*" -or $_.Name -like "RUSTC_WRAPPER" -or $_.Name -like "CARGO_*" } | Sort-Object Name | Format-Table -AutoSize | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
-            sccache --show-stats | Tee-Object -FilePath C:\Users\circleci\project\tmp\sccache-stats.txt
+            & $sccacheBin --show-stats | Tee-Object -FilePath C:\Users\circleci\project\tmp\sccache-stats.txt
             Get-Content C:\Users\circleci\project\tmp\sccache.log -Tail 200
       - save_rust_cache_windows
       - save_sccache_windows:
