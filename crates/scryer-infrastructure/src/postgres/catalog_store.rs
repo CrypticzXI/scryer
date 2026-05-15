@@ -15,7 +15,7 @@ use scryer_domain::{
     MediaFacet, TaggedAlias, Title, User,
 };
 use serde_json::Value;
-use sqlx::Row;
+use sqlx::{Row, types::Json};
 
 use crate::catalog_store::{CatalogStore, LibrarySql, ShowSql, TitleSql, UserSql};
 use crate::postgres::timestamp::parse_rfc3339_timestamp;
@@ -1569,7 +1569,7 @@ impl ShowSql for PostgresCatalogSql {
         .bind(interstitial.runtime_minutes)
         .bind(interstitial.sort_title)
         .bind(interstitial.imdb_id)
-        .bind(interstitial.genres_json)
+        .bind(interstitial.genres_json.map(Json))
         .bind(interstitial.studio)
         .bind(interstitial.digital_release_date)
         .bind(interstitial.association_confidence)
@@ -1582,7 +1582,7 @@ impl ShowSql for PostgresCatalogSql {
         .bind(interstitial.movie_mal_id)
         .bind(interstitial.movie_anidb_id)
         .bind(&collection.interstitial_season_episode)
-        .bind(interstitial.special_movies_json)
+        .bind(Json(interstitial.special_movies_json))
         .bind(collection.monitored)
         .bind(collection.created_at)
         .execute(&self.pool)

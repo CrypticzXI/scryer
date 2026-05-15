@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -11,7 +11,7 @@ use tempfile::TempDir;
 
 use crate::{AppError, AppResult};
 
-pub const BACKUP_FORMAT_VERSION: &str = "scryer-backup-bundle-v1";
+pub const BACKUP_FORMAT_VERSION: &str = "scryer-backup-bundle-v2";
 pub const BACKUP_PLAINTEXT_EXTENSION: &str = ".tar.zst";
 pub const BACKUP_ENCRYPTED_EXTENSION: &str = ".enc";
 pub const LEGACY_BACKUP_PLAINTEXT_EXTENSION: &str = ".scryer-backup.tar.zst";
@@ -37,6 +37,14 @@ const BACKUP_ENCRYPTION_KEY_LEN: usize = 32;
 const BACKUP_ENCRYPTION_ARGON2_M_COST_KIB: u32 = 65_536;
 const BACKUP_ENCRYPTION_ARGON2_T_COST: u32 = 3;
 const BACKUP_ENCRYPTION_ARGON2_P_COST: u32 = 1;
+
+pub fn backup_table_part_filename(table: &str) -> String {
+    format!("{table}.ndjson")
+}
+
+pub fn backup_table_part_relative_path(table: &str) -> String {
+    format!("{TABLES_DIRNAME}/{}", backup_table_part_filename(table))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackupTableClassification {
@@ -100,6 +108,308 @@ impl BackupEncryptionMetadataV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EncryptedBundleHeaderV1 {
     metadata: BackupEncryptionMetadataV1,
+}
+
+struct AtomicOutputWriter {
+    temp_file: tempfile::NamedTempFile,
+    writer: BufWriter<File>,
+    final_path: PathBuf,
+}
+
+impl AtomicOutputWriter {
+    fn new(path: &Path) -> AppResult<Self> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|error| {
+            AppError::Repository(format!("failed to create {}: {error}", parent.display()))
+        })?;
+        let temp_file = tempfile::Builder::new()
+            .prefix(".scryer-backup-")
+            .tempfile_in(parent)
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to create staged backup output in {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        ensure_owner_only_permissions(temp_file.path())?;
+        let writer = BufWriter::new(temp_file.reopen().map_err(|error| {
+            AppError::Repository(format!(
+                "failed to open staged backup output {}: {error}",
+                temp_file.path().display()
+            ))
+        })?);
+        Ok(Self {
+            temp_file,
+            writer,
+            final_path: path.to_path_buf(),
+        })
+    }
+
+    fn finish(mut self) -> AppResult<()> {
+        self.writer.flush().map_err(|error| {
+            AppError::Repository(format!(
+                "failed to flush staged backup output {}: {error}",
+                self.temp_file.path().display()
+            ))
+        })?;
+        let file = self.writer.into_inner().map_err(|error| {
+            AppError::Repository(format!(
+                "failed to finalize staged backup output {}: {error}",
+                self.temp_file.path().display()
+            ))
+        })?;
+        file.sync_all().map_err(|error| {
+            AppError::Repository(format!(
+                "failed to sync staged backup output {}: {error}",
+                self.temp_file.path().display()
+            ))
+        })?;
+        drop(file);
+
+        self.temp_file.persist(&self.final_path).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to persist staged backup output to {}: {}",
+                self.final_path.display(),
+                error.error
+            ))
+        })?;
+        ensure_owner_only_permissions(&self.final_path)?;
+        Ok(())
+    }
+}
+
+impl Write for AtomicOutputWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.writer.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+struct AeadChunkWriter<W> {
+    writer: W,
+    key: LessSafeKey,
+    version: u8,
+    metadata_bytes: [u8; BACKUP_ENCRYPTION_METADATA_V1_LEN],
+    nonce_prefix: [u8; BACKUP_ENCRYPTION_NONCE_PREFIX_LEN],
+    chunk_index: u64,
+    buffer: Vec<u8>,
+}
+
+impl<W: Write> AeadChunkWriter<W> {
+    fn new(mut writer: W, passphrase: &str) -> AppResult<Self> {
+        let header = EncryptedBundleHeaderV1 {
+            metadata: BackupEncryptionMetadataV1::generate()?,
+        };
+        let version = BACKUP_ENCRYPTION_VERSION_1;
+        let metadata_bytes = header.metadata.to_bytes();
+        let key_bytes = derive_backup_encryption_key(passphrase, &header.metadata.salt)?;
+        let key = make_backup_aead_key(&key_bytes)?;
+
+        writer.write_all(&ENCRYPTED_BUNDLE_MAGIC).map_err(|error| {
+            AppError::Repository(format!("failed to write encrypted backup header: {error}"))
+        })?;
+        writer.write_all(&[version]).map_err(|error| {
+            AppError::Repository(format!("failed to write encrypted backup version: {error}"))
+        })?;
+        writer
+            .write_all(&(metadata_bytes.len() as u32).to_be_bytes())
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to write encrypted backup metadata length: {error}"
+                ))
+            })?;
+        writer.write_all(&metadata_bytes).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to write encrypted backup metadata: {error}"
+            ))
+        })?;
+
+        Ok(Self {
+            writer,
+            key,
+            version,
+            metadata_bytes,
+            nonce_prefix: header.metadata.nonce_prefix,
+            chunk_index: 0,
+            buffer: Vec::with_capacity(BACKUP_ENCRYPTION_CHUNK_SIZE),
+        })
+    }
+
+    fn write_chunk(&mut self, plaintext: &[u8]) -> AppResult<()> {
+        if plaintext.is_empty() {
+            return Ok(());
+        }
+
+        let mut in_out = plaintext.to_vec();
+        let nonce = chunk_nonce(self.nonce_prefix, self.chunk_index);
+        let aad = chunk_aad(self.version, &self.metadata_bytes, self.chunk_index);
+        self.key
+            .seal_in_place_append_tag(nonce, Aad::from(aad.as_slice()), &mut in_out)
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to encrypt backup chunk {}: {error}",
+                    self.chunk_index
+                ))
+            })?;
+
+        let chunk_len = u32::try_from(in_out.len()).map_err(|_| {
+            AppError::Repository("encrypted backup chunk length exceeds u32".into())
+        })?;
+        self.writer
+            .write_all(&chunk_len.to_be_bytes())
+            .and_then(|_| self.writer.write_all(&in_out))
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to write encrypted backup chunk {}: {error}",
+                    self.chunk_index
+                ))
+            })?;
+        self.chunk_index = self
+            .chunk_index
+            .checked_add(1)
+            .ok_or_else(|| AppError::Repository("backup chunk index overflowed".into()))?;
+        Ok(())
+    }
+
+    fn flush_buffer(&mut self) -> AppResult<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        let buffer = std::mem::take(&mut self.buffer);
+        self.write_chunk(&buffer)
+    }
+
+    fn finish(mut self) -> AppResult<W> {
+        self.flush_buffer()?;
+        self.writer.flush().map_err(|error| {
+            AppError::Repository(format!("failed to finalize encrypted bundle: {error}"))
+        })?;
+        Ok(self.writer)
+    }
+}
+
+impl<W: Write> Write for AeadChunkWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut consumed = 0_usize;
+        while consumed < buf.len() {
+            let remaining = BACKUP_ENCRYPTION_CHUNK_SIZE - self.buffer.len();
+            let to_copy = remaining.min(buf.len() - consumed);
+            self.buffer
+                .extend_from_slice(&buf[consumed..consumed + to_copy]);
+            consumed += to_copy;
+            if self.buffer.len() == BACKUP_ENCRYPTION_CHUNK_SIZE {
+                self.flush_buffer().map_err(app_error_to_io_error)?;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flush_buffer().map_err(app_error_to_io_error)?;
+        self.writer.flush()
+    }
+}
+
+struct AeadChunkReader<R> {
+    reader: R,
+    key: LessSafeKey,
+    metadata_bytes: [u8; BACKUP_ENCRYPTION_METADATA_V1_LEN],
+    nonce_prefix: [u8; BACKUP_ENCRYPTION_NONCE_PREFIX_LEN],
+    chunk_index: u64,
+    plaintext: Vec<u8>,
+    plaintext_offset: usize,
+    finished: bool,
+}
+
+impl<R: Read> AeadChunkReader<R> {
+    fn new(reader: R, header: EncryptedBundleHeaderV1, passphrase: &str) -> AppResult<Self> {
+        let metadata_bytes = header.metadata.to_bytes();
+        let key_bytes = derive_backup_encryption_key(passphrase, &header.metadata.salt)?;
+        let key = make_backup_aead_key(&key_bytes)?;
+        Ok(Self {
+            reader,
+            key,
+            metadata_bytes,
+            nonce_prefix: header.metadata.nonce_prefix,
+            chunk_index: 0,
+            plaintext: Vec::new(),
+            plaintext_offset: 0,
+            finished: false,
+        })
+    }
+
+    fn fill_plaintext(&mut self) -> AppResult<()> {
+        if self.finished {
+            return Ok(());
+        }
+
+        let Some(ciphertext_len) = read_encrypted_chunk_len(&mut self.reader)? else {
+            self.finished = true;
+            self.plaintext.clear();
+            self.plaintext_offset = 0;
+            return Ok(());
+        };
+
+        let mut in_out = vec![0_u8; ciphertext_len];
+        self.reader.read_exact(&mut in_out).map_err(|error| {
+            AppError::Validation(format!(
+                "encrypted backup payload is truncated or invalid: {error}"
+            ))
+        })?;
+
+        let nonce = chunk_nonce(self.nonce_prefix, self.chunk_index);
+        let aad = chunk_aad(
+            BACKUP_ENCRYPTION_VERSION_1,
+            &self.metadata_bytes,
+            self.chunk_index,
+        );
+        let plaintext = self
+            .key
+            .open_in_place(nonce, Aad::from(aad.as_slice()), &mut in_out)
+            .map_err(|_| {
+                AppError::Validation(
+                    "failed to decrypt backup bundle: wrong password or corrupted data".into(),
+                )
+            })?;
+        let plaintext_len = plaintext.len();
+        in_out.truncate(plaintext_len);
+        self.plaintext = in_out;
+        self.plaintext_offset = 0;
+        self.chunk_index = self
+            .chunk_index
+            .checked_add(1)
+            .ok_or_else(|| AppError::Repository("backup chunk index overflowed".into()))?;
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for AeadChunkReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        while self.plaintext_offset >= self.plaintext.len() && !self.finished {
+            self.fill_plaintext().map_err(app_error_to_io_error)?;
+        }
+
+        if self.plaintext_offset >= self.plaintext.len() {
+            return Ok(0);
+        }
+
+        let remaining = &self.plaintext[self.plaintext_offset..];
+        let to_copy = remaining.len().min(buf.len());
+        buf[..to_copy].copy_from_slice(&remaining[..to_copy]);
+        self.plaintext_offset += to_copy;
+        Ok(to_copy)
+    }
 }
 
 pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
@@ -562,10 +872,14 @@ impl BackupBundleStaging {
         self.staging.path().join(TABLES_DIRNAME)
     }
 
-    pub fn record_table_part(&mut self, table: &str, row_count: u64) -> AppResult<()> {
+    pub fn record_table_part(
+        &mut self,
+        table: &str,
+        row_count: u64,
+        checksum: String,
+    ) -> AppResult<()> {
         self.row_counts.insert(table.to_string(), row_count);
-        let rel_path = format!("{TABLES_DIRNAME}/{table}.ndjson.zst");
-        let checksum = checksum_hex(self.staging.path().join(&rel_path))?;
+        let rel_path = backup_table_part_relative_path(table);
         self.part_checksums.insert(rel_path, checksum);
         Ok(())
     }
@@ -592,16 +906,18 @@ impl BackupBundleStaging {
         let manifest_path = self.staging.path().join(MANIFEST_FILENAME);
         write_json_file(&manifest_path, &manifest)?;
 
-        let temp_payload_path = self.staging.path().join("bundle.tar.zst");
-        write_bundle_payload(self.staging.path(), &temp_payload_path)?;
-
         if let Some(passphrase) = request.passphrase.as_deref() {
-            encrypt_payload_with_aead(&temp_payload_path, &request.output_path, passphrase)?;
+            let writer = AtomicOutputWriter::new(&request.output_path)?;
+            let writer = AeadChunkWriter::new(writer, passphrase)?;
+            let writer = write_bundle_payload(self.staging.path(), writer)?.finish()?;
+            writer.finish()?;
         } else {
-            move_with_permissions(&temp_payload_path, &request.output_path)?;
+            let writer = write_bundle_payload(
+                self.staging.path(),
+                AtomicOutputWriter::new(&request.output_path)?,
+            )?;
+            writer.finish()?;
         }
-
-        ensure_owner_only_permissions(&request.output_path)?;
 
         Ok(BackupExportOutcome {
             summary: manifest.summary(),
@@ -706,38 +1022,10 @@ fn checksum_hex(path: impl AsRef<Path>) -> AppResult<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn move_with_permissions(source: &Path, dest: &Path) -> AppResult<()> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            AppError::Repository(format!("failed to create {}: {error}", parent.display()))
-        })?;
-    }
-    std::fs::rename(source, dest)
-        .or_else(|_| {
-            std::fs::copy(source, dest)?;
-            std::fs::remove_file(source)
-        })
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to move staged backup {} to {}: {error}",
-                source.display(),
-                dest.display()
-            ))
-        })?;
-    Ok(())
-}
-
-fn write_bundle_payload(stage_dir: &Path, output_path: &Path) -> AppResult<()> {
-    let file = File::create(output_path).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to create payload {}: {error}",
-            output_path.display()
-        ))
-    })?;
-    let encoder = zstd::Encoder::new(file, 3)
+fn write_bundle_payload<W: Write>(stage_dir: &Path, writer: W) -> AppResult<W> {
+    let encoder = zstd::Encoder::new(writer, 3)
         .map_err(|error| AppError::Repository(format!("failed to start zstd encoder: {error}")))?;
-    let writer = encoder.auto_finish();
-    let mut tar = tar::Builder::new(writer);
+    let mut tar = tar::Builder::new(encoder);
     tar.append_path_with_name(stage_dir.join(MANIFEST_FILENAME), MANIFEST_FILENAME)
         .map_err(|error| {
             AppError::Repository(format!("failed to append manifest to tar: {error}"))
@@ -751,100 +1039,12 @@ fn write_bundle_payload(stage_dir: &Path, output_path: &Path) -> AppResult<()> {
         .map_err(|error| {
             AppError::Repository(format!("failed to append tables to tar: {error}"))
         })?;
-    tar.finish().map_err(|error| {
+    let encoder = tar.into_inner().map_err(|error| {
         AppError::Repository(format!("failed to finalize tar payload: {error}"))
     })?;
-    Ok(())
-}
-
-fn encrypt_payload_with_aead(
-    input_path: &Path,
-    output_path: &Path,
-    passphrase: &str,
-) -> AppResult<()> {
-    let input = File::open(input_path).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to open staged payload {}: {error}",
-            input_path.display()
-        ))
-    })?;
-    let output = File::create(output_path).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to create encrypted bundle {}: {error}",
-            output_path.display()
-        ))
-    })?;
-    let header = EncryptedBundleHeaderV1 {
-        metadata: BackupEncryptionMetadataV1::generate()?,
-    };
-    let version = BACKUP_ENCRYPTION_VERSION_1;
-    let metadata_bytes = header.metadata.to_bytes();
-    let key_bytes = derive_backup_encryption_key(passphrase, &header.metadata.salt)?;
-    let key = make_backup_aead_key(&key_bytes)?;
-
-    let mut reader = BufReader::new(input);
-    let mut writer = BufWriter::new(output);
-    writer.write_all(&ENCRYPTED_BUNDLE_MAGIC).map_err(|error| {
-        AppError::Repository(format!("failed to write encrypted backup header: {error}"))
-    })?;
-    writer.write_all(&[version]).map_err(|error| {
-        AppError::Repository(format!("failed to write encrypted backup version: {error}"))
-    })?;
-    writer
-        .write_all(&(metadata_bytes.len() as u32).to_be_bytes())
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to write encrypted backup metadata length: {error}"
-            ))
-        })?;
-    writer.write_all(&metadata_bytes).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to write encrypted backup metadata: {error}"
-        ))
-    })?;
-
-    let mut buffer = vec![0_u8; BACKUP_ENCRYPTION_CHUNK_SIZE];
-    let mut chunk_index = 0_u64;
-    loop {
-        let read = reader.read(&mut buffer).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to read staged payload for encryption: {error}"
-            ))
-        })?;
-        if read == 0 {
-            break;
-        }
-
-        let mut in_out = buffer[..read].to_vec();
-        let nonce = chunk_nonce(header.metadata.nonce_prefix, chunk_index);
-        let aad = chunk_aad(version, &metadata_bytes, chunk_index);
-        key.seal_in_place_append_tag(nonce, Aad::from(aad.as_slice()), &mut in_out)
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to encrypt backup chunk {chunk_index}: {error}"
-                ))
-            })?;
-
-        let chunk_len = u32::try_from(in_out.len()).map_err(|_| {
-            AppError::Repository("encrypted backup chunk length exceeds u32".into())
-        })?;
-        writer
-            .write_all(&chunk_len.to_be_bytes())
-            .and_then(|_| writer.write_all(&in_out))
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to write encrypted backup chunk {chunk_index}: {error}"
-                ))
-            })?;
-        chunk_index = chunk_index
-            .checked_add(1)
-            .ok_or_else(|| AppError::Repository("backup chunk index overflowed".into()))?;
-    }
-
-    writer.flush().map_err(|error| {
-        AppError::Repository(format!("failed to finalize encrypted bundle: {error}"))
-    })?;
-    Ok(())
+    encoder
+        .finish()
+        .map_err(|error| AppError::Repository(format!("failed to finalize zstd payload: {error}")))
 }
 
 fn extract_bundle_to_tempdir(bundle_path: &Path, passphrase: Option<&str>) -> AppResult<TempDir> {
@@ -854,103 +1054,21 @@ fn extract_bundle_to_tempdir(bundle_path: &Path, passphrase: Option<&str>) -> Ap
         ))
     })?;
 
-    let payload_path = tempdir.path().join("payload.tar.zst");
-    if parse_encrypted_bundle_header(bundle_path)?.is_some() {
-        let passphrase = passphrase.ok_or_else(|| {
-            AppError::Validation("this backup bundle is encrypted and requires a password".into())
-        })?;
-        decrypt_payload_with_aead(bundle_path, &payload_path, passphrase)?;
-    } else {
-        std::fs::copy(bundle_path, &payload_path).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to stage bundle payload from {}: {error}",
-                bundle_path.display()
-            ))
-        })?;
-    }
-
-    let payload_file = File::open(&payload_path).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to open staged payload {}: {error}",
-            payload_path.display()
-        ))
-    })?;
-    let decoder = zstd::Decoder::new(BufReader::new(payload_file)).map_err(|error| {
-        AppError::Validation(format!("backup payload is not valid zstd: {error}"))
-    })?;
+    let payload_reader = open_bundle_payload_reader(bundle_path, passphrase)?;
+    let decoder = zstd::Decoder::new(payload_reader)
+        .map_err(|error| map_streaming_bundle_error(error, "backup payload is not valid zstd"))?;
     let mut archive = tar::Archive::new(decoder);
     archive.unpack(tempdir.path()).map_err(|error| {
-        AppError::Validation(format!(
-            "backup payload is not a valid tar archive: {error}"
-        ))
+        map_streaming_bundle_error(error, "backup payload is not a valid tar archive")
     })?;
 
     Ok(tempdir)
 }
 
-fn decrypt_payload_with_aead(
-    input_path: &Path,
-    output_path: &Path,
-    passphrase: &str,
-) -> AppResult<()> {
-    let input = File::open(input_path).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to open encrypted bundle {}: {error}",
-            input_path.display()
-        ))
-    })?;
-    let mut reader = BufReader::new(input);
-    let header = parse_encrypted_bundle_header_from_reader(&mut reader)?.ok_or_else(|| {
-        AppError::Validation("backup bundle is not a supported encrypted backup".into())
-    })?;
-    let metadata_bytes = header.metadata.to_bytes();
-    let key_bytes = derive_backup_encryption_key(passphrase, &header.metadata.salt)?;
-    let key = make_backup_aead_key(&key_bytes)?;
-
-    let output = File::create(output_path).map_err(|error| {
-        AppError::Repository(format!(
-            "failed to create decrypted payload {}: {error}",
-            output_path.display()
-        ))
-    })?;
-    let mut writer = BufWriter::new(output);
-    let mut chunk_index = 0_u64;
-
-    while let Some(ciphertext_len) = read_encrypted_chunk_len(&mut reader)? {
-        let mut in_out = vec![0_u8; ciphertext_len];
-        reader.read_exact(&mut in_out).map_err(|error| {
-            AppError::Validation(format!(
-                "encrypted backup payload is truncated or invalid: {error}"
-            ))
-        })?;
-
-        let nonce = chunk_nonce(header.metadata.nonce_prefix, chunk_index);
-        let aad = chunk_aad(BACKUP_ENCRYPTION_VERSION_1, &metadata_bytes, chunk_index);
-        let plaintext = key
-            .open_in_place(nonce, Aad::from(aad.as_slice()), &mut in_out)
-            .map_err(|_| {
-                AppError::Validation(
-                    "failed to decrypt backup bundle: wrong password or corrupted data".into(),
-                )
-            })?;
-
-        writer.write_all(plaintext).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to write decrypted backup payload chunk {chunk_index}: {error}"
-            ))
-        })?;
-        chunk_index = chunk_index
-            .checked_add(1)
-            .ok_or_else(|| AppError::Repository("backup chunk index overflowed".into()))?;
-    }
-
-    writer.flush().map_err(|error| {
-        AppError::Repository(format!("failed to write decrypted backup payload: {error}"))
-    })?;
-    Ok(())
-}
-
-fn parse_encrypted_bundle_header(bundle_path: &Path) -> AppResult<Option<EncryptedBundleHeaderV1>> {
+fn open_bundle_payload_reader(
+    bundle_path: &Path,
+    passphrase: Option<&str>,
+) -> AppResult<Box<dyn Read>> {
     let input = File::open(bundle_path).map_err(|error| {
         AppError::Repository(format!(
             "failed to open bundle {}: {error}",
@@ -958,9 +1076,23 @@ fn parse_encrypted_bundle_header(bundle_path: &Path) -> AppResult<Option<Encrypt
         ))
     })?;
     let mut reader = BufReader::new(input);
-    parse_encrypted_bundle_header_from_reader(&mut reader)
+    let mut prefix = [0_u8; ENCRYPTED_BUNDLE_MAGIC.len()];
+    let read = reader.read(&mut prefix).map_err(|error| {
+        AppError::Repository(format!("failed to read backup bundle header: {error}"))
+    })?;
+    if read == ENCRYPTED_BUNDLE_MAGIC.len() && prefix == ENCRYPTED_BUNDLE_MAGIC {
+        let passphrase = passphrase.ok_or_else(|| {
+            AppError::Validation("this backup bundle is encrypted and requires a password".into())
+        })?;
+        let header = parse_encrypted_bundle_header_after_magic(&mut reader)?;
+        let reader = AeadChunkReader::new(reader, header, passphrase)?;
+        Ok(Box::new(reader))
+    } else {
+        Ok(Box::new(Cursor::new(prefix[..read].to_vec()).chain(reader)))
+    }
 }
 
+#[cfg(test)]
 fn parse_encrypted_bundle_header_from_reader(
     reader: &mut impl Read,
 ) -> AppResult<Option<EncryptedBundleHeaderV1>> {
@@ -972,6 +1104,12 @@ fn parse_encrypted_bundle_header_from_reader(
         return Ok(None);
     }
 
+    parse_encrypted_bundle_header_after_magic(reader).map(Some)
+}
+
+fn parse_encrypted_bundle_header_after_magic(
+    reader: &mut impl Read,
+) -> AppResult<EncryptedBundleHeaderV1> {
     let mut version = [0_u8; 1];
     reader.read_exact(&mut version).map_err(|error| {
         AppError::Validation(format!("encrypted backup header is truncated: {error}"))
@@ -1001,9 +1139,9 @@ fn parse_encrypted_bundle_header_from_reader(
         AppError::Validation(format!("encrypted backup metadata is truncated: {error}"))
     })?;
 
-    Ok(Some(EncryptedBundleHeaderV1 {
+    Ok(EncryptedBundleHeaderV1 {
         metadata: BackupEncryptionMetadataV1::from_bytes(&metadata_bytes)?,
-    }))
+    })
 }
 
 fn derive_backup_encryption_key(
@@ -1083,6 +1221,28 @@ fn read_encrypted_chunk_len(reader: &mut impl Read) -> AppResult<Option<usize>> 
         ));
     }
     Ok(Some(chunk_len))
+}
+
+fn app_error_to_io_error(error: AppError) -> io::Error {
+    io::Error::other(error.to_string())
+}
+
+fn map_streaming_bundle_error<E>(error: E, fallback: &str) -> AppError
+where
+    E: std::error::Error + 'static,
+{
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(source) = current {
+        let message = source.to_string();
+        if let Some(validation) = message.strip_prefix("validation: ") {
+            return AppError::Validation(validation.to_string());
+        }
+        if let Some(repository) = message.strip_prefix("repository: ") {
+            return AppError::Repository(repository.to_string());
+        }
+        current = source.source();
+    }
+    AppError::Validation(format!("{fallback}: {error}"))
 }
 
 fn load_manifest(root: &Path) -> AppResult<BackupBundleManifest> {
@@ -1279,35 +1439,126 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_backup_round_trip_handles_exact_chunk_boundary() {
+    fn plaintext_backup_extracts_plain_ndjson_parts() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let bundle_path = temp.path().join("exact-boundary.scryer-backup.enc");
-        let passphrase = "exact-boundary-pass";
-        write_test_bundle_with_payload_size(
-            &bundle_path,
-            Some(passphrase),
-            BACKUP_ENCRYPTION_CHUNK_SIZE,
-        )
-        .expect("write bundle");
+        let bundle_path = temp.path().join("plain.scryer-backup.tar.zst");
+        write_test_bundle(&bundle_path, None).expect("write bundle");
 
-        let summary = inspect_backup_bundle(&bundle_path, Some(passphrase)).expect("inspect");
-        assert_eq!(summary.row_counts.get("titles"), Some(&1));
+        let summary = inspect_backup_bundle(&bundle_path, None).expect("inspect");
+        assert!(!summary.encrypted);
+
+        let extracted = extract_bundle_to_tempdir(&bundle_path, None).expect("extract");
+        assert!(
+            extracted
+                .path()
+                .join(backup_table_part_relative_path("titles"))
+                .exists()
+        );
+        assert!(!extracted.path().join("tables/titles.ndjson.zst").exists());
+        assert!(!extracted.path().join("payload.tar.zst").exists());
     }
 
     #[test]
-    fn encrypted_backup_round_trip_spans_multiple_chunks() {
+    fn atomic_output_writer_preserves_existing_file_until_finish() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let bundle_path = temp.path().join("multi-chunk.scryer-backup.enc");
-        let passphrase = "multi-chunk-pass";
-        write_test_bundle_with_payload_size(
-            &bundle_path,
-            Some(passphrase),
-            BACKUP_ENCRYPTION_CHUNK_SIZE + 1,
-        )
-        .expect("write bundle");
+        let output_path = temp.path().join("existing.scryer-backup.tar.zst");
+        std::fs::write(&output_path, b"known-good").expect("seed output");
 
-        let summary = inspect_backup_bundle(&bundle_path, Some(passphrase)).expect("inspect");
-        assert_eq!(summary.row_counts.get("titles"), Some(&1));
+        let mut writer = AtomicOutputWriter::new(&output_path).expect("create atomic writer");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = std::fs::metadata(writer.temp_file.path())
+                .expect("temp metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        writer.write_all(b"partial").expect("write partial");
+        assert_eq!(
+            std::fs::read(&output_path).expect("read existing output"),
+            b"known-good"
+        );
+        drop(writer);
+
+        assert_eq!(
+            std::fs::read(&output_path).expect("read preserved output"),
+            b"known-good"
+        );
+    }
+
+    #[test]
+    fn atomic_output_writer_replaces_existing_file_on_finish() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output_path = temp.path().join("replace.scryer-backup.tar.zst");
+        std::fs::write(&output_path, b"old-backup").expect("seed output");
+
+        let mut writer = AtomicOutputWriter::new(&output_path).expect("create atomic writer");
+        writer
+            .write_all(b"new-backup")
+            .expect("write staged output");
+        writer.finish().expect("finish output");
+
+        assert_eq!(
+            std::fs::read(&output_path).expect("read replaced output"),
+            b"new-backup"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = std::fs::metadata(&output_path)
+                .expect("output metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn encrypted_chunk_writer_round_trip_handles_exact_chunk_boundary() {
+        let passphrase = "exact-boundary-pass";
+        let payload = deterministic_payload_bytes(BACKUP_ENCRYPTION_CHUNK_SIZE);
+        let round_trip = round_trip_aead_payload(&payload, passphrase).expect("round trip");
+        assert_eq!(round_trip, payload);
+    }
+
+    #[test]
+    fn encrypted_chunk_writer_round_trip_spans_multiple_chunks() {
+        let passphrase = "multi-chunk-pass";
+        let payload = deterministic_payload_bytes(BACKUP_ENCRYPTION_CHUNK_SIZE + 1);
+        let round_trip = round_trip_aead_payload(&payload, passphrase).expect("round trip");
+        assert_eq!(round_trip, payload);
+    }
+
+    #[test]
+    fn inspect_rejects_legacy_bundle_format_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("legacy-format.scryer-backup.tar.zst");
+        write_test_bundle(&bundle_path, None).expect("write bundle");
+
+        let extracted = extract_bundle_to_tempdir(&bundle_path, None).expect("extract");
+        let mut manifest = load_manifest(extracted.path()).expect("manifest");
+        manifest.format_version = "scryer-backup-bundle-v1".to_string();
+        write_json_file(&extracted.path().join(MANIFEST_FILENAME), &manifest).expect("rewrite");
+
+        let rebuilt_path = temp.path().join("legacy-rebuilt.scryer-backup.tar.zst");
+        let writer = write_bundle_payload(
+            extracted.path(),
+            AtomicOutputWriter::new(&rebuilt_path).expect("create output"),
+        )
+        .expect("rebuild bundle");
+        writer.finish().expect("persist rebuilt bundle");
+
+        let error = inspect_backup_bundle(&rebuilt_path, None).expect_err("legacy format");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported backup format version")
+        );
     }
 
     #[test]
@@ -1344,9 +1595,12 @@ mod tests {
         payload_size: usize,
     ) -> AppResult<()> {
         let mut staging = BackupBundleStaging::new()?;
-        let table_path = staging.tables_dir().join("titles.ndjson.zst");
-        write_zstd_payload(&table_path, payload_size)?;
-        staging.record_table_part("titles", 1)?;
+        let table_path = staging
+            .tables_dir()
+            .join(backup_table_part_filename("titles"));
+        write_test_payload(&table_path, payload_size)?;
+        let checksum = checksum_hex(&table_path)?;
+        staging.record_table_part("titles", 1, checksum)?;
         staging.finish(BackupBundleExportRequest {
             output_path: output_path.to_path_buf(),
             passphrase: passphrase.map(str::to_string),
@@ -1364,20 +1618,63 @@ mod tests {
         Ok(())
     }
 
-    fn write_zstd_payload(path: &Path, payload_size: usize) -> AppResult<()> {
+    fn write_test_payload(path: &Path, payload_size: usize) -> AppResult<()> {
         let file = File::create(path).map_err(|error| {
             AppError::Repository(format!("failed to create test payload: {error}"))
         })?;
-        let mut encoder = zstd::Encoder::new(file, 1).map_err(|error| {
-            AppError::Repository(format!("failed to create test zstd encoder: {error}"))
-        })?;
-        let payload = vec![b'x'; payload_size];
-        encoder.write_all(&payload).map_err(|error| {
+        let mut writer = BufWriter::new(file);
+        let payload = deterministic_payload_bytes(payload_size);
+        writer.write_all(&payload).map_err(|error| {
             AppError::Repository(format!("failed to write test payload: {error}"))
         })?;
-        encoder.finish().map_err(|error| {
-            AppError::Repository(format!("failed to finish test payload: {error}"))
+        writer.flush().map_err(|error| {
+            AppError::Repository(format!("failed to flush test payload: {error}"))
         })?;
         Ok(())
+    }
+
+    fn deterministic_payload_bytes(payload_size: usize) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(payload_size);
+        let mut state = 0x0123_4567_89ab_cdef_u64;
+        for _ in 0..payload_size {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            payload.push((state & 0xff) as u8);
+        }
+        payload
+    }
+
+    fn round_trip_aead_payload(payload: &[u8], passphrase: &str) -> AppResult<Vec<u8>> {
+        let writer = AeadChunkWriter::new(Cursor::new(Vec::new()), passphrase)?;
+        let mut writer = writer;
+        for chunk in payload.chunks(7919) {
+            writer.write_all(chunk).map_err(|error| {
+                AppError::Repository(format!("failed to write chunked test payload: {error}"))
+            })?;
+        }
+        let mut encrypted = writer.finish()?;
+        encrypted.seek(SeekFrom::Start(0)).map_err(|error| {
+            AppError::Repository(format!("failed to seek test payload: {error}"))
+        })?;
+
+        let mut encrypted_reader = BufReader::new(encrypted);
+        let header =
+            parse_encrypted_bundle_header_from_reader(&mut encrypted_reader)?.ok_or_else(|| {
+                AppError::Validation("missing encrypted bundle header in test payload".into())
+            })?;
+        let mut reader = AeadChunkReader::new(encrypted_reader, header, passphrase)?;
+        let mut plaintext = Vec::new();
+        let mut buffer = [0_u8; 4093];
+        loop {
+            let read = reader.read(&mut buffer).map_err(|error| {
+                AppError::Repository(format!("failed to read chunked test payload: {error}"))
+            })?;
+            if read == 0 {
+                break;
+            }
+            plaintext.extend_from_slice(&buffer[..read]);
+        }
+        Ok(plaintext)
     }
 }

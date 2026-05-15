@@ -59,6 +59,7 @@ type TitleTableProps = {
   isTogglingMonitoredById?: Record<string, boolean>;
   showScanLibraryAction?: boolean;
   showConfigureRootsAction?: boolean;
+  configureRootsReason?: "missing" | "invalid";
   configureRootsHref?: string;
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
@@ -83,6 +84,7 @@ export function TitleTable({
   isTogglingMonitoredById,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
+  configureRootsReason = "missing",
   configureRootsHref,
   onScanLibrary,
   scanLibraryLoading = false,
@@ -579,6 +581,7 @@ export function TitleTable({
                 t={t}
                 showScanAction={showScanLibraryAction}
                 showConfigureRootsAction={showConfigureRootsAction}
+                configureRootsReason={configureRootsReason}
                 configureRootsHref={configureRootsHref}
                 onScan={onScanLibrary}
                 scanLoading={scanLibraryLoading}

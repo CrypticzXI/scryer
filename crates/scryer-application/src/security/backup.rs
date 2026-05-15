@@ -407,6 +407,7 @@ impl AppUseCase {
             trigger,
         );
         write_backup_metadata(&dir, &queued)?;
+        self.publish_settings_changed(vec!["backup".to_string()]);
 
         Ok(PreparedBackupRequest {
             dir,
@@ -479,6 +480,7 @@ impl AppUseCase {
             ConfigurationChangeAction::Saved,
         )
         .await;
+        self.publish_settings_changed(vec!["backup".to_string()]);
 
         match result {
             Ok(_) => Ok(next_info),
@@ -569,6 +571,55 @@ impl AppUseCase {
         Ok(list_backup_files(&self.backup_dir()))
     }
 
+    pub async fn prepare_backup_download(
+        &self,
+        actor: &User,
+        filename: &str,
+    ) -> AppResult<crate::BackupDownloadTicket> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        if !is_supported_backup_filename(filename) {
+            return Err(AppError::Validation("invalid backup filename".into()));
+        }
+
+        let backup_dir = self.backup_dir();
+        let info = list_backup_files(&backup_dir)
+            .into_iter()
+            .find(|entry| entry.filename == filename)
+            .ok_or_else(|| AppError::NotFound("backup metadata could not be found".into()))?;
+
+        match info.status {
+            BackupStatus::Creating => {
+                return Err(AppError::Validation(
+                    "backup bundle is still being created".into(),
+                ));
+            }
+            BackupStatus::Failed => {
+                return Err(AppError::Validation(
+                    info.error_message
+                        .unwrap_or_else(|| "backup bundle creation failed".to_string()),
+                ));
+            }
+            BackupStatus::Invalid => {
+                return Err(AppError::Validation(
+                    info.error_message
+                        .unwrap_or_else(|| "backup bundle is invalid".to_string()),
+                ));
+            }
+            BackupStatus::Ready => {}
+        }
+
+        let bundle = bundle_path(&backup_dir, filename);
+        if !bundle.is_file() {
+            return Err(AppError::NotFound(
+                "backup bundle could not be found".into(),
+            ));
+        }
+
+        self.issue_backup_download_token(actor, filename).await
+    }
+
     pub async fn delete_backup(&self, actor: &User, filename: &str) -> AppResult<bool> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
@@ -590,6 +641,7 @@ impl AppUseCase {
             ConfigurationChangeAction::Deleted,
         )
         .await;
+        self.publish_settings_changed(vec!["backup".to_string()]);
         Ok(true)
     }
 

@@ -67,6 +67,7 @@ type PosterGridProps = {
   overviewTargetView: ViewId;
   showScanLibraryAction?: boolean;
   showConfigureRootsAction?: boolean;
+  configureRootsReason?: "missing" | "invalid";
   configureRootsHref?: string;
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
@@ -85,6 +86,7 @@ export const PosterGrid = React.memo(function PosterGrid({
   overviewTargetView,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
+  configureRootsReason = "missing",
   configureRootsHref,
   onScanLibrary,
   scanLibraryLoading = false,
@@ -104,6 +106,7 @@ export const PosterGrid = React.memo(function PosterGrid({
         t={t}
         showScanAction={showScanLibraryAction}
         showConfigureRootsAction={showConfigureRootsAction}
+        configureRootsReason={configureRootsReason}
         configureRootsHref={configureRootsHref}
         scanLoading={scanLibraryLoading}
         scanDisabled={scanLibraryDisabled}

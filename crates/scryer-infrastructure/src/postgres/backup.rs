@@ -12,7 +12,7 @@ use sqlx::{Column, Row, TypeInfo, ValueRef};
 use scryer_application::{
     AppError, AppResult, BACKUP_TABLE_CATALOG, BackupBundleExportRequest, BackupBundleStaging,
     BackupExportOutcome, BackupRestorePreparedBundle, BackupTableClassification,
-    LogicalBackupExporter, prepare_backup_restore_payload,
+    LogicalBackupExporter, backup_table_part_filename, prepare_backup_restore_payload,
 };
 use scryer_domain::MediaFacet;
 
@@ -107,8 +107,8 @@ async fn export_backup_tables_from_pool(
         })?;
 
     for table in &export_tables {
-        let row_count = export_table_part(&mut tx, table, &tables_dir).await?;
-        staging.record_table_part(table, row_count)?;
+        let (row_count, checksum) = export_table_part(&mut tx, table, &tables_dir).await?;
+        staging.record_table_part(table, row_count, checksum)?;
     }
 
     tx.rollback().await.map_err(|error| {
@@ -166,7 +166,7 @@ pub async fn restore_backup_bundle_into_postgres_pool(
         import_table_part(
             &mut tx,
             table,
-            &tables_dir.join(format!("{table}.ndjson.zst")),
+            &tables_dir.join(backup_table_part_filename(table)),
         )
         .await?;
     }
@@ -333,7 +333,7 @@ async fn export_table_part(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     table: &str,
     tables_dir: &Path,
-) -> AppResult<u64> {
+) -> AppResult<(u64, String)> {
     let order_by = table_row_order_clause(tx, table).await?;
     let sql = format!(
         "SELECT * FROM {} ORDER BY {} LIMIT $1 OFFSET $2",
@@ -341,17 +341,16 @@ async fn export_table_part(
         order_by
     );
 
-    let output_path = tables_dir.join(format!("{table}.ndjson.zst"));
+    let output_path = tables_dir.join(backup_table_part_filename(table));
     let file = File::create(&output_path).map_err(|error| {
         AppError::Repository(format!(
             "failed to create PostgreSQL table export {}: {error}",
             output_path.display()
         ))
     })?;
-    let encoder = zstd::Encoder::new(file, 3).map_err(|error| {
-        AppError::Repository(format!("failed to start zstd encoder for {table}: {error}"))
-    })?;
-    let mut writer = BufWriter::new(encoder.auto_finish());
+    let mut writer = BufWriter::new(file);
+    let mut hasher = blake3::Hasher::new();
+    let mut line_buffer = Vec::with_capacity(16 * 1024);
 
     let mut count = 0_u64;
     let mut offset = 0_i64;
@@ -374,12 +373,15 @@ async fn export_table_part(
         let row_count = rows.len() as i64;
         for row in rows {
             let value = encode_row(&row)?;
-            serde_json::to_writer(&mut writer, &value).map_err(|error| {
+            line_buffer.clear();
+            serde_json::to_writer(&mut line_buffer, &value).map_err(|error| {
                 AppError::Repository(format!("failed to encode backup row for {table}: {error}"))
             })?;
-            writer.write_all(b"\n").map_err(|error| {
+            line_buffer.push(b'\n');
+            writer.write_all(&line_buffer).map_err(|error| {
                 AppError::Repository(format!("failed to write backup row for {table}: {error}"))
             })?;
+            hasher.update(&line_buffer);
             count += 1;
         }
         offset += row_count;
@@ -388,7 +390,7 @@ async fn export_table_part(
     writer.flush().map_err(|error| {
         AppError::Repository(format!("failed to flush table export for {table}: {error}"))
     })?;
-    Ok(count)
+    Ok((count, hasher.finalize().to_hex().to_string()))
 }
 
 async fn table_row_order_clause(
@@ -563,12 +565,7 @@ async fn import_table_part(
     let file = File::open(part_path).map_err(|error| {
         AppError::Validation(format!("backup table payload missing for {table}: {error}"))
     })?;
-    let decoder = zstd::Decoder::new(BufReader::new(file)).map_err(|error| {
-        AppError::Validation(format!(
-            "backup table payload for {table} is invalid: {error}"
-        ))
-    })?;
-    let reader = BufReader::new(decoder);
+    let reader = BufReader::new(file);
 
     for (line_number, line) in reader.lines().enumerate() {
         let line = line.map_err(|error| {

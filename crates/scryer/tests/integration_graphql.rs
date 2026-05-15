@@ -6,11 +6,12 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, CutoffUnmetQualitySummary, DeleteExecutionConfirmation,
-    DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
-    LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision,
-    ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
+    AppError, AppResult, BackupInfo, BackupService, BackupStatus, BackupTrigger, CollectionUpdate,
+    CutoffUnmetQualitySummary, DeleteExecutionConfirmation, DownloadSubmissionRepository,
+    EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput, LibraryRootDraft,
+    MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision, ScopedExternalId,
+    ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
+    TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
     start_background_download_delete_poller,
 };
 use scryer_domain::{
@@ -26,7 +27,7 @@ use scryer_infrastructure::{
 };
 use serde_json::{Value, json};
 use sqlx::Row;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use wiremock::matchers::{body_string_contains, method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -63,6 +64,18 @@ fn assert_no_errors(body: &Value) {
         body.get("errors").is_none(),
         "unexpected GraphQL errors: {body}"
     );
+}
+
+fn write_backup_fixture(ctx: &TestContext, info: BackupInfo, bundle_bytes: &[u8]) {
+    let backup_dir = ctx.app.backup_dir();
+    std::fs::create_dir_all(&backup_dir).expect("create backup dir");
+    std::fs::write(backup_dir.join(&info.filename), bundle_bytes).expect("write backup bundle");
+    let metadata_path = backup_dir.join(format!("{}.metadata.json", info.filename));
+    std::fs::write(
+        metadata_path,
+        serde_json::to_vec(&info).expect("serialize backup metadata"),
+    )
+    .expect("write backup metadata");
 }
 
 async fn set_rename_collision_policy(ctx: &TestContext, scope: &str, policy: &str) {
@@ -3762,6 +3775,271 @@ async fn graphql_auth_runtime_state_is_public() {
     assert_eq!(
         body["data"]["authRuntimeState"]["skipLoginForLocalIps"],
         false
+    );
+}
+
+#[tokio::test]
+async fn prepare_backup_download_returns_signed_url_for_ready_backup() {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .attach_user_authorization(
+            ctx.app
+                .find_or_create_default_user()
+                .await
+                .expect("default user should exist"),
+        )
+        .await
+        .expect("default user authorization");
+    write_backup_fixture(
+        &ctx,
+        BackupInfo {
+            filename: "backup_20260515_abcd1234.tar.zst".to_string(),
+            size_bytes: 42,
+            created_at: Utc::now().to_rfc3339(),
+            format_version: "scryer-backup-bundle-v2".to_string(),
+            source_scryer_version: "0.15.0".to_string(),
+            source_engine: "sqlite".to_string(),
+            source_migration_key: Some("0115".to_string()),
+            encrypted: false,
+            row_counts: BTreeMap::from([("settings_definitions".to_string(), 1)]),
+            trigger: BackupTrigger::Manual,
+            status: BackupStatus::Ready,
+            error_message: None,
+        },
+        b"ready-backup",
+    );
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        mutation PrepareBackupDownload {
+          prepareBackupDownload(filename: "backup_20260515_abcd1234.tar.zst") {
+            downloadUrl
+            expiresAt
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    let download_url = body["data"]["prepareBackupDownload"]["downloadUrl"]
+        .as_str()
+        .expect("download url should be present");
+    assert!(
+        download_url
+            .starts_with("/admin/backups/backup_20260515_abcd1234.tar.zst/download?ticket=")
+    );
+    assert!(
+        body["data"]["prepareBackupDownload"]["expiresAt"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn prepare_backup_download_percent_encodes_reserved_filename_characters() {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .attach_user_authorization(
+            ctx.app
+                .find_or_create_default_user()
+                .await
+                .expect("default user should exist"),
+        )
+        .await
+        .expect("default user authorization");
+    let filename = "backup 2026 #%?.tar.zst";
+    write_backup_fixture(
+        &ctx,
+        BackupInfo {
+            filename: filename.to_string(),
+            size_bytes: 42,
+            created_at: Utc::now().to_rfc3339(),
+            format_version: "scryer-backup-bundle-v2".to_string(),
+            source_scryer_version: "0.15.0".to_string(),
+            source_engine: "sqlite".to_string(),
+            source_migration_key: Some("0115".to_string()),
+            encrypted: false,
+            row_counts: BTreeMap::from([("settings_definitions".to_string(), 1)]),
+            trigger: BackupTrigger::Manual,
+            status: BackupStatus::Ready,
+            error_message: None,
+        },
+        b"ready-backup-reserved",
+    );
+    let filename_literal = serde_json::to_string(filename).expect("serialize filename");
+    let query = format!(
+        r#"
+        mutation PrepareBackupDownload {{
+          prepareBackupDownload(filename: {filename_literal}) {{
+            downloadUrl
+            expiresAt
+          }}
+        }}
+        "#
+    );
+
+    let body = schema_exec(&ctx, &query, Some(admin)).await;
+
+    assert_no_errors(&body);
+    let download_url = body["data"]["prepareBackupDownload"]["downloadUrl"]
+        .as_str()
+        .expect("download url should be present");
+    assert!(
+        download_url
+            .starts_with("/admin/backups/backup%202026%20%23%25%3F.tar.zst/download?ticket="),
+        "expected percent-encoded path segment: {download_url}"
+    );
+}
+
+#[tokio::test]
+async fn prepare_backup_download_requires_manage_system_settings() {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .attach_user_authorization(
+            ctx.app
+                .find_or_create_default_user()
+                .await
+                .expect("default user should exist"),
+        )
+        .await
+        .expect("default user authorization");
+    let viewer = ctx
+        .app
+        .create_user(
+            &admin,
+            "backup_viewer".to_string(),
+            "password123".to_string(),
+            scryer_domain::AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create limited user");
+    let viewer = ctx
+        .app
+        .attach_user_authorization(viewer)
+        .await
+        .expect("viewer authorization");
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        mutation PrepareBackupDownload {
+          prepareBackupDownload(filename: "backup_20260515_abcd1234.tar.zst") {
+            downloadUrl
+            expiresAt
+          }
+        }
+        "#,
+        Some(viewer),
+    )
+    .await;
+
+    assert!(
+        body["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected authorization error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn prepare_backup_download_rejects_missing_file_and_non_ready_backup() {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .attach_user_authorization(
+            ctx.app
+                .find_or_create_default_user()
+                .await
+                .expect("default user should exist"),
+        )
+        .await
+        .expect("default user authorization");
+
+    write_backup_fixture(
+        &ctx,
+        BackupInfo {
+            filename: "backup_20260515_missing.tar.zst".to_string(),
+            size_bytes: 42,
+            created_at: Utc::now().to_rfc3339(),
+            format_version: "scryer-backup-bundle-v2".to_string(),
+            source_scryer_version: "0.15.0".to_string(),
+            source_engine: "sqlite".to_string(),
+            source_migration_key: Some("0115".to_string()),
+            encrypted: false,
+            row_counts: BTreeMap::new(),
+            trigger: BackupTrigger::Manual,
+            status: BackupStatus::Ready,
+            error_message: None,
+        },
+        b"missing-backup",
+    );
+    std::fs::remove_file(ctx.app.backup_dir().join("backup_20260515_missing.tar.zst"))
+        .expect("remove bundle file");
+
+    let missing_file = schema_exec(
+        &ctx,
+        r#"
+        mutation PrepareBackupDownload {
+          prepareBackupDownload(filename: "backup_20260515_missing.tar.zst") {
+            downloadUrl
+            expiresAt
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert!(
+        missing_file["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected missing bundle error: {missing_file}"
+    );
+
+    write_backup_fixture(
+        &ctx,
+        BackupInfo {
+            filename: "backup_20260515_creating.tar.zst".to_string(),
+            size_bytes: 42,
+            created_at: Utc::now().to_rfc3339(),
+            format_version: "scryer-backup-bundle-v2".to_string(),
+            source_scryer_version: "0.15.0".to_string(),
+            source_engine: "sqlite".to_string(),
+            source_migration_key: Some("0115".to_string()),
+            encrypted: false,
+            row_counts: BTreeMap::new(),
+            trigger: BackupTrigger::Manual,
+            status: BackupStatus::Creating,
+            error_message: None,
+        },
+        b"creating-backup",
+    );
+
+    let creating = schema_exec(
+        &ctx,
+        r#"
+        mutation PrepareBackupDownload($filename: String!) {
+          prepareBackupDownload(filename: "backup_20260515_creating.tar.zst") {
+            downloadUrl
+            expiresAt
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert!(
+        creating["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected non-ready backup error: {creating}"
     );
 }
 

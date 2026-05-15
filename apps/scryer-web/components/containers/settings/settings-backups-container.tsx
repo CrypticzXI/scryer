@@ -31,11 +31,12 @@ import { useTranslate } from "@/lib/context/translate-context";
 import {
   createBackupMutation,
   deleteBackupMutation,
+  prepareBackupDownloadMutation,
   updateAutoBackupSettingsMutation,
 } from "@/lib/graphql/mutations";
 import { autoBackupSettingsQuery, backupsQuery } from "@/lib/graphql/queries";
 import { scryerFetch } from "@/lib/graphql/urql-client";
-import { getAuthToken } from "@/lib/hooks/use-auth";
+import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { getRuntimeBasePath } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
 import {
@@ -75,6 +76,13 @@ type CreateBackupMutationResult = {
 
 type DeleteBackupMutationResult = {
   deleteBackup?: boolean;
+};
+
+type PrepareBackupDownloadMutationResult = {
+  prepareBackupDownload?: {
+    downloadUrl: string;
+    expiresAt: string;
+  };
 };
 
 type AutoBackupSettingsQueryResult = {
@@ -176,15 +184,6 @@ function mutationErrorMessage(error: unknown, fallback: string): string {
 function buildAppUrl(path: string): string {
   const basePath = getRuntimeBasePath();
   return basePath === "/" ? path : `${basePath}${path}`;
-}
-
-function createAuthHeaders(init?: HeadersInit): Headers {
-  const headers = new Headers(init);
-  const token = getAuthToken();
-  if (token) {
-    headers.set("authorization", `Bearer ${token}`);
-  }
-  return headers;
 }
 
 async function readResponseErrorMessage(response: Response, fallback: string): Promise<string> {
@@ -332,6 +331,7 @@ export function SettingsBackupsContainer() {
     React.useState<AutoBackupSettings>(DEFAULT_AUTO_BACKUP_SETTINGS);
   const [autoBackupLoading, setAutoBackupLoading] = React.useState(true);
   const [autoBackupSaving, setAutoBackupSaving] = React.useState(false);
+  const [autoBackupExpanded, setAutoBackupExpanded] = React.useState(false);
   const [autoBackupKey, setAutoBackupKey] = React.useState("");
   const [clearAutoBackupKey, setClearAutoBackupKey] = React.useState(false);
   const [showAutoBackupKey, setShowAutoBackupKey] = React.useState(false);
@@ -342,7 +342,6 @@ export function SettingsBackupsContainer() {
   const [pendingDelete, setPendingDelete] = React.useState<BackupInfoRecord | null>(null);
   const [deletingFilename, setDeletingFilename] = React.useState<string | null>(null);
   const [downloadingFilename, setDownloadingFilename] = React.useState<string | null>(null);
-  const hasCreatingBackup = backups.some((backup) => backup.status === "creating");
   const hasCreatingManualBackup = backups.some(
     (backup) => backup.status === "creating" && backup.trigger === "manual",
   );
@@ -428,15 +427,24 @@ export function SettingsBackupsContainer() {
   }, [fetchAutoBackupSettings]);
 
   React.useEffect(() => {
-    if (!hasCreatingBackup) {
-      return undefined;
+    if (autoBackupSettings.enabled) {
+      setAutoBackupExpanded(true);
+      return;
     }
 
-    const timeoutId = window.setTimeout(() => {
-      void fetchBackups();
-    }, 2500);
-    return () => window.clearTimeout(timeoutId);
-  }, [fetchBackups, hasCreatingBackup]);
+    setAutoBackupExpanded(false);
+  }, [autoBackupSettings.enabled]);
+
+  useSettingsSubscription(
+    React.useCallback(
+      (keys: string[]) => {
+        if (keys.includes("backup")) {
+          void fetchBackups();
+        }
+      },
+      [fetchBackups],
+    ),
+  );
 
   React.useEffect(() => {
     if (autoBackupNavigationBlocker.state !== "blocked") {
@@ -507,11 +515,18 @@ export function SettingsBackupsContainer() {
   const handleDownloadBackup = React.useCallback(async (backup: BackupInfoRecord) => {
     setDownloadingFilename(backup.filename);
     try {
+      const { data, error } = await client
+        .mutation<PrepareBackupDownloadMutationResult>(prepareBackupDownloadMutation, {
+          filename: backup.filename,
+        })
+        .toPromise();
+      const downloadUrl = data?.prepareBackupDownload?.downloadUrl;
+      if (error || !downloadUrl) {
+        throw error ?? new Error(t("status.failedToLoad"));
+      }
+
       const response = await scryerFetch(
-        buildAppUrl(`/admin/backups/${encodeURIComponent(backup.filename)}/download`),
-        {
-          headers: createAuthHeaders(),
-        },
+        buildAppUrl(downloadUrl),
       );
       if (!response.ok) {
         throw new Error(
@@ -525,7 +540,7 @@ export function SettingsBackupsContainer() {
     } finally {
       setDownloadingFilename(null);
     }
-  }, [setGlobalStatus, t]);
+  }, [client, setGlobalStatus, t]);
 
   const handleSaveAutoBackupSettings = React.useCallback(async () => {
     setAutoBackupSaving(true);
@@ -580,153 +595,158 @@ export function SettingsBackupsContainer() {
     <>
       <div className="space-y-6 text-sm">
         <Card>
-          <CardHeader className="space-y-1">
-            <CardTitle>{t("settings.autoBackupsTitle")}</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              {t("settings.autoBackupsDescription")}
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-3 md:items-stretch">
-              <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
-                <div className="flex justify-center pt-2">
-                  <SliderSwitch
-                    checked={autoBackupSettings.enabled}
-                    disabled={autoBackupSaving}
-                    enabledLabel={t("label.enabled")}
-                    disabledLabel={t("label.disabled")}
-                    onChange={(nextValue) =>
-                      setAutoBackupSettings((current) => ({
-                        ...current,
-                        enabled: nextValue,
-                      }))
-                    }
-                  />
-                </div>
-                <p className="mt-auto pt-6 text-xs text-muted-foreground">
-                  {t("settings.autoBackupsEnabledHelp")}
+          <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-start gap-3 text-left"
+              onClick={() => setAutoBackupExpanded((current) => !current)}
+              aria-expanded={autoBackupExpanded}
+            >
+              <div className="min-w-0 flex-1 space-y-1">
+                <CardTitle>{t("settings.autoBackupsTitle")}</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.autoBackupsDescription")}
                 </p>
               </div>
-
-              <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
-                <Label htmlFor="auto-backups-time" className="text-sm font-medium">
-                  {t("settings.autoBackupsTime")}
-                </Label>
-                <div className="mt-3">
-                  <TimePicker
-                    id="auto-backups-time"
-                    value={autoBackupSettings.dailyTimeLocal}
-                    disabled={autoBackupSaving}
-                    hourLabel={t("settings.autoBackupsHour")}
-                    minuteLabel={t("settings.autoBackupsMinute")}
-                    onChange={(nextValue) =>
-                      setAutoBackupSettings((current) => ({
-                        ...current,
-                        dailyTimeLocal: nextValue,
-                      }))
-                    }
-                  />
-                </div>
-                <p className="mt-auto pt-4 text-xs text-muted-foreground">
-                  {t("settings.autoBackupsTimeHelp")}
-                </p>
-              </div>
-
-              <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
-                <p className="text-sm font-medium">{t("settings.autoBackupsNextRun")}</p>
-                <p className="mt-3 text-base font-medium text-foreground">{autoBackupNextRunLabel}</p>
-                <p className="mt-auto pt-4 text-xs text-muted-foreground">
-                  {t("settings.autoBackupsNextRunHelp")}
-                </p>
-              </div>
+            </button>
+            <div className="flex shrink-0 justify-end sm:pt-1">
+              <SliderSwitch
+                checked={autoBackupSettings.enabled}
+                disabled={autoBackupSaving}
+                enabledLabel={t("label.enabled")}
+                disabledLabel={t("label.disabled")}
+                onChange={(nextValue) =>
+                  setAutoBackupSettings((current) => ({
+                    ...current,
+                    enabled: nextValue,
+                  }))
+                }
+              />
             </div>
-
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center gap-2">
-                <span className="font-medium">{t("settings.autoBackupsKeyLabel")}</span>
-                <InfoHelp
-                  text={t("settings.autoBackupsKeyHelp")}
-                  ariaLabel={t("settings.autoBackupsKeyHelpLabel")}
-                />
-              </div>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <div className="w-full max-w-sm space-y-2">
-                  <div className="relative">
-                    <Input
-                      type={showAutoBackupKey ? "text" : "password"}
-                      value={autoBackupKey}
-                      placeholder={autoBackupKeyPlaceholder}
-                      className="pr-11"
-                      disabled={autoBackupSaving || clearAutoBackupKey}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        setAutoBackupKey(nextValue);
-                        if (nextValue.length > 0) {
-                          setClearAutoBackupKey(false);
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                      aria-label={
-                        showAutoBackupKey
-                          ? t("settings.autoBackupsHideKey")
-                          : t("settings.autoBackupsShowKey")
+          </CardHeader>
+          {autoBackupExpanded ? (
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2 md:items-stretch">
+                <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
+                  <Label htmlFor="auto-backups-time" className="text-sm font-medium">
+                    {t("settings.autoBackupsTime")}
+                  </Label>
+                  <div className="mt-3">
+                    <TimePicker
+                      id="auto-backups-time"
+                      value={autoBackupSettings.dailyTimeLocal}
+                      disabled={autoBackupSaving}
+                      hourLabel={t("settings.autoBackupsHour")}
+                      minuteLabel={t("settings.autoBackupsMinute")}
+                      onChange={(nextValue) =>
+                        setAutoBackupSettings((current) => ({
+                          ...current,
+                          dailyTimeLocal: nextValue,
+                        }))
                       }
-                      disabled={autoBackupSaving || clearAutoBackupKey}
-                      onClick={() => setShowAutoBackupKey((current) => !current)}
-                    >
-                      {showAutoBackupKey ? (
-                        <EyeOff className="h-4 w-4" />
-                      ) : (
-                        <Eye className="h-4 w-4" />
-                      )}
-                    </button>
+                    />
                   </div>
+                  <p className="mt-auto pt-4 text-xs text-muted-foreground">
+                    {t("settings.autoBackupsTimeHelp")}
+                  </p>
                 </div>
 
-                <div className="flex shrink-0 flex-wrap items-center gap-3 sm:min-w-64">
-                  <Button
-                    type="button"
-                    onClick={() => void handleSaveAutoBackupSettings()}
-                    disabled={autoBackupSaving}
-                  >
-                    {autoBackupSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    {t("label.save")}
-                  </Button>
+                <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
+                  <p className="text-sm font-medium">{t("settings.autoBackupsNextRun")}</p>
+                  <p className="mt-3 text-base font-medium text-foreground">{autoBackupNextRunLabel}</p>
+                  <p className="mt-auto pt-4 text-xs text-muted-foreground">
+                    {t("settings.autoBackupsNextRunHelp")}
+                  </p>
+                </div>
+              </div>
 
-                  {autoBackupSettings.autoBackupKeyPresent ? (
-                    <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3 sm:max-w-xl">
-                      <Checkbox
-                        id="auto-backups-clear-key"
-                        className="size-5 rounded-md data-[state=checked]:border-rose-500 data-[state=checked]:bg-rose-500 data-[state=indeterminate]:border-rose-500 data-[state=indeterminate]:bg-rose-500"
-                        checked={clearAutoBackupKey}
-                        disabled={autoBackupSaving || autoBackupKey.length > 0}
-                        onCheckedChange={(checked) => {
-                          const shouldClear = checked === true;
-                          setClearAutoBackupKey(shouldClear);
-                          if (shouldClear) {
-                            setAutoBackupKey("");
-                            setShowAutoBackupKey(false);
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{t("settings.autoBackupsKeyLabel")}</span>
+                  <InfoHelp
+                    text={t("settings.autoBackupsKeyHelp")}
+                    ariaLabel={t("settings.autoBackupsKeyHelpLabel")}
+                  />
+                </div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <div className="w-full max-w-sm space-y-2">
+                    <div className="relative">
+                      <Input
+                        type={showAutoBackupKey ? "text" : "password"}
+                        value={autoBackupKey}
+                        placeholder={autoBackupKeyPlaceholder}
+                        className="pr-11"
+                        disabled={autoBackupSaving || clearAutoBackupKey}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          setAutoBackupKey(nextValue);
+                          if (nextValue.length > 0) {
+                            setClearAutoBackupKey(false);
                           }
                         }}
                       />
-                      <div className="flex min-w-0 items-center gap-2">
-                        <Label htmlFor="auto-backups-clear-key" className="truncate">
-                          {t("settings.autoBackupsClearKey")}
-                        </Label>
-                        <InfoHelp
-                          text={t("settings.autoBackupsClearKeyHelp")}
-                          ariaLabel={t("settings.autoBackupsClearKey")}
-                        />
-                      </div>
+                      <button
+                        type="button"
+                        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-label={
+                          showAutoBackupKey
+                            ? t("settings.autoBackupsHideKey")
+                            : t("settings.autoBackupsShowKey")
+                        }
+                        disabled={autoBackupSaving || clearAutoBackupKey}
+                        onClick={() => setShowAutoBackupKey((current) => !current)}
+                      >
+                        {showAutoBackupKey ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
                     </div>
-                  ) : null}
+                  </div>
+
+                  <div className="flex shrink-0 flex-wrap items-center gap-3 sm:min-w-64">
+                    <Button
+                      type="button"
+                      onClick={() => void handleSaveAutoBackupSettings()}
+                      disabled={autoBackupSaving}
+                    >
+                      {autoBackupSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      {t("label.save")}
+                    </Button>
+
+                    {autoBackupSettings.autoBackupKeyPresent ? (
+                      <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3 sm:max-w-xl">
+                        <Checkbox
+                          id="auto-backups-clear-key"
+                          className="size-5 rounded-md data-[state=checked]:border-rose-500 data-[state=checked]:bg-rose-500 data-[state=indeterminate]:border-rose-500 data-[state=indeterminate]:bg-rose-500"
+                          checked={clearAutoBackupKey}
+                          disabled={autoBackupSaving || autoBackupKey.length > 0}
+                          onCheckedChange={(checked) => {
+                            const shouldClear = checked === true;
+                            setClearAutoBackupKey(shouldClear);
+                            if (shouldClear) {
+                              setAutoBackupKey("");
+                              setShowAutoBackupKey(false);
+                            }
+                          }}
+                        />
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Label htmlFor="auto-backups-clear-key" className="truncate">
+                            {t("settings.autoBackupsClearKey")}
+                          </Label>
+                          <InfoHelp
+                            text={t("settings.autoBackupsClearKeyHelp")}
+                            ariaLabel={t("settings.autoBackupsClearKey")}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
-            </div>
-          </CardContent>
+            </CardContent>
+          ) : null}
         </Card>
 
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">

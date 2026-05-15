@@ -486,10 +486,7 @@ function RootSidebarContent({
                               event,
                               item.id,
                               undefined,
-                              (canAccessFacetImport || contentSettingsSection !== "import") &&
-                                (canAccessMediaSettings || !isSettingsSubPage(contentSettingsSection))
-                                ? contentSettingsSection
-                                : "overview",
+                              "overview",
                             );
                           }}
                         >

@@ -5,9 +5,14 @@ use aws_lc_rs::hmac;
 
 use super::*;
 use crate::services::AppAssembly;
-use crate::types::{JwtLibraryPermissionClaim, ReleaseCandidateTokenClaims};
+use crate::types::{
+    BackupDownloadTicket, BackupDownloadTokenClaims, JwtLibraryPermissionClaim,
+    ReleaseCandidateTokenClaims,
+};
 
 impl AppUseCase {
+    const BACKUP_DOWNLOAD_TOKEN_KIND: &'static str = "backup_download_v1";
+    const BACKUP_DOWNLOAD_TOKEN_TTL_SECONDS: i64 = 5 * 60;
     const RELEASE_CANDIDATE_TOKEN_KIND: &'static str = "release_candidate_v1";
     const RELEASE_CANDIDATE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
@@ -299,11 +304,35 @@ impl AppUseCase {
         Ok(token)
     }
 
-    fn derive_release_candidate_signing_key(&self, jwt_signing_key: &[u8]) -> Vec<u8> {
+    fn derive_scoped_signing_key(&self, jwt_signing_key: &[u8], token_kind: &str) -> Vec<u8> {
         let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, jwt_signing_key);
-        hmac::sign(&hmac_key, Self::RELEASE_CANDIDATE_TOKEN_KIND.as_bytes())
+        hmac::sign(&hmac_key, token_kind.as_bytes())
             .as_ref()
             .to_vec()
+    }
+
+    fn derive_backup_download_signing_key(&self, jwt_signing_key: &[u8]) -> Vec<u8> {
+        self.derive_scoped_signing_key(jwt_signing_key, Self::BACKUP_DOWNLOAD_TOKEN_KIND)
+    }
+
+    fn derive_release_candidate_signing_key(&self, jwt_signing_key: &[u8]) -> Vec<u8> {
+        self.derive_scoped_signing_key(jwt_signing_key, Self::RELEASE_CANDIDATE_TOKEN_KIND)
+    }
+
+    pub(crate) async fn backup_download_signing_key_for_actor(
+        &self,
+        actor: &User,
+    ) -> AppResult<Vec<u8>> {
+        self.ensure_jwt_signing_keys_loaded().await?;
+        let cache = self.jwt_signing_keys.read().await;
+        let jwt_signing_key = cache.get(&actor.id).cloned().ok_or_else(|| {
+            AppError::Unauthorized(format!(
+                "cannot resolve backup download signing key for actor {}",
+                actor.id
+            ))
+        })?;
+
+        Ok(self.derive_backup_download_signing_key(&jwt_signing_key))
     }
 
     pub(crate) async fn release_candidate_signing_key_for_actor(
@@ -436,6 +465,44 @@ impl AppUseCase {
         })
     }
 
+    pub(crate) fn issue_backup_download_token_with_signing_key(
+        &self,
+        actor: &User,
+        filename: &str,
+        signing_key: &[u8],
+    ) -> AppResult<BackupDownloadTicket> {
+        let now = Utc::now();
+        let iat = now.timestamp();
+        let expires_at = now + Duration::seconds(Self::BACKUP_DOWNLOAD_TOKEN_TTL_SECONDS);
+        let claims = BackupDownloadTokenClaims {
+            sub: actor.id.clone(),
+            exp: expires_at.timestamp(),
+            iat,
+            iss: self.auth.issuer.clone(),
+            kind: Self::BACKUP_DOWNLOAD_TOKEN_KIND.to_string(),
+            filename: filename.to_string(),
+        };
+        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+        let key = jsonwebtoken::EncodingKey::from_secret(signing_key);
+        let token = jsonwebtoken::encode(&header, &claims, &key).map_err(|err| {
+            AppError::Repository(format!("failed to issue backup download token: {err}"))
+        })?;
+
+        Ok(BackupDownloadTicket {
+            token,
+            expires_at: expires_at.to_rfc3339(),
+        })
+    }
+
+    pub async fn issue_backup_download_token(
+        &self,
+        actor: &User,
+        filename: &str,
+    ) -> AppResult<BackupDownloadTicket> {
+        let signing_key = self.backup_download_signing_key_for_actor(actor).await?;
+        self.issue_backup_download_token_with_signing_key(actor, filename, &signing_key)
+    }
+
     pub async fn issue_release_candidate_token(
         &self,
         actor: &User,
@@ -469,6 +536,75 @@ impl AppUseCase {
             ));
         }
         Ok(selection)
+    }
+
+    fn backup_download_token_subject(&self, token: &str) -> AppResult<String> {
+        let unverified = jsonwebtoken::dangerous::insecure_decode::<BackupDownloadTokenClaims>(
+            token,
+        )
+        .map_err(|err| AppError::Unauthorized(format!("malformed backup download token: {err}")))?;
+        let subject = unverified.claims.sub.trim();
+        if subject.is_empty() {
+            return Err(AppError::Unauthorized(
+                "backup download token subject is empty".into(),
+            ));
+        }
+        Ok(subject.to_string())
+    }
+
+    pub async fn verify_backup_download_token(
+        &self,
+        actor: &User,
+        filename: &str,
+        token: &str,
+    ) -> AppResult<()> {
+        let signing_key = self.backup_download_signing_key_for_actor(actor).await?;
+        let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+        validation.validate_exp = true;
+        validation.set_issuer(&[self.auth.issuer.as_str()]);
+        let key = jsonwebtoken::DecodingKey::from_secret(&signing_key);
+        let claims = jsonwebtoken::decode::<BackupDownloadTokenClaims>(token, &key, &validation)
+            .map_err(|err| AppError::Unauthorized(format!("invalid backup download token: {err}")))?
+            .claims;
+
+        if claims.kind != Self::BACKUP_DOWNLOAD_TOKEN_KIND {
+            return Err(AppError::Unauthorized(
+                "invalid backup download token kind".into(),
+            ));
+        }
+        if claims.sub != actor.id {
+            return Err(AppError::Unauthorized(
+                "backup download token subject does not match actor".into(),
+            ));
+        }
+        if claims.filename != filename {
+            return Err(AppError::Unauthorized(
+                "backup download token filename does not match request".into(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn authorize_backup_download_ticket(
+        &self,
+        filename: &str,
+        token: &str,
+    ) -> AppResult<User> {
+        let subject = self.backup_download_token_subject(token)?;
+        let actor = self
+            .services
+            .identity
+            .users
+            .get_by_id(&subject)
+            .await?
+            .ok_or_else(|| AppError::Unauthorized("unknown backup download subject".into()))?;
+        let actor = self.attach_user_authorization(actor).await?;
+        self.require_app_permission(&actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        self.verify_backup_download_token(&actor, filename, token)
+            .await?;
+        Ok(actor)
     }
 
     pub async fn verify_release_candidate_token_for_signed_scope(

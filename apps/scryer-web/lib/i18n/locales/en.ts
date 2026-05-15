@@ -324,6 +324,7 @@ const en: LocaleDictionary = {
     "Define profile behavior as JSON. Save with valid JSON and a list of profiles with unique `id` values.",
   "settings.qualityProfileGlobalLabel": "Default quality profile (global)",
   "settings.qualityProfileNameRequired": "Quality profile name is required.",
+  "settings.qualityProfileNameDuplicate": "Quality profile names must be unique.",
   "settings.qualityProfileGlobalHelp":
     "Used when a category does not override it.",
   "settings.qualityProfileOverrideLabel": "{{category}} quality override",
@@ -647,6 +648,9 @@ const en: LocaleDictionary = {
     "Run a library scan to detect files on disk.",
   "title.configureRootFoldersHint":
     "Configure your root data folders in facet settings before scanning this library.",
+  "title.invalidRootFoldersTitle": "One or more root folders are invalid.",
+  "title.invalidRootFoldersHint":
+    "Fix your configured root data folders in facet settings before running a library scan.",
   "title.configureRootFoldersButton": "Configure root data folders",
   "title.descriptionUnavailable": "No description available.",
   "title.canon": "Canon",
@@ -1430,12 +1434,16 @@ const en: LocaleDictionary = {
   "qualityProfile.existingProfiles": "Existing quality profiles",
   "qualityProfile.noProfilesFound": "No profiles found.",
   "qualityProfile.createProfile": "Create quality profile",
+  "qualityProfile.createNewProfile": "Create new quality profile",
   "qualityProfile.defaultProfileName": "Default",
   "qualityProfile.idGeneratedDescription":
     "Profile ID will be generated from the name.",
   "qualityProfile.createProfileDescription":
     "Profile names can be edited after creation; IDs are auto-generated and must stay unique.",
   "qualityProfile.editProfile": "Edit quality profile",
+  "qualityProfile.confirmCreateFromEditTitle": "Discard current quality profile edits?",
+  "qualityProfile.confirmCreateFromEditDescription":
+    "Your current quality profile edits will be lost and replaced with a new blank profile form.",
   "qualityProfile.profileNameLabel": "Profile name",
   "qualityProfile.qualityTiersAndArchival":
     "Quality tiers and archival quality",

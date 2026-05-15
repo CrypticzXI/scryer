@@ -17,6 +17,7 @@ import {
 } from "@/lib/graphql/mutations";
 import {
   buildDeleteTitlePreviewBatchQuery,
+  browsePathQuery,
   deleteTitlePreviewQuery,
   librariesQuery,
   librarySettingsQuery,
@@ -465,6 +466,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   });
   const [rootValidationLibraries, setRootValidationLibraries] = React.useState<LibraryRecord[]>([]);
   const [rootValidationLibrariesLoading, setRootValidationLibrariesLoading] = React.useState(false);
+  const [invalidRootLibraryIds, setInvalidRootLibraryIds] = React.useState<string[]>([]);
   const [librarySettingsSaving, setLibrarySettingsSaving] = React.useState(false);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const activeCatalogQueryRef = React.useRef("");
@@ -1536,6 +1538,77 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, []);
 
   React.useEffect(() => {
+    if (!isMediaView || librariesLoading) {
+      setInvalidRootLibraryIds([]);
+      return;
+    }
+
+    const explicitSelectedLibraryIds = selectedLibraryIds.filter(
+      (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
+    );
+    const selectedLibraryIdSet =
+      explicitSelectedLibraryIds.length > 0
+        ? new Set(explicitSelectedLibraryIds)
+        : null;
+    const relevantLibraries = libraries.filter((library) =>
+      selectedLibraryIdSet ? selectedLibraryIdSet.has(library.id) : true,
+    );
+    const librariesWithConfiguredRoots = relevantLibraries.filter((library) =>
+      library.roots.some((root) => root.path.trim().length > 0),
+    );
+
+    if (librariesWithConfiguredRoots.length === 0) {
+      setInvalidRootLibraryIds([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const validateRoots = async () => {
+      const invalidIds = new Set<string>();
+
+      await Promise.all(
+        librariesWithConfiguredRoots.map(async (library) => {
+          const configuredPaths = library.roots
+            .map((root) => root.path.trim())
+            .filter((path) => path.length > 0);
+          if (configuredPaths.length === 0) {
+            return;
+          }
+
+          const validationResults = await Promise.all(
+            configuredPaths.map(async (path) => {
+              const { error } = await client
+                .query(browsePathQuery, { path }, { requestPolicy: "network-only" })
+                .toPromise();
+              return error != null;
+            }),
+          );
+
+          if (validationResults.some(Boolean)) {
+            invalidIds.add(library.id);
+          }
+        }),
+      );
+
+      if (!cancelled) {
+        setInvalidRootLibraryIds([...invalidIds]);
+      }
+    };
+
+    void validateRoots().catch((error) => {
+      console.error("[library-root-validation] failed to validate root folders:", error);
+      if (!cancelled) {
+        setInvalidRootLibraryIds([]);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, isMediaView, libraries, librariesLoading, selectedLibraryIds]);
+
+  React.useEffect(() => {
     if (!bulkDeleteFilesOnDisk) {
       setBulkDeleteTypedConfirmation("");
       setBulkDeletePreviewLoading(false);
@@ -2463,6 +2536,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           librariesLoading,
           rootValidationLibraries,
           rootValidationLibrariesLoading,
+          invalidRootLibraryIds,
           selectedLibraryIds,
           allLibrariesValue: ALL_LIBRARIES_VALUE,
           setSelectedLibraryIds,

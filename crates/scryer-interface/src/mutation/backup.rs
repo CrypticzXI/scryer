@@ -47,6 +47,12 @@ struct RestoreApplyPayload {
     summary: RestoreSummaryPayload,
 }
 
+#[derive(Clone, SimpleObject)]
+struct BackupDownloadUrlPayload {
+    download_url: String,
+    expires_at: String,
+}
+
 #[derive(Default)]
 pub struct BackupMutations;
 
@@ -65,6 +71,28 @@ impl BackupMutations {
             .await
             .map_err(to_gql_error)?;
         Ok(from_backup_info(info))
+    }
+
+    async fn prepare_backup_download(
+        &self,
+        ctx: &Context<'_>,
+        filename: String,
+    ) -> GqlResult<BackupDownloadUrlPayload> {
+        let actor = require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        let ticket = app
+            .prepare_backup_download(&actor, &filename)
+            .await
+            .map_err(to_gql_error)?;
+        let encoded_filename = encode_path_segment(&filename);
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("ticket", &ticket.token)
+            .finish();
+
+        Ok(BackupDownloadUrlPayload {
+            download_url: format!("/admin/backups/{encoded_filename}/download?{query}"),
+            expires_at: ticket.expires_at,
+        })
     }
 
     async fn delete_backup(&self, ctx: &Context<'_>, filename: String) -> GqlResult<bool> {
@@ -193,6 +221,19 @@ impl BackupMutations {
 
 fn normalize_password(password: Option<String>) -> Option<String> {
     password
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 fn finish_restore_apply(

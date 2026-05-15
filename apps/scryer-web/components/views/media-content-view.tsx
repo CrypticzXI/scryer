@@ -242,6 +242,7 @@ export function MediaContentView({
     librariesLoading: boolean;
     rootValidationLibraries: LibraryRecord[];
     rootValidationLibrariesLoading: boolean;
+    invalidRootLibraryIds: string[];
     selectedLibraryIds: string[];
     allLibrariesValue: string;
     setSelectedLibraryIds: (value: string[]) => void;
@@ -362,6 +363,7 @@ export function MediaContentView({
     librariesLoading,
     rootValidationLibraries,
     rootValidationLibrariesLoading,
+    invalidRootLibraryIds,
     selectedLibraryIds,
     allLibrariesValue,
     setSelectedLibraryIds,
@@ -405,22 +407,39 @@ export function MediaContentView({
         ? t("search.facetSeries")
         : t("search.facetAnime");
   const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
+  const explicitlySelectedLibraryIds = selectedLibraryIds.filter(
+    (libraryId) => libraryId !== allLibrariesValue,
+  );
+  const selectedLibraryIdSet =
+    explicitlySelectedLibraryIds.length > 0
+      ? new Set(explicitlySelectedLibraryIds)
+      : null;
+  const relevantLibraries = selectedLibraryIdSet
+    ? libraries.filter((library) => selectedLibraryIdSet.has(library.id))
+    : libraries;
   const hasConfiguredRootFolders =
     !catalogInitialLoadComplete || librariesLoading
     ? null
-    : libraries.some((library) =>
+    : relevantLibraries.some((library) =>
         library.roots.some((folder) => folder.path.trim().length > 0),
       );
+  const hasInvalidConfiguredRootFolders =
+    catalogInitialLoadComplete &&
+    !librariesLoading &&
+    relevantLibraries.some((library) => invalidRootLibraryIds.includes(library.id));
   const showInitialScanAction =
     canManageConfig &&
     catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
-    hasConfiguredRootFolders === true;
+    hasConfiguredRootFolders === true &&
+    !hasInvalidConfiguredRootFolders;
   const showConfigureRootFoldersAction =
     canManageConfig &&
     catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
-    hasConfiguredRootFolders === false;
+    (hasConfiguredRootFolders === false || hasInvalidConfiguredRootFolders);
+  const configureRootFoldersReason =
+    hasInvalidConfiguredRootFolders ? "invalid" : "missing";
   const configureRootFoldersHref =
     view === "movies" || view === "series" || view === "anime"
       ? buildViewPath(view, undefined, "library")
@@ -871,6 +890,7 @@ export function MediaContentView({
                       showConfigureRootsAction={
                         showEmptyStateActions && showConfigureRootFoldersAction
                       }
+                      configureRootsReason={configureRootFoldersReason}
                       configureRootsHref={configureRootFoldersHref}
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
@@ -905,6 +925,7 @@ export function MediaContentView({
                       showConfigureRootsAction={
                         showEmptyStateActions && showConfigureRootFoldersAction
                       }
+                      configureRootsReason={configureRootFoldersReason}
                       configureRootsHref={configureRootFoldersHref}
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
@@ -934,6 +955,7 @@ export function MediaContentView({
                     showConfigureRootsAction={
                       showEmptyStateActions && showConfigureRootFoldersAction
                     }
+                    configureRootsReason={configureRootFoldersReason}
                     configureRootsHref={configureRootFoldersHref}
                     onScanLibrary={scanLibrary}
                     scanLibraryLoading={libraryScanLoading}

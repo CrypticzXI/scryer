@@ -1017,6 +1017,39 @@ impl AppUseCase {
         }
     }
 
+    fn builtin_description_for_plugin(
+        &self,
+        plugin_type: &str,
+        provider_type: &str,
+    ) -> Option<String> {
+        match plugin_type {
+            "download_client" => self
+                .services
+                .integrations
+                .download_client_plugin_provider
+                .available()
+                .and_then(|provider| provider.plugin_description_for_provider(provider_type)),
+            "subtitle_provider" => self
+                .services
+                .integrations
+                .subtitle_plugin_provider
+                .available()
+                .and_then(|provider| provider.plugin_description_for_provider(provider_type)),
+            "notification" => self
+                .services
+                .notifications
+                .notification_provider()
+                .and_then(|provider| provider.plugin_description_for_provider(provider_type)),
+            _ if is_indexer_plugin_type(plugin_type) => self
+                .services
+                .integrations
+                .plugin_provider
+                .available()
+                .and_then(|provider| provider.plugin_description_for_provider(provider_type)),
+            _ => None,
+        }
+    }
+
     async fn load_runtime_plugin_for_installation(
         &self,
         installation: &PluginInstallation,
@@ -1953,10 +1986,16 @@ impl AppUseCase {
                 let builtin = builtin_by_key
                     .contains_key(&builtin_lookup_key(&inst.plugin_type, &inst.provider_type))
                     || inst.is_builtin;
+                let description = if inst.description.trim().is_empty() && builtin {
+                    self.builtin_description_for_plugin(&inst.plugin_type, &inst.provider_type)
+                        .unwrap_or_default()
+                } else {
+                    inst.description.clone()
+                };
                 result.push(RegistryPlugin {
                     id: inst.plugin_id.clone(),
                     name: inst.name.clone(),
-                    description: inst.description.clone(),
+                    description,
                     version: inst.version.clone(),
                     latest_version: None,
                     plugin_type: inst.plugin_type.clone(),
@@ -1986,6 +2025,58 @@ impl AppUseCase {
         }
 
         Ok(result)
+    }
+
+    async fn backfill_catalog_plugin_installation_descriptions(&self) -> AppResult<()> {
+        let sources = self
+            .services
+            .customization
+            .plugin_installations
+            .list_plugin_catalog_sources()
+            .await?;
+        let Some(central) = sources
+            .iter()
+            .find(|source| source.source_key == CENTRAL_CATALOG_SOURCE_KEY)
+            .and_then(|source| source.catalog_json.as_deref())
+            .and_then(|json| parse_and_validate_central_catalog(json.as_bytes()).ok())
+        else {
+            return Ok(());
+        };
+        let resolved_descriptions = central
+            .plugins
+            .into_iter()
+            .filter(|entry| entry.support_tier == PluginSupportTier::Official)
+            .filter_map(|entry| {
+                let description = entry.description.trim();
+                if description.is_empty() {
+                    None
+                } else {
+                    Some((entry.id, description.to_string()))
+                }
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if resolved_descriptions.is_empty() {
+            return Ok(());
+        }
+
+        let repo = &self.services.customization.plugin_installations;
+        for installation in repo.list_plugin_installations().await? {
+            if !installation_is_catalog_official(&installation)
+                || !installation.description.trim().is_empty()
+            {
+                continue;
+            }
+
+            let Some(description) = resolved_descriptions.get(&installation.plugin_id) else {
+                continue;
+            };
+
+            let mut updated = installation.clone();
+            updated.description = description.clone();
+            repo.update_plugin_installation(&updated, None).await?;
+        }
+
+        Ok(())
     }
 
     /// List available plugins by merging cached registry with local installations.
@@ -2252,6 +2343,8 @@ impl AppUseCase {
             }
         }
 
+        self.backfill_catalog_plugin_installation_descriptions()
+            .await?;
         self.publish_provider_catalog_changed(ProviderCatalogFamily::all().into_iter().collect());
         Ok(())
     }

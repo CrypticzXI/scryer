@@ -19532,6 +19532,177 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
 }
 
 #[tokio::test]
+async fn backup_download_token_round_trips() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "backup_download_user",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+
+    let ticket = app
+        .issue_backup_download_token(&authenticated_user, "backup_20260515_abcd1234.tar.zst")
+        .await
+        .expect("backup download token should issue");
+
+    app.verify_backup_download_token(
+        &authenticated_user,
+        "backup_20260515_abcd1234.tar.zst",
+        &ticket.token,
+    )
+    .await
+    .expect("backup download token should verify");
+}
+
+#[tokio::test]
+async fn backup_download_token_rejects_tampering_and_filename_mismatch() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "backup_download_user_2",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+
+    let ticket = app
+        .issue_backup_download_token(&authenticated_user, "backup_20260515_abcd1234.tar.zst")
+        .await
+        .expect("backup download token should issue");
+
+    assert!(
+        app.verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_different.tar.zst",
+            &ticket.token,
+        )
+        .await
+        .is_err(),
+        "filename mismatch should be rejected"
+    );
+
+    let tampered = format!("{}x", ticket.token);
+    assert!(
+        app.verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_abcd1234.tar.zst",
+            &tampered,
+        )
+        .await
+        .is_err(),
+        "tampered token should be rejected"
+    );
+}
+
+#[tokio::test]
+async fn backup_download_token_rejects_wrong_kind_and_expired_claims() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "backup_download_user_3",
+        "password123",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+
+    let signing_key = app
+        .backup_download_signing_key_for_actor(&authenticated_user)
+        .await
+        .expect("signing key should resolve");
+    let now = Utc::now();
+    let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
+    let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+
+    let wrong_kind = crate::types::BackupDownloadTokenClaims {
+        sub: authenticated_user.id.clone(),
+        exp: (now + chrono::Duration::minutes(5)).timestamp(),
+        iat: now.timestamp(),
+        iss: app.auth.issuer.clone(),
+        kind: "wrong_backup_kind".to_string(),
+        filename: "backup_20260515_abcd1234.tar.zst".to_string(),
+    };
+    let wrong_kind_token =
+        jsonwebtoken::encode(&header, &wrong_kind, &key).expect("wrong kind token should encode");
+    assert!(
+        app.verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_abcd1234.tar.zst",
+            &wrong_kind_token,
+        )
+        .await
+        .is_err(),
+        "wrong kind token should be rejected"
+    );
+
+    let expired = crate::types::BackupDownloadTokenClaims {
+        sub: authenticated_user.id.clone(),
+        exp: (now - chrono::Duration::minutes(5)).timestamp(),
+        iat: (now - chrono::Duration::minutes(10)).timestamp(),
+        iss: app.auth.issuer.clone(),
+        kind: "backup_download_v1".to_string(),
+        filename: "backup_20260515_abcd1234.tar.zst".to_string(),
+    };
+    let expired_token =
+        jsonwebtoken::encode(&header, &expired, &key).expect("expired token should encode");
+    assert!(
+        app.verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_abcd1234.tar.zst",
+            &expired_token,
+        )
+        .await
+        .is_err(),
+        "expired token should be rejected"
+    );
+}
+
+#[tokio::test]
+async fn backup_download_token_is_invalidated_by_permission_change() {
+    let (app, admin) = bootstrap();
+    let (created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "backup_download_permission_rotate",
+        "same-pass",
+        vec![Entitlement::ViewCatalog],
+    )
+    .await;
+
+    let ticket = app
+        .issue_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_permission_rotate.tar.zst",
+        )
+        .await
+        .expect("backup download token should issue");
+
+    let grants = test_library_grants_from_entitlements(&[
+        Entitlement::ViewCatalog,
+        Entitlement::ManageTitle,
+    ]);
+    app.set_user_library_permissions(&admin, &created.id, grants)
+        .await
+        .expect("update permissions");
+
+    let result = app
+        .verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_permission_rotate.tar.zst",
+            &ticket.token,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "backup download token should be rejected after permission change"
+    );
+}
+
+#[tokio::test]
 async fn expired_token_returns_unauthorized() {
     let (app, _) = bootstrap();
     let user = User {

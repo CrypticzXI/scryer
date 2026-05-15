@@ -584,6 +584,7 @@ type TitleCollectionEmptyStateProps = {
   t: Translate;
   showScanAction?: boolean;
   showConfigureRootsAction?: boolean;
+  configureRootsReason?: "missing" | "invalid";
   configureRootsHref?: string;
   scanLoading?: boolean;
   scanDisabled?: boolean;
@@ -613,6 +614,7 @@ export function TitleCollectionEmptyState({
   t,
   showScanAction = false,
   showConfigureRootsAction = false,
+  configureRootsReason = "missing",
   configureRootsHref,
   scanLoading = false,
   scanDisabled = false,
@@ -624,10 +626,14 @@ export function TitleCollectionEmptyState({
       {showConfigureRootsAction && configureRootsHref ? (
         <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
           <p className="text-sm font-medium text-foreground">
-            {t("settings.rootFoldersEmpty")}
+            {configureRootsReason === "invalid"
+              ? t("title.invalidRootFoldersTitle")
+              : t("settings.rootFoldersEmpty")}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            {t("title.configureRootFoldersHint")}
+            {configureRootsReason === "invalid"
+              ? t("title.invalidRootFoldersHint")
+              : t("title.configureRootFoldersHint")}
           </p>
           <Button asChild type="button" variant="primary" className="mt-4">
             <Link to={configureRootsHref}>

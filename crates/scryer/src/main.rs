@@ -1112,7 +1112,6 @@ async fn bootstrap_application(
     let admin_settings_auth_runtime = auth_runtime.clone();
     let backup_route_state = BackupRouteState {
         app: app_use_case.clone(),
-        auth_runtime: auth_runtime.clone(),
     };
     let ws_auth_state = auth_state.clone();
 

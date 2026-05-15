@@ -48,6 +48,7 @@ fn normalize_import_object(
     now: DateTime<Utc>,
 ) -> AppResult<()> {
     match table {
+        "settings_definitions" => normalize_settings_definition_import_object(object, now),
         "settings_values" => normalize_settings_value_import_object(object, now),
         "titles" => normalize_title_import_object(object),
         _ => {}
@@ -117,6 +118,35 @@ fn normalize_settings_value_import_object(
             "source".to_string(),
             JsonValue::String("system".to_string()),
         );
+    }
+
+    let now_rfc3339 = now.to_rfc3339();
+    for field in ["created_at", "updated_at"] {
+        if missing_or_blank(object.get(field)) {
+            object.insert(field.to_string(), JsonValue::String(now_rfc3339.clone()));
+        }
+    }
+}
+
+fn normalize_settings_definition_import_object(
+    object: &mut JsonMap<String, JsonValue>,
+    now: DateTime<Utc>,
+) {
+    if object
+        .get("default_value_json")
+        .is_none_or(|value| missing_or_blank(Some(value)))
+    {
+        object.insert(
+            "default_value_json".to_string(),
+            JsonValue::String("null".to_string()),
+        );
+    }
+
+    if object
+        .get("validation_json")
+        .is_some_and(|value| missing_or_blank(Some(value)))
+    {
+        object.insert("validation_json".to_string(), JsonValue::Null);
     }
 
     let now_rfc3339 = now.to_rfc3339();
@@ -293,6 +323,87 @@ mod tests {
             object.get("source"),
             Some(&JsonValue::String("system".to_string()))
         );
+        assert_eq!(
+            object.get("created_at"),
+            Some(&JsonValue::String(now.to_rfc3339()))
+        );
+        assert_eq!(
+            object.get("updated_at"),
+            Some(&JsonValue::String(now.to_rfc3339()))
+        );
+    }
+
+    #[test]
+    fn settings_definitions_normalization_fills_default_and_timestamps() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 5, 15, 9, 30, 0)
+            .single()
+            .expect("fixed timestamp");
+        let mut object = JsonMap::from_iter([
+            (
+                "id".to_string(),
+                JsonValue::String("backup_matrix:backup_matrix:json_payload".to_string()),
+            ),
+            (
+                "category".to_string(),
+                JsonValue::String("backup_matrix".to_string()),
+            ),
+            (
+                "scope".to_string(),
+                JsonValue::String("backup_matrix".to_string()),
+            ),
+            (
+                "key_name".to_string(),
+                JsonValue::String("json_payload".to_string()),
+            ),
+            (
+                "data_type".to_string(),
+                JsonValue::String("json".to_string()),
+            ),
+            ("default_value_json".to_string(), JsonValue::Null),
+            (
+                "validation_json".to_string(),
+                JsonValue::String("   ".to_string()),
+            ),
+            ("is_sensitive".to_string(), JsonValue::Bool(false)),
+        ]);
+
+        normalize_import_object_for_target(
+            "settings_definitions",
+            &mut object,
+            now,
+            &[
+                ImportColumnRule {
+                    name: "default_value_json".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::Generic,
+                },
+                ImportColumnRule {
+                    name: "created_at".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::TimestampLike,
+                },
+                ImportColumnRule {
+                    name: "updated_at".to_string(),
+                    nullable: false,
+                    has_default: false,
+                    nullable_foreign_key: false,
+                    kind: ImportColumnKind::TimestampLike,
+                },
+            ],
+            11,
+        )
+        .expect("settings definitions row should normalize");
+
+        assert_eq!(
+            object.get("default_value_json"),
+            Some(&JsonValue::String("null".to_string()))
+        );
+        assert_eq!(object.get("validation_json"), Some(&JsonValue::Null));
         assert_eq!(
             object.get("created_at"),
             Some(&JsonValue::String(now.to_rfc3339()))

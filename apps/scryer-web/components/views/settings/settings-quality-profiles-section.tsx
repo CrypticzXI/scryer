@@ -115,6 +115,7 @@ type SettingsQualityProfilesSectionProps = {
     fallback: boolean,
   ) => boolean;
   loadQualityProfileById: (profileId: string) => void;
+  startNewQualityProfileDraft: () => void;
   activeQualityProfileTierOptions: string[];
   availableQualityTiers: Array<{ value: string; label: string }>;
   updateQualityProfileDraft: (
@@ -164,7 +165,7 @@ type SettingsQualityProfilesSectionProps = {
   mediaSettingsLoading: boolean;
   initialLoadComplete: boolean;
   qualityProfilesSaving: boolean;
-  updateQualityProfilesGlobal: (event?: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
+  updateQualityProfilesGlobal: (event?: React.FormEvent<HTMLFormElement>) => Promise<boolean> | boolean;
   categoryQualityProfileSaving: Record<ViewCategoryId, boolean>;
   saveCategoryQualityProfile: (scopeId: ViewCategoryId, value: string) => Promise<void> | void;
   saveGlobalQualityProfile: (value: string) => Promise<void> | void;
@@ -415,6 +416,7 @@ export function SettingsQualityProfilesSection({
   getQualityProfileCriteria,
   getQualityProfileBoolean,
   loadQualityProfileById,
+  startNewQualityProfileDraft,
   activeQualityProfileTierOptions,
   availableQualityTiers,
   updateQualityProfileDraft,
@@ -470,6 +472,9 @@ export function SettingsQualityProfilesSection({
     anime: categoryPersonaSelections.anime.overridePersona ?? "__default__",
   });
   const [pendingDeleteProfile, setPendingDeleteProfile] = React.useState<{ id: string; name: string } | null>(null);
+  const [pendingCreateFromEdit, setPendingCreateFromEdit] = React.useState(false);
+  const [isEditorOpen, setIsEditorOpen] = React.useState(false);
+  const [editorMode, setEditorMode] = React.useState<"create" | "edit">("create");
 
   React.useEffect(() => {
     setGlobalQualityProfileDraft(globalQualityProfileId);
@@ -563,6 +568,34 @@ export function SettingsQualityProfilesSection({
     (_scopeId: ViewCategoryId) => {},
     [],
   );
+
+  const handleStartCreateProfile = React.useCallback(() => {
+    startNewQualityProfileDraft();
+    setEditorMode("create");
+    setIsEditorOpen(true);
+  }, [startNewQualityProfileDraft]);
+
+  const handleEditProfile = React.useCallback(
+    (profileId: string) => {
+      loadQualityProfileById(profileId);
+      setEditorMode("edit");
+      setIsEditorOpen(true);
+    },
+    [loadQualityProfileById],
+  );
+
+  const handleSaveQualityProfile = React.useCallback(async () => {
+    const saved = await updateQualityProfilesGlobal();
+    if (saved && editorMode === "create") {
+      setIsEditorOpen(false);
+      setEditorMode("create");
+    }
+  }, [editorMode, updateQualityProfilesGlobal]);
+
+  const confirmStartCreateProfileFromEdit = React.useCallback(() => {
+    setPendingCreateFromEdit(false);
+    handleStartCreateProfile();
+  }, [handleStartCreateProfile]);
 
   return (
     <>
@@ -663,7 +696,7 @@ export function SettingsQualityProfilesSection({
                       <div className="flex items-center gap-1">
                         <QualityProfileActionButton
                           tone="edit"
-                          onClick={() => loadQualityProfileById(profile.id)}
+                          onClick={() => handleEditProfile(profile.id)}
                           label={t("label.edit")}
                         >
                           <Edit className="h-4 w-4" />
@@ -710,9 +743,15 @@ export function SettingsQualityProfilesSection({
         </div>
       </div>
 
+      {isEditorOpen ? (
+        <>
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">{t("qualityProfile.editProfile")}</CardTitle>
+          <CardTitle className="text-lg">
+            {editorMode === "create"
+              ? t("qualityProfile.createNewProfile")
+              : t("qualityProfile.editProfile")}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3">
@@ -1105,7 +1144,7 @@ export function SettingsQualityProfilesSection({
           <div className="flex justify-end">
             <Button
               type="button"
-              onClick={() => void updateQualityProfilesGlobal()}
+              onClick={() => void handleSaveQualityProfile()}
               disabled={mediaSettingsLoading || qualityProfilesSaving}
             >
               {qualityProfilesSaving ? t("label.saving") : t("label.save")}
@@ -1119,6 +1158,35 @@ export function SettingsQualityProfilesSection({
           ) : null}
         </CardContent>
       </Card>
+      {editorMode === "edit" ? (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={() => setPendingCreateFromEdit(true)}
+            disabled={mediaSettingsLoading || qualityProfilesSaving}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("qualityProfile.createNewProfile")}
+          </Button>
+        </div>
+      ) : null}
+        </>
+      ) : (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={handleStartCreateProfile}
+            disabled={mediaSettingsLoading || qualityProfilesSaving}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("qualityProfile.createNewProfile")}
+          </Button>
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -1248,6 +1316,16 @@ export function SettingsQualityProfilesSection({
         </CardContent>
       </Card>
     </form>
+    <ConfirmDialog
+      open={pendingCreateFromEdit}
+      title={t("qualityProfile.confirmCreateFromEditTitle")}
+      description={t("qualityProfile.confirmCreateFromEditDescription")}
+      confirmLabel={t("qualityProfile.createNewProfile")}
+      cancelLabel={t("label.cancel")}
+      isBusy={qualityProfilesSaving}
+      onConfirm={confirmStartCreateProfileFromEdit}
+      onCancel={() => setPendingCreateFromEdit(false)}
+    />
     <ConfirmDialog
       open={pendingDeleteProfile !== null}
       title={t("qualityProfile.confirmDeleteTitle")}

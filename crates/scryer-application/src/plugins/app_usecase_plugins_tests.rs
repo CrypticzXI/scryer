@@ -713,6 +713,12 @@ impl IndexerPluginProvider for MockPluginProvider {
         self.plugin_names.get(provider_type).cloned()
     }
 
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        self.plugin_names
+            .get(provider_type)
+            .map(|name| format!("{name} description"))
+    }
+
     fn default_base_url_for_provider(&self, provider_type: &str) -> Option<String> {
         self.default_urls.get(provider_type).cloned()
     }
@@ -1310,6 +1316,10 @@ impl SubtitlePluginProvider for MockSubtitlePluginProvider {
         Some(provider_type.to_string())
     }
 
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        Some(format!("{provider_type} description"))
+    }
+
     fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
         self.upsert_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -1415,6 +1425,10 @@ impl DownloadClientPluginProvider for MockDownloadClientPluginProvider {
         Some(provider_type.to_string())
     }
 
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        Some(format!("{provider_type} description"))
+    }
+
     fn default_base_url_for_provider(&self, _provider_type: &str) -> Option<String> {
         None
     }
@@ -1506,6 +1520,10 @@ impl NotificationPluginProvider for MockNotificationPluginProvider {
 
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String> {
         Some(provider_type.to_string())
+    }
+
+    fn plugin_description_for_provider(&self, provider_type: &str) -> Option<String> {
+        Some(format!("{provider_type} description"))
     }
 
     fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
@@ -2135,6 +2153,30 @@ async fn list_installed_and_in_catalog() {
 }
 
 #[tokio::test]
+async fn list_installed_and_in_catalog_uses_catalog_description_when_persisted_description_is_blank()
+ {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let json = make_catalog_fixture_json(&[catalog_entry(
+        "alpha",
+        "0.2.0",
+        false,
+        Some("https://example.com/a.wasm"),
+    )]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
+    let mut installation = make_installation("alpha", "0.1.0", false, true);
+    installation.description.clear();
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    let plugin = result.iter().find(|plugin| plugin.id == "alpha").unwrap();
+
+    assert_eq!(plugin.description, "Description for alpha");
+}
+
+#[tokio::test]
 async fn list_installed_at_latest() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_catalog_fixture_json(&[catalog_entry("alpha", "0.1.0", false, None)]);
@@ -2186,6 +2228,28 @@ async fn list_installed_not_in_catalog() {
     assert!(!p.official);
     assert!(p.wasm_url.is_none());
     assert!(!p.update_available);
+}
+
+#[tokio::test]
+async fn list_installed_builtin_without_catalog_uses_provider_description_when_persisted_description_is_blank()
+ {
+    let provider = MockPluginProvider::new().with_builtin_provider(
+        "animetosho",
+        "AnimeTosho",
+        Some("https://feed.animetosho.org"),
+    );
+    let h = bootstrap_plugins(Some(provider));
+    let mut installation = make_installation("animetosho", "0.1.0", true, true);
+    installation.description.clear();
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    let plugin = result
+        .iter()
+        .find(|plugin| plugin.id == "animetosho")
+        .unwrap();
+
+    assert_eq!(plugin.description, "AnimeTosho description");
 }
 
 #[tokio::test]

@@ -72,6 +72,7 @@ type CompactTitleTableProps = {
   bulkActionBusy: boolean;
   showScanLibraryAction?: boolean;
   showConfigureRootsAction?: boolean;
+  configureRootsReason?: "missing" | "invalid";
   configureRootsHref?: string;
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
@@ -100,6 +101,7 @@ export function CompactTitleTable({
   bulkActionBusy,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
+  configureRootsReason = "missing",
   configureRootsHref,
   onScanLibrary,
   scanLibraryLoading = false,
@@ -692,6 +694,7 @@ export function CompactTitleTable({
               t={t}
               showScanAction={showScanLibraryAction}
               showConfigureRootsAction={showConfigureRootsAction}
+              configureRootsReason={configureRootsReason}
               configureRootsHref={configureRootsHref}
               onScan={onScanLibrary}
               scanLoading={scanLibraryLoading}

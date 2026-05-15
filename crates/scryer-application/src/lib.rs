@@ -204,8 +204,8 @@ pub use security::backup_bundle::{
     BACKUP_TABLE_CATALOG, BLOB_MARKER_BASE64, BLOB_MARKER_TYPE, BackupBundleExportRequest,
     BackupBundleInspectSummary, BackupBundleRestorePayload, BackupBundleStaging,
     BackupExportOutcome, BackupExportSecrets, BackupInstanceSecrets, BackupRestorePreparedBundle,
-    BackupTableCatalogEntry, BackupTableClassification, EXPORT_BATCH_SIZE, inspect_backup_bundle,
-    prepare_backup_restore_payload,
+    BackupTableCatalogEntry, BackupTableClassification, EXPORT_BATCH_SIZE,
+    backup_table_part_filename, inspect_backup_bundle, prepare_backup_restore_payload,
 };
 pub use settings::settings::{
     AcquisitionSettings, AutoBackupSettings, DownloadClientRoutingSettingsEntry,
@@ -345,15 +345,15 @@ pub use settings::keys::{
 pub(crate) use types::JwtClaims;
 pub use types::SmgVersionCompatibilityNotice;
 pub use types::{
-    AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupInfo,
-    BackupStatus, BackupTrigger, CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetItem,
-    CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo, DownloadActivityFilter,
-    DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage,
-    DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage,
-    DownloadQueueCommandRecord, DownloadSourceKind, EpisodeScopedMediaFile, FixTitleMatchResult,
-    HealthCheckResult, HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult,
-    IndexerQueryStats, JwtAuthConfig, LibraryRootDraft, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedSearchAttempt, PendingImportBindingFilePreview,
+    AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupDownloadTicket,
+    BackupInfo, BackupStatus, BackupTrigger, CancelLibraryScanResult, CreateTitleOutcome,
+    CutoffUnmetItem, CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo,
+    DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter,
+    DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter,
+    DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind, EpisodeScopedMediaFile,
+    FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
+    IgnorePendingImportResult, IndexerQueryStats, JwtAuthConfig, LibraryRootDraft,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, PendingImportBindingFilePreview,
     PendingImportBindingPreview, PendingImportConnection, PendingImportCounts, PendingImportItem,
     PendingImportSearchAttempt, PendingImportStatus, PendingRelease, PendingReleaseStatus,
     PendingReleaseStatusCount, PendingTitleHydration, PrimaryCollectionSummary, ReleaseDecision,

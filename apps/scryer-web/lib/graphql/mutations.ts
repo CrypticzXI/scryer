@@ -426,6 +426,13 @@ export const createBackupMutation = `mutation CreateBackup($password: String) {
   }
 }`;
 
+export const prepareBackupDownloadMutation = `mutation PrepareBackupDownload($filename: String!) {
+  prepareBackupDownload(filename: $filename) {
+    downloadUrl
+    expiresAt
+  }
+}`;
+
 export const deleteBackupMutation = `mutation DeleteBackup($filename: String!) {
   deleteBackup(filename: $filename)
 }`;

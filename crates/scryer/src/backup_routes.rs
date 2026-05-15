@@ -1,19 +1,16 @@
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use axum::Json;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Path as AxumPath, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::extract::{Path as AxumPath, RawQuery, State};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase, BackupInfo, BackupService, BackupStatus};
-use scryer_domain::AppPermission;
 use scryer_infrastructure::datastore_file_path;
-use scryer_interface::context::AuthRuntimeStateHandle;
 use serde::Serialize;
 use tokio_util::io::ReaderStream;
 
-use crate::middleware::{map_app_error, resolve_actor_with_app_permission};
+use crate::middleware::map_app_error;
 
 const BACKUP_METADATA_EXTENSION: &str = ".metadata.json";
 const BACKUP_PLAINTEXT_EXTENSION: &str = ".tar.zst";
@@ -28,7 +25,6 @@ const PENDING_RESTORE_READY_FILENAME: &str = "restore-ready";
 #[derive(Clone)]
 pub(crate) struct BackupRouteState {
     pub(crate) app: AppUseCase,
-    pub(crate) auth_runtime: AuthRuntimeStateHandle,
 }
 
 #[derive(Serialize)]
@@ -79,6 +75,93 @@ fn conflict_response(message: impl Into<String>) -> Response {
         .into_response()
 }
 
+fn decode_query_component(component: &str) -> Result<String, AppError> {
+    fn from_hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = component.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err(AppError::Unauthorized(
+                        "backup download ticket query is invalid".into(),
+                    ));
+                }
+                let Some(high) = from_hex(bytes[index + 1]) else {
+                    return Err(AppError::Unauthorized(
+                        "backup download ticket query is invalid".into(),
+                    ));
+                };
+                let Some(low) = from_hex(bytes[index + 2]) else {
+                    return Err(AppError::Unauthorized(
+                        "backup download ticket query is invalid".into(),
+                    ));
+                };
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+
+    String::from_utf8(decoded)
+        .map_err(|_| AppError::Unauthorized("backup download ticket query is invalid".into()))
+}
+
+fn parse_backup_download_ticket(raw_query: Option<&str>) -> Result<String, AppError> {
+    let Some(raw_query) = raw_query else {
+        return Err(AppError::Unauthorized(
+            "backup download ticket is required".into(),
+        ));
+    };
+    if raw_query.trim().is_empty() {
+        return Err(AppError::Unauthorized(
+            "backup download ticket is required".into(),
+        ));
+    }
+
+    let mut ticket: Option<String> = None;
+    for pair in raw_query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (raw_key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = decode_query_component(raw_key)?;
+        if key != "ticket" {
+            continue;
+        }
+        let value = decode_query_component(raw_value)?;
+        if value.trim().is_empty() {
+            return Err(AppError::Unauthorized(
+                "backup download ticket is required".into(),
+            ));
+        }
+        if ticket.replace(value).is_some() {
+            return Err(AppError::Unauthorized(
+                "backup download ticket query is invalid".into(),
+            ));
+        }
+    }
+
+    ticket.ok_or_else(|| AppError::Unauthorized("backup download ticket is required".into()))
+}
+
 #[cfg(unix)]
 fn ensure_owner_only_permissions(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -119,18 +202,18 @@ fn load_backup_metadata(backup_dir: &Path, filename: &str) -> Result<BackupInfo,
 
 pub(crate) async fn download_backup_handler(
     State(state): State<BackupRouteState>,
-    headers: HeaderMap,
-    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     AxumPath(filename): AxumPath<String>,
+    RawQuery(raw_query): RawQuery,
 ) -> Response {
-    if let Err(error) = resolve_actor_with_app_permission(
-        &state.app,
-        &state.auth_runtime,
-        &headers,
-        Some(remote_addr),
-        AppPermission::ManageSystemSettings,
-    )
-    .await
+    let ticket = match parse_backup_download_ticket(raw_query.as_deref()) {
+        Ok(ticket) => ticket,
+        Err(error) => return map_app_error(error),
+    };
+
+    if let Err(error) = state
+        .app
+        .authorize_backup_download_ticket(&filename, &ticket)
+        .await
     {
         return map_app_error(error);
     }
@@ -242,6 +325,25 @@ pub(crate) fn finalize_pending_restore_if_present(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_backup_download_ticket_requires_valid_ticket_query() {
+        let missing = parse_backup_download_ticket(None).unwrap_err();
+        assert!(matches!(missing, AppError::Unauthorized(_)));
+
+        let blank = parse_backup_download_ticket(Some("ticket=")).unwrap_err();
+        assert!(matches!(blank, AppError::Unauthorized(_)));
+
+        let malformed = parse_backup_download_ticket(Some("ticket=%zz")).unwrap_err();
+        assert!(matches!(malformed, AppError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn parse_backup_download_ticket_accepts_ticket_and_ignores_other_params() {
+        let ticket = parse_backup_download_ticket(Some("foo=bar&ticket=abc.def&baz=qux"))
+            .expect("ticket should parse");
+        assert_eq!(ticket, "abc.def");
+    }
 
     #[test]
     fn finalize_pending_restore_ignores_incomplete_restore_without_marker() {

@@ -1059,6 +1059,16 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub source_title: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BackupDownloadTokenClaims {
+    pub sub: String,
+    pub exp: i64,
+    pub iat: i64,
+    pub iss: String,
+    pub kind: String,
+    pub filename: String,
+}
+
 /// Lightweight summary of the collection that should represent a title in list
 /// views, used to avoid N+1 queries when listing titles with their current
 /// collection label.
@@ -1208,6 +1218,12 @@ pub struct BackupInfo {
     pub trigger: BackupTrigger,
     pub status: BackupStatus,
     pub error_message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackupDownloadTicket {
+    pub token: String,
+    pub expires_at: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
