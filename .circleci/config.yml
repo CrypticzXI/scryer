@@ -793,6 +793,19 @@ jobs:
             if (-not (Test-Path $sccacheBin)) {
               throw "sccache.exe not found at $sccacheBin"
             }
+            $toolchainBin = Join-Path $HOME ".rustup\toolchains\1.95.0-x86_64-pc-windows-msvc\bin"
+            $cargoExe = Join-Path $toolchainBin "cargo.exe"
+            $rustcExe = Join-Path $toolchainBin "rustc.exe"
+            if (-not (Test-Path $cargoExe)) {
+              throw "cargo.exe not found at $cargoExe"
+            }
+            if (-not (Test-Path $rustcExe)) {
+              throw "rustc.exe not found at $rustcExe"
+            }
+            $Env:Path = "$toolchainBin;$HOME\.cargo\bin;$Env:Path"
+            [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
+            $Env:CARGO = $cargoExe
+            $Env:RUSTC = $rustcExe
             $Env:RUSTC_WRAPPER = $sccacheBin
             $Env:CARGO_BUILD_TARGET = "x86_64-pc-windows-msvc"
             $Env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = "link.exe"
@@ -803,6 +816,8 @@ jobs:
             "RUSTC_WRAPPER=$Env:RUSTC_WRAPPER" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             "SCCACHE_DIR=$Env:SCCACHE_DIR" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             "$sccacheBin" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            "$cargoExe" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            "$rustcExe" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             where.exe rustc | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             where.exe cargo | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             where.exe link | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
@@ -829,7 +844,7 @@ jobs:
             }
 
             Measure-Command {
-              cmd.exe /d /s /c "cargo build -vv -p xtask --locked > C:\Users\circleci\project\tmp\windows-xtask-build.log 2>&1"
+              cmd.exe /d /s /c """$cargoExe"" build -vv -p xtask --locked > C:\Users\circleci\project\tmp\windows-xtask-build.log 2>&1"
             } | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             if ($LASTEXITCODE -ne 0) {
               throw "cargo build failed with exit code $LASTEXITCODE"
