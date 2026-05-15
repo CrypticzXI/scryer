@@ -710,7 +710,7 @@ jobs:
       - persist_release_artifact:
           path: release-artifacts/scryer-darwin-arm64.tar.gz
 
-  rust-build-windows-xtask:
+  rust-build-windows-scryer:
     executor: windows-medium
     working_directory: C:\Users\circleci\project
     steps:
@@ -718,9 +718,10 @@ jobs:
       - run:
           name: Configure git for tag fetches
           command: git fetch --force --tags --prune
+      - attach_repo_workspace
       - restore_rust_cache_windows
       - restore_sccache_windows:
-          key_prefix: windows-xtask
+          key_prefix: windows-scryer-release
       - run:
           name: Install Rust 1.95.0
           command: |
@@ -760,10 +761,10 @@ jobs:
             New-Item -ItemType Directory -Force -Path "$Env:LOCALAPPDATA\Mozilla\sccache" | Out-Null
             & $bin --version
       - run:
-          name: Build xtask with sccache (Windows x86_64)
+          name: Build release binary with sccache (Windows x86_64 + embedded UI)
           no_output_timeout: 30m
           environment:
-            CARGO_TARGET_DIR: C:\Users\circleci\project\target\ci-windows-xtask
+            CARGO_TARGET_DIR: C:\Users\circleci\project\target\ci-windows-x86_64-release
             SCCACHE_DIR: C:\Users\circleci\AppData\Local\Mozilla\sccache
             SCCACHE_CACHE_SIZE: 10G
             SCCACHE_LOG: debug
@@ -810,6 +811,8 @@ jobs:
             $Env:CARGO_BUILD_TARGET = "x86_64-pc-windows-msvc"
             $Env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = "link.exe"
             $Env:RUSTFLAGS = "-C linker=link.exe -C linker-flavor=msvc"
+            $Env:SCRYER_SMG_GRAPHQL_URL = "https://smg.scryer.media/graphql"
+            $Env:SCRYER_EMBED_UI_DIR = "C:\Users\circleci\project\apps\scryer-web\dist"
             Remove-Item Env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER -ErrorAction SilentlyContinue
             "=== before build ===" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-Date -Format o | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
@@ -844,12 +847,12 @@ jobs:
             }
 
             Measure-Command {
-              cmd.exe /d /s /c """$cargoExe"" build -vv -p xtask --locked > C:\Users\circleci\project\tmp\windows-xtask-build.log 2>&1"
+              cmd.exe /d /s /c """$cargoExe"" build -vv -p scryer --release --locked --target x86_64-pc-windows-msvc > C:\Users\circleci\project\tmp\windows-scryer-build.log 2>&1"
             } | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             if ($LASTEXITCODE -ne 0) {
               throw "cargo build failed with exit code $LASTEXITCODE"
             }
-            Get-Content C:\Users\circleci\project\tmp\windows-xtask-build.log -Tail 200
+            Get-Content C:\Users\circleci\project\tmp\windows-scryer-build.log -Tail 200
 
             Stop-Job $watchdog -ErrorAction SilentlyContinue
             Receive-Job $watchdog -ErrorAction SilentlyContinue | Out-Null
@@ -864,9 +867,9 @@ jobs:
             Get-Content C:\Users\circleci\project\tmp\sccache.log -Tail 200
       - save_rust_cache_windows
       - save_sccache_windows:
-          key_prefix: windows-xtask
+          key_prefix: windows-scryer-release
       - store_artifacts:
-          path: tmp/windows-xtask-build.log
+          path: tmp/windows-scryer-build.log
       - store_artifacts:
           path: tmp/sccache-stats.txt
       - store_artifacts:
@@ -1244,9 +1247,17 @@ jobs:
 workflows:
   scryer:
     jobs:
-      - rust-build-windows-xtask:
-          context: scryer-build
+      - web:
           filters: &release_tag_filters
+            tags:
+              only: /^(scryer-v|cci-scryer-v).*/
+            branches:
+              ignore: /.*/
+      - rust-build-windows-scryer:
+          requires:
+            - web
+          context: scryer-build
+          filters:
             tags:
               only: /^(scryer-v|cci-scryer-v).*/
             branches:
