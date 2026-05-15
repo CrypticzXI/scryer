@@ -15,7 +15,11 @@ import {
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import { SCORING_PERSONA_CHOICES } from "@/lib/constants/quality-profiles";
-import { boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
+import { cn } from "@/lib/utils";
+import {
+  boxedActionButtonBaseClass,
+  boxedActionButtonToneClass,
+} from "@/lib/utils/action-button-styles";
 import type {
   LibraryRecord,
   LibraryScanSummary,
@@ -681,23 +685,31 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                           )}
                           <Button
                             type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 shrink-0"
+                            variant="secondary"
+                            size="icon-sm"
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.edit,
+                            )}
                             onClick={() => openEdit(index)}
                             disabled={actionBusy}
                             aria-label={t("label.edit")}
+                            title={t("label.edit")}
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
                           <Button
                             type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                            variant="secondary"
+                            size="icon-sm"
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.delete,
+                            )}
                             onClick={() => handleRemovePath(index)}
                             disabled={actionBusy}
                             aria-label={t("label.delete")}
+                            title={t("label.delete")}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>

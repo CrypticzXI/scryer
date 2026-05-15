@@ -236,6 +236,23 @@ file = "postgres/migrations/0114_schema_parity_hard_cutover.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 115
+description = "postgres sqlite parity remediation"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0115_postgres_sqlite_parity_remediation.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0115_sqlite_parity_remediation.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"
@@ -250,3 +267,19 @@ engine = "postgres"
 through_version = 114
 file = "baselines/0114_baseline.sql"
 engine = "sqlite"
+
+[[baseline]]
+through_version = 114
+file = "postgres/baselines/0114_baseline.sql"
+engine = "postgres"
+
+[[baseline]]
+through_version = 115
+file = "baselines/0115_baseline.sql"
+engine = "sqlite"
+
+[[baseline]]
+through_version = 115
+file = "postgres/baselines/0115_baseline.sql"
+engine = "postgres"
+

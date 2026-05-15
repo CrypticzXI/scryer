@@ -4646,9 +4646,6 @@ pub async fn start_background_acquisition_poller(
                         warn!(error = %e, "periodic housekeeping failed");
                         metrics::counter!("scryer_task_errors_total", "task" => "housekeeping").increment(1);
                     }
-                    if let Err(e) = app.auto_backup_if_due().await {
-                        warn!(error = %e, "auto-backup failed");
-                    }
                 }).await;
             }
             _ = pending_release_interval.tick() => {

@@ -273,18 +273,15 @@ impl CustomizationSql for PostgresCustomizationSql {
         rego_source: Option<&str>,
         actor_id: Option<&str>,
     ) -> AppResult<()> {
-        let event_json = serde_json::json!({
-            "action": action,
-            "rego_source": rego_source,
-            "actor_id": actor_id,
-        });
         sqlx::query(
-            "INSERT INTO rule_set_history (id, rule_set_id, event_json, created_at)
-             VALUES ($1, $2, $3::jsonb, NOW())",
+            "INSERT INTO rule_set_history (id, rule_set_id, action, rego_source, actor_id, created_at)
+             VALUES ($1, $2, $3, $4, $5, NOW())",
         )
         .bind(Id::new().0)
         .bind(rule_set_id)
-        .bind(event_json)
+        .bind(action)
+        .bind(rego_source)
+        .bind(actor_id)
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;

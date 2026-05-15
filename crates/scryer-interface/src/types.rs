@@ -1371,6 +1371,7 @@ pub enum JobKeyValue {
     PluginRegistryRefresh,
     Housekeeping,
     HealthChecks,
+    AutoBackup,
     WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
@@ -1391,6 +1392,7 @@ impl JobKeyValue {
             Self::PluginRegistryRefresh => AppJobKey::PluginRegistryRefresh,
             Self::Housekeeping => AppJobKey::Housekeeping,
             Self::HealthChecks => AppJobKey::HealthChecks,
+            Self::AutoBackup => AppJobKey::AutoBackup,
             Self::WantedSync => AppJobKey::WantedSync,
             Self::PendingReleaseProcessing => AppJobKey::PendingReleaseProcessing,
             Self::StagedNzbPrune => AppJobKey::StagedNzbPrune,
@@ -1411,6 +1413,7 @@ impl JobKeyValue {
             AppJobKey::PluginRegistryRefresh => Self::PluginRegistryRefresh,
             AppJobKey::Housekeeping => Self::Housekeeping,
             AppJobKey::HealthChecks => Self::HealthChecks,
+            AppJobKey::AutoBackup => Self::AutoBackup,
             AppJobKey::WantedSync => Self::WantedSync,
             AppJobKey::PendingReleaseProcessing => Self::PendingReleaseProcessing,
             AppJobKey::StagedNzbPrune => Self::StagedNzbPrune,
@@ -1462,6 +1465,7 @@ pub enum JobScheduleKindValue {
     Manual,
     Interval,
     StartupAndInterval,
+    DailyAtTime,
 }
 
 impl JobScheduleKindValue {
@@ -1470,6 +1474,7 @@ impl JobScheduleKindValue {
             AppJobScheduleKind::Manual => Self::Manual,
             AppJobScheduleKind::Interval => Self::Interval,
             AppJobScheduleKind::StartupAndInterval => Self::StartupAndInterval,
+            AppJobScheduleKind::DailyAtTime => Self::DailyAtTime,
         }
     }
 }
@@ -1480,6 +1485,7 @@ pub enum JobTriggerSourceValue {
     Manual,
     ScheduledStartup,
     ScheduledInterval,
+    ScheduledDaily,
     SystemInternal,
 }
 
@@ -1489,6 +1495,7 @@ impl JobTriggerSourceValue {
             AppJobTriggerSource::Manual => Self::Manual,
             AppJobTriggerSource::ScheduledStartup => Self::ScheduledStartup,
             AppJobTriggerSource::ScheduledInterval => Self::ScheduledInterval,
+            AppJobTriggerSource::ScheduledDaily => Self::ScheduledDaily,
             AppJobTriggerSource::SystemInternal => Self::SystemInternal,
         }
     }
@@ -2252,6 +2259,14 @@ pub struct GeneralSettingsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct AutoBackupSettingsPayload {
+    pub enabled: bool,
+    pub daily_time_local: String,
+    pub auto_backup_key_present: bool,
+    pub next_run_at: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct SecuritySettingsPayload {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
@@ -2666,6 +2681,14 @@ pub struct UpdateServiceSettingsInput {
 pub struct UpdateGeneralSettingsInput {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateAutoBackupSettingsInput {
+    pub enabled: bool,
+    pub daily_time_local: String,
+    pub set_auto_backup_key: Option<String>,
+    pub clear_auto_backup_key: bool,
 }
 
 #[derive(InputObject, Clone)]
@@ -3745,6 +3768,7 @@ pub struct BackupInfoPayload {
     pub source_migration_key: Option<String>,
     pub encrypted: bool,
     pub row_counts: Vec<BackupRowCountPayload>,
+    pub trigger: String,
     pub status: String,
     pub error_message: Option<String>,
 }

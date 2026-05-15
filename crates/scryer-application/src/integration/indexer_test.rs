@@ -573,7 +573,11 @@ mod tests {
         }
 
         fn available_provider_types(&self) -> Vec<String> {
-            vec![self.provider_type.clone()]
+            let mut provider_types = vec![self.provider_type.clone()];
+            if self.provider_type == "manager" {
+                provider_types.push("torrent_rss".to_string());
+            }
+            provider_types
         }
 
         fn management_capabilities_for_provider(
@@ -595,6 +599,13 @@ mod tests {
             provider_type: &str,
         ) -> Vec<scryer_domain::ConfigFieldDef> {
             if provider_type != self.provider_type {
+                if self.provider_type == "manager" && provider_type == "torrent_rss" {
+                    return vec![string_field(
+                        "feed_url",
+                        "Feed URL",
+                        Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                    )];
+                }
                 return vec![];
             }
             self.fields.clone()

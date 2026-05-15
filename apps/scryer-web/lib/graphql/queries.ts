@@ -384,6 +384,7 @@ export const BACKUP_INFO_FIELDS = `
     formatVersion
     sourceEngine
     sourceMigrationKey
+    trigger
     encrypted
     rowCounts {
       table
@@ -1579,6 +1580,15 @@ export const securitySettingsQuery = `query SecuritySettings {
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
+  }
+}`;
+
+export const autoBackupSettingsQuery = `query AutoBackupSettings {
+  autoBackupSettings {
+    enabled
+    dailyTimeLocal
+    autoBackupKeyPresent
+    nextRunAt
   }
 }`;
 

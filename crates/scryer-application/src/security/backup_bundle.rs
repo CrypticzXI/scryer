@@ -12,8 +12,10 @@ use tempfile::TempDir;
 use crate::{AppError, AppResult};
 
 pub const BACKUP_FORMAT_VERSION: &str = "scryer-backup-bundle-v1";
-pub const BACKUP_PLAINTEXT_EXTENSION: &str = ".scryer-backup.tar.zst";
-pub const BACKUP_ENCRYPTED_EXTENSION: &str = ".scryer-backup.enc";
+pub const BACKUP_PLAINTEXT_EXTENSION: &str = ".tar.zst";
+pub const BACKUP_ENCRYPTED_EXTENSION: &str = ".enc";
+pub const LEGACY_BACKUP_PLAINTEXT_EXTENSION: &str = ".scryer-backup.tar.zst";
+pub const LEGACY_BACKUP_ENCRYPTED_EXTENSION: &str = ".scryer-backup.enc";
 
 const INSTANCE_SECRETS_FILENAME: &str = "instance-secrets.json";
 const MANIFEST_FILENAME: &str = "manifest.json";
@@ -106,28 +108,12 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Ignore,
     },
     BackupTableCatalogEntry {
-        table: "mediarr_schema_migrations",
-        classification: BackupTableClassification::Ignore,
-    },
-    BackupTableCatalogEntry {
-        table: "import_artifacts",
-        classification: BackupTableClassification::Ignore,
-    },
-    BackupTableCatalogEntry {
-        table: "job_runs",
-        classification: BackupTableClassification::Ignore,
-    },
-    BackupTableCatalogEntry {
-        table: "quality_profiles_json",
-        classification: BackupTableClassification::Ignore,
-    },
-    BackupTableCatalogEntry {
         table: "subtitle_providers",
         classification: BackupTableClassification::Ignore,
     },
     BackupTableCatalogEntry {
         table: "settings_definitions",
-        classification: BackupTableClassification::Rebuild,
+        classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
         table: "title_search_terms",

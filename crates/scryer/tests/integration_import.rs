@@ -532,6 +532,15 @@ async fn import_movie_strm_file_is_treated_as_video_artifact() {
         std::fs::read_to_string(&dest_path).expect("read imported strm"),
         "https://nzbdav.example/stream/Test.Movie.2024.1080p.WEB-DL.H264"
     );
+
+    let media_files = ctx
+        .library_state
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].scan_status, "scanned");
+    assert_eq!(media_files[0].container_format.as_deref(), Some("strm"));
 }
 
 // ---------------------------------------------------------------------------

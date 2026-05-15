@@ -10,10 +10,11 @@ use crate::acquisition_policy::AcquisitionThresholds;
 use crate::scoring_weights::ScoringPersona;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY,
-    HISTORY_RETENTION_DAYS_KEY, LibraryRootDraft, REQUIRED_AUDIO_LANGUAGES_KEY,
-    SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
-    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
+    AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL,
+    FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, LibraryRootDraft,
+    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL,
+    SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
 use super::keys::default_indexer_routing_categories_for_scope;
@@ -40,6 +41,38 @@ const SUBTITLES_SYNC_THRESHOLD_SERIES_KEY: &str = "subtitles.sync_threshold_seri
 const SUBTITLES_SYNC_THRESHOLD_MOVIE_KEY: &str = "subtitles.sync_threshold_movie";
 const SUBTITLES_SYNC_MAX_OFFSET_SECONDS_KEY: &str = "subtitles.sync_max_offset_seconds";
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
+
+fn normalize_auto_backup_daily_time_local(value: &str) -> AppResult<String> {
+    let value = value.trim();
+    let (hour, minute) = value
+        .split_once(':')
+        .ok_or_else(|| AppError::Validation("daily time must use HH:MM format".to_string()))?;
+    let hour = hour
+        .parse::<u32>()
+        .map_err(|_| AppError::Validation("daily time hour must be numeric".to_string()))?;
+    let minute = minute
+        .parse::<u32>()
+        .map_err(|_| AppError::Validation("daily time minute must be numeric".to_string()))?;
+    if hour > 23 || minute > 59 {
+        return Err(AppError::Validation(
+            "daily time must be between 00:00 and 23:59".to_string(),
+        ));
+    }
+    Ok(format!("{hour:02}:{minute:02}"))
+}
+
+fn validate_auto_backup_key_update(
+    set_auto_backup_key: Option<&str>,
+    clear_auto_backup_key: bool,
+) -> AppResult<()> {
+    if clear_auto_backup_key && set_auto_backup_key.is_some_and(|value| !value.is_empty()) {
+        return Err(AppError::Validation(
+            "automatic backup key cannot be replaced and cleared in the same request".to_string(),
+        ));
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct SubtitleSettings {
@@ -130,9 +163,25 @@ pub struct GeneralSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoBackupSettings {
+    pub enabled: bool,
+    pub daily_time_local: String,
+    pub auto_backup_key_present: bool,
+    pub next_run_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateGeneralSettings {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAutoBackupSettings {
+    pub enabled: bool,
+    pub daily_time_local: String,
+    pub set_auto_backup_key: Option<String>,
+    pub clear_auto_backup_key: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1224,6 +1273,14 @@ impl AppUseCase {
                 SETTINGS_SOURCE_TYPED_GRAPHQL,
                 updated_by_user_id,
             )
+            .await
+    }
+
+    async fn delete_system_setting(&self, key_name: &str) -> AppResult<()> {
+        self.services
+            .config
+            .settings
+            .delete_setting_value(SETTINGS_SCOPE_SYSTEM, key_name, None)
             .await
     }
 
@@ -2433,6 +2490,41 @@ impl AppUseCase {
         })
     }
 
+    pub(crate) async fn load_auto_backup_settings(&self) -> AppResult<AutoBackupSettings> {
+        let enabled = self
+            .read_setting_bool_value(AUTO_BACKUP_ENABLED_KEY, None)
+            .await?
+            .unwrap_or(false);
+        let daily_time_local = normalize_auto_backup_daily_time_local(
+            &self
+                .read_setting_string_value(AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, None)
+                .await?
+                .unwrap_or_else(|| DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL.to_string()),
+        )?;
+        let auto_backup_key_present = self
+            .read_setting_string_value(AUTO_BACKUP_KEY_KEY, None)
+            .await?
+            .is_some_and(|value| !value.is_empty());
+        let next_run_at = if enabled {
+            Some(
+                crate::security::backup::compute_next_auto_backup_run_at(
+                    &daily_time_local,
+                    chrono::Utc::now(),
+                )?
+                .to_rfc3339(),
+            )
+        } else {
+            None
+        };
+
+        Ok(AutoBackupSettings {
+            enabled,
+            daily_time_local,
+            auto_backup_key_present,
+            next_run_at,
+        })
+    }
+
     async fn load_security_settings(&self) -> AppResult<SecuritySettings> {
         let form_login_enabled = self
             .read_setting_bool_value(FORM_LOGIN_ENABLED_KEY, None)
@@ -2498,6 +2590,12 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         self.load_general_settings().await
+    }
+
+    pub async fn get_auto_backup_settings(&self, actor: &User) -> AppResult<AutoBackupSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        self.load_auto_backup_settings().await
     }
 
     pub async fn get_security_settings(&self, actor: &User) -> AppResult<SecuritySettings> {
@@ -3477,6 +3575,59 @@ impl AppUseCase {
         })
     }
 
+    pub async fn update_auto_backup_settings(
+        &self,
+        actor: &User,
+        input: UpdateAutoBackupSettings,
+    ) -> AppResult<AutoBackupSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        validate_auto_backup_key_update(
+            input.set_auto_backup_key.as_deref(),
+            input.clear_auto_backup_key,
+        )?;
+        let daily_time_local = normalize_auto_backup_daily_time_local(&input.daily_time_local)?;
+
+        self.upsert_system_setting_json(
+            AUTO_BACKUP_ENABLED_KEY,
+            &input.enabled,
+            Some(actor.id.clone()),
+        )
+        .await?;
+        self.upsert_system_setting_json(
+            AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
+            &daily_time_local,
+            Some(actor.id.clone()),
+        )
+        .await?;
+
+        let mut changed_keys = vec![
+            AUTO_BACKUP_ENABLED_KEY.to_string(),
+            AUTO_BACKUP_DAILY_TIME_LOCAL_KEY.to_string(),
+        ];
+
+        if input.clear_auto_backup_key {
+            self.delete_system_setting(AUTO_BACKUP_KEY_KEY).await?;
+            changed_keys.push(AUTO_BACKUP_KEY_KEY.to_string());
+        } else if let Some(set_auto_backup_key) = input.set_auto_backup_key
+            && !set_auto_backup_key.is_empty()
+        {
+            self.upsert_system_setting_json(
+                AUTO_BACKUP_KEY_KEY,
+                &set_auto_backup_key,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(AUTO_BACKUP_KEY_KEY.to_string());
+        }
+
+        self.emit_settings_saved(actor, "auto_backup_settings", None, changed_keys)
+            .await;
+
+        self.load_auto_backup_settings().await
+    }
+
     pub async fn update_security_settings(
         &self,
         actor: &User,
@@ -4277,5 +4428,36 @@ impl AppUseCase {
                 AcquisitionThresholds::for_persona(persona)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_auto_backup_daily_time_local_trims_and_zero_pads_values() {
+        let normalized = normalize_auto_backup_daily_time_local(" 3:5 ").expect("normalized time");
+
+        assert_eq!(normalized, "03:05");
+    }
+
+    #[test]
+    fn normalize_auto_backup_daily_time_local_rejects_invalid_values() {
+        assert!(normalize_auto_backup_daily_time_local("24:00").is_err());
+        assert!(normalize_auto_backup_daily_time_local("10:60").is_err());
+        assert!(normalize_auto_backup_daily_time_local("nope").is_err());
+    }
+
+    #[test]
+    fn validate_auto_backup_key_update_rejects_replace_and_clear_together() {
+        let error = validate_auto_backup_key_update(Some("secret"), true)
+            .expect_err("set and clear should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("automatic backup key cannot be replaced and cleared"),
+        );
     }
 }

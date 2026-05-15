@@ -119,6 +119,17 @@ fn from_general_settings(settings: scryer_application::GeneralSettings) -> Gener
     }
 }
 
+fn from_auto_backup_settings(
+    settings: scryer_application::AutoBackupSettings,
+) -> AutoBackupSettingsPayload {
+    AutoBackupSettingsPayload {
+        enabled: settings.enabled,
+        daily_time_local: settings.daily_time_local,
+        auto_backup_key_present: settings.auto_backup_key_present,
+        next_run_at: settings.next_run_at,
+    }
+}
+
 fn from_security_settings(
     settings: scryer_application::SecuritySettings,
     auth_runtime: &crate::context::AuthRuntimeStateSnapshot,
@@ -1121,6 +1132,19 @@ impl QueryRoot {
         Ok(from_general_settings(settings))
     }
 
+    async fn auto_backup_settings(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<AutoBackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_auto_backup_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_auto_backup_settings(settings))
+    }
+
     async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1468,6 +1492,7 @@ impl QueryRoot {
     }
 
     async fn backups(&self, ctx: &Context<'_>) -> GqlResult<Vec<BackupInfoPayload>> {
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let backups = app.list_backups(&actor).await.map_err(to_gql_error)?;

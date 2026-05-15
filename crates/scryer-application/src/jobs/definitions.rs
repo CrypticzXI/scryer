@@ -51,6 +51,7 @@ pub enum JobScheduleKind {
     Manual,
     Interval,
     StartupAndInterval,
+    DailyAtTime,
 }
 
 impl JobScheduleKind {
@@ -59,6 +60,7 @@ impl JobScheduleKind {
             Self::Manual => "manual",
             Self::Interval => "interval",
             Self::StartupAndInterval => "startup_interval",
+            Self::DailyAtTime => "daily_at_time",
         }
     }
 }
@@ -68,6 +70,7 @@ pub enum JobTriggerSource {
     Manual,
     ScheduledStartup,
     ScheduledInterval,
+    ScheduledDaily,
     SystemInternal,
 }
 
@@ -77,6 +80,7 @@ impl JobTriggerSource {
             Self::Manual => "manual",
             Self::ScheduledStartup => "scheduled_startup",
             Self::ScheduledInterval => "scheduled_interval",
+            Self::ScheduledDaily => "scheduled_daily",
             Self::SystemInternal => "system_internal",
         }
     }
@@ -86,6 +90,7 @@ impl JobTriggerSource {
             "manual" => Some(Self::Manual),
             "scheduled_startup" => Some(Self::ScheduledStartup),
             "scheduled_interval" => Some(Self::ScheduledInterval),
+            "scheduled_daily" => Some(Self::ScheduledDaily),
             "system_internal" => Some(Self::SystemInternal),
             _ => None,
         }
@@ -145,6 +150,7 @@ pub enum JobKey {
     PluginRegistryRefresh,
     Housekeeping,
     HealthChecks,
+    AutoBackup,
     WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
@@ -165,6 +171,7 @@ impl JobKey {
             Self::PluginRegistryRefresh => "plugin_registry_refresh",
             Self::Housekeeping => "housekeeping",
             Self::HealthChecks => "health_checks",
+            Self::AutoBackup => "auto_backup",
             Self::WantedSync => "wanted_sync",
             Self::PendingReleaseProcessing => "pending_release_processing",
             Self::StagedNzbPrune => "staged_nzb_prune",
@@ -185,6 +192,7 @@ impl JobKey {
             "plugin_registry_refresh" => Some(Self::PluginRegistryRefresh),
             "housekeeping" => Some(Self::Housekeeping),
             "health_checks" => Some(Self::HealthChecks),
+            "auto_backup" => Some(Self::AutoBackup),
             "wanted_sync" => Some(Self::WantedSync),
             "pending_release_processing" => Some(Self::PendingReleaseProcessing),
             "staged_nzb_prune" => Some(Self::StagedNzbPrune),
@@ -206,6 +214,7 @@ impl JobKey {
             Self::PluginRegistryRefresh => "Plugin Catalog Refresh",
             Self::Housekeeping => "Housekeeping",
             Self::HealthChecks => "Health Checks",
+            Self::AutoBackup => "Automatic Backup",
             Self::WantedSync => "Wanted Sync",
             Self::PendingReleaseProcessing => "Pending Release Processing",
             Self::StagedNzbPrune => "Staged NZB Prune",
@@ -232,6 +241,9 @@ impl JobKey {
             Self::PluginRegistryRefresh => "Refresh the installed plugin catalog metadata.",
             Self::Housekeeping => "Clean stale records and purge expired artifacts.",
             Self::HealthChecks => "Run configured system health checks.",
+            Self::AutoBackup => {
+                "Create a daily backup snapshot and keep the newest successful automatic backups."
+            }
             Self::WantedSync => "Resync wanted items from the current monitored state.",
             Self::PendingReleaseProcessing => {
                 "Process delayed pending releases whose hold period has expired."
@@ -250,7 +262,9 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshAnime => JobCategory::Library,
             Self::RssSync | Self::MetadataRefresh => JobCategory::Acquisition,
             Self::SubtitleSearch => JobCategory::Subtitles,
-            Self::PluginRegistryRefresh | Self::HealthChecks => JobCategory::System,
+            Self::PluginRegistryRefresh | Self::HealthChecks | Self::AutoBackup => {
+                JobCategory::System
+            }
             Self::Housekeeping
             | Self::WantedSync
             | Self::PendingReleaseProcessing
@@ -281,6 +295,7 @@ impl JobKey {
             | Self::WantedSync
             | Self::PendingReleaseProcessing
             | Self::StagedNzbPrune => JobScheduleKind::Interval,
+            Self::AutoBackup => JobScheduleKind::DailyAtTime,
             Self::LibraryScanMovies | Self::LibraryScanSeries | Self::LibraryScanAnime => {
                 JobScheduleKind::Manual
             }
@@ -298,6 +313,7 @@ impl JobKey {
             Self::PluginRegistryRefresh => "Every 24 hours",
             Self::Housekeeping => "Every 24 hours",
             Self::HealthChecks => "Every 6 hours",
+            Self::AutoBackup => "Daily at configured local time",
             Self::WantedSync => "Based on acquisition sync interval",
             Self::PendingReleaseProcessing => "Every minute",
             Self::StagedNzbPrune => "Every hour",
@@ -335,7 +351,7 @@ impl JobKey {
     }
 
     pub fn manual_trigger_allowed(self) -> bool {
-        true
+        !matches!(self, Self::AutoBackup)
     }
 
     pub fn uses_library_scan_progress(self) -> bool {
@@ -351,7 +367,7 @@ impl JobKey {
     }
 }
 
-pub const ALL_JOB_KEYS: [JobKey; 15] = [
+pub const ALL_JOB_KEYS: [JobKey; 16] = [
     JobKey::LibraryScanMovies,
     JobKey::LibraryScanSeries,
     JobKey::LibraryScanAnime,
@@ -364,6 +380,7 @@ pub const ALL_JOB_KEYS: [JobKey; 15] = [
     JobKey::PluginRegistryRefresh,
     JobKey::Housekeeping,
     JobKey::HealthChecks,
+    JobKey::AutoBackup,
     JobKey::WantedSync,
     JobKey::PendingReleaseProcessing,
     JobKey::StagedNzbPrune,

@@ -40,8 +40,9 @@ impl ReleaseSql for PostgresReleaseSql {
     ) -> AppResult<()> {
         sqlx::query(
             "INSERT INTO release_download_attempts
-             (id, title_id, source_hint, source_title, outcome, error_message, source_password, attempted_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())",
+             (id, title_id, source_hint, source_title, outcome, error_message, source_password,
+              attempted_at, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), NOW())",
         )
         .bind(Id::new().0)
         .bind(title_id)

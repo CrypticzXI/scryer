@@ -186,9 +186,10 @@ export function SetupDownloadClientView({
                 )}
               </p>
             ) : draft.clientType === "sabnzbd" ? (
-              <p className="text-xs text-muted-foreground">
-                {t("settings.downloadClientSabnzbdAuthHelp")}
-              </p>
+              <div className="space-y-2 text-xs text-muted-foreground">
+                <p>{t("settings.downloadClientSabnzbdAuthHelp")}</p>
+                <p>{t("settings.downloadClientSabnzbdNzbdavHelp")}</p>
+              </div>
             ) : null}
           </div>
         )}

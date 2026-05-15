@@ -144,6 +144,32 @@ pub(crate) fn build_media_file_analysis(
     }
 }
 
+pub(crate) fn build_stream_pointer_media_file_analysis() -> crate::MediaFileAnalysis {
+    crate::MediaFileAnalysis {
+        video_codec: None,
+        video_width: None,
+        video_height: None,
+        video_bitrate_kbps: None,
+        video_bit_depth: None,
+        video_hdr_format: None,
+        video_frame_rate: None,
+        video_profile: None,
+        audio_codec: None,
+        audio_profile: None,
+        audio_channels: None,
+        audio_bitrate_kbps: None,
+        audio_languages: Vec::new(),
+        audio_streams: Vec::new(),
+        subtitle_languages: Vec::new(),
+        subtitle_codecs: Vec::new(),
+        subtitle_streams: Vec::new(),
+        has_multiaudio: false,
+        duration_seconds: None,
+        num_chapters: None,
+        container_format: Some("strm".to_string()),
+    }
+}
+
 /// Probe a file at the given path and validate it against the quality profile and user rules.
 /// The file does NOT need to be at its final destination — this can probe a file in-place
 /// at its download location before any move/copy.
@@ -168,7 +194,7 @@ pub(crate) async fn probe_and_validate(
         .is_some_and(|ext| ext.eq_ignore_ascii_case("strm"))
     {
         return ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
-            analysis: None,
+            analysis: Some(build_stream_pointer_media_file_analysis()),
             scan_error: None,
         }));
     }

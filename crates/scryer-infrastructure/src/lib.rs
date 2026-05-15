@@ -1,3 +1,4 @@
+mod backup_import_normalization;
 mod catalog_store;
 pub(crate) mod commands;
 mod config_store;

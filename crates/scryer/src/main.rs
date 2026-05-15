@@ -12,9 +12,16 @@ mod settings_bootstrap;
 mod splash;
 mod ui_assets;
 
+use std::ffi::OsString;
+use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::process::Command;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
@@ -27,12 +34,13 @@ use scryer_application::{
     NotificationPluginProvider, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
     RuntimePluginLoad, SeriesFacetHandler, SubtitlePluginProvider, SystemInfoProvider,
     TitleImageKind, TitleImageRepository, load_runtime_plugin_from_persisted_installation_payload,
-    start_background_acquisition_poller, start_background_banner_loop,
-    start_background_download_delete_poller, start_background_fanart_loop,
-    start_background_library_refresh_loop, start_background_manual_import_poller,
-    start_background_poster_loop, start_background_subtitle_poller,
-    start_background_title_hydration_loop, start_download_queue_poller,
-    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
+    start_background_acquisition_poller, start_background_auto_backup_scheduler,
+    start_background_banner_loop, start_background_download_delete_poller,
+    start_background_fanart_loop, start_background_library_refresh_loop,
+    start_background_manual_import_poller, start_background_poster_loop,
+    start_background_subtitle_poller, start_background_title_hydration_loop,
+    start_download_queue_poller, start_notification_dispatcher,
+    tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreEngine,
@@ -42,8 +50,10 @@ use scryer_infrastructure::{
     WeaverDownloadClient, resolve_datastore_config_from_env, start_weaver_subscription_bridge,
     validate_datastore,
 };
-use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
-use scryer_interface::{LogBuffer, build_schema_with_log_buffer};
+use scryer_interface::context::{
+    AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, RestoreContext, RestoreRestartHandle,
+};
+use scryer_interface::{LogBuffer, build_schema_with_log_buffer_and_restore};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -55,7 +65,6 @@ use admin_routes::{
 };
 use backup_routes::{
     BackupRouteState, download_backup_handler, finalize_pending_restore_if_present,
-    setup_restore_apply_handler, setup_restore_inspect_handler,
 };
 use base_path::BasePath;
 use middleware::{
@@ -99,6 +108,125 @@ impl AuthModeConfig {
     fn effective_form_login_enabled(&self, saved_form_login_enabled: bool) -> bool {
         self.env_override_form_login_enabled
             .unwrap_or(saved_form_login_enabled)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RestartSpec {
+    executable: PathBuf,
+    args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
+    current_dir: PathBuf,
+}
+
+fn restart_spec_from_parts(
+    executable: PathBuf,
+    args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
+    current_dir: PathBuf,
+) -> RestartSpec {
+    RestartSpec {
+        executable,
+        args,
+        env,
+        current_dir,
+    }
+}
+
+fn current_restart_spec() -> io::Result<RestartSpec> {
+    let executable = std::env::current_exe()?;
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let env = std::env::vars_os().collect::<Vec<_>>();
+    let current_dir = std::env::current_dir().or_else(|_| {
+        executable.parent().map(PathBuf::from).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "failed to determine current directory for restart",
+            )
+        })
+    })?;
+    Ok(restart_spec_from_parts(executable, args, env, current_dir))
+}
+
+#[cfg(unix)]
+fn restart_current_process(spec: &RestartSpec) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = Command::new(&spec.executable);
+    command.current_dir(&spec.current_dir);
+    command.args(&spec.args);
+    command.env_clear();
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    Err(command.exec())
+}
+
+#[cfg(not(unix))]
+fn restart_current_process(spec: &RestartSpec) -> io::Result<()> {
+    let mut command = Command::new(&spec.executable);
+    command.current_dir(&spec.current_dir);
+    command.args(&spec.args);
+    command.env_clear();
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    let _child = command.spawn()?;
+    std::process::exit(0);
+}
+
+#[derive(Clone)]
+struct SelfRestartController {
+    inner: Arc<SelfRestartControllerInner>,
+}
+
+struct SelfRestartControllerInner {
+    delay: Duration,
+    scheduled: AtomicBool,
+    launcher: Arc<dyn Fn() -> io::Result<()> + Send + Sync>,
+}
+
+impl SelfRestartController {
+    fn new(delay: Duration) -> io::Result<Self> {
+        let spec = Arc::new(current_restart_spec()?);
+        Ok(Self::with_launcher(
+            delay,
+            Arc::new(move || restart_current_process(&spec)),
+        ))
+    }
+
+    fn with_launcher(
+        delay: Duration,
+        launcher: Arc<dyn Fn() -> io::Result<()> + Send + Sync>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(SelfRestartControllerInner {
+                delay,
+                scheduled: AtomicBool::new(false),
+                launcher,
+            }),
+        }
+    }
+
+    fn handle(&self) -> RestoreRestartHandle {
+        let controller = self.clone();
+        RestoreRestartHandle::new(move || controller.schedule_restart())
+    }
+
+    fn schedule_restart(&self) {
+        if self.inner.scheduled.swap(true, Ordering::SeqCst) {
+            tracing::info!("restore restart already scheduled");
+            return;
+        }
+
+        let inner = self.inner.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(inner.delay);
+            if let Err(error) = (inner.launcher)() {
+                tracing::error!(error = %error, "failed to restart after restore");
+                inner.scheduled.store(false, Ordering::SeqCst);
+            }
+        });
     }
 }
 
@@ -843,6 +971,8 @@ async fn bootstrap_application(
     if let Err(e) = app_use_case.normalize_routing_settings().await {
         tracing::warn!(error = %e, "failed to normalize routing settings on startup");
     }
+    let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
+        .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
 
     let saved_security_settings = app_use_case
         .security_settings()
@@ -860,13 +990,18 @@ async fn bootstrap_application(
     });
     let log_buf_snapshot = log_ring_buffer.clone();
     let log_buf_subscribe = log_ring_buffer.clone();
-    let schema = build_schema_with_log_buffer(
+    let schema = build_schema_with_log_buffer_and_restore(
         app_use_case.clone(),
         auth_runtime.clone(),
         Some(LogBuffer::new(
             move |limit| log_buf_snapshot.snapshot(limit),
             move || log_buf_subscribe.subscribe(),
         )),
+        Some(RestoreContext {
+            data_dir: data_dir.clone(),
+            datastore_config: backup_datastore_config.clone(),
+            restart: restore_restart_controller.handle(),
+        }),
     );
     // Always run the download queue poller — it queries ALL enabled download
     // clients (NZBGet, SABnzbd, Weaver, plugins) and triggers imports for
@@ -923,6 +1058,10 @@ async fn bootstrap_application(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
+    tokio::spawn(start_background_auto_backup_scheduler(
+        app_use_case.clone(),
+        shutdown_token.child_token(),
+    ));
     tokio::spawn(start_background_manual_import_poller(
         app_use_case.clone(),
         shutdown_token.child_token(),
@@ -974,9 +1113,6 @@ async fn bootstrap_application(
     let backup_route_state = BackupRouteState {
         app: app_use_case.clone(),
         auth_runtime: auth_runtime.clone(),
-        data_dir: data_dir.clone(),
-        datastore_engine: datastore.engine(),
-        datastore_config: backup_datastore_config,
     };
     let ws_auth_state = auth_state.clone();
 
@@ -1021,15 +1157,7 @@ async fn bootstrap_application(
         )
         .route(
             "/admin/backups/{filename}/download",
-            get(download_backup_handler).with_state(backup_route_state.clone()),
-        )
-        .route(
-            "/setup/restore/inspect",
-            post(setup_restore_inspect_handler).with_state(backup_route_state.clone()),
-        )
-        .route(
-            "/setup/restore/apply",
-            post(setup_restore_apply_handler).with_state(backup_route_state),
+            get(download_backup_handler).with_state(backup_route_state),
         )
         .fallback(get(ui_fallback))
         .layer(axum::middleware::from_fn_with_state(
@@ -1853,12 +1981,19 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthModeConfig, VersionLifecycle, bootstrap_plugin_installations, check_version_upgrade,
-        clear_legacy_history_retention_forever_override, load_runtime_plugin_state,
-        resolve_auth_mode, seed_service_setting_definitions, title_image_handler,
+        AuthModeConfig, SelfRestartController, VersionLifecycle, bootstrap_plugin_installations,
+        check_version_upgrade, clear_legacy_history_retention_forever_override,
+        load_runtime_plugin_state, resolve_auth_mode, restart_spec_from_parts,
+        seed_service_setting_definitions, title_image_handler,
     };
     use chrono::Utc;
-    use std::sync::Arc;
+    use std::ffi::OsString;
+    use std::io;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
 
     use crate::base_path::{BasePath, mount_router};
     use crate::{
@@ -1879,6 +2014,53 @@ mod tests {
     };
     use tempfile::tempdir;
     use tower::ServiceExt;
+
+    #[test]
+    fn restart_spec_builder_preserves_executable_args_and_env() {
+        let spec = restart_spec_from_parts(
+            "/usr/local/bin/scryer".into(),
+            vec![OsString::from("--data-dir"), OsString::from("/config")],
+            vec![(OsString::from("SCRYER_MODE"), OsString::from("restore"))],
+            "/Users/jeremy/dev/scryer-media/scryer".into(),
+        );
+
+        assert_eq!(
+            spec.executable,
+            std::path::PathBuf::from("/usr/local/bin/scryer")
+        );
+        assert_eq!(
+            spec.args,
+            vec![OsString::from("--data-dir"), OsString::from("/config")]
+        );
+        assert_eq!(
+            spec.env,
+            vec![(OsString::from("SCRYER_MODE"), OsString::from("restore"))]
+        );
+        assert_eq!(
+            spec.current_dir,
+            std::path::PathBuf::from("/Users/jeremy/dev/scryer-media/scryer")
+        );
+    }
+
+    #[test]
+    fn restart_controller_allows_retry_when_relaunch_fails() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_handle = attempts.clone();
+        let controller = SelfRestartController::with_launcher(
+            Duration::from_millis(0),
+            Arc::new(move || {
+                attempts_handle.fetch_add(1, Ordering::SeqCst);
+                Err(io::Error::other("boom"))
+            }),
+        );
+
+        controller.schedule_restart();
+        std::thread::sleep(Duration::from_millis(40));
+        controller.schedule_restart();
+        std::thread::sleep(Duration::from_millis(40));
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
 
     #[derive(Default)]
     struct MockTitleImageRepository {

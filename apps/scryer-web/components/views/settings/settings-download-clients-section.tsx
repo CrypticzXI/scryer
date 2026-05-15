@@ -644,9 +644,10 @@ export function SettingsDownloadClientsSection({
                       )}
                     </p>
                   ) : normalizedClientType === "sabnzbd" ? (
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {t("settings.downloadClientSabnzbdAuthHelp")}
-                    </p>
+                    <div className="mt-2 space-y-2 text-xs text-muted-foreground">
+                      <p>{t("settings.downloadClientSabnzbdAuthHelp")}</p>
+                      <p>{t("settings.downloadClientSabnzbdNzbdavHelp")}</p>
+                    </div>
                   ) : null}
                 </label>
               ) : null}

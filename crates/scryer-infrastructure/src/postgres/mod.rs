@@ -16,6 +16,7 @@ pub use catalog_store::PostgresCatalogStore;
 pub use config_store::PostgresConfigStore;
 pub use customization_store::PostgresCustomizationStore;
 pub use library_state_store::PostgresLibraryStateStore;
+pub use migrations::{replay_catalog_into_fresh_db, replay_source_catalog_for_fresh_install};
 pub use notification_store::PostgresNotificationStore;
 pub use release_store::PostgresReleaseStore;
 pub use services::PostgresServices;

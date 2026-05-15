@@ -104,6 +104,7 @@ struct JobExecutionOutcome {
     summary_text: Option<String>,
     summary_json: Option<String>,
     library_scan_progress: Option<LibraryScanSession>,
+    status_override: Option<JobRunStatus>,
 }
 
 impl JobExecutionOutcome {
@@ -112,6 +113,16 @@ impl JobExecutionOutcome {
             summary_text,
             summary_json,
             library_scan_progress: None,
+            status_override: None,
+        }
+    }
+
+    fn warning(summary_text: Option<String>, summary_json: Option<String>) -> Self {
+        Self {
+            summary_text,
+            summary_json,
+            library_scan_progress: None,
+            status_override: Some(JobRunStatus::Warning),
         }
     }
 
@@ -315,6 +326,12 @@ impl AppUseCase {
     pub async fn trigger_job(&self, actor: &User, job_key: JobKey) -> AppResult<JobRun> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
+        if !job_key.manual_trigger_allowed() {
+            return Err(AppError::Validation(format!(
+                "{} can only run on its configured schedule",
+                job_key.display_name()
+            )));
+        }
         self.ensure_job_can_start(job_key).await?;
 
         let run = self
@@ -571,6 +588,7 @@ impl AppUseCase {
                     outcome.summary_text,
                     outcome.summary_json,
                     outcome.library_scan_progress,
+                    outcome.status_override,
                 )
                 .await
             }
@@ -715,6 +733,32 @@ impl AppUseCase {
                     .ok(),
                 ))
             }
+            JobKey::AutoBackup => match self.run_auto_backup_job().await? {
+                crate::security::backup::AutoBackupRunOutcome::Created { info, pruned_count } => {
+                    let summary_text = Some(format!(
+                        "Created {} ({}) and pruned {} older automatic backup{}",
+                        info.filename,
+                        if info.encrypted {
+                            "encrypted"
+                        } else {
+                            "plaintext"
+                        },
+                        pruned_count,
+                        if pruned_count == 1 { "" } else { "s" },
+                    ));
+                    let summary_json = serde_json::json!({
+                        "filename": info.filename,
+                        "encrypted": info.encrypted,
+                        "prunedCount": pruned_count,
+                        "trigger": info.trigger.as_str(),
+                    })
+                    .to_string();
+                    Ok(JobExecutionOutcome::new(summary_text, Some(summary_json)))
+                }
+                crate::security::backup::AutoBackupRunOutcome::Skipped { reason } => {
+                    Ok(JobExecutionOutcome::warning(Some(reason), None))
+                }
+            },
             JobKey::WantedSync => {
                 self.sync_wanted_state().await?;
                 Ok(JobExecutionOutcome::new(
@@ -750,17 +794,20 @@ impl AppUseCase {
         summary_text: Option<String>,
         summary_json: Option<String>,
         library_scan_progress: Option<LibraryScanSession>,
+        status_override: Option<JobRunStatus>,
     ) -> AppResult<()> {
         let completed_at = Utc::now();
-        run.status = match library_scan_progress
-            .as_ref()
-            .map(|session| &session.status)
-        {
-            Some(LibraryScanStatus::Warning) => JobRunStatus::Warning,
-            Some(LibraryScanStatus::Canceled) => JobRunStatus::Warning,
-            Some(LibraryScanStatus::Failed) => JobRunStatus::Failed,
-            _ => JobRunStatus::Completed,
-        };
+        run.status = status_override.unwrap_or_else(|| {
+            match library_scan_progress
+                .as_ref()
+                .map(|session| &session.status)
+            {
+                Some(LibraryScanStatus::Warning) => JobRunStatus::Warning,
+                Some(LibraryScanStatus::Canceled) => JobRunStatus::Warning,
+                Some(LibraryScanStatus::Failed) => JobRunStatus::Failed,
+                _ => JobRunStatus::Completed,
+            }
+        });
         run.progress_json = Some(json!({ "status": run.status.as_str() }).to_string());
         run.summary_text = summary_text;
         run.summary_json = summary_json;

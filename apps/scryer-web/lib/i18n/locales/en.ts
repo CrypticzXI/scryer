@@ -292,6 +292,7 @@ const en: LocaleDictionary = {
   "jobs.triggerSource.manual": "Manual",
   "jobs.triggerSource.scheduledStartup": "Scheduled startup",
   "jobs.triggerSource.scheduledInterval": "Scheduled interval",
+  "jobs.triggerSource.scheduledDaily": "Scheduled daily",
   "jobs.triggerSource.systemInternal": "System internal",
   "deletePreview.counting": "Counting files to delete...",
   "deletePreview.error": "Unable to prepare delete preview.",
@@ -409,10 +410,12 @@ const en: LocaleDictionary = {
     "Map download-client paths reported inside its container or host to local paths Scryer can read. Enter one rule per line as REMOTE => LOCAL.",
   "settings.downloadClientSabnzbdAuthHelp":
     "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientSabnzbdNzbdavHelp":
+    "For NzbDav, point SAB-compatible completed downloads at the mounted completed-symlinks path, make sure Scryer can read that mount locally, and add remote path mappings if NzbDav reports a different visible path.",
   "settings.downloadClientQbittorrentDecypharrHelp":
     "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
   "settings.downloadClientDecypharrFilesystemHelp":
-    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr output paths into Scryer and add remote path mappings when the reported paths differ.",
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr or NzbDav output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "My Download Client",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "e.g. api",
@@ -2020,8 +2023,18 @@ const en: LocaleDictionary = {
   "setup.restoreDescription":
     "Upload a Scryer backup bundle, inspect its manifest, and restore it into this fresh instance.",
   "setup.restoreSelectBundle": "Backup bundle",
+  "setup.restoreDropTargetTitle": "Drag and drop a backup bundle here",
+  "setup.restoreDropTargetDescription":
+    "Choose a backup file from your device or drop it here to inspect before restoring.",
+  "setup.restoreDropTargetSelected": "Bundle selected and ready to inspect.",
+  "setup.restoreDropTargetEncryptedSelected":
+    "Encrypted bundle selected. Enter the password used during backup creation to continue.",
+  "setup.restoreDropTargetFormats":
+    "Supported formats: .tar.zst and .enc",
+  "setup.restoreSelectFile": "Select file",
+  "setup.restoreClearFile": "Clear selection",
   "setup.restorePasswordHelp":
-    "Encrypted bundles use the .scryer-backup.enc extension and require the password used during backup creation.",
+    "Enter the password used when this encrypted backup was created.",
   "setup.restoreNoFile": "Choose a backup bundle to continue.",
   "setup.restorePasswordRequired": "Enter the bundle password before continuing.",
   "setup.restoreInspect": "Inspect bundle",
@@ -2194,23 +2207,56 @@ const en: LocaleDictionary = {
     "Releases without these audio languages will be blocked. Creates a managed rule visible in Settings > Rules.",
 
   // Recycle Bin
+  "settings.autoBackupsTitle": "Automatic backups",
+  "settings.autoBackupsDescription":
+    "Opt in to one system backup per day at a server-local time. Automatic backups time out after 30 minutes, and Scryer keeps the last 5 successful automatic backups.",
+  "settings.autoBackupsEnabledHelp":
+    "This scheduler is system-wide and runs once per day at the saved time.",
+  "settings.autoBackupsTime": "Daily backup time",
+  "settings.autoBackupsHour": "Hour",
+  "settings.autoBackupsMinute": "Minute",
+  "settings.autoBackupsTimeHelp": "Uses the server's local timezone.",
+  "settings.autoBackupsNextRun": "Next automatic backup",
+  "settings.autoBackupsNextRunHelp":
+    "Save your changes to update the scheduler. Disabled automatic backups do not run.",
+  "settings.autoBackupsKeyLabel": "Automatic backup key",
+  "settings.autoBackupsKeyHelpLabel": "About the automatic backup key",
+  "settings.autoBackupsSetKey": "Set automatic backup key",
+  "settings.autoBackupsReplaceKey": "Replace automatic backup key",
+  "settings.autoBackupsKeyAlreadySetHint": "(backup key already set)",
+  "settings.autoBackupsKeyPresent": "A saved automatic backup key is currently configured.",
+  "settings.autoBackupsKeyAbsent": "No automatic backup key is saved. Automatic backups will be plaintext.",
+  "settings.autoBackupsClearKey": "Clear saved automatic backup key",
+  "settings.autoBackupsClearKeyHelp":
+    "Removes the stored key after you save. Future automatic backups will be plaintext unless you set a new key.",
+  "settings.autoBackupsKeySummary": "Optional automatic backup encryption",
+  "settings.autoBackupsKeyHelp":
+    "Leave the field blank to keep the existing saved key. Enter a new value to replace it. If no key is stored, automatic backups are created as plaintext.",
+  "settings.autoBackupsShowKey": "Show automatic backup key",
+  "settings.autoBackupsHideKey": "Hide automatic backup key",
+  "settings.autoBackupsSaved": "Automatic backup settings saved.",
   "settings.backupsSection":
-    "Create restorable Scryer bundle backups. Manual backups run in the background so you can keep working while the bundle is prepared.",
+    "Create restorable Scryer bundle backups. Manual backups run in the background so you can keep working while the bundle is prepared, even if an automatic backup is already running.",
   "settings.backupsEmpty": "No backups created yet.",
   "settings.backupsCreate": "Create backup",
   "settings.backupsCreateTitle": "Create backup bundle",
   "settings.backupsCreateDescription":
-    "Optionally protect this backup with a password. Encrypted bundles use age and require the same password during restore.",
+    "Optionally protect this backup with a password. Password-protected bundles require the same password during restore.",
   "settings.backupsOptionalPassword": "Optional password protection",
+  "settings.backupsConfirmPassword": "Confirm password",
+  "settings.backupsPasswordMismatch": "Passwords do not match",
   "settings.backupsPasswordHelp":
-    "Leave this blank to create a plaintext bundle. Auto-generated backups remain plaintext.",
+    "Leave this blank to create a plaintext bundle. Automatic backups use the saved automatic backup key when one is configured.",
   "settings.backupsQueued": "Backup creation started in the background.",
   "settings.backupsDeleted": "Backup deleted.",
   "settings.backupsCreating": "Creating",
   "settings.backupsReady": "Ready",
+  "settings.backupsInvalid": "Invalid",
   "settings.backupsFailed": "Failed",
   "settings.backupsEncrypted": "Encrypted",
   "settings.backupsPlaintext": "Plaintext",
+  "settings.backupsManual": "Manual",
+  "settings.backupsAutomatic": "Automatic",
   "settings.backupsDownload": "Download",
   "settings.backupsDelete": "Delete",
   "settings.backupsDeleteConfirm":

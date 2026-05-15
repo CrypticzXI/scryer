@@ -10,6 +10,60 @@ use crate::migration_assets::{
 };
 use crate::{MigrationMode, MigrationStatus};
 
+pub async fn replay_source_catalog_for_fresh_install(
+    pool: &PgPool,
+    through_version: Option<i64>,
+) -> AppResult<()> {
+    let bundle = crate::migrations::load_source_migration_catalog()?;
+    replay_catalog_into_fresh_db(
+        pool,
+        &bundle.catalog,
+        &bundle.payload_bytes,
+        through_version,
+    )
+    .await
+}
+
+pub async fn replay_catalog_into_fresh_db(
+    pool: &PgPool,
+    catalog: &CompiledMigrationCatalog,
+    payload_bytes: &[u8],
+    through_version: Option<i64>,
+) -> AppResult<()> {
+    ensure_migration_ledger_shape(pool).await?;
+
+    let applied = load_applied_migrations(pool).await?;
+    if !applied.is_empty() || app_object_count(pool).await? > 0 {
+        return Err(AppError::Repository(
+            "replay_catalog_into_fresh_db requires an empty PostgreSQL database".to_string(),
+        ));
+    }
+
+    let target_version = through_version.unwrap_or_else(|| catalog.max_version());
+    if target_version <= 0 {
+        return Ok(());
+    }
+
+    let baseline = catalog
+        .latest_baseline_at_or_below(target_version, EngineScope::Postgres)
+        .ok_or_else(|| {
+            AppError::Repository(format!(
+                "missing PostgreSQL baseline at or below {target_version:04}"
+            ))
+        })?;
+
+    apply_postgres_baseline(pool, catalog, payload_bytes, baseline).await?;
+    apply_version_range(
+        pool,
+        catalog,
+        payload_bytes,
+        MigrationInstallKind::FreshInstall,
+        baseline.through_version + 1,
+        target_version,
+    )
+    .await
+}
+
 pub(crate) async fn run_migrations(pool: &PgPool, mode: MigrationMode) -> AppResult<()> {
     let catalog = crate::migrations::embedded_catalog()?;
 
@@ -239,16 +293,7 @@ async fn detect_install_kind(
         return Ok(MigrationInstallKind::Upgrade);
     }
 
-    let app_objects: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)
-           FROM information_schema.tables
-          WHERE table_schema = current_schema()
-            AND table_name NOT LIKE '_sqlx_%'",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(|error| AppError::Repository(error.to_string()))?;
-
+    let app_objects = app_object_count(pool).await?;
     if app_objects == 0 {
         Ok(MigrationInstallKind::FreshInstall)
     } else {
@@ -256,6 +301,18 @@ async fn detect_install_kind(
             "PostgreSQL database contains application schema or data but has no applied migration ledger".to_string(),
         ))
     }
+}
+
+async fn app_object_count(pool: &PgPool) -> AppResult<i64> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM information_schema.tables
+          WHERE table_schema = current_schema()
+            AND table_name NOT LIKE '_sqlx_%'",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::Repository(error.to_string()))
 }
 
 async fn apply_postgres_baseline(

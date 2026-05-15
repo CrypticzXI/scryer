@@ -1871,6 +1871,7 @@ pub(crate) fn from_backup_info(info: BackupInfo) -> BackupInfoPayload {
                 row_count: row_count.to_string(),
             })
             .collect(),
+        trigger: info.trigger.as_str().to_string(),
         status: info.status.as_str().to_string(),
         error_message: info.error_message,
     }

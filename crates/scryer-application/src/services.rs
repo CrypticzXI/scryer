@@ -91,6 +91,30 @@ impl DownloadFailureGuardTable {
 }
 
 #[derive(Clone, Default)]
+pub struct BackupExecutionGuardTable {
+    locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+}
+
+impl BackupExecutionGuardTable {
+    async fn lock_for_key(&self, key: String) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(existing) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+            existing
+        } else {
+            let created = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(key, Arc::downgrade(&created));
+            created
+        }
+    }
+
+    pub async fn try_acquire(&self, key: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = self.lock_for_key(key.to_string()).await;
+        lock.try_lock_owned().ok()
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct PluginOperationGuardTable {
     locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
 }
@@ -454,6 +478,7 @@ pub struct AppRuntimeLibraryState {
 #[derive(Clone)]
 pub struct AppRuntimeJobState {
     pub job_run_tracker: JobRunTracker,
+    pub backup_execution_guards: BackupExecutionGuardTable,
 }
 
 #[derive(Clone)]
@@ -522,6 +547,7 @@ impl Default for AppRuntimeState {
             },
             jobs: AppRuntimeJobState {
                 job_run_tracker: JobRunTracker::new(),
+                backup_execution_guards: BackupExecutionGuardTable::default(),
             },
             health: AppRuntimeHealthState {
                 results: Arc::new(tokio::sync::RwLock::new(Vec::new())),
@@ -2149,6 +2175,41 @@ mod tests {
     #[test]
     fn build_partial_for_tests_allows_partial_test_assemblies() {
         let _ = test_builder().build_partial_for_tests();
+    }
+
+    #[tokio::test]
+    async fn backup_execution_guards_allow_cross_trigger_overlap_but_block_same_trigger() {
+        let guards = BackupExecutionGuardTable::default();
+
+        let manual_guard = guards
+            .try_acquire("manual")
+            .await
+            .expect("manual guard should acquire");
+        let auto_guard = guards
+            .try_acquire("auto")
+            .await
+            .expect("auto guard should acquire while manual is running");
+
+        assert!(
+            guards.try_acquire("manual").await.is_none(),
+            "same-trigger manual backup should be blocked",
+        );
+        assert!(
+            guards.try_acquire("auto").await.is_none(),
+            "same-trigger automatic backup should be blocked",
+        );
+
+        drop(manual_guard);
+        assert!(
+            guards.try_acquire("manual").await.is_some(),
+            "manual guard should be released after completion",
+        );
+
+        drop(auto_guard);
+        assert!(
+            guards.try_acquire("auto").await.is_some(),
+            "automatic guard should be released after completion",
+        );
     }
 
     #[tokio::test]

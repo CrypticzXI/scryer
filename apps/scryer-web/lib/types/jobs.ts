@@ -9,12 +9,17 @@ export type JobCategory =
 
 export type JobSection = "primary" | "maintenance";
 
-export type JobScheduleKind = "manual" | "interval" | "startup_interval";
+export type JobScheduleKind =
+  | "manual"
+  | "interval"
+  | "startup_interval"
+  | "daily_at_time";
 
 export type JobTriggerSource =
   | "manual"
   | "scheduled_startup"
   | "scheduled_interval"
+  | "scheduled_daily"
   | "system_internal";
 
 export type JobRunStatus =
@@ -40,7 +45,8 @@ export type JobKey =
   | "health_checks"
   | "wanted_sync"
   | "pending_release_processing"
-  | "staged_nzb_prune";
+  | "staged_nzb_prune"
+  | "auto_backup";
 
 export type JobScheduleInfo = {
   kind: JobScheduleKind;

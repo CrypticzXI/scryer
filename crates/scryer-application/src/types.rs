@@ -1160,6 +1160,7 @@ pub struct IndexerQueryStats {
 pub enum BackupStatus {
     Creating,
     Ready,
+    Invalid,
     Failed,
 }
 
@@ -1168,7 +1169,25 @@ impl BackupStatus {
         match self {
             Self::Creating => "creating",
             Self::Ready => "ready",
+            Self::Invalid => "invalid",
             Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupTrigger {
+    #[default]
+    Manual,
+    Auto,
+}
+
+impl BackupTrigger {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Auto => "auto",
         }
     }
 }
@@ -1179,10 +1198,14 @@ pub struct BackupInfo {
     pub size_bytes: u64,
     pub created_at: String,
     pub format_version: String,
+    #[serde(default)]
+    pub source_scryer_version: String,
     pub source_engine: String,
     pub source_migration_key: Option<String>,
     pub encrypted: bool,
     pub row_counts: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub trigger: BackupTrigger,
     pub status: BackupStatus,
     pub error_message: Option<String>,
 }

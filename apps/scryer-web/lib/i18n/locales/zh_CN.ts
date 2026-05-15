@@ -360,10 +360,12 @@ const zh_CN: LocaleDictionary = {
     "将下载客户端在其容器或主机内报告的路径映射到 Scryer 可读取的本地路径。每行输入一条规则，格式为 REMOTE => LOCAL。",
   "settings.downloadClientSabnzbdAuthHelp":
     "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientSabnzbdNzbdavHelp":
+    "For NzbDav, point SAB-compatible completed downloads at the mounted completed-symlinks path, make sure Scryer can read that mount locally, and add remote path mappings if NzbDav reports a different visible path.",
   "settings.downloadClientQbittorrentDecypharrHelp":
     "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
   "settings.downloadClientDecypharrFilesystemHelp":
-    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr output paths into Scryer and add remote path mappings when the reported paths differ.",
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr or NzbDav output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "我的下载客户端",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "例如 api",

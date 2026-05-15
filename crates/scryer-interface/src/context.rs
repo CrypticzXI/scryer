@@ -1,9 +1,11 @@
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult, Schema};
 use scryer_application::AppError;
 use scryer_application::AppUseCase;
 use scryer_domain::{AppPermission, LibraryPermission, User};
+use scryer_infrastructure::DatastoreConfig;
 use tokio::sync::{broadcast, watch};
 
 use crate::{mutation::MutationRoot, query::QueryRoot, subscription::SubscriptionRoot};
@@ -115,10 +117,35 @@ pub struct ConnectionAuthEpoch(pub u64);
 pub struct ApiContext {
     pub app: AppUseCase,
     pub auth_runtime: AuthRuntimeStateHandle,
+    pub restore: Option<RestoreContext>,
+}
+
+#[derive(Clone)]
+pub struct RestoreRestartHandle {
+    schedule_fn: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl RestoreRestartHandle {
+    pub fn new(schedule: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            schedule_fn: Arc::new(schedule),
+        }
+    }
+
+    pub fn schedule_restart(&self) {
+        (self.schedule_fn)();
+    }
+}
+
+#[derive(Clone)]
+pub struct RestoreContext {
+    pub data_dir: PathBuf,
+    pub datastore_config: DatastoreConfig,
+    pub restart: RestoreRestartHandle,
 }
 
 pub fn build_schema(app: AppUseCase, auth_runtime: AuthRuntimeStateHandle) -> ApiSchema {
-    build_schema_with_log_buffer(app, auth_runtime, None)
+    build_schema_with_log_buffer_and_restore(app, auth_runtime, None, None)
 }
 
 pub fn build_schema_with_log_buffer(
@@ -126,8 +153,21 @@ pub fn build_schema_with_log_buffer(
     auth_runtime: AuthRuntimeStateHandle,
     log_buffer: Option<LogBuffer>,
 ) -> ApiSchema {
-    let mut builder = Schema::build(QueryRoot, MutationRoot::default(), SubscriptionRoot)
-        .data(ApiContext { app, auth_runtime });
+    build_schema_with_log_buffer_and_restore(app, auth_runtime, log_buffer, None)
+}
+
+pub fn build_schema_with_log_buffer_and_restore(
+    app: AppUseCase,
+    auth_runtime: AuthRuntimeStateHandle,
+    log_buffer: Option<LogBuffer>,
+    restore: Option<RestoreContext>,
+) -> ApiSchema {
+    let mut builder =
+        Schema::build(QueryRoot, MutationRoot::default(), SubscriptionRoot).data(ApiContext {
+            app,
+            auth_runtime,
+            restore,
+        });
     if let Some(buf) = log_buffer {
         builder = builder.data(buf);
     }
@@ -140,6 +180,13 @@ pub(crate) fn app_from_ctx(ctx: &Context<'_>) -> GqlResult<AppUseCase> {
 
 pub(crate) fn auth_runtime_from_ctx(ctx: &Context<'_>) -> AuthRuntimeStateHandle {
     ctx.data_unchecked::<ApiContext>().auth_runtime.clone()
+}
+
+pub(crate) fn restore_context_from_ctx(ctx: &Context<'_>) -> GqlResult<RestoreContext> {
+    ctx.data_unchecked::<ApiContext>()
+        .restore
+        .clone()
+        .ok_or_else(|| Error::new("restore is not configured"))
 }
 
 pub(crate) fn to_gql_error(err: AppError) -> Error {

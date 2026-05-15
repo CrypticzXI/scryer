@@ -16,8 +16,13 @@ use scryer_application::{
 };
 use scryer_domain::MediaFacet;
 
+use crate::backup_import_normalization::{
+    ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
+};
 use crate::postgres::PostgresServices;
-use crate::queries::title_search::{self, TitleSearchProjectionSource};
+use crate::queries::title_search::{
+    TitleSearchProjectionSource, replace_title_search_projection_pg_source_tx,
+};
 
 const EXPORT_BATCH_SIZE: i64 = 500;
 
@@ -29,7 +34,26 @@ pub struct PostgresLogicalBackupExporter {
 #[derive(Clone, Debug)]
 struct PgColumnInfo {
     name: String,
+    has_default: bool,
+    nullable: bool,
+    nullable_foreign_key: bool,
     udt_name: String,
+}
+
+impl PgColumnInfo {
+    fn import_rule(&self) -> ImportColumnRule {
+        ImportColumnRule {
+            name: self.name.clone(),
+            nullable: self.nullable,
+            has_default: self.has_default,
+            nullable_foreign_key: self.nullable_foreign_key,
+            kind: if is_timestamp_column(self) {
+                ImportColumnKind::TimestampLike
+            } else {
+                ImportColumnKind::Generic
+            },
+        }
+    }
 }
 
 impl PostgresLogicalBackupExporter {
@@ -111,9 +135,19 @@ pub async fn restore_backup_bundle_into_postgres_pool(
         .cloned()
         .collect::<BTreeSet<_>>();
     if manifest_tables != expected_tables {
-        return Err(AppError::Validation(
-            "backup bundle table set does not match the current restore catalog".into(),
-        ));
+        let missing = expected_tables
+            .difference(&manifest_tables)
+            .cloned()
+            .collect::<Vec<_>>();
+        let unexpected = manifest_tables
+            .difference(&expected_tables)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(AppError::Validation(format!(
+            "backup bundle table set does not match the current restore catalog: missing [{}], unexpected [{}]",
+            missing.join(", "),
+            unexpected.join(", ")
+        )));
     }
 
     let mut tx = pool.begin().await.map_err(|error| {
@@ -211,7 +245,7 @@ async fn application_tables(pool: &PgPool) -> AppResult<Vec<String>> {
 }
 
 fn is_engine_internal_table(table: &str) -> bool {
-    table == "_sqlx_migrations" || table == "mediarr_schema_migrations"
+    table == "_sqlx_migrations"
 }
 
 async fn ordered_export_tables(pool: &PgPool) -> AppResult<Vec<String>> {
@@ -522,6 +556,10 @@ async fn import_table_part(
     part_path: &Path,
 ) -> AppResult<()> {
     let target_columns = table_columns(tx, table).await?;
+    let target_column_rules = target_columns
+        .iter()
+        .map(PgColumnInfo::import_rule)
+        .collect::<Vec<_>>();
     let file = File::open(part_path).map_err(|error| {
         AppError::Validation(format!("backup table payload missing for {table}: {error}"))
     })?;
@@ -551,7 +589,13 @@ async fn import_table_part(
                 "backup row for {table}:{line_number} is not an object"
             ))
         })?;
-        normalize_import_object(table, &mut object)?;
+        normalize_import_object_for_target(
+            table,
+            &mut object,
+            chrono::Utc::now(),
+            &target_column_rules,
+            line_number,
+        )?;
         let columns = target_columns
             .iter()
             .filter(|column| object.contains_key(&column.name))
@@ -592,118 +636,35 @@ async fn import_table_part(
     Ok(())
 }
 
-fn normalize_import_object(table: &str, object: &mut JsonMap<String, JsonValue>) -> AppResult<()> {
-    if table == "titles" {
-        normalize_title_import_object(object);
-    }
-    Ok(())
-}
-
-fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
-    let record = object
-        .get("record_json")
-        .and_then(JsonValue::as_object)
-        .cloned()
-        .unwrap_or_default();
-
-    for field in [
-        "id",
-        "name",
-        "created_by",
-        "created_at",
-        "year",
-        "overview",
-        "poster_url",
-        "banner_url",
-        "background_url",
-        "sort_title",
-        "slug",
-        "imdb_id",
-        "runtime_minutes",
-        "content_status",
-        "language",
-        "first_aired",
-        "network",
-        "studio",
-        "country",
-        "metadata_language",
-        "metadata_fetched_at",
-        "min_availability",
-        "digital_release_date",
-        "folder_path",
-    ] {
-        copy_title_record_field(object, &record, field, field);
-    }
-
-    copy_title_record_field(object, &record, "library_id", "library_id");
-    copy_title_record_field(object, &record, "facet", "facet");
-
-    object
-        .entry("library_id".to_string())
-        .or_insert_with(|| JsonValue::String(String::new()));
-    object
-        .entry("facet".to_string())
-        .or_insert_with(|| JsonValue::String("movie".to_string()));
-    let monitored = sqlite_bool_value(object.get("monitored"))
-        .or_else(|| {
-            record
-                .get("monitored")
-                .and_then(|value| sqlite_bool_value(Some(value)))
-        })
-        .unwrap_or(JsonValue::Bool(true));
-    object.insert("monitored".to_string(), monitored);
-
-    for (record_field, source_field) in [
-        ("tags", "tags"),
-        ("external_ids", "external_ids"),
-        ("genres", "genres"),
-        ("aliases", "aliases"),
-        ("tagged_aliases", "tagged_aliases_json"),
-    ] {
-        if object.contains_key(source_field) {
-            continue;
-        }
-        let value = record
-            .get(record_field)
-            .and_then(logical_json_value)
-            .unwrap_or_else(|| JsonValue::Array(Vec::new()));
-        object.insert(source_field.to_string(), value);
-    }
-}
-
-fn copy_title_record_field(
-    object: &mut JsonMap<String, JsonValue>,
-    record: &JsonMap<String, JsonValue>,
-    record_field: &str,
-    column: &str,
-) {
-    if object.contains_key(column) {
-        return;
-    }
-    if let Some(value) = record.get(record_field).filter(|value| !value.is_null()) {
-        object.insert(column.to_string(), value.clone());
-    }
-}
-
-fn sqlite_bool_value(value: Option<&JsonValue>) -> Option<JsonValue> {
-    match value {
-        Some(JsonValue::Bool(value)) => Some(JsonValue::Bool(*value)),
-        Some(JsonValue::Number(value)) => value.as_i64().map(|value| JsonValue::Bool(value != 0)),
-        Some(JsonValue::String(value)) => match value.as_str() {
-            "1" | "true" | "TRUE" => Some(JsonValue::Bool(true)),
-            "0" | "false" | "FALSE" => Some(JsonValue::Bool(false)),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 async fn table_columns(
     executor: &mut sqlx::PgConnection,
     table: &str,
 ) -> AppResult<Vec<PgColumnInfo>> {
+    let foreign_key_rows = sqlx::query(
+        "SELECT kcu.column_name
+           FROM information_schema.table_constraints tc
+           JOIN information_schema.key_column_usage kcu
+             ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+          WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_schema = current_schema()
+            AND tc.table_name = $1",
+    )
+    .bind(table)
+    .fetch_all(&mut *executor)
+    .await
+    .map_err(|error| {
+        AppError::Repository(format!(
+            "failed to inspect PostgreSQL foreign keys for {table}: {error}"
+        ))
+    })?;
+    let foreign_key_columns = foreign_key_rows
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("column_name").ok())
+        .collect::<BTreeSet<_>>();
+
     let rows = sqlx::query(
-        "SELECT column_name, data_type, udt_name
+        "SELECT column_name, is_nullable, column_default, udt_name
            FROM information_schema.columns
           WHERE table_schema = current_schema()
             AND table_name = $1
@@ -719,8 +680,16 @@ async fn table_columns(
     })?;
     rows.into_iter()
         .map(|row| {
+            let name: String = row.try_get("column_name").map_err(repo_err)?;
+            let nullable = row.try_get::<String, _>("is_nullable").map_err(repo_err)? == "YES";
             Ok(PgColumnInfo {
-                name: row.try_get("column_name").map_err(repo_err)?,
+                has_default: row
+                    .try_get::<Option<String>, _>("column_default")
+                    .map_err(repo_err)?
+                    .is_some(),
+                name: name.clone(),
+                nullable,
+                nullable_foreign_key: nullable && foreign_key_columns.contains(&name),
                 udt_name: row.try_get("udt_name").map_err(repo_err)?,
             })
         })
@@ -913,23 +882,7 @@ async fn rebuild_title_search_projection(
             aliases: json_row_value(&row, "aliases")?,
             tagged_aliases: json_row_value(&row, "tagged_aliases_json")?,
         };
-        for term in title_search::build_title_search_terms(&source) {
-            sqlx::query(
-                "INSERT INTO title_search_terms
-                 (title_id, facet, term_kind, raw_term, normalized_term, weight, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                 ON CONFLICT (title_id, term_kind, normalized_term) DO UPDATE SET
-                    raw_term = EXCLUDED.raw_term,
-                    weight = EXCLUDED.weight,
-                    updated_at = EXCLUDED.updated_at",
-            )
-            .bind(&source.title_id)
-            .bind(source.facet.as_str())
-            .bind(term.term_kind)
-            .bind(&term.raw_term)
-            .bind(&term.normalized_term)
-            .bind(term.weight)
-            .execute(&mut **tx)
+        replace_title_search_projection_pg_source_tx(tx, &source)
             .await
             .map_err(|error| {
                 AppError::Repository(format!(
@@ -937,7 +890,6 @@ async fn rebuild_title_search_projection(
                     source.title_id
                 ))
             })?;
-        }
     }
 
     Ok(())

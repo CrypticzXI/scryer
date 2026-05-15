@@ -726,8 +726,8 @@ impl MediaFileRepository for PostgresLibraryStateSql {
     }
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
         sqlx::query(
-            "INSERT INTO file_episode_map (file_id, episode_id, created_at)
-             VALUES ($1, $2, NOW())
+            "INSERT INTO file_episode_map (file_id, episode_id)
+             VALUES ($1, $2)
              ON CONFLICT (file_id, episode_id) DO NOTHING",
         )
         .bind(file_id)
@@ -735,12 +735,6 @@ impl MediaFileRepository for PostgresLibraryStateSql {
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
-        sqlx::query("UPDATE media_files SET episode_id = COALESCE(episode_id, $2) WHERE id = $1")
-            .bind(file_id)
-            .bind(episode_id)
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
         Ok(())
     }
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {

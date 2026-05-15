@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use scryer_application::{AppError, AppResult};
 use scryer_domain::{MediaFacet, TaggedAlias, Title};
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Postgres, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
 const TERM_KIND_NAME: &str = "name";
@@ -603,6 +603,48 @@ pub(crate) async fn replace_title_search_projection_tx(
     title: &Title,
 ) -> AppResult<()> {
     replace_title_search_projection_source_tx(tx, &TitleSearchProjectionSource::from(title)).await
+}
+
+pub(crate) async fn replace_title_search_projection_pg_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    title: &Title,
+) -> AppResult<()> {
+    replace_title_search_projection_pg_source_tx(tx, &TitleSearchProjectionSource::from(title))
+        .await
+}
+
+pub(crate) async fn replace_title_search_projection_pg_source_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    source: &TitleSearchProjectionSource,
+) -> AppResult<()> {
+    sqlx::query("DELETE FROM title_search_terms WHERE title_id = $1")
+        .bind(&source.title_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+
+    let facet = source.facet.as_str();
+    for term in build_title_search_terms(source) {
+        sqlx::query(
+            "INSERT INTO title_search_terms
+             (title_id, facet, term_kind, raw_term, normalized_term, weight)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (title_id, term_kind, normalized_term) DO UPDATE SET
+                raw_term = EXCLUDED.raw_term,
+                weight = EXCLUDED.weight",
+        )
+        .bind(&source.title_id)
+        .bind(facet)
+        .bind(term.term_kind)
+        .bind(&term.raw_term)
+        .bind(&term.normalized_term)
+        .bind(term.weight)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    }
+
+    Ok(())
 }
 
 async fn replace_title_search_projection_source_tx(

@@ -93,8 +93,8 @@ mod tests {
         default_quality_profile_for_search,
     };
     use scryer_domain::{
-        Collection, CollectionType, ExternalId, Id, LibraryGrant, LibraryPermission,
-        LibraryPermissionMask, MediaFacet, Title, User,
+        Collection, CollectionType, ExternalId, Id, InterstitialMovieMetadata, LibraryGrant,
+        LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
     };
     use sqlx::Row;
     use tokio::task::JoinSet;
@@ -157,6 +157,16 @@ mod tests {
 
             let title = sample_title("pg-blank-install-movie");
             TitleRepository::create(&catalog, title.clone()).await?;
+            let title_search_term_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM title_search_terms WHERE title_id = $1")
+                    .bind(&title.id)
+                    .fetch_one(services.pool())
+                    .await
+                    .map_err(|error| AppError::Repository(error.to_string()))?;
+            assert!(
+                title_search_term_count > 0,
+                "PostgreSQL title create should seed canonical title_search_terms"
+            );
             catalog
                 .mark_title_metadata_hydration_due_now(&title.id)
                 .await?;
@@ -394,15 +404,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn postgres_collection_reader_treats_json_null_interstitial_fields_as_missing()
-    -> AppResult<()> {
+    async fn postgres_collection_round_trips_canonical_interstitial_columns() -> AppResult<()> {
         let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
         else {
             eprintln!(
-                "skipping PostgreSQL collection-null compatibility test; SCRYER_TEST_POSTGRES_URL is not set"
+                "skipping PostgreSQL collection interstitial-column test; SCRYER_TEST_POSTGRES_URL is not set"
             );
             return Ok(());
         };
@@ -425,12 +434,62 @@ mod tests {
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
             let catalog = super::super::PostgresCatalogStore::new(&services);
 
-            let mut title = sample_title("pg-collection-json-null");
+            let mut title = sample_title("pg-collection-interstitial");
             title.facet = MediaFacet::Anime;
             TitleRepository::create(&catalog, title.clone()).await?;
 
+            let interstitial_movie = InterstitialMovieMetadata {
+                tvdb_id: "movie-100".to_string(),
+                name: "Interstitial Movie".to_string(),
+                slug: "interstitial-movie".to_string(),
+                year: Some(2024),
+                content_status: "released".to_string(),
+                overview: "A canonical scalar interstitial movie".to_string(),
+                poster_url: "https://example.com/interstitial.jpg".to_string(),
+                language: "eng".to_string(),
+                runtime_minutes: 42,
+                sort_title: "Interstitial Movie".to_string(),
+                imdb_id: "tt0000100".to_string(),
+                genres: vec!["Animation".to_string(), "Short".to_string()],
+                studio: "Scryer Studios".to_string(),
+                digital_release_date: Some("2024-05-01".to_string()),
+                association_confidence: Some("high".to_string()),
+                continuity_status: Some("canon".to_string()),
+                movie_form: Some("special".to_string()),
+                confidence: Some("strong".to_string()),
+                signal_summary: Some("test fixture".to_string()),
+                placement: Some("between-episodes".to_string()),
+                movie_tmdb_id: Some("100".to_string()),
+                movie_mal_id: Some("200".to_string()),
+                movie_anidb_id: Some("300".to_string()),
+            };
+            let special_movie = InterstitialMovieMetadata {
+                tvdb_id: "movie-101".to_string(),
+                name: "Special Movie".to_string(),
+                slug: "special-movie".to_string(),
+                year: Some(2025),
+                content_status: "released".to_string(),
+                overview: "A canonical special movie".to_string(),
+                poster_url: "https://example.com/special.jpg".to_string(),
+                language: "jpn".to_string(),
+                runtime_minutes: 55,
+                sort_title: "Special Movie".to_string(),
+                imdb_id: "tt0000101".to_string(),
+                genres: vec!["Adventure".to_string()],
+                studio: "Scryer Studios".to_string(),
+                digital_release_date: None,
+                association_confidence: None,
+                continuity_status: None,
+                movie_form: Some("ova".to_string()),
+                confidence: None,
+                signal_summary: None,
+                placement: None,
+                movie_tmdb_id: None,
+                movie_mal_id: Some("201".to_string()),
+                movie_anidb_id: Some("301".to_string()),
+            };
             let collection = Collection {
-                id: "pg-collection-json-null-season-1".to_string(),
+                id: "pg-collection-interstitial-season-1".to_string(),
                 title_id: title.id.clone(),
                 collection_type: CollectionType::Season,
                 collection_index: "1".to_string(),
@@ -439,44 +498,34 @@ mod tests {
                 narrative_order: Some("1".to_string()),
                 first_episode_number: Some("1".to_string()),
                 last_episode_number: Some("12".to_string()),
-                interstitial_movie: None,
-                specials_movies: Vec::new(),
-                interstitial_season_episode: None,
+                interstitial_movie: Some(interstitial_movie.clone()),
+                specials_movies: vec![special_movie.clone()],
+                interstitial_season_episode: Some("S01E06".to_string()),
                 monitored: true,
                 created_at: chrono::Utc::now(),
             };
             ShowRepository::create_collection(&catalog, collection.clone()).await?;
 
-            sqlx::query(
-                "UPDATE collections
-                    SET interstitial_movie_json = 'null'::jsonb,
-                        specials_movies_json = 'null'::jsonb
-                  WHERE id = $1",
-            )
-            .bind(&collection.id)
-            .execute(services.pool())
-            .await
-            .map_err(|error| AppError::Repository(error.to_string()))?;
-
             let listed = ShowRepository::list_collections_for_title(&catalog, &title.id).await?;
             assert_eq!(listed.len(), 1);
             assert_eq!(listed[0].id, collection.id);
-            assert!(
-                listed[0].interstitial_movie.is_none(),
-                "expected JSON null interstitial movie payloads to deserialize as missing"
+            assert_eq!(
+                listed[0].interstitial_movie,
+                Some(interstitial_movie.clone())
             );
-            assert!(
-                listed[0].specials_movies.is_empty(),
-                "expected JSON null specials payloads to deserialize as empty collections"
-            );
+            assert_eq!(listed[0].specials_movies, vec![special_movie.clone()]);
 
             let loaded = ShowRepository::get_collection_by_id(&catalog, &collection.id)
                 .await?
                 .ok_or_else(|| {
                     AppError::Repository("expected collection to be readable by id".to_string())
                 })?;
-            assert!(loaded.interstitial_movie.is_none());
-            assert!(loaded.specials_movies.is_empty());
+            assert_eq!(loaded.interstitial_movie, Some(interstitial_movie));
+            assert_eq!(loaded.specials_movies, vec![special_movie]);
+            assert_eq!(
+                loaded.interstitial_season_episode.as_deref(),
+                Some("S01E06")
+            );
 
             services.pool().close().await;
             Ok::<_, AppError>(())
@@ -978,145 +1027,102 @@ mod tests {
             .iter()
             .map(|(table, _)| table.clone())
             .collect();
+        let expected_columns = postgres_0115_baseline_columns();
 
-        let expected_columns = [
-            ("titles", "library_id"),
-            ("titles", "name"),
-            ("titles", "facet"),
-            ("titles", "monitored"),
-            ("titles", "tags"),
-            ("titles", "external_ids"),
-            ("titles", "created_by"),
-            ("titles", "created_at"),
-            ("titles", "year"),
-            ("titles", "overview"),
-            ("titles", "poster_url"),
-            ("titles", "poster_local_path"),
-            ("titles", "banner_url"),
-            ("titles", "banner_local_path"),
-            ("titles", "background_url"),
-            ("titles", "background_local_path"),
-            ("titles", "sort_title"),
-            ("titles", "slug"),
-            ("titles", "imdb_id"),
-            ("titles", "runtime_minutes"),
-            ("titles", "genres"),
-            ("titles", "content_status"),
-            ("titles", "language"),
-            ("titles", "first_aired"),
-            ("titles", "network"),
-            ("titles", "studio"),
-            ("titles", "country"),
-            ("titles", "aliases"),
-            ("titles", "metadata_language"),
-            ("titles", "metadata_fetched_at"),
-            ("titles", "min_availability"),
-            ("titles", "digital_release_date"),
-            ("titles", "folder_path"),
-            ("titles", "tagged_aliases_json"),
-            ("titles", "metadata_hydration_next_attempt_at"),
-            ("titles", "metadata_hydration_attempt_count"),
-            ("libraries", "is_default"),
-            ("library_roots", "is_default"),
-            ("library_scan_unmatched_items", "title_id"),
-            ("library_scan_unmatched_items", "library_id"),
-            ("library_scan_unmatched_items", "scan_session_id"),
-            ("library_scan_unmatched_items", "display_name"),
-            ("library_scan_unmatched_items", "query"),
-            ("library_scan_unmatched_items", "year_hint"),
-            ("library_scan_unmatched_items", "reason_code"),
-            ("library_scan_unmatched_items", "error_message"),
-            ("library_scan_unmatched_items", "search_attempts_json"),
-            ("title_images", "master_sha256"),
-            ("title_images", "bytes"),
-            ("title_image_variants", "variant_key"),
-            ("title_image_variants", "bytes"),
-            ("download_jobs", "progress_json"),
-            ("download_submissions", "episode_set_ids"),
-            ("media_files", "analysis_json"),
-            ("pending_releases", "scoring_log_json"),
-            ("post_processing_scripts", "priority"),
-            ("post_processing_scripts", "script_content"),
-            ("post_processing_scripts", "applied_facets"),
-            ("post_processing_scripts", "enabled"),
-            ("post_processing_scripts", "debug"),
-            ("post_processing_script_runs", "script_name"),
-            ("post_processing_script_runs", "stdout_tail"),
-            ("post_processing_script_runs", "stderr_tail"),
-            ("post_processing_script_runs", "started_at"),
-            ("post_processing_script_runs", "completed_at"),
-            ("rule_sets", "rego_source"),
-            ("rule_sets", "applied_facets"),
-            ("rule_sets", "is_managed"),
-            ("history_events", "event_json"),
-            ("event_outboxes", "payload_json"),
-            ("collection_external_ids", "provenance"),
-            ("episode_external_ids", "provenance"),
-            ("indexers", "api_key_encrypted"),
-            ("indexers", "config_json"),
-            ("download_clients", "config_json"),
-            ("subtitle_provider_configs", "config_json"),
-            ("subtitle_provider_configs", "enabled_facets"),
-            ("plugin_catalog_status", "status_json"),
-            ("plugin_catalog_status", "checked_at"),
-            ("subtitle_downloads", "source_kind"),
-            ("user_app_permission_masks", "permission_mask"),
-            ("user_library_permission_masks", "permission_mask"),
-        ];
-
-        let missing_columns: Vec<String> = expected_columns
-            .into_iter()
-            .filter(|(table, column)| {
-                !actual_columns.contains(&(table.to_string(), column.to_string()))
-            })
-            .map(|(table, column)| format!("{table}.{column}"))
-            .collect();
+        let mut missing_columns = Vec::new();
+        for (table, columns) in &expected_columns {
+            for column in columns {
+                if !actual_columns.contains(&(table.clone(), column.clone())) {
+                    missing_columns.push(format!("{table}.{column}"));
+                }
+            }
+        }
 
         assert!(
             missing_columns.is_empty(),
-            "expected PostgreSQL blank install to include runtime schema columns; missing {missing_columns:?}"
+            "expected PostgreSQL blank install to include every 0115 baseline column; missing {missing_columns:?}"
         );
 
-        let forbidden_columns = [
-            ("titles", "record_json"),
-            ("titles", "metadata_json"),
-            ("indexers", "record_json"),
-            ("indexers", "api_key"),
-            ("download_clients", "record_json"),
-            ("subtitle_provider_configs", "record_json"),
-            ("subtitle_provider_configs", "status"),
-            ("subtitle_provider_configs", "last_seen_at"),
-            ("rule_sets", "record_json"),
-            ("rule_sets", "rule_json"),
-            ("post_processing_scripts", "record_json"),
-            ("post_processing_scripts", "script_path"),
-            ("post_processing_scripts", "is_enabled"),
-            ("post_processing_script_runs", "record_json"),
-            ("post_processing_script_runs", "output_text"),
-            ("plugin_installations", "record_json"),
-            ("plugin_catalog_sources", "record_json"),
-            ("plugin_catalog_status", "record_json"),
-            ("plugin_catalog_status", "catalog_json"),
-        ];
-        let unexpected_columns: Vec<String> = forbidden_columns
-            .into_iter()
+        let unexpected_columns: Vec<String> = actual_columns
+            .iter()
             .filter(|(table, column)| {
-                actual_columns.contains(&(table.to_string(), column.to_string()))
+                expected_columns
+                    .get(table)
+                    .is_some_and(|columns| !columns.contains(column))
             })
             .map(|(table, column)| format!("{table}.{column}"))
             .collect();
 
         assert!(
             unexpected_columns.is_empty(),
-            "PostgreSQL blank install still exposes legacy compatibility columns: {unexpected_columns:?}"
+            "PostgreSQL blank install exposes columns outside the 0115 baseline: {unexpected_columns:?}"
         );
 
-        assert!(
-            !actual_tables.contains("subtitle_providers"),
-            "PostgreSQL blank install still exposes legacy subtitle_providers table"
-        );
+        for removed_table in [
+            "subtitle_providers",
+            "import_artifacts",
+            "job_runs",
+            "quality_profiles_json",
+            "mediarr_schema_migrations",
+        ] {
+            assert!(
+                !actual_tables.contains(removed_table),
+                "PostgreSQL blank install still exposes removed table {removed_table}"
+            );
+        }
 
         Ok(())
+    }
+
+    fn postgres_0115_baseline_columns() -> BTreeMap<String, BTreeSet<String>> {
+        parse_create_table_columns(include_str!(
+            "../../../scryer/src/db/postgres/baselines/0115_baseline.sql"
+        ))
+    }
+
+    fn parse_create_table_columns(sql: &str) -> BTreeMap<String, BTreeSet<String>> {
+        let mut schema = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut current_table: Option<String> = None;
+        for line in sql.lines() {
+            let trimmed = line.trim();
+            if let Some(table) = current_table.as_ref() {
+                if trimmed == ");" {
+                    current_table = None;
+                    continue;
+                }
+                if trimmed.is_empty()
+                    || trimmed.starts_with("CONSTRAINT ")
+                    || trimmed.starts_with("PRIMARY ")
+                    || trimmed.starts_with("UNIQUE ")
+                    || trimmed.starts_with("FOREIGN ")
+                    || trimmed.starts_with("CHECK ")
+                {
+                    continue;
+                }
+                if let Some(column) = trimmed
+                    .trim_end_matches(',')
+                    .split_whitespace()
+                    .next()
+                    .map(|value| value.trim_matches('"').to_string())
+                {
+                    schema.entry(table.clone()).or_default().insert(column);
+                }
+                continue;
+            }
+
+            if let Some(rest) = trimmed.strip_prefix("CREATE TABLE ") {
+                let table = rest
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .trim_end_matches('(')
+                    .trim_start_matches("public.")
+                    .to_string();
+                schema.entry(table.clone()).or_default();
+                current_table = Some(table);
+            }
+        }
+        schema
     }
 
     async fn assert_schema_parity_owned_tables_match_sqlite(

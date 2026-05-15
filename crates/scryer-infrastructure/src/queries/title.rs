@@ -22,6 +22,69 @@ const TITLE_COLUMNS: &str = "id, library_id, name, facet, monitored, tags, exter
     content_status, language, first_aired, network, studio, country, aliases, \
     metadata_language, metadata_fetched_at, min_availability, digital_release_date, folder_path, tagged_aliases_json";
 
+pub(crate) struct CollectionInterstitialColumnValues {
+    pub(crate) tvdb_id: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) slug: Option<String>,
+    pub(crate) year: Option<i32>,
+    pub(crate) content_status: Option<String>,
+    pub(crate) overview: Option<String>,
+    pub(crate) poster_url: Option<String>,
+    pub(crate) language: Option<String>,
+    pub(crate) runtime_minutes: Option<i32>,
+    pub(crate) sort_title: Option<String>,
+    pub(crate) imdb_id: Option<String>,
+    pub(crate) genres_json: Option<serde_json::Value>,
+    pub(crate) studio: Option<String>,
+    pub(crate) digital_release_date: Option<String>,
+    pub(crate) association_confidence: Option<String>,
+    pub(crate) continuity_status: Option<String>,
+    pub(crate) movie_form: Option<String>,
+    pub(crate) confidence: Option<String>,
+    pub(crate) signal_summary: Option<String>,
+    pub(crate) placement: Option<String>,
+    pub(crate) movie_tmdb_id: Option<String>,
+    pub(crate) movie_mal_id: Option<String>,
+    pub(crate) movie_anidb_id: Option<String>,
+    pub(crate) special_movies_json: serde_json::Value,
+}
+
+pub(crate) fn collection_interstitial_column_values(
+    collection: &Collection,
+) -> AppResult<CollectionInterstitialColumnValues> {
+    let movie = collection.interstitial_movie.as_ref();
+    Ok(CollectionInterstitialColumnValues {
+        tvdb_id: movie.map(|value| value.tvdb_id.clone()),
+        name: movie.map(|value| value.name.clone()),
+        slug: movie.map(|value| value.slug.clone()),
+        year: movie.and_then(|value| value.year),
+        content_status: movie.map(|value| value.content_status.clone()),
+        overview: movie.map(|value| value.overview.clone()),
+        poster_url: movie.map(|value| value.poster_url.clone()),
+        language: movie.map(|value| value.language.clone()),
+        runtime_minutes: movie.map(|value| value.runtime_minutes),
+        sort_title: movie.map(|value| value.sort_title.clone()),
+        imdb_id: movie.map(|value| value.imdb_id.clone()),
+        genres_json: movie
+            .map(|value| serde_json::to_value(&value.genres))
+            .transpose()
+            .map_err(|err| AppError::Repository(err.to_string()))?,
+        studio: movie.map(|value| value.studio.clone()),
+        digital_release_date: movie.and_then(|value| value.digital_release_date.clone()),
+        association_confidence: movie.and_then(|value| value.association_confidence.clone()),
+        continuity_status: movie.and_then(|value| value.continuity_status.clone()),
+        movie_form: movie.and_then(|value| value.movie_form.clone()),
+        confidence: movie.and_then(|value| value.confidence.clone()),
+        signal_summary: movie.and_then(|value| value.signal_summary.clone()),
+        placement: movie.and_then(|value| value.placement.clone()),
+        movie_tmdb_id: movie.and_then(|value| value.movie_tmdb_id.clone()),
+        movie_mal_id: movie.and_then(|value| value.movie_mal_id.clone()),
+        movie_anidb_id: movie.and_then(|value| value.movie_anidb_id.clone()),
+        special_movies_json: serde_json::to_value(&collection.specials_movies)
+            .map_err(|err| AppError::Repository(err.to_string()))?,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TitleReadMode {
     Presentation,
@@ -971,6 +1034,7 @@ pub(crate) async fn create_collection_query(
     pool: &SqlitePool,
     collection: &Collection,
 ) -> AppResult<Collection> {
+    let interstitial = collection_interstitial_column_values(collection)?;
     sqlx::query(
         "INSERT INTO collections
          (id, title_id, collection_type, collection_index, label, ordered_path, narrative_order,
@@ -994,146 +1058,31 @@ pub(crate) async fn create_collection_query(
     .bind(&collection.narrative_order)
     .bind(&collection.first_episode_number)
     .bind(&collection.last_episode_number)
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.tvdb_id.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.name.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.slug.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.year),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.content_status.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.overview.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.poster_url.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.language.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.runtime_minutes),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.sort_title.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.imdb_id.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| serde_json::to_string(&movie.genres).unwrap_or_else(|_| "[]".to_string())),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .map(|movie| movie.studio.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.digital_release_date.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.association_confidence.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.continuity_status.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.movie_form.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.confidence.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.signal_summary.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.placement.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.movie_tmdb_id.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.movie_mal_id.clone()),
-    )
-    .bind(
-        collection
-            .interstitial_movie
-            .as_ref()
-            .and_then(|movie| movie.movie_anidb_id.clone()),
-    )
+    .bind(interstitial.tvdb_id)
+    .bind(interstitial.name)
+    .bind(interstitial.slug)
+    .bind(interstitial.year)
+    .bind(interstitial.content_status)
+    .bind(interstitial.overview)
+    .bind(interstitial.poster_url)
+    .bind(interstitial.language)
+    .bind(interstitial.runtime_minutes)
+    .bind(interstitial.sort_title)
+    .bind(interstitial.imdb_id)
+    .bind(interstitial.genres_json.map(|value| value.to_string()))
+    .bind(interstitial.studio)
+    .bind(interstitial.digital_release_date)
+    .bind(interstitial.association_confidence)
+    .bind(interstitial.continuity_status)
+    .bind(interstitial.movie_form)
+    .bind(interstitial.confidence)
+    .bind(interstitial.signal_summary)
+    .bind(interstitial.placement)
+    .bind(interstitial.movie_tmdb_id)
+    .bind(interstitial.movie_mal_id)
+    .bind(interstitial.movie_anidb_id)
     .bind(&collection.interstitial_season_episode)
-    .bind(serde_json::to_string(&collection.specials_movies).unwrap_or_else(|_| "[]".to_string()))
+    .bind(interstitial.special_movies_json.to_string())
     .bind(if collection.monitored { 1_i64 } else { 0_i64 })
     .bind(collection.created_at.to_rfc3339())
     .execute(pool)

@@ -421,6 +421,25 @@ async fn manual_job_trigger_failure_is_persisted_and_broadcast() {
 }
 
 #[tokio::test]
+async fn automatic_backup_job_cannot_be_triggered_manually() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let error = ctx
+        .app
+        .trigger_job(&admin, JobKey::AutoBackup)
+        .await
+        .expect_err("automatic backup should reject manual triggering");
+
+    assert!(
+        error
+            .to_string()
+            .contains("Automatic Backup can only run on its configured schedule"),
+    );
+}
+
+#[tokio::test]
 async fn health_check_job_persists_issue_details_in_summary_json() {
     let ctx = TestContext::new().await;
     let workflow_store = SqliteWorkflowStore::new(&ctx.db);

@@ -1,5 +1,6 @@
 use scryer_application::{
     ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
+    AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
     FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
     INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
@@ -149,6 +150,30 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             data_type: "number",
             default_value_json: "180",
             is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: AUTO_BACKUP_ENABLED_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
+            data_type: "string",
+            default_value_json: "\"03:00\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: AUTO_BACKUP_KEY_KEY,
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: true,
         },
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_SECURITY,
@@ -905,6 +930,28 @@ mod tests {
                 && seed.key_name == HISTORY_RETENTION_DAYS_KEY
                 && seed.data_type == "number"
                 && seed.default_value_json == "180"
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == AUTO_BACKUP_ENABLED_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == AUTO_BACKUP_DAILY_TIME_LOCAL_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json
+                    == format!(
+                        "\"{}\"",
+                        scryer_application::DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL
+                    )
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == AUTO_BACKUP_KEY_KEY
+                && seed.data_type == "string"
+                && seed.is_sensitive
         }));
     }
 

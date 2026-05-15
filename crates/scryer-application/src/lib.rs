@@ -199,7 +199,7 @@ pub use plugins::plugins::{
     ManualPluginPreview, PluginCatalogStatus, RegistryPlugin, RulePackRegistryEntry,
     RulePackTemplate,
 };
-pub use security::backup::BackupService;
+pub use security::backup::{BackupService, start_background_auto_backup_scheduler};
 pub use security::backup_bundle::{
     BACKUP_TABLE_CATALOG, BLOB_MARKER_BASE64, BLOB_MARKER_TYPE, BackupBundleExportRequest,
     BackupBundleInspectSummary, BackupBundleRestorePayload, BackupBundleStaging,
@@ -208,11 +208,12 @@ pub use security::backup_bundle::{
     prepare_backup_restore_payload,
 };
 pub use settings::settings::{
-    AcquisitionSettings, DownloadClientRoutingSettingsEntry, ExternalImportLibraryPathsSelection,
-    FacetScoringPersonaSelection, GeneralSettings, IndexerRoutingSettingsEntry,
-    LibraryPathsSettings, LibrarySettings, LibrarySettingsOverrideDraft, MediaSettings,
-    QualityProfileSelection, QualityProfileSettings, SaveQualityProfileSettings, SecuritySettings,
-    ServiceSettings, SubtitleSettings, UpdateFacetScoringPersonaSelection, UpdateGeneralSettings,
+    AcquisitionSettings, AutoBackupSettings, DownloadClientRoutingSettingsEntry,
+    ExternalImportLibraryPathsSelection, FacetScoringPersonaSelection, GeneralSettings,
+    IndexerRoutingSettingsEntry, LibraryPathsSettings, LibrarySettings,
+    LibrarySettingsOverrideDraft, MediaSettings, QualityProfileSelection, QualityProfileSettings,
+    SaveQualityProfileSettings, SecuritySettings, ServiceSettings, SubtitleSettings,
+    UpdateAutoBackupSettings, UpdateFacetScoringPersonaSelection, UpdateGeneralSettings,
     UpdateLibraryPaths, UpdateMediaSettings, UpdateQualityProfileSelection, UpdateSecuritySettings,
     UpdateServiceSettings, UpdateSubtitleSettings,
 };
@@ -315,13 +316,14 @@ pub use services::{AppServices, AppServicesBuilder, AppUseCase, ProviderCatalogF
 pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
     ANIME_MONITOR_SPECIALS_KEY, ANIME_PATH_KEY, ANIME_RECAP_POLICY_KEY, ANIME_ROOT_FOLDERS_KEY,
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, DEFAULT_ANIME_LIBRARY_PATH, DEFAULT_FILLER_POLICY,
-    DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY,
-    DEFAULT_RENAME_MISSING_METADATA_POLICY, DEFAULT_RENAME_TEMPLATE_ANIME,
-    DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES, DEFAULT_SERIES_LIBRARY_PATH,
-    DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
-    FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
-    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
+    AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, DEFAULT_ANIME_LIBRARY_PATH,
+    DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL, DEFAULT_FILLER_POLICY, DEFAULT_MOVIE_LIBRARY_PATH,
+    DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY, DEFAULT_RENAME_MISSING_METADATA_POLICY,
+    DEFAULT_RENAME_TEMPLATE_ANIME, DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES,
+    DEFAULT_SERIES_LIBRARY_PATH, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
+    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY,
+    HISTORY_RETENTION_DAYS_KEY, INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
     LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY, MOVIES_PATH_KEY,
     MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY, NFO_WRITE_ON_IMPORT_MOVIE_KEY,
     NFO_WRITE_ON_IMPORT_SERIES_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY,
@@ -344,7 +346,7 @@ pub(crate) use types::JwtClaims;
 pub use types::SmgVersionCompatibilityNotice;
 pub use types::{
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupInfo,
-    BackupStatus, CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetItem,
+    BackupStatus, BackupTrigger, CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetItem,
     CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo, DownloadActivityFilter,
     DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage,
     DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage,

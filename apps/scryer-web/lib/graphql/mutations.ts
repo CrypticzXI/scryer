@@ -430,6 +430,15 @@ export const deleteBackupMutation = `mutation DeleteBackup($filename: String!) {
   deleteBackup(filename: $filename)
 }`;
 
+export const updateAutoBackupSettingsMutation = `mutation UpdateAutoBackupSettings($input: UpdateAutoBackupSettingsInput!) {
+  updateAutoBackupSettings(input: $input) {
+    enabled
+    dailyTimeLocal
+    autoBackupKeyPresent
+    nextRunAt
+  }
+}`;
+
 export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($input: UpdateSecuritySettingsInput!) {
   updateSecuritySettings(input: $input) {
     formLoginEnabled

@@ -193,6 +193,8 @@ function triggerSourceLabel(
       return t("jobs.triggerSource.scheduledStartup");
     case "scheduled_interval":
       return t("jobs.triggerSource.scheduledInterval");
+    case "scheduled_daily":
+      return t("jobs.triggerSource.scheduledDaily");
     case "system_internal":
       return t("jobs.triggerSource.systemInternal");
   }
@@ -494,17 +496,19 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
           <span className={runStatusTone(status)}>{runStatusLabel(status, t)}</span>
         </TableCell>
         <TableCell>
-          <Button
-            size="sm"
-            variant="default"
-            disabled={isDisabled}
-            onClick={(event) => {
-              event.stopPropagation();
-              onTriggerJob(job.key);
-            }}
-          >
-            {t("jobs.action.run")}
-          </Button>
+          {job.manualTriggerAllowed ? (
+            <Button
+              size="sm"
+              variant="default"
+              disabled={isDisabled}
+              onClick={(event) => {
+                event.stopPropagation();
+                onTriggerJob(job.key);
+              }}
+            >
+              {t("jobs.action.run")}
+            </Button>
+          ) : null}
         </TableCell>
         </TableRow>
     ));
@@ -574,17 +578,19 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
           >
             {t("jobs.recentRuns")}
           </button>
-          <Button
-            size="sm"
-            variant="default"
-            disabled={isDisabled}
-            onClick={(event) => {
-              event.stopPropagation();
-              onTriggerJob(job.key);
-            }}
-          >
-            {t("jobs.action.run")}
-          </Button>
+          {job.manualTriggerAllowed ? (
+            <Button
+              size="sm"
+              variant="default"
+              disabled={isDisabled}
+              onClick={(event) => {
+                event.stopPropagation();
+                onTriggerJob(job.key);
+              }}
+            >
+              {t("jobs.action.run")}
+            </Button>
+          ) : null}
         </div>
       </div>
     ));
@@ -698,14 +704,18 @@ export function SystemJobsView({ state }: { state: SystemJobsViewState }) {
                       isTriggering,
                     );
 
+                    if (!selectedJob.manualTriggerAllowed) {
+                      return null;
+                    }
+
                     return (
-                  <Button
-                    variant="default"
-                    onClick={() => onTriggerJob(selectedJob.key)}
-                    disabled={isDisabled}
-                  >
-                    {t("jobs.action.runNow")}
-                  </Button>
+                      <Button
+                        variant="default"
+                        onClick={() => onTriggerJob(selectedJob.key)}
+                        disabled={isDisabled}
+                      >
+                        {t("jobs.action.runNow")}
+                      </Button>
                     );
                   })()}
                 </div>

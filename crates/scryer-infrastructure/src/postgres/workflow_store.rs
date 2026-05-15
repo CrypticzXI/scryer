@@ -296,14 +296,15 @@ impl WorkflowSql for PostgresWorkflowSql {
     }
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
         let (episode_id, collection_id) = persisted_submission_scope(&submission.scope);
-        let episode_set_ids = persisted_episode_set_ids(&submission.scope).join("\u{1f}");
+        let download_client_id =
+            normalize_download_client_id(submission.download_client_id.as_deref());
+        let mut tx = self.pool.begin().await.map_err(repo_err)?;
         sqlx::query(
             "INSERT INTO download_submissions
              (id, title_id, facet, download_client_id, download_client_type,
               download_client_item_id, source_title, submitted_at, collection_id, tracked_state,
-              tracked_state_at, source_hint, source_kind, request_signature, episode_id,
-              episode_set_ids)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, NULL, NULL, $9, $10, $11, $12, $13)
+              tracked_state_at, source_hint, source_kind, request_signature, episode_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, NULL, NULL, $9, $10, $11, $12)
              ON CONFLICT (download_client_id, download_client_type, download_client_item_id)
              DO UPDATE SET
                 title_id = EXCLUDED.title_id,
@@ -313,15 +314,12 @@ impl WorkflowSql for PostgresWorkflowSql {
                 source_hint = EXCLUDED.source_hint,
                 source_kind = EXCLUDED.source_kind,
                 request_signature = EXCLUDED.request_signature,
-                episode_id = EXCLUDED.episode_id,
-                episode_set_ids = EXCLUDED.episode_set_ids",
+                episode_id = EXCLUDED.episode_id",
         )
         .bind(Id::new().0)
         .bind(&submission.title_id)
         .bind(&submission.facet)
-        .bind(normalize_download_client_id(
-            submission.download_client_id.as_deref(),
-        ))
+        .bind(&download_client_id)
         .bind(&submission.download_client_type)
         .bind(&submission.download_client_item_id)
         .bind(&submission.source_title)
@@ -330,14 +328,18 @@ impl WorkflowSql for PostgresWorkflowSql {
         .bind(submission.source_kind.as_ref().map(|kind| kind.as_str()))
         .bind(&submission.request_signature)
         .bind(episode_id)
-        .bind(if episode_set_ids.is_empty() {
-            None::<String>
-        } else {
-            Some(episode_set_ids)
-        })
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(repo_err)?;
+        replace_download_submission_episode_links_pg_tx(
+            &mut tx,
+            &download_client_id,
+            &submission.download_client_type,
+            &submission.download_client_item_id,
+            persisted_episode_set_ids(&submission.scope),
+        )
+        .await?;
+        tx.commit().await.map_err(repo_err)?;
         Ok(())
     }
 
@@ -541,11 +543,12 @@ impl WorkflowSql for PostgresWorkflowSql {
     }
 
     async fn get_job_run(&self, run_id: &str) -> AppResult<Option<JobRunRecord>> {
-        let row = sqlx::query("SELECT * FROM download_jobs WHERE id = $1")
-            .bind(run_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
+        let row =
+            sqlx::query("SELECT * FROM workflow_operations WHERE id = $1 AND job_key IS NOT NULL")
+                .bind(run_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(repo_err)?;
         row.as_ref().map(job_run_from_row).transpose()
     }
 
@@ -556,17 +559,27 @@ impl WorkflowSql for PostgresWorkflowSql {
     ) -> AppResult<Vec<JobRunRecord>> {
         let rows = if let Some(job_key) = job_key {
             sqlx::query(
-                "SELECT * FROM download_jobs WHERE job_key = $1 ORDER BY created_at DESC LIMIT $2",
+                "SELECT *
+                   FROM workflow_operations
+                  WHERE job_key = $1
+                  ORDER BY COALESCE(started_at, created_at) DESC
+                  LIMIT $2",
             )
             .bind(job_key.as_str())
             .bind(limit as i64)
             .fetch_all(&self.pool)
             .await
         } else {
-            sqlx::query("SELECT * FROM download_jobs ORDER BY created_at DESC LIMIT $1")
-                .bind(limit as i64)
-                .fetch_all(&self.pool)
-                .await
+            sqlx::query(
+                "SELECT *
+                   FROM workflow_operations
+                  WHERE job_key IS NOT NULL
+                  ORDER BY COALESCE(started_at, created_at) DESC
+                  LIMIT $1",
+            )
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
         }
         .map_err(repo_err)?;
         rows.iter().map(job_run_from_row).collect()
@@ -574,7 +587,11 @@ impl WorkflowSql for PostgresWorkflowSql {
 
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
         let rows = sqlx::query(
-            "SELECT * FROM download_jobs WHERE status IN ('queued', 'running') ORDER BY created_at DESC",
+            "SELECT *
+               FROM workflow_operations
+              WHERE job_key IS NOT NULL
+                AND status IN ('queued', 'running', 'discovering')
+              ORDER BY COALESCE(started_at, created_at) ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -1004,6 +1021,45 @@ fn persisted_episode_set_ids(scope: &SubmissionScope) -> &[String] {
     }
 }
 
+async fn replace_download_submission_episode_links_pg_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    download_client_id: &str,
+    download_client_type: &str,
+    download_client_item_id: &str,
+    episode_ids: &[String],
+) -> AppResult<()> {
+    sqlx::query(
+        "DELETE FROM download_submission_episode_links
+         WHERE download_client_id = $1
+           AND download_client_type = $2
+           AND download_client_item_id = $3",
+    )
+    .bind(download_client_id)
+    .bind(download_client_type)
+    .bind(download_client_item_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(repo_err)?;
+
+    for episode_id in episode_ids {
+        sqlx::query(
+            "INSERT INTO download_submission_episode_links
+             (download_client_id, download_client_type, download_client_item_id, episode_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(download_client_id)
+        .bind(download_client_type)
+        .bind(download_client_item_id)
+        .bind(episode_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(repo_err)?;
+    }
+
+    Ok(())
+}
+
 fn normalize_download_client_id(value: Option<&str>) -> String {
     value
         .map(str::trim)
@@ -1016,7 +1072,12 @@ fn download_submission_select_where(where_clause: &str) -> String {
     format!(
         "SELECT title_id, facet, download_client_id, download_client_type, download_client_item_id,
                 source_hint, source_kind, source_title, request_signature, episode_id,
-                collection_id, episode_set_ids
+                collection_id,
+                (SELECT string_agg(link.episode_id, CHR(31))
+                   FROM download_submission_episode_links link
+                  WHERE link.download_client_id = download_submissions.download_client_id
+                    AND link.download_client_type = download_submissions.download_client_type
+                    AND link.download_client_item_id = download_submissions.download_client_item_id) AS episode_set_ids
          FROM download_submissions WHERE {where_clause}"
     )
 }
@@ -1302,26 +1363,36 @@ async fn upsert_job_run(pool: &sqlx::PgPool, run: &JobRunRecord) -> AppResult<()
         .transpose()
         .map_err(repo_err)?;
     sqlx::query(
-        "INSERT INTO download_jobs
-         (id, job_key, status, started_at, completed_at, progress_json, summary_json,
-          error_text, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)
+        "INSERT INTO workflow_operations
+         (id, operation_type, status, job_key, trigger_source, actor_user_id, progress_json,
+          summary_json, summary_text, error_text, started_at, completed_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14)
          ON CONFLICT (id) DO UPDATE SET
+            operation_type = EXCLUDED.operation_type,
             status = EXCLUDED.status,
-            completed_at = EXCLUDED.completed_at,
+            job_key = EXCLUDED.job_key,
+            trigger_source = EXCLUDED.trigger_source,
+            actor_user_id = EXCLUDED.actor_user_id,
             progress_json = EXCLUDED.progress_json,
             summary_json = EXCLUDED.summary_json,
+            summary_text = EXCLUDED.summary_text,
             error_text = EXCLUDED.error_text,
+            started_at = EXCLUDED.started_at,
+            completed_at = EXCLUDED.completed_at,
             updated_at = EXCLUDED.updated_at",
     )
     .bind(&run.id)
-    .bind(run.job_key.as_str())
+    .bind(&run.operation_type)
     .bind(run.status.as_str())
-    .bind(run.started_at)
-    .bind(run.completed_at)
+    .bind(run.job_key.as_str())
+    .bind(run.trigger_source.as_str())
+    .bind(&run.actor_user_id)
     .bind(progress_json)
     .bind(summary_json)
+    .bind(&run.summary_text)
     .bind(&run.error_text)
+    .bind(run.started_at)
+    .bind(run.completed_at)
     .bind(run.created_at)
     .bind(run.updated_at)
     .execute(pool)
@@ -1331,17 +1402,30 @@ async fn upsert_job_run(pool: &sqlx::PgPool, run: &JobRunRecord) -> AppResult<()
 }
 
 fn job_run_from_row(row: &sqlx::postgres::PgRow) -> AppResult<JobRunRecord> {
-    let job_key_raw: String = row.try_get("job_key").map_err(repo_err)?;
+    let job_key_raw: String = row
+        .try_get::<Option<String>, _>("job_key")
+        .map_err(repo_err)?
+        .ok_or_else(|| AppError::Repository("workflow operation missing job_key".to_string()))?;
     let status_raw: String = row.try_get("status").map_err(repo_err)?;
+    let trigger_source_raw = row
+        .try_get::<Option<String>, _>("trigger_source")
+        .map_err(repo_err)?
+        .unwrap_or_else(|| JobTriggerSource::SystemInternal.as_str().to_string());
+    let started_at = row
+        .try_get::<Option<DateTime<Utc>>, _>("started_at")
+        .map_err(repo_err)?
+        .unwrap_or_else(Utc::now);
     Ok(JobRunRecord {
         id: row.try_get("id").map_err(repo_err)?,
         job_key: JobKey::parse(&job_key_raw)
             .ok_or_else(|| AppError::Repository(format!("invalid job_key: {job_key_raw}")))?,
-        operation_type: job_key_raw.clone(),
+        operation_type: row.try_get("operation_type").map_err(repo_err)?,
         status: JobRunStatus::parse(&status_raw)
             .ok_or_else(|| AppError::Repository(format!("invalid job status: {status_raw}")))?,
-        trigger_source: JobTriggerSource::SystemInternal,
-        actor_user_id: None,
+        trigger_source: JobTriggerSource::parse(&trigger_source_raw).ok_or_else(|| {
+            AppError::Repository(format!("invalid job trigger source: {trigger_source_raw}"))
+        })?,
+        actor_user_id: row.try_get("actor_user_id").map_err(repo_err)?,
         progress_json: row
             .try_get::<Option<serde_json::Value>, _>("progress_json")
             .map_err(repo_err)?
@@ -1350,9 +1434,9 @@ fn job_run_from_row(row: &sqlx::postgres::PgRow) -> AppResult<JobRunRecord> {
             .try_get::<Option<serde_json::Value>, _>("summary_json")
             .map_err(repo_err)?
             .map(json_value_as_string),
-        summary_text: None,
+        summary_text: row.try_get("summary_text").map_err(repo_err)?,
         error_text: row.try_get("error_text").map_err(repo_err)?,
-        started_at: row.try_get("started_at").map_err(repo_err)?,
+        started_at,
         completed_at: row.try_get("completed_at").map_err(repo_err)?,
         created_at: row.try_get("created_at").map_err(repo_err)?,
         updated_at: row.try_get("updated_at").map_err(repo_err)?,

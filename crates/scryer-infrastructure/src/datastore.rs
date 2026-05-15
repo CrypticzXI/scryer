@@ -1353,8 +1353,9 @@ pub fn datastore_file_path(database_url: &str) -> PathBuf {
 mod tests {
     use super::*;
     use scryer_application::{
-        BackupBundleExportRequest, BackupExportSecrets, LogicalBackupExporter, SettingsRepository,
-        SystemInfoProvider, TitleRepository, UserRepository,
+        BACKUP_TABLE_CATALOG, BackupBundleExportRequest, BackupExportSecrets,
+        BackupTableClassification, LogicalBackupExporter, SettingsRepository, SystemInfoProvider,
+        TitleRepository, UserRepository, inspect_backup_bundle,
     };
     use scryer_domain::{ExternalId, Id, MediaFacet, Title, User};
     use std::sync::{Mutex, MutexGuard};
@@ -1661,8 +1662,42 @@ mod tests {
         let result = async {
             source.seed().await?;
             let outcome = source.export_backup(&bundle_path, passphrase).await?;
+            let inspected = inspect_backup_bundle(&bundle_path, Some(passphrase))?;
+            let expected_bundle_tables = BACKUP_TABLE_CATALOG
+                .iter()
+                .filter(|entry| entry.classification == BackupTableClassification::Export)
+                .map(|entry| entry.table.to_string())
+                .collect::<std::collections::BTreeSet<_>>();
+            let inspected_tables = inspected
+                .row_counts
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
             assert!(outcome.summary.encrypted);
             assert_eq!(outcome.summary.source_engine, source.engine_name());
+            assert_eq!(
+                outcome
+                    .summary
+                    .row_counts
+                    .get("settings_definitions")
+                    .copied(),
+                Some(1),
+                "backup should include the seeded setting definition row"
+            );
+            assert_eq!(
+                inspected.row_counts.get("settings_definitions").copied(),
+                Some(1),
+                "inspected bundle should persist the setting definition row count"
+            );
+            assert_eq!(
+                inspected.row_counts.get("settings_values").copied(),
+                Some(1),
+                "inspected bundle should persist the seeded setting value row count"
+            );
+            assert_eq!(
+                inspected_tables, expected_bundle_tables,
+                "inspected bundle table set should match the export catalog"
+            );
             assert!(
                 outcome.summary.row_counts.contains_key("settings_values"),
                 "backup should include settings JSON rows"
@@ -1672,7 +1707,6 @@ mod tests {
                 "backup should include title rows"
             );
 
-            target.seed_rebuildable_definitions().await?;
             let prepared = restore_backup_bundle_to_datastore(
                 target.config.clone(),
                 &bundle_path,
@@ -1923,37 +1957,6 @@ mod tests {
                 }
             }
         }
-
-        async fn seed_rebuildable_definitions(&self) -> AppResult<()> {
-            match self.engine {
-                TestBackupEngine::Sqlite => {
-                    let services = SqliteServices::new_with_mode(
-                        self.config.database_url.clone(),
-                        MigrationMode::Apply,
-                    )
-                    .await?;
-                    let settings = SqliteSettingsStore::new(&services);
-                    settings
-                        .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
-                        .await?;
-                    services.pool().close().await;
-                }
-                TestBackupEngine::Postgres => {
-                    let services = PostgresServices::new_with_mode(
-                        self.config.database_url.clone(),
-                        MigrationMode::Apply,
-                    )
-                    .await?;
-                    let settings = PostgresSettingsStore::new(&services);
-                    settings
-                        .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
-                        .await?;
-                    services.pool().close().await;
-                }
-            }
-            Ok(())
-        }
-
         async fn verify_restored(&self) -> AppResult<()> {
             match self.engine {
                 TestBackupEngine::Sqlite => {

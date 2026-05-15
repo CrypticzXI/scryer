@@ -2,7 +2,9 @@ use async_graphql::{Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
     AcquisitionSettings as AppAcquisitionSettings, QualityProfile, QualityProfileCriteria,
-    SecuritySettings as AppSecuritySettings, UpdateGeneralSettings as AppUpdateGeneralSettings,
+    SecuritySettings as AppSecuritySettings,
+    UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
+    UpdateGeneralSettings as AppUpdateGeneralSettings,
     UpdateSecuritySettings as AppUpdateSecuritySettings,
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
@@ -64,6 +66,17 @@ fn from_general_settings(settings: scryer_application::GeneralSettings) -> Gener
     GeneralSettingsPayload {
         keep_history_forever: settings.keep_history_forever,
         history_retention_days: settings.history_retention_days,
+    }
+}
+
+fn from_auto_backup_settings(
+    settings: scryer_application::AutoBackupSettings,
+) -> AutoBackupSettingsPayload {
+    AutoBackupSettingsPayload {
+        enabled: settings.enabled,
+        daily_time_local: settings.daily_time_local,
+        auto_backup_key_present: settings.auto_backup_key_present,
+        next_run_at: settings.next_run_at,
     }
 }
 
@@ -311,6 +324,30 @@ impl SettingsMutations {
             .map_err(to_gql_error)?;
 
         Ok(from_general_settings(settings))
+    }
+
+    async fn update_auto_backup_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateAutoBackupSettingsInput,
+    ) -> GqlResult<AutoBackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+
+        let settings = app
+            .update_auto_backup_settings(
+                &actor,
+                AppUpdateAutoBackupSettings {
+                    enabled: input.enabled,
+                    daily_time_local: input.daily_time_local,
+                    set_auto_backup_key: input.set_auto_backup_key,
+                    clear_auto_backup_key: input.clear_auto_backup_key,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_auto_backup_settings(settings))
     }
 
     async fn update_security_settings(

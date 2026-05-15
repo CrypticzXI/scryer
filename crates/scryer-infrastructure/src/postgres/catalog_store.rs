@@ -10,15 +10,19 @@ use scryer_application::{
     },
 };
 use scryer_domain::{
-    AppPermissionMask, CalendarEpisode, Collection, Entitlement, Episode, ExternalId, Id, Library,
-    LibraryGrant, LibraryPermissionMask, LibraryRoot, MediaFacet, TaggedAlias, Title, User,
+    AppPermissionMask, CalendarEpisode, Collection, Entitlement, Episode, ExternalId, Id,
+    InterstitialMovieMetadata, Library, LibraryGrant, LibraryPermissionMask, LibraryRoot,
+    MediaFacet, TaggedAlias, Title, User,
 };
 use serde_json::Value;
 use sqlx::Row;
 
 use crate::catalog_store::{CatalogStore, LibrarySql, ShowSql, TitleSql, UserSql};
 use crate::postgres::timestamp::parse_rfc3339_timestamp;
-use crate::queries::title_search::{self, TitleSearchProjectionSource};
+use crate::queries::{
+    title::collection_interstitial_column_values,
+    title_search::{self, replace_title_search_projection_pg_tx},
+};
 use crate::title_images::normalized_base_path_from_env;
 
 pub type PostgresCatalogStore = CatalogStore<PostgresCatalogSql>;
@@ -603,8 +607,6 @@ impl PostgresCatalogSql {
             } else {
                 None
             };
-        let search_source = TitleSearchProjectionSource::from(title);
-        let search_terms = title_search::build_title_search_terms(&search_source);
         let mut tx = self.pool.begin().await.map_err(repo_err)?;
         sqlx::query(
             "INSERT INTO titles (
@@ -703,33 +705,7 @@ impl PostgresCatalogSql {
         .await
         .map_err(repo_err)?;
 
-        sqlx::query("DELETE FROM title_search_terms WHERE title_id = $1")
-            .bind(&title.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(repo_err)?;
-
-        for term in search_terms {
-            sqlx::query(
-                "INSERT INTO title_search_terms
-                 (title_id, facet, term_kind, raw_term, normalized_term, weight, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT (title_id, term_kind, normalized_term) DO UPDATE SET
-                    raw_term = EXCLUDED.raw_term,
-                    weight = EXCLUDED.weight,
-                    updated_at = EXCLUDED.updated_at",
-            )
-            .bind(&title.id)
-            .bind(title.facet.as_str())
-            .bind(term.term_kind)
-            .bind(&term.raw_term)
-            .bind(&term.normalized_term)
-            .bind(term.weight)
-            .bind(Utc::now())
-            .execute(&mut *tx)
-            .await
-            .map_err(repo_err)?;
-        }
+        replace_title_search_projection_pg_tx(&mut tx, title).await?;
 
         tx.commit().await.map_err(repo_err)?;
         Ok(())
@@ -1520,12 +1496,23 @@ impl ShowSql for PostgresCatalogSql {
         row.as_ref().map(row_to_collection).transpose()
     }
     async fn create_collection(&self, collection: Collection) -> AppResult<Collection> {
+        let interstitial = collection_interstitial_column_values(&collection)?;
         sqlx::query(
             "INSERT INTO collections
              (id, title_id, collection_type, collection_index, label, ordered_path, narrative_order,
-              first_episode_number, last_episode_number, interstitial_movie_json,
-              specials_movies_json, interstitial_season_episode, monitored, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13, $14, NOW())
+              first_episode_number, last_episode_number, interstitial_tvdb_id, interstitial_name,
+              interstitial_slug, interstitial_year, interstitial_content_status,
+              interstitial_overview, interstitial_poster_url, interstitial_language,
+              interstitial_runtime_minutes, interstitial_sort_title, interstitial_imdb_id,
+              interstitial_genres_json, interstitial_studio, interstitial_digital_release_date,
+              interstitial_association_confidence, interstitial_continuity_status,
+              interstitial_movie_form, interstitial_confidence, interstitial_signal_summary,
+              interstitial_placement, interstitial_movie_tmdb_id, interstitial_movie_mal_id,
+              interstitial_movie_anidb_id, interstitial_season_episode, special_movies_json,
+              monitored, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                     $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25, $26, $27,
+                     $28, $29, $30, $31, $32, $33, $34::jsonb, $35, $36, NOW())
              ON CONFLICT (id) DO UPDATE SET
                 collection_type = EXCLUDED.collection_type,
                 collection_index = EXCLUDED.collection_index,
@@ -1534,9 +1521,31 @@ impl ShowSql for PostgresCatalogSql {
                 narrative_order = EXCLUDED.narrative_order,
                 first_episode_number = EXCLUDED.first_episode_number,
                 last_episode_number = EXCLUDED.last_episode_number,
-                interstitial_movie_json = EXCLUDED.interstitial_movie_json,
-                specials_movies_json = EXCLUDED.specials_movies_json,
+                interstitial_tvdb_id = EXCLUDED.interstitial_tvdb_id,
+                interstitial_name = EXCLUDED.interstitial_name,
+                interstitial_slug = EXCLUDED.interstitial_slug,
+                interstitial_year = EXCLUDED.interstitial_year,
+                interstitial_content_status = EXCLUDED.interstitial_content_status,
+                interstitial_overview = EXCLUDED.interstitial_overview,
+                interstitial_poster_url = EXCLUDED.interstitial_poster_url,
+                interstitial_language = EXCLUDED.interstitial_language,
+                interstitial_runtime_minutes = EXCLUDED.interstitial_runtime_minutes,
+                interstitial_sort_title = EXCLUDED.interstitial_sort_title,
+                interstitial_imdb_id = EXCLUDED.interstitial_imdb_id,
+                interstitial_genres_json = EXCLUDED.interstitial_genres_json,
+                interstitial_studio = EXCLUDED.interstitial_studio,
+                interstitial_digital_release_date = EXCLUDED.interstitial_digital_release_date,
+                interstitial_association_confidence = EXCLUDED.interstitial_association_confidence,
+                interstitial_continuity_status = EXCLUDED.interstitial_continuity_status,
+                interstitial_movie_form = EXCLUDED.interstitial_movie_form,
+                interstitial_confidence = EXCLUDED.interstitial_confidence,
+                interstitial_signal_summary = EXCLUDED.interstitial_signal_summary,
+                interstitial_placement = EXCLUDED.interstitial_placement,
+                interstitial_movie_tmdb_id = EXCLUDED.interstitial_movie_tmdb_id,
+                interstitial_movie_mal_id = EXCLUDED.interstitial_movie_mal_id,
+                interstitial_movie_anidb_id = EXCLUDED.interstitial_movie_anidb_id,
                 interstitial_season_episode = EXCLUDED.interstitial_season_episode,
+                special_movies_json = EXCLUDED.special_movies_json,
                 monitored = EXCLUDED.monitored,
                 updated_at = NOW()",
         )
@@ -1549,16 +1558,31 @@ impl ShowSql for PostgresCatalogSql {
         .bind(&collection.narrative_order)
         .bind(&collection.first_episode_number)
         .bind(&collection.last_episode_number)
-        .bind(
-            collection
-                .interstitial_movie
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()
-                .map_err(repo_err)?,
-        )
-        .bind(serde_json::to_value(&collection.specials_movies).map_err(repo_err)?)
+        .bind(interstitial.tvdb_id)
+        .bind(interstitial.name)
+        .bind(interstitial.slug)
+        .bind(interstitial.year)
+        .bind(interstitial.content_status)
+        .bind(interstitial.overview)
+        .bind(interstitial.poster_url)
+        .bind(interstitial.language)
+        .bind(interstitial.runtime_minutes)
+        .bind(interstitial.sort_title)
+        .bind(interstitial.imdb_id)
+        .bind(interstitial.genres_json)
+        .bind(interstitial.studio)
+        .bind(interstitial.digital_release_date)
+        .bind(interstitial.association_confidence)
+        .bind(interstitial.continuity_status)
+        .bind(interstitial.movie_form)
+        .bind(interstitial.confidence)
+        .bind(interstitial.signal_summary)
+        .bind(interstitial.placement)
+        .bind(interstitial.movie_tmdb_id)
+        .bind(interstitial.movie_mal_id)
+        .bind(interstitial.movie_anidb_id)
         .bind(&collection.interstitial_season_episode)
+        .bind(interstitial.special_movies_json)
         .bind(collection.monitored)
         .bind(collection.created_at)
         .execute(&self.pool)
@@ -2234,18 +2258,61 @@ fn row_to_collection(row: &sqlx::postgres::PgRow) -> AppResult<Collection> {
             AppError::Repository(format!("invalid collection type {collection_type_raw}"))
         })?;
     let interstitial_movie = row
-        .try_get::<Option<Value>, _>("interstitial_movie_json")
+        .try_get::<Option<String>, _>("interstitial_tvdb_id")
         .ok()
         .flatten()
-        .and_then(json_value_unless_null)
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(repo_err)?;
+        .map(|tvdb_id| {
+            let genres = row
+                .try_get::<Option<Value>, _>("interstitial_genres_json")
+                .ok()
+                .flatten()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(repo_err)?
+                .unwrap_or_default();
+            let runtime_minutes = row
+                .try_get::<Option<i64>, _>("interstitial_runtime_minutes")
+                .unwrap_or(None)
+                .unwrap_or_default() as i32;
+            Ok::<_, AppError>(InterstitialMovieMetadata {
+                tvdb_id,
+                name: row.try_get("interstitial_name").unwrap_or_default(),
+                slug: row.try_get("interstitial_slug").unwrap_or_default(),
+                year: row.try_get("interstitial_year").unwrap_or(None),
+                content_status: row
+                    .try_get("interstitial_content_status")
+                    .unwrap_or_default(),
+                overview: row.try_get("interstitial_overview").unwrap_or_default(),
+                poster_url: row.try_get("interstitial_poster_url").unwrap_or_default(),
+                language: row.try_get("interstitial_language").unwrap_or_default(),
+                runtime_minutes,
+                sort_title: row.try_get("interstitial_sort_title").unwrap_or_default(),
+                imdb_id: row.try_get("interstitial_imdb_id").unwrap_or_default(),
+                genres,
+                studio: row.try_get("interstitial_studio").unwrap_or_default(),
+                digital_release_date: row
+                    .try_get("interstitial_digital_release_date")
+                    .unwrap_or(None),
+                association_confidence: row
+                    .try_get("interstitial_association_confidence")
+                    .unwrap_or(None),
+                continuity_status: row
+                    .try_get("interstitial_continuity_status")
+                    .unwrap_or(None),
+                movie_form: row.try_get("interstitial_movie_form").unwrap_or(None),
+                confidence: row.try_get("interstitial_confidence").unwrap_or(None),
+                signal_summary: row.try_get("interstitial_signal_summary").unwrap_or(None),
+                placement: row.try_get("interstitial_placement").unwrap_or(None),
+                movie_tmdb_id: row.try_get("interstitial_movie_tmdb_id").unwrap_or(None),
+                movie_mal_id: row.try_get("interstitial_movie_mal_id").unwrap_or(None),
+                movie_anidb_id: row.try_get("interstitial_movie_anidb_id").unwrap_or(None),
+            })
+        })
+        .transpose()?;
     let specials_movies = row
-        .try_get::<Option<Value>, _>("specials_movies_json")
+        .try_get::<Option<Value>, _>("special_movies_json")
         .ok()
         .flatten()
-        .and_then(json_value_unless_null)
         .map(serde_json::from_value)
         .transpose()
         .map_err(repo_err)?
@@ -2266,10 +2333,6 @@ fn row_to_collection(row: &sqlx::postgres::PgRow) -> AppResult<Collection> {
         monitored: row.try_get("monitored").unwrap_or(true),
         created_at: row_timestamp(row, "created_at")?,
     })
-}
-
-fn json_value_unless_null(value: Value) -> Option<Value> {
-    (!value.is_null()).then_some(value)
 }
 
 fn row_to_episode(row: &sqlx::postgres::PgRow) -> AppResult<Episode> {

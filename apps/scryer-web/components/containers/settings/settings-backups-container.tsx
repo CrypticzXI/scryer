@@ -1,8 +1,12 @@
 import * as React from "react";
-import { Download, Loader2, LockKeyhole, Plus, Trash2 } from "lucide-react";
+import { Download, Eye, EyeOff, Loader2, LockKeyhole, Plus, Trash2 } from "lucide-react";
+import { useBeforeUnload, useBlocker } from "react-router-dom";
 import { useClient } from "urql";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { InfoHelp } from "@/components/common/info-help";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -20,18 +25,31 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { TimePicker } from "@/components/ui/time-picker";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import { createBackupMutation, deleteBackupMutation } from "@/lib/graphql/mutations";
-import { backupsQuery } from "@/lib/graphql/queries";
+import {
+  createBackupMutation,
+  deleteBackupMutation,
+  updateAutoBackupSettingsMutation,
+} from "@/lib/graphql/mutations";
+import { autoBackupSettingsQuery, backupsQuery } from "@/lib/graphql/queries";
 import { scryerFetch } from "@/lib/graphql/urql-client";
 import { getAuthToken } from "@/lib/hooks/use-auth";
 import { getRuntimeBasePath } from "@/lib/runtime-config";
+import { cn } from "@/lib/utils";
+import {
+  boxedActionButtonBaseClass,
+  boxedActionButtonToneClass,
+} from "@/lib/utils/action-button-styles";
+import type { AutoBackupSettings } from "@/lib/types/settings";
 
 type BackupRowCount = {
   table: string;
   rowCount: string;
 };
+
+type BackupTrigger = "manual" | "auto";
 
 type BackupInfoRecord = {
   filename: string;
@@ -40,9 +58,10 @@ type BackupInfoRecord = {
   formatVersion: string;
   sourceEngine: string;
   sourceMigrationKey: string | null;
+  trigger: BackupTrigger;
   encrypted: boolean;
   rowCounts: BackupRowCount[];
-  status: "creating" | "ready" | "failed";
+  status: "creating" | "ready" | "invalid" | "failed";
   errorMessage: string | null;
 };
 
@@ -58,6 +77,23 @@ type DeleteBackupMutationResult = {
   deleteBackup?: boolean;
 };
 
+type AutoBackupSettingsQueryResult = {
+  autoBackupSettings?: AutoBackupSettings;
+};
+
+type UpdateAutoBackupSettingsMutationResult = {
+  updateAutoBackupSettings?: AutoBackupSettings;
+};
+
+const DEFAULT_AUTO_BACKUP_SETTINGS: AutoBackupSettings = {
+  enabled: false,
+  dailyTimeLocal: "03:00",
+  autoBackupKeyPresent: false,
+  nextRunAt: null,
+};
+const UNSAVED_AUTO_BACKUP_CHANGES_MESSAGE =
+  "You have unsaved automatic backup changes. Leave without saving?";
+
 type SaveFilePickerWindow = Window & {
   showSaveFilePicker?: (options: {
     suggestedName: string;
@@ -65,6 +101,70 @@ type SaveFilePickerWindow = Window & {
     createWritable: () => Promise<WritableStream<Uint8Array>>;
   }>;
 };
+
+function SliderSwitch({
+  checked,
+  disabled,
+  onChange,
+  enabledLabel,
+  disabledLabel,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (nextValue: boolean) => void;
+  enabledLabel: string;
+  disabledLabel: string;
+}) {
+  return (
+    <div className="flex justify-center">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={checked ? enabledLabel : disabledLabel}
+        disabled={disabled}
+        className={cn(
+          "relative inline-flex h-14 w-28 shrink-0 items-center rounded-full border-2 px-3 transition-[background-color,border-color,box-shadow,transform] duration-200",
+          "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none",
+          disabled
+            ? "cursor-not-allowed opacity-50"
+            : "cursor-pointer hover:-translate-y-px",
+          checked
+            ? "border-emerald-400/50 bg-emerald-500/20 text-emerald-100"
+            : "border-rose-400/45 bg-rose-500/18 text-rose-100",
+        )}
+        onClick={() => !disabled && onChange(!checked)}
+      >
+        <span
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute left-4 text-xs font-semibold uppercase tracking-[0.24em] transition-opacity duration-200",
+            checked ? "opacity-100" : "opacity-0",
+          )}
+        >
+          On
+        </span>
+        <span
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute right-4 text-xs font-semibold uppercase tracking-[0.24em] transition-opacity duration-200",
+            checked ? "opacity-0" : "opacity-100",
+          )}
+        >
+          Off
+        </span>
+        <span
+          className={cn(
+            "pointer-events-none inline-flex h-9 w-9 items-center justify-center rounded-full border bg-background shadow-lg transition-transform duration-200",
+            checked
+              ? "translate-x-14 border-emerald-200"
+              : "translate-x-0 border-rose-200",
+          )}
+        />
+      </button>
+    </div>
+  );
+}
 
 function mutationErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -149,6 +249,18 @@ function upsertBackup(backups: BackupInfoRecord[], nextBackup: BackupInfoRecord)
   ]);
 }
 
+function autoBackupSettingsEqual(
+  left: AutoBackupSettings,
+  right: AutoBackupSettings,
+): boolean {
+  return (
+    left.enabled === right.enabled &&
+    left.dailyTimeLocal === right.dailyTimeLocal &&
+    left.autoBackupKeyPresent === right.autoBackupKeyPresent &&
+    (left.nextRunAt ?? null) === (right.nextRunAt ?? null)
+  );
+}
+
 function formatBytes(sizeBytes: string): string {
   const value = Number(sizeBytes);
   if (!Number.isFinite(value) || value < 0) {
@@ -177,14 +289,11 @@ function formatDateTime(value: string): string {
   return new Date(timestamp).toLocaleString();
 }
 
-function totalRows(backup: BackupInfoRecord): number {
-  return backup.rowCounts.reduce((sum, rowCount) => sum + Number(rowCount.rowCount || 0), 0);
-}
-
 function statusTone(status: BackupInfoRecord["status"]): string {
   switch (status) {
     case "creating":
       return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+    case "invalid":
     case "failed":
       return "border-destructive/40 bg-destructive/10 text-destructive";
     case "ready":
@@ -217,13 +326,60 @@ export function SettingsBackupsContainer() {
 
   const [backups, setBackups] = React.useState<BackupInfoRecord[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [savedAutoBackupSettings, setSavedAutoBackupSettings] =
+    React.useState<AutoBackupSettings>(DEFAULT_AUTO_BACKUP_SETTINGS);
+  const [autoBackupSettings, setAutoBackupSettings] =
+    React.useState<AutoBackupSettings>(DEFAULT_AUTO_BACKUP_SETTINGS);
+  const [autoBackupLoading, setAutoBackupLoading] = React.useState(true);
+  const [autoBackupSaving, setAutoBackupSaving] = React.useState(false);
+  const [autoBackupKey, setAutoBackupKey] = React.useState("");
+  const [clearAutoBackupKey, setClearAutoBackupKey] = React.useState(false);
+  const [showAutoBackupKey, setShowAutoBackupKey] = React.useState(false);
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false);
   const [password, setPassword] = React.useState("");
+  const [confirmPassword, setConfirmPassword] = React.useState("");
   const [creatingRequest, setCreatingRequest] = React.useState(false);
   const [pendingDelete, setPendingDelete] = React.useState<BackupInfoRecord | null>(null);
   const [deletingFilename, setDeletingFilename] = React.useState<string | null>(null);
   const [downloadingFilename, setDownloadingFilename] = React.useState<string | null>(null);
   const hasCreatingBackup = backups.some((backup) => backup.status === "creating");
+  const hasCreatingManualBackup = backups.some(
+    (backup) => backup.status === "creating" && backup.trigger === "manual",
+  );
+  const passwordMismatch = confirmPassword.length > 0 && password !== confirmPassword;
+  const requiresPasswordConfirmation = password.length > 0;
+  const canCreateBackup =
+    !creatingRequest &&
+    !hasCreatingManualBackup &&
+    (!requiresPasswordConfirmation || (confirmPassword.length > 0 && !passwordMismatch));
+  const pageLoading = loading || autoBackupLoading;
+  const autoBackupNextRunLabel =
+    autoBackupSettings.enabled && autoBackupSettings.nextRunAt
+      ? formatDateTime(autoBackupSettings.nextRunAt)
+      : t("label.disabled");
+  const autoBackupKeyPlaceholder = clearAutoBackupKey
+    ? ""
+    : autoBackupSettings.autoBackupKeyPresent
+      ? t("settings.autoBackupsKeyAlreadySetHint")
+      : t("settings.autoBackupsSetKey");
+  const autoBackupTriggerLabel = (trigger: BackupTrigger) =>
+    trigger === "auto" ? t("settings.backupsAutomatic") : t("settings.backupsManual");
+  const autoBackupDirty =
+    !autoBackupSettingsEqual(autoBackupSettings, savedAutoBackupSettings) ||
+    autoBackupKey.length > 0 ||
+    clearAutoBackupKey;
+  const shouldBlockNavigation = autoBackupDirty && !autoBackupSaving;
+  const autoBackupNavigationBlocker = useBlocker(shouldBlockNavigation);
+
+  useBeforeUnload(
+    React.useCallback((event: BeforeUnloadEvent) => {
+      if (!shouldBlockNavigation) {
+        return;
+      }
+      event.preventDefault();
+      event.returnValue = "";
+    }, [shouldBlockNavigation]),
+  );
 
   const fetchBackups = React.useCallback(async () => {
     try {
@@ -241,12 +397,38 @@ export function SettingsBackupsContainer() {
     }
   }, [client, setGlobalStatus, t]);
 
+  const fetchAutoBackupSettings = React.useCallback(async () => {
+    try {
+      const { data, error } = await client
+        .query<AutoBackupSettingsQueryResult>(
+          autoBackupSettingsQuery,
+          {},
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      const nextSettings = data?.autoBackupSettings ?? DEFAULT_AUTO_BACKUP_SETTINGS;
+      setSavedAutoBackupSettings(nextSettings);
+      setAutoBackupSettings(nextSettings);
+    } catch (error) {
+      setGlobalStatus(mutationErrorMessage(error, t("status.failedToLoad")));
+    } finally {
+      setAutoBackupLoading(false);
+    }
+  }, [client, setGlobalStatus, t]);
+
   React.useEffect(() => {
     void fetchBackups();
   }, [fetchBackups]);
 
   React.useEffect(() => {
-    if (!backups.some((backup) => backup.status === "creating")) {
+    void fetchAutoBackupSettings();
+  }, [fetchAutoBackupSettings]);
+
+  React.useEffect(() => {
+    if (!hasCreatingBackup) {
       return undefined;
     }
 
@@ -254,7 +436,20 @@ export function SettingsBackupsContainer() {
       void fetchBackups();
     }, 2500);
     return () => window.clearTimeout(timeoutId);
-  }, [backups, fetchBackups]);
+  }, [fetchBackups, hasCreatingBackup]);
+
+  React.useEffect(() => {
+    if (autoBackupNavigationBlocker.state !== "blocked") {
+      return;
+    }
+
+    if (window.confirm(UNSAVED_AUTO_BACKUP_CHANGES_MESSAGE)) {
+      autoBackupNavigationBlocker.proceed();
+      return;
+    }
+
+    autoBackupNavigationBlocker.reset();
+  }, [autoBackupNavigationBlocker]);
 
   const handleCreateBackup = React.useCallback(async () => {
     setCreatingRequest(true);
@@ -271,6 +466,7 @@ export function SettingsBackupsContainer() {
 
       setBackups((current) => upsertBackup(current, data.createBackup!));
       setPassword("");
+      setConfirmPassword("");
       setCreateDialogOpen(false);
       setGlobalStatus(t("settings.backupsQueued"));
     } catch (error) {
@@ -331,7 +527,47 @@ export function SettingsBackupsContainer() {
     }
   }, [setGlobalStatus, t]);
 
-  if (loading) {
+  const handleSaveAutoBackupSettings = React.useCallback(async () => {
+    setAutoBackupSaving(true);
+    try {
+      const nextAutoBackupKey =
+        clearAutoBackupKey ? null : autoBackupKey.length > 0 ? autoBackupKey : null;
+      const { data, error } = await client
+        .mutation<UpdateAutoBackupSettingsMutationResult>(updateAutoBackupSettingsMutation, {
+          input: {
+            enabled: autoBackupSettings.enabled,
+            dailyTimeLocal: autoBackupSettings.dailyTimeLocal,
+            setAutoBackupKey: nextAutoBackupKey,
+            clearAutoBackupKey,
+          },
+        })
+        .toPromise();
+      if (error || !data?.updateAutoBackupSettings) {
+        throw error ?? new Error(t("status.failedToUpdate"));
+      }
+
+      setSavedAutoBackupSettings(data.updateAutoBackupSettings);
+      setAutoBackupSettings(data.updateAutoBackupSettings);
+      setAutoBackupKey("");
+      setClearAutoBackupKey(false);
+      setShowAutoBackupKey(false);
+      setGlobalStatus(t("settings.autoBackupsSaved"));
+    } catch (error) {
+      setGlobalStatus(mutationErrorMessage(error, t("status.failedToUpdate")));
+    } finally {
+      setAutoBackupSaving(false);
+    }
+  }, [
+    autoBackupKey,
+    autoBackupSettings.dailyTimeLocal,
+    autoBackupSettings.enabled,
+    clearAutoBackupKey,
+    client,
+    setGlobalStatus,
+    t,
+  ]);
+
+  if (pageLoading) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -343,6 +579,156 @@ export function SettingsBackupsContainer() {
   return (
     <>
       <div className="space-y-6 text-sm">
+        <Card>
+          <CardHeader className="space-y-1">
+            <CardTitle>{t("settings.autoBackupsTitle")}</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.autoBackupsDescription")}
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-3 md:items-stretch">
+              <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
+                <div className="flex justify-center pt-2">
+                  <SliderSwitch
+                    checked={autoBackupSettings.enabled}
+                    disabled={autoBackupSaving}
+                    enabledLabel={t("label.enabled")}
+                    disabledLabel={t("label.disabled")}
+                    onChange={(nextValue) =>
+                      setAutoBackupSettings((current) => ({
+                        ...current,
+                        enabled: nextValue,
+                      }))
+                    }
+                  />
+                </div>
+                <p className="mt-auto pt-6 text-xs text-muted-foreground">
+                  {t("settings.autoBackupsEnabledHelp")}
+                </p>
+              </div>
+
+              <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
+                <Label htmlFor="auto-backups-time" className="text-sm font-medium">
+                  {t("settings.autoBackupsTime")}
+                </Label>
+                <div className="mt-3">
+                  <TimePicker
+                    id="auto-backups-time"
+                    value={autoBackupSettings.dailyTimeLocal}
+                    disabled={autoBackupSaving}
+                    hourLabel={t("settings.autoBackupsHour")}
+                    minuteLabel={t("settings.autoBackupsMinute")}
+                    onChange={(nextValue) =>
+                      setAutoBackupSettings((current) => ({
+                        ...current,
+                        dailyTimeLocal: nextValue,
+                      }))
+                    }
+                  />
+                </div>
+                <p className="mt-auto pt-4 text-xs text-muted-foreground">
+                  {t("settings.autoBackupsTimeHelp")}
+                </p>
+              </div>
+
+              <div className="flex h-full min-h-32 flex-col rounded-lg border border-border bg-muted/20 p-4">
+                <p className="text-sm font-medium">{t("settings.autoBackupsNextRun")}</p>
+                <p className="mt-3 text-base font-medium text-foreground">{autoBackupNextRunLabel}</p>
+                <p className="mt-auto pt-4 text-xs text-muted-foreground">
+                  {t("settings.autoBackupsNextRunHelp")}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{t("settings.autoBackupsKeyLabel")}</span>
+                <InfoHelp
+                  text={t("settings.autoBackupsKeyHelp")}
+                  ariaLabel={t("settings.autoBackupsKeyHelpLabel")}
+                />
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="w-full max-w-sm space-y-2">
+                  <div className="relative">
+                    <Input
+                      type={showAutoBackupKey ? "text" : "password"}
+                      value={autoBackupKey}
+                      placeholder={autoBackupKeyPlaceholder}
+                      className="pr-11"
+                      disabled={autoBackupSaving || clearAutoBackupKey}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setAutoBackupKey(nextValue);
+                        if (nextValue.length > 0) {
+                          setClearAutoBackupKey(false);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={
+                        showAutoBackupKey
+                          ? t("settings.autoBackupsHideKey")
+                          : t("settings.autoBackupsShowKey")
+                      }
+                      disabled={autoBackupSaving || clearAutoBackupKey}
+                      onClick={() => setShowAutoBackupKey((current) => !current)}
+                    >
+                      {showAutoBackupKey ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 flex-wrap items-center gap-3 sm:min-w-64">
+                  <Button
+                    type="button"
+                    onClick={() => void handleSaveAutoBackupSettings()}
+                    disabled={autoBackupSaving}
+                  >
+                    {autoBackupSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {t("label.save")}
+                  </Button>
+
+                  {autoBackupSettings.autoBackupKeyPresent ? (
+                    <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3 sm:max-w-xl">
+                      <Checkbox
+                        id="auto-backups-clear-key"
+                        className="size-5 rounded-md data-[state=checked]:border-rose-500 data-[state=checked]:bg-rose-500 data-[state=indeterminate]:border-rose-500 data-[state=indeterminate]:bg-rose-500"
+                        checked={clearAutoBackupKey}
+                        disabled={autoBackupSaving || autoBackupKey.length > 0}
+                        onCheckedChange={(checked) => {
+                          const shouldClear = checked === true;
+                          setClearAutoBackupKey(shouldClear);
+                          if (shouldClear) {
+                            setAutoBackupKey("");
+                            setShowAutoBackupKey(false);
+                          }
+                        }}
+                      />
+                      <div className="flex min-w-0 items-center gap-2">
+                        <Label htmlFor="auto-backups-clear-key" className="truncate">
+                          {t("settings.autoBackupsClearKey")}
+                        </Label>
+                        <InfoHelp
+                          text={t("settings.autoBackupsClearKeyHelp")}
+                          ariaLabel={t("settings.autoBackupsClearKey")}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-1">
             <p className="text-muted-foreground">{t("settings.backupsSection")}</p>
@@ -351,7 +737,7 @@ export function SettingsBackupsContainer() {
             type="button"
             className="shrink-0"
             onClick={() => setCreateDialogOpen(true)}
-            disabled={hasCreatingBackup}
+            disabled={hasCreatingManualBackup}
           >
             <Plus className="h-4 w-4" />
             {t("settings.backupsCreate")}
@@ -369,7 +755,7 @@ export function SettingsBackupsContainer() {
                 <TableHead>Bundle</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>{t("label.status")}</TableHead>
-                <TableHead>Summary</TableHead>
+                <TableHead>Size</TableHead>
                 <TableHead className="text-right">{t("label.actions")}</TableHead>
               </TableRow>
             </TableHeader>
@@ -381,6 +767,8 @@ export function SettingsBackupsContainer() {
                 const statusLabel =
                   backup.status === "creating"
                     ? t("settings.backupsCreating")
+                    : backup.status === "invalid"
+                      ? t("settings.backupsInvalid")
                     : backup.status === "failed"
                       ? t("settings.backupsFailed")
                       : t("settings.backupsReady");
@@ -395,6 +783,9 @@ export function SettingsBackupsContainer() {
                             {backup.encrypted
                               ? t("settings.backupsEncrypted")
                               : t("settings.backupsPlaintext")}
+                          </span>
+                          <span className="rounded-full border border-border px-2 py-0.5">
+                            {autoBackupTriggerLabel(backup.trigger)}
                           </span>
                           <span>{backup.formatVersion}</span>
                           <span>{backup.sourceEngine}</span>
@@ -411,52 +802,50 @@ export function SettingsBackupsContainer() {
                     <TableCell>
                       <BackupStatusBadge status={backup.status} label={statusLabel} />
                     </TableCell>
-                    <TableCell className="align-top">
-                      <div className="space-y-1 text-xs text-muted-foreground">
-                        <div>{formatBytes(backup.sizeBytes)}</div>
-                        <div>
-                          {t("settings.backupsTables", {
-                            count: backup.rowCounts.length.toLocaleString(),
-                          })}
-                        </div>
-                        <div>
-                          {t("settings.backupsRows", {
-                            count: totalRows(backup).toLocaleString(),
-                          })}
-                        </div>
-                      </div>
+                    <TableCell className="align-middle text-xs text-muted-foreground">
+                      {formatBytes(backup.sizeBytes)}
                     </TableCell>
                     <TableCell>
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-1">
                         {backup.status === "ready" ? (
                           <Button
                             type="button"
-                            variant="outline"
-                            size="sm"
+                            variant="secondary"
+                            size="icon-sm"
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.install,
+                            )}
                             disabled={isDownloading || isDeleting}
                             onClick={() => void handleDownloadBackup(backup)}
+                            title={t("settings.backupsDownload")}
+                            aria-label={t("settings.backupsDownload")}
                           >
                             {isDownloading ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
                             ) : (
                               <Download className="h-4 w-4" />
                             )}
-                            {t("settings.backupsDownload")}
                           </Button>
                         ) : null}
                         <Button
                           type="button"
-                          variant="outline"
-                          size="sm"
+                          variant="secondary"
+                          size="icon-sm"
+                          className={cn(
+                            boxedActionButtonBaseClass,
+                            boxedActionButtonToneClass.delete,
+                          )}
                           disabled={disableActions}
                           onClick={() => setPendingDelete(backup)}
+                          title={t("settings.backupsDelete")}
+                          aria-label={t("settings.backupsDelete")}
                         >
                           {isDeleting ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <Trash2 className="h-4 w-4" />
                           )}
-                          {t("settings.backupsDelete")}
                         </Button>
                       </div>
                     </TableCell>
@@ -474,6 +863,7 @@ export function SettingsBackupsContainer() {
           setCreateDialogOpen(open);
           if (!open) {
             setPassword("");
+            setConfirmPassword("");
           }
         }}
       >
@@ -488,11 +878,34 @@ export function SettingsBackupsContainer() {
               <Input
                 type="password"
                 value={password}
-                onChange={(event) => setPassword(event.target.value)}
+                onChange={(event) => {
+                  const nextPassword = event.target.value;
+                  setPassword(nextPassword);
+                  if (nextPassword.length === 0) {
+                    setConfirmPassword("");
+                  }
+                }}
                 placeholder={t("settings.password")}
                 disabled={creatingRequest}
               />
             </label>
+            {requiresPasswordConfirmation ? (
+              <label className="block space-y-2 text-sm">
+                <span className="font-medium">{t("settings.backupsConfirmPassword")}</span>
+                <Input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  placeholder={t("settings.backupsConfirmPassword")}
+                  disabled={creatingRequest}
+                />
+                {passwordMismatch ? (
+                  <p className="text-xs text-destructive">
+                    {t("settings.backupsPasswordMismatch")}
+                  </p>
+                ) : null}
+              </label>
+            ) : null}
             <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               <div className="mb-1 flex items-center gap-2 text-foreground">
                 <LockKeyhole className="h-3.5 w-3.5" />
@@ -513,7 +926,7 @@ export function SettingsBackupsContainer() {
             <Button
               type="button"
               onClick={() => void handleCreateBackup()}
-              disabled={creatingRequest || hasCreatingBackup}
+              disabled={!canCreateBackup}
             >
               {creatingRequest ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t("settings.backupsCreate")}

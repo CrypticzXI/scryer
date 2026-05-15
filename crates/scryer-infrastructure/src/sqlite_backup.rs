@@ -15,9 +15,21 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 
+use crate::backup_import_normalization::{
+    ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
+};
+
 #[derive(Clone, Debug)]
 pub struct SqliteLogicalBackupExporter {
     db_path: String,
+}
+
+#[derive(Clone, Debug)]
+struct SqliteForeignKeyViolation {
+    table: String,
+    rowid: Option<i64>,
+    parent: String,
+    fkid: i64,
 }
 
 impl SqliteLogicalBackupExporter {
@@ -126,9 +138,19 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
         .cloned()
         .collect::<BTreeSet<_>>();
     if manifest_tables != expected_tables {
-        return Err(AppError::Validation(
-            "backup bundle table set does not match the current restore catalog".into(),
-        ));
+        let missing = expected_tables
+            .difference(&manifest_tables)
+            .cloned()
+            .collect::<Vec<_>>();
+        let unexpected = manifest_tables
+            .difference(&expected_tables)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(AppError::Validation(format!(
+            "backup bundle table set does not match the current restore catalog: missing [{}], unexpected [{}]",
+            missing.join(", "),
+            unexpected.join(", ")
+        )));
     }
 
     let mut conn = pool.acquire().await.map_err(|error| {
@@ -182,16 +204,12 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
     restore_result?;
     enable_foreign_keys_result?;
 
-    let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|error| {
-            AppError::Repository(format!("failed to validate restored foreign keys: {error}"))
-        })?;
-    if violations != 0 {
-        return Err(AppError::Validation(
-            "restored database failed foreign key validation".into(),
-        ));
+    let violations = foreign_key_violations(&mut conn).await?;
+    if !violations.is_empty() {
+        return Err(AppError::Validation(format!(
+            "restored database failed foreign key validation: {}",
+            format_foreign_key_violations(&violations)
+        )));
     }
 
     crate::queries::title_search::rebuild_title_search_projection(pool).await?;
@@ -551,16 +569,22 @@ async fn import_table_part(
                 "invalid backup row for {table}:{line_number}: {error}"
             ))
         })?;
-        let object = value.as_object().ok_or_else(|| {
+        let mut object = value.as_object().cloned().ok_or_else(|| {
             AppError::Validation(format!(
                 "backup row for {table}:{line_number} is not an object"
             ))
         })?;
+        normalize_import_object_for_target(
+            table,
+            &mut object,
+            chrono::Utc::now(),
+            &target_columns,
+            line_number,
+        )?;
 
         let columns = target_columns
             .iter()
-            .filter(|column| object.contains_key(*column))
-            .cloned()
+            .filter(|column| object.contains_key(column.name.as_str()))
             .collect::<Vec<_>>();
         if columns.is_empty() {
             continue;
@@ -571,7 +595,7 @@ async fn import_table_part(
             quote_identifier(table),
             columns
                 .iter()
-                .map(|column| quote_identifier(column))
+                .map(|column| quote_identifier(&column.name))
                 .collect::<Vec<_>>()
                 .join(", "),
             std::iter::repeat_n("?", columns.len())
@@ -581,7 +605,7 @@ async fn import_table_part(
 
         let mut query = sqlx::query(&insert_sql);
         for column in &columns {
-            let value = object.get(column).unwrap_or(&JsonValue::Null);
+            let value = object.get(&column.name).unwrap_or(&JsonValue::Null);
             query = bind_json_value(query, value)?;
         }
         query.execute(&mut **conn).await.map_err(|error| {
@@ -597,9 +621,9 @@ async fn import_table_part(
 async fn table_columns(
     conn: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
     table: &str,
-) -> AppResult<Vec<String>> {
+) -> AppResult<Vec<ImportColumnRule>> {
     let pragma = format!("PRAGMA table_info({})", quote_identifier(table));
-    let rows = sqlx::query(&pragma)
+    let table_rows = sqlx::query(&pragma)
         .fetch_all(&mut **conn)
         .await
         .map_err(|error| {
@@ -607,10 +631,106 @@ async fn table_columns(
                 "failed to inspect table columns for {table}: {error}"
             ))
         })?;
-    Ok(rows
+
+    let fk_pragma = format!("PRAGMA foreign_key_list({})", quote_identifier(table));
+    let foreign_key_rows = sqlx::query(&fk_pragma)
+        .fetch_all(&mut **conn)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to inspect foreign keys for {table}: {error}"
+            ))
+        })?;
+    let foreign_key_columns = foreign_key_rows
         .into_iter()
-        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .filter_map(|row| row.try_get::<String, _>("from").ok())
+        .collect::<BTreeSet<_>>();
+
+    Ok(table_rows
+        .into_iter()
+        .filter_map(|row| {
+            let name = row.try_get::<String, _>("name").ok()?;
+            let nullable = row.try_get::<i64, _>("notnull").ok()? == 0;
+            Some(ImportColumnRule {
+                has_default: row
+                    .try_get::<Option<String>, _>("dflt_value")
+                    .ok()
+                    .flatten()
+                    .is_some(),
+                kind: ImportColumnKind::Generic,
+                nullable_foreign_key: nullable && foreign_key_columns.contains(&name),
+                nullable,
+                name,
+            })
+        })
         .collect())
+}
+
+async fn foreign_key_violations(
+    conn: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+) -> AppResult<Vec<SqliteForeignKeyViolation>> {
+    let rows = sqlx::query(
+        "SELECT \"table\" AS table_name, rowid, parent, fkid FROM pragma_foreign_key_check",
+    )
+    .fetch_all(&mut **conn)
+    .await
+    .map_err(|error| {
+        AppError::Repository(format!("failed to validate restored foreign keys: {error}"))
+    })?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(SqliteForeignKeyViolation {
+                table: row.try_get("table_name").map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to decode SQLite foreign key check table: {error}"
+                    ))
+                })?,
+                rowid: row.try_get("rowid").map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to decode SQLite foreign key check rowid: {error}"
+                    ))
+                })?,
+                parent: row.try_get("parent").map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to decode SQLite foreign key check parent: {error}"
+                    ))
+                })?,
+                fkid: row.try_get("fkid").map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to decode SQLite foreign key check fkid: {error}"
+                    ))
+                })?,
+            })
+        })
+        .collect()
+}
+
+fn format_foreign_key_violations(violations: &[SqliteForeignKeyViolation]) -> String {
+    const LIMIT: usize = 8;
+    let sample = violations
+        .iter()
+        .take(LIMIT)
+        .map(|violation| {
+            let rowid = violation
+                .rowid
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            format!(
+                "{} rowid {} -> {} (fk {})",
+                violation.table, rowid, violation.parent, violation.fkid
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    if violations.len() > LIMIT {
+        format!(
+            "{}; and {} more violation(s)",
+            sample,
+            violations.len() - LIMIT
+        )
+    } else {
+        sample
+    }
 }
 
 fn bind_json_value<'q>(
@@ -660,4 +780,75 @@ fn bind_json_value<'q>(
 fn quote_identifier(value: &str) -> String {
     let escaped = value.replace('"', "\"\"");
     format!("\"{escaped}\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Map as JsonMap, Value as JsonValue};
+
+    use super::{SqliteForeignKeyViolation, format_foreign_key_violations};
+    use crate::backup_import_normalization::{
+        ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
+    };
+
+    #[test]
+    fn nullable_foreign_keys_convert_blank_strings_to_null() {
+        let now = chrono::Utc::now();
+        let mut object = JsonMap::from_iter([
+            (
+                "episode_id".to_string(),
+                JsonValue::String("   ".to_string()),
+            ),
+            (
+                "title_id".to_string(),
+                JsonValue::String("title-1".to_string()),
+            ),
+        ]);
+        let columns = vec![
+            ImportColumnRule {
+                kind: ImportColumnKind::Generic,
+                has_default: false,
+                name: "episode_id".to_string(),
+                nullable_foreign_key: true,
+                nullable: true,
+            },
+            ImportColumnRule {
+                kind: ImportColumnKind::Generic,
+                has_default: false,
+                name: "title_id".to_string(),
+                nullable_foreign_key: false,
+                nullable: false,
+            },
+        ];
+
+        normalize_import_object_for_target("file_episode_map", &mut object, now, &columns, 2)
+            .expect("normalization should succeed");
+
+        assert_eq!(object.get("episode_id"), Some(&JsonValue::Null));
+        assert_eq!(
+            object.get("title_id"),
+            Some(&JsonValue::String("title-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn foreign_key_violation_formatter_includes_sample_details() {
+        let rendered = format_foreign_key_violations(&[
+            SqliteForeignKeyViolation {
+                table: "file_episode_map".to_string(),
+                rowid: Some(12),
+                parent: "episodes".to_string(),
+                fkid: 0,
+            },
+            SqliteForeignKeyViolation {
+                table: "settings_values".to_string(),
+                rowid: None,
+                parent: "settings_definitions".to_string(),
+                fkid: 1,
+            },
+        ]);
+
+        assert!(rendered.contains("file_episode_map rowid 12 -> episodes (fk 0)"));
+        assert!(rendered.contains("settings_values rowid ? -> settings_definitions (fk 1)"));
+    }
 }
