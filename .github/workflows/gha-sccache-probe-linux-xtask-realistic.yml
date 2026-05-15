@@ -47,8 +47,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-linux-xtask-realistic-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/Cargo.toml', 'xtask-support/Cargo.toml') }}
+          key: gha-sccache-linux-xtask-realistic-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/Cargo.toml', 'xtask-support/Cargo.toml') }}-${{ github.run_id }}
           restore-keys: |
+            gha-sccache-linux-xtask-realistic-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/Cargo.toml', 'xtask-support/Cargo.toml') }}-
             gha-sccache-linux-xtask-realistic-
 
       - name: Install sccache
