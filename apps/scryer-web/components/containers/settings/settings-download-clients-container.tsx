@@ -44,6 +44,18 @@ type SettingsDownloadClientsContainerProps = {
   providerCatalogVersion?: number;
 };
 
+type PendingDownloadClientEditorAction =
+  | { type: "create" }
+  | { type: "edit"; downloadClient: DownloadClientRecord }
+  | { type: "close" }
+  | null;
+
+function cloneDownloadClientDraft(
+  draft: DownloadClientDraft,
+): DownloadClientDraft {
+  return { ...draft };
+}
+
 export function SettingsDownloadClientsContainer({
   providerCatalogVersion = 0,
 }: SettingsDownloadClientsContainerProps) {
@@ -65,6 +77,16 @@ export function SettingsDownloadClientsContainer({
   const [pendingDeleteDownloadClient, setPendingDeleteDownloadClient] = useState<DownloadClientRecord | null>(null);
   const [downloadClientOrder, setDownloadClientOrder] = useState<string[]>([]);
   const [isSavingOrder, setIsSavingOrder] = useState(false);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
+  const [pendingEditorAction, setPendingEditorAction] =
+    useState<PendingDownloadClientEditorAction>(null);
+  const [draftBaseline, setDraftBaseline] = useState<DownloadClientDraft>(() =>
+    cloneDownloadClientDraft({
+      ...DEFAULT_DOWNLOAD_CLIENT_DRAFT,
+    }),
+  );
+  const [awaitingBaselineSync, setAwaitingBaselineSync] = useState(false);
   const providerCatalogVersionRef = useRef(providerCatalogVersion);
 
   const getDownloadClientErrorMessage = useCallback(
@@ -74,11 +96,23 @@ export function SettingsDownloadClientsContainer({
 
   const resetDownloadClientDraft = useCallback(() => {
     setEditingDownloadClientId(null);
-    setDownloadClientDraft({
+    setDownloadClientDraft(cloneDownloadClientDraft({
       ...DEFAULT_DOWNLOAD_CLIENT_DRAFT,
       isEnabled: true,
-    });
+    }));
   }, []);
+
+  useEffect(() => {
+    if (!awaitingBaselineSync) {
+      return;
+    }
+
+    setDraftBaseline(cloneDownloadClientDraft(downloadClientDraft));
+    setAwaitingBaselineSync(false);
+  }, [awaitingBaselineSync, downloadClientDraft]);
+
+  const isDraftDirty =
+    JSON.stringify(downloadClientDraft) !== JSON.stringify(draftBaseline);
 
   const refreshDownloadClients = useCallback(async () => {
     try {
@@ -194,6 +228,13 @@ export function SettingsDownloadClientsContainer({
     );
   }, [availableDownloadClientTypeOptions, downloadClientDraft.clientType]);
 
+  const openCreateEditor = useCallback(() => {
+    resetDownloadClientDraft();
+    setEditorMode("create");
+    setIsEditorOpen(true);
+    setAwaitingBaselineSync(true);
+  }, [resetDownloadClientDraft]);
+
   const submitDownloadClient = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const payload = {
@@ -275,6 +316,9 @@ export function SettingsDownloadClientsContainer({
         setGlobalStatus(t("status.downloadClientCreated"));
       }
       resetDownloadClientDraft();
+      setIsEditorOpen(false);
+      setEditorMode("create");
+      setAwaitingBaselineSync(true);
       await refreshDownloadClients();
     } catch (error) {
       if (!isReportedConnectionFeedbackError(error)) {
@@ -395,6 +439,66 @@ export function SettingsDownloadClientsContainer({
     setGlobalStatus(t("status.editingDownloadClient", { name: downloadClient.name }));
   }, [setGlobalStatus, t]);
 
+  const openEditEditor = useCallback((downloadClient: DownloadClientRecord) => {
+    editDownloadClient(downloadClient);
+    setEditorMode("edit");
+    setIsEditorOpen(true);
+    setAwaitingBaselineSync(true);
+  }, [editDownloadClient]);
+
+  const requestCreateEditor = useCallback(() => {
+    if (!isEditorOpen || !isDraftDirty) {
+      openCreateEditor();
+      return;
+    }
+
+    setPendingEditorAction({ type: "create" });
+  }, [isDraftDirty, isEditorOpen, openCreateEditor]);
+
+  const requestEditDownloadClient = useCallback((downloadClient: DownloadClientRecord) => {
+    if (!isEditorOpen || !isDraftDirty) {
+      openEditEditor(downloadClient);
+      return;
+    }
+
+    setPendingEditorAction({ type: "edit", downloadClient });
+  }, [isDraftDirty, isEditorOpen, openEditEditor]);
+
+  const requestCloseEditor = useCallback(() => {
+    if (!isEditorOpen) {
+      return;
+    }
+
+    if (!isDraftDirty) {
+      setIsEditorOpen(false);
+      setEditorMode("create");
+      resetDownloadClientDraft();
+      setAwaitingBaselineSync(true);
+      return;
+    }
+
+    setPendingEditorAction({ type: "close" });
+  }, [isDraftDirty, isEditorOpen, resetDownloadClientDraft]);
+
+  const confirmPendingEditorAction = useCallback(() => {
+    if (!pendingEditorAction) {
+      return;
+    }
+
+    if (pendingEditorAction.type === "create") {
+      openCreateEditor();
+    } else if (pendingEditorAction.type === "edit") {
+      openEditEditor(pendingEditorAction.downloadClient);
+    } else {
+      setIsEditorOpen(false);
+      setEditorMode("create");
+      resetDownloadClientDraft();
+      setAwaitingBaselineSync(true);
+    }
+
+    setPendingEditorAction(null);
+  }, [openCreateEditor, openEditEditor, pendingEditorAction, resetDownloadClientDraft]);
+
   const toggleDownloadClientEnabled = useCallback(async (downloadClient: DownloadClientRecord) => {
     const nextIsEnabled = !downloadClient.isEnabled;
     setMutatingDownloadClientId(downloadClient.id);
@@ -434,6 +538,9 @@ export function SettingsDownloadClientsContainer({
       await refreshDownloadClients();
       if (editingDownloadClientId === downloadClient.id) {
         resetDownloadClientDraft();
+        setIsEditorOpen(false);
+        setEditorMode("create");
+        setAwaitingBaselineSync(true);
       }
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));
@@ -454,14 +561,33 @@ export function SettingsDownloadClientsContainer({
         testDownloadClientConnection={testDownloadClientConnection}
         isTestingDownloadClientConnection={isTestingDownloadClientConnection}
         mutatingDownloadClientId={mutatingDownloadClientId}
-        resetDownloadClientDraft={resetDownloadClientDraft}
+        resetDownloadClientDraft={requestCloseEditor}
         settingsDownloadClients={settingsDownloadClients}
-        editDownloadClient={editDownloadClient}
+        editDownloadClient={requestEditDownloadClient}
         toggleDownloadClientEnabled={toggleDownloadClientEnabled}
         deleteDownloadClient={deleteDownloadClient}
         downloadClientOrder={downloadClientOrder}
         moveDownloadClient={moveDownloadClient}
         isSavingOrder={isSavingOrder}
+        isEditorOpen={isEditorOpen}
+        editorMode={editorMode}
+        startCreateDownloadClient={requestCreateEditor}
+      />
+      <ConfirmDialog
+        open={pendingEditorAction !== null}
+        title={t("settings.downloadClientConfirmDiscardTitle")}
+        description={t("settings.downloadClientConfirmDiscardDescription")}
+        confirmLabel={
+          pendingEditorAction?.type === "create"
+            ? t("settings.downloadClientCreateNew")
+            : pendingEditorAction?.type === "edit"
+              ? t("label.edit")
+              : t("label.discard")
+        }
+        cancelLabel={t("label.cancel")}
+        isBusy={mutatingDownloadClientId !== null}
+        onConfirm={confirmPendingEditorAction}
+        onCancel={() => setPendingEditorAction(null)}
       />
       <ConfirmDialog
         open={pendingDeleteDownloadClient !== null}

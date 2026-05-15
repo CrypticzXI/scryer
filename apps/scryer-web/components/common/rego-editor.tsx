@@ -13,6 +13,8 @@ type RegoEditorProps = {
   onChange: (value: string) => void;
   readOnly?: boolean;
   height?: string;
+  minLines?: number;
+  maxLines?: number;
 };
 
 const CODE_FONT = "'Fira Code', 'Fira Mono', 'JetBrains Mono', 'Source Code Pro', 'Cascadia Code', 'Consolas', monospace";
@@ -52,11 +54,24 @@ const prideTheme = EditorView.theme({
   ".cm-line": { padding: "0 4px" },
 }, { dark: true });
 
-export default function RegoEditor({ value, onChange, readOnly = false, height = "320px" }: RegoEditorProps) {
+export default function RegoEditor({
+  value,
+  onChange,
+  readOnly = false,
+  height = "320px",
+  minLines,
+  maxLines,
+}: RegoEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const { resolvedTheme } = useTheme();
+  const lineCount = value.split("\n").length;
+  const lineHeightPx = 20;
+  const computedHeight =
+    minLines && maxLines
+      ? `${Math.min(Math.max(lineCount, minLines), maxLines) * lineHeightPx}px`
+      : height;
 
   onChangeRef.current = onChange;
 
@@ -125,7 +140,7 @@ export default function RegoEditor({ value, onChange, readOnly = false, height =
     <div
       ref={containerRef}
       className="overflow-auto rounded-lg border border-border text-sm"
-      style={{ height, minHeight: "120px" }}
+      style={{ height: computedHeight, minHeight: "120px" }}
     />
   );
 }

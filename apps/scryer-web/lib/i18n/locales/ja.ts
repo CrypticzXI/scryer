@@ -967,23 +967,17 @@ const ja: LocaleDictionary = {
   "settings.pp.fireAndForget": "ファイア＆フォーゲット",
   "settings.pp.blockingHelp":
     "優先順位に従って実行されます。次のスクリプトは、このスクリプトが完了するまで待機します。",
-  "settings.pp.fireAndForgetHelp":
-    "インポートをブロックせずにバックグラウンドで実行されます。",
   "settings.pp.executionMode": "実行モード",
   "settings.pp.timeout": "タイムアウト (秒)",
   "settings.pp.priority": "優先度",
   "settings.pp.priorityHelp": "小さい番号が最初に実行されます。",
   "settings.pp.facets": "適用対象",
   "settings.pp.debug": "スクリプト出力のキャプチャ",
-  "settings.pp.debugHelp":
-    "有効にすると、実行ごとに stdout と stderr が保存されます。トラブルシューティングに役立ちます。",
   "settings.pp.runHistory": "実行履歴",
   "settings.pp.noRuns": "まだ処刑はされていない。",
   "settings.pp.outputNotCaptured":
     "出力がキャプチャされませんでした。出力を確認するには、このスクリプトでデバッグ モードを有効にします。",
   "settings.pp.envHeading": "環境変数",
-  "settings.pp.envDescription":
-    "スクリプトは、タイトル、エピソード、リリース、メディア情報のメタデータを含む JSON ペイロードを SCRYER_METADATA 環境変数で受け取ります。 SCRYER_FILE_PATH には、インポートされたファイルのパスが含まれます。",
   "settings.pp.created": "スクリプトが作成されました。",
   "settings.pp.updated": "スクリプトが更新されました。",
   "settings.pp.deleted": "スクリプトが削除されました。",

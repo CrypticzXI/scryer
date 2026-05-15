@@ -986,23 +986,17 @@ const de: LocaleDictionary = {
   "settings.pp.fireAndForget": "Feuer & Vergessen",
   "settings.pp.blockingHelp":
     "Wird in Prioritätsreihenfolge ausgeführt. Das nächste Skript wartet darauf, dass dieses beendet wird.",
-  "settings.pp.fireAndForgetHelp":
-    "Läuft im Hintergrund, ohne den Import zu blockieren.",
   "settings.pp.executionMode": "Ausführungsmodus",
   "settings.pp.timeout": "Timeout (Sekunden)",
   "settings.pp.priority": "Priorität",
   "settings.pp.priorityHelp": "Die niedrigere Nummer wird zuerst ausgeführt.",
   "settings.pp.facets": "Gilt für",
   "settings.pp.debug": "Erfassen Sie die Skriptausgabe",
-  "settings.pp.debugHelp":
-    "Wenn diese Option aktiviert ist, werden stdout und stderr für jeden Lauf gespeichert. Nützlich zur Fehlerbehebung.",
   "settings.pp.runHistory": "Laufverlauf",
   "settings.pp.noRuns": "Noch keine Hinrichtungen.",
   "settings.pp.outputNotCaptured":
     "Ausgabe nicht erfasst. Aktivieren Sie den Debug-Modus für dieses Skript, um die Ausgabe anzuzeigen.",
   "settings.pp.envHeading": "Umgebungsvariablen",
-  "settings.pp.envDescription":
-    "Skripte erhalten eine JSON-Nutzlast in der Umgebungsvariablen SCRYER_METADATA, die Titel-, Episoden-, Veröffentlichungs- und Medieninfo-Metadaten enthält. SCRYER_FILE_PATH enthält den importierten Dateipfad.",
   "settings.pp.created": "Skript erstellt.",
   "settings.pp.updated": "Skript aktualisiert.",
   "settings.pp.deleted": "Skript gelöscht.",

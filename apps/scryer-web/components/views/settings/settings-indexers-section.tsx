@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Edit, Lock, MonitorCog, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
+import { Edit, Lock, MonitorCog, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -55,6 +55,9 @@ type SettingsIndexersSectionProps = {
   providerTypes: ProviderTypeInfo[];
   testIndexerConnection: () => Promise<void> | void;
   isTestingConnection: boolean;
+  isEditorOpen: boolean;
+  editorMode: "create" | "edit";
+  startCreateIndexer: () => void;
 };
 
 const FALLBACK_PROVIDER_OPTIONS = [
@@ -352,9 +355,13 @@ export function SettingsIndexersSection({
   providerTypes,
   testIndexerConnection,
   isTestingConnection,
+  isEditorOpen,
+  editorMode,
+  startCreateIndexer,
 }: SettingsIndexersSectionProps) {
   const t = useTranslate();
   const normalizedProviderType = indexerDraft.providerType.trim().toLowerCase();
+  const isEditing = editorMode === "edit";
   const indexersById = React.useMemo(() => {
     return new Map(settingsIndexers.map((indexer) => [indexer.id, indexer]));
   }, [settingsIndexers]);
@@ -638,16 +645,18 @@ export function SettingsIndexersSection({
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            {editingIndexerId
-              ? t("settings.indexerUpdate")
-              : t("settings.indexerCreate")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form className="space-y-3" onSubmit={submitIndexer}>
+      {isEditorOpen ? (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                {editingIndexerId
+                  ? t("settings.indexerUpdate")
+                  : t("settings.indexerCreate")}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form className="space-y-3" onSubmit={submitIndexer}>
             <div className="grid gap-3 md:grid-cols-2">
               <label>
                 <Label className="mb-2 block">
@@ -789,15 +798,43 @@ export function SettingsIndexersSection({
               </Button>
               <Button
                 type="button"
-                variant="secondary"
+                variant="outline"
                 onClick={resetIndexerDraft}
               >
                 {t("label.cancel")}
               </Button>
             </div>
-          </form>
-        </CardContent>
-      </Card>
+              </form>
+            </CardContent>
+          </Card>
+          {isEditing ? (
+            <div className="flex justify-center">
+              <Button
+                type="button"
+                size="lg"
+                onClick={startCreateIndexer}
+                disabled={mutatingIndexerId !== null}
+                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+              >
+                <Plus className="h-5 w-5" />
+                {t("settings.indexerCreateNew")}
+              </Button>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={startCreateIndexer}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("settings.indexerCreateNew")}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

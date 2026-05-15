@@ -5,6 +5,7 @@ import {
   Edit,
   FileCode2,
   Library,
+  Plus,
   Power,
   Trash2,
 } from "lucide-react";
@@ -42,6 +43,8 @@ import type {
 } from "@/lib/types/rule-sets";
 
 type SettingsRulesSectionProps = {
+  isEditorOpen: boolean;
+  editorMode: "create" | "edit";
   editingRuleSetId: string | null;
   ruleSetDraft: RuleSetDraft;
   setRuleSetDraft: React.Dispatch<React.SetStateAction<RuleSetDraft>>;
@@ -50,6 +53,7 @@ type SettingsRulesSectionProps = {
   ) => Promise<void> | void;
   mutatingRuleSetId: string | null;
   resetRuleSetDraft: () => void;
+  startCreateRuleSet: () => void;
   ruleSetRecords: RuleSetRecord[];
   editRuleSet: (record: RuleSetRecord) => void;
   toggleRuleSetEnabled: (record: RuleSetRecord) => Promise<void> | void;
@@ -57,6 +61,12 @@ type SettingsRulesSectionProps = {
   validateDraft: () => Promise<void> | void;
   validating: boolean;
   validationResult: RuleValidationResult | null;
+  applyTemplate: (template: {
+    title: string;
+    description: string;
+    regoSource: string;
+    appliedFacets?: string[];
+  }) => void;
 };
 
 const FACET_OPTIONS = [
@@ -1061,12 +1071,15 @@ function TemplateGrid({
 }
 
 export function SettingsRulesSection({
+  isEditorOpen,
+  editorMode,
   editingRuleSetId,
   ruleSetDraft,
   setRuleSetDraft,
   submitRuleSet,
   mutatingRuleSetId,
   resetRuleSetDraft,
+  startCreateRuleSet,
   ruleSetRecords,
   editRuleSet,
   toggleRuleSetEnabled,
@@ -1074,6 +1087,7 @@ export function SettingsRulesSection({
   validateDraft,
   validating,
   validationResult,
+  applyTemplate,
 }: SettingsRulesSectionProps) {
   const t = useTranslate();
   return (
@@ -1199,17 +1213,11 @@ export function SettingsRulesSection({
 
       <RuleLibrary
         defaultOpen={ruleSetRecords.length === 0}
-        onApply={(template) => {
-          setRuleSetDraft((prev) => ({
-            ...prev,
-            name: template.title.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
-            description: template.description,
-            regoSource: template.regoSource,
-            appliedFacets: template.appliedFacets ?? [],
-          }));
-        }}
+        onApply={applyTemplate}
       />
 
+      {isEditorOpen ? (
+        <>
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
@@ -1277,7 +1285,8 @@ export function SettingsRulesSection({
                 onChange={(value) =>
                   setRuleSetDraft((prev) => ({ ...prev, regoSource: value }))
                 }
-                height="420px"
+                minLines={20}
+                maxLines={50}
               />
             </div>
 
@@ -1346,8 +1355,8 @@ export function SettingsRulesSection({
             ) : null}
 
             <div className="flex gap-2">
-              <Button type="submit" disabled={mutatingRuleSetId === "new"}>
-                {mutatingRuleSetId === "new"
+              <Button type="submit" disabled={mutatingRuleSetId !== null}>
+                {mutatingRuleSetId !== null
                   ? t("label.saving")
                   : editingRuleSetId
                     ? t("settings.ruleUpdate")
@@ -1374,6 +1383,35 @@ export function SettingsRulesSection({
           </form>
         </CardContent>
       </Card>
+      {editorMode === "edit" ? (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={startCreateRuleSet}
+            disabled={mutatingRuleSetId !== null}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("settings.ruleCreateNew")}
+          </Button>
+        </div>
+      ) : null}
+        </>
+      ) : (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={startCreateRuleSet}
+            disabled={mutatingRuleSetId !== null}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("settings.ruleCreateNew")}
+          </Button>
+        </div>
+      )}
 
       <RulesContextReference />
     </div>

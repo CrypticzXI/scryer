@@ -999,23 +999,17 @@ const es: LocaleDictionary = {
   "settings.pp.fireAndForget": "Dispara y olvida",
   "settings.pp.blockingHelp":
     "Se ejecuta en orden de prioridad. El siguiente script espera a que este termine.",
-  "settings.pp.fireAndForgetHelp":
-    "Se ejecuta en segundo plano sin bloquear la importación.",
   "settings.pp.executionMode": "Modo de ejecución",
   "settings.pp.timeout": "Tiempo de espera (segundos)",
   "settings.pp.priority": "Prioridad",
   "settings.pp.priorityHelp": "El número más bajo se ejecuta primero.",
   "settings.pp.facets": "Se aplica a",
   "settings.pp.debug": "Capturar la salida del script",
-  "settings.pp.debugHelp":
-    "Cuando está habilitado, stdout y stderr se guardan para cada ejecución. Útil para solucionar problemas.",
   "settings.pp.runHistory": "Historial de ejecución",
   "settings.pp.noRuns": "Aún no hay ejecuciones.",
   "settings.pp.outputNotCaptured":
     "Salida no capturada. Habilite el modo de depuración en este script para ver el resultado.",
   "settings.pp.envHeading": "Variables de entorno",
-  "settings.pp.envDescription":
-    "Los scripts reciben una carga útil JSON en la variable de entorno SCRYER_METADATA que contiene metadatos de título, episodio, lanzamiento y información multimedia. SCRYER_FILE_PATH contiene la ruta del archivo importado.",
   "settings.pp.created": "Guión creado.",
   "settings.pp.updated": "Guión actualizado.",
   "settings.pp.deleted": "Guión eliminado.",

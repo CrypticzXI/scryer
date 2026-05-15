@@ -951,23 +951,17 @@ const ko: LocaleDictionary = {
   "settings.pp.fireAndForget": "화재 및 잊어 버리기",
   "settings.pp.blockingHelp":
     "우선순위로 실행됩니다. 다음 스크립트는 이 스크립트가 완료될 때까지 기다립니다.",
-  "settings.pp.fireAndForgetHelp":
-    "가져오기를 차단하지 않고 백그라운드에서 실행됩니다.",
   "settings.pp.executionMode": "실행 모드",
   "settings.pp.timeout": "시간 초과(초)",
   "settings.pp.priority": "우선순위",
   "settings.pp.priorityHelp": "낮은 숫자가 먼저 실행됩니다.",
   "settings.pp.facets": "적용 대상",
   "settings.pp.debug": "스크립트 출력 캡처",
-  "settings.pp.debugHelp":
-    "활성화되면 각 실행마다 stdout 및 stderr이 저장됩니다. 문제 해결에 유용합니다.",
   "settings.pp.runHistory": "실행 기록",
   "settings.pp.noRuns": "아직 처형이 없습니다.",
   "settings.pp.outputNotCaptured":
     "출력이 캡처되지 않았습니다. 출력을 보려면 이 스크립트에서 디버그 모드를 활성화하세요.",
   "settings.pp.envHeading": "환경 변수",
-  "settings.pp.envDescription":
-    "스크립트는 제목, 에피소드, 릴리스 및 미디어 정보 메타데이터가 포함된 SCRYER_METADATA 환경 변수에서 JSON 페이로드를 수신합니다. SCRYER_FILE_PATH에는 가져온 파일 경로가 포함됩니다.",
   "settings.pp.created": "스크립트가 생성되었습니다.",
   "settings.pp.updated": "스크립트가 업데이트되었습니다.",
   "settings.pp.deleted": "스크립트가 삭제되었습니다.",

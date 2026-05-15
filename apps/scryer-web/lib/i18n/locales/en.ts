@@ -33,6 +33,7 @@ const en: LocaleDictionary = {
   "label.actions": "Actions",
   "label.create": "Create",
   "label.cancel": "Cancel",
+  "label.discard": "Discard changes",
   "label.clear": "Clear",
   "label.add": "Add",
   "label.remove": "Remove",
@@ -344,7 +345,13 @@ const en: LocaleDictionary = {
   "settings.delayProfileNone":
     "No delay profiles configured. Releases will be grabbed immediately.",
   "settings.delayProfileCreate": "Create Profile",
+  "settings.delayProfileCreateNew": "Create new delay profile",
   "settings.delayProfileEdit": "Edit Profile",
+  "settings.delayProfileConfirmDiscardTitle": "Discard current delay profile edits?",
+  "settings.delayProfileConfirmDiscardDescription":
+    "Your current delay profile edits will be lost.",
+  "settings.delayProfileDeleteConfirm":
+    "Delete this delay profile?",
   "settings.delayProfileNameLabel": "Name",
   "settings.delayProfileNamePlaceholder": "e.g. Wait for better quality",
   "settings.delayProfileNameRequired": "Delay profile name is required.",
@@ -381,7 +388,12 @@ const en: LocaleDictionary = {
   "settings.delayProfileSaveError": "Failed to save delay profiles.",
   "settings.downloadClientSection": "Download client settings",
   "settings.downloadClientCreate": "Save Download Client",
+  "settings.downloadClientCreateNew": "Create new download client",
   "settings.downloadClientUpdate": "Update Download Client",
+  "settings.downloadClientConfirmDiscardTitle":
+    "Discard current download client edits?",
+  "settings.downloadClientConfirmDiscardDescription":
+    "Your current download client edits will be lost.",
   "settings.downloadClientUseSsl": "Use SSL",
   "settings.downloadClientUrlBase": "URL Base",
   "settings.downloadClientUrlPreview": "Computed base URL",
@@ -963,6 +975,10 @@ const en: LocaleDictionary = {
   "settings.indexerAdd": "Add indexer",
   "settings.indexerUpdate": "Update Indexer",
   "settings.indexerCreate": "Create Indexer",
+  "settings.indexerCreateNew": "Create new indexer",
+  "settings.indexerConfirmDiscardTitle": "Discard current indexer edits?",
+  "settings.indexerConfirmDiscardDescription":
+    "Your current indexer edits will be lost.",
   "settings.indexerFilterPlaceholder": "Filter by provider type",
   "settings.noIndexersFound": "No indexers found.",
   "settings.indexerConfig": "Provider Configuration",
@@ -994,7 +1010,12 @@ const en: LocaleDictionary = {
   "settings.existingRules": "Existing rules",
   "settings.noRulesFound": "No custom rules configured.",
   "settings.ruleCreate": "Create Rule",
+  "settings.ruleCreateNew": "Create new rule",
   "settings.ruleUpdate": "Update Rule",
+  "settings.ruleApplyTemplate": "Apply template",
+  "settings.ruleConfirmDiscardTitle": "Discard current rule edits?",
+  "settings.ruleConfirmDiscardDescription":
+    "Your current rule edits will be lost.",
   "settings.ruleDescription": "Description",
   "settings.ruleRegoSource": "Rego Source",
   "settings.rulePriority": "Priority",
@@ -1239,6 +1260,8 @@ const en: LocaleDictionary = {
     "Rules must define a score_entry rule that returns a map of string keys (score codes) to integer values (point deltas). Positive values boost the release, negative values penalize it, and scryer.block_score() hard-blocks it. File-based rules naturally no-op pre-download because input.file is null until post-download evaluation.",
 
   "settings.subtitles": "Subtitles",
+  "settings.subtitlesDescription":
+    "Configure subtitle languages, matching thresholds, sync behavior, and provider connections.",
   "settings.subtitlesSaved": "Subtitle settings saved.",
   "settings.subtitleProviders": "Subtitle providers",
   "settings.existingSubtitleProviders": "Configured subtitle providers",
@@ -1249,7 +1272,12 @@ const en: LocaleDictionary = {
     "Scryer only searches this provider for the selected content types. Plugin recommendations seed these defaults, but do not restrict your choices.",
   "settings.subtitleProviderEmpty": "No subtitle providers configured yet.",
   "settings.subtitleProviderCreate": "Add subtitle provider",
+  "settings.subtitleProviderCreateNew": "Create new subtitle provider",
   "settings.subtitleProviderEdit": "Edit subtitle provider",
+  "settings.subtitleProviderConfirmDiscardTitle":
+    "Discard current subtitle provider edits?",
+  "settings.subtitleProviderConfirmDiscardDescription":
+    "Your current subtitle provider edits will be lost.",
   "settings.subtitleProviderNamePlaceholder": "OpenSubtitles",
   "settings.subtitleProviderCreated": "Subtitle provider created.",
   "settings.subtitleProviderUpdated": "Subtitle provider updated.",
@@ -1320,24 +1348,31 @@ const en: LocaleDictionary = {
   "settings.pp.blocking": "Blocking",
   "settings.pp.fireAndForget": "Fire & Forget",
   "settings.pp.blockingHelp": "Runs in priority order. Next script waits for this one to finish.",
-  "settings.pp.fireAndForgetHelp": "Runs in the background without blocking import.",
+  "settings.pp.fireAndForgetHelp":
+    "Runs in the background without blocking import. Output can still be captured if enabled.",
   "settings.pp.executionMode": "Execution Mode",
   "settings.pp.timeout": "Timeout (seconds)",
   "settings.pp.priority": "Priority",
   "settings.pp.priorityHelp": "Lower number runs first.",
   "settings.pp.facets": "Applies To",
   "settings.pp.debug": "Capture script output",
-  "settings.pp.debugHelp": "When enabled, stdout and stderr are saved for each run. Useful for troubleshooting.",
+  "settings.pp.debugHelp":
+    "When enabled, stdout and stderr are saved for each run, including background runs. Useful for troubleshooting.",
   "settings.pp.runHistory": "Run History",
   "settings.pp.noRuns": "No executions yet.",
   "settings.pp.outputNotCaptured": "Output not captured. Enable debug mode on this script to see output.",
   "settings.pp.envHeading": "Environment Variables",
   "settings.pp.envDescription":
-    "Scripts receive a JSON payload in the SCRYER_METADATA environment variable containing title, episode, release, and mediainfo metadata. SCRYER_FILE_PATH contains the imported file path.",
+    "Scripts receive a JSON payload in SCRYER_METADATA, plus the convenience variables shown below. Values may be null when Scryer does not have them.",
   "settings.pp.created": "Script created.",
   "settings.pp.updated": "Script updated.",
   "settings.pp.deleted": "Script deleted.",
   "settings.pp.toggled": "Script {{state}}.",
+  "settings.pp.createNewScript": "Create new script",
+  "settings.pp.confirmDiscardTitle":
+    "Discard current post-processing script edits?",
+  "settings.pp.confirmDiscardDescription":
+    "Your current post-processing script edits will be lost.",
 
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Manage plugins",
@@ -1444,6 +1479,9 @@ const en: LocaleDictionary = {
   "qualityProfile.confirmCreateFromEditTitle": "Discard current quality profile edits?",
   "qualityProfile.confirmCreateFromEditDescription":
     "Your current quality profile edits will be lost and replaced with a new blank profile form.",
+  "qualityProfile.confirmDiscardTitle": "Discard current quality profile edits?",
+  "qualityProfile.confirmDiscardDescription":
+    "Your current quality profile edits will be lost.",
   "qualityProfile.profileNameLabel": "Profile name",
   "qualityProfile.qualityTiersAndArchival":
     "Quality tiers and archival quality",
@@ -1923,9 +1961,19 @@ const en: LocaleDictionary = {
   "settings.notificationChannels": "Channels",
   "settings.notificationSubscriptions": "Subscriptions",
   "settings.notificationChannelCreate": "Add Channel",
+  "settings.notificationChannelCreateNew": "Create new channel",
   "settings.notificationChannelUpdate": "Update Channel",
   "settings.notificationSubscriptionCreate": "Add Subscription",
+  "settings.notificationSubscriptionCreateNew": "Create new subscription",
   "settings.notificationSubscriptionUpdate": "Update Subscription",
+  "settings.notificationChannelConfirmDiscardTitle":
+    "Discard current channel edits?",
+  "settings.notificationChannelConfirmDiscardDescription":
+    "Your current notification channel edits will be lost.",
+  "settings.notificationSubscriptionConfirmDiscardTitle":
+    "Discard current subscription edits?",
+  "settings.notificationSubscriptionConfirmDiscardDescription":
+    "Your current notification subscription edits will be lost.",
   "settings.notificationNoChannels": "No notification channels configured.",
   "settings.notificationNoSubscriptions":
     "No notification subscriptions configured.",

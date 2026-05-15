@@ -984,23 +984,17 @@ const it: LocaleDictionary = {
   "settings.pp.fireAndForget": "Spara e dimentica",
   "settings.pp.blockingHelp":
     "Viene eseguito in ordine di priorità. Lo script successivo attende che questo finisca.",
-  "settings.pp.fireAndForgetHelp":
-    "Viene eseguito in background senza bloccare l'importazione.",
   "settings.pp.executionMode": "Modalità di esecuzione",
   "settings.pp.timeout": "Timeout (secondi)",
   "settings.pp.priority": "Priorità",
   "settings.pp.priorityHelp": "Il numero più basso viene eseguito per primo.",
   "settings.pp.facets": "Si applica a",
   "settings.pp.debug": "Cattura l'output dello script",
-  "settings.pp.debugHelp":
-    "Se abilitati, stdout e stderr vengono salvati per ogni esecuzione. Utile per la risoluzione dei problemi.",
   "settings.pp.runHistory": "Esegui la cronologia",
   "settings.pp.noRuns": "Nessuna esecuzione ancora.",
   "settings.pp.outputNotCaptured":
     "Uscita non catturata. Abilita la modalità debug su questo script per vedere l'output.",
   "settings.pp.envHeading": "Variabili d'ambiente",
-  "settings.pp.envDescription":
-    "Gli script ricevono un payload JSON nella variabile di ambiente SCRYER_METADATA contenente i metadati di titolo, episodio, versione e mediainfo. SCRYER_FILE_PATH contiene il percorso del file importato.",
   "settings.pp.created": "Script creato.",
   "settings.pp.updated": "Scritto aggiornato.",
   "settings.pp.deleted": "Copione eliminato.",

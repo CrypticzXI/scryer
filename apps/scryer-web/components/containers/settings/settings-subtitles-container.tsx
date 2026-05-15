@@ -1,9 +1,12 @@
 import * as React from "react";
+import { Loader2, Subtitles } from "lucide-react";
 import { useClient } from "urql";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { SettingsSubtitleProvidersSection } from "@/components/views/settings/settings-subtitle-providers-section";
 import { SettingsSubtitlesSection } from "@/components/views/settings/settings-subtitles-section";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   subtitleProviderConfigsQuery,
   subtitleSettingsInitQuery,
@@ -153,6 +156,22 @@ type SettingsSubtitlesContainerProps = {
   providerCatalogVersion?: number;
 };
 
+type PendingSubtitleProviderEditorAction =
+  | { type: "create" }
+  | { type: "edit"; provider: SubtitleProviderConfigRecord }
+  | { type: "close" }
+  | null;
+
+function cloneProviderDraft(draft: SubtitleProviderDraft): SubtitleProviderDraft {
+  return {
+    ...draft,
+    enabledFacets: [...draft.enabledFacets],
+    configValues: { ...draft.configValues },
+    persistedConfigValues: { ...draft.persistedConfigValues },
+    storedSecretKeys: [...draft.storedSecretKeys],
+  };
+}
+
 export function SettingsSubtitlesContainer({
   providerCatalogVersion = 0,
 }: SettingsSubtitlesContainerProps) {
@@ -173,13 +192,41 @@ export function SettingsSubtitlesContainer({
     React.useState<SubtitleProviderConfigRecord | null>(null);
   const [isTestingProviderConnection, setIsTestingProviderConnection] =
     React.useState(false);
+  const [isProviderEditorOpen, setIsProviderEditorOpen] = React.useState(false);
+  const [providerEditorMode, setProviderEditorMode] =
+    React.useState<"create" | "edit">("create");
+  const [pendingProviderEditorAction, setPendingProviderEditorAction] =
+    React.useState<PendingSubtitleProviderEditorAction>(null);
+  const [providerDraftBaseline, setProviderDraftBaseline] =
+    React.useState<SubtitleProviderDraft>(() =>
+      cloneProviderDraft(DEFAULT_PROVIDER_DRAFT),
+    );
+  const [awaitingProviderBaselineSync, setAwaitingProviderBaselineSync] =
+    React.useState(false);
+  const [subtitlesExpanded, setSubtitlesExpanded] = React.useState(true);
   const loadedRef = React.useRef(false);
   const providerCatalogVersionRef = React.useRef(providerCatalogVersion);
 
   const resetProviderDraft = React.useCallback(() => {
     setEditingProviderId(null);
-    setProviderDraft({ ...DEFAULT_PROVIDER_DRAFT });
+    setProviderDraft(cloneProviderDraft(DEFAULT_PROVIDER_DRAFT));
   }, []);
+
+  React.useEffect(() => {
+    if (!awaitingProviderBaselineSync) {
+      return;
+    }
+
+    setProviderDraftBaseline(cloneProviderDraft(providerDraft));
+    setAwaitingProviderBaselineSync(false);
+  }, [awaitingProviderBaselineSync, providerDraft]);
+
+  React.useEffect(() => {
+    setSubtitlesExpanded(settings.enabled);
+  }, [settings.enabled]);
+
+  const isProviderDraftDirty =
+    JSON.stringify(providerDraft) !== JSON.stringify(providerDraftBaseline);
 
   const refreshProviderConfigs = React.useCallback(async () => {
     const { data, error } = await client
@@ -407,6 +454,9 @@ export function SettingsSubtitlesContainer({
           setGlobalStatus(t("settings.subtitleProviderCreated"));
         }
         resetProviderDraft();
+        setIsProviderEditorOpen(false);
+        setProviderEditorMode("create");
+        setAwaitingProviderBaselineSync(true);
         await refreshProviderConfigs();
       } catch (error) {
         setGlobalStatus(
@@ -458,6 +508,88 @@ export function SettingsSubtitlesContainer({
     },
     [providerTypes, setGlobalStatus, t],
   );
+
+  const openCreateProviderEditor = React.useCallback(() => {
+    resetProviderDraft();
+    setProviderEditorMode("create");
+    setIsProviderEditorOpen(true);
+    setAwaitingProviderBaselineSync(true);
+  }, [resetProviderDraft]);
+
+  const openEditProviderEditor = React.useCallback(
+    (provider: SubtitleProviderConfigRecord) => {
+      editProvider(provider);
+      setProviderEditorMode("edit");
+      setIsProviderEditorOpen(true);
+      setAwaitingProviderBaselineSync(true);
+    },
+    [editProvider],
+  );
+
+  const requestCreateProviderEditor = React.useCallback(() => {
+    if (!isProviderEditorOpen || !isProviderDraftDirty) {
+      openCreateProviderEditor();
+      return;
+    }
+
+    setPendingProviderEditorAction({ type: "create" });
+  }, [
+    isProviderDraftDirty,
+    isProviderEditorOpen,
+    openCreateProviderEditor,
+  ]);
+
+  const requestEditProvider = React.useCallback(
+    (provider: SubtitleProviderConfigRecord) => {
+      if (!isProviderEditorOpen || !isProviderDraftDirty) {
+        openEditProviderEditor(provider);
+        return;
+      }
+
+      setPendingProviderEditorAction({ type: "edit", provider });
+    },
+    [isProviderDraftDirty, isProviderEditorOpen, openEditProviderEditor],
+  );
+
+  const requestCloseProviderEditor = React.useCallback(() => {
+    if (!isProviderEditorOpen) {
+      return;
+    }
+
+    if (!isProviderDraftDirty) {
+      setIsProviderEditorOpen(false);
+      setProviderEditorMode("create");
+      resetProviderDraft();
+      setAwaitingProviderBaselineSync(true);
+      return;
+    }
+
+    setPendingProviderEditorAction({ type: "close" });
+  }, [isProviderDraftDirty, isProviderEditorOpen, resetProviderDraft]);
+
+  const confirmPendingProviderEditorAction = React.useCallback(() => {
+    if (!pendingProviderEditorAction) {
+      return;
+    }
+
+    if (pendingProviderEditorAction.type === "create") {
+      openCreateProviderEditor();
+    } else if (pendingProviderEditorAction.type === "edit") {
+      openEditProviderEditor(pendingProviderEditorAction.provider);
+    } else {
+      setIsProviderEditorOpen(false);
+      setProviderEditorMode("create");
+      resetProviderDraft();
+      setAwaitingProviderBaselineSync(true);
+    }
+
+    setPendingProviderEditorAction(null);
+  }, [
+    openCreateProviderEditor,
+    openEditProviderEditor,
+    pendingProviderEditorAction,
+    resetProviderDraft,
+  ]);
 
   const toggleProviderEnabled = React.useCallback(
     async (provider: SubtitleProviderConfigRecord) => {
@@ -518,6 +650,9 @@ export function SettingsSubtitlesContainer({
       await refreshProviderConfigs();
       if (editingProviderId === pendingDeleteProvider.id) {
         resetProviderDraft();
+        setIsProviderEditorOpen(false);
+        setProviderEditorMode("create");
+        setAwaitingProviderBaselineSync(true);
       }
     } catch (error) {
       setGlobalStatus(
@@ -605,30 +740,88 @@ export function SettingsSubtitlesContainer({
   return (
     <>
       <div className="space-y-6">
-        <SettingsSubtitlesSection
-          settings={settings}
-          setSettings={setSettings}
-          saving={saving}
-          loading={loading}
-        />
-        {!loading ? (
-          <SettingsSubtitleProvidersSection
-            editingProviderId={editingProviderId}
-            providerDraft={providerDraft}
-            setProviderDraft={setProviderDraft}
-            submitProvider={submitProvider}
-            mutatingProviderId={mutatingProviderId}
-            resetProviderDraft={resetProviderDraft}
-            providerConfigs={providerConfigs}
-            editProvider={editProvider}
-            toggleProviderEnabled={toggleProviderEnabled}
-            deleteProvider={deleteProvider}
-          providerTypes={providerTypes}
-          testProviderConnection={testProviderConnection}
-          isTestingConnection={isTestingProviderConnection}
-        />
-      ) : null}
+        <Card>
+          <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-start gap-3 text-left"
+              onClick={() => setSubtitlesExpanded((current) => !current)}
+              aria-expanded={subtitlesExpanded}
+            >
+              <div className="min-w-0 flex-1 space-y-1">
+                <CardTitle className="flex items-center gap-2">
+                  <Subtitles className="h-4 w-4" />
+                  {t("settings.subtitles")}
+                  {saving ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                  ) : null}
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.subtitlesDescription")}
+                </p>
+              </div>
+            </button>
+            <div className="flex shrink-0 justify-end sm:pt-1">
+              <SettingsToggleSwitch
+                checked={settings.enabled}
+                disabled={loading}
+                size="lg"
+                ariaLabel={
+                  settings.enabled ? t("label.enabled") : t("label.disabled")
+                }
+                onChange={(nextValue) =>
+                  setSettings({ ...settings, enabled: nextValue })
+                }
+              />
+            </div>
+          </CardHeader>
+          {subtitlesExpanded ? (
+            <CardContent className="space-y-6">
+              <SettingsSubtitlesSection
+                settings={settings}
+                setSettings={setSettings}
+                loading={loading}
+              />
+              {!loading ? (
+                <SettingsSubtitleProvidersSection
+                  editingProviderId={editingProviderId}
+                  providerDraft={providerDraft}
+                  setProviderDraft={setProviderDraft}
+                  submitProvider={submitProvider}
+                  mutatingProviderId={mutatingProviderId}
+                  resetProviderDraft={requestCloseProviderEditor}
+                  providerConfigs={providerConfigs}
+                  editProvider={requestEditProvider}
+                  toggleProviderEnabled={toggleProviderEnabled}
+                  deleteProvider={deleteProvider}
+                  providerTypes={providerTypes}
+                  testProviderConnection={testProviderConnection}
+                  isTestingConnection={isTestingProviderConnection}
+                  isEditorOpen={isProviderEditorOpen}
+                  editorMode={providerEditorMode}
+                  startCreateProvider={requestCreateProviderEditor}
+                />
+              ) : null}
+            </CardContent>
+          ) : null}
+        </Card>
       </div>
+      <ConfirmDialog
+        open={pendingProviderEditorAction !== null}
+        title={t("settings.subtitleProviderConfirmDiscardTitle")}
+        description={t("settings.subtitleProviderConfirmDiscardDescription")}
+        confirmLabel={
+          pendingProviderEditorAction?.type === "create"
+            ? t("settings.subtitleProviderCreateNew")
+            : pendingProviderEditorAction?.type === "edit"
+              ? t("label.edit")
+              : t("label.discard")
+        }
+        cancelLabel={t("label.cancel")}
+        isBusy={mutatingProviderId !== null}
+        onConfirm={confirmPendingProviderEditorAction}
+        onCancel={() => setPendingProviderEditorAction(null)}
+      />
       <ConfirmDialog
         open={pendingDeleteProvider !== null}
         title={t("label.delete")}

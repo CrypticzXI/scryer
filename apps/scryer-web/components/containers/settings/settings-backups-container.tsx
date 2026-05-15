@@ -4,6 +4,7 @@ import { useBeforeUnload, useBlocker } from "react-router-dom";
 import { useClient } from "urql";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { InfoHelp } from "@/components/common/info-help";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -109,70 +110,6 @@ type SaveFilePickerWindow = Window & {
     createWritable: () => Promise<WritableStream<Uint8Array>>;
   }>;
 };
-
-function SliderSwitch({
-  checked,
-  disabled,
-  onChange,
-  enabledLabel,
-  disabledLabel,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (nextValue: boolean) => void;
-  enabledLabel: string;
-  disabledLabel: string;
-}) {
-  return (
-    <div className="flex justify-center">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={checked ? enabledLabel : disabledLabel}
-        disabled={disabled}
-        className={cn(
-          "relative inline-flex h-14 w-28 shrink-0 items-center rounded-full border-2 px-3 transition-[background-color,border-color,box-shadow,transform] duration-200",
-          "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none",
-          disabled
-            ? "cursor-not-allowed opacity-50"
-            : "cursor-pointer hover:-translate-y-px",
-          checked
-            ? "border-emerald-400/50 bg-emerald-500/20 text-emerald-100"
-            : "border-rose-400/45 bg-rose-500/18 text-rose-100",
-        )}
-        onClick={() => !disabled && onChange(!checked)}
-      >
-        <span
-          aria-hidden="true"
-          className={cn(
-            "pointer-events-none absolute left-4 text-xs font-semibold uppercase tracking-[0.24em] transition-opacity duration-200",
-            checked ? "opacity-100" : "opacity-0",
-          )}
-        >
-          On
-        </span>
-        <span
-          aria-hidden="true"
-          className={cn(
-            "pointer-events-none absolute right-4 text-xs font-semibold uppercase tracking-[0.24em] transition-opacity duration-200",
-            checked ? "opacity-0" : "opacity-100",
-          )}
-        >
-          Off
-        </span>
-        <span
-          className={cn(
-            "pointer-events-none inline-flex h-9 w-9 items-center justify-center rounded-full border bg-background shadow-lg transition-transform duration-200",
-            checked
-              ? "translate-x-14 border-emerald-200"
-              : "translate-x-0 border-rose-200",
-          )}
-        />
-      </button>
-    </div>
-  );
-}
 
 function mutationErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -610,11 +547,15 @@ export function SettingsBackupsContainer() {
               </div>
             </button>
             <div className="flex shrink-0 justify-end sm:pt-1">
-              <SliderSwitch
+              <SettingsToggleSwitch
                 checked={autoBackupSettings.enabled}
                 disabled={autoBackupSaving}
-                enabledLabel={t("label.enabled")}
-                disabledLabel={t("label.disabled")}
+                size="lg"
+                ariaLabel={
+                  autoBackupSettings.enabled
+                    ? t("label.enabled")
+                    : t("label.disabled")
+                }
                 onChange={(nextValue) =>
                   setAutoBackupSettings((current) => ({
                     ...current,

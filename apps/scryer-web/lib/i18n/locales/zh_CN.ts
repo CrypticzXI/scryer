@@ -921,22 +921,17 @@ const zh_CN: LocaleDictionary = {
   "settings.pp.blocking": "阻塞",
   "settings.pp.fireAndForget": "发射即忘",
   "settings.pp.blockingHelp": "按优先顺序运行。下一个脚本等待此脚本完成。",
-  "settings.pp.fireAndForgetHelp": "在后台运行，不会阻止导入。",
   "settings.pp.executionMode": "执行模式",
   "settings.pp.timeout": "超时（秒）",
   "settings.pp.priority": "优先级",
   "settings.pp.priorityHelp": "数字较小的先运行。",
   "settings.pp.facets": "适用于",
   "settings.pp.debug": "捕获脚本输出",
-  "settings.pp.debugHelp":
-    "启用后，每次运行都会保存 stdout 和 stderr。对于故障排除很有用。",
   "settings.pp.runHistory": "运行历史",
   "settings.pp.noRuns": "尚未执行死刑。",
   "settings.pp.outputNotCaptured":
     "未捕获输出。对此脚本启用调试模式以查看输出。",
   "settings.pp.envHeading": "环境变量",
-  "settings.pp.envDescription":
-    "脚本在 SCRYER_METADATA 环境变量中接收 JSON 有效负载，其中包含标题、剧集、版本和媒体信息元数据。 SCRYER_FILE_PATH 包含导入的文件路径。",
   "settings.pp.created": "脚本已创建。",
   "settings.pp.updated": "脚本已更新。",
   "settings.pp.deleted": "脚本已删除。",

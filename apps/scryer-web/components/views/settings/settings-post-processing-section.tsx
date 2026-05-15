@@ -43,12 +43,15 @@ import type {
 
 type SettingsPostProcessingSectionProps = {
   scripts: PPScript[];
+  isEditorOpen: boolean;
+  editorMode: "create" | "edit";
   editingScriptId: string | null;
   scriptDraft: PPScriptDraft;
   setScriptDraft: React.Dispatch<React.SetStateAction<PPScriptDraft>>;
   submitScript: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
   mutatingScriptId: string | null;
   resetDraft: () => void;
+  startCreateScript: () => void;
   editScript: (record: PPScript) => void;
   toggleScript: (record: PPScript) => Promise<void> | void;
   deleteScript: (record: PPScript) => void;
@@ -181,12 +184,15 @@ function ScriptRunsTable({
 export const SettingsPostProcessingSection = React.memo(
   function SettingsPostProcessingSection({
     scripts,
+    isEditorOpen,
+    editorMode,
     editingScriptId,
     scriptDraft,
     setScriptDraft,
     submitScript,
     mutatingScriptId,
     resetDraft,
+    startCreateScript,
     editScript,
     toggleScript,
     deleteScript,
@@ -364,6 +370,8 @@ export const SettingsPostProcessingSection = React.memo(
           </div>
         </div>
 
+        {isEditorOpen ? (
+          <>
         {/* Create / Edit Form */}
         <Card>
           <CardHeader>
@@ -447,7 +455,8 @@ export const SettingsPostProcessingSection = React.memo(
                       onChange={(value) =>
                         setScriptDraft((prev) => ({ ...prev, scriptContent: value }))
                       }
-                      height="200px"
+                      minLines={20}
+                      maxLines={50}
                     />
                   </>
                 ) : (
@@ -620,8 +629,8 @@ export const SettingsPostProcessingSection = React.memo(
 
               {/* Actions */}
               <div className="flex gap-2">
-                <Button type="submit" disabled={mutatingScriptId === "new"}>
-                  {mutatingScriptId === "new"
+                <Button type="submit" disabled={mutatingScriptId !== null}>
+                  {mutatingScriptId !== null
                     ? t("label.saving")
                     : editingScriptId
                       ? t("label.update")
@@ -638,6 +647,35 @@ export const SettingsPostProcessingSection = React.memo(
             </form>
           </CardContent>
         </Card>
+        {editorMode === "edit" ? (
+          <div className="flex justify-center">
+            <Button
+              type="button"
+              size="lg"
+              onClick={startCreateScript}
+              disabled={mutatingScriptId !== null}
+              className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+            >
+              <Plus className="h-5 w-5" />
+              {t("settings.pp.createNewScript")}
+            </Button>
+          </div>
+        ) : null}
+          </>
+        ) : (
+          <div className="flex justify-center">
+            <Button
+              type="button"
+              size="lg"
+              onClick={startCreateScript}
+              disabled={mutatingScriptId !== null}
+              className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+            >
+              <Plus className="h-5 w-5" />
+              {t("settings.pp.createNewScript")}
+            </Button>
+          </div>
+        )}
 
         {/* Environment Variables Reference */}
         <EnvVarsReference />
@@ -683,37 +721,20 @@ function EnvVarsReference() {
   },
   "episode": {
     "season": 1,
-    "episode": 5,
-    "absolute": 5,
-    "name": "..."
+    "episode": 5
   },
   "release": {
-    "raw_title": "...",
-    "quality": "1080p",
-    "source": "WEB-DL",
-    "video_codec": "H.265",
-    "audio": "DDP5.1 Atmos",
-    "release_group": "...",
-    "is_dual_audio": false,
-    "is_dolby_vision": true,
-    "is_hdr10plus": true,
-    "languages_audio": ["English"],
-    "streaming_service": "ATVP"
-  },
-  "mediainfo": {
-    "video_codec": "HEVC",
-    "video_width": 3840,
-    "video_height": 2160,
-    "video_bit_depth": 10,
-    "video_hdr_format": "Dolby Vision",
-    "audio_codec": "E-AC-3",
-    "audio_channels": "5.1",
-    "audio_languages": ["eng"],
-    "subtitle_languages": ["eng", "spa"],
-    "duration_seconds": 3600,
-    "container_format": "Matroska"
+    "quality": "1080p"
   }
 }`}
+          </pre>
+          <pre className="mt-3 rounded border border-border bg-muted/50 p-3 text-xs leading-relaxed">
+{`SCRYER_METADATA={...}
+SCRYER_EVENT=post_import
+SCRYER_FILE_PATH=/data/series/...
+SCRYER_FACET=series
+SCRYER_TITLE_NAME=Example Title
+SCRYER_TITLE_ID=...`}
           </pre>
         </CardContent>
       ) : null}

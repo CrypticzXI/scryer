@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { ChevronDown, ChevronUp, Edit, Power, PowerOff, Server, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Edit, Plus, Power, PowerOff, Server, Trash2 } from "lucide-react";
 import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
 import { InfoHelp } from "@/components/common/info-help";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
@@ -220,6 +220,9 @@ export type SettingsDownloadClientsSectionProps = {
   downloadClientOrder: string[];
   moveDownloadClient: (clientId: string, direction: "up" | "down") => Promise<void> | void;
   isSavingOrder: boolean;
+  isEditorOpen: boolean;
+  editorMode: "create" | "edit";
+  startCreateDownloadClient: () => void;
 };
 
 const DOWNLOAD_CLIENT_TYPE_LOGO_OPTIONS: DownloadClientTypeLogoOption[] = [
@@ -310,6 +313,9 @@ export function SettingsDownloadClientsSection({
   downloadClientOrder,
   moveDownloadClient,
   isSavingOrder,
+  isEditorOpen,
+  editorMode,
+  startCreateDownloadClient,
 }: SettingsDownloadClientsSectionProps) {
   const t = useTranslate();
   const urlPreview = buildUrlPreview(downloadClientDraft);
@@ -373,6 +379,7 @@ export function SettingsDownloadClientsSection({
   const hasOptionalCredentials =
     normalizedClientType === "nzbget" || normalizedClientType === "sabnzbd";
   const optionalCredentialLabel = hasOptionalCredentials ? " (optional)" : "";
+  const isEditing = editorMode === "edit";
 
   return (
     <div className="space-y-4 text-sm">
@@ -491,14 +498,18 @@ export function SettingsDownloadClientsSection({
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            {editingDownloadClientId ? t("settings.downloadClientUpdate") : t("settings.downloadClientCreate")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form className="space-y-3" onSubmit={submitDownloadClient}>
+      {isEditorOpen ? (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                {editingDownloadClientId
+                  ? t("settings.downloadClientUpdate")
+                  : t("settings.downloadClientCreate")}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form className="space-y-3" onSubmit={submitDownloadClient}>
             <div className="grid gap-3 md:grid-cols-3">
               <label>
                 <Label className="mb-2 block">{t("label.type")}</Label>
@@ -754,13 +765,41 @@ export function SettingsDownloadClientsSection({
                   ? t("status.testingDownloadClient", { client: selectedDownloadClientLabel })
                   : t("label.testConnection")}
               </Button>
-              <Button type="button" variant="secondary" onClick={resetDownloadClientDraft}>
+              <Button type="button" variant="outline" onClick={resetDownloadClientDraft}>
                 {t("label.cancel")}
               </Button>
             </div>
-          </form>
-        </CardContent>
-      </Card>
+              </form>
+            </CardContent>
+          </Card>
+          {isEditing ? (
+            <div className="flex justify-center">
+              <Button
+                type="button"
+                size="lg"
+                onClick={startCreateDownloadClient}
+                disabled={mutatingDownloadClientId !== null}
+                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+              >
+                <Plus className="h-5 w-5" />
+                {t("settings.downloadClientCreateNew")}
+              </Button>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={startCreateDownloadClient}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("settings.downloadClientCreateNew")}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
