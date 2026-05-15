@@ -114,7 +114,7 @@ jobs:
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
           export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
-          cargo build -vv -p scryer --release --locked --target x86_64-unknown-linux-musl 2>&1 | tee scryer-build.log
+          cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl 2>&1 | tee scryer-build.log
 
       - name: Show sccache stats
         shell: bash
