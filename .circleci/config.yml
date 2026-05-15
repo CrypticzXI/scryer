@@ -782,6 +782,23 @@ jobs:
             if (-not $vsPath) {
               throw "Unable to locate a Visual Studio installation with MSVC build tools"
             }
+            $vsInstaller = Join-Path ${Env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\setup.exe"
+            if (-not (Test-Path $vsInstaller)) {
+              throw "Visual Studio installer not found at $vsInstaller"
+            }
+            "Installing Spectre-mitigated MSVC runtime libs into $vsPath" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            $spectreArgs = @(
+              "modify",
+              "--installPath", $vsPath,
+              "--add", "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
+              "--quiet",
+              "--wait",
+              "--norestart"
+            )
+            & $vsInstaller @spectreArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "Visual Studio installer failed while adding Spectre libs with exit code $LASTEXITCODE"
+            }
             $vsDevCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
             cmd.exe /s /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && set" |
               ForEach-Object {
