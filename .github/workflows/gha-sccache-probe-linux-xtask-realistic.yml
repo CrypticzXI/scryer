@@ -1,0 +1,92 @@
+name: gha-sccache-probe-linux-xtask-realistic
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "gha-sccache-linux-xtask-v*"
+
+concurrency:
+  group: gha-sccache-probe-linux-xtask-realistic-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux-xtask-realistic:
+    name: linux-xtask-realistic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_DIR: /home/runner/.cache/sccache
+      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
+      RUSTC_WRAPPER: sccache
+      CARGO_HOME: /home/runner/.cargo
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.95.0"
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y --no-install-recommends musl-tools mold nasm
+
+      - name: Add musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Restore sccache directory
+        id: sccache-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/.cache/sccache
+          key: gha-sccache-linux-xtask-realistic-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/Cargo.toml', 'xtask-support/Cargo.toml') }}
+          restore-keys: |
+            gha-sccache-linux-xtask-realistic-
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Prime sccache server
+        shell: bash
+        run: |
+          set -euo pipefail
+          sccache --start-server || true
+          sccache --zero-stats || true
+
+      - name: Build xtask in realistic mode with sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
+          cargo build -p xtask --release --locked --target x86_64-unknown-linux-musl 2>&1 | tee xtask-build.log
+
+      - name: Show sccache stats
+        shell: bash
+        run: |
+          set -euo pipefail
+          sccache --show-stats | tee sccache-stats.txt
+
+      - name: Upload probe artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: gha-sccache-probe-linux-xtask-realistic-${{ github.run_id }}
+          path: |
+            xtask-build.log
+            sccache-stats.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Save sccache directory
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /home/runner/.cache/sccache
+          key: ${{ steps.sccache-cache-restore.outputs.cache-primary-key }}
