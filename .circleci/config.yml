@@ -370,30 +370,34 @@ jobs:
       - save_rust_cache_unix:
           key_prefix: linux-check
 
-  rust-build-linux-xtask-debug:
+  rust-build-linux-x86_64-portable:
     executor: linux-medium
     working_directory: ~/project
     steps:
       - checkout
       - fetch_full_history
+      - attach_repo_workspace
       - restore_rust_cache_unix:
-          key_prefix: linux-xtask-debug
+          key_prefix: linux-x86_64-portable-release
       - restore_sccache_unix:
-          key_prefix: linux-xtask-debug
-      - setup_rust_unix
+          key_prefix: linux-x86_64-portable-release
+      - setup_rust_unix:
+          target: x86_64-unknown-linux-musl
       - setup_sccache_unix:
           asset_name: sccache-v0.15.0-x86_64-unknown-linux-musl.tar.gz
           sha256: 782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e
       - run:
           name: Install mold
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold musl-tools nasm
       - run:
-          name: Build xtask with sccache instrumentation
+          name: Build portable release binary (Linux x86_64 + embedded UI)
           no_output_timeout: 30m
           environment:
-            CARGO_TARGET_DIR: target/ci-linux-xtask-debug
+            CARGO_TARGET_DIR: target/ci-linux-x86_64-portable-release
+            SCRYER_SMG_GRAPHQL_URL: https://smg.scryer.media/graphql
           command: |
             . "$BASH_ENV"
+            export SCRYER_EMBED_UI_DIR="$PWD/apps/scryer-web/dist"
             export SCCACHE_ERROR_LOG="/tmp/sccache.log"
             export SCCACHE_LOG="debug"
             export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
@@ -422,7 +426,7 @@ jobs:
               ps -o pid,ppid,etimes,%mem,rss,vsz,command -C sccache || true
             } | tee /tmp/sccache-diagnostics.txt
             sccache --zero-stats || true
-            /usr/bin/time -v cargo build -vv -p xtask --locked 2>&1 | tee /tmp/xtask-build.log
+            /usr/bin/time -v cargo build -vv -p scryer --release --locked --target x86_64-unknown-linux-musl 2>&1 | tee /tmp/scryer-build.log
             {
               echo
               echo '=== sccache-after ==='
@@ -431,6 +435,9 @@ jobs:
               echo
               echo '=== memory-after ==='
               free -h
+              echo
+              echo '=== disk-after ==='
+              du -sh "$HOME/.cache/sccache" "$CARGO_TARGET_DIR" || true
             } | tee -a /tmp/sccache-diagnostics.txt
             sccache --show-stats | tee /tmp/sccache-stats.txt
             {
@@ -439,7 +446,7 @@ jobs:
               tail -n 200 /tmp/sccache.log || true
             } | tee -a /tmp/sccache-diagnostics.txt
       - store_artifacts:
-          path: /tmp/xtask-build.log
+          path: /tmp/scryer-build.log
       - store_artifacts:
           path: /tmp/sccache-stats.txt
       - store_artifacts:
@@ -447,9 +454,9 @@ jobs:
       - store_artifacts:
           path: /tmp/sccache.log
       - save_sccache_unix:
-          key_prefix: linux-xtask-debug
+          key_prefix: linux-x86_64-portable-release
       - save_rust_cache_unix:
-          key_prefix: linux-xtask-debug
+          key_prefix: linux-x86_64-portable-release
 
   rust-build-linux-x86_64-haswell:
     executor: linux-medium
@@ -1165,9 +1172,15 @@ jobs:
 workflows:
   scryer:
     jobs:
-      - rust-build-linux-xtask-debug:
+      - web:
+          context: scryer-build
           filters: &release_tag_filters
             tags:
               only: /^(scryer-v|cci-scryer-v).*/
             branches:
               ignore: /.*/
+      - rust-build-linux-x86_64-portable:
+          context: scryer-build
+          requires:
+            - web
+          filters: *release_tag_filters
