@@ -65,6 +65,7 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_IDLE_TIMEOUT: "0"
       SCCACHE_DIR: /home/runner/.cache/sccache
+      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
       RUSTC_WRAPPER: sccache
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
@@ -114,7 +115,7 @@ jobs:
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
-          export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
           cargo build -p scryer --release --locked --target x86_64-unknown-linux-musl 2>&1 | tee scryer-build.log
 
       - name: Show sccache stats
