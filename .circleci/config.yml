@@ -710,7 +710,7 @@ jobs:
       - persist_release_artifact:
           path: release-artifacts/scryer-darwin-arm64.tar.gz
 
-  rust-build-windows-scryer:
+  rust-build-windows-xtask:
     executor: windows-medium
     working_directory: C:\Users\circleci\project
     steps:
@@ -718,10 +718,9 @@ jobs:
       - run:
           name: Configure git for tag fetches
           command: git fetch --force --tags --prune
-      - attach_repo_workspace
       - restore_rust_cache_windows
       - restore_sccache_windows:
-          key_prefix: windows-scryer-release
+          key_prefix: windows-xtask-regorus
       - run:
           name: Install Rust 1.95.0
           command: |
@@ -761,10 +760,10 @@ jobs:
             New-Item -ItemType Directory -Force -Path "$Env:LOCALAPPDATA\Mozilla\sccache" | Out-Null
             & $bin --version
       - run:
-          name: Build release binary with sccache (Windows x86_64 + embedded UI)
+          name: Build xtask with regorus and sccache (Windows x86_64)
           no_output_timeout: 30m
           environment:
-            CARGO_TARGET_DIR: C:\Users\circleci\project\target\ci-windows-x86_64-release
+            CARGO_TARGET_DIR: C:\Users\circleci\project\target\ci-windows-xtask-regorus
             SCCACHE_DIR: C:\Users\circleci\AppData\Local\Mozilla\sccache
             SCCACHE_CACHE_SIZE: 10G
             SCCACHE_LOG: debug
@@ -782,9 +781,12 @@ jobs:
             if (-not $vsPath) {
               throw "Unable to locate a Visual Studio installation with MSVC build tools"
             }
-            $vsInstaller = Join-Path ${Env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\setup.exe"
+            $vsInstaller = Join-Path ${Env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vs_installer.exe"
             if (-not (Test-Path $vsInstaller)) {
-              throw "Visual Studio installer not found at $vsInstaller"
+              $vsInstaller = Join-Path ${Env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\setup.exe"
+            }
+            if (-not (Test-Path $vsInstaller)) {
+              throw "Visual Studio installer frontend not found"
             }
             "Installing Spectre-mitigated MSVC runtime libs into $vsPath" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             $spectreComponents = @(
@@ -813,7 +815,15 @@ jobs:
                 if ($_ -match '^(.*?)=(.*)$') {
                   [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
                 }
-              }
+            }
+            $spectreDir = Join-Path $vsPath "VC\Tools\MSVC\14.44.35207\lib\spectre\x64"
+            "Spectre dir: $spectreDir" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            if (Test-Path $spectreDir) {
+              Get-ChildItem $spectreDir | Select-Object -First 20 Name | Format-Table -HideTableHeaders | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            } else {
+              "Spectre dir missing after installer modify." | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+              throw "Spectre dir missing after installer modify: $spectreDir"
+            }
             $sccacheDir = (Get-ChildItem C:\sccache-install -Directory | Select-Object -First 1).FullName
             $sccacheBin = Join-Path $sccacheDir "sccache.exe"
             if (-not (Test-Path $sccacheBin)) {
@@ -836,8 +846,6 @@ jobs:
             $Env:CARGO_BUILD_TARGET = "x86_64-pc-windows-msvc"
             $Env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = "link.exe"
             $Env:RUSTFLAGS = "-C linker=link.exe -C linker-flavor=msvc"
-            $Env:SCRYER_SMG_GRAPHQL_URL = "https://smg.scryer.media/graphql"
-            $Env:SCRYER_EMBED_UI_DIR = "C:\Users\circleci\project\apps\scryer-web\dist"
             Remove-Item Env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER -ErrorAction SilentlyContinue
             "=== before build ===" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-Date -Format o | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
@@ -872,12 +880,12 @@ jobs:
             }
 
             Measure-Command {
-              cmd.exe /d /s /c """$cargoExe"" build -vv -p scryer --release --locked --target x86_64-pc-windows-msvc > C:\Users\circleci\project\tmp\windows-scryer-build.log 2>&1"
+              cmd.exe /d /s /c """$cargoExe"" build -vv -p xtask --locked --target x86_64-pc-windows-msvc > C:\Users\circleci\project\tmp\windows-xtask-build.log 2>&1"
             } | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             if ($LASTEXITCODE -ne 0) {
               throw "cargo build failed with exit code $LASTEXITCODE"
             }
-            Get-Content C:\Users\circleci\project\tmp\windows-scryer-build.log -Tail 200
+            Get-Content C:\Users\circleci\project\tmp\windows-xtask-build.log -Tail 200
 
             Stop-Job $watchdog -ErrorAction SilentlyContinue
             Receive-Job $watchdog -ErrorAction SilentlyContinue | Out-Null
@@ -892,9 +900,9 @@ jobs:
             Get-Content C:\Users\circleci\project\tmp\sccache.log -Tail 200
       - save_rust_cache_windows
       - save_sccache_windows:
-          key_prefix: windows-scryer-release
+          key_prefix: windows-xtask-regorus
       - store_artifacts:
-          path: tmp/windows-scryer-build.log
+          path: tmp/windows-xtask-build.log
       - store_artifacts:
           path: tmp/sccache-stats.txt
       - store_artifacts:
@@ -1272,15 +1280,7 @@ jobs:
 workflows:
   scryer:
     jobs:
-      - web:
-          filters: &release_tag_filters
-            tags:
-              only: /^(scryer-v|cci-scryer-v).*/
-            branches:
-              ignore: /.*/
-      - rust-build-windows-scryer:
-          requires:
-            - web
+      - rust-build-windows-xtask:
           context: scryer-build
           filters:
             tags:
