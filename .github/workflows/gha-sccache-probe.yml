@@ -85,6 +85,14 @@ jobs:
       - name: Add musl target
         run: rustup target add x86_64-unknown-linux-musl
 
+      - name: Restore cargo dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gha-rust-cache-linux-scryer
+          cache-targets: "false"
+          cache-workspace-crates: "false"
+          key: scryer-linux-release
+
       - name: Restore sccache directory
         id: sccache-cache-restore
         uses: actions/cache/restore@v4
