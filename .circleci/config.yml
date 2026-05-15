@@ -829,12 +829,12 @@ jobs:
             }
 
             Measure-Command {
-              rustup run 1.95.0-x86_64-pc-windows-msvc cargo build -vv -p xtask --locked 2>&1 |
-                Tee-Object -FilePath C:\Users\circleci\project\tmp\windows-xtask-build.log
+              cmd.exe /d /s /c "cargo build -vv -p xtask --locked > C:\Users\circleci\project\tmp\windows-xtask-build.log 2>&1"
             } | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             if ($LASTEXITCODE -ne 0) {
               throw "cargo build failed with exit code $LASTEXITCODE"
             }
+            Get-Content C:\Users\circleci\project\tmp\windows-xtask-build.log -Tail 200
 
             Stop-Job $watchdog -ErrorAction SilentlyContinue
             Receive-Job $watchdog -ErrorAction SilentlyContinue | Out-Null
