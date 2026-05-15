@@ -742,9 +742,8 @@ jobs:
             $version = "0.15.0"
             $asset = "sccache-v${version}-x86_64-pc-windows-msvc.zip"
             $assetUrl = "https://github.com/mozilla/sccache/releases/download/v${version}/${asset}"
-            $checksumUrl = "${assetUrl}.sha256"
+            $expectedSha256 = "dcf489090aa5ef4c7d145e8b29f759124c803d636c3107f397bd50d425b5f341"
             Invoke-WebRequest $assetUrl -OutFile sccache.zip
-            $expectedSha256 = ((Invoke-WebRequest $checksumUrl).Content.Trim() -replace '^sha256:', '').ToLowerInvariant()
             $actualSha256 = (Get-FileHash sccache.zip -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actualSha256 -ne $expectedSha256) {
               throw "sccache checksum mismatch: expected $expectedSha256, got $actualSha256"
