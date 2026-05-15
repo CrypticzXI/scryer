@@ -14,15 +14,61 @@ permissions:
   contents: read
 
 jobs:
-  linux-xtask:
-    name: linux-xtask
+  web:
+    name: web
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 25
+          cache: npm
+          cache-dependency-path: apps/scryer-web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/scryer-web
+        run: npm ci
+
+      - name: Lint
+        working-directory: apps/scryer-web
+        run: npm run lint
+
+      - name: Build web app
+        working-directory: apps/scryer-web
+        env:
+          SCRYER_GRAPHQL_URL: /graphql
+          SCRYER_METADATA_GATEWAY_GRAPHQL_URL: https://smg.scryer.media/graphql
+        run: npm run build
+
+      - name: Verify static output
+        run: test -f apps/scryer-web/dist/index.html
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: scryer-web-out-${{ github.run_id }}
+          path: apps/scryer-web/dist
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-scryer:
+    name: linux-scryer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    needs: [web]
     env:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_IDLE_TIMEOUT: "0"
       SCCACHE_DIR: /home/runner/.cache/sccache
       RUSTC_WRAPPER: sccache
+      CARGO_HOME: /home/runner/.cargo
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v6
         with:
@@ -32,27 +78,43 @@ jobs:
         with:
           toolchain: "1.95.0"
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y --no-install-recommends musl-tools mold nasm
+
+      - name: Add musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
       - name: Restore sccache directory
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-linux-xtask-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'xtask/Cargo.toml', 'xtask-support/Cargo.toml') }}
+          key: gha-sccache-linux-scryer-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}
           restore-keys: |
-            gha-sccache-linux-xtask-
+            gha-sccache-linux-scryer-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Download embedded web artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: scryer-web-out-${{ github.run_id }}
+          path: scryer-web-out
 
       - name: Prime sccache server
         run: |
           sccache --start-server || true
           sccache --zero-stats || true
 
-      - name: Build xtask with sccache
+      - name: Build scryer with sccache
         shell: bash
         run: |
           set -euo pipefail
-          cargo build -vv -p xtask --locked 2>&1 | tee xtask-build.log
+          export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
+          export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
+          export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
+          export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+          cargo build -vv -p scryer --release --locked --target x86_64-unknown-linux-musl 2>&1 | tee scryer-build.log
 
       - name: Show sccache stats
         shell: bash
@@ -65,7 +127,7 @@ jobs:
         with:
           name: gha-sccache-probe-${{ github.run_id }}
           path: |
-            xtask-build.log
+            scryer-build.log
             sccache-stats.txt
           if-no-files-found: error
           retention-days: 14
