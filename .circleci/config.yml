@@ -758,7 +758,7 @@ jobs:
             $Env:Path = "$dir;$HOME\.cargo\bin;$Env:Path"
             [Environment]::SetEnvironmentVariable("Path", $Env:Path, "Process")
             New-Item -ItemType Directory -Force -Path "$Env:LOCALAPPDATA\Mozilla\sccache" | Out-Null
-            $bin --version
+            & $bin --version
       - run:
           name: Build xtask with sccache (Windows x86_64)
           no_output_timeout: 30m
