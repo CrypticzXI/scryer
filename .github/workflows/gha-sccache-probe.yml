@@ -1,6 +1,7 @@
 name: gha-sccache-probe
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "gha-sccache-v*"
