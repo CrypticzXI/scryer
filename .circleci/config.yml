@@ -809,9 +809,19 @@ jobs:
             Get-Process sccache -ErrorAction SilentlyContinue | Format-List * | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
             Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | Format-List | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
 
-            & $sccacheBin --stop-server *> $null
-            & $sccacheBin --start-server
-            & $sccacheBin --zero-stats
+            $stopOutput = & $sccacheBin --stop-server 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              "sccache --stop-server exited $LASTEXITCODE" | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+              $stopOutput | Out-String | Add-Content -Path C:\Users\circleci\project\tmp\sccache-diagnostics.txt
+            }
+            & $sccacheBin --start-server | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "sccache --start-server failed with exit code $LASTEXITCODE"
+            }
+            & $sccacheBin --zero-stats | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "sccache --zero-stats failed with exit code $LASTEXITCODE"
+            }
 
             $watchdog = Start-Job -ScriptBlock {
               while ($true) {
