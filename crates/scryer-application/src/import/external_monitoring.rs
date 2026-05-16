@@ -4,7 +4,6 @@ fn snapshot_payload_is_empty(payload: &ExternalImportMonitorSnapshotPayload) -> 
     match payload {
         ExternalImportMonitorSnapshotPayload::Movie { entries } => entries.is_empty(),
         ExternalImportMonitorSnapshotPayload::Series { entries } => entries.is_empty(),
-        ExternalImportMonitorSnapshotPayload::Chunked { manifest } => manifest.entry_count == 0,
     }
 }
 
@@ -93,38 +92,6 @@ impl AppUseCase {
             .external_import_monitor_snapshots
             .delete_external_import_monitor_snapshot_chunks(scope_kind, scope_key)
             .await
-    }
-
-    pub async fn promote_external_import_monitor_snapshot_chunks(
-        &self,
-        actor: &User,
-        from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        from_scope_key: &str,
-        facet: MediaFacet,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<ExternalImportMonitorChunkedPayload> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
-            .await?;
-
-        let (chunk_count, entry_count, total_bytes) = self
-            .services
-            .workflow
-            .external_import_monitor_snapshots
-            .copy_external_import_monitor_snapshot_chunks(
-                from_scope_kind,
-                from_scope_key,
-                ExternalImportMonitorSnapshotChunkScopeKind::Facet,
-                facet.as_str(),
-                entry_kind.clone(),
-            )
-            .await?;
-
-        Ok(ExternalImportMonitorChunkedPayload {
-            entry_kind,
-            chunk_count,
-            entry_count,
-            total_bytes,
-        })
     }
 
     pub async fn begin_external_import_monitor_warmup(

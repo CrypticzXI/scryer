@@ -178,24 +178,7 @@ fn release_type_details(parsed: &ParsedReleaseMetadata) -> (Option<String>, bool
 }
 
 fn is_obfuscated_release(parsed: &ParsedReleaseMetadata) -> bool {
-    if parsed
-        .release_group
-        .as_ref()
-        .is_some_and(|group| !group.trim().is_empty())
-    {
-        return false;
-    }
-
-    parsed
-        .raw_title
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| token.len() >= 8)
-        .any(|token| {
-            let has_alpha = token.chars().any(|ch| ch.is_ascii_alphabetic());
-            let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
-            let hex_like = token.chars().all(|ch| ch.is_ascii_hexdigit());
-            (has_alpha && has_digit) || hex_like
-        })
+    crate::helpers::is_obfuscated_release_name(parsed)
 }
 
 fn is_retagged_release(parsed: &ParsedReleaseMetadata) -> bool {

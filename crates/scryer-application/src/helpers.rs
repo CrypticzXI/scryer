@@ -85,6 +85,48 @@ pub(crate) fn normalize_release_password(raw: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+pub(crate) fn is_obfuscated_release_name(parsed: &ParsedReleaseMetadata) -> bool {
+    if parsed
+        .release_group
+        .as_ref()
+        .is_some_and(|group| !group.trim().is_empty())
+    {
+        return false;
+    }
+
+    parsed
+        .raw_title
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| token.len() >= 8)
+        .any(|token| {
+            let has_alpha = token.chars().any(|ch| ch.is_ascii_alphabetic());
+            let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
+            let hex_like = token.chars().all(|ch| ch.is_ascii_hexdigit());
+            (has_alpha && has_digit) || hex_like
+        })
+}
+
+pub(crate) fn has_usable_release_title_signal(parsed: &ParsedReleaseMetadata) -> bool {
+    let normalized_title = parsed.normalized_title.trim();
+    if normalized_title.is_empty() {
+        return false;
+    }
+
+    if matches!(
+        normalized_title.to_ascii_uppercase().as_str(),
+        "MOVIE" | "VIDEO" | "FILE" | "DOWNLOAD" | "UNKNOWN"
+    ) {
+        return false;
+    }
+
+    !is_obfuscated_release_name(parsed)
+}
+
+pub(crate) fn parse_usable_release_title(raw: &str) -> Option<ParsedReleaseMetadata> {
+    let parsed = parse_release_metadata(raw);
+    has_usable_release_title_signal(&parsed).then_some(parsed)
+}
+
 pub(crate) fn normalize_release_selection_signature(
     source_hint: Option<&str>,
     source_title: Option<&str>,

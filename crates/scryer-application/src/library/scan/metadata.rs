@@ -1955,8 +1955,22 @@ mod tests {
         let (queries, year) =
             extract_library_queries("/library/My Cousin (2020)/movie.mkv", "/library");
 
-        assert_eq!(queries, vec!["MOVIE".to_string(), "My Cousin".to_string()]);
+        assert_eq!(queries, vec!["MY COUSIN".to_string()]);
         assert_eq!(year, Some(2020));
+    }
+
+    #[test]
+    fn extract_library_queries_uses_parent_folder_when_filename_is_obfuscated() {
+        let (queries, year) = extract_library_queries(
+            "/library/Harry.Potter.And.The.Deathly.Hallows.Part1.2010.720p.BluRay.DTS.x264-LEGION-Obfuscated/aUUKqrO833LbSr7VlByumnR24y7ULADpVJ7K0FTnPhPMqpp0KIIaLSLYXJmyjm.mkv",
+            "/library",
+        );
+
+        assert_eq!(
+            queries,
+            vec!["HARRY POTTER AND THE DEATHLY HALLOWS PART 1".to_string()]
+        );
+        assert_eq!(year, Some(2010));
     }
 
     #[test]
@@ -1979,7 +1993,7 @@ mod tests {
 
         assert_eq!(
             queries,
-            vec!["GLASS HARBOR TWO".to_string(), "Glass Harbor".to_string()]
+            vec!["GLASS HARBOR TWO".to_string(), "GLASS HARBOR".to_string()]
         );
         assert_eq!(year, Some(2024));
     }

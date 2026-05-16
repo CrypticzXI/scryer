@@ -1053,55 +1053,6 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
         Ok(())
     }
 
-    async fn copy_external_import_monitor_snapshot_chunks(
-        &self,
-        from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        from_scope_key: &str,
-        to_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        to_scope_key: &str,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<(i32, i32, i64)> {
-        let source_chunks = {
-            let chunks = self.chunks.lock().await;
-            chunks
-                .iter()
-                .filter(|chunk| {
-                    chunk.scope_kind == from_scope_kind
-                        && chunk.scope_key == from_scope_key
-                        && chunk.entry_kind == entry_kind
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-
-        let mut copied_count = 0_i32;
-        let mut max_chunk_index = 0_i32;
-        let mut total_bytes = 0_i64;
-        let mut chunks = self.chunks.lock().await;
-        chunks.retain(|chunk| {
-            !(chunk.scope_kind == to_scope_kind
-                && chunk.scope_key == to_scope_key
-                && chunk.entry_kind == entry_kind)
-        });
-        for chunk in source_chunks {
-            copied_count = copied_count.saturating_add(1);
-            max_chunk_index = max_chunk_index.max(chunk.chunk_index);
-            total_bytes = total_bytes.saturating_add(chunk.byte_len);
-            chunks.push(ExternalImportMonitorSnapshotChunk {
-                scope_kind: to_scope_kind.clone(),
-                scope_key: to_scope_key.to_string(),
-                entry_kind: entry_kind.clone(),
-                chunk_index: chunk.chunk_index,
-                payload_ndjson: chunk.payload_ndjson,
-                entry_count: chunk.entry_count,
-                byte_len: chunk.byte_len,
-                created_at: chunk.created_at,
-            });
-        }
-
-        Ok((copied_count, max_chunk_index, total_bytes))
-    }
-
     async fn get_external_import_monitor_snapshot(
         &self,
         facet: &MediaFacet,

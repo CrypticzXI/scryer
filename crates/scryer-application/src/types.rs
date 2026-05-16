@@ -192,14 +192,6 @@ impl ExternalImportMonitorSnapshotChunkScopeKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExternalImportMonitorChunkedPayload {
-    pub entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    pub chunk_count: i32,
-    pub entry_count: i32,
-    pub total_bytes: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorSnapshotChunk {
     pub scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
     pub scope_key: String,
@@ -219,9 +211,6 @@ pub enum ExternalImportMonitorSnapshotPayload {
     },
     Series {
         entries: Vec<ExternalImportMonitorSeriesEntry>,
-    },
-    Chunked {
-        manifest: ExternalImportMonitorChunkedPayload,
     },
 }
 

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, UNIX_EPOCH};
 
 use super::*;
+use crate::helpers::{has_usable_release_title_signal, parse_usable_release_title};
 use scryer_domain::VIDEO_EXTENSIONS;
 
 const LIBRARY_SCAN_DISCOVERY_WORK_QUEUE_CAPACITY: usize = 16;
@@ -53,16 +54,46 @@ pub(crate) fn extract_library_queries(
         .and_then(|s| s.to_str())
         .unwrap_or_default();
     let parsed = parse_release_metadata(stem);
-    let parsed_queries = if parsed.normalized_title_variants.is_empty() {
-        vec![parsed.normalized_title.clone()]
+    let parsed_has_usable_title_signal = has_usable_release_title_signal(&parsed);
+    let parsed_queries = if parsed_has_usable_title_signal {
+        if parsed.normalized_title_variants.is_empty() {
+            vec![parsed.normalized_title.clone()]
+        } else {
+            parsed.normalized_title_variants.clone()
+        }
     } else {
-        parsed.normalized_title_variants.clone()
+        Vec::new()
     };
 
     let mut queries = Vec::new();
     let mut seen_normalized = HashSet::new();
     let mut folder_year = None;
     let mut folder_query = None;
+
+    if let Some(parent) = Path::new(path).parent() {
+        let parent_str = parent.to_string_lossy();
+        if parent_str.trim_end_matches('/') != root
+            && let Some(folder_name) = parent.file_name().and_then(|n| n.to_str())
+        {
+            if let Some(parsed_folder) = parse_usable_release_title(folder_name) {
+                folder_query = Some(parsed_folder.normalized_title.clone());
+                folder_year = parsed_folder.year.and_then(|year| u32::try_from(year).ok());
+            } else {
+                let clean = normalize_folder_name(folder_name);
+                let (title, year) = strip_year_suffix(&clean);
+                if !title.trim().is_empty() {
+                    folder_query = Some(title);
+                    folder_year = year;
+                }
+            }
+        }
+    }
+
+    if let Some(folder_query) = folder_query.clone()
+        && !parsed_has_usable_title_signal
+    {
+        push_unique_query(&mut queries, &mut seen_normalized, folder_query);
+    }
 
     for query in parsed_queries {
         if let Some(reduced) = part_reduced_query(query.as_str()) {
@@ -72,28 +103,17 @@ pub(crate) fn extract_library_queries(
         }
     }
 
-    if let Some(parent) = Path::new(path).parent() {
-        let parent_str = parent.to_string_lossy();
-        if parent_str.trim_end_matches('/') != root
-            && let Some(folder_name) = parent.file_name().and_then(|n| n.to_str())
-        {
-            let clean = normalize_folder_name(folder_name);
-            let (title, year) = strip_year_suffix(&clean);
-            if !title.trim().is_empty() {
-                folder_query = Some(title);
-                folder_year = year;
-            }
-        }
-    }
-
-    if let Some(folder_query) = folder_query {
+    if let Some(folder_query) = folder_query
+        && parsed_has_usable_title_signal
+    {
         push_unique_query(&mut queries, &mut seen_normalized, folder_query);
     }
 
     (
         queries,
-        parsed
-            .year
+        parsed_has_usable_title_signal
+            .then_some(parsed.year)
+            .flatten()
             .and_then(|year| u32::try_from(year).ok())
             .or(folder_year),
     )

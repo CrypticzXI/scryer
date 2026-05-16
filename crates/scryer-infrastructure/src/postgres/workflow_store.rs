@@ -927,68 +927,6 @@ impl WorkflowSql for PostgresWorkflowSql {
         Ok(())
     }
 
-    async fn copy_external_import_monitor_snapshot_chunks(
-        &self,
-        from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        from_scope_key: &str,
-        to_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        to_scope_key: &str,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<(i32, i32, i64)> {
-        let mut tx = self.pool.begin().await.map_err(repo_err)?;
-
-        sqlx::query(
-            "DELETE FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = $1 AND scope_key = $2 AND entry_kind = $3",
-        )
-        .bind(to_scope_kind.as_str())
-        .bind(to_scope_key)
-        .bind(entry_kind.as_str())
-        .execute(tx.as_mut())
-        .await
-        .map_err(repo_err)?;
-
-        sqlx::query(
-            "INSERT INTO external_import_monitor_snapshot_chunks
-             (scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at)
-             SELECT $1, $2, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, $3
-             FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = $4 AND scope_key = $5 AND entry_kind = $6
-             ORDER BY chunk_index ASC",
-        )
-        .bind(to_scope_kind.as_str())
-        .bind(to_scope_key)
-        .bind(Utc::now())
-        .bind(from_scope_kind.as_str())
-        .bind(from_scope_key)
-        .bind(entry_kind.as_str())
-        .execute(tx.as_mut())
-        .await
-        .map_err(repo_err)?;
-
-        let row = sqlx::query(
-            "SELECT COUNT(*) AS chunk_count,
-                    COALESCE(SUM(entry_count), 0) AS entry_count,
-                    COALESCE(SUM(byte_len), 0) AS total_bytes
-             FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = $1 AND scope_key = $2 AND entry_kind = $3",
-        )
-        .bind(from_scope_kind.as_str())
-        .bind(from_scope_key)
-        .bind(entry_kind.as_str())
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(repo_err)?;
-
-        tx.commit().await.map_err(repo_err)?;
-
-        Ok((
-            row.try_get::<i32, _>("chunk_count").map_err(repo_err)?,
-            row.try_get::<i32, _>("entry_count").map_err(repo_err)?,
-            row.try_get::<i64, _>("total_bytes").map_err(repo_err)?,
-        ))
-    }
-
     async fn get_external_import_monitor_snapshot(
         &self,
         facet: &MediaFacet,
@@ -1002,7 +940,10 @@ impl WorkflowSql for PostgresWorkflowSql {
         .fetch_optional(&self.pool)
         .await
         .map_err(repo_err)?;
-        row.as_ref().map(snapshot_from_row).transpose()
+        match row.as_ref().map(snapshot_from_row).transpose() {
+            Err(AppError::NotFound(_)) => Ok(None),
+            other => other,
+        }
     }
 
     async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()> {
@@ -1485,10 +1426,16 @@ fn snapshot_from_row(row: &sqlx::postgres::PgRow) -> AppResult<ExternalImportMon
     let facet_raw: String = row.try_get("facet").map_err(repo_err)?;
     let facet = MediaFacet::parse(&facet_raw)
         .ok_or_else(|| AppError::Repository(format!("invalid snapshot facet: {facet_raw}")))?;
+    let payload_json: serde_json::Value = row.try_get("payload_json").map_err(repo_err)?;
+    if payload_json.get("kind").and_then(serde_json::Value::as_str) == Some("chunked") {
+        return Err(AppError::NotFound(format!(
+            "legacy chunked snapshot payload for facet {}",
+            facet.as_str()
+        )));
+    }
     Ok(ExternalImportMonitorSnapshot {
         facet,
-        payload: serde_json::from_value(row.try_get("payload_json").map_err(repo_err)?)
-            .map_err(repo_err)?,
+        payload: serde_json::from_value(payload_json).map_err(repo_err)?,
         created_at: row
             .try_get::<DateTime<Utc>, _>("created_at")
             .map_err(repo_err)?

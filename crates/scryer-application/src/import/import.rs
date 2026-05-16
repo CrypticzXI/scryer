@@ -7,6 +7,7 @@ use crate::{
     domain_events::{
         created_media_update, deleted_media_update, new_title_domain_event, title_context_snapshot,
     },
+    helpers::{has_usable_release_title_signal, parse_usable_release_title},
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
@@ -18,7 +19,7 @@ use chrono::{DateTime, Utc};
 use scryer_domain::{
     Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem,
     DownloadQueueState, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
-    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet,
+    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title,
     TrackedDownloadState, User, is_video_file,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1070,8 +1071,11 @@ async fn run_import(
 ) -> AppResult<ImportResult> {
     // 2. TITLE MATCHING
     let mut title = None;
+    let dest_dir = Path::new(&completed.dest_dir);
+    let mut extracted_dir: Option<PathBuf> = None;
+    let mut title_evidence_video_files: Option<Vec<PathBuf>> = None;
     let parsed_completed_name = parse_release_metadata(&completed.name);
-    let parsed_completed_folder = parsed_release_from_folder_name(Path::new(&completed.dest_dir));
+    let parsed_completed_folder = parsed_release_from_folder_name(dest_dir);
     if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id") {
         let title_id = title_id.trim();
         if !title_id.is_empty() {
@@ -1123,38 +1127,41 @@ async fn run_import(
         let facet_hint = extract_parameter(&completed.parameters, "*scryer_facet")
             .or_else(|| completed.category.clone());
 
-        title = if parsed_completed_name.episode.is_some() {
-            crate::import_title_resolution::resolve_monitored_episode_title_from_release(
-                &titles,
-                &parsed_completed_name,
-                facet_hint.as_deref(),
-            )
-            .map(|resolved| resolved.title.clone())
-        } else {
-            crate::import_title_resolution::resolve_monitored_movie_title_from_release(
-                &titles,
-                &parsed_completed_name,
-            )
-            .map(|resolved| resolved.title.clone())
-        };
+        title = resolve_title_from_release_candidate(
+            &titles,
+            &parsed_completed_name,
+            facet_hint.as_deref(),
+        );
 
         if title.is_none()
             && let Some(parsed_completed_folder) = parsed_completed_folder.as_ref()
         {
-            title = if parsed_completed_folder.episode.is_some() {
-                crate::import_title_resolution::resolve_monitored_episode_title_from_release(
+            title = resolve_title_from_release_candidate(
+                &titles,
+                parsed_completed_folder,
+                facet_hint.as_deref(),
+            );
+        }
+
+        if title.is_none() {
+            extracted_dir =
+                crate::archive_extractor::extract_archives_if_needed(dest_dir, archive_password)
+                    .await?;
+            let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
+            let video_files = find_video_files(effective_dir, true)?;
+
+            for candidate in title_evidence_candidates_from_video_files(&video_files) {
+                title = resolve_title_from_release_candidate(
                     &titles,
-                    parsed_completed_folder,
+                    &candidate,
                     facet_hint.as_deref(),
-                )
-                .map(|resolved| resolved.title.clone())
-            } else {
-                crate::import_title_resolution::resolve_monitored_movie_title_from_release(
-                    &titles,
-                    parsed_completed_folder,
-                )
-                .map(|resolved| resolved.title.clone())
-            };
+                );
+                if title.is_some() {
+                    break;
+                }
+            }
+
+            title_evidence_video_files = Some(video_files);
         }
     }
 
@@ -1200,12 +1207,20 @@ async fn run_import(
     }
 
     // 3. FIND VIDEO FILES (extract archives first if needed)
-    let dest_dir = Path::new(&completed.dest_dir);
     let is_series = matches!(title.facet, MediaFacet::Series | MediaFacet::Anime);
-    let extracted_dir =
-        crate::archive_extractor::extract_archives_if_needed(dest_dir, archive_password).await?;
+    if extracted_dir.is_none() {
+        extracted_dir =
+            crate::archive_extractor::extract_archives_if_needed(dest_dir, archive_password)
+                .await?;
+    }
     let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
-    let video_files = find_video_files(effective_dir, is_series)?;
+    let video_files = if is_series {
+        title_evidence_video_files
+            .take()
+            .unwrap_or(find_video_files(effective_dir, true)?)
+    } else {
+        find_video_files(effective_dir, false)?
+    };
 
     if video_files.is_empty() {
         let result = ImportResult {
@@ -4010,12 +4025,71 @@ fn parsed_release_from_file_stem(path: &Path) -> ParsedReleaseMetadata {
     parse_release_metadata(stem)
 }
 
+fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
+    let fallback = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(fallback);
+    parse_usable_release_title(stem)
+}
+
 fn parsed_release_from_folder_name(path: &Path) -> Option<ParsedReleaseMetadata> {
     path.file_name()
         .and_then(|value| value.to_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(parse_release_metadata)
+}
+
+fn parsed_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
+    path.parent().and_then(parsed_release_from_folder_name)
+}
+
+fn parsed_usable_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
+    parsed_release_from_parent_folder(path).filter(has_usable_release_title_signal)
+}
+
+fn resolve_title_from_release_candidate(
+    titles: &[Title],
+    candidate: &ParsedReleaseMetadata,
+    facet_hint: Option<&str>,
+) -> Option<Title> {
+    if candidate.episode.is_some() {
+        crate::import_title_resolution::resolve_monitored_episode_title_from_release(
+            titles, candidate, facet_hint,
+        )
+        .map(|resolved| resolved.title.clone())
+    } else {
+        crate::import_title_resolution::resolve_monitored_movie_title_from_release(
+            titles, candidate,
+        )
+        .map(|resolved| resolved.title.clone())
+    }
+}
+
+fn title_evidence_candidates_from_video_files(
+    video_files: &[PathBuf],
+) -> Vec<ParsedReleaseMetadata> {
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for video_file in video_files {
+        let candidate = parsed_usable_release_from_file_stem(video_file)
+            .or_else(|| parsed_usable_release_from_parent_folder(video_file));
+
+        if let Some(candidate) = candidate {
+            let key = candidate.raw_title.to_ascii_uppercase();
+            if seen.insert(key) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
 }
 
 fn fill_missing_release_metadata(
@@ -4105,10 +4179,25 @@ fn build_augmented_episode_import_metadata(
 ) -> ParsedReleaseMetadata {
     let mut parsed = parsed_release_from_file_stem(source_video);
     let file_episode = parsed.episode.clone();
+    let file_has_usable_title_signal = has_usable_release_title_signal(&parsed);
+    let source_parent_info = if file_has_usable_title_signal {
+        None
+    } else {
+        parsed_usable_release_from_parent_folder(source_video)
+    };
     let download_client_info = parse_release_metadata(&completed.name);
     let folder_info = parsed_release_from_folder_name(Path::new(&completed.dest_dir));
 
     if !other_video_files {
+        if let Some(source_parent_info) = source_parent_info.as_ref()
+            && let Some(other_episode_info) = source_parent_info.episode.as_ref()
+            && !other_episode_info.full_season
+            && prefer_other_episode_info(parsed.episode.as_ref(), other_episode_info)
+        {
+            fill_missing_release_metadata(&mut parsed, source_parent_info, true);
+            return parsed;
+        }
+
         if let Some(other_episode_info) = download_client_info.episode.as_ref()
             && !other_episode_info.full_season
             && prefer_other_episode_info(parsed.episode.as_ref(), other_episode_info)
@@ -4127,6 +4216,9 @@ fn build_augmented_episode_import_metadata(
         }
     }
 
+    if let Some(source_parent_info) = source_parent_info.as_ref() {
+        fill_missing_release_metadata(&mut parsed, source_parent_info, false);
+    }
     fill_missing_release_metadata(&mut parsed, &download_client_info, false);
     if let Some(folder_info) = folder_info.as_ref() {
         fill_missing_release_metadata(&mut parsed, folder_info, false);
@@ -4142,6 +4234,11 @@ fn build_augmented_movie_import_metadata(
     completed: &CompletedDownload,
 ) -> ParsedReleaseMetadata {
     let mut parsed = parsed_release_from_file_stem(source_video);
+    if !has_usable_release_title_signal(&parsed)
+        && let Some(source_parent_info) = parsed_usable_release_from_parent_folder(source_video)
+    {
+        fill_missing_release_metadata(&mut parsed, &source_parent_info, false);
+    }
     let download_client_info = parse_release_metadata(&completed.name);
     fill_missing_release_metadata(&mut parsed, &download_client_info, false);
     if let Some(folder_info) = parsed_release_from_folder_name(Path::new(&completed.dest_dir)) {

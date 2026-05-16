@@ -7,7 +7,7 @@ use scryer_domain::{
 };
 use sqlx::{Postgres, QueryBuilder, Sqlite};
 
-use super::sql_runtime::{SqlArg, SqlRow, SqlRuntime, SqlTarget, SqlTx, repo_err};
+use super::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTarget, SqlTx, repo_err};
 
 const COLLECTION_COLUMNS: &str = "id, title_id, collection_type, collection_index, label, ordered_path, \
     narrative_order, first_episode_number, last_episode_number, interstitial_tvdb_id, interstitial_name, \
@@ -30,7 +30,9 @@ pub(crate) async fn list_collections_for_title_query(
     let sql = format!(
         "SELECT {COLLECTION_COLUMNS} FROM collections WHERE title_id = {{}} ORDER BY collection_index ASC, id ASC"
     );
-    let rows = SqlRuntime::fetch_all(target, &sql, &[SqlArg::Text(title_id.to_string())]).await?;
+    let rows =
+        SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &[SqlArg::Text(title_id.to_string())])
+            .await?;
     rows.iter().map(row_to_collection).collect()
 }
 
@@ -39,7 +41,7 @@ pub(crate) async fn list_collection_external_ids_query(
     collection_id: &str,
 ) -> AppResult<Vec<ScopedExternalId>> {
     let rows = SqlRuntime::fetch_all(
-        target,
+        SqlExec::Target(target),
         "SELECT collection_id AS scope_id, source, external_id, provenance, source_scope \
          FROM collection_external_ids WHERE collection_id = {} \
          ORDER BY source ASC, external_id ASC, source_scope ASC",
@@ -113,7 +115,11 @@ pub(crate) async fn get_collection_by_id_query(
     collection_id: &str,
 ) -> AppResult<Option<Collection>> {
     let sql = format!("SELECT {COLLECTION_COLUMNS} FROM collections WHERE id = {{}}");
-    let row = SqlRuntime::fetch_optional(target, &sql, &[SqlArg::Text(collection_id.to_string())])
+    let row = SqlRuntime::fetch_optional(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(collection_id.to_string())],
+    )
         .await?;
     row.as_ref().map(row_to_collection).transpose()
 }
@@ -126,7 +132,12 @@ pub(crate) async fn get_collection_by_ordered_path_query(
         "SELECT {COLLECTION_COLUMNS} FROM collections WHERE ordered_path = {{}} ORDER BY id ASC LIMIT 1"
     );
     let row =
-        SqlRuntime::fetch_optional(target, &sql, &[SqlArg::Text(ordered_path.to_string())]).await?;
+        SqlRuntime::fetch_optional(
+            SqlExec::Target(target),
+            &sql,
+            &[SqlArg::Text(ordered_path.to_string())],
+        )
+        .await?;
     row.as_ref().map(row_to_collection).transpose()
 }
 
@@ -136,7 +147,7 @@ pub(crate) async fn update_interstitial_season_episode_query(
     season_episode: Option<&str>,
 ) -> AppResult<()> {
     SqlRuntime::execute(
-        target,
+        SqlExec::Target(target),
         "UPDATE collections SET interstitial_season_episode = {} WHERE id = {}",
         &[
             SqlArg::OptText(season_episode.map(str::to_string)),
@@ -153,7 +164,7 @@ pub(crate) async fn set_collection_episodes_monitored_query(
     monitored: bool,
 ) -> AppResult<()> {
     SqlRuntime::execute(
-        target,
+        SqlExec::Target(target),
         "UPDATE episodes SET monitored = {} WHERE collection_id = {}",
         &[
             SqlArg::Bool(monitored),
@@ -210,7 +221,7 @@ pub(crate) async fn delete_collection_query(
     collection_id: &str,
 ) -> AppResult<()> {
     let rows = SqlRuntime::execute(
-        target,
+        SqlExec::Target(target),
         "DELETE FROM collections WHERE id = {}",
         &[SqlArg::Text(collection_id.to_string())],
     )
@@ -226,7 +237,7 @@ pub(crate) async fn delete_collections_for_title_query(
     title_id: &str,
 ) -> AppResult<()> {
     SqlRuntime::execute(
-        target,
+        SqlExec::Target(target),
         "DELETE FROM collections WHERE title_id = {}",
         &[SqlArg::Text(title_id.to_string())],
     )
@@ -242,7 +253,12 @@ pub(crate) async fn list_episodes_for_collection_query(
         "SELECT {EPISODE_COLUMNS} FROM episodes WHERE collection_id = {{}} ORDER BY episode_number ASC, id ASC"
     );
     let rows =
-        SqlRuntime::fetch_all(target, &sql, &[SqlArg::Text(collection_id.to_string())]).await?;
+        SqlRuntime::fetch_all(
+            SqlExec::Target(target),
+            &sql,
+            &[SqlArg::Text(collection_id.to_string())],
+        )
+        .await?;
     rows.iter().map(row_to_episode).collect()
 }
 
@@ -253,7 +269,9 @@ pub(crate) async fn list_episodes_for_title_query(
     let sql = format!(
         "SELECT {EPISODE_COLUMNS} FROM episodes WHERE title_id = {{}} ORDER BY season_number ASC, episode_number ASC, id ASC"
     );
-    let rows = SqlRuntime::fetch_all(target, &sql, &[SqlArg::Text(title_id.to_string())]).await?;
+    let rows =
+        SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &[SqlArg::Text(title_id.to_string())])
+            .await?;
     rows.iter().map(row_to_episode).collect()
 }
 
@@ -262,7 +280,7 @@ pub(crate) async fn list_episode_external_ids_query(
     episode_id: &str,
 ) -> AppResult<Vec<ScopedExternalId>> {
     let rows = SqlRuntime::fetch_all(
-        target,
+        SqlExec::Target(target),
         "SELECT episode_id AS scope_id, source, external_id, provenance, source_scope \
          FROM episode_external_ids WHERE episode_id = {} \
          ORDER BY source ASC, external_id ASC, source_scope ASC",
@@ -278,7 +296,12 @@ pub(crate) async fn get_episode_by_id_query(
 ) -> AppResult<Option<Episode>> {
     let sql = format!("SELECT {EPISODE_COLUMNS} FROM episodes WHERE id = {{}}");
     let row =
-        SqlRuntime::fetch_optional(target, &sql, &[SqlArg::Text(episode_id.to_string())]).await?;
+        SqlRuntime::fetch_optional(
+            SqlExec::Target(target),
+            &sql,
+            &[SqlArg::Text(episode_id.to_string())],
+        )
+        .await?;
     row.as_ref().map(row_to_episode).transpose()
 }
 
@@ -325,7 +348,7 @@ pub(crate) async fn set_episodes_monitored_query(
 
 pub(crate) async fn delete_episode_query(target: SqlTarget<'_>, episode_id: &str) -> AppResult<()> {
     let rows = SqlRuntime::execute(
-        target,
+        SqlExec::Target(target),
         "DELETE FROM episodes WHERE id = {}",
         &[SqlArg::Text(episode_id.to_string())],
     )
@@ -341,7 +364,7 @@ pub(crate) async fn delete_episodes_for_title_query(
     title_id: &str,
 ) -> AppResult<()> {
     SqlRuntime::execute(
-        target,
+        SqlExec::Target(target),
         "DELETE FROM episodes WHERE title_id = {}",
         &[SqlArg::Text(title_id.to_string())],
     )
@@ -358,7 +381,7 @@ pub(crate) async fn find_episode_by_title_and_absolute_number_query(
         "SELECT {EPISODE_COLUMNS} FROM episodes WHERE title_id = {{}} AND absolute_number = {{}} LIMIT 1"
     );
     let row = SqlRuntime::fetch_optional(
-        target,
+        SqlExec::Target(target),
         &sql,
         &[
             SqlArg::Text(title_id.to_string()),

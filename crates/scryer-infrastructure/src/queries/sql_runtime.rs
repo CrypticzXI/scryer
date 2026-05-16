@@ -1,4 +1,9 @@
-use chrono::{DateTime, Utc};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::{DateTime, SecondsFormat, Utc};
 use scryer_application::{AppError, AppResult};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::{PgArguments, PgPool, PgRow};
@@ -6,13 +11,50 @@ use sqlx::query::Query;
 use sqlx::sqlite::{SqliteArguments, SqlitePool, SqliteRow};
 use sqlx::types::Json;
 use sqlx::{Postgres, Row, Sqlite, Transaction};
+use tokio::sync::Mutex;
 
 use super::common::parse_utc_datetime;
+
+const SQLITE_BUSY_RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(1000),
+];
+const SQLITE_BUSY_RETRY_HARD_CAP: Duration = Duration::from_secs(120);
+
+#[derive(Clone)]
+pub(crate) enum StoreDatastore {
+    Sqlite {
+        pool: SqlitePool,
+        writer_gate: Arc<Mutex<()>>,
+    },
+    Postgres {
+        pool: PgPool,
+    },
+}
+
+impl StoreDatastore {
+    pub(crate) fn read_exec(&self) -> SqlExec<'_, '_> {
+        match self {
+            Self::Sqlite { pool, .. } => SqlExec::Target(SqlTarget::Sqlite(pool)),
+            Self::Postgres { pool } => SqlExec::Target(SqlTarget::Postgres(pool)),
+        }
+    }
+}
 
 pub(crate) enum SqlTarget<'a> {
     Sqlite(&'a SqlitePool),
     Postgres(&'a PgPool),
 }
+
+pub(crate) enum SqlExec<'tx, 'db> {
+    Target(SqlTarget<'db>),
+    Tx(&'tx mut SqlTx<'db>),
+}
+
+pub(crate) type TxFuture<'a, T> = Pin<Box<dyn Future<Output = AppResult<T>> + Send + 'a>>;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -40,42 +82,43 @@ pub(crate) enum SqlRow {
     Postgres(PgRow),
 }
 
-pub(crate) enum SqlTx<'a> {
-    Sqlite(Transaction<'a, Sqlite>),
-    Postgres(Transaction<'a, Postgres>),
+pub(crate) enum SqlTx<'db> {
+    Sqlite(Transaction<'db, Sqlite>),
+    Postgres(Transaction<'db, Postgres>),
 }
 
 pub(crate) struct SqlRuntime;
 
 impl SqlRuntime {
     pub(crate) async fn execute(
-        target: SqlTarget<'_>,
+        exec: SqlExec<'_, '_>,
         template: &str,
         args: &[SqlArg],
     ) -> AppResult<u64> {
-        match target {
-            SqlTarget::Sqlite(pool) => {
+        match exec {
+            SqlExec::Target(SqlTarget::Sqlite(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
                 let query = bind_sqlite(sqlx::query(&sql), args);
                 let result = query.execute(pool).await.map_err(repo_err)?;
                 Ok(result.rows_affected())
             }
-            SqlTarget::Postgres(pool) => {
+            SqlExec::Target(SqlTarget::Postgres(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
                 let query = bind_postgres(sqlx::query(&sql), args);
                 let result = query.execute(pool).await.map_err(repo_err)?;
                 Ok(result.rows_affected())
             }
+            SqlExec::Tx(tx) => tx.execute(template, args).await,
         }
     }
 
     pub(crate) async fn fetch_optional(
-        target: SqlTarget<'_>,
+        exec: SqlExec<'_, '_>,
         template: &str,
         args: &[SqlArg],
     ) -> AppResult<Option<SqlRow>> {
-        match target {
-            SqlTarget::Sqlite(pool) => {
+        match exec {
+            SqlExec::Target(SqlTarget::Sqlite(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
                 let query = bind_sqlite(sqlx::query(&sql), args);
                 query
@@ -84,7 +127,7 @@ impl SqlRuntime {
                     .map(|row| row.map(SqlRow::Sqlite))
                     .map_err(repo_err)
             }
-            SqlTarget::Postgres(pool) => {
+            SqlExec::Target(SqlTarget::Postgres(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
                 let query = bind_postgres(sqlx::query(&sql), args);
                 query
@@ -93,16 +136,36 @@ impl SqlRuntime {
                     .map(|row| row.map(SqlRow::Postgres))
                     .map_err(repo_err)
             }
+            SqlExec::Tx(tx) => match tx {
+                SqlTx::Sqlite(tx) => {
+                    let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
+                    let query = bind_sqlite(sqlx::query(&sql), args);
+                    query
+                        .fetch_optional(&mut **tx)
+                        .await
+                        .map(|row| row.map(SqlRow::Sqlite))
+                        .map_err(repo_err)
+                }
+                SqlTx::Postgres(tx) => {
+                    let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
+                    let query = bind_postgres(sqlx::query(&sql), args);
+                    query
+                        .fetch_optional(&mut **tx)
+                        .await
+                        .map(|row| row.map(SqlRow::Postgres))
+                        .map_err(repo_err)
+                }
+            },
         }
     }
 
     pub(crate) async fn fetch_all(
-        target: SqlTarget<'_>,
+        exec: SqlExec<'_, '_>,
         template: &str,
         args: &[SqlArg],
     ) -> AppResult<Vec<SqlRow>> {
-        match target {
-            SqlTarget::Sqlite(pool) => {
+        match exec {
+            SqlExec::Target(SqlTarget::Sqlite(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
                 let query = bind_sqlite(sqlx::query(&sql), args);
                 query
@@ -111,7 +174,7 @@ impl SqlRuntime {
                     .map(|rows| rows.into_iter().map(SqlRow::Sqlite).collect())
                     .map_err(repo_err)
             }
-            SqlTarget::Postgres(pool) => {
+            SqlExec::Target(SqlTarget::Postgres(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
                 let query = bind_postgres(sqlx::query(&sql), args);
                 query
@@ -120,6 +183,26 @@ impl SqlRuntime {
                     .map(|rows| rows.into_iter().map(SqlRow::Postgres).collect())
                     .map_err(repo_err)
             }
+            SqlExec::Tx(tx) => match tx {
+                SqlTx::Sqlite(tx) => {
+                    let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
+                    let query = bind_sqlite(sqlx::query(&sql), args);
+                    query
+                        .fetch_all(&mut **tx)
+                        .await
+                        .map(|rows| rows.into_iter().map(SqlRow::Sqlite).collect())
+                        .map_err(repo_err)
+                }
+                SqlTx::Postgres(tx) => {
+                    let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
+                    let query = bind_postgres(sqlx::query(&sql), args);
+                    query
+                        .fetch_all(&mut **tx)
+                        .await
+                        .map(|rows| rows.into_iter().map(SqlRow::Postgres).collect())
+                        .map_err(repo_err)
+                }
+            },
         }
     }
 
@@ -127,6 +210,45 @@ impl SqlRuntime {
         match target {
             SqlTarget::Sqlite(pool) => pool.begin().await.map(SqlTx::Sqlite).map_err(repo_err),
             SqlTarget::Postgres(pool) => pool.begin().await.map(SqlTx::Postgres).map_err(repo_err),
+        }
+    }
+
+    pub(crate) async fn run_in_transaction<T, F>(
+        datastore: &StoreDatastore,
+        op_name: &'static str,
+        op: F,
+    ) -> AppResult<T>
+    where
+        T: Send,
+        F: for<'tx, 'db> Fn(&'tx mut SqlTx<'db>) -> TxFuture<'tx, T> + Send + Sync,
+    {
+        match datastore {
+            StoreDatastore::Sqlite { pool, writer_gate } => {
+                let _guard = writer_gate.lock().await;
+                run_with_sqlite_busy_retries(op_name, || {
+                    let pool = pool.clone();
+                    let op = &op;
+                    async move {
+                        let mut tx = SqlTx::Sqlite(pool.begin().await.map_err(repo_err)?);
+                        let result = {
+                            let future = op(&mut tx);
+                            future.await?
+                        };
+                        tx.commit().await?;
+                        Ok(result)
+                    }
+                })
+                .await
+            }
+            StoreDatastore::Postgres { pool } => {
+                let mut tx = SqlTx::Postgres(pool.begin().await.map_err(repo_err)?);
+                let result = {
+                    let future = op(&mut tx);
+                    future.await?
+                };
+                tx.commit().await?;
+                Ok(result)
+            }
         }
     }
 }
@@ -146,6 +268,20 @@ impl SqlTx<'_> {
                 let result = query.execute(&mut **tx).await.map_err(repo_err)?;
                 Ok(result.rows_affected())
             }
+        }
+    }
+
+    pub(crate) fn sqlite(&mut self) -> Option<&mut Transaction<'_, Sqlite>> {
+        match self {
+            Self::Sqlite(tx) => Some(tx),
+            Self::Postgres(_) => None,
+        }
+    }
+
+    pub(crate) fn postgres(&mut self) -> Option<&mut Transaction<'_, Postgres>> {
+        match self {
+            Self::Sqlite(_) => None,
+            Self::Postgres(tx) => Some(tx),
         }
     }
 
@@ -235,7 +371,10 @@ impl SqlRow {
                     Some(_) | None => Ok(None),
                 }
             }
-            SqlRow::Postgres(row) => row.try_get(column).map_err(repo_err),
+            SqlRow::Postgres(row) => {
+                let raw: Option<Json<JsonValue>> = row.try_get(column).map_err(repo_err)?;
+                Ok(raw.map(|value| value.0))
+            }
         }
     }
 }
@@ -243,31 +382,33 @@ impl SqlRow {
 type SqliteQuery<'q> = Query<'q, Sqlite, SqliteArguments<'q>>;
 type PostgresQuery<'q> = Query<'q, Postgres, PgArguments>;
 
-fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, args: &[SqlArg]) -> SqliteQuery<'q> {
-    for arg in args {
-        query = match arg {
-            SqlArg::Text(value) => query.bind(value.clone()),
-            SqlArg::OptText(value) => query.bind(value.clone()),
+fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, values: &[SqlArg]) -> SqliteQuery<'q> {
+    for value in values {
+        query = match value {
+            SqlArg::Text(value) => query.bind(value),
+            SqlArg::OptText(value) => query.bind(value),
             SqlArg::I64(value) => query.bind(*value),
             SqlArg::OptI64(value) => query.bind(*value),
             SqlArg::Bool(value) => query.bind(if *value { 1_i64 } else { 0_i64 }),
-            SqlArg::OptBool(value) => {
-                query.bind(value.map(|value| if value { 1_i64 } else { 0_i64 }))
+            SqlArg::OptBool(value) => query.bind(value.map(|value| if value { 1_i64 } else { 0_i64 })),
+            SqlArg::Timestamp(value) => {
+                query.bind(value.to_rfc3339_opts(SecondsFormat::Secs, true))
             }
-            SqlArg::Timestamp(value) => query.bind(value.to_rfc3339()),
-            SqlArg::OptTimestamp(value) => query.bind(value.map(|value| value.to_rfc3339())),
+            SqlArg::OptTimestamp(value) => query.bind(
+                value.map(|value| value.to_rfc3339_opts(SecondsFormat::Secs, true)),
+            ),
             SqlArg::Json(value) => query.bind(value.to_string()),
-            SqlArg::OptJson(value) => query.bind(value.as_ref().map(ToString::to_string)),
+            SqlArg::OptJson(value) => query.bind(value.as_ref().map(JsonValue::to_string)),
         };
     }
     query
 }
 
-fn bind_postgres<'q>(mut query: PostgresQuery<'q>, args: &[SqlArg]) -> PostgresQuery<'q> {
-    for arg in args {
-        query = match arg {
-            SqlArg::Text(value) => query.bind(value.clone()),
-            SqlArg::OptText(value) => query.bind(value.clone()),
+fn bind_postgres<'q>(mut query: PostgresQuery<'q>, values: &[SqlArg]) -> PostgresQuery<'q> {
+    for value in values {
+        query = match value {
+            SqlArg::Text(value) => query.bind(value),
+            SqlArg::OptText(value) => query.bind(value),
             SqlArg::I64(value) => query.bind(*value),
             SqlArg::OptI64(value) => query.bind(*value),
             SqlArg::Bool(value) => query.bind(*value),
@@ -285,145 +426,155 @@ fn render_sql(template: &str, dialect: PlaceholderDialect, bind_count: usize) ->
     let placeholder_count = template.matches("{}").count();
     if placeholder_count != bind_count {
         return Err(AppError::Repository(format!(
-            "placeholder count mismatch: expected {placeholder_count} binds for `{template}`, got {bind_count}"
+            "sql placeholder mismatch: expected {placeholder_count} bind(s), received {bind_count}"
         )));
     }
 
-    let mut rendered = String::with_capacity(template.len() + bind_count * 3);
-    let mut index = 1usize;
+    let mut next_index = 1usize;
+    let mut rendered = String::with_capacity(template.len() + bind_count * 2);
     let mut parts = template.split("{}").peekable();
-
     while let Some(part) = parts.next() {
         rendered.push_str(part);
-        if parts.peek().is_none() {
-            continue;
-        }
-
-        match dialect {
-            PlaceholderDialect::Sqlite => rendered.push('?'),
-            PlaceholderDialect::Postgres => {
-                rendered.push('$');
-                rendered.push_str(&index.to_string());
-                index += 1;
+        if parts.peek().is_some() {
+            match dialect {
+                PlaceholderDialect::Sqlite => rendered.push('?'),
+                PlaceholderDialect::Postgres => {
+                    rendered.push('$');
+                    rendered.push_str(&next_index.to_string());
+                    next_index += 1;
+                }
             }
         }
     }
-
     Ok(rendered)
 }
 
 fn opt_text_from_sqlite_row(row: &SqliteRow, column: &str) -> AppResult<Option<String>> {
-    match row.try_get::<Option<String>, _>(column) {
-        Ok(value) => Ok(value),
-        Err(string_error) => match row.try_get::<Option<i64>, _>(column) {
-            Ok(value) => Ok(value.map(|value| value.to_string())),
-            Err(integer_error) => Err(AppError::Repository(format!(
-                "failed decode {column} as optional text: {string_error}; {integer_error}"
-            ))),
-        },
+    let value: Option<String> = row.try_get(column).map_err(repo_err)?;
+    match value {
+        Some(value) if value.trim().is_empty() => Ok(None),
+        other => Ok(other),
     }
 }
 
 fn opt_text_from_pg_row(row: &PgRow, column: &str) -> AppResult<Option<String>> {
-    match row.try_get::<Option<String>, _>(column) {
-        Ok(value) => Ok(value),
-        Err(string_error) => match row.try_get::<Option<i64>, _>(column) {
-            Ok(value) => Ok(value.map(|value| value.to_string())),
-            Err(integer_error) => Err(AppError::Repository(format!(
-                "failed decode {column} as optional text: {string_error}; {integer_error}"
-            ))),
-        },
+    let value: Option<String> = row.try_get(column).map_err(repo_err)?;
+    match value {
+        Some(value) if value.trim().is_empty() => Ok(None),
+        other => Ok(other),
     }
 }
 
 fn opt_i64_from_sqlite_row(row: &SqliteRow, column: &str) -> AppResult<Option<i64>> {
-    match row.try_get::<Option<i64>, _>(column) {
-        Ok(value) => Ok(value),
-        Err(integer_error) => match row.try_get::<Option<String>, _>(column) {
-            Ok(value) => value
-                .map(|value| {
-                    value.parse::<i64>().map_err(|parse_error| {
-                        AppError::Repository(format!("failed parse {column} as i64: {parse_error}"))
-                    })
-                })
-                .transpose(),
-            Err(string_error) => Err(AppError::Repository(format!(
-                "failed decode {column} as optional i64: {integer_error}; {string_error}"
-            ))),
-        },
-    }
+    row.try_get(column).map_err(repo_err)
 }
 
 fn opt_i64_from_pg_row(row: &PgRow, column: &str) -> AppResult<Option<i64>> {
-    match row.try_get::<Option<i64>, _>(column) {
-        Ok(value) => Ok(value),
-        Err(integer_error) => match row.try_get::<Option<String>, _>(column) {
-            Ok(value) => value
-                .map(|value| {
-                    value.parse::<i64>().map_err(|parse_error| {
-                        AppError::Repository(format!("failed parse {column} as i64: {parse_error}"))
-                    })
-                })
-                .transpose(),
-            Err(string_error) => Err(AppError::Repository(format!(
-                "failed decode {column} as optional i64: {integer_error}; {string_error}"
-            ))),
-        },
-    }
+    row.try_get(column).map_err(repo_err)
 }
 
 fn bool_from_sqlite_row(row: &SqliteRow, column: &str) -> AppResult<bool> {
-    match row.try_get::<i64, _>(column) {
-        Ok(value) => Ok(value != 0),
-        Err(integer_error) => row.try_get::<bool, _>(column).map_err(|bool_error| {
-            AppError::Repository(format!(
-                "failed decode {column} as bool: {integer_error}; {bool_error}"
-            ))
-        }),
-    }
+    let value: i64 = row.try_get(column).map_err(repo_err)?;
+    Ok(value != 0)
 }
 
 fn bool_from_pg_row(row: &PgRow, column: &str) -> AppResult<bool> {
-    match row.try_get::<bool, _>(column) {
-        Ok(value) => Ok(value),
-        Err(bool_error) => row
-            .try_get::<i64, _>(column)
-            .map(|value| value != 0)
-            .map_err(|integer_error| {
-                AppError::Repository(format!(
-                    "failed decode {column} as bool: {bool_error}; {integer_error}"
-                ))
-            }),
-    }
+    row.try_get(column).map_err(repo_err)
 }
 
 fn opt_bool_from_sqlite_row(row: &SqliteRow, column: &str) -> AppResult<Option<bool>> {
-    match row.try_get::<Option<i64>, _>(column) {
-        Ok(value) => Ok(value.map(|value| value != 0)),
-        Err(integer_error) => row
-            .try_get::<Option<bool>, _>(column)
-            .map_err(|bool_error| {
-                AppError::Repository(format!(
-                    "failed decode {column} as optional bool: {integer_error}; {bool_error}"
-                ))
-            }),
-    }
+    let value: Option<i64> = row.try_get(column).map_err(repo_err)?;
+    Ok(value.map(|value| value != 0))
 }
 
 fn opt_bool_from_pg_row(row: &PgRow, column: &str) -> AppResult<Option<bool>> {
-    match row.try_get::<Option<bool>, _>(column) {
-        Ok(value) => Ok(value),
-        Err(bool_error) => row
-            .try_get::<Option<i64>, _>(column)
-            .map(|value| value.map(|value| value != 0))
-            .map_err(|integer_error| {
-                AppError::Repository(format!(
-                    "failed decode {column} as optional bool: {bool_error}; {integer_error}"
-                ))
-            }),
+    row.try_get(column).map_err(repo_err)
+}
+
+pub(crate) fn is_transient_sqlite_busy(error: &AppError) -> bool {
+    let AppError::Repository(message) = error else {
+        return false;
+    };
+
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("sqlite_code=5")
+        || normalized.contains("sqlite_code=517")
+        || normalized.contains("database is locked")
+        || normalized.contains("database table is locked")
+        || normalized.contains("database schema is locked")
+        || normalized.contains("sqlite_busy")
+        || normalized.contains("busy_snapshot")
+        || normalized.contains("code: 5")
+        || normalized.contains("code: 517")
+}
+
+pub(crate) async fn run_with_sqlite_busy_retries<T, Op, Fut>(
+    operation_name: &str,
+    mut operation: Op,
+) -> AppResult<T>
+where
+    Op: FnMut() -> Fut,
+    Fut: Future<Output = AppResult<T>>,
+{
+    run_with_sqlite_busy_retries_with_deadline(
+        operation_name,
+        SQLITE_BUSY_RETRY_HARD_CAP,
+        &mut operation,
+    )
+    .await
+}
+
+async fn run_with_sqlite_busy_retries_with_deadline<T, Op, Fut>(
+    operation_name: &str,
+    hard_cap: Duration,
+    operation: &mut Op,
+) -> AppResult<T>
+where
+    Op: FnMut() -> Fut,
+    Fut: Future<Output = AppResult<T>>,
+{
+    let started_at = tokio::time::Instant::now();
+    let mut attempt = 0usize;
+
+    loop {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) if is_transient_sqlite_busy(&error) => {
+                let elapsed = started_at.elapsed();
+                if elapsed >= hard_cap {
+                    tracing::warn!(
+                        attempts = attempt,
+                        elapsed_ms = elapsed.as_millis(),
+                        error = %error,
+                        operation = operation_name,
+                        "serialized sqlite writer: retry deadline exhausted"
+                    );
+                    return Err(AppError::Repository(format!(
+                        "serialized sqlite writer: retry deadline exceeded for operation `{operation_name}` after {attempt} attempts over {}ms: {error}",
+                        elapsed.as_millis()
+                    )));
+                }
+
+                let scheduled_delay = SQLITE_BUSY_RETRY_DELAYS
+                    [attempt.min(SQLITE_BUSY_RETRY_DELAYS.len().saturating_sub(1))];
+                let remaining = hard_cap.saturating_sub(elapsed);
+                let delay = scheduled_delay.min(remaining);
+                tracing::debug!(
+                    attempt = attempt + 1,
+                    retry_after_ms = delay.as_millis(),
+                    elapsed_ms = elapsed.as_millis(),
+                    error = %error,
+                    operation = operation_name,
+                    "serialized sqlite writer: retrying transient sqlite busy"
+                );
+                attempt = attempt.saturating_add(1);
+                tokio::time::sleep(delay).await;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
-pub(crate) fn repo_err(error: impl ToString) -> AppError {
+pub(crate) fn repo_err(error: impl std::fmt::Display) -> AppError {
     AppError::Repository(error.to_string())
 }

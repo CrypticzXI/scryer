@@ -17,12 +17,13 @@ use crate::postgres::{
     PostgresReleaseStore, PostgresServices, PostgresSettingsStore, PostgresWorkflowStore,
     restore_backup_bundle_into_postgres_pool, restore_prepared_backup_directory_into_postgres_pool,
 };
+use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
     FileSystemStagedNzbStore, InMemoryIndexerStatsTracker, MetadataGatewayClient, MigrationMode,
     SmgEnrollmentConfig, SqliteCatalogStore, SqliteConfigStore, SqliteCustomizationStore,
     SqliteLibraryStateStore, SqliteLogicalBackupExporter, SqliteNotificationStore,
     SqliteReleaseStore, SqliteServices, SqliteSettingsStore, SqliteTitleImageProcessor,
-    SqliteWorkflowStore,
+    SqliteWorkflowStore, TitleStore,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -910,6 +911,7 @@ pub struct DatastoreAssembly {
 enum DatastoreStores {
     Sqlite {
         db: SqliteServices,
+        title_store: Arc<TitleStore>,
         catalog_store: Arc<SqliteCatalogStore>,
         config_store: Arc<SqliteConfigStore>,
         customization_store: Arc<SqliteCustomizationStore>,
@@ -922,6 +924,7 @@ enum DatastoreStores {
     },
     Postgres {
         db: PostgresServices,
+        title_store: Arc<TitleStore>,
         catalog_store: Arc<PostgresCatalogStore>,
         config_store: Arc<PostgresConfigStore>,
         customization_store: Arc<PostgresCustomizationStore>,
@@ -945,6 +948,10 @@ impl DatastoreAssembly {
     async fn connect_sqlite(config: DatastoreConfig) -> Result<Self, AppError> {
         let db = SqliteServices::new_with_mode(config.database_url.clone(), config.migration_mode)
             .await?;
+        let title_store = Arc::new(TitleStore::new(StoreDatastore::Sqlite {
+            pool: db.pool().clone(),
+            writer_gate: db.writer_gate(),
+        }));
         let catalog_store = Arc::new(SqliteCatalogStore::new(&db));
         let config_store = Arc::new(SqliteConfigStore::new(&db));
         let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
@@ -959,6 +966,7 @@ impl DatastoreAssembly {
 
         let stores = DatastoreStores::Sqlite {
             db,
+            title_store,
             catalog_store,
             config_store,
             customization_store,
@@ -977,6 +985,9 @@ impl DatastoreAssembly {
         let db =
             PostgresServices::new_with_mode(config.database_url.clone(), config.migration_mode)
                 .await?;
+        let title_store = Arc::new(TitleStore::new(StoreDatastore::Postgres {
+            pool: db.pool().clone(),
+        }));
         let catalog_store = Arc::new(PostgresCatalogStore::new(&db));
         let config_store = Arc::new(PostgresConfigStore::new(&db));
         let customization_store = Arc::new(PostgresCustomizationStore::new(&db));
@@ -989,6 +1000,7 @@ impl DatastoreAssembly {
 
         let stores = DatastoreStores::Postgres {
             db,
+            title_store,
             catalog_store,
             config_store,
             customization_store,
@@ -1173,6 +1185,7 @@ impl DatastoreAssembly {
     ) -> AppServicesBuilder {
         match &self.stores {
             DatastoreStores::Sqlite {
+                title_store,
                 catalog_store,
                 release_store,
                 library_state_store,
@@ -1182,7 +1195,7 @@ impl DatastoreAssembly {
                 settings_store,
                 ..
             } => {
-                let titles: Arc<dyn TitleRepository> = catalog_store.clone();
+                let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = catalog_store.clone();
                 let users: Arc<dyn UserRepository> = catalog_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = catalog_store.clone();
@@ -1218,6 +1231,7 @@ impl DatastoreAssembly {
                 .with_workflow_operations(workflow_store.clone())
             }
             DatastoreStores::Postgres {
+                title_store,
                 catalog_store,
                 customization_store,
                 library_state_store,
@@ -1227,7 +1241,7 @@ impl DatastoreAssembly {
                 workflow_store,
                 ..
             } => {
-                let titles: Arc<dyn TitleRepository> = catalog_store.clone();
+                let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = catalog_store.clone();
                 let users: Arc<dyn UserRepository> = catalog_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = catalog_store.clone();

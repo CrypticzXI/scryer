@@ -3,11 +3,10 @@ use std::collections::{HashMap, HashSet};
 use async_graphql::{Context, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
-    AppError, ExternalImportLibraryPathsSelection, ExternalImportMonitorChunkedPayload,
-    ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
-    ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
-    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotChunkScopeKind,
-    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotPayload,
+    AppError, ExternalImportLibraryPathsSelection, ExternalImportMonitorEpisodeEntry,
+    ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
+    ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
+    ExternalImportMonitorSnapshotChunkScopeKind, ExternalImportMonitorSnapshotEntryKind,
     ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupProgressSnapshot,
     ExternalImportMonitorWarmupStatus, IndexerConfigUpdate,
 };
@@ -39,32 +38,26 @@ struct ExternalImportWarmupConnections {
 struct SnapshotChunkWriter {
     app: scryer_application::AppUseCase,
     actor: scryer_domain::User,
-    session_id: String,
+    scope_key: String,
     entry_kind: ExternalImportMonitorSnapshotEntryKind,
     chunk_index: i32,
     buffered_ndjson: String,
-    buffered_entry_count: i32,
-    total_entry_count: i32,
-    total_byte_len: i64,
 }
 
 impl SnapshotChunkWriter {
     fn new(
         app: scryer_application::AppUseCase,
         actor: scryer_domain::User,
-        session_id: String,
+        scope_key: String,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
     ) -> Self {
         Self {
             app,
             actor,
-            session_id,
+            scope_key,
             entry_kind,
             chunk_index: 0,
             buffered_ndjson: String::new(),
-            buffered_entry_count: 0,
-            total_entry_count: 0,
-            total_byte_len: 0,
         }
     }
 
@@ -74,9 +67,6 @@ impl SnapshotChunkWriter {
         })?;
         self.buffered_ndjson.push_str(&line);
         self.buffered_ndjson.push('\n');
-        self.buffered_entry_count += 1;
-        self.total_entry_count += 1;
-        self.total_byte_len += i64::try_from(line.len() + 1).unwrap_or(i64::MAX);
 
         if self.buffered_ndjson.len() >= SNAPSHOT_CHUNK_FLUSH_BYTES {
             self.flush().await?;
@@ -86,18 +76,18 @@ impl SnapshotChunkWriter {
     }
 
     async fn flush(&mut self) -> scryer_application::AppResult<()> {
-        if self.buffered_entry_count == 0 {
+        if self.buffered_ndjson.is_empty() {
             return Ok(());
         }
 
         let payload_ndjson = std::mem::take(&mut self.buffered_ndjson);
         let chunk = ExternalImportMonitorSnapshotChunk {
-            scope_kind: ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-            scope_key: self.session_id.clone(),
+            scope_kind: ExternalImportMonitorSnapshotChunkScopeKind::Facet,
+            scope_key: self.scope_key.clone(),
             entry_kind: self.entry_kind.clone(),
             chunk_index: self.chunk_index,
-            entry_count: self.buffered_entry_count,
-            byte_len: i64::try_from(payload_ndjson.len()).unwrap_or(i64::MAX),
+            entry_count: 0,
+            byte_len: 0,
             payload_ndjson,
             created_at: Utc::now().to_rfc3339(),
         };
@@ -106,21 +96,38 @@ impl SnapshotChunkWriter {
             .await?;
 
         self.chunk_index += 1;
-        self.buffered_entry_count = 0;
         Ok(())
     }
 
-    async fn finish(
-        &mut self,
-    ) -> scryer_application::AppResult<ExternalImportMonitorChunkedPayload> {
+    async fn finish(&mut self) -> scryer_application::AppResult<()> {
         self.flush().await?;
-        Ok(ExternalImportMonitorChunkedPayload {
-            entry_kind: self.entry_kind.clone(),
-            chunk_count: self.chunk_index,
-            entry_count: self.total_entry_count,
-            total_bytes: self.total_byte_len,
-        })
+        Ok(())
     }
+}
+
+async fn clear_external_import_monitor_apply_target(
+    app: &scryer_application::AppUseCase,
+    actor: &scryer_domain::User,
+    facet: MediaFacet,
+) -> scryer_application::AppResult<()> {
+    app.clear_external_import_monitor_snapshot(actor, facet.clone())
+        .await?;
+    app.clear_external_import_monitor_snapshot_chunks(
+        actor,
+        ExternalImportMonitorSnapshotChunkScopeKind::Facet,
+        facet.as_str(),
+    )
+    .await
+}
+
+async fn clear_external_import_monitor_apply_targets(
+    app: &scryer_application::AppUseCase,
+    actor: &scryer_domain::User,
+) -> scryer_application::AppResult<()> {
+    for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+        clear_external_import_monitor_apply_target(app, actor, facet).await?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -534,14 +541,12 @@ impl ExternalImportMutations {
         let canceled = app
             .cancel_external_import_monitor_warmup(&actor, &input.session_id)
             .await?;
-        if canceled {
-            let _ = app
-                .clear_external_import_monitor_snapshot_chunks(
-                    &actor,
-                    ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-                    &input.session_id,
-                )
-                .await;
+        if app
+            .external_import_monitor_warmup_connection_fingerprint(&actor, &input.session_id)
+            .await
+            .is_ok()
+        {
+            let _ = clear_external_import_monitor_apply_targets(&app, &actor).await;
         }
 
         Ok(canceled)
@@ -560,7 +565,7 @@ impl ExternalImportMutations {
             sonarr: input.sonarr.clone(),
             radarr: input.radarr.clone(),
         };
-        let session_id = ensure_external_import_monitor_warmup_completed(
+        let _session_id = ensure_external_import_monitor_warmup_completed(
             &app,
             &actor,
             connections,
@@ -568,75 +573,17 @@ impl ExternalImportMutations {
         )
         .await?;
 
-        if input.radarr.is_some() && !input.selected_movies_paths.is_empty() {
-            let manifest = app
-                .promote_external_import_monitor_snapshot_chunks(
-                    &actor,
-                    ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-                    &session_id,
-                    MediaFacet::Movie,
-                    ExternalImportMonitorSnapshotEntryKind::Movie,
-                )
-                .await?;
-            app.save_external_import_monitor_snapshot(
-                &actor,
-                MediaFacet::Movie,
-                ExternalImportMonitorSnapshotPayload::Chunked { manifest },
-            )
-            .await?;
-        } else {
-            app.clear_external_import_monitor_snapshot(&actor, MediaFacet::Movie)
-                .await?;
+        if input.radarr.is_none() || input.selected_movies_paths.is_empty() {
+            clear_external_import_monitor_apply_target(&app, &actor, MediaFacet::Movie).await?;
         }
 
-        if input.sonarr.is_some() && !input.selected_series_paths.is_empty() {
-            let manifest = app
-                .promote_external_import_monitor_snapshot_chunks(
-                    &actor,
-                    ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-                    &session_id,
-                    MediaFacet::Series,
-                    ExternalImportMonitorSnapshotEntryKind::Series,
-                )
-                .await?;
-            app.save_external_import_monitor_snapshot(
-                &actor,
-                MediaFacet::Series,
-                ExternalImportMonitorSnapshotPayload::Chunked { manifest },
-            )
-            .await?;
-        } else {
-            app.clear_external_import_monitor_snapshot(&actor, MediaFacet::Series)
-                .await?;
+        if input.sonarr.is_none() || input.selected_series_paths.is_empty() {
+            clear_external_import_monitor_apply_target(&app, &actor, MediaFacet::Series).await?;
         }
 
-        if input.sonarr.is_some() && !input.selected_anime_paths.is_empty() {
-            let manifest = app
-                .promote_external_import_monitor_snapshot_chunks(
-                    &actor,
-                    ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-                    &session_id,
-                    MediaFacet::Anime,
-                    ExternalImportMonitorSnapshotEntryKind::Series,
-                )
-                .await?;
-            app.save_external_import_monitor_snapshot(
-                &actor,
-                MediaFacet::Anime,
-                ExternalImportMonitorSnapshotPayload::Chunked { manifest },
-            )
-            .await?;
-        } else {
-            app.clear_external_import_monitor_snapshot(&actor, MediaFacet::Anime)
-                .await?;
+        if input.sonarr.is_none() || input.selected_anime_paths.is_empty() {
+            clear_external_import_monitor_apply_target(&app, &actor, MediaFacet::Anime).await?;
         }
-
-        app.clear_external_import_monitor_snapshot_chunks(
-            &actor,
-            ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-            &session_id,
-        )
-        .await?;
 
         Ok(true)
     }
@@ -1254,23 +1201,24 @@ async fn capture_external_import_monitor_warmup(
     cancel_token: &CancellationToken,
     snapshot: &mut ExternalImportMonitorWarmupProgressSnapshot,
 ) -> scryer_application::AppResult<()> {
-    app.clear_external_import_monitor_snapshot_chunks(
-        actor,
-        ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-        session_id,
-    )
-    .await?;
+    clear_external_import_monitor_apply_targets(app, actor).await?;
 
     let mut movie_writer = SnapshotChunkWriter::new(
         app.clone(),
         actor.clone(),
-        session_id.to_string(),
+        MediaFacet::Movie.as_str().to_string(),
         ExternalImportMonitorSnapshotEntryKind::Movie,
     );
     let mut series_writer = SnapshotChunkWriter::new(
         app.clone(),
         actor.clone(),
-        session_id.to_string(),
+        MediaFacet::Series.as_str().to_string(),
+        ExternalImportMonitorSnapshotEntryKind::Series,
+    );
+    let mut anime_writer = SnapshotChunkWriter::new(
+        app.clone(),
+        actor.clone(),
+        MediaFacet::Anime.as_str().to_string(),
         ExternalImportMonitorSnapshotEntryKind::Series,
     );
 
@@ -1396,6 +1344,7 @@ async fn capture_external_import_monitor_warmup(
             let episode_count = i32::try_from(episodes.len()).unwrap_or(i32::MAX);
             let entry = series_monitor_entry_from_arr(series, episodes);
             series_writer.push(&entry).await?;
+            anime_writer.push(&entry).await?;
 
             snapshot.episode_fetch_progress.completed = snapshot
                 .episode_fetch_progress
@@ -1422,8 +1371,9 @@ async fn capture_external_import_monitor_warmup(
     snapshot.phase = ExternalImportMonitorWarmupPhase::BuildingSnapshot;
     publish_warmup_progress(app, session_id, snapshot).await;
 
-    let _movie_manifest = movie_writer.finish().await?;
-    let _series_manifest = series_writer.finish().await?;
+    movie_writer.finish().await?;
+    series_writer.finish().await?;
+    anime_writer.finish().await?;
     snapshot.snapshot_build_progress.completed = snapshot.snapshot_build_progress.total;
 
     Ok(())
@@ -1448,13 +1398,7 @@ async fn run_external_import_monitor_warmup_job(
     .await;
 
     if cancel_token.is_cancelled() {
-        let _ = app
-            .clear_external_import_monitor_snapshot_chunks(
-                &actor,
-                ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-                &session_id,
-            )
-            .await;
+        let _ = clear_external_import_monitor_apply_targets(&app, &actor).await;
         snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
         snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
         snapshot.error_message = None;
@@ -1469,13 +1413,7 @@ async fn run_external_import_monitor_warmup_job(
             publish_warmup_progress(&app, &session_id, &mut snapshot).await;
         }
         Err(err) => {
-            let _ = app
-                .clear_external_import_monitor_snapshot_chunks(
-                    &actor,
-                    ExternalImportMonitorSnapshotChunkScopeKind::WarmupSession,
-                    &session_id,
-                )
-                .await;
+            let _ = clear_external_import_monitor_apply_targets(&app, &actor).await;
             snapshot.status = ExternalImportMonitorWarmupStatus::Failed;
             snapshot.error_message = Some(err.to_string());
             publish_warmup_progress(&app, &session_id, &mut snapshot).await;

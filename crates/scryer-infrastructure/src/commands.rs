@@ -1,126 +1,32 @@
 use crate::queries::{
     blocklist as blocklist_queries, library_scan_unmatched as library_scan_unmatched_queries,
-    plugin_installation::BuiltinPluginSeed, show, sql_runtime::SqlTarget, title::*,
+    plugin_installation::BuiltinPluginSeed, show,
+    sql_runtime::{SqlTarget, run_with_sqlite_busy_retries},
+    title::*,
 };
 use crate::{
     encryption::EncryptionKey,
     types::{SettingDefinitionSeed, SettingsValueRecord},
 };
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, CreateTitleOutcome, DownloadClientConfigUpdate,
-    DownloadQueueCommandRecord, DownloadSourceIdentity, EpisodeUpdate,
-    ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate, InsertMediaFileInput,
-    LibraryScanUnmatchedItem, MediaFileAnalysis, PendingRelease, PendingReleaseStatus,
-    ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, SubtitleProviderConfigUpdate,
-    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WantedItem, WantedItemsQuery,
-    WorkflowOperationInfo,
+    AppError, AppResult, CollectionUpdate, DownloadClientConfigUpdate, DownloadQueueCommandRecord,
+    DownloadSourceIdentity, EpisodeUpdate, ExternalImportMonitorSnapshot, ImportArtifact,
+    IndexerConfigUpdate, InsertMediaFileInput, LibraryScanUnmatchedItem, MediaFileAnalysis,
+    PendingRelease, PendingReleaseStatus, ReleaseDecision, ReleaseDownloadAttemptOutcome,
+    ScopedExternalId, SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement,
+    WantedItem, WantedItemsQuery, WorkflowOperationInfo,
 };
 use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
-    Episode, ExternalId, ImportType, IndexerConfig, InterstitialMovieMetadata, MediaFacet,
-    NewDomainEvent, NotificationChannelConfig, NotificationSubscription, PluginInstallation,
+    Episode, ImportType, IndexerConfig, InterstitialMovieMetadata, MediaFacet, NewDomainEvent,
+    NotificationChannelConfig, NotificationSubscription, PluginInstallation,
     PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload,
-    SubtitleProviderConfig, Title, User,
+    SubtitleProviderConfig, User,
 };
 use sqlx::SqlitePool;
-use std::future::Future;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 use tokio::sync::oneshot::Sender;
-
-const SQLITE_BUSY_RETRY_DELAYS: [Duration; 5] = [
-    Duration::from_millis(50),
-    Duration::from_millis(100),
-    Duration::from_millis(250),
-    Duration::from_millis(500),
-    Duration::from_millis(1000),
-];
-const SQLITE_BUSY_RETRY_HARD_CAP: Duration = Duration::from_secs(120);
-
-pub(crate) fn is_transient_sqlite_busy(error: &AppError) -> bool {
-    let AppError::Repository(message) = error else {
-        return false;
-    };
-
-    let normalized = message.to_ascii_lowercase();
-    normalized.contains("sqlite_code=5")
-        || normalized.contains("sqlite_code=517")
-        || normalized.contains("database is locked")
-        || normalized.contains("database table is locked")
-        || normalized.contains("database schema is locked")
-        || normalized.contains("sqlite_busy")
-        || normalized.contains("busy_snapshot")
-        || normalized.contains("code: 5")
-        || normalized.contains("code: 517")
-}
-
-pub(crate) async fn run_with_sqlite_busy_retries<T, Op, Fut>(
-    operation_name: &str,
-    mut operation: Op,
-) -> AppResult<T>
-where
-    Op: FnMut() -> Fut,
-    Fut: Future<Output = AppResult<T>>,
-{
-    run_with_sqlite_busy_retries_with_deadline(
-        operation_name,
-        SQLITE_BUSY_RETRY_HARD_CAP,
-        &mut operation,
-    )
-    .await
-}
-
-async fn run_with_sqlite_busy_retries_with_deadline<T, Op, Fut>(
-    operation_name: &str,
-    hard_cap: Duration,
-    operation: &mut Op,
-) -> AppResult<T>
-where
-    Op: FnMut() -> Fut,
-    Fut: Future<Output = AppResult<T>>,
-{
-    let started_at = tokio::time::Instant::now();
-    let mut attempt = 0usize;
-
-    loop {
-        match operation().await {
-            Ok(value) => return Ok(value),
-            Err(error) if is_transient_sqlite_busy(&error) => {
-                let elapsed = started_at.elapsed();
-                if elapsed >= hard_cap {
-                    tracing::warn!(
-                        attempts = attempt,
-                        elapsed_ms = elapsed.as_millis(),
-                        error = %error,
-                        operation = operation_name,
-                        "serialized db worker: sqlite busy retry deadline exhausted"
-                    );
-                    return Err(AppError::Repository(format!(
-                        "serialized db worker: sqlite busy retry deadline exceeded for operation `{operation_name}` after {attempt} attempts over {}ms: {error}",
-                        elapsed.as_millis()
-                    )));
-                }
-
-                let scheduled_delay = SQLITE_BUSY_RETRY_DELAYS
-                    [attempt.min(SQLITE_BUSY_RETRY_DELAYS.len().saturating_sub(1))];
-                let remaining = hard_cap.saturating_sub(elapsed);
-                let delay = scheduled_delay.min(remaining);
-                tracing::debug!(
-                    attempt = attempt + 1,
-                    retry_after_ms = delay.as_millis(),
-                    elapsed_ms = elapsed.as_millis(),
-                    error = %error,
-                    operation = operation_name,
-                    "serialized db worker: retrying transient sqlite busy"
-                );
-                attempt = attempt.saturating_add(1);
-                tokio::time::sleep(delay).await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
 
 pub(crate) enum DbCommand {
     UpsertLibraryScanUnmatchedItem {
@@ -133,10 +39,6 @@ pub(crate) enum DbCommand {
         item_path: String,
         reply: Sender<AppResult<()>>,
     },
-    CreateOrGetExistingTitle {
-        title: Title,
-        reply: Sender<AppResult<CreateTitleOutcome>>,
-    },
     ReplaceTitleImage {
         title_id: String,
         replacement: TitleImageReplacement,
@@ -147,11 +49,6 @@ pub(crate) enum DbCommand {
         replacement: TitleImageReplacement,
         event: NewDomainEvent,
         reply: Sender<AppResult<DomainEvent>>,
-    },
-    SetTitleFolderPath {
-        title_id: String,
-        folder_path: String,
-        reply: Sender<AppResult<()>>,
     },
     CreateCollection {
         collection: Collection,
@@ -192,24 +89,6 @@ pub(crate) enum DbCommand {
         sequence: i64,
         reply: Sender<AppResult<()>>,
     },
-    UpdateTitleMetadata {
-        id: String,
-        name: Option<String>,
-        facet: Option<MediaFacet>,
-        tags_json: Option<String>,
-        reply: Sender<AppResult<Title>>,
-    },
-    UpdateTitleHydratedMetadata {
-        id: String,
-        metadata: TitleMetadataUpdate,
-        reply: Sender<AppResult<Title>>,
-    },
-    ReplaceTitleMatchState {
-        id: String,
-        external_ids: Vec<ExternalId>,
-        tags: Vec<String>,
-        reply: Sender<AppResult<Title>>,
-    },
     CreateEpisode {
         episode: Episode,
         reply: Sender<AppResult<Episode>>,
@@ -232,40 +111,6 @@ pub(crate) enum DbCommand {
         status: DownloadQueueDeleteStatus,
         error_text: Option<String>,
         reply: Sender<AppResult<()>>,
-    },
-    CreateTitle {
-        title: Title,
-        reply: Sender<AppResult<Title>>,
-    },
-    MarkTitleMetadataHydrationDueNow {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    ScheduleTitleMetadataHydrationRetry {
-        id: String,
-        next_attempt_at: String,
-        attempt_count: i64,
-        reply: Sender<AppResult<()>>,
-    },
-    ClearTitleMetadataHydrationRetryState {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    UpdateTitleMonitored {
-        id: String,
-        monitored: bool,
-        reply: Sender<AppResult<Title>>,
-    },
-    DeleteTitle {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    ClearTitleFolderPath {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    ClearMetadataLanguageForAll {
-        reply: Sender<AppResult<u64>>,
     },
     ReplaceAnibridgeScopedExternalIdsForTitle {
         title_id: String,
@@ -914,14 +759,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::CreateOrGetExistingTitle { title, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_or_get_existing_title", || {
-                            create_or_get_existing_title_query(&pool, &title)
-                        })
-                        .await,
-                    );
-                }
                 DbCommand::ReplaceTitleImage {
                     title_id,
                     replacement,
@@ -956,18 +793,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                                 )
                             },
                         )
-                        .await,
-                    );
-                }
-                DbCommand::SetTitleFolderPath {
-                    title_id,
-                    folder_path,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("set_title_folder_path", || {
-                            set_title_folder_path_query(&pool, &title_id, &folder_path)
-                        })
                         .await,
                     );
                 }
@@ -1075,56 +900,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::UpdateTitleMetadata {
-                    id,
-                    name,
-                    facet,
-                    tags_json,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_title_metadata", || {
-                            update_title_metadata_query(
-                                &pool,
-                                &id,
-                                name.clone(),
-                                facet.clone(),
-                                tags_json.clone(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateTitleHydratedMetadata {
-                    id,
-                    metadata,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_title_hydrated_metadata", || {
-                            update_title_hydrated_metadata_query(&pool, &id, metadata.clone())
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::ReplaceTitleMatchState {
-                    id,
-                    external_ids,
-                    tags,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("replace_title_match_state", || {
-                            replace_title_match_state_query(
-                                &pool,
-                                &id,
-                                external_ids.clone(),
-                                tags.clone(),
-                            )
-                        })
-                        .await,
-                    );
-                }
                 DbCommand::CreateEpisode { episode, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("create_episode", || {
@@ -1184,89 +959,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                                 status,
                                 error_text.as_deref(),
                             )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreateTitle { title, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_title", || {
-                            create_title_query(&pool, &title)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::MarkTitleMetadataHydrationDueNow { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries(
-                            "mark_title_metadata_hydration_due_now",
-                            || mark_title_metadata_hydration_due_now_query(&pool, &id),
-                        )
-                        .await,
-                    );
-                }
-                DbCommand::ScheduleTitleMetadataHydrationRetry {
-                    id,
-                    next_attempt_at,
-                    attempt_count,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries(
-                            "schedule_title_metadata_hydration_retry",
-                            || {
-                                schedule_title_metadata_hydration_retry_query(
-                                    &pool,
-                                    &id,
-                                    &next_attempt_at,
-                                    attempt_count,
-                                )
-                            },
-                        )
-                        .await,
-                    );
-                }
-                DbCommand::ClearTitleMetadataHydrationRetryState { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries(
-                            "clear_title_metadata_hydration_retry_state",
-                            || clear_title_metadata_hydration_retry_state_query(&pool, &id),
-                        )
-                        .await,
-                    );
-                }
-                DbCommand::UpdateTitleMonitored {
-                    id,
-                    monitored,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_title_monitored", || {
-                            update_title_monitored_query(&pool, &id, monitored)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteTitle { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_title", || {
-                            delete_title_query(&pool, &id)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::ClearTitleFolderPath { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("clear_title_folder_path", || {
-                            clear_title_folder_path_query(&pool, &id)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::ClearMetadataLanguageForAll { reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("clear_metadata_language_for_all", || {
-                            clear_metadata_language_for_all_query(&pool)
                         })
                         .await,
                     );

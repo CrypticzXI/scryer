@@ -146,14 +146,6 @@ pub trait WorkflowSql: Clone + Send + Sync + 'static {
         scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
         scope_key: &str,
     ) -> AppResult<()>;
-    async fn copy_external_import_monitor_snapshot_chunks(
-        &self,
-        from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        from_scope_key: &str,
-        to_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        to_scope_key: &str,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<(i32, i32, i64)>;
     async fn get_external_import_monitor_snapshot(
         &self,
         facet: &scryer_domain::MediaFacet,
@@ -506,25 +498,6 @@ impl<S: WorkflowSql> ExternalImportMonitorSnapshotRepository for WorkflowStore<S
     ) -> AppResult<()> {
         self.sql
             .delete_external_import_monitor_snapshot_chunks(scope_kind, scope_key)
-            .await
-    }
-
-    async fn copy_external_import_monitor_snapshot_chunks(
-        &self,
-        from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        from_scope_key: &str,
-        to_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        to_scope_key: &str,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<(i32, i32, i64)> {
-        self.sql
-            .copy_external_import_monitor_snapshot_chunks(
-                from_scope_kind,
-                from_scope_key,
-                to_scope_kind,
-                to_scope_key,
-                entry_kind,
-            )
             .await
     }
 
@@ -1077,25 +1050,6 @@ impl WorkflowSql for SqliteWorkflowSql {
     ) -> AppResult<()> {
         crate::queries::workflow::delete_external_import_monitor_snapshot_chunks_query(
             &self.pool, scope_kind, scope_key,
-        )
-        .await
-    }
-
-    async fn copy_external_import_monitor_snapshot_chunks(
-        &self,
-        from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        from_scope_key: &str,
-        to_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        to_scope_key: &str,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<(i32, i32, i64)> {
-        crate::queries::workflow::copy_external_import_monitor_snapshot_chunks_query(
-            &self.pool,
-            from_scope_kind,
-            from_scope_key,
-            to_scope_kind,
-            to_scope_key,
-            entry_kind,
         )
         .await
     }

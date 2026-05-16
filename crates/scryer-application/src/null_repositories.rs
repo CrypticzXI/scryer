@@ -140,17 +140,6 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
         Ok(())
     }
 
-    async fn copy_external_import_monitor_snapshot_chunks(
-        &self,
-        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        _: &str,
-        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        _: &str,
-        _: crate::ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<(i32, i32, i64)> {
-        Ok((0, 0, 0))
-    }
-
     async fn get_external_import_monitor_snapshot(
         &self,
         _: &crate::MediaFacet,

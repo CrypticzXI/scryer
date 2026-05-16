@@ -756,15 +756,6 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
         scope_key: &str,
     ) -> AppResult<()>;
 
-    async fn copy_external_import_monitor_snapshot_chunks(
-        &self,
-        from_scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        from_scope_key: &str,
-        to_scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        to_scope_key: &str,
-        entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<(i32, i32, i64)>;
-
     async fn get_external_import_monitor_snapshot(
         &self,
         facet: &MediaFacet,

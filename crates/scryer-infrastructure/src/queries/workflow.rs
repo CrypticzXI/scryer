@@ -3,9 +3,8 @@ use scryer_application::{
     AppError, AppResult, DownloadQueueCommandRecord as AppDownloadQueueCommandRecord,
     DownloadSourceIdentity, DownloadSubmission, ExternalImportMonitorSnapshot,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotChunkScopeKind,
-    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotPayload,
-    PendingReleaseStatus, ReleaseDownloadAttemptOutcome, SubmissionScope, SuccessfulGrabCommit,
-    WantedStatus,
+    ExternalImportMonitorSnapshotEntryKind, PendingReleaseStatus,
+    ReleaseDownloadAttemptOutcome, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
 };
 use scryer_domain::{
     DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus,
@@ -324,10 +323,6 @@ pub(crate) async fn upsert_external_import_monitor_snapshot_query(
 ) -> AppResult<()> {
     let payload_json = serde_json::to_string(&snapshot.payload)
         .map_err(|err| AppError::Repository(err.to_string()))?;
-    let clear_facet_chunks = !matches!(
-        snapshot.payload,
-        ExternalImportMonitorSnapshotPayload::Chunked { .. }
-    );
 
     sqlx::query(
         "INSERT INTO external_import_monitor_snapshots (facet, payload_json, created_at)
@@ -342,18 +337,6 @@ pub(crate) async fn upsert_external_import_monitor_snapshot_query(
     .execute(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    if clear_facet_chunks {
-        sqlx::query(
-            "DELETE FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = ? AND scope_key = ?",
-        )
-        .bind(ExternalImportMonitorSnapshotChunkScopeKind::Facet.as_str())
-        .bind(snapshot.facet.as_str())
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    }
 
     Ok(())
 }
@@ -399,7 +382,7 @@ fn row_to_external_import_monitor_snapshot_chunk(
             .map_err(|err| AppError::Repository(err.to_string()))?,
         created_at: row
             .try_get("created_at")
-        .map_err(|err| AppError::Repository(err.to_string()))?,
+            .map_err(|err| AppError::Repository(err.to_string()))?,
     })
 }
 
@@ -515,76 +498,6 @@ pub(crate) async fn delete_external_import_monitor_snapshot_chunks_query(
     Ok(())
 }
 
-pub(crate) async fn copy_external_import_monitor_snapshot_chunks_query(
-    pool: &SqlitePool,
-    from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-    from_scope_key: &str,
-    to_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-    to_scope_key: &str,
-    entry_kind: ExternalImportMonitorSnapshotEntryKind,
-) -> AppResult<(i32, i32, i64)> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(map_external_import_monitor_snapshot_chunk_query_error)?;
-
-    sqlx::query(
-        "DELETE FROM external_import_monitor_snapshot_chunks
-         WHERE scope_kind = ? AND scope_key = ? AND entry_kind = ?",
-    )
-    .bind(to_scope_kind.as_str())
-    .bind(to_scope_key)
-    .bind(entry_kind.as_str())
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_external_import_monitor_snapshot_chunk_query_error)?;
-
-    sqlx::query(
-        "INSERT INTO external_import_monitor_snapshot_chunks
-         (scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at)
-         SELECT ?, ?, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, ?
-         FROM external_import_monitor_snapshot_chunks
-         WHERE scope_kind = ? AND scope_key = ? AND entry_kind = ?
-         ORDER BY chunk_index ASC",
-    )
-    .bind(to_scope_kind.as_str())
-    .bind(to_scope_key)
-    .bind(Utc::now().to_rfc3339())
-    .bind(from_scope_kind.as_str())
-    .bind(from_scope_key)
-    .bind(entry_kind.as_str())
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_external_import_monitor_snapshot_chunk_query_error)?;
-
-    let row = sqlx::query(
-        "SELECT COUNT(*) AS chunk_count,
-                COALESCE(SUM(entry_count), 0) AS entry_count,
-                COALESCE(SUM(byte_len), 0) AS total_bytes
-         FROM external_import_monitor_snapshot_chunks
-         WHERE scope_kind = ? AND scope_key = ? AND entry_kind = ?",
-    )
-    .bind(from_scope_kind.as_str())
-    .bind(from_scope_key)
-    .bind(entry_kind.as_str())
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_external_import_monitor_snapshot_chunk_query_error)?;
-
-    tx.commit()
-        .await
-        .map_err(map_external_import_monitor_snapshot_chunk_query_error)?;
-
-    Ok((
-        row.try_get::<i32, _>("chunk_count")
-            .map_err(|err| AppError::Repository(err.to_string()))?,
-        row.try_get::<i32, _>("entry_count")
-            .map_err(|err| AppError::Repository(err.to_string()))?,
-        row.try_get::<i64, _>("total_bytes")
-            .map_err(|err| AppError::Repository(err.to_string()))?,
-    ))
-}
-
 pub(crate) async fn get_external_import_monitor_snapshot_query(
     pool: &SqlitePool,
     facet: &MediaFacet,
@@ -609,6 +522,9 @@ pub(crate) async fn get_external_import_monitor_snapshot_query(
     let payload_json: String = row
         .try_get("payload_json")
         .map_err(|err| AppError::Repository(err.to_string()))?;
+    if payload_json.contains("\"kind\":\"chunked\"") {
+        return Ok(None);
+    }
     let created_at: String = row
         .try_get("created_at")
         .map_err(|err| AppError::Repository(err.to_string()))?;

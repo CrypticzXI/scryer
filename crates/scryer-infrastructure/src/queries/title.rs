@@ -1,3 +1,5 @@
+use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate,
     PendingTitleHydration, PrimaryCollectionSummary, TitleMetadataUpdate,
@@ -10,13 +12,16 @@ use scryer_domain::{
     MediaFacet, Title,
 };
 use serde_json;
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{postgres::PgRow, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
-use super::common::{parse_utc_datetime, repository_error_from_sqlx};
+use super::{
+    common::{parse_utc_datetime, repository_error_from_sqlx},
+    sql_runtime::{SqlRow, repo_err},
+};
 use crate::title_images::normalized_base_path_from_env;
 
-const TITLE_COLUMNS: &str = "id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at, \
+pub(crate) const TITLE_COLUMNS: &str = "id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at, \
     year, overview, poster_url, poster_local_path, banner_url, banner_local_path, background_url, background_local_path, \
     sort_title, slug, imdb_id, runtime_minutes, genres, \
     content_status, language, first_aired, network, studio, country, aliases, \
@@ -93,6 +98,17 @@ enum TitleReadMode {
 
 fn parse_facet(raw: &str) -> MediaFacet {
     MediaFacet::parse(raw).unwrap_or_default()
+}
+
+pub(crate) fn normalize_title_query(query: Option<String>) -> Option<String> {
+    query.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 pub(crate) async fn list_titles_query(
@@ -474,7 +490,7 @@ pub(crate) async fn get_title_by_external_id_in_facet_query(
     }
 }
 
-fn normalized_external_ids(external_ids: &[ExternalId]) -> Vec<(String, String)> {
+pub(crate) fn normalized_external_ids(external_ids: &[ExternalId]) -> Vec<(String, String)> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for external_id in external_ids {
@@ -590,141 +606,343 @@ async fn get_title_by_id_tx(
     }
 }
 
-fn row_to_title(
-    row: &sqlx::sqlite::SqliteRow,
-    mode: TitleReadMode,
+trait TitleProjectionRow {
+    fn text(&self, column: &str) -> AppResult<String>;
+    fn opt_text(&self, column: &str) -> AppResult<Option<String>>;
+    fn bool(&self, column: &str) -> AppResult<bool>;
+    fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>>;
+    fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>>;
+    fn opt_i32(&self, column: &str) -> AppResult<Option<i32>>;
+    fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>>;
+}
+
+impl TitleProjectionRow for sqlx::sqlite::SqliteRow {
+    fn text(&self, column: &str) -> AppResult<String> {
+        self.try_get(column).map_err(repository_error_from_sqlx)
+    }
+
+    fn opt_text(&self, column: &str) -> AppResult<Option<String>> {
+        let value: Option<String> = self.try_get(column).map_err(repository_error_from_sqlx)?;
+        match value {
+            Some(value) if value.trim().is_empty() => Ok(None),
+            other => Ok(other),
+        }
+    }
+
+    fn bool(&self, column: &str) -> AppResult<bool> {
+        let value: i64 = self.try_get(column).map_err(repository_error_from_sqlx)?;
+        Ok(value != 0)
+    }
+
+    fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>> {
+        let raw: String = self.try_get(column).map_err(repository_error_from_sqlx)?;
+        parse_utc_datetime(&raw)
+    }
+
+    fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>> {
+        let raw: Option<String> = self.try_get(column).map_err(repository_error_from_sqlx)?;
+        match raw {
+            Some(value) if value.trim().is_empty() => Ok(None),
+            Some(value) => parse_utc_datetime(&value).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn opt_i32(&self, column: &str) -> AppResult<Option<i32>> {
+        self.try_get(column).map_err(repository_error_from_sqlx)
+    }
+
+    fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>> {
+        let raw: Option<String> = self.try_get(column).map_err(repository_error_from_sqlx)?;
+        match raw {
+            Some(raw) if raw.trim().is_empty() => Ok(None),
+            Some(raw) => serde_json::from_str(&raw)
+                .map(Some)
+                .map_err(|err| AppError::Repository(err.to_string())),
+            None => Ok(None),
+        }
+    }
+}
+
+impl TitleProjectionRow for PgRow {
+    fn text(&self, column: &str) -> AppResult<String> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_text(&self, column: &str) -> AppResult<Option<String>> {
+        let value: Option<String> = self.try_get(column).map_err(repo_err)?;
+        match value {
+            Some(value) if value.trim().is_empty() => Ok(None),
+            other => Ok(other),
+        }
+    }
+
+    fn bool(&self, column: &str) -> AppResult<bool> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_i32(&self, column: &str) -> AppResult<Option<i32>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>> {
+        self.try_get(column).map_err(repo_err)
+    }
+}
+
+impl TitleProjectionRow for SqlRow {
+    fn text(&self, column: &str) -> AppResult<String> {
+        SqlRow::text(self, column)
+    }
+
+    fn opt_text(&self, column: &str) -> AppResult<Option<String>> {
+        SqlRow::opt_text(self, column)
+    }
+
+    fn bool(&self, column: &str) -> AppResult<bool> {
+        SqlRow::bool(self, column)
+    }
+
+    fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>> {
+        SqlRow::timestamp(self, column)
+    }
+
+    fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>> {
+        SqlRow::opt_timestamp(self, column)
+    }
+
+    fn opt_i32(&self, column: &str) -> AppResult<Option<i32>> {
+        self.opt_i64(column)?
+            .map(|value| i32::try_from(value).map_err(|_| AppError::Repository(format!(
+                "value out of range for i32 column {column}: {value}"
+            ))))
+            .transpose()
+    }
+
+    fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>> {
+        SqlRow::opt_json(self, column)
+    }
+}
+
+fn decode_title_json_or_default<T, R>(row: &R, column: &str) -> AppResult<T>
+where
+    T: DeserializeOwned + Default,
+    R: TitleProjectionRow,
+{
+    match row.opt_json_value(column)? {
+        Some(value) => serde_json::from_value(value).map_err(|err| AppError::Repository(err.to_string())),
+        None => Ok(T::default()),
+    }
+}
+
+pub(crate) fn decode_runtime_title_rows(
+    rows: &[SqlRow],
+    mode: PersistedTitleReadMode,
+    include_external_ids: bool,
+) -> AppResult<Vec<Title>> {
+    let base_path = normalized_base_path_from_env();
+    rows.iter()
+        .map(|row| title_from_projection_row(row, mode, include_external_ids, &base_path))
+        .collect()
+}
+
+pub(crate) fn decode_optional_runtime_title_row(
+    row: Option<&SqlRow>,
+    mode: PersistedTitleReadMode,
+    include_external_ids: bool,
+) -> AppResult<Option<Title>> {
+    let base_path = normalized_base_path_from_env();
+    row.map(|row| title_from_projection_row(row, mode, include_external_ids, &base_path))
+        .transpose()
+}
+
+fn title_from_projection_row<R>(
+    row: &R,
+    mode: PersistedTitleReadMode,
+    include_external_ids: bool,
     base_path: &str,
-) -> AppResult<Title> {
-    let id: String = row
-        .try_get("id")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    let name: String = row
-        .try_get("name")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    let facet: String = row
-        .try_get("facet")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    let parsed_facet = parse_facet(&facet);
-    let library_id: String = row
-        .try_get("library_id")
-        .unwrap_or_else(|_| scryer_domain::default_library_id_for_facet(&parsed_facet));
-    let monitored: i64 = row
-        .try_get("monitored")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    let tags_json: String = row
-        .try_get("tags")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    let external_ids_json: String = row
-        .try_get("external_ids")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    let created_by: Option<String> = row
-        .try_get("created_by")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    let created_at_raw: String = row
-        .try_get("created_at")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    let tags: Vec<String> =
-        serde_json::from_str(&tags_json).map_err(|err| AppError::Repository(err.to_string()))?;
-    let external_ids: Vec<ExternalId> = serde_json::from_str(&external_ids_json)
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    let created_at = parse_utc_datetime(&created_at_raw)?;
-
-    // metadata fields
-    let year: Option<i32> = row.try_get("year").unwrap_or(None);
-    let overview: Option<String> = row.try_get("overview").unwrap_or(None);
-    let poster_url_source: Option<String> = row.try_get("poster_url").unwrap_or(None);
-    let poster_local_path: Option<String> = row.try_get("poster_local_path").unwrap_or(None);
-    let banner_url_source: Option<String> = row.try_get("banner_url").unwrap_or(None);
-    let banner_local_path: Option<String> = row.try_get("banner_local_path").unwrap_or(None);
-    let background_url_source: Option<String> = row.try_get("background_url").unwrap_or(None);
-    let background_local_path: Option<String> =
-        row.try_get("background_local_path").unwrap_or(None);
-    let sort_title: Option<String> = row.try_get("sort_title").unwrap_or(None);
-    let slug: Option<String> = row.try_get("slug").unwrap_or(None);
-    let imdb_id: Option<String> = row.try_get("imdb_id").unwrap_or(None);
-    let runtime_minutes: Option<i32> = row.try_get("runtime_minutes").unwrap_or(None);
-    let genres_json: String = row.try_get("genres").unwrap_or_else(|_| "[]".to_string());
-    let content_status: Option<String> = row.try_get("content_status").unwrap_or(None);
-    let language: Option<String> = row.try_get("language").unwrap_or(None);
-    let first_aired: Option<String> = row.try_get("first_aired").unwrap_or(None);
-    let network: Option<String> = row.try_get("network").unwrap_or(None);
-    let studio: Option<String> = row.try_get("studio").unwrap_or(None);
-    let country: Option<String> = row.try_get("country").unwrap_or(None);
-    let aliases_json: String = row.try_get("aliases").unwrap_or_else(|_| "[]".to_string());
-    let metadata_language: Option<String> = row.try_get("metadata_language").unwrap_or(None);
-    let metadata_fetched_at_raw: Option<String> =
-        row.try_get("metadata_fetched_at").unwrap_or(None);
-    let min_availability: Option<String> = row.try_get("min_availability").unwrap_or(None);
-    let digital_release_date: Option<String> = row.try_get("digital_release_date").unwrap_or(None);
-    let folder_path: Option<String> = row.try_get("folder_path").unwrap_or(None);
-
-    let genres: Vec<String> =
-        serde_json::from_str(&genres_json).map_err(|err| AppError::Repository(err.to_string()))?;
-    let aliases: Vec<String> =
-        serde_json::from_str(&aliases_json).map_err(|err| AppError::Repository(err.to_string()))?;
-    let metadata_fetched_at = match metadata_fetched_at_raw {
-        Some(raw) => Some(parse_utc_datetime(&raw)?),
-        None => None,
-    };
-
+) -> AppResult<Title>
+where
+    R: TitleProjectionRow,
+{
+    let facet = parse_facet(&row.text("facet")?);
     let title = Title {
-        id,
-        library_id,
-        name,
-        facet: parsed_facet,
-        monitored: monitored != 0,
-        tags,
-        external_ids,
-        created_by,
-        created_at,
-        year,
-        overview,
-        poster_url: poster_url_source,
-        poster_source_url: None,
-        banner_url: banner_url_source,
-        banner_source_url: None,
-        background_url: background_url_source,
-        background_source_url: None,
-        sort_title,
-        slug,
-        imdb_id,
-        runtime_minutes,
-        genres,
-        content_status,
-        language,
-        first_aired,
-        network,
-        studio,
-        country,
-        aliases,
-        tagged_aliases: {
-            let raw: Option<String> = row.try_get("tagged_aliases_json").unwrap_or(None);
-            raw.as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default()
+        id: row.text("id")?,
+        library_id: row
+            .opt_text("library_id")?
+            .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet)),
+        name: row.text("name")?,
+        facet,
+        monitored: row.bool("monitored")?,
+        tags: decode_title_json_or_default(row, "tags")?,
+        external_ids: if include_external_ids {
+            decode_title_json_or_default(row, "external_ids")?
+        } else {
+            Vec::new()
         },
-        metadata_language,
-        metadata_fetched_at,
-        min_availability,
-        digital_release_date,
-        folder_path,
+        created_by: row.opt_text("created_by")?,
+        created_at: row.timestamp("created_at")?,
+        year: row.opt_i32("year")?,
+        overview: row.opt_text("overview")?,
+        poster_url: row.opt_text("poster_url")?,
+        poster_source_url: None,
+        banner_url: row.opt_text("banner_url")?,
+        banner_source_url: None,
+        background_url: row.opt_text("background_url")?,
+        background_source_url: None,
+        sort_title: row.opt_text("sort_title")?,
+        slug: row.opt_text("slug")?,
+        imdb_id: row.opt_text("imdb_id")?,
+        runtime_minutes: row.opt_i32("runtime_minutes")?,
+        genres: decode_title_json_or_default(row, "genres")?,
+        content_status: row.opt_text("content_status")?,
+        language: row.opt_text("language")?,
+        first_aired: row.opt_text("first_aired")?,
+        network: row.opt_text("network")?,
+        studio: row.opt_text("studio")?,
+        country: row.opt_text("country")?,
+        aliases: decode_title_json_or_default(row, "aliases")?,
+        tagged_aliases: decode_title_json_or_default(row, "tagged_aliases_json")?,
+        metadata_language: row.opt_text("metadata_language")?,
+        metadata_fetched_at: row.opt_timestamp("metadata_fetched_at")?,
+        min_availability: row.opt_text("min_availability")?,
+        digital_release_date: row.opt_text("digital_release_date")?,
+        folder_path: row.opt_text("folder_path")?,
     };
+
+    let poster_local_path = row.opt_text("poster_local_path")?;
+    let banner_local_path = row.opt_text("banner_local_path")?;
+    let background_local_path = row.opt_text("background_local_path")?;
 
     Ok(finalize_persisted_title(
         title,
         PersistedTitleDecodeOptions {
-            mode: match mode {
-                TitleReadMode::Presentation => PersistedTitleReadMode::Presentation,
-                TitleReadMode::Matching => PersistedTitleReadMode::Matching,
-            },
-            include_external_ids: true,
+            mode,
+            include_external_ids,
             base_path,
             poster_local_path: poster_local_path.as_deref(),
             banner_local_path: banner_local_path.as_deref(),
             background_local_path: background_local_path.as_deref(),
         },
     ))
+}
+
+fn row_to_title(
+    row: &sqlx::sqlite::SqliteRow,
+    mode: TitleReadMode,
+    base_path: &str,
+) -> AppResult<Title> {
+    title_from_projection_row(
+        row,
+        match mode {
+            TitleReadMode::Presentation => PersistedTitleReadMode::Presentation,
+            TitleReadMode::Matching => PersistedTitleReadMode::Matching,
+        },
+        true,
+        base_path,
+    )
+}
+
+pub(crate) fn apply_title_metadata_update(
+    title: &mut Title,
+    metadata: TitleMetadataUpdate,
+) -> AppResult<()> {
+    if let Some(name) = metadata.name.filter(|value| !value.is_empty()) {
+        title.name = name;
+    }
+    if metadata.year.is_some() {
+        title.year = metadata.year;
+    }
+    merge_optional_title_text(&mut title.overview, metadata.overview);
+    merge_optional_title_text(&mut title.poster_url, metadata.poster_url);
+    merge_optional_title_text(&mut title.banner_url, metadata.banner_url);
+    merge_optional_title_text(&mut title.background_url, metadata.background_url);
+    merge_optional_title_text(&mut title.sort_title, metadata.sort_title);
+    merge_optional_title_text(&mut title.slug, metadata.slug);
+    merge_optional_title_text(&mut title.imdb_id, metadata.imdb_id);
+    if metadata.runtime_minutes.is_some() {
+        title.runtime_minutes = metadata.runtime_minutes;
+    }
+    if !metadata.genres.is_empty() {
+        title.genres = metadata.genres;
+    }
+    merge_optional_title_text(&mut title.content_status, metadata.content_status);
+    merge_optional_title_text(&mut title.language, metadata.language);
+    merge_optional_title_text(&mut title.first_aired, metadata.first_aired);
+    merge_optional_title_text(&mut title.network, metadata.network);
+    merge_optional_title_text(&mut title.studio, metadata.studio);
+    merge_optional_title_text(&mut title.country, metadata.country);
+    if !metadata.aliases.is_empty() {
+        title.aliases = metadata.aliases;
+    }
+    if !metadata.tagged_aliases.is_empty() {
+        title.tagged_aliases = metadata.tagged_aliases;
+    }
+    merge_optional_title_text(&mut title.metadata_language, metadata.metadata_language);
+    if let Some(raw) = metadata.metadata_fetched_at
+        && !raw.trim().is_empty()
+    {
+        title.metadata_fetched_at = Some(parse_utc_datetime(&raw)?);
+    }
+    merge_optional_title_text(
+        &mut title.digital_release_date,
+        metadata.digital_release_date,
+    );
+    merge_title_external_ids(&mut title.external_ids, metadata.extra_external_ids);
+    merge_title_tags(&mut title.tags, metadata.extra_tags);
+    Ok(())
+}
+
+pub(crate) fn title_has_tvdb_external_id(title: &Title) -> bool {
+    title.external_ids.iter().any(|external_id| {
+        let source = external_id.source.trim().to_ascii_lowercase();
+        source == "tvdb" || source == "tvdb_id"
+    })
+}
+
+fn merge_optional_title_text(target: &mut Option<String>, incoming: Option<String>) {
+    if let Some(incoming) = incoming
+        && !incoming.trim().is_empty()
+    {
+        *target = Some(incoming);
+    }
+}
+
+fn merge_title_external_ids(target: &mut Vec<ExternalId>, incoming: Vec<ExternalId>) {
+    for external_id in incoming {
+        let source = external_id.source.trim().to_ascii_lowercase();
+        let value = external_id.value.trim().to_string();
+        if source.is_empty() || value.is_empty() {
+            continue;
+        }
+        if target.iter().any(|candidate| {
+            candidate.source.eq_ignore_ascii_case(&source) && candidate.value.trim() == value
+        }) {
+            continue;
+        }
+        target.push(ExternalId { source, value });
+    }
+}
+
+fn merge_title_tags(target: &mut Vec<String>, incoming: Vec<String>) {
+    for tag in incoming {
+        let normalized = tag.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        if target.iter().any(|candidate| candidate == normalized) {
+            continue;
+        }
+        target.push(normalized.to_string());
+    }
 }
 
 pub(crate) async fn list_primary_collection_summaries_query(

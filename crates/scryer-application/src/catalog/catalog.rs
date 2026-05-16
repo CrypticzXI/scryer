@@ -3415,17 +3415,7 @@ impl AppUseCase {
         Ok(())
     }
 
-    async fn apply_movie_monitor_snapshot_chunks(
-        &self,
-        manifest: &ExternalImportMonitorChunkedPayload,
-        now: &DateTime<Utc>,
-    ) -> AppResult<()> {
-        if manifest.entry_kind != ExternalImportMonitorSnapshotEntryKind::Movie {
-            return Err(AppError::Validation(
-                "movie monitor snapshot manifest did not contain movie entries".into(),
-            ));
-        }
-
+    async fn apply_movie_monitor_snapshot_chunks(&self, now: &DateTime<Utc>) -> AppResult<()> {
         let titles = self
             .services
             .catalog
@@ -3450,7 +3440,6 @@ impl AppUseCase {
 
         let mut touched_title_ids = HashSet::new();
         let mut processed_chunk_count = 0i32;
-        let mut processed_entry_count = 0i32;
         let mut after_chunk_index = None;
         loop {
             let chunks = self
@@ -3472,7 +3461,6 @@ impl AppUseCase {
             for chunk in chunks {
                 after_chunk_index = Some(chunk.chunk_index);
                 processed_chunk_count += 1;
-                processed_entry_count += chunk.entry_count;
                 for line in chunk
                     .payload_ndjson
                     .lines()
@@ -3494,16 +3482,8 @@ impl AppUseCase {
                 }
             }
         }
-
-        if processed_chunk_count != manifest.chunk_count || processed_entry_count != manifest.entry_count
-        {
-            return Err(AppError::Repository(format!(
-                "movie monitor snapshot chunk manifest mismatch: expected {} chunk(s) / {} entrie(s), loaded {} chunk(s) / {} entrie(s)",
-                manifest.chunk_count,
-                manifest.entry_count,
-                processed_chunk_count,
-                processed_entry_count
-            )));
+        if processed_chunk_count == 0 {
+            return Ok(());
         }
 
         for title_id in touched_title_ids {
@@ -3719,15 +3699,8 @@ impl AppUseCase {
     async fn apply_series_monitor_snapshot_chunks(
         &self,
         facet: &MediaFacet,
-        manifest: &ExternalImportMonitorChunkedPayload,
         now: &DateTime<Utc>,
     ) -> AppResult<()> {
-        if manifest.entry_kind != ExternalImportMonitorSnapshotEntryKind::Series {
-            return Err(AppError::Validation(
-                "series monitor snapshot manifest did not contain series entries".into(),
-            ));
-        }
-
         let titles = self
             .services
             .catalog
@@ -3747,7 +3720,6 @@ impl AppUseCase {
         let mut touched_title_ids = HashSet::new();
         let mut title_ids_needing_activity = HashSet::<String>::new();
         let mut processed_chunk_count = 0i32;
-        let mut processed_entry_count = 0i32;
         let mut after_chunk_index = None;
         loop {
             let chunks = self
@@ -3769,7 +3741,6 @@ impl AppUseCase {
             for chunk in chunks {
                 after_chunk_index = Some(chunk.chunk_index);
                 processed_chunk_count += 1;
-                processed_entry_count += chunk.entry_count;
                 for line in chunk
                     .payload_ndjson
                     .lines()
@@ -3795,17 +3766,8 @@ impl AppUseCase {
                 }
             }
         }
-
-        if processed_chunk_count != manifest.chunk_count || processed_entry_count != manifest.entry_count
-        {
-            return Err(AppError::Repository(format!(
-                "{} monitor snapshot chunk manifest mismatch: expected {} chunk(s) / {} entrie(s), loaded {} chunk(s) / {} entrie(s)",
-                facet.as_str(),
-                manifest.chunk_count,
-                manifest.entry_count,
-                processed_chunk_count,
-                processed_entry_count
-            )));
+        if processed_chunk_count == 0 {
+            return Ok(());
         }
 
         for title_id in touched_title_ids {
@@ -3826,18 +3788,53 @@ impl AppUseCase {
         &self,
         facet: &MediaFacet,
     ) -> AppResult<bool> {
+        let now = Utc::now();
+        let chunk_entry_kind = match facet {
+            MediaFacet::Movie => ExternalImportMonitorSnapshotEntryKind::Movie,
+            MediaFacet::Series | MediaFacet::Anime => {
+                ExternalImportMonitorSnapshotEntryKind::Series
+            }
+        };
+        let chunk_batch = self
+            .services
+            .workflow
+            .external_import_monitor_snapshots
+            .list_external_import_monitor_snapshot_chunk_batch(
+                ExternalImportMonitorSnapshotChunkScopeKind::Facet,
+                facet.as_str(),
+                chunk_entry_kind,
+                None,
+                1,
+            )
+            .await?;
+
+        if !chunk_batch.is_empty() {
+            match facet {
+                MediaFacet::Movie => {
+                    self.apply_movie_monitor_snapshot_chunks(&now).await?;
+                }
+                MediaFacet::Series | MediaFacet::Anime => {
+                    self.apply_series_monitor_snapshot_chunks(facet, &now)
+                        .await?;
+                }
+            }
+
+            self.services
+                .workflow
+                .external_import_monitor_snapshots
+                .delete_external_import_monitor_snapshot(facet)
+                .await?;
+
+            return Ok(true);
+        }
+
         let Some(snapshot) = self.pending_external_import_monitor_snapshot(facet).await? else {
             return Ok(false);
         };
 
-        let now = Utc::now();
         match (&snapshot.facet, &snapshot.payload) {
             (MediaFacet::Movie, ExternalImportMonitorSnapshotPayload::Movie { entries }) => {
                 self.apply_movie_monitor_snapshot_entries(entries, &now)
-                    .await?;
-            }
-            (MediaFacet::Movie, ExternalImportMonitorSnapshotPayload::Chunked { manifest }) => {
-                self.apply_movie_monitor_snapshot_chunks(manifest, &now)
                     .await?;
             }
             (
@@ -3845,13 +3842,6 @@ impl AppUseCase {
                 ExternalImportMonitorSnapshotPayload::Series { entries },
             ) => {
                 self.apply_series_monitor_snapshot_entries(&snapshot.facet, entries, &now)
-                    .await?;
-            }
-            (
-                MediaFacet::Series | MediaFacet::Anime,
-                ExternalImportMonitorSnapshotPayload::Chunked { manifest },
-            ) => {
-                self.apply_series_monitor_snapshot_chunks(&snapshot.facet, manifest, &now)
                     .await?;
             }
             (snapshot_facet, _) => {

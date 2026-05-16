@@ -41,6 +41,7 @@ pub struct DbRuntime {
     pub(crate) sender: mpsc::Sender<DbCommand>,
     pub(crate) pool: sqlx::SqlitePool,
     pub(crate) encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
+    pub(crate) writer_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub type SqliteServices = DbRuntime;
@@ -149,11 +150,16 @@ impl DbRuntime {
             sender,
             pool,
             encryption_key: Arc::new(RwLock::new(None)),
+            writer_gate: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
     pub(crate) fn encryption_key_state(&self) -> Arc<RwLock<Option<EncryptionKey>>> {
         self.encryption_key.clone()
+    }
+
+    pub(crate) fn writer_gate(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.writer_gate.clone()
     }
 
     fn current_encryption_key(&self) -> AppResult<Option<EncryptionKey>> {
@@ -254,24 +260,6 @@ impl DbRuntime {
         .await
     }
 
-    pub async fn create_or_get_existing_title(
-        &self,
-        title: &Title,
-    ) -> AppResult<CreateTitleOutcome> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateOrGetExistingTitle {
-                title: title.clone(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
     pub async fn replace_title_image(
         &self,
         title_id: &str,
@@ -304,22 +292,6 @@ impl DbRuntime {
                 title_id: title_id.to_string(),
                 replacement,
                 event,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn set_title_folder_path(&self, title_id: &str, folder_path: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::SetTitleFolderPath {
-                title_id: title_id.to_string(),
-                folder_path: folder_path.to_string(),
                 reply: reply_tx,
             })
             .await
@@ -392,72 +364,6 @@ impl DbRuntime {
             .send(DbCommand::SetEventSubscriberOffset {
                 subscriber: subscriber.to_string(),
                 sequence,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_title_metadata(
-        &self,
-        id: &str,
-        name: Option<String>,
-        facet: Option<MediaFacet>,
-        tags_json: Option<String>,
-    ) -> AppResult<Title> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateTitleMetadata {
-                id: id.to_string(),
-                name,
-                facet,
-                tags_json,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_title_hydrated_metadata(
-        &self,
-        id: &str,
-        metadata: TitleMetadataUpdate,
-    ) -> AppResult<Title> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateTitleHydratedMetadata {
-                id: id.to_string(),
-                metadata,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn replace_title_match_state(
-        &self,
-        id: &str,
-        external_ids: Vec<ExternalId>,
-        tags: Vec<String>,
-    ) -> AppResult<Title> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ReplaceTitleMatchState {
-                id: id.to_string(),
-                external_ids,
-                tags,
                 reply: reply_tx,
             })
             .await
@@ -859,123 +765,6 @@ impl DbRuntime {
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?;
 
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_title(&self, title: &Title) -> AppResult<Title> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateTitle {
-                title: title.clone(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::MarkTitleMetadataHydrationDueNow {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn schedule_title_metadata_hydration_retry(
-        &self,
-        id: &str,
-        next_attempt_at: &str,
-        attempt_count: i64,
-    ) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ScheduleTitleMetadataHydrationRetry {
-                id: id.to_string(),
-                next_attempt_at: next_attempt_at.to_string(),
-                attempt_count,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn clear_title_metadata_hydration_retry_state(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ClearTitleMetadataHydrationRetryState {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_title_monitored(&self, id: &str, monitored: bool) -> AppResult<Title> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateTitleMonitored {
-                id: id.to_string(),
-                monitored,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_title(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteTitle {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn clear_title_folder_path(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ClearTitleFolderPath {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ClearMetadataLanguageForAll { reply: reply_tx })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
         reply_rx
             .await
             .map_err(|err| AppError::Repository(err.to_string()))?

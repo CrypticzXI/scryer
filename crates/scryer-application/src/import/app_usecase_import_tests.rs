@@ -321,6 +321,24 @@ fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_f
 }
 
 #[test]
+fn build_augmented_movie_import_metadata_uses_immediate_parent_for_obfuscated_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_dir = dir.path().join("job-123");
+    let release_dir = dest_dir.join("Paper.Lantern.2012.1080p.BluRay.x264-GRP");
+    std::fs::create_dir_all(&release_dir).expect("create release dir");
+    let file_path = release_dir.join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"movie").expect("write file");
+    let completed = test_completed_download("job-123", &dest_dir);
+
+    let parsed = build_augmented_movie_import_metadata(&file_path, &completed);
+
+    assert_eq!(parsed.normalized_title, "PAPER LANTERN");
+    assert_eq!(parsed.year, Some(2012));
+    assert_eq!(parsed.quality.as_deref(), Some("1080p"));
+    assert_eq!(parsed.source.as_deref(), Some("BluRay"));
+}
+
+#[test]
 fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest_dir = dir
@@ -337,6 +355,25 @@ fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obf
 
     assert_eq!(episode.season, Some(1));
     assert_eq!(episode.episode_numbers, vec![1]);
+    assert_eq!(parsed.quality.as_deref(), Some("720p"));
+}
+
+#[test]
+fn build_augmented_episode_import_metadata_uses_immediate_parent_for_obfuscated_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_dir = dir.path().join("job-123");
+    let release_dir = dest_dir.join("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+    std::fs::create_dir_all(&release_dir).expect("create release dir");
+    let file_path = release_dir.join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed = test_completed_download("job-123", &dest_dir);
+
+    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, false);
+    let episode = parsed.episode.expect("episode metadata");
+
+    assert_eq!(episode.season, Some(1));
+    assert_eq!(episode.episode_numbers, vec![1]);
+    assert_eq!(parsed.normalized_title, "HARBOR PALS");
     assert_eq!(parsed.quality.as_deref(), Some("720p"));
 }
 
@@ -373,6 +410,42 @@ fn build_augmented_episode_import_metadata_does_not_infer_episode_from_download_
 
     assert!(parsed.episode.is_none());
     assert_eq!(parsed.quality.as_deref(), Some("720p"));
+}
+
+#[test]
+fn title_evidence_candidates_from_video_files_uses_immediate_parent_for_obfuscated_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let release_dir = dir.path().join(
+        "Harry.Potter.And.The.Deathly.Hallows.Part1.2010.720p.BluRay.DTS.x264-LEGION-Obfuscated",
+    );
+    std::fs::create_dir_all(&release_dir).expect("create release dir");
+    let file_path =
+        release_dir.join("aUUKqrO833LbSr7VlByumnR24y7ULADpVJ7K0FTnPhPMqpp0KIIaLSLYXJmyjm.mkv");
+    std::fs::write(&file_path, b"movie").expect("write file");
+
+    let candidates = title_evidence_candidates_from_video_files(&[file_path]);
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].normalized_title,
+        "HARRY POTTER AND THE DEATHLY HALLOWS PART 1"
+    );
+    assert_eq!(candidates[0].year, Some(2010));
+}
+
+#[test]
+fn title_evidence_candidates_from_video_files_prefers_usable_file_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let release_dir = dir.path().join("Generic");
+    std::fs::create_dir_all(&release_dir).expect("create release dir");
+    let file_path = release_dir.join("Paper.Lantern.2012.1080p.BluRay.x264-GRP.mkv");
+    std::fs::write(&file_path, b"movie").expect("write file");
+
+    let candidates = title_evidence_candidates_from_video_files(&[file_path]);
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].normalized_title, "PAPER LANTERN");
+    assert_eq!(candidates[0].year, Some(2012));
 }
 
 // ── is_sample_file ────────────────────────────────────────────────────────────

@@ -557,10 +557,10 @@ impl MultiIndexerSearchClient {
             let tagged_aliases = tagged_aliases.clone();
             let facet = facet.clone();
             let strategy_label = strategy.label.clone();
-            let title_guard_mode = if strategy.ids.is_empty() {
-                TitleGuardMode::ExactTitleMatch
-            } else {
+            let title_guard_mode = if strategy.query.trim().is_empty() {
                 TitleGuardMode::SkipTitleMatch
+            } else {
+                TitleGuardMode::ExactTitleMatch
             };
 
             set.spawn(async move {
@@ -1296,7 +1296,11 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
 
         if strategies.is_empty() {
             strategies.push(SearchStrategy {
-                query: String::new(),
+                query: if caps.query_param.is_some() && !query.is_empty() {
+                    query.to_string()
+                } else {
+                    String::new()
+                },
                 ids: filtered_ids,
                 season,
                 episode,
@@ -2546,10 +2550,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn id_backed_searches_skip_title_guard() {
+    async fn ids_only_searches_skip_title_guard() {
         let (client, _calls) = scripted_search_client(movie_caps(), |call| {
             if call.ids.contains_key("imdb_id") {
                 response_with_titles(&["Lantern.Tide.Hidden.Current.2001.1080p.BluRay"])
+            } else {
+                response_with_titles(&[])
+            }
+        });
+
+        let response = client
+            .search(
+                String::new(),
+                HashMap::from([("imdb_id".to_string(), "tt0245429".to_string())]),
+                Some("movie".into()),
+                Some("movie".into()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("ID-backed search should succeed");
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].title,
+            "Lantern.Tide.Hidden.Current.2001.1080p.BluRay"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_backed_id_searches_keep_title_guard() {
+        let (client, _calls) = scripted_search_client(movie_caps(), |call| {
+            if call.ids.contains_key("imdb_id") {
+                response_with_titles(&[
+                    "Lantern.Tide.Hidden.Current.2001.1080p.BluRay",
+                    "Lantern.Tide.2001.1080p.BluRay",
+                ])
             } else {
                 response_with_titles(&[])
             }
@@ -2570,13 +2611,10 @@ mod tests {
                 vec![],
             )
             .await
-            .expect("ID-backed search should succeed");
+            .expect("query-backed ID search should succeed");
 
         assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            response.results[0].title,
-            "Lantern.Tide.Hidden.Current.2001.1080p.BluRay"
-        );
+        assert_eq!(response.results[0].title, "Lantern.Tide.2001.1080p.BluRay");
     }
     #[test]
     fn anime_strategies_try_abs_and_sxex_in_parallel() {
