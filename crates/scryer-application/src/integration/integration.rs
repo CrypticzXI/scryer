@@ -824,9 +824,10 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
         .iter()
         .filter(|item| queue_item_import_state_eligible(item))
         .map(|item| {
-            (
-                item.client_type.clone(),
-                item.download_client_item_id.clone(),
+            DownloadSourceIdentity::new(
+                Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
+                &item.client_type,
+                &item.download_client_item_id,
             )
         })
         .collect::<Vec<_>>();
@@ -850,7 +851,7 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
             .services
             .workflow
             .imports
-            .list_imports_for_sources(&import_sources)
+            .list_imports_for_identities(&import_sources)
             .await
         {
             Ok(records) => records,
@@ -881,7 +882,11 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
     let mut fallback_records = HashMap::new();
     let mut delete_records = HashMap::new();
     for record in records {
-        let key = (record.source_system.clone(), record.source_ref.clone());
+        let key = DownloadSourceIdentity::new(
+            record.source_client_id.as_deref(),
+            &record.source_system,
+            &record.source_ref,
+        );
         if record.import_type == ImportType::ManualImport {
             manual_records.entry(key).or_insert(record);
         } else {
@@ -899,9 +904,10 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
     }
 
     for item in items.iter_mut() {
-        let import_key = (
-            item.client_type.clone(),
-            item.download_client_item_id.clone(),
+        let import_key = DownloadSourceIdentity::new(
+            Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
+            &item.client_type,
+            &item.download_client_item_id,
         );
         let delete_key = (
             item.client_id.clone(),
@@ -2915,11 +2921,17 @@ impl AppUseCase {
             return Ok(existing.id);
         }
 
+        let source_identity = DownloadSourceIdentity::new(
+            client_id.as_deref(),
+            normalized_client_type.as_str(),
+            source_ref.as_str(),
+        );
+
         let payload_json = serde_json::to_string(&crate::ManualImportRequestPayload {
             requested_by_user_id: Some(actor.id.clone()),
             title_id: title_id.clone(),
             download_client_item_id: source_ref.clone(),
-            client_id,
+            client_id: client_id.clone(),
             client_type: normalized_client_type.clone(),
             files,
             requested_at: Utc::now().to_rfc3339(),
@@ -2931,8 +2943,7 @@ impl AppUseCase {
             .workflow
             .imports
             .queue_import_request(
-                normalized_client_type.clone(),
-                source_ref.clone(),
+                source_identity,
                 ImportType::ManualImport.as_str().to_string(),
                 payload_json,
             )

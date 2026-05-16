@@ -1366,16 +1366,14 @@ impl DbRuntime {
 
     pub async fn create_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(DbCommand::CreateImportRequest {
-                source_system,
-                source_ref,
+                source_identity,
                 import_type,
                 payload_json,
                 reply: reply_tx,

@@ -382,8 +382,7 @@ pub(crate) enum DbCommand {
         reply: Sender<AppResult<crate::WorkflowOperationRecord>>,
     },
     CreateImportRequest {
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
         reply: Sender<AppResult<String>>,
@@ -1584,8 +1583,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::CreateImportRequest {
-                    source_system,
-                    source_ref,
+                    source_identity,
                     import_type,
                     payload_json,
                     reply,
@@ -1594,8 +1592,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         run_with_sqlite_busy_retries("create_import_request", || {
                             crate::queries::workflow::create_import_request_query(
                                 &pool,
-                                source_system.clone(),
-                                source_ref.clone(),
+                                source_identity.clone(),
                                 import_type.clone(),
                                 payload_json.clone(),
                             )

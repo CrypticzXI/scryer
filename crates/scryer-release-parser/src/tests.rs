@@ -327,6 +327,21 @@ fn series_context_supports_split_day_month_year_daily_release() {
 }
 
 #[test]
+fn series_context_supports_hyphenated_day_month_year_daily_release() {
+    let mut target = context(ContextFacetHint::Series, "Kiskanmak");
+    target.known_years.push(2026);
+
+    let analysis = analyze_release_for_target(
+        "Kiskanmak.29.Blm.21-04-2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
+        &target,
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.family, ParseFamily::DailyEpisode);
+    assert_eq!(candidate.projected.year, Some(2026));
+}
+
+#[test]
 fn split_season_episode_tokens_parse_as_standard_episode() {
     let analysis = analyze_release_for_target(
         "[Erai-raws] Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e S4-07 [1080p]",

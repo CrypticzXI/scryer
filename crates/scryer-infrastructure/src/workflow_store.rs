@@ -69,15 +69,13 @@ pub trait WorkflowSql: Clone + Send + Sync + 'static {
         identity: &DownloadSourceIdentity,
     ) -> AppResult<Option<String>>;
     async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()>;
-    async fn list_by_source_ref(
+    async fn list_by_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Vec<ImportArtifact>>;
-    async fn count_by_result(
+    async fn count_by_result_for_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
         result: &str,
     ) -> AppResult<u64>;
     async fn create_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord>;
@@ -91,23 +89,11 @@ pub trait WorkflowSql: Clone + Send + Sync + 'static {
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>>;
     async fn queue_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String>;
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>>;
-    async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>>;
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        import_type: ImportType,
-    ) -> AppResult<Option<ImportRecord>>;
     async fn update_import_status(
         &self,
         import_id: &str,
@@ -125,11 +111,11 @@ pub trait WorkflowSql: Clone + Send + Sync + 'static {
         &self,
         import_type: ImportType,
     ) -> AppResult<Vec<ImportRecord>>;
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        sources: &[(String, String)],
+        identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>>;
-    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool>;
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool>;
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>>;
     async fn upsert_external_import_monitor_snapshot(
         &self,
@@ -314,22 +300,20 @@ impl<S: WorkflowSql> ImportArtifactRepository for WorkflowStore<S> {
         self.sql.insert_artifact(artifact).await
     }
 
-    async fn list_by_source_ref(
+    async fn list_by_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Vec<ImportArtifact>> {
-        self.sql.list_by_source_ref(source_system, source_ref).await
+        self.sql.list_by_source_identity(identity).await
     }
 
-    async fn count_by_result(
+    async fn count_by_result_for_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
         result: &str,
     ) -> AppResult<u64> {
         self.sql
-            .count_by_result(source_system, source_ref, result)
+            .count_by_result_for_source_identity(identity, result)
             .await
     }
 }
@@ -365,39 +349,17 @@ impl<S: WorkflowSql> JobRunRepository for WorkflowStore<S> {
 impl<S: WorkflowSql> ImportRepository for WorkflowStore<S> {
     async fn queue_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
         self.sql
-            .queue_import_request(source_system, source_ref, import_type, payload_json)
+            .queue_import_request(source_identity, import_type, payload_json)
             .await
     }
 
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
         self.sql.get_import_by_id(id).await
-    }
-
-    async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>> {
-        self.sql
-            .get_import_by_source_ref(source_system, source_ref)
-            .await
-    }
-
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        import_type: ImportType,
-    ) -> AppResult<Option<ImportRecord>> {
-        self.sql
-            .get_import_by_source_ref_and_type(source_system, source_ref, import_type)
-            .await
     }
 
     async fn update_import_status(
@@ -438,17 +400,15 @@ impl<S: WorkflowSql> ImportRepository for WorkflowStore<S> {
         self.sql.list_pending_imports_for_type(import_type).await
     }
 
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        sources: &[(String, String)],
+        identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>> {
-        self.sql.list_imports_for_sources(sources).await
+        self.sql.list_imports_for_identities(identities).await
     }
 
-    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
-        self.sql
-            .is_already_imported(source_system, source_ref)
-            .await
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+        self.sql.is_already_imported(identity).await
     }
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
@@ -789,30 +749,23 @@ impl WorkflowSql for SqliteWorkflowSql {
         self.db.insert_import_artifact(&artifact).await
     }
 
-    async fn list_by_source_ref(
+    async fn list_by_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Vec<ImportArtifact>> {
-        crate::queries::workflow::list_import_artifacts_by_source_ref_query(
-            &self.pool,
-            source_system,
-            source_ref,
+        crate::queries::workflow::list_import_artifacts_by_source_identity_query(
+            &self.pool, identity,
         )
         .await
     }
 
-    async fn count_by_result(
+    async fn count_by_result_for_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
         result: &str,
     ) -> AppResult<u64> {
-        crate::queries::workflow::count_import_artifacts_by_result_query(
-            &self.pool,
-            source_system,
-            source_ref,
-            result,
+        crate::queries::workflow::count_import_artifacts_by_result_for_source_identity_query(
+            &self.pool, identity, result,
         )
         .await
     }
@@ -886,46 +839,17 @@ impl WorkflowSql for SqliteWorkflowSql {
     }
     async fn queue_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
         self.db
-            .create_import_request(source_system, source_ref, import_type, payload_json)
+            .create_import_request(source_identity, import_type, payload_json)
             .await
     }
 
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
         crate::queries::workflow::get_import_by_id_query(&self.pool, id).await
-    }
-
-    async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>> {
-        crate::queries::workflow::get_import_by_source_ref_query(
-            &self.pool,
-            source_system,
-            source_ref,
-        )
-        .await
-    }
-
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        import_type: ImportType,
-    ) -> AppResult<Option<ImportRecord>> {
-        crate::queries::workflow::get_import_by_source_ref_and_type_query(
-            &self.pool,
-            source_system,
-            source_ref,
-            import_type,
-        )
-        .await
     }
 
     async fn update_import_status(
@@ -966,23 +890,25 @@ impl WorkflowSql for SqliteWorkflowSql {
         crate::queries::workflow::list_pending_imports_for_type_query(&self.pool, import_type).await
     }
 
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        sources: &[(String, String)],
+        identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>> {
-        crate::queries::workflow::list_imports_for_sources_query(&self.pool, sources).await
+        crate::queries::workflow::list_imports_for_identities_query(&self.pool, identities).await
     }
 
-    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
         let rows_affected = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(1)
              FROM imports
-             WHERE source_system = ?
+             WHERE COALESCE(source_client_id, '') = ?
+               AND source_system = ?
                AND source_ref = ?
                AND status IN ('completed', 'skipped')",
         )
-        .bind(source_system)
-        .bind(source_ref)
+        .bind(identity.client_id_or_empty())
+        .bind(&identity.client_type)
+        .bind(&identity.item_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|err| AppError::Repository(err.to_string()))?;

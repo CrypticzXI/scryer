@@ -121,6 +121,10 @@ impl DownloadSourceIdentity {
     pub fn has_client_id(&self) -> bool {
         self.client_id.is_some()
     }
+
+    pub fn client_id_or_empty(&self) -> &str {
+        self.client_id.as_deref().unwrap_or("")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +144,7 @@ pub struct SuccessfulGrabCommit {
 #[derive(Clone, Debug)]
 pub struct ImportArtifact {
     pub id: String,
+    pub source_client_id: Option<String>,
     pub source_system: String,
     pub source_ref: String,
     pub import_id: Option<String>,
@@ -154,6 +159,16 @@ pub struct ImportArtifact {
     pub reason_code: Option<String>,
     pub imported_media_file_id: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+impl ImportArtifact {
+    pub fn source_identity(&self) -> DownloadSourceIdentity {
+        DownloadSourceIdentity::new(
+            self.source_client_id.as_deref(),
+            &self.source_system,
+            &self.source_ref,
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

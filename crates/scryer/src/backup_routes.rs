@@ -6,7 +6,7 @@ use axum::extract::{Path as AxumPath, RawQuery, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase, BackupInfo, BackupService, BackupStatus};
-use scryer_infrastructure::datastore_file_path;
+use scryer_infrastructure::{DatastoreConfig, DatastoreEngine, datastore_file_path};
 use serde::Serialize;
 use tokio_util::io::ReaderStream;
 
@@ -178,16 +178,97 @@ fn ensure_owner_only_permissions(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn remove_sqlite_sidecars(db_file: &Path) -> std::io::Result<()> {
-    for suffix in ["", "-wal", "-shm"] {
-        let path = if suffix.is_empty() {
-            db_file.to_path_buf()
-        } else {
-            PathBuf::from(format!("{}{}", db_file.display(), suffix))
-        };
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
+fn sqlite_related_paths(db_file: &Path) -> Vec<PathBuf> {
+    ["", "-wal", "-shm", "-journal"]
+        .into_iter()
+        .map(|suffix| {
+            if suffix.is_empty() {
+                db_file.to_path_buf()
+            } else {
+                PathBuf::from(format!("{}{}", db_file.display(), suffix))
+            }
+        })
+        .collect()
+}
+
+fn promotion_temp_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.restore-promote", path.display()))
+}
+
+fn promotion_backup_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.restore-backup", path.display()))
+}
+
+fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn restore_backup_file_if_present(target: &Path) -> std::io::Result<()> {
+    remove_file_if_exists(&promotion_temp_path(target))?;
+
+    let backup = promotion_backup_path(target);
+    if !backup.exists() {
+        return Ok(());
+    }
+
+    remove_file_if_exists(target)?;
+    std::fs::rename(&backup, target)?;
+    ensure_owner_only_permissions(target)
+}
+
+fn cleanup_promotion_files(target: &Path) -> std::io::Result<()> {
+    remove_file_if_exists(&promotion_temp_path(target))?;
+    remove_file_if_exists(&promotion_backup_path(target))
+}
+
+fn stage_file_for_promotion(source: &Path, target: &Path) -> std::io::Result<()> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = promotion_temp_path(target);
+    remove_file_if_exists(&temp)?;
+    std::fs::copy(source, &temp)?;
+    ensure_owner_only_permissions(&temp)
+}
+
+fn promote_staged_file(target: &Path) -> std::io::Result<()> {
+    let temp = promotion_temp_path(target);
+    if !temp.exists() {
+        return Ok(());
+    }
+
+    let backup = promotion_backup_path(target);
+    remove_file_if_exists(&backup)?;
+    if target.exists() {
+        std::fs::rename(target, &backup)?;
+    }
+    std::fs::rename(&temp, target)?;
+    ensure_owner_only_permissions(target)
+}
+
+fn retire_live_file_without_replacement(target: &Path) -> std::io::Result<()> {
+    let backup = promotion_backup_path(target);
+    remove_file_if_exists(&backup)?;
+    if target.exists() {
+        std::fs::rename(target, &backup)?;
+    }
+    Ok(())
+}
+
+fn recover_interrupted_restore_promotion(targets: &[PathBuf]) -> std::io::Result<()> {
+    for target in targets {
+        restore_backup_file_if_present(target)?;
+    }
+    Ok(())
+}
+
+fn cleanup_restore_promotion_artifacts(targets: &[PathBuf]) -> std::io::Result<()> {
+    for target in targets {
+        cleanup_promotion_files(target)?;
     }
     Ok(())
 }
@@ -282,12 +363,11 @@ pub(crate) async fn download_backup_handler(
 
 pub(crate) fn finalize_pending_restore_if_present(
     data_dir: &Path,
-    db_path: &str,
+    datastore_config: &DatastoreConfig,
 ) -> std::io::Result<bool> {
     let pending_dir = pending_restore_dir(data_dir);
-    let pending_db = pending_restore_db_path(data_dir);
     let pending_ready = pending_restore_ready_path(data_dir);
-    if !pending_db.exists() {
+    if !pending_dir.exists() {
         return Ok(false);
     }
     if !pending_ready.exists() {
@@ -304,20 +384,56 @@ pub(crate) fn finalize_pending_restore_if_present(
     }
 
     let target_secrets = managed_instance_secrets_path(data_dir);
-    if target_secrets.exists() {
-        std::fs::remove_file(&target_secrets)?;
-    }
-    std::fs::copy(&pending_secrets, &target_secrets)?;
-    ensure_owner_only_permissions(&target_secrets)?;
+    let mut promotion_targets = vec![target_secrets.clone()];
+    recover_interrupted_restore_promotion(&promotion_targets)?;
 
-    let target_db = datastore_file_path(db_path);
-    if let Some(parent) = target_db.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    remove_sqlite_sidecars(&target_db)?;
-    std::fs::rename(&pending_db, &target_db)?;
-    ensure_owner_only_permissions(&target_db)?;
+    let promotion_result = match datastore_config.engine {
+        DatastoreEngine::Postgres => {
+            stage_file_for_promotion(&pending_secrets, &target_secrets)?;
+            promote_staged_file(&target_secrets)
+        }
+        DatastoreEngine::Sqlite => {
+            let pending_db = pending_restore_db_path(data_dir);
+            if !pending_db.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "pending restore database is missing",
+                ));
+            }
 
+            let target_db = datastore_file_path(&datastore_config.database_url);
+            let target_db_paths = sqlite_related_paths(&target_db);
+            promotion_targets.extend(target_db_paths.clone());
+            recover_interrupted_restore_promotion(&target_db_paths)?;
+
+            for (pending_path, target_path) in
+                sqlite_related_paths(&pending_db).into_iter().zip(target_db_paths.iter())
+            {
+                if pending_path.exists() {
+                    stage_file_for_promotion(&pending_path, target_path)?;
+                }
+            }
+            stage_file_for_promotion(&pending_secrets, &target_secrets)?;
+
+            for (pending_path, target_path) in
+                sqlite_related_paths(&pending_db).into_iter().zip(target_db_paths.iter())
+            {
+                if pending_path.exists() {
+                    promote_staged_file(target_path)?;
+                } else {
+                    retire_live_file_without_replacement(target_path)?;
+                }
+            }
+            promote_staged_file(&target_secrets)
+        }
+    };
+
+    if let Err(error) = promotion_result {
+        let _ = recover_interrupted_restore_promotion(&promotion_targets);
+        return Err(error);
+    }
+
+    cleanup_restore_promotion_artifacts(&promotion_targets)?;
     let _ = std::fs::remove_dir_all(&pending_dir);
     Ok(true)
 }
@@ -358,7 +474,11 @@ mod tests {
 
         let restored = finalize_pending_restore_if_present(
             data_dir,
-            &format!("sqlite://{}", target_db.display()),
+            &DatastoreConfig::sqlite(
+                format!("sqlite://{}", target_db.display()),
+                data_dir,
+                scryer_infrastructure::MigrationMode::Apply,
+            ),
         )
         .expect("finalize");
 
@@ -388,7 +508,11 @@ mod tests {
 
         let restored = finalize_pending_restore_if_present(
             data_dir,
-            &format!("sqlite://{}", target_db.display()),
+            &DatastoreConfig::sqlite(
+                format!("sqlite://{}", target_db.display()),
+                data_dir,
+                scryer_infrastructure::MigrationMode::Apply,
+            ),
         )
         .expect("finalize");
 
@@ -398,6 +522,84 @@ mod tests {
             std::fs::read_to_string(&target_secrets).expect("target secrets"),
             "SCRYER_ENCRYPTION_KEY=\"restored\"\n",
         );
+        assert!(!pending_dir.exists());
+    }
+
+    #[test]
+    fn finalize_pending_restore_promotes_postgres_secrets_without_sqlite_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path();
+        let pending_dir = pending_restore_dir(data_dir);
+        std::fs::create_dir_all(&pending_dir).expect("pending dir");
+        std::fs::write(
+            pending_restore_instance_secrets_path(data_dir),
+            b"SCRYER_ENCRYPTION_KEY=\"restored\"\n",
+        )
+        .expect("pending secrets");
+        std::fs::write(pending_restore_ready_path(data_dir), b"ready").expect("ready marker");
+
+        let target_secrets = managed_instance_secrets_path(data_dir);
+        std::fs::write(&target_secrets, b"old").expect("target secrets");
+
+        let restored = finalize_pending_restore_if_present(
+            data_dir,
+            &DatastoreConfig::postgres(
+                "postgres://localhost/scryer".to_string(),
+                "postgres://localhost/scryer".to_string(),
+                scryer_infrastructure::DatastoreConfigSource::EnvDbUrl,
+                data_dir,
+                scryer_infrastructure::MigrationMode::Apply,
+            ),
+        )
+        .expect("finalize");
+
+        assert!(restored);
+        assert_eq!(
+            std::fs::read_to_string(&target_secrets).expect("target secrets"),
+            "SCRYER_ENCRYPTION_KEY=\"restored\"\n",
+        );
+        assert!(!pending_dir.exists());
+    }
+
+    #[test]
+    fn finalize_pending_restore_recovers_interrupted_sqlite_promotion() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path();
+        let pending_dir = pending_restore_dir(data_dir);
+        std::fs::create_dir_all(&pending_dir).expect("pending dir");
+        std::fs::write(pending_restore_db_path(data_dir), b"restored").expect("pending db");
+        std::fs::write(
+            pending_restore_instance_secrets_path(data_dir),
+            b"SCRYER_ENCRYPTION_KEY=\"restored\"\n",
+        )
+        .expect("pending secrets");
+        std::fs::write(pending_restore_ready_path(data_dir), b"ready").expect("ready marker");
+
+        let target_db = data_dir.join("scryer.db");
+        let target_secrets = managed_instance_secrets_path(data_dir);
+        std::fs::write(&target_db, b"partial-new").expect("target db");
+        std::fs::write(&target_secrets, b"partial-new-secrets").expect("target secrets");
+        std::fs::write(promotion_backup_path(&target_db), b"original").expect("db backup");
+        std::fs::write(promotion_backup_path(&target_secrets), b"old").expect("secrets backup");
+
+        let restored = finalize_pending_restore_if_present(
+            data_dir,
+            &DatastoreConfig::sqlite(
+                format!("sqlite://{}", target_db.display()),
+                data_dir,
+                scryer_infrastructure::MigrationMode::Apply,
+            ),
+        )
+        .expect("finalize");
+
+        assert!(restored);
+        assert_eq!(std::fs::read(&target_db).expect("target db"), b"restored");
+        assert_eq!(
+            std::fs::read_to_string(&target_secrets).expect("target secrets"),
+            "SCRYER_ENCRYPTION_KEY=\"restored\"\n",
+        );
+        assert!(!promotion_backup_path(&target_db).exists());
+        assert!(!promotion_backup_path(&target_secrets).exists());
         assert!(!pending_dir.exists());
     }
 

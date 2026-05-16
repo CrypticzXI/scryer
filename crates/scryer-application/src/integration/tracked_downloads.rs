@@ -426,7 +426,11 @@ impl TrackedDownloadService {
             .services
             .workflow
             .imports
-            .is_already_imported(&td.client_type, &td.client_item.download_client_item_id)
+            .is_already_imported(&DownloadSourceIdentity::new(
+                Some(td.client_id.as_str()),
+                &td.client_type,
+                &td.client_item.download_client_item_id,
+            ))
             .await
         {
             td.state = TrackedDownloadState::Imported;
@@ -956,8 +960,7 @@ mod tests {
     impl ImportRepository for TestImportRepo {
         async fn queue_import_request(
             &self,
-            _: String,
-            _: String,
+            _: DownloadSourceIdentity,
             _: String,
             _: String,
         ) -> AppResult<String> {
@@ -966,23 +969,6 @@ mod tests {
 
         async fn get_import_by_id(&self, _: &str) -> AppResult<Option<ImportRecord>> {
             Ok(None)
-        }
-
-        async fn get_import_by_source_ref(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> AppResult<Option<ImportRecord>> {
-            Ok(self.stored_imports().into_iter().next())
-        }
-
-        async fn get_import_by_source_ref_and_type(
-            &self,
-            _: &str,
-            _: &str,
-            _: ImportType,
-        ) -> AppResult<Option<ImportRecord>> {
-            Ok(self.stored_imports().into_iter().next())
         }
 
         async fn update_import_status(
@@ -1021,19 +1007,33 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn list_imports_for_sources(
+        async fn list_imports_for_identities(
             &self,
-            _: &[(String, String)],
+            identities: &[DownloadSourceIdentity],
         ) -> AppResult<Vec<ImportRecord>> {
-            Ok(self.stored_imports())
+            Ok(self
+                .stored_imports()
+                .into_iter()
+                .filter(|record| {
+                    identities.iter().any(|identity| {
+                        record.source_client_id.as_deref().unwrap_or("")
+                            == identity.client_id_or_empty()
+                            && record.source_system == identity.client_type
+                            && record.source_ref == identity.item_id
+                    })
+                })
+                .collect())
         }
 
-        async fn is_already_imported(&self, _: &str, _: &str) -> AppResult<bool> {
+        async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
             Ok(self.stored_imports().iter().any(|record| {
-                matches!(
-                    record.status,
-                    ImportStatus::Completed | ImportStatus::Skipped
-                )
+                record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
+                    && record.source_system == identity.client_type
+                    && record.source_ref == identity.item_id
+                    && matches!(
+                        record.status,
+                        ImportStatus::Completed | ImportStatus::Skipped
+                    )
             }))
         }
 
@@ -1739,6 +1739,7 @@ mod tests {
         let imports = Arc::new(TestImportRepo {
             import_record: Some(ImportRecord {
                 id: Id::new().0,
+                source_client_id: Some("client-1".to_string()),
                 source_system: "nzbget".to_string(),
                 source_ref: "dl-1".to_string(),
                 import_type: ImportType::SeriesDownload,
@@ -2438,6 +2439,7 @@ mod tests {
         let imports = Arc::new(TestImportRepo {
             import_record: Some(ImportRecord {
                 id: "import-1".to_string(),
+                source_client_id: Some("client-1".to_string()),
                 source_system: "weaver".to_string(),
                 source_ref: "job-active-manual".to_string(),
                 import_type: ImportType::ManualImport,
@@ -2510,6 +2512,7 @@ mod tests {
             import_records: vec![
                 ImportRecord {
                     id: "import-other".to_string(),
+                    source_client_id: Some("client-2".to_string()),
                     source_system: "weaver".to_string(),
                     source_ref: "job-shared".to_string(),
                     import_type: ImportType::ManualImport,
@@ -2524,6 +2527,7 @@ mod tests {
                 },
                 ImportRecord {
                     id: "import-match".to_string(),
+                    source_client_id: Some("client-1".to_string()),
                     source_system: "weaver".to_string(),
                     source_ref: "job-shared".to_string(),
                     import_type: ImportType::ManualImport,
@@ -2591,6 +2595,7 @@ mod tests {
             import_records: vec![
                 ImportRecord {
                     id: "import-other".to_string(),
+                    source_client_id: Some("client-2".to_string()),
                     source_system: "weaver".to_string(),
                     source_ref: "job-shared".to_string(),
                     import_type: ImportType::ManualImport,
@@ -2605,6 +2610,7 @@ mod tests {
                 },
                 ImportRecord {
                     id: "import-match".to_string(),
+                    source_client_id: Some("client-1".to_string()),
                     source_system: "weaver".to_string(),
                     source_ref: "job-shared".to_string(),
                     import_type: ImportType::ManualImport,

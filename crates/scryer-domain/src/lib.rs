@@ -1230,6 +1230,7 @@ pub struct ImportResult {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportRecord {
     pub id: String,
+    pub source_client_id: Option<String>,
     pub source_system: String,
     pub source_ref: String,
     pub import_type: ImportType,

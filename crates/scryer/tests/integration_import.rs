@@ -8,8 +8,9 @@ use std::sync::Arc;
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    BlocklistRepository, ImportRepository, MediaFileRepository, ReleaseAttemptRepository,
-    ShowRepository, TitleRepository, WantedItemRepository, import_completed_download,
+    BlocklistRepository, DownloadSourceIdentity, ImportRepository, MediaFileRepository,
+    ReleaseAttemptRepository, ShowRepository, TitleRepository, WantedItemRepository,
+    import_completed_download,
 };
 use scryer_domain::{
     Collection, CompletedDownload, Episode, Id, ImportDecision, ImportSkipReason, MediaFacet, Title,
@@ -377,8 +378,7 @@ async fn import_deduplicates_completed_imports() {
     // Seed a completed import record for (nzbget, "dl-dedup").
     let import_id = workflow_store
         .queue_import_request(
-            "nzbget".to_string(),
-            "dl-dedup".to_string(),
+            DownloadSourceIdentity::new(Some("test-client"), "nzbget", "dl-dedup"),
             "movie_download".to_string(),
             "{}".to_string(),
         )

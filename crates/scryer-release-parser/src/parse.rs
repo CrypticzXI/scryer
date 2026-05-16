@@ -1356,6 +1356,31 @@ fn unit_is_foreign_alt_title_group(unit: &ParseUnit, context: &ContextIndex) -> 
             .any(|ch| !ch.is_ascii() && ch.is_alphabetic())
 }
 
+fn parse_identity_for_unit(
+    family: ParseFamily,
+    unit: &ParseUnit,
+    tokens: &[Token],
+    context: &ContextIndex,
+) -> Option<(usize, ReleaseIdentity, usize, i32, &'static str)> {
+    parse_identity_at(family, tokens, unit.start_token, context)
+        .map(|(identity, last_token, family_bonus, evidence)| {
+            (unit.start_token, identity, last_token, family_bonus, evidence)
+        })
+        .or_else(|| {
+            (family == ParseFamily::DailyEpisode && unit.end_token > unit.start_token + 1).then(
+                || {
+                    ((unit.start_token + 1)..unit.end_token).find_map(|index| {
+                        parse_identity_at(family, tokens, index, context).map(
+                            |(identity, last_token, family_bonus, evidence)| {
+                                (index, identity, last_token, family_bonus, evidence)
+                            },
+                        )
+                    })
+                },
+            )?
+        })
+}
+
 fn branch_identity(
     state: &ParseState,
     unit: &ParseUnit,
@@ -1363,8 +1388,8 @@ fn branch_identity(
     annotations: &[TokenAnnotations],
     context: &ContextIndex,
 ) -> Option<ParseState> {
-    let (identity, last_token, family_bonus, evidence) =
-        parse_identity_at(state.family, tokens, unit.start_token, context)?;
+    let (identity_start, identity, last_token, family_bonus, evidence) =
+        parse_identity_for_unit(state.family, unit, tokens, context)?;
     let mut next = state.clone();
     next.phase = ParsePhase::Metadata;
     next.identity = identity;
@@ -1372,7 +1397,7 @@ fn branch_identity(
     next.cursor = last_token + 1;
     next.raw_evidence.push(evidence.to_string());
     next.reasons.push(reason(evidence, family_bonus, None));
-    for token_index in unit.start_token..=last_token {
+    for token_index in identity_start..=last_token {
         next.consumed_tokens.insert(token_index);
         if let Some(annotation) = annotations.get(token_index) {
             let expected_role = match next.family {
@@ -5093,7 +5118,14 @@ fn parse_versioned_absolute(token: &str) -> Option<(u32, u32)> {
 }
 
 fn parse_daily_token(token: &str) -> Option<NaiveDate> {
-    ["%Y.%m.%d", "%Y-%m-%d", "%d.%b.%Y", "%b.%d.%Y"]
+    [
+        "%Y.%m.%d",
+        "%Y-%m-%d",
+        "%d.%m.%Y",
+        "%d-%m-%Y",
+        "%d.%b.%Y",
+        "%b.%d.%Y",
+    ]
         .into_iter()
         .find_map(|format| NaiveDate::parse_from_str(token, format).ok())
 }

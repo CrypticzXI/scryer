@@ -730,8 +730,7 @@ struct TrackingImportRepo {
 impl ImportRepository for TrackingImportRepo {
     async fn queue_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
@@ -739,8 +738,9 @@ impl ImportRepository for TrackingImportRepo {
         let now = Utc::now().to_rfc3339();
         self.records.lock().await.push(ImportRecord {
             id: id.clone(),
-            source_system,
-            source_ref,
+            source_client_id: source_identity.client_id.clone(),
+            source_system: source_identity.client_type,
+            source_ref: source_identity.item_id,
             import_type: ImportType::parse(&import_type).unwrap_or(ImportType::ManualImport),
             status: ImportStatus::Pending,
             payload_json,
@@ -760,41 +760,6 @@ impl ImportRepository for TrackingImportRepo {
             .await
             .iter()
             .find(|record| record.id == id)
-            .cloned())
-    }
-
-    async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>> {
-        Ok(self
-            .records
-            .lock()
-            .await
-            .iter()
-            .rev()
-            .find(|record| record.source_system == source_system && record.source_ref == source_ref)
-            .cloned())
-    }
-
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        import_type: ImportType,
-    ) -> AppResult<Option<ImportRecord>> {
-        Ok(self
-            .records
-            .lock()
-            .await
-            .iter()
-            .rev()
-            .find(|record| {
-                record.source_system == source_system
-                    && record.source_ref == source_ref
-                    && record.import_type == import_type
-            })
             .cloned())
     }
 
@@ -859,33 +824,41 @@ impl ImportRepository for TrackingImportRepo {
             .collect())
     }
 
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        sources: &[(String, String)],
+        identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>> {
         let records = self.records.lock().await;
-        Ok(sources
+        Ok(identities
             .iter()
-            .filter_map(|(source_system, source_ref)| {
+            .filter_map(|identity| {
                 records
                     .iter()
                     .rev()
                     .find(|record| {
-                        record.source_system == *source_system && record.source_ref == *source_ref
+                        record.source_client_id.as_deref().unwrap_or("")
+                            == identity.client_id_or_empty()
+                            && record.source_system == identity.client_type
+                            && record.source_ref == identity.item_id
                     })
                     .cloned()
             })
             .collect())
     }
 
-    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
         Ok(self
             .records
             .lock()
             .await
             .iter()
             .rev()
-            .find(|record| record.source_system == source_system && record.source_ref == source_ref)
+            .find(|record| {
+                record.source_client_id.as_deref().unwrap_or("")
+                    == identity.client_id_or_empty()
+                    && record.source_system == identity.client_type
+                    && record.source_ref == identity.item_id
+            })
             .is_some_and(|record| {
                 matches!(
                     record.status,
@@ -12331,6 +12304,7 @@ async fn try_import_completed_downloads_removes_already_imported_history_with_ex
     let item_id = "legacy-completed-1";
     import_repo.records.lock().await.push(ImportRecord {
         id: Id::new().0,
+        source_client_id: Some(config.id.clone()),
         source_system: "nzbget".to_string(),
         source_ref: item_id.to_string(),
         import_type: ImportType::MovieDownload,
@@ -12388,6 +12362,7 @@ async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed
     let item_id = "legacy-missing-completed-1";
     import_repo.records.lock().await.push(ImportRecord {
         id: Id::new().0,
+        source_client_id: Some("client-1".to_string()),
         source_system: "nzbget".to_string(),
         source_ref: item_id.to_string(),
         import_type: ImportType::MovieDownload,

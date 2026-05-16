@@ -53,6 +53,7 @@ import { SetupImportConnectView } from "./setup-import-connect-view";
 import { SetupImportReviewView } from "./setup-import-review-view";
 import { SetupPluginsView } from "./setup-plugins-view";
 import { SetupRestoreView } from "./setup-restore-view";
+import { findMissingExternalImportApiKeyRequirement } from "./setup-import-api-key-requirements";
 import type {
   PluginInstallProgressRecord,
   RegistryPluginRecord,
@@ -1081,15 +1082,24 @@ export function SetupWizardContainer({
   );
 
   const handleImportExecute = useCallback(async () => {
-    const missingProwlarrKey = importPreview?.indexers.find((indexer) => (
-      selectedIdxKeys.has(indexer.dedupKey)
-        && indexer.requiresApiKeyOverride
-        && !(idxApiKeyOverrides.get(indexer.dedupKey)?.trim())
-    ));
-    if (missingProwlarrKey) {
-      setImportExecuteError(t("setup.prowlarrApiKeyRequired", {
-        name: missingProwlarrKey.name,
-      }));
+    const missingApiKeyRequirement = importPreview
+      ? findMissingExternalImportApiKeyRequirement({
+        preview: importPreview,
+        selectedDcKeys,
+        selectedIdxKeys,
+        dcApiKeyOverrides,
+        idxApiKeyOverrides,
+        indexerProviderConfigFieldsByType,
+      })
+      : null;
+    if (missingApiKeyRequirement) {
+      setImportExecuteError(
+        missingApiKeyRequirement.isProwlarr
+          ? t("setup.prowlarrApiKeyRequired", {
+            name: missingApiKeyRequirement.name,
+          })
+          : t("setup.apiKeyMasked"),
+      );
       return;
     }
 
@@ -1163,6 +1173,7 @@ export function SetupWizardContainer({
     selectedIdxKeys,
     dcApiKeyOverrides,
     idxApiKeyOverrides,
+    indexerProviderConfigFieldsByType,
     importPreview,
     t,
     goToStep,

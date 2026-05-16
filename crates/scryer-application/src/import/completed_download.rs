@@ -17,7 +17,7 @@ use crate::domain_events::{
 };
 use crate::import_workflow::import_completed_download;
 use crate::tracked_downloads::TrackedDownload;
-use crate::{AppResult, AppUseCase, User};
+use crate::{AppResult, AppUseCase, DownloadSourceIdentity, User};
 use crate::{
     apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
 };
@@ -282,13 +282,17 @@ pub async fn verify_import(
     td: &TrackedDownload,
     files_imported_this_pass: usize,
 ) -> bool {
-    let source_ref = &td.client_item.download_client_item_id;
+    let source_identity = DownloadSourceIdentity::new(
+        Some(td.client_id.as_str()),
+        &td.client_type,
+        &td.client_item.download_client_item_id,
+    );
 
     let artifacts = match app
         .services
         .workflow
         .import_artifacts
-        .list_by_source_ref(&td.client_type, source_ref)
+        .list_by_source_identity(&source_identity)
         .await
     {
         Ok(artifacts) => artifacts,
@@ -992,19 +996,23 @@ async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload)
 }
 
 async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u64 {
-    let source_ref = &td.client_item.download_client_item_id;
+    let source_identity = DownloadSourceIdentity::new(
+        Some(td.client_id.as_str()),
+        &td.client_type,
+        &td.client_item.download_client_item_id,
+    );
     let imported = app
         .services
         .workflow
         .import_artifacts
-        .count_by_result(&td.client_type, source_ref, "imported")
+        .count_by_result_for_source_identity(&source_identity, "imported")
         .await
         .unwrap_or(0);
     let already_present = app
         .services
         .workflow
         .import_artifacts
-        .count_by_result(&td.client_type, source_ref, "already_present")
+        .count_by_result_for_source_identity(&source_identity, "already_present")
         .await
         .unwrap_or(0);
     imported + already_present
@@ -1499,35 +1507,27 @@ mod tests {
             Ok(())
         }
 
-        async fn list_by_source_ref(
+        async fn list_by_source_identity(
             &self,
-            source_system: &str,
-            source_ref: &str,
+            identity: &DownloadSourceIdentity,
         ) -> AppResult<Vec<ImportArtifact>> {
             let artifacts = self.artifacts.lock().await;
             Ok(artifacts
                 .iter()
-                .filter(|artifact| {
-                    artifact.source_system == source_system && artifact.source_ref == source_ref
-                })
+                .filter(|artifact| artifact.source_identity() == *identity)
                 .cloned()
                 .collect())
         }
 
-        async fn count_by_result(
+        async fn count_by_result_for_source_identity(
             &self,
-            source_system: &str,
-            source_ref: &str,
+            identity: &DownloadSourceIdentity,
             result: &str,
         ) -> AppResult<u64> {
             let artifacts = self.artifacts.lock().await;
             Ok(artifacts
                 .iter()
-                .filter(|artifact| {
-                    artifact.source_system == source_system
-                        && artifact.source_ref == source_ref
-                        && artifact.result == result
-                })
+                .filter(|artifact| artifact.source_identity() == *identity && artifact.result == result)
                 .count() as u64)
         }
     }
@@ -2036,6 +2036,7 @@ mod tests {
     ) -> ImportArtifact {
         ImportArtifact {
             id: Id::new().0,
+            source_client_id: Some("client-1".to_string()),
             source_system: "nzbget".to_string(),
             source_ref: source_ref.to_string(),
             import_id: None,

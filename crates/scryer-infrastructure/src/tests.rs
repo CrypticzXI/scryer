@@ -601,7 +601,7 @@ async fn enabled_plugin_payloads_preserve_zstd_encoding() {
 }
 
 #[tokio::test]
-async fn list_imports_for_sources_handles_multiple_pairs() {
+async fn list_imports_for_identities_handles_multiple_pairs() {
     let db = std::env::temp_dir().join(format!(
         "scryer_import_sources_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -613,8 +613,7 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
 
     workflow
         .queue_import_request(
-            "weaver".to_string(),
-            "10000".to_string(),
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "10000"),
             ImportType::ManualImport.as_str().to_string(),
             "{}".to_string(),
         )
@@ -622,8 +621,7 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
         .expect("first import should queue");
     workflow
         .queue_import_request(
-            "weaver".to_string(),
-            "10001".to_string(),
+            DownloadSourceIdentity::new(Some("client-b"), "weaver", "10001"),
             ImportType::ManualImport.as_str().to_string(),
             "{}".to_string(),
         )
@@ -631,9 +629,9 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
         .expect("second import should queue");
 
     let records = workflow
-        .list_imports_for_sources(&[
-            ("weaver".to_string(), "10000".to_string()),
-            ("weaver".to_string(), "10001".to_string()),
+        .list_imports_for_identities(&[
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "10000"),
+            DownloadSourceIdentity::new(Some("client-b"), "weaver", "10001"),
         ])
         .await
         .expect("batch lookup should succeed");

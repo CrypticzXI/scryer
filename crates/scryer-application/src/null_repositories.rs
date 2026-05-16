@@ -44,8 +44,7 @@ pub struct NullImportRepository;
 impl ImportRepository for NullImportRepository {
     async fn queue_import_request(
         &self,
-        _source_system: String,
-        _source_ref: String,
+        _source_identity: DownloadSourceIdentity,
         _import_type: String,
         _payload_json: String,
     ) -> AppResult<String> {
@@ -54,17 +53,6 @@ impl ImportRepository for NullImportRepository {
         ))
     }
     async fn get_import_by_id(&self, _: &str) -> AppResult<Option<ImportRecord>> {
-        Ok(None)
-    }
-    async fn get_import_by_source_ref(&self, _: &str, _: &str) -> AppResult<Option<ImportRecord>> {
-        Ok(None)
-    }
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        _: &str,
-        _: &str,
-        _: ImportType,
-    ) -> AppResult<Option<ImportRecord>> {
         Ok(None)
     }
     async fn update_import_status(
@@ -91,13 +79,13 @@ impl ImportRepository for NullImportRepository {
     async fn list_pending_imports_for_type(&self, _: ImportType) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        _: &[(String, String)],
+        _: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
-    async fn is_already_imported(&self, _: &str, _: &str) -> AppResult<bool> {
+    async fn is_already_imported(&self, _: &DownloadSourceIdentity) -> AppResult<bool> {
         Ok(false)
     }
     async fn list_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
@@ -981,10 +969,17 @@ impl ImportArtifactRepository for NullImportArtifactRepository {
     async fn insert_artifact(&self, _: ImportArtifact) -> AppResult<()> {
         Ok(())
     }
-    async fn list_by_source_ref(&self, _: &str, _: &str) -> AppResult<Vec<ImportArtifact>> {
+    async fn list_by_source_identity(
+        &self,
+        _: &DownloadSourceIdentity,
+    ) -> AppResult<Vec<ImportArtifact>> {
         Ok(vec![])
     }
-    async fn count_by_result(&self, _: &str, _: &str, _: &str) -> AppResult<u64> {
+    async fn count_by_result_for_source_identity(
+        &self,
+        _: &DownloadSourceIdentity,
+        _: &str,
+    ) -> AppResult<u64> {
         Ok(0)
     }
 }

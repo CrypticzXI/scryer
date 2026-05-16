@@ -21,8 +21,7 @@ use scryer_domain::{
     ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet,
     TrackedDownloadState, User, is_video_file,
 };
-use std::collections::BTreeMap;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// If subtitles.auto_download_on_import is enabled, spawn a background subtitle search.
@@ -386,13 +385,23 @@ pub async fn try_import_completed_downloads(
         }
     };
 
+    let completed_downloads_by_identity = completed_downloads
+        .iter()
+        .map(|completed| (completed_download_identity(completed), completed))
+        .collect::<HashMap<_, _>>();
+
     for item in completed_items {
         let source_ref = &item.download_client_item_id;
+        let item_identity = DownloadSourceIdentity::new(
+            Some(item.client_id.as_str()),
+            &item.client_type,
+            &item.download_client_item_id,
+        );
         let already_imported = match app
             .services
             .workflow
             .imports
-            .is_already_imported(&item.client_type, source_ref)
+            .is_already_imported(&item_identity)
             .await
         {
             Ok(result) => result,
@@ -403,11 +412,8 @@ pub async fn try_import_completed_downloads(
         };
 
         // Find the matching CompletedDownload
-        let completed = match completed_downloads
-            .iter()
-            .find(|cd| cd.download_client_item_id == item.download_client_item_id)
-        {
-            Some(cd) => cd,
+        let completed = match completed_downloads_by_identity.get(&item_identity).copied() {
+            Some(completed) => completed,
             None => {
                 tracing::debug!(
                     source_ref = %source_ref,
@@ -440,15 +446,12 @@ pub async fn try_import_completed_downloads(
                 Ok(Some(submission)) if submission_has_scryer_origin(&submission) => {
                     let collection_id = submission.scope.collection_id().map(str::to_string);
                     let mut patched = completed.clone();
-                    patched.parameters = vec![
-                        ("*scryer_title_id".to_string(), submission.title_id),
-                        ("*scryer_facet".to_string(), submission.facet),
-                    ];
-                    if let Some(coll_id) = collection_id {
-                        patched
-                            .parameters
-                            .push(("*scryer_collection_id".to_string(), coll_id));
-                    }
+                    merge_scryer_origin_parameters(
+                        &mut patched.parameters,
+                        submission.title_id,
+                        submission.facet,
+                        collection_id,
+                    );
                     patched
                 }
                 Ok(Some(_)) => {
@@ -639,6 +642,27 @@ fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceI
         &completed.client_type,
         &completed.download_client_item_id,
     )
+}
+
+fn merge_scryer_origin_parameters(
+    parameters: &mut Vec<(String, String)>,
+    title_id: String,
+    facet: String,
+    collection_id: Option<String>,
+) {
+    upsert_parameter(parameters, "*scryer_title_id", title_id);
+    upsert_parameter(parameters, "*scryer_facet", facet);
+    if let Some(collection_id) = collection_id {
+        upsert_parameter(parameters, "*scryer_collection_id", collection_id);
+    }
+}
+
+fn upsert_parameter(parameters: &mut Vec<(String, String)>, key: &str, value: String) {
+    if let Some((_, existing_value)) = parameters.iter_mut().find(|(name, _)| name == key) {
+        *existing_value = value;
+    } else {
+        parameters.push((key.to_string(), value));
+    }
 }
 
 async fn persist_completed_download_tracked_state(
@@ -923,13 +947,14 @@ pub async fn import_completed_download(
     remap_completed_download_for_client(app, &mut completed).await;
     let started_at = Utc::now();
     let source_ref = &completed.download_client_item_id;
+    let source_identity = completed_download_identity(&completed);
 
     // 1. DEDUP CHECK
     if app
         .services
         .workflow
         .imports
-        .is_already_imported(&completed.client_type, source_ref)
+        .is_already_imported(&source_identity)
         .await?
     {
         return Ok(ImportResult {
@@ -957,8 +982,7 @@ pub async fn import_completed_download(
         .workflow
         .imports
         .queue_import_request(
-            completed.client_type.clone(),
-            source_ref.clone(),
+            source_identity,
             import_type.as_str().to_string(),
             serde_json::to_string(&completed).unwrap_or_default(),
         )
@@ -3862,6 +3886,7 @@ async fn persist_file_import_artifact(
     for (episode_id, season_number, episode_number) in episode_rows {
         let artifact = ImportArtifact {
             id: Id::new().0,
+            source_client_id: Some(completed.client_id.clone()),
             source_system: completed.client_type.clone(),
             source_ref: completed.download_client_item_id.clone(),
             import_id: Some(import_id.to_string()),
@@ -4463,7 +4488,11 @@ pub(crate) async fn find_active_manual_import_for_source(
         .services
         .workflow
         .imports
-        .list_imports_for_sources(&[(normalized_client_type.clone(), source_ref.to_string())])
+        .list_imports_for_identities(&[DownloadSourceIdentity::new(
+            client_id,
+            normalized_client_type.as_str(),
+            source_ref,
+        )])
         .await?;
 
     Ok(records.into_iter().find(|record| {

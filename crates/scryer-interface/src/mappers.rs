@@ -2031,6 +2031,7 @@ mod tests {
         };
         let record = ImportRecord {
             id: "import-1".to_string(),
+            source_client_id: None,
             source_system: "weaver".to_string(),
             source_ref: "10495".to_string(),
             import_type: ImportType::SeriesDownload,

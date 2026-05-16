@@ -6,23 +6,13 @@ import { Button } from "@/components/ui/button";
 import type { ConfigFieldDef } from "@/lib/types";
 import type { ExternalImportPreview } from "@/lib/types/external-import";
 
+import {
+  externalImportDownloadClientNeedsUserSuppliedApiKey,
+  externalImportIndexerNeedsUserSuppliedApiKey,
+} from "./setup-import-api-key-requirements";
+
 type ImportFacet = "movie" | "series" | "anime";
 type BrowseTarget = ImportFacet | null;
-
-function providerRequiresApiKey(fields: ConfigFieldDef[]): boolean {
-  return fields.some((field) => {
-    const normalizedKey = field.key.trim().toLowerCase();
-    const normalizedFieldType = field.fieldType.trim().toLowerCase();
-    return field.required && (
-      normalizedKey === "api_key" ||
-      normalizedKey === "apikey" ||
-      (
-        (normalizedFieldType === "password" || normalizedFieldType === "secret")
-        && normalizedKey.includes("api")
-      )
-    );
-  });
-}
 
 interface SetupImportReviewViewProps {
   t: (key: string) => string;
@@ -207,10 +197,7 @@ export function SetupImportReviewView({
       {preview.downloadClients.length > 0 ? (
         <Section title={t("setup.downloadClientsSection")}>
           {preview.downloadClients.map((dc) => {
-            const needsApiKey =
-              dc.supported &&
-              dc.apiKey === null &&
-              (dc.scryerClientType === "sabnzbd" || dc.scryerClientType === "weaver");
+            const needsApiKey = externalImportDownloadClientNeedsUserSuppliedApiKey(dc);
             const isSelected = selectedDcKeys.has(dc.dedupKey);
             const sabUrl = dc.host
               ? `${dc.useSsl ? "https" : "http"}://${dc.host}${dc.port ? `:${dc.port}` : ""}${dc.urlBase ? `/${dc.urlBase.replace(/^\//, "")}` : ""}/config/general/`
@@ -278,13 +265,12 @@ export function SetupImportReviewView({
               idx.scryerProviderType === null
                 ? []
                 : (indexerProviderConfigFieldsByType.get(idx.scryerProviderType) ?? []);
-            const needsGenericApiKey =
-              idx.supported &&
-              idx.apiKey === null &&
-              providerRequiresApiKey(providerConfigFields);
             const isSelected = selectedIdxKeys.has(idx.dedupKey);
             const isProwlarr = idx.scryerProviderType === "prowlarr";
-            const needsApiKey = idx.requiresApiKeyOverride || needsGenericApiKey;
+            const needsApiKey = externalImportIndexerNeedsUserSuppliedApiKey(
+              idx,
+              providerConfigFields,
+            );
             return (
               <div key={idx.dedupKey}>
                 <label

@@ -42,17 +42,21 @@ fn normalize_download_client_id(value: Option<&str>) -> String {
         .to_string()
 }
 
+fn normalized_identity_key(identity: &DownloadSourceIdentity) -> (String, String, String) {
+    (
+        normalize_download_client_id(identity.client_id.as_deref()),
+        identity.client_type.clone(),
+        identity.item_id.clone(),
+    )
+}
+
 pub(crate) fn chunk_download_submission_client_items(
     client_items: &[DownloadSourceIdentity],
 ) -> Vec<Vec<DownloadSourceIdentity>> {
     let mut seen = HashSet::with_capacity(client_items.len());
     let mut deduped = Vec::with_capacity(client_items.len());
     for identity in client_items {
-        let key = (
-            normalize_download_client_id(identity.client_id.as_deref()),
-            identity.client_type.clone(),
-            identity.item_id.clone(),
-        );
+        let key = normalized_identity_key(identity);
         if seen.insert(key) {
             deduped.push(identity.clone());
         }
@@ -62,6 +66,17 @@ pub(crate) fn chunk_download_submission_client_items(
         .chunks(DOWNLOAD_SUBMISSION_BATCH_LOOKUP_CHUNK_SIZE)
         .map(|chunk| chunk.to_vec())
         .collect()
+}
+
+fn dedupe_import_identities(identities: &[DownloadSourceIdentity]) -> Vec<DownloadSourceIdentity> {
+    let mut seen = HashSet::with_capacity(identities.len());
+    let mut deduped = Vec::with_capacity(identities.len());
+    for identity in identities {
+        if seen.insert(normalized_identity_key(identity)) {
+            deduped.push(identity.clone());
+        }
+    }
+    deduped
 }
 
 fn download_submission_from_row(row: &sqlx::sqlite::SqliteRow) -> AppResult<DownloadSubmission> {
@@ -201,6 +216,10 @@ fn import_record_from_row(row: &sqlx::sqlite::SqliteRow) -> AppResult<ImportReco
         id: row
             .try_get("id")
             .map_err(|e| AppError::Repository(e.to_string()))?,
+        source_client_id: row
+            .try_get::<Option<String>, _>("source_client_id")
+            .map_err(|e| AppError::Repository(e.to_string()))?
+            .filter(|value| !value.trim().is_empty()),
         source_system: row
             .try_get("source_system")
             .map_err(|e| AppError::Repository(e.to_string()))?,
@@ -1040,8 +1059,7 @@ pub(crate) async fn get_latest_source_password_query(
 
 pub(crate) async fn create_import_request_query(
     pool: &SqlitePool,
-    source_system: String,
-    source_ref: String,
+    source_identity: DownloadSourceIdentity,
     import_type: String,
     payload_json: String,
 ) -> AppResult<String> {
@@ -1053,12 +1071,19 @@ pub(crate) async fn create_import_request_query(
     } else {
         None
     };
+    let normalized_client_id = source_identity
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     sqlx::query(
         "INSERT INTO imports
-         (id, source_system, source_ref, import_type, status, payload_json, rename_plan_json, result_json, started_at, finished_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(source_system, source_ref, import_type) DO UPDATE SET
+         (id, source_client_id, source_system, source_ref, import_type, status, payload_json, rename_plan_json, result_json, started_at, finished_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT DO UPDATE SET
+            source_client_id = excluded.source_client_id,
             status = excluded.status,
             payload_json = excluded.payload_json,
             rename_plan_json = excluded.rename_plan_json,
@@ -1068,8 +1093,9 @@ pub(crate) async fn create_import_request_query(
             updated_at = excluded.updated_at",
     )
     .bind(&id)
-    .bind(&source_system)
-    .bind(&source_ref)
+    .bind(&normalized_client_id)
+    .bind(&source_identity.client_type)
+    .bind(&source_identity.item_id)
     .bind(&import_type)
     .bind(ImportStatus::Pending.as_str())
     .bind(&payload_json)
@@ -1086,12 +1112,14 @@ pub(crate) async fn create_import_request_query(
     let row = sqlx::query(
         "SELECT id
          FROM imports
-         WHERE source_system = ?
+         WHERE COALESCE(source_client_id, '') = ?
+           AND source_system = ?
            AND source_ref = ?
            AND import_type = ?",
     )
-    .bind(&source_system)
-    .bind(&source_ref)
+    .bind(normalized_client_id.as_deref().unwrap_or(""))
+    .bind(&source_identity.client_type)
+    .bind(&source_identity.item_id)
     .bind(&import_type)
     .fetch_one(pool)
     .await
@@ -1108,7 +1136,7 @@ pub(crate) async fn get_import_by_id_query(
     id: &str,
 ) -> AppResult<Option<ImportRecord>> {
     let row = sqlx::query(
-        "SELECT id, source_system, source_ref, import_type, status,
+        "SELECT id, source_client_id, source_system, source_ref, import_type, status,
                 payload_json, result_json, started_at, finished_at,
                 created_at, updated_at
          FROM imports
@@ -1116,54 +1144,6 @@ pub(crate) async fn get_import_by_id_query(
          LIMIT 1",
     )
     .bind(id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    row.as_ref().map(import_record_from_row).transpose()
-}
-
-pub(crate) async fn get_import_by_source_ref_query(
-    pool: &SqlitePool,
-    source_system: &str,
-    source_ref: &str,
-) -> AppResult<Option<ImportRecord>> {
-    let row = sqlx::query(
-        "SELECT id, source_system, source_ref, import_type, status,
-                payload_json, result_json, started_at, finished_at,
-                created_at, updated_at
-         FROM imports
-         WHERE source_system = ? AND source_ref = ?
-         ORDER BY updated_at DESC
-         LIMIT 1",
-    )
-    .bind(source_system)
-    .bind(source_ref)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    row.as_ref().map(import_record_from_row).transpose()
-}
-
-pub(crate) async fn get_import_by_source_ref_and_type_query(
-    pool: &SqlitePool,
-    source_system: &str,
-    source_ref: &str,
-    import_type: ImportType,
-) -> AppResult<Option<ImportRecord>> {
-    let row = sqlx::query(
-        "SELECT id, source_system, source_ref, import_type, status,
-                payload_json, result_json, started_at, finished_at,
-                created_at, updated_at
-         FROM imports
-         WHERE source_system = ? AND source_ref = ? AND import_type = ?
-         ORDER BY updated_at DESC
-         LIMIT 1",
-    )
-    .bind(source_system)
-    .bind(source_ref)
-    .bind(import_type.as_str())
     .fetch_optional(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -1263,7 +1243,7 @@ pub(crate) async fn recover_stale_processing_imports_for_type_query(
 
 pub(crate) async fn list_pending_imports_query(pool: &SqlitePool) -> AppResult<Vec<ImportRecord>> {
     let rows = sqlx::query(
-        "SELECT id, source_system, source_ref, import_type, status,
+        "SELECT id, source_client_id, source_system, source_ref, import_type, status,
                 payload_json, result_json, started_at, finished_at,
                 created_at, updated_at
          FROM imports
@@ -1287,7 +1267,7 @@ pub(crate) async fn list_pending_imports_for_type_query(
     import_type: ImportType,
 ) -> AppResult<Vec<ImportRecord>> {
     let rows = sqlx::query(
-        "SELECT id, source_system, source_ref, import_type, status,
+        "SELECT id, source_client_id, source_system, source_ref, import_type, status,
                 payload_json, result_json, started_at, finished_at,
                 created_at, updated_at
          FROM imports
@@ -1308,32 +1288,35 @@ pub(crate) async fn list_pending_imports_for_type_query(
     Ok(out)
 }
 
-pub(crate) async fn list_imports_for_sources_query(
+pub(crate) async fn list_imports_for_identities_query(
     pool: &SqlitePool,
-    sources: &[(String, String)],
+    identities: &[DownloadSourceIdentity],
 ) -> AppResult<Vec<ImportRecord>> {
-    if sources.is_empty() {
+    let identities = dedupe_import_identities(identities);
+    if identities.is_empty() {
         return Ok(vec![]);
     }
 
     let mut builder: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
-        "SELECT id, source_system, source_ref, import_type, status,
+        "SELECT id, source_client_id, source_system, source_ref, import_type, status,
                 payload_json, result_json, started_at, finished_at,
                 created_at, updated_at
          FROM imports
          WHERE ",
     );
 
-    for (index, (source_system, source_ref)) in sources.iter().enumerate() {
+    for (index, identity) in identities.iter().enumerate() {
         if index > 0 {
             builder.push(" OR ");
         }
 
         builder
-            .push("(source_system = ")
-            .push_bind(source_system)
+            .push("(COALESCE(source_client_id, '') = ")
+            .push_bind(identity.client_id_or_empty())
+            .push(" AND source_system = ")
+            .push_bind(&identity.client_type)
             .push(" AND source_ref = ")
-            .push_bind(source_ref)
+            .push_bind(&identity.item_id)
             .push(")");
     }
     builder.push(" ORDER BY updated_at DESC");
@@ -1358,7 +1341,7 @@ pub(crate) async fn list_imports_query(
 ) -> AppResult<Vec<ImportRecord>> {
     let limit = limit.clamp(1, 500);
     let rows = sqlx::query(
-        "SELECT id, source_system, source_ref, import_type, status,
+        "SELECT id, source_client_id, source_system, source_ref, import_type, status,
                 payload_json, result_json, started_at, finished_at,
                 created_at, updated_at
          FROM imports
@@ -1955,12 +1938,13 @@ pub(crate) async fn insert_import_artifact_query(
 ) -> AppResult<()> {
     sqlx::query(
         "INSERT INTO download_import_artifacts
-         (id, source_system, source_ref, import_id, relative_path, normalized_file_name,
+         (id, source_client_id, source_system, source_ref, import_id, relative_path, normalized_file_name,
           media_kind, title_id, episode_id, season_number, episode_number,
           result, reason_code, imported_media_file_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&artifact.id)
+    .bind(&artifact.source_client_id)
     .bind(&artifact.source_system)
     .bind(&artifact.source_ref)
     .bind(&artifact.import_id)
@@ -1981,22 +1965,22 @@ pub(crate) async fn insert_import_artifact_query(
     Ok(())
 }
 
-pub(crate) async fn list_import_artifacts_by_source_ref_query(
+pub(crate) async fn list_import_artifacts_by_source_identity_query(
     pool: &SqlitePool,
-    source_system: &str,
-    source_ref: &str,
+    identity: &DownloadSourceIdentity,
 ) -> AppResult<Vec<scryer_application::ImportArtifact>> {
     let rows = sqlx::query(
-        "SELECT id, source_system, source_ref, import_id, relative_path,
+        "SELECT id, source_client_id, source_system, source_ref, import_id, relative_path,
                 normalized_file_name, media_kind, title_id, episode_id,
                 season_number, episode_number, result, reason_code,
                 imported_media_file_id, created_at
          FROM download_import_artifacts
-         WHERE source_system = ? AND source_ref = ?
+         WHERE COALESCE(source_client_id, '') = ? AND source_system = ? AND source_ref = ?
          ORDER BY created_at",
     )
-    .bind(source_system)
-    .bind(source_ref)
+    .bind(identity.client_id_or_empty())
+    .bind(&identity.client_type)
+    .bind(&identity.item_id)
     .fetch_all(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -2007,6 +1991,10 @@ pub(crate) async fn list_import_artifacts_by_source_ref_query(
             id: row
                 .try_get("id")
                 .map_err(|e| AppError::Repository(e.to_string()))?,
+            source_client_id: row
+                .try_get::<Option<String>, _>("source_client_id")
+                .map_err(|e| AppError::Repository(e.to_string()))?
+                .filter(|value| !value.trim().is_empty()),
             source_system: row
                 .try_get("source_system")
                 .map_err(|e| AppError::Repository(e.to_string()))?,
@@ -2059,18 +2047,18 @@ pub(crate) async fn list_import_artifacts_by_source_ref_query(
     Ok(out)
 }
 
-pub(crate) async fn count_import_artifacts_by_result_query(
+pub(crate) async fn count_import_artifacts_by_result_for_source_identity_query(
     pool: &SqlitePool,
-    source_system: &str,
-    source_ref: &str,
+    identity: &DownloadSourceIdentity,
     result: &str,
 ) -> AppResult<u64> {
     let row = sqlx::query(
         "SELECT COUNT(*) as cnt FROM download_import_artifacts
-         WHERE source_system = ? AND source_ref = ? AND result = ?",
+         WHERE COALESCE(source_client_id, '') = ? AND source_system = ? AND source_ref = ? AND result = ?",
     )
-    .bind(source_system)
-    .bind(source_ref)
+    .bind(identity.client_id_or_empty())
+    .bind(&identity.client_type)
+    .bind(&identity.item_id)
     .bind(result)
     .fetch_one(pool)
     .await

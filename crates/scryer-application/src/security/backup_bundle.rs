@@ -1271,8 +1271,47 @@ fn validate_extracted_bundle(root: &Path, manifest: &BackupBundleManifest) -> Ap
         )));
     }
 
+    let canonical_root = root.canonicalize().map_err(|error| {
+        AppError::Repository(format!(
+            "failed to resolve extracted backup root {}: {error}",
+            root.display()
+        ))
+    })?;
+
     for (part, expected_checksum) in &manifest.part_checksums {
-        let actual_checksum = checksum_hex(root.join(part))?;
+        let part_path = Path::new(part);
+        if part_path.is_absolute() {
+            return Err(AppError::Validation(format!(
+                "backup part path must be relative: {part}"
+            )));
+        }
+        if part_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(AppError::Validation(format!(
+                "backup part path escapes the bundle root: {part}"
+            )));
+        }
+
+        let canonical_part = root.join(part_path).canonicalize().map_err(|error| {
+            AppError::Validation(format!("backup part path is invalid: {part}: {error}"))
+        })?;
+        if !canonical_part.starts_with(&canonical_root) {
+            return Err(AppError::Validation(format!(
+                "backup part path escapes the bundle root: {part}"
+            )));
+        }
+        let metadata = std::fs::metadata(&canonical_part).map_err(|error| {
+            AppError::Validation(format!("backup part path is unreadable: {part}: {error}"))
+        })?;
+        if !metadata.is_file() {
+            return Err(AppError::Validation(format!(
+                "backup part path must be a regular file: {part}"
+            )));
+        }
+
+        let actual_checksum = checksum_hex(&canonical_part)?;
         if &actual_checksum != expected_checksum {
             return Err(AppError::Validation(format!(
                 "backup checksum mismatch for {part}"
@@ -1303,7 +1342,21 @@ fn ensure_owner_only_permissions(path: &Path) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::{Seek, SeekFrom, Write};
+
+    fn manifest_with_part(part: &str, checksum: &str) -> BackupBundleManifest {
+        BackupBundleManifest {
+            format_version: BACKUP_FORMAT_VERSION.to_string(),
+            created_at: "2026-05-15T00:00:00Z".to_string(),
+            source_scryer_version: "0.15.0".to_string(),
+            source_engine: "sqlite".to_string(),
+            source_migration_key: None,
+            encrypted: false,
+            row_counts: BTreeMap::new(),
+            part_checksums: BTreeMap::from([(part.to_string(), checksum.to_string())]),
+        }
+    }
 
     #[test]
     fn env_file_writer_escapes_multiline_values() {
@@ -1318,6 +1371,63 @@ mod tests {
         let env_file = secrets.to_env_file();
         assert!(env_file.contains("SCRYER_ENCRYPTION_KEY=\"enc\""));
         assert!(env_file.contains("SCRYER_SMG_CA_CERT=\"line1\\nline2\""));
+    }
+
+    #[test]
+    fn validate_extracted_bundle_accepts_relative_regular_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let payload = temp.path().join("payload.txt");
+        std::fs::write(&payload, b"ok").expect("payload");
+        let checksum = checksum_hex(&payload).expect("checksum");
+
+        validate_extracted_bundle(temp.path(), &manifest_with_part("payload.txt", &checksum))
+            .expect("bundle should validate");
+    }
+
+    #[test]
+    fn validate_extracted_bundle_rejects_absolute_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let payload = temp.path().join("payload.txt");
+        std::fs::write(&payload, b"ok").expect("payload");
+        let checksum = checksum_hex(&payload).expect("checksum");
+
+        let error = validate_extracted_bundle(
+            temp.path(),
+            &manifest_with_part(payload.to_string_lossy().as_ref(), &checksum),
+        )
+        .expect_err("absolute path should fail");
+
+        assert!(matches!(error, AppError::Validation(message) if message.contains("must be relative")));
+    }
+
+    #[test]
+    fn validate_extracted_bundle_rejects_traversal_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let payload = temp.path().join("payload.txt");
+        std::fs::write(&payload, b"ok").expect("payload");
+        let checksum = checksum_hex(&payload).expect("checksum");
+
+        let error = validate_extracted_bundle(
+            temp.path(),
+            &manifest_with_part("../payload.txt", &checksum),
+        )
+        .expect_err("traversal path should fail");
+
+        assert!(matches!(error, AppError::Validation(message) if message.contains("escapes the bundle root")));
+    }
+
+    #[test]
+    fn validate_extracted_bundle_rejects_non_regular_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(temp.path().join("nested")).expect("nested dir");
+
+        let error = validate_extracted_bundle(
+            temp.path(),
+            &manifest_with_part("nested", "ignored"),
+        )
+        .expect_err("directories should fail");
+
+        assert!(matches!(error, AppError::Validation(message) if message.contains("regular file")));
     }
 
     #[test]

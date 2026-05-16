@@ -466,16 +466,17 @@ impl WorkflowSql for PostgresWorkflowSql {
     async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()> {
         sqlx::query(
             "INSERT INTO download_import_artifacts
-             (id, source_system, source_ref, import_id, relative_path, normalized_file_name,
+             (id, source_client_id, source_system, source_ref, import_id, relative_path, normalized_file_name,
               media_kind, title_id, episode_id, season_number, episode_number, result,
               reason_code, imported_media_file_id, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              ON CONFLICT (id) DO UPDATE SET
                 result = EXCLUDED.result,
                 reason_code = EXCLUDED.reason_code,
                 imported_media_file_id = EXCLUDED.imported_media_file_id",
         )
         .bind(&artifact.id)
+        .bind(&artifact.source_client_id)
         .bind(&artifact.source_system)
         .bind(&artifact.source_ref)
         .bind(&artifact.import_id)
@@ -496,36 +497,36 @@ impl WorkflowSql for PostgresWorkflowSql {
         Ok(())
     }
 
-    async fn list_by_source_ref(
+    async fn list_by_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Vec<ImportArtifact>> {
         let rows = sqlx::query(
             "SELECT * FROM download_import_artifacts
-             WHERE source_system = $1 AND source_ref = $2
+             WHERE COALESCE(source_client_id, '') = $1 AND source_system = $2 AND source_ref = $3
              ORDER BY created_at ASC, id ASC",
         )
-        .bind(source_system)
-        .bind(source_ref)
+        .bind(identity.client_id_or_empty())
+        .bind(&identity.client_type)
+        .bind(&identity.item_id)
         .fetch_all(&self.pool)
         .await
         .map_err(repo_err)?;
         rows.iter().map(import_artifact_from_row).collect()
     }
 
-    async fn count_by_result(
+    async fn count_by_result_for_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
         result: &str,
     ) -> AppResult<u64> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM download_import_artifacts
-             WHERE source_system = $1 AND source_ref = $2 AND result = $3",
+             WHERE COALESCE(source_client_id, '') = $1 AND source_system = $2 AND source_ref = $3 AND result = $4",
         )
-        .bind(source_system)
-        .bind(source_ref)
+        .bind(identity.client_id_or_empty())
+        .bind(&identity.client_type)
+        .bind(&identity.item_id)
         .bind(result)
         .fetch_one(&self.pool)
         .await
@@ -600,22 +601,62 @@ impl WorkflowSql for PostgresWorkflowSql {
     }
     async fn queue_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
+        let payload: serde_json::Value = serde_json::from_str(&payload_json).map_err(repo_err)?;
         let id = Id::new().0;
         let now = Utc::now();
-        let payload: serde_json::Value = serde_json::from_str(&payload_json).map_err(repo_err)?;
+        let existing_id = sqlx::query_scalar::<_, String>(
+            "SELECT id
+               FROM imports
+              WHERE COALESCE(source_client_id, '') = $1
+                AND source_system = $2
+                AND source_ref = $3
+                AND import_type = $4
+              ORDER BY updated_at DESC
+              LIMIT 1",
+        )
+        .bind(source_identity.client_id_or_empty())
+        .bind(&source_identity.client_type)
+        .bind(&source_identity.item_id)
+        .bind(&import_type)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+
+        if let Some(existing_id) = existing_id {
+            sqlx::query(
+                "UPDATE imports
+                    SET source_client_id = $2,
+                        status = 'queued',
+                        payload_json = $3::jsonb,
+                        result_json = NULL,
+                        started_at = NULL,
+                        finished_at = NULL,
+                        updated_at = $4
+                  WHERE id = $1",
+            )
+            .bind(&existing_id)
+            .bind(source_identity.client_id.clone())
+            .bind(payload)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+            return Ok(existing_id);
+        }
+
         sqlx::query(
             "INSERT INTO imports
-             (id, source_system, source_ref, import_type, status, payload_json, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'queued', $5::jsonb, $6, $7)",
+             (id, source_client_id, source_system, source_ref, import_type, status, payload_json, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, 'queued', $6::jsonb, $7, $8)",
         )
         .bind(&id)
-        .bind(source_system)
-        .bind(source_ref)
+        .bind(source_identity.client_id)
+        .bind(source_identity.client_type)
+        .bind(source_identity.item_id)
         .bind(import_type)
         .bind(payload)
         .bind(now)
@@ -632,42 +673,6 @@ impl WorkflowSql for PostgresWorkflowSql {
             .fetch_optional(&self.pool)
             .await
             .map_err(repo_err)?;
-        row.as_ref().map(import_record_from_row).transpose()
-    }
-
-    async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>> {
-        let row = sqlx::query(
-            "SELECT * FROM imports WHERE source_system = $1 AND source_ref = $2 ORDER BY created_at DESC LIMIT 1",
-        )
-        .bind(source_system)
-        .bind(source_ref)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        row.as_ref().map(import_record_from_row).transpose()
-    }
-
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        import_type: ImportType,
-    ) -> AppResult<Option<ImportRecord>> {
-        let row = sqlx::query(
-            "SELECT * FROM imports
-             WHERE source_system = $1 AND source_ref = $2 AND import_type = $3
-             ORDER BY created_at DESC LIMIT 1",
-        )
-        .bind(source_system)
-        .bind(source_ref)
-        .bind(import_type.as_str())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(repo_err)?;
         row.as_ref().map(import_record_from_row).transpose()
     }
 
@@ -738,29 +743,45 @@ impl WorkflowSql for PostgresWorkflowSql {
         rows.iter().map(import_record_from_row).collect()
     }
 
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        sources: &[(String, String)],
+        identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>> {
-        let mut out = Vec::new();
-        for (source_system, source_ref) in sources {
-            if let Some(record) = self
-                .get_import_by_source_ref(source_system, source_ref)
-                .await?
-            {
-                out.push(record);
-            }
+        if identities.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(out)
+
+        let mut builder = QueryBuilder::new("SELECT * FROM imports WHERE ");
+        for (idx, identity) in identities.iter().enumerate() {
+            if idx > 0 {
+                builder.push(" OR ");
+            }
+            builder
+                .push("(COALESCE(source_client_id, '') = ")
+                .push_bind(identity.client_id_or_empty())
+                .push(" AND source_system = ")
+                .push_bind(&identity.client_type)
+                .push(" AND source_ref = ")
+                .push_bind(&identity.item_id)
+                .push(")");
+        }
+        builder.push(" ORDER BY updated_at DESC");
+
+        let rows = builder.build().fetch_all(&self.pool).await.map_err(repo_err)?;
+        rows.iter().map(import_record_from_row).collect()
     }
 
-    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM imports
-             WHERE source_system = $1 AND source_ref = $2 AND status IN ('completed', 'skipped')",
+             WHERE COALESCE(source_client_id, '') = $1
+               AND source_system = $2
+               AND source_ref = $3
+               AND status IN ('completed', 'skipped')",
         )
-        .bind(source_system)
-        .bind(source_ref)
+        .bind(identity.client_id_or_empty())
+        .bind(&identity.client_type)
+        .bind(&identity.item_id)
         .fetch_one(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -1220,6 +1241,10 @@ fn import_record_from_row(row: &sqlx::postgres::PgRow) -> AppResult<ImportRecord
     let status_raw: String = row.try_get("status").map_err(repo_err)?;
     Ok(ImportRecord {
         id: row.try_get("id").map_err(repo_err)?,
+        source_client_id: row
+            .try_get::<Option<String>, _>("source_client_id")
+            .map_err(repo_err)?
+            .filter(|value| !value.trim().is_empty()),
         source_system: row.try_get("source_system").map_err(repo_err)?,
         source_ref: row.try_get("source_ref").map_err(repo_err)?,
         import_type: ImportType::parse(&import_type_raw).ok_or_else(|| {
@@ -1253,6 +1278,10 @@ fn import_record_from_row(row: &sqlx::postgres::PgRow) -> AppResult<ImportRecord
 fn import_artifact_from_row(row: &sqlx::postgres::PgRow) -> AppResult<ImportArtifact> {
     Ok(ImportArtifact {
         id: row.try_get("id").map_err(repo_err)?,
+        source_client_id: row
+            .try_get::<Option<String>, _>("source_client_id")
+            .map_err(repo_err)?
+            .filter(|value| !value.trim().is_empty()),
         source_system: row.try_get("source_system").map_err(repo_err)?,
         source_ref: row.try_get("source_ref").map_err(repo_err)?,
         import_id: row.try_get("import_id").map_err(repo_err)?,

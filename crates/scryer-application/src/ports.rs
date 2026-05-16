@@ -571,16 +571,14 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 pub trait ImportArtifactRepository: Send + Sync {
     async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()>;
 
-    async fn list_by_source_ref(
+    async fn list_by_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Vec<ImportArtifact>>;
 
-    async fn count_by_result(
+    async fn count_by_result_for_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
         result: &str,
     ) -> AppResult<u64>;
 }
@@ -675,26 +673,12 @@ pub trait StagedNzbStore: Send + Sync {
 pub trait ImportRepository: Send + Sync {
     async fn queue_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String>;
 
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>>;
-
-    async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>>;
-
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        import_type: ImportType,
-    ) -> AppResult<Option<ImportRecord>>;
 
     async fn update_import_status(
         &self,
@@ -718,12 +702,12 @@ pub trait ImportRepository: Send + Sync {
         import_type: ImportType,
     ) -> AppResult<Vec<ImportRecord>>;
 
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        sources: &[(String, String)],
+        identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>>;
 
-    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool>;
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool>;
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>>;
 }

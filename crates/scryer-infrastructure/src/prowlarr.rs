@@ -338,7 +338,7 @@ impl IndexerManagementClient for ProwlarrManagementClient {
     async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
         let config = self.config()?.clone();
         let indexers: Vec<ProwlarrIndexerResource> = self.get_json("/api/v1/indexer").await?;
-        let app_profiles: Vec<ProwlarrAppProfile> = self.get_json("/api/v1/profiles/app").await?;
+        let app_profiles: Vec<ProwlarrAppProfile> = self.get_json("/api/v1/appProfile").await?;
         let app_profiles_by_id = app_profiles
             .into_iter()
             .map(|profile| (profile.id, profile))

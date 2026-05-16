@@ -18,7 +18,8 @@ use crate::domain_events::{
 use crate::facet_handler::{RenameFacetSettings, rename_facet_settings};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::{
-    AppError, AppResult, AppUseCase, CollectionUpdate, ParsedEpisodeMetadata,
+    AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity,
+    ParsedEpisodeMetadata,
     ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
 };
 
@@ -377,8 +378,7 @@ impl AppUseCase {
             .workflow
             .imports
             .queue_import_request(
-                "scryer_rename".to_string(),
-                source_ref,
+                DownloadSourceIdentity::new(None, "scryer_rename", source_ref),
                 ImportType::RenameApplyResult.as_str().to_string(),
                 payload_json,
             )

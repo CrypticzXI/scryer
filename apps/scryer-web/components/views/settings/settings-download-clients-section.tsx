@@ -509,15 +509,21 @@ export function SettingsDownloadClientsSection({
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <form className="space-y-3" onSubmit={submitDownloadClient}>
+              <form
+                id="settings-download-client-form"
+                className="space-y-3"
+                onSubmit={submitDownloadClient}
+              >
             <div className="grid gap-3 md:grid-cols-3">
-              <label>
-                <Label className="mb-2 block">{t("label.type")}</Label>
+              <div>
+                <Label className="mb-2 block" htmlFor="settings-download-client-type">
+                  {t("label.type")}
+                </Label>
                 <Select
                   value={downloadClientDraft.clientType}
                   onValueChange={handleDownloadClientTypeChange}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger id="settings-download-client-type" className="w-full">
                     <SelectValue aria-label={selectedDownloadClientLabel}>
                       <DownloadClientTypeOptionContent
                         typeValue={downloadClientDraft.clientType}
@@ -541,10 +547,13 @@ export function SettingsDownloadClientsSection({
                     ))}
                   </SelectContent>
                 </Select>
-              </label>
-              <label>
-                <Label className="mb-2 block">{t("label.name")}</Label>
+              </div>
+              <div>
+                <Label className="mb-2 block" htmlFor="settings-download-client-name">
+                  {t("label.name")}
+                </Label>
                 <Input
+                  id="settings-download-client-name"
                   value={downloadClientDraft.name}
                   onChange={(event) =>
                     setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -555,11 +564,14 @@ export function SettingsDownloadClientsSection({
                   required
                   placeholder={t("settings.downloadClientNamePlaceholder")}
                 />
-              </label>
+              </div>
               <div className="md:col-span-3 grid grid-cols-1 gap-2 md:grid-cols-[220px_92px_128px_auto] md:items-end md:gap-2">
-                <label>
-                  <Label className="mb-2 block">{t("settings.host")}</Label>
+                <div>
+                  <Label className="mb-2 block" htmlFor="settings-download-client-host">
+                    {t("settings.host")}
+                  </Label>
                   <Input
+                    id="settings-download-client-host"
                     className="w-56 max-w-56"
                     value={downloadClientDraft.host}
                     onChange={(event) =>
@@ -571,10 +583,13 @@ export function SettingsDownloadClientsSection({
                     required
                     placeholder={t("settings.downloadClientHostPlaceholder")}
                   />
-                </label>
-                <label>
-                  <Label className="mb-2 block">{t("settings.port")}</Label>
+                </div>
+                <div>
+                  <Label className="mb-2 block" htmlFor="settings-download-client-port">
+                    {t("settings.port")}
+                  </Label>
                   <Input
+                    id="settings-download-client-port"
                     {...integerInputProps}
                     value={downloadClientDraft.port}
                     onChange={(event) =>
@@ -586,10 +601,16 @@ export function SettingsDownloadClientsSection({
                     className="w-24 max-w-24"
                     placeholder={t("settings.downloadClientPortPlaceholder")}
                   />
-                </label>
-                <label>
-                  <Label className="mb-2 block">{t("settings.downloadClientUrlBase")}</Label>
+                </div>
+                <div>
+                  <Label
+                    className="mb-2 block"
+                    htmlFor="settings-download-client-url-base"
+                  >
+                    {t("settings.downloadClientUrlBase")}
+                  </Label>
                   <Input
+                    id="settings-download-client-url-base"
                     value={downloadClientDraft.urlBase}
                     onChange={(event) =>
                       setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -600,7 +621,7 @@ export function SettingsDownloadClientsSection({
                     className="w-36 max-w-36"
                     placeholder={t("settings.downloadClientUrlBasePlaceholder")}
                   />
-                </label>
+                </div>
                 <label className="mb-2 ml-2 flex items-center gap-1.5 pl-2.5 md:ml-4">
                   <Checkbox
                     checked={downloadClientDraft.useSsl}
@@ -625,9 +646,12 @@ export function SettingsDownloadClientsSection({
                 <Input value={urlPreview || "https://..."} readOnly disabled className="text-muted-foreground" />
               </label>
               {hasApiKeyField ? (
-                <label>
-                  <Label className="mb-2 block">{t("settings.apiKey")}</Label>
+                <div>
+                  <Label className="mb-2 block" htmlFor="settings-download-client-api-key">
+                    {t("settings.apiKey")}
+                  </Label>
                   <Input
+                    id="settings-download-client-api-key"
                     value={downloadClientDraft.apiKey}
                     onChange={(event) =>
                       setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -660,16 +684,17 @@ export function SettingsDownloadClientsSection({
                       <p>{t("settings.downloadClientSabnzbdNzbdavHelp")}</p>
                     </div>
                   ) : null}
-                </label>
+                </div>
               ) : null}
               {showCredentialFields ? (
                 <>
-                  <label>
-                    <Label className="mb-2 block">
+                  <div>
+                    <Label className="mb-2 block" htmlFor="settings-download-client-username">
                       {t("settings.username")}
                       {optionalCredentialLabel}
                     </Label>
                     <Input
+                      id="settings-download-client-username"
                       value={downloadClientDraft.username}
                       onChange={(event) =>
                         setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -679,13 +704,14 @@ export function SettingsDownloadClientsSection({
                       }
                       placeholder={t("form.usernamePlaceholder")}
                     />
-                  </label>
-                  <label>
-                    <Label className="mb-2 block">
+                  </div>
+                  <div>
+                    <Label className="mb-2 block" htmlFor="settings-download-client-password">
                       {t("settings.password")}
                       {optionalCredentialLabel}
                     </Label>
                     <Input
+                      id="settings-download-client-password"
                       value={downloadClientDraft.password}
                       onChange={(event) =>
                         setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -696,7 +722,7 @@ export function SettingsDownloadClientsSection({
                       placeholder={t("form.passwordPlaceholder")}
                       type="password"
                     />
-                  </label>
+                  </div>
                   {normalizedClientType === "qbittorrent" ? (
                     <p className="md:col-span-3 text-xs text-muted-foreground">
                       {t("settings.downloadClientQbittorrentDecypharrHelp")}
@@ -748,7 +774,11 @@ export function SettingsDownloadClientsSection({
               </details>
             </div>
             <div className="flex gap-2">
-                <Button type="submit" disabled={mutatingDownloadClientId === "new"}>
+                <Button
+                  id="settings-download-client-save"
+                  type="submit"
+                  disabled={mutatingDownloadClientId === "new"}
+                >
                   {mutatingDownloadClientId === "new"
                     ? t("label.saving")
                     : editingDownloadClientId
@@ -756,6 +786,7 @@ export function SettingsDownloadClientsSection({
                       : t("settings.downloadClientCreate")}
                 </Button>
               <Button
+                id="settings-download-client-test-connection"
                 type="button"
                 variant="secondary"
                 onClick={() => void testDownloadClientConnection()}
@@ -775,6 +806,7 @@ export function SettingsDownloadClientsSection({
           {isEditing ? (
             <div className="flex justify-center">
               <Button
+                id="settings-download-client-create"
                 type="button"
                 size="lg"
                 onClick={startCreateDownloadClient}
@@ -790,6 +822,7 @@ export function SettingsDownloadClientsSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-download-client-create"
             type="button"
             size="lg"
             onClick={startCreateDownloadClient}

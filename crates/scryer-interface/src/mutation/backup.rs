@@ -9,7 +9,10 @@ use crate::context::{
 use crate::mappers::from_backup_info;
 use crate::types::{BackupInfoPayload, BackupRowCountPayload};
 use async_graphql::{Context, Error, Object, Result as GqlResult, SimpleObject, Upload};
-use scryer_application::{AppError, AppUseCase, BackupBundleInspectSummary, inspect_backup_bundle};
+use scryer_application::{
+    AppError, AppUseCase, BackupBundleInspectSummary, inspect_backup_bundle,
+    prepare_backup_restore_payload,
+};
 use scryer_domain::AppPermission;
 use scryer_infrastructure::{
     DatastoreConfig, DatastoreEngine, restore_backup_bundle_to_datastore,
@@ -278,10 +281,6 @@ fn pending_restore_ready_path(data_dir: &Path) -> PathBuf {
     pending_restore_dir(data_dir).join(PENDING_RESTORE_READY_FILENAME)
 }
 
-fn managed_instance_secrets_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(INSTANCE_SECRETS_ENV_FILENAME)
-}
-
 async fn ensure_setup_mode(app: &AppUseCase) -> Result<(), AppError> {
     if app.setup_complete().await? {
         return Err(AppError::Validation(
@@ -379,32 +378,6 @@ fn stage_restore_bundle(
     datastore_config: DatastoreConfig,
     password: Option<String>,
 ) -> Result<RestoreSummaryPayload, AppError> {
-    if datastore_config.engine == DatastoreEngine::Postgres {
-        let secrets_path = managed_instance_secrets_path(&data_dir);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| {
-                AppError::Repository(format!("failed to start restore runtime: {error}"))
-            })?;
-
-        return runtime.block_on(async move {
-            let prepared = restore_backup_bundle_to_datastore(
-                datastore_config,
-                &bundle_path,
-                password.as_deref(),
-            )
-            .await?;
-            write_owner_only_file_atomically(&secrets_path, &prepared.instance_secrets_env())?;
-            ensure_owner_only_permissions(&secrets_path).map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to protect restored instance secrets: {error}"
-                ))
-            })?;
-            Ok::<_, AppError>(restore_summary_payload(prepared.summary()))
-        });
-    }
-
     let pending_dir = pending_restore_dir(&data_dir);
     let pending_db_path = pending_restore_db_path(&data_dir);
     let pending_secrets_path = pending_restore_instance_secrets_path(&data_dir);
@@ -429,23 +402,47 @@ fn stage_restore_bundle(
         })?;
 
     let result = runtime.block_on(async move {
-        let prepared = restore_backup_bundle_to_datastore_path(
-            &pending_db_path,
-            datastore_config.migration_mode,
-            &bundle_path,
-            password.as_deref(),
-        )
-        .await?;
+        match datastore_config.engine {
+            DatastoreEngine::Postgres => {
+                let prepared =
+                    prepare_backup_restore_payload(&bundle_path, password.as_deref())?;
+                let summary = restore_summary_payload(&prepared.summary());
+                let instance_secrets_env = prepared.instance_secrets_env()?;
+                write_owner_only_file_atomically(
+                    &pending_secrets_path,
+                    &instance_secrets_env,
+                )?;
+                restore_backup_bundle_to_datastore(
+                    datastore_config,
+                    &bundle_path,
+                    password.as_deref(),
+                )
+                .await?;
+                Ok::<_, AppError>(summary)
+            }
+            DatastoreEngine::Sqlite => {
+                let prepared = restore_backup_bundle_to_datastore_path(
+                    &pending_db_path,
+                    datastore_config.migration_mode,
+                    &bundle_path,
+                    password.as_deref(),
+                )
+                .await?;
 
-        write_owner_only_file_atomically(&pending_secrets_path, &prepared.instance_secrets_env())?;
+                write_owner_only_file_atomically(
+                    &pending_secrets_path,
+                    &prepared.instance_secrets_env(),
+                )?;
 
-        let summary = restore_summary_payload(prepared.summary());
-        ensure_owner_only_permissions(&pending_db_path).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to protect pending restore database: {error}"
-            ))
-        })?;
-        Ok::<_, AppError>(summary)
+                let summary = restore_summary_payload(prepared.summary());
+                ensure_owner_only_permissions(&pending_db_path).map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to protect pending restore database: {error}"
+                    ))
+                })?;
+                Ok::<_, AppError>(summary)
+            }
+        }
     });
 
     match result {
