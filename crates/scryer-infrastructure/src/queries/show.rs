@@ -30,9 +30,12 @@ pub(crate) async fn list_collections_for_title_query(
     let sql = format!(
         "SELECT {COLLECTION_COLUMNS} FROM collections WHERE title_id = {{}} ORDER BY collection_index ASC, id ASC"
     );
-    let rows =
-        SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &[SqlArg::Text(title_id.to_string())])
-            .await?;
+    let rows = SqlRuntime::fetch_all(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
     rows.iter().map(row_to_collection).collect()
 }
 
@@ -120,7 +123,7 @@ pub(crate) async fn get_collection_by_id_query(
         &sql,
         &[SqlArg::Text(collection_id.to_string())],
     )
-        .await?;
+    .await?;
     row.as_ref().map(row_to_collection).transpose()
 }
 
@@ -131,13 +134,12 @@ pub(crate) async fn get_collection_by_ordered_path_query(
     let sql = format!(
         "SELECT {COLLECTION_COLUMNS} FROM collections WHERE ordered_path = {{}} ORDER BY id ASC LIMIT 1"
     );
-    let row =
-        SqlRuntime::fetch_optional(
-            SqlExec::Target(target),
-            &sql,
-            &[SqlArg::Text(ordered_path.to_string())],
-        )
-        .await?;
+    let row = SqlRuntime::fetch_optional(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(ordered_path.to_string())],
+    )
+    .await?;
     row.as_ref().map(row_to_collection).transpose()
 }
 
@@ -252,13 +254,12 @@ pub(crate) async fn list_episodes_for_collection_query(
     let sql = format!(
         "SELECT {EPISODE_COLUMNS} FROM episodes WHERE collection_id = {{}} ORDER BY episode_number ASC, id ASC"
     );
-    let rows =
-        SqlRuntime::fetch_all(
-            SqlExec::Target(target),
-            &sql,
-            &[SqlArg::Text(collection_id.to_string())],
-        )
-        .await?;
+    let rows = SqlRuntime::fetch_all(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(collection_id.to_string())],
+    )
+    .await?;
     rows.iter().map(row_to_episode).collect()
 }
 
@@ -269,9 +270,12 @@ pub(crate) async fn list_episodes_for_title_query(
     let sql = format!(
         "SELECT {EPISODE_COLUMNS} FROM episodes WHERE title_id = {{}} ORDER BY season_number ASC, episode_number ASC, id ASC"
     );
-    let rows =
-        SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &[SqlArg::Text(title_id.to_string())])
-            .await?;
+    let rows = SqlRuntime::fetch_all(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?;
     rows.iter().map(row_to_episode).collect()
 }
 
@@ -295,13 +299,12 @@ pub(crate) async fn get_episode_by_id_query(
     episode_id: &str,
 ) -> AppResult<Option<Episode>> {
     let sql = format!("SELECT {EPISODE_COLUMNS} FROM episodes WHERE id = {{}}");
-    let row =
-        SqlRuntime::fetch_optional(
-            SqlExec::Target(target),
-            &sql,
-            &[SqlArg::Text(episode_id.to_string())],
-        )
-        .await?;
+    let row = SqlRuntime::fetch_optional(
+        SqlExec::Target(target),
+        &sql,
+        &[SqlArg::Text(episode_id.to_string())],
+    )
+    .await?;
     row.as_ref().map(row_to_episode).transpose()
 }
 

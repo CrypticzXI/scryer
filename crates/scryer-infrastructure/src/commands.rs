@@ -1,6 +1,7 @@
 use crate::queries::{
     blocklist as blocklist_queries, library_scan_unmatched as library_scan_unmatched_queries,
-    plugin_installation::BuiltinPluginSeed, show,
+    plugin_installation::BuiltinPluginSeed,
+    show,
     sql_runtime::{SqlTarget, run_with_sqlite_busy_retries},
     title::*,
 };
@@ -19,9 +20,8 @@ use scryer_application::{
 use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
     Episode, ImportType, IndexerConfig, InterstitialMovieMetadata, MediaFacet, NewDomainEvent,
-    NotificationChannelConfig, NotificationSubscription, PluginInstallation,
-    PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload,
-    SubtitleProviderConfig, User,
+    NotificationChannelConfig, NotificationSubscription, PluginInstallation, PostProcessingScript,
+    PostProcessingScriptRun, RuleSet, SubtitleDownload, SubtitleProviderConfig, User,
 };
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -2630,10 +2630,12 @@ fn bl_row_to_entry(row: blocklist_queries::BlocklistRow) -> BlocklistEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::queries::sql_runtime::run_with_sqlite_busy_retries_with_deadline;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    use std::time::Duration;
 
     #[tokio::test]
     async fn sqlite_busy_retries_eventually_succeed_before_deadline() {

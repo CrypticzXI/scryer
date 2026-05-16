@@ -3,8 +3,8 @@ use scryer_application::{
     AppError, AppResult, DownloadQueueCommandRecord as AppDownloadQueueCommandRecord,
     DownloadSourceIdentity, DownloadSubmission, ExternalImportMonitorSnapshot,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotChunkScopeKind,
-    ExternalImportMonitorSnapshotEntryKind, PendingReleaseStatus,
-    ReleaseDownloadAttemptOutcome, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
+    ExternalImportMonitorSnapshotEntryKind, PendingReleaseStatus, ReleaseDownloadAttemptOutcome,
+    SubmissionScope, SuccessfulGrabCommit, WantedStatus,
 };
 use scryer_domain::{
     DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus,

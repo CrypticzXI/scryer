@@ -1,16 +1,22 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, EpisodeUpdate, LibraryRepository, LibraryRootDraft,
-    PrimaryCollectionSummary, ScopedExternalId, ShowRepository, UserRepository,
+    AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate, LibraryRepository,
+    LibraryRootDraft, PendingTitleHydration, PrimaryCollectionSummary, ScopedExternalId,
+    ShowRepository, TitleMetadataUpdate, TitleRepository, UserRepository,
 };
 use scryer_domain::{
-    AppPermissionMask, CalendarEpisode, Collection, Entitlement, Episode, Library, LibraryGrant,
-    MediaFacet, User,
+    AppPermissionMask, CalendarEpisode, Collection, Entitlement, Episode, ExternalId, Library,
+    LibraryGrant, MediaFacet, Title, User,
 };
 use std::collections::HashMap;
 
 use crate::SqliteServices;
-use crate::queries::{library, show, sql_runtime::SqlTarget, title, user};
+use crate::queries::{
+    library, show,
+    sql_runtime::{SqlTarget, StoreDatastore},
+    title, user,
+};
+use crate::title_store::TitleStore;
 
 #[async_trait]
 pub trait LibrarySql: Clone + Send + Sync + 'static {
@@ -154,6 +160,17 @@ impl<S> CatalogStore<S> {
     }
 }
 
+pub(crate) trait TitleDatastoreSql: Clone + Send + Sync + 'static {
+    fn title_datastore(&self) -> StoreDatastore;
+}
+
+fn delegated_title_store<S>(sql: &S) -> TitleStore
+where
+    S: TitleDatastoreSql,
+{
+    TitleStore::new(sql.title_datastore())
+}
+
 pub type SqliteCatalogStore = CatalogStore<SqliteCatalogSql>;
 
 #[derive(Clone)]
@@ -174,6 +191,245 @@ impl SqliteCatalogSql {
             db: db.clone(),
             pool: db.pool().clone(),
         }
+    }
+}
+
+impl TitleDatastoreSql for SqliteCatalogSql {
+    fn title_datastore(&self) -> StoreDatastore {
+        StoreDatastore::Sqlite {
+            pool: self.pool.clone(),
+            writer_gate: self.db.writer_gate(),
+        }
+    }
+}
+
+#[async_trait]
+impl<S> TitleRepository for CatalogStore<S>
+where
+    S: TitleDatastoreSql,
+{
+    async fn list(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        delegated_title_store(&self.sql).list(facet, query).await
+    }
+
+    async fn list_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        delegated_title_store(&self.sql)
+            .list_without_external_ids(facet, query)
+            .await
+    }
+
+    async fn list_for_libraries(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        delegated_title_store(&self.sql)
+            .list_for_libraries(facet, library_ids, query)
+            .await
+    }
+
+    async fn list_for_libraries_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        delegated_title_store(&self.sql)
+            .list_for_libraries_without_external_ids(facet, library_ids, query)
+            .await
+    }
+
+    async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>> {
+        delegated_title_store(&self.sql)
+            .list_by_external_ids(source, values)
+            .await
+    }
+
+    async fn list_for_matching(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        delegated_title_store(&self.sql)
+            .list_for_matching(facet, query)
+            .await
+    }
+
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>> {
+        delegated_title_store(&self.sql).get_by_id(id).await
+    }
+
+    async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
+        delegated_title_store(&self.sql)
+            .get_by_id_without_external_ids(id)
+            .await
+    }
+
+    async fn get_by_facet_and_slug(
+        &self,
+        facet: MediaFacet,
+        slug: &str,
+    ) -> AppResult<Option<Title>> {
+        delegated_title_store(&self.sql)
+            .get_by_facet_and_slug(facet, slug)
+            .await
+    }
+
+    async fn get_by_facet_libraries_and_slug(
+        &self,
+        facet: MediaFacet,
+        library_ids: &[String],
+        slug: &str,
+    ) -> AppResult<Option<Title>> {
+        delegated_title_store(&self.sql)
+            .get_by_facet_libraries_and_slug(facet, library_ids, slug)
+            .await
+    }
+
+    async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>> {
+        delegated_title_store(&self.sql)
+            .find_by_external_id(source, value)
+            .await
+    }
+
+    async fn find_by_external_id_in_facet(
+        &self,
+        facet: MediaFacet,
+        source: &str,
+        value: &str,
+    ) -> AppResult<Option<Title>> {
+        delegated_title_store(&self.sql)
+            .find_by_external_id_in_facet(facet, source, value)
+            .await
+    }
+
+    async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome> {
+        delegated_title_store(&self.sql)
+            .create_or_get_existing(title)
+            .await
+    }
+
+    async fn create(&self, title: Title) -> AppResult<Title> {
+        delegated_title_store(&self.sql).create(title).await
+    }
+
+    async fn list_titles_due_for_hydration(
+        &self,
+        limit: usize,
+        excluded_facets: &[MediaFacet],
+    ) -> AppResult<Vec<PendingTitleHydration>> {
+        delegated_title_store(&self.sql)
+            .list_titles_due_for_hydration(limit, excluded_facets)
+            .await
+    }
+
+    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<String>> {
+        delegated_title_store(&self.sql)
+            .list_anime_title_ids_missing_anibridge_scoped_external_ids(limit)
+            .await
+    }
+
+    async fn list_anime_title_ids_missing_title_anidb_external_ids(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<String>> {
+        delegated_title_store(&self.sql)
+            .list_anime_title_ids_missing_title_anidb_external_ids(limit)
+            .await
+    }
+
+    async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()> {
+        delegated_title_store(&self.sql)
+            .mark_title_metadata_hydration_due_now(id)
+            .await
+    }
+
+    async fn schedule_title_metadata_hydration_retry(
+        &self,
+        id: &str,
+        next_attempt_at: &str,
+        attempt_count: i64,
+    ) -> AppResult<()> {
+        delegated_title_store(&self.sql)
+            .schedule_title_metadata_hydration_retry(id, next_attempt_at, attempt_count)
+            .await
+    }
+
+    async fn clear_title_metadata_hydration_retry_state(&self, id: &str) -> AppResult<()> {
+        delegated_title_store(&self.sql)
+            .clear_title_metadata_hydration_retry_state(id)
+            .await
+    }
+
+    async fn update_monitored(&self, id: &str, monitored: bool) -> AppResult<Title> {
+        delegated_title_store(&self.sql)
+            .update_monitored(id, monitored)
+            .await
+    }
+
+    async fn update_metadata(
+        &self,
+        id: &str,
+        name: Option<String>,
+        facet: Option<MediaFacet>,
+        tags: Option<Vec<String>>,
+    ) -> AppResult<Title> {
+        delegated_title_store(&self.sql)
+            .update_metadata(id, name, facet, tags)
+            .await
+    }
+
+    async fn update_title_hydrated_metadata(
+        &self,
+        id: &str,
+        metadata: TitleMetadataUpdate,
+    ) -> AppResult<Title> {
+        delegated_title_store(&self.sql)
+            .update_title_hydrated_metadata(id, metadata)
+            .await
+    }
+
+    async fn replace_match_state(
+        &self,
+        id: &str,
+        external_ids: Vec<ExternalId>,
+        tags: Vec<String>,
+    ) -> AppResult<Title> {
+        delegated_title_store(&self.sql)
+            .replace_match_state(id, external_ids, tags)
+            .await
+    }
+
+    async fn delete(&self, id: &str) -> AppResult<()> {
+        delegated_title_store(&self.sql).delete(id).await
+    }
+
+    async fn set_folder_path(&self, id: &str, folder_path: &str) -> AppResult<()> {
+        delegated_title_store(&self.sql)
+            .set_folder_path(id, folder_path)
+            .await
+    }
+
+    async fn clear_folder_path(&self, id: &str) -> AppResult<()> {
+        delegated_title_store(&self.sql).clear_folder_path(id).await
+    }
+
+    async fn clear_metadata_language_for_all(&self) -> AppResult<u64> {
+        delegated_title_store(&self.sql)
+            .clear_metadata_language_for_all()
+            .await
     }
 }
 

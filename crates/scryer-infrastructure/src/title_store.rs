@@ -1,26 +1,27 @@
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, CreateTitleOutcome, PendingTitleHydration, TitleMetadataUpdate,
     TitleRepository,
-    persisted_records::PersistedTitleReadMode,
+    persisted_records::{
+        PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
+    },
 };
 use scryer_domain::{ExternalId, MediaFacet, Title};
+use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
+use sqlx::{Row, postgres::PgRow};
 
 use crate::queries::{
     common::parse_utc_datetime,
-    sql_runtime::{SqlArg, SqlExec, SqlRuntime, SqlTx, StoreDatastore},
-    title::{
-        TITLE_COLUMNS, apply_title_metadata_update, decode_optional_runtime_title_row,
-        decode_runtime_title_rows, normalize_title_query, normalized_external_ids,
-        title_has_tvdb_external_id,
-    },
+    sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err},
+    title::TITLE_COLUMNS,
     title_search::{
         delete_title_search_projection_tx, normalize_title_search_text,
         replace_title_search_projection_pg_tx, replace_title_search_projection_tx,
     },
 };
+use crate::title_images::normalized_base_path_from_env;
 
 const TITLE_INSERT_SQL: &str = "INSERT INTO titles (
     id, library_id, name, facet, monitored, tags, external_ids, created_by, created_at,
@@ -98,7 +99,7 @@ pub struct TitleStore {
 }
 
 impl TitleStore {
-    pub fn new(datastore: StoreDatastore) -> Self {
+    pub(crate) fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
     }
 
@@ -110,6 +111,10 @@ impl TitleStore {
         mode: PersistedTitleReadMode,
         include_external_ids: bool,
     ) -> AppResult<Vec<Title>> {
+        if matches!(library_ids, Some(library_ids) if library_ids.is_empty()) {
+            return Ok(Vec::new());
+        }
+
         let query = normalize_title_query(query);
 
         let (sql, args) = if let Some(query) = query {
@@ -219,19 +224,33 @@ impl TitleRepository for TitleStore {
             return Ok(Vec::new());
         }
 
-        let placeholders = std::iter::repeat_n("{}", values.len())
+        let requested_values = std::iter::repeat_n("({}, {})", values.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "SELECT DISTINCT {TITLE_COLUMNS}
+            "WITH requested(request_ordinal, external_id) AS (
+                 VALUES {requested_values}
+             ),
+             matched_titles AS (
+                 SELECT title_external_ids.title_id,
+                        MIN(requested.request_ordinal) AS first_request_ordinal
+                   FROM requested
+                   JOIN title_external_ids
+                     ON title_external_ids.external_id = requested.external_id
+                  WHERE LOWER(title_external_ids.source) = {{}}
+                  GROUP BY title_external_ids.title_id
+             )
+             SELECT {TITLE_COLUMNS}
                FROM titles
-               JOIN title_external_ids ON title_external_ids.title_id = titles.id
-              WHERE LOWER(title_external_ids.source) = {{}}
-                AND title_external_ids.external_id IN ({placeholders})
-              ORDER BY LOWER(name), id"
+               JOIN matched_titles ON matched_titles.title_id = titles.id
+              ORDER BY matched_titles.first_request_ordinal, LOWER(name), id"
         );
-        let mut args = vec![SqlArg::Text(normalized_source)];
-        args.extend(values.into_iter().map(SqlArg::Text));
+        let mut args = Vec::with_capacity(values.len() * 2 + 1);
+        for (ordinal, value) in values.into_iter().enumerate() {
+            args.push(SqlArg::I64(ordinal as i64));
+            args.push(SqlArg::Text(value));
+        }
+        args.push(SqlArg::Text(normalized_source));
 
         let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
         decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)
@@ -259,24 +278,28 @@ impl TitleRepository for TitleStore {
         facet: MediaFacet,
         slug: &str,
     ) -> AppResult<Option<Title>> {
+        let Some(normalized_slug) = normalize_lookup_slug(slug) else {
+            return Ok(None);
+        };
         let sql = format!(
             "SELECT {TITLE_COLUMNS}
                FROM titles
               WHERE facet = {{}}
-                AND LOWER(slug) = LOWER({{}})
+                AND LOWER(TRIM(slug)) = LOWER({{}})
               ORDER BY LOWER(name), id
-              LIMIT 1"
+              LIMIT 2"
         );
-        let row = SqlRuntime::fetch_optional(
+        let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
             &sql,
             &[
                 SqlArg::Text(facet.as_str().to_string()),
-                SqlArg::Text(slug.to_string()),
+                SqlArg::Text(normalized_slug.clone()),
             ],
         )
         .await?;
-        decode_optional_runtime_title_row(row.as_ref(), PersistedTitleReadMode::Presentation, true)
+        let titles = decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
+        single_slug_match(titles, &normalized_slug)
     }
 
     async fn get_by_facet_libraries_and_slug(
@@ -289,6 +312,10 @@ impl TitleRepository for TitleStore {
             return Ok(None);
         }
 
+        let Some(normalized_slug) = normalize_lookup_slug(slug) else {
+            return Ok(None);
+        };
+
         let placeholders = std::iter::repeat_n("{}", library_ids.len())
             .collect::<Vec<_>>()
             .join(", ");
@@ -296,28 +323,32 @@ impl TitleRepository for TitleStore {
             "SELECT {TITLE_COLUMNS}
                FROM titles
               WHERE facet = {{}}
-                AND LOWER(slug) = LOWER({{}})
+                AND LOWER(TRIM(slug)) = LOWER({{}})
                 AND library_id IN ({placeholders})
               ORDER BY LOWER(name), id
-              LIMIT 1"
+              LIMIT 2"
         );
         let mut args = vec![
             SqlArg::Text(facet.as_str().to_string()),
-            SqlArg::Text(slug.to_string()),
+            SqlArg::Text(normalized_slug.clone()),
         ];
         args.extend(library_ids.iter().cloned().map(SqlArg::Text));
 
-        let row = SqlRuntime::fetch_optional(self.datastore.read_exec(), &sql, &args).await?;
-        decode_optional_runtime_title_row(row.as_ref(), PersistedTitleReadMode::Presentation, true)
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        let titles = decode_runtime_title_rows(&rows, PersistedTitleReadMode::Presentation, true)?;
+        single_slug_match(titles, &normalized_slug)
     }
 
     async fn find_by_external_id(&self, source: &str, value: &str) -> AppResult<Option<Title>> {
         let sql = format!(
-            "SELECT DISTINCT {TITLE_COLUMNS}
+            "SELECT {TITLE_COLUMNS}
                FROM titles
-               JOIN title_external_ids ON title_external_ids.title_id = titles.id
-              WHERE LOWER(title_external_ids.source) = {{}}
-                AND title_external_ids.external_id = {{}}
+              WHERE id IN (
+                    SELECT title_id
+                      FROM title_external_ids
+                     WHERE LOWER(source) = {{}}
+                       AND external_id = {{}}
+              )
               ORDER BY LOWER(name), id
               LIMIT 1"
         );
@@ -340,12 +371,15 @@ impl TitleRepository for TitleStore {
         value: &str,
     ) -> AppResult<Option<Title>> {
         let sql = format!(
-            "SELECT DISTINCT {TITLE_COLUMNS}
+            "SELECT {TITLE_COLUMNS}
                FROM titles
-               JOIN title_external_ids ON title_external_ids.title_id = titles.id
-              WHERE titles.facet = {{}}
-                AND LOWER(title_external_ids.source) = {{}}
-                AND title_external_ids.external_id = {{}}
+              WHERE facet = {{}}
+                AND id IN (
+                    SELECT title_id
+                      FROM title_external_ids
+                     WHERE LOWER(source) = {{}}
+                       AND external_id = {{}}
+                )
               ORDER BY LOWER(name), id
               LIMIT 1"
         );
@@ -363,27 +397,23 @@ impl TitleRepository for TitleStore {
     }
 
     async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome> {
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "create_or_get_existing_title",
-            move |tx| {
-                let title = title.clone();
-                Box::pin(async move {
-                    if let Some(existing) = find_existing_title_for_create_tx(tx, &title).await? {
-                        return Ok(CreateTitleOutcome {
-                            title: existing,
-                            reused_existing: true,
-                        });
-                    }
+        SqlRuntime::run_in_transaction(&self.datastore, "create_or_get_existing_title", move |tx| {
+            let title = title.clone();
+            Box::pin(async move {
+                if let Some(existing) = find_existing_title_for_create_tx(tx, &title).await? {
+                    return Ok(CreateTitleOutcome {
+                        title: existing,
+                        reused_existing: true,
+                    });
+                }
 
-                    create_title_tx(tx, &title).await?;
-                    Ok(CreateTitleOutcome {
-                        title,
-                        reused_existing: false,
-                    })
+                create_title_tx(tx, &title).await?;
+                Ok(CreateTitleOutcome {
+                    title,
+                    reused_existing: false,
                 })
-            },
-        )
+            })
+        })
         .await
     }
 
@@ -797,27 +827,401 @@ impl TitleRepository for TitleStore {
     }
 }
 
+fn normalize_title_query(query: Option<String>) -> Option<String> {
+    query.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn normalize_lookup_slug(slug: &str) -> Option<String> {
+    let trimmed = slug.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn single_slug_match(mut titles: Vec<Title>, slug: &str) -> AppResult<Option<Title>> {
+    match titles.len() {
+        0 => Ok(None),
+        1 => Ok(titles.pop()),
+        _ => Err(AppError::Validation(format!(
+            "slug '{slug}' maps to multiple titles"
+        ))),
+    }
+}
+
+fn normalized_external_ids(external_ids: &[ExternalId]) -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for external_id in external_ids {
+        let source = external_id.source.trim().to_ascii_lowercase();
+        let value = external_id.value.trim().to_string();
+        if source.is_empty() || value.is_empty() {
+            continue;
+        }
+        if seen.insert((source.clone(), value.clone())) {
+            out.push((source, value));
+        }
+    }
+    out
+}
+
+trait TitleProjectionRow {
+    fn text(&self, column: &str) -> AppResult<String>;
+    fn opt_text(&self, column: &str) -> AppResult<Option<String>>;
+    fn bool(&self, column: &str) -> AppResult<bool>;
+    fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>>;
+    fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>>;
+    fn opt_i32(&self, column: &str) -> AppResult<Option<i32>>;
+    fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>>;
+}
+
+impl TitleProjectionRow for sqlx::sqlite::SqliteRow {
+    fn text(&self, column: &str) -> AppResult<String> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_text(&self, column: &str) -> AppResult<Option<String>> {
+        let value: Option<String> = self.try_get(column).map_err(repo_err)?;
+        match value {
+            Some(value) if value.trim().is_empty() => Ok(None),
+            other => Ok(other),
+        }
+    }
+
+    fn bool(&self, column: &str) -> AppResult<bool> {
+        let value: i64 = self.try_get(column).map_err(repo_err)?;
+        Ok(value != 0)
+    }
+
+    fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>> {
+        let raw: String = self.try_get(column).map_err(repo_err)?;
+        parse_utc_datetime(&raw)
+    }
+
+    fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>> {
+        let raw: Option<String> = self.try_get(column).map_err(repo_err)?;
+        match raw {
+            Some(value) if value.trim().is_empty() => Ok(None),
+            Some(value) => parse_utc_datetime(&value).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn opt_i32(&self, column: &str) -> AppResult<Option<i32>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>> {
+        let raw: Option<String> = self.try_get(column).map_err(repo_err)?;
+        match raw {
+            Some(raw) if raw.trim().is_empty() => Ok(None),
+            Some(raw) => serde_json::from_str(&raw).map(Some).map_err(repo_err),
+            None => Ok(None),
+        }
+    }
+}
+
+impl TitleProjectionRow for PgRow {
+    fn text(&self, column: &str) -> AppResult<String> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_text(&self, column: &str) -> AppResult<Option<String>> {
+        let value: Option<String> = self.try_get(column).map_err(repo_err)?;
+        match value {
+            Some(value) if value.trim().is_empty() => Ok(None),
+            other => Ok(other),
+        }
+    }
+
+    fn bool(&self, column: &str) -> AppResult<bool> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_i32(&self, column: &str) -> AppResult<Option<i32>> {
+        self.try_get(column).map_err(repo_err)
+    }
+
+    fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>> {
+        self.try_get(column).map_err(repo_err)
+    }
+}
+
+impl TitleProjectionRow for SqlRow {
+    fn text(&self, column: &str) -> AppResult<String> {
+        SqlRow::text(self, column)
+    }
+
+    fn opt_text(&self, column: &str) -> AppResult<Option<String>> {
+        SqlRow::opt_text(self, column)
+    }
+
+    fn bool(&self, column: &str) -> AppResult<bool> {
+        SqlRow::bool(self, column)
+    }
+
+    fn timestamp(&self, column: &str) -> AppResult<DateTime<Utc>> {
+        SqlRow::timestamp(self, column)
+    }
+
+    fn opt_timestamp(&self, column: &str) -> AppResult<Option<DateTime<Utc>>> {
+        SqlRow::opt_timestamp(self, column)
+    }
+
+    fn opt_i32(&self, column: &str) -> AppResult<Option<i32>> {
+        self.opt_i64(column)?
+            .map(|value| {
+                i32::try_from(value).map_err(|_| {
+                    AppError::Repository(format!(
+                        "value out of range for i32 column {column}: {value}"
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    fn opt_json_value(&self, column: &str) -> AppResult<Option<serde_json::Value>> {
+        SqlRow::opt_json(self, column)
+    }
+}
+
+fn decode_title_json_or_default<T, R>(row: &R, column: &str) -> AppResult<T>
+where
+    T: DeserializeOwned + Default,
+    R: TitleProjectionRow,
+{
+    match row.opt_json_value(column)? {
+        Some(value) => serde_json::from_value(value).map_err(repo_err),
+        None => Ok(T::default()),
+    }
+}
+
+fn decode_runtime_title_rows(
+    rows: &[SqlRow],
+    mode: PersistedTitleReadMode,
+    include_external_ids: bool,
+) -> AppResult<Vec<Title>> {
+    let base_path = normalized_base_path_from_env();
+    rows.iter()
+        .map(|row| title_from_projection_row(row, mode, include_external_ids, &base_path))
+        .collect()
+}
+
+fn decode_optional_runtime_title_row(
+    row: Option<&SqlRow>,
+    mode: PersistedTitleReadMode,
+    include_external_ids: bool,
+) -> AppResult<Option<Title>> {
+    let base_path = normalized_base_path_from_env();
+    row.map(|row| title_from_projection_row(row, mode, include_external_ids, &base_path))
+        .transpose()
+}
+
+fn title_from_projection_row<R>(
+    row: &R,
+    mode: PersistedTitleReadMode,
+    include_external_ids: bool,
+    base_path: &str,
+) -> AppResult<Title>
+where
+    R: TitleProjectionRow,
+{
+    let facet = parse_facet(&row.text("facet")?);
+    let title = Title {
+        id: row.text("id")?,
+        library_id: row
+            .opt_text("library_id")?
+            .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet)),
+        name: row.text("name")?,
+        facet,
+        monitored: row.bool("monitored")?,
+        tags: decode_title_json_or_default(row, "tags")?,
+        external_ids: if include_external_ids {
+            decode_title_json_or_default(row, "external_ids")?
+        } else {
+            Vec::new()
+        },
+        created_by: row.opt_text("created_by")?,
+        created_at: row.timestamp("created_at")?,
+        year: row.opt_i32("year")?,
+        overview: row.opt_text("overview")?,
+        poster_url: row.opt_text("poster_url")?,
+        poster_source_url: None,
+        banner_url: row.opt_text("banner_url")?,
+        banner_source_url: None,
+        background_url: row.opt_text("background_url")?,
+        background_source_url: None,
+        sort_title: row.opt_text("sort_title")?,
+        slug: row.opt_text("slug")?,
+        imdb_id: row.opt_text("imdb_id")?,
+        runtime_minutes: row.opt_i32("runtime_minutes")?,
+        genres: decode_title_json_or_default(row, "genres")?,
+        content_status: row.opt_text("content_status")?,
+        language: row.opt_text("language")?,
+        first_aired: row.opt_text("first_aired")?,
+        network: row.opt_text("network")?,
+        studio: row.opt_text("studio")?,
+        country: row.opt_text("country")?,
+        aliases: decode_title_json_or_default(row, "aliases")?,
+        tagged_aliases: decode_title_json_or_default(row, "tagged_aliases_json")?,
+        metadata_language: row.opt_text("metadata_language")?,
+        metadata_fetched_at: row.opt_timestamp("metadata_fetched_at")?,
+        min_availability: row.opt_text("min_availability")?,
+        digital_release_date: row.opt_text("digital_release_date")?,
+        folder_path: row.opt_text("folder_path")?,
+    };
+
+    let poster_local_path = row.opt_text("poster_local_path")?;
+    let banner_local_path = row.opt_text("banner_local_path")?;
+    let background_local_path = row.opt_text("background_local_path")?;
+
+    Ok(finalize_persisted_title(
+        title,
+        PersistedTitleDecodeOptions {
+            mode,
+            include_external_ids,
+            base_path,
+            poster_local_path: poster_local_path.as_deref(),
+            banner_local_path: banner_local_path.as_deref(),
+            background_local_path: background_local_path.as_deref(),
+        },
+    ))
+}
+
+fn parse_facet(raw: &str) -> MediaFacet {
+    MediaFacet::parse(raw).unwrap_or_default()
+}
+
+fn apply_title_metadata_update(title: &mut Title, metadata: TitleMetadataUpdate) -> AppResult<()> {
+    if let Some(name) = metadata.name.filter(|value| !value.is_empty()) {
+        title.name = name;
+    }
+    if metadata.year.is_some() {
+        title.year = metadata.year;
+    }
+    merge_optional_title_text(&mut title.overview, metadata.overview);
+    merge_optional_title_text(&mut title.poster_url, metadata.poster_url);
+    merge_optional_title_text(&mut title.banner_url, metadata.banner_url);
+    merge_optional_title_text(&mut title.background_url, metadata.background_url);
+    merge_optional_title_text(&mut title.sort_title, metadata.sort_title);
+    merge_optional_title_text(&mut title.slug, metadata.slug);
+    merge_optional_title_text(&mut title.imdb_id, metadata.imdb_id);
+    if metadata.runtime_minutes.is_some() {
+        title.runtime_minutes = metadata.runtime_minutes;
+    }
+    if !metadata.genres.is_empty() {
+        title.genres = metadata.genres;
+    }
+    merge_optional_title_text(&mut title.content_status, metadata.content_status);
+    merge_optional_title_text(&mut title.language, metadata.language);
+    merge_optional_title_text(&mut title.first_aired, metadata.first_aired);
+    merge_optional_title_text(&mut title.network, metadata.network);
+    merge_optional_title_text(&mut title.studio, metadata.studio);
+    merge_optional_title_text(&mut title.country, metadata.country);
+    if !metadata.aliases.is_empty() {
+        title.aliases = metadata.aliases;
+    }
+    if !metadata.tagged_aliases.is_empty() {
+        title.tagged_aliases = metadata.tagged_aliases;
+    }
+    merge_optional_title_text(&mut title.metadata_language, metadata.metadata_language);
+    if let Some(raw) = metadata.metadata_fetched_at
+        && !raw.trim().is_empty()
+    {
+        title.metadata_fetched_at = Some(parse_utc_datetime(&raw)?);
+    }
+    merge_optional_title_text(
+        &mut title.digital_release_date,
+        metadata.digital_release_date,
+    );
+    merge_title_external_ids(&mut title.external_ids, metadata.extra_external_ids);
+    merge_title_tags(&mut title.tags, metadata.extra_tags);
+    Ok(())
+}
+
+fn title_has_tvdb_external_id(title: &Title) -> bool {
+    title.external_ids.iter().any(|external_id| {
+        let source = external_id.source.trim().to_ascii_lowercase();
+        source == "tvdb" || source == "tvdb_id"
+    })
+}
+
+fn merge_optional_title_text(target: &mut Option<String>, incoming: Option<String>) {
+    if let Some(incoming) = incoming
+        && !incoming.trim().is_empty()
+    {
+        *target = Some(incoming);
+    }
+}
+
+fn merge_title_external_ids(target: &mut Vec<ExternalId>, incoming: Vec<ExternalId>) {
+    for external_id in incoming {
+        let source = external_id.source.trim().to_ascii_lowercase();
+        let value = external_id.value.trim().to_string();
+        if source.is_empty() || value.is_empty() {
+            continue;
+        }
+        if target.iter().any(|candidate| {
+            candidate.source.eq_ignore_ascii_case(&source) && candidate.value.trim() == value
+        }) {
+            continue;
+        }
+        target.push(ExternalId { source, value });
+    }
+}
+
+fn merge_title_tags(target: &mut Vec<String>, incoming: Vec<String>) {
+    for tag in incoming {
+        let normalized = tag.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        if target.iter().any(|candidate| candidate == normalized) {
+            continue;
+        }
+        target.push(normalized.to_string());
+    }
+}
+
 fn build_plain_title_list_sql(
     facet: Option<MediaFacet>,
     library_ids: Option<&[String]>,
 ) -> (String, Vec<SqlArg>) {
     let mut sql = format!("SELECT {TITLE_COLUMNS} FROM titles");
-    let mut where_clauses = Vec::new();
+    let mut where_clauses = Vec::<String>::new();
     let mut args = Vec::new();
 
     if let Some(facet) = facet {
-        where_clauses.push("facet = {}");
+        where_clauses.push("facet = {}".to_string());
         args.push(SqlArg::Text(facet.as_str().to_string()));
     }
 
-    if let Some(library_ids) = library_ids
-        && !library_ids.is_empty()
-    {
-        let placeholders = std::iter::repeat_n("{}", library_ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        where_clauses.push(Box::leak(format!("library_id IN ({placeholders})").into_boxed_str()));
-        args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+    if let Some(library_ids) = library_ids {
+        if library_ids.is_empty() {
+            where_clauses.push("1 = 0".to_string());
+        } else {
+            let placeholders = std::iter::repeat_n("{}", library_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            where_clauses.push(format!("library_id IN ({placeholders})"));
+            args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+        }
     }
 
     if !where_clauses.is_empty() {
@@ -870,14 +1274,16 @@ fn build_ranked_title_list_sql(
            ) ranked_titles ON ranked_titles.title_id = titles.id",
     );
 
-    if let Some(library_ids) = library_ids
-        && !library_ids.is_empty()
-    {
-        let placeholders = std::iter::repeat_n("{}", library_ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        sql.push_str(&format!(" WHERE library_id IN ({placeholders})"));
-        args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+    if let Some(library_ids) = library_ids {
+        if library_ids.is_empty() {
+            sql.push_str(" WHERE 1 = 0");
+        } else {
+            let placeholders = std::iter::repeat_n("{}", library_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(&format!(" WHERE library_id IN ({placeholders})"));
+            args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+        }
     }
 
     sql.push_str(" ORDER BY ranked_titles.rank, LOWER(name), id");
@@ -890,8 +1296,8 @@ async fn load_title_tx(
     include_external_ids: bool,
 ) -> AppResult<Option<Title>> {
     let sql = format!("SELECT {TITLE_COLUMNS} FROM titles WHERE id = {{}}");
-    let row = SqlRuntime::fetch_optional(SqlExec::Tx(tx), &sql, &[SqlArg::Text(id.to_string())])
-        .await?;
+    let row =
+        SqlRuntime::fetch_optional(SqlExec::Tx(tx), &sql, &[SqlArg::Text(id.to_string())]).await?;
     decode_optional_runtime_title_row(
         row.as_ref(),
         PersistedTitleReadMode::Presentation,
@@ -1070,7 +1476,10 @@ async fn replace_title_external_ids_projection_sql_tx(
     Ok(())
 }
 
-async fn replace_title_search_projection_sql_tx(tx: &mut SqlTx<'_>, title: &Title) -> AppResult<()> {
+async fn replace_title_search_projection_sql_tx(
+    tx: &mut SqlTx<'_>,
+    title: &Title,
+) -> AppResult<()> {
     if let Some(sqlite_tx) = tx.sqlite() {
         replace_title_search_projection_tx(sqlite_tx, title).await
     } else if let Some(pg_tx) = tx.postgres() {
@@ -1082,7 +1491,10 @@ async fn replace_title_search_projection_sql_tx(tx: &mut SqlTx<'_>, title: &Titl
     }
 }
 
-async fn delete_title_search_projection_sql_tx(tx: &mut SqlTx<'_>, title_id: &str) -> AppResult<()> {
+async fn delete_title_search_projection_sql_tx(
+    tx: &mut SqlTx<'_>,
+    title_id: &str,
+) -> AppResult<()> {
     if let Some(sqlite_tx) = tx.sqlite() {
         delete_title_search_projection_tx(sqlite_tx, title_id).await
     } else {

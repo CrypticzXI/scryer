@@ -3,15 +3,15 @@ use chrono::Utc;
 use scryer_application::{
     CollectionUpdate, DownloadClientConfigRepository, DownloadQueueCommandRepository,
     DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate,
-    ExternalImportMonitorSnapshotRepository, ImportRepository, InsertMediaFileInput,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
-    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
-    NotificationSubscriptionRepository, PendingImportStatus, PluginInstallationRepository,
-    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    SettingsRepository, ShowRepository, SubmissionScope, SubtitleProviderConfigUpdate,
-    TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
-    TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
-    UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery, WantedStatus,
+    ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
+    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
+    PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
+    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
+    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
+    WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -1423,10 +1423,6 @@ fn catalog_store(services: &SqliteServices) -> SqliteCatalogStore {
     SqliteCatalogStore::new(services)
 }
 
-fn workflow_store(services: &SqliteServices) -> SqliteWorkflowStore {
-    SqliteWorkflowStore::new(services)
-}
-
 fn library_state_store(services: &SqliteServices) -> SqliteLibraryStateStore {
     SqliteLibraryStateStore::new(services)
 }
@@ -2071,6 +2067,7 @@ async fn single_connection_services(name: &str) -> (SqliteServices, std::path::P
         sender: crate::commands::spawn_db_command_worker(pool.clone()),
         pool,
         encryption_key: Arc::new(RwLock::new(None)),
+        writer_gate: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     (services, db)
@@ -2644,7 +2641,7 @@ async fn title_queries_find_by_external_id() {
 }
 
 #[tokio::test]
-async fn title_queries_list_by_external_ids_returns_unique_first_matches() {
+async fn title_queries_list_by_external_ids_preserve_request_order_for_unique_first_matches() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_external_id_batch_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -2673,10 +2670,10 @@ async fn title_queries_list_by_external_ids_returns_unique_first_matches() {
         .expect("second title should insert");
 
     let values = vec![
+        "345678".to_string(),
         "123456".to_string(),
         "123456".to_string(),
         "000000".to_string(),
-        "345678".to_string(),
     ];
     let matches = catalog
         .list_by_external_ids("tvdb", &values)
@@ -2684,8 +2681,131 @@ async fn title_queries_list_by_external_ids_returns_unique_first_matches() {
         .expect("batch lookup should succeed");
 
     assert_eq!(matches.len(), 2);
-    assert_eq!(matches[0].id, first.id);
-    assert_eq!(matches[1].id, second.id);
+    assert_eq!(matches[0].id, second.id);
+    assert_eq!(matches[1].id, first.id);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_with_empty_library_allowlist_return_no_results() {
+    let (services, db) = temp_services("scryer_title_empty_library_allowlist").await;
+    let catalog = catalog_store(&services);
+
+    let mut title = make_test_title("title-empty-library-allowlist", None);
+    title.name = "Alpha Allowlist".to_string();
+    TitleRepository::create(&catalog, title)
+        .await
+        .expect("title should insert");
+
+    let empty_library_ids = Vec::<String>::new();
+
+    let listed = TitleRepository::list_for_libraries(&catalog, None, &empty_library_ids, None)
+        .await
+        .expect("plain library listing should succeed");
+    assert!(listed.is_empty());
+
+    let searched = TitleRepository::list_for_libraries_without_external_ids(
+        &catalog,
+        None,
+        &empty_library_ids,
+        Some("alpha".to_string()),
+    )
+    .await
+    .expect("ranked library listing should succeed");
+    assert!(searched.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_get_by_facet_and_slug_trim_input_and_reject_duplicates() {
+    let (services, db) = temp_services("scryer_title_slug_lookup").await;
+    let catalog = catalog_store(&services);
+
+    let mut first = make_test_title("title-slug-primary", None);
+    first.facet = MediaFacet::Movie;
+    first.library_id = "library-a".to_string();
+    first.slug = Some("earth-defenders".to_string());
+    TitleRepository::create(&catalog, first.clone())
+        .await
+        .expect("first title should insert");
+
+    let found =
+        TitleRepository::get_by_facet_and_slug(&catalog, MediaFacet::Movie, " earth-defenders ")
+            .await
+            .expect("trimmed slug lookup should succeed")
+            .expect("trimmed slug lookup should find a title");
+    assert_eq!(found.id, first.id);
+
+    let mut duplicate = make_test_title("title-slug-duplicate", None);
+    duplicate.facet = MediaFacet::Movie;
+    duplicate.library_id = "library-b".to_string();
+    duplicate.slug = Some("earth-defenders".to_string());
+    TitleRepository::create(&catalog, duplicate)
+        .await
+        .expect("duplicate title should insert in a different library");
+
+    let err =
+        TitleRepository::get_by_facet_and_slug(&catalog, MediaFacet::Movie, "earth-defenders")
+            .await
+            .expect_err("duplicate slug lookup should fail validation");
+    assert!(matches!(
+        err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("earth-defenders") && message.contains("multiple titles")
+    ));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_get_by_facet_libraries_and_slug_trim_input_and_reject_duplicates() {
+    let (services, db) = temp_services("scryer_title_library_slug_lookup").await;
+    let catalog = catalog_store(&services);
+
+    let mut first = make_test_title("title-library-slug-a", None);
+    first.facet = MediaFacet::Movie;
+    first.library_id = "library-a".to_string();
+    first.slug = Some("planet-heroes".to_string());
+    TitleRepository::create(&catalog, first)
+        .await
+        .expect("first title should insert");
+
+    let mut second = make_test_title("title-library-slug-b", None);
+    second.facet = MediaFacet::Movie;
+    second.library_id = "library-b".to_string();
+    second.slug = Some("planet-heroes".to_string());
+    TitleRepository::create(&catalog, second.clone())
+        .await
+        .expect("second title should insert");
+
+    let library_b = vec!["library-b".to_string()];
+    let found = TitleRepository::get_by_facet_libraries_and_slug(
+        &catalog,
+        MediaFacet::Movie,
+        &library_b,
+        " planet-heroes ",
+    )
+    .await
+    .expect("trimmed library slug lookup should succeed")
+    .expect("trimmed library slug lookup should find a title");
+    assert_eq!(found.id, second.id);
+
+    let libraries = vec!["library-a".to_string(), "library-b".to_string()];
+    let err = TitleRepository::get_by_facet_libraries_and_slug(
+        &catalog,
+        MediaFacet::Movie,
+        &libraries,
+        "planet-heroes",
+    )
+    .await
+    .expect_err("duplicate library slug lookup should fail validation");
+    assert!(matches!(
+        err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("planet-heroes") && message.contains("multiple titles")
+    ));
 
     let _ = std::fs::remove_file(db);
 }

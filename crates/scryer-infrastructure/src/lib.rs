@@ -29,8 +29,8 @@ mod spellfix;
 mod sqlite_backup;
 mod sqlite_services;
 mod staged_nzb_store;
-mod title_store;
 mod title_images;
+mod title_store;
 mod types;
 mod workflow_store;
 
@@ -47,8 +47,8 @@ pub mod sqlite {
     pub use crate::settings_store::SqliteSettingsStore;
     pub use crate::sqlite_backup::SqliteLogicalBackupExporter;
     pub use crate::sqlite_services::{DbRuntime, SqliteServices};
-    pub use crate::title_store::TitleStore;
     pub use crate::title_images::SqliteTitleImageProcessor;
+    pub use crate::title_store::TitleStore;
     pub use crate::workflow_store::SqliteWorkflowStore;
 }
 
@@ -87,8 +87,8 @@ pub use spellfix::register_spellfix_auto_extension;
 pub use sqlite_backup::SqliteLogicalBackupExporter;
 pub use sqlite_services::{DbRuntime, SqliteServices};
 pub use staged_nzb_store::FileSystemStagedNzbStore;
-pub use title_store::TitleStore;
 pub use title_images::SqliteTitleImageProcessor;
+pub use title_store::TitleStore;
 pub(crate) use types::sqlite_url_with_create;
 pub use types::{
     DownloadQueueCommandRecord, EmbeddedMigrationDescriptor, LibraryProbeSignatureRecord,

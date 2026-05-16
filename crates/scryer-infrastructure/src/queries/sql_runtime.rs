@@ -253,7 +253,7 @@ impl SqlRuntime {
     }
 }
 
-impl SqlTx<'_> {
+impl<'db> SqlTx<'db> {
     pub(crate) async fn execute(&mut self, template: &str, args: &[SqlArg]) -> AppResult<u64> {
         match self {
             SqlTx::Sqlite(tx) => {
@@ -271,14 +271,14 @@ impl SqlTx<'_> {
         }
     }
 
-    pub(crate) fn sqlite(&mut self) -> Option<&mut Transaction<'_, Sqlite>> {
+    pub(crate) fn sqlite<'tx>(&'tx mut self) -> Option<&'tx mut Transaction<'db, Sqlite>> {
         match self {
             Self::Sqlite(tx) => Some(tx),
             Self::Postgres(_) => None,
         }
     }
 
-    pub(crate) fn postgres(&mut self) -> Option<&mut Transaction<'_, Postgres>> {
+    pub(crate) fn postgres<'tx>(&'tx mut self) -> Option<&'tx mut Transaction<'db, Postgres>> {
         match self {
             Self::Sqlite(_) => None,
             Self::Postgres(tx) => Some(tx),
@@ -382,7 +382,7 @@ impl SqlRow {
 type SqliteQuery<'q> = Query<'q, Sqlite, SqliteArguments<'q>>;
 type PostgresQuery<'q> = Query<'q, Postgres, PgArguments>;
 
-fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, values: &[SqlArg]) -> SqliteQuery<'q> {
+fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, values: &'q [SqlArg]) -> SqliteQuery<'q> {
     for value in values {
         query = match value {
             SqlArg::Text(value) => query.bind(value),
@@ -390,13 +390,15 @@ fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, values: &[SqlArg]) -> SqliteQuery
             SqlArg::I64(value) => query.bind(*value),
             SqlArg::OptI64(value) => query.bind(*value),
             SqlArg::Bool(value) => query.bind(if *value { 1_i64 } else { 0_i64 }),
-            SqlArg::OptBool(value) => query.bind(value.map(|value| if value { 1_i64 } else { 0_i64 })),
+            SqlArg::OptBool(value) => {
+                query.bind(value.map(|value| if value { 1_i64 } else { 0_i64 }))
+            }
             SqlArg::Timestamp(value) => {
                 query.bind(value.to_rfc3339_opts(SecondsFormat::Secs, true))
             }
-            SqlArg::OptTimestamp(value) => query.bind(
-                value.map(|value| value.to_rfc3339_opts(SecondsFormat::Secs, true)),
-            ),
+            SqlArg::OptTimestamp(value) => {
+                query.bind(value.map(|value| value.to_rfc3339_opts(SecondsFormat::Secs, true)))
+            }
             SqlArg::Json(value) => query.bind(value.to_string()),
             SqlArg::OptJson(value) => query.bind(value.as_ref().map(JsonValue::to_string)),
         };
@@ -404,7 +406,7 @@ fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, values: &[SqlArg]) -> SqliteQuery
     query
 }
 
-fn bind_postgres<'q>(mut query: PostgresQuery<'q>, values: &[SqlArg]) -> PostgresQuery<'q> {
+fn bind_postgres<'q>(mut query: PostgresQuery<'q>, values: &'q [SqlArg]) -> PostgresQuery<'q> {
     for value in values {
         query = match value {
             SqlArg::Text(value) => query.bind(value),
@@ -524,7 +526,7 @@ where
     .await
 }
 
-async fn run_with_sqlite_busy_retries_with_deadline<T, Op, Fut>(
+pub(crate) async fn run_with_sqlite_busy_retries_with_deadline<T, Op, Fut>(
     operation_name: &str,
     hard_cap: Duration,
     operation: &mut Op,

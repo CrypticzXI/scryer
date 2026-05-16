@@ -12,6 +12,7 @@ use scryer_application::{
 };
 use scryer_domain::{BlocklistEntry, DomainEventType, MediaFacet};
 
+use crate::SqliteServices;
 use crate::queries::housekeeping::list_all_media_file_paths_query;
 use crate::queries::library_scan_unmatched::get_library_scan_unmatched_item_query;
 use crate::queries::media_file::{
@@ -20,16 +21,15 @@ use crate::queries::media_file::{
     list_media_files_for_title_query, list_title_episode_progress_summaries_query,
     list_title_media_size_summaries_query, list_title_quality_summaries_query,
 };
+use crate::queries::sql_runtime::run_with_sqlite_busy_retries;
 use crate::queries::subtitle::{
     delete_external_subtitle_probe_cache_entry, get_subtitle_download,
     is_blocklisted as is_subtitle_blocklisted, list_blocklist_for_media_file,
     list_external_subtitle_probe_cache_for_media_file, list_subtitle_downloads_for_media_file,
     list_subtitle_downloads_for_title, upsert_external_subtitle_probe_cache_entry,
 };
-use crate::queries::sql_runtime::run_with_sqlite_busy_retries;
 use crate::queries::workflow::get_library_probe_signature_query;
 use crate::title_images::{get_title_image_blob_query, list_titles_requiring_image_refresh_query};
-use crate::SqliteServices;
 
 #[derive(Clone)]
 pub struct LibraryStateStore<S> {

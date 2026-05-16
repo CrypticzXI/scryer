@@ -12,9 +12,11 @@ use scryer_domain::{
 };
 use sqlx::{Row, types::Json};
 
-use crate::catalog_store::{CatalogStore, LibrarySql, ShowSql, UserSql};
+use crate::catalog_store::{CatalogStore, LibrarySql, ShowSql, TitleDatastoreSql, UserSql};
 use crate::queries::{
-    show, sql_runtime::SqlTarget, title::collection_interstitial_column_values,
+    show,
+    sql_runtime::{SqlTarget, StoreDatastore},
+    title::collection_interstitial_column_values,
 };
 
 pub type PostgresCatalogStore = CatalogStore<PostgresCatalogSql>;
@@ -33,6 +35,14 @@ impl PostgresCatalogStore {
 impl PostgresCatalogSql {
     fn new(pool: sqlx::PgPool) -> Self {
         Self { pool }
+    }
+}
+
+impl TitleDatastoreSql for PostgresCatalogSql {
+    fn title_datastore(&self) -> StoreDatastore {
+        StoreDatastore::Postgres {
+            pool: self.pool.clone(),
+        }
     }
 }
 

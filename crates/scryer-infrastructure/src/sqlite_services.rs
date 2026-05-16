@@ -1,17 +1,16 @@
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, CreateTitleOutcome, DownloadClientConfigUpdate,
-    DownloadQueueCommandRecord, DownloadSourceIdentity, EpisodeUpdate,
-    ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate, QualityProfile,
-    ReleaseDownloadAttemptOutcome, ScopedExternalId, SubtitleProviderConfigUpdate,
-    SuccessfulGrabCommit, TitleImageReplacement, TitleMetadataUpdate, WantedItemsQuery,
+    AppError, AppResult, CollectionUpdate, DownloadClientConfigUpdate, DownloadQueueCommandRecord,
+    DownloadSourceIdentity, EpisodeUpdate, ExternalImportMonitorSnapshot, ImportArtifact,
+    IndexerConfigUpdate, QualityProfile, ReleaseDownloadAttemptOutcome, ScopedExternalId,
+    SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement, WantedItemsQuery,
     WorkflowOperationInfo,
 };
 use scryer_domain::{
     BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
-    Episode, ExternalId, ImportStatus, ImportType, IndexerConfig, InterstitialMovieMetadata,
-    MediaFacet, NewDomainEvent, NotificationChannelConfig, NotificationSubscription,
-    PluginInstallation, PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload,
-    SubtitleProviderConfig, Title, User,
+    Episode, ImportStatus, ImportType, IndexerConfig, InterstitialMovieMetadata, MediaFacet,
+    NewDomainEvent, NotificationChannelConfig, NotificationSubscription, PluginInstallation,
+    PostProcessingScript, PostProcessingScriptRun, RuleSet, SubtitleDownload,
+    SubtitleProviderConfig, User,
 };
 use sqlx::ConnectOptions;
 use std::sync::{Arc, RwLock};
