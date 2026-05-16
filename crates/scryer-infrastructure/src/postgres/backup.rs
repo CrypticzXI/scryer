@@ -12,7 +12,8 @@ use sqlx::{Column, Row, TypeInfo, ValueRef};
 use scryer_application::{
     AppError, AppResult, BACKUP_TABLE_CATALOG, BackupBundleExportRequest, BackupBundleStaging,
     BackupExportOutcome, BackupRestorePreparedBundle, BackupTableClassification,
-    LogicalBackupExporter, backup_table_part_filename, prepare_backup_restore_payload,
+    LogicalBackupExporter, PreparedBackupBundleDirectory, backup_table_part_filename,
+    prepare_backup_restore_payload,
 };
 use scryer_domain::MediaFacet;
 
@@ -125,15 +126,50 @@ pub async fn restore_backup_bundle_into_postgres_pool(
     passphrase: Option<&str>,
 ) -> AppResult<BackupRestorePreparedBundle> {
     let payload = prepare_backup_restore_payload(bundle_path, passphrase)?;
+    restore_bundle_parts_into_postgres_pool(
+        pool,
+        &payload.manifest().row_counts,
+        &payload.tables_dir(),
+    )
+    .await?;
+
+    Ok(
+        BackupRestorePreparedBundle::from_summary_and_instance_secrets_env(
+            payload.summary(),
+            payload.instance_secrets_env()?,
+        ),
+    )
+}
+
+pub async fn restore_prepared_backup_directory_into_postgres_pool(
+    pool: &PgPool,
+    prepared_root: &Path,
+) -> AppResult<BackupRestorePreparedBundle> {
+    let payload = PreparedBackupBundleDirectory::load(prepared_root)?;
+    restore_bundle_parts_into_postgres_pool(
+        pool,
+        &payload.manifest().row_counts,
+        &payload.tables_dir(),
+    )
+    .await?;
+
+    Ok(
+        BackupRestorePreparedBundle::from_summary_and_instance_secrets_env(
+            payload.summary(),
+            payload.instance_secrets_env()?,
+        ),
+    )
+}
+
+async fn restore_bundle_parts_into_postgres_pool(
+    pool: &PgPool,
+    row_counts: &BTreeMap<String, u64>,
+    tables_dir: &Path,
+) -> AppResult<()> {
     validate_backup_catalog(pool).await?;
     let export_tables = ordered_export_tables(pool).await?;
     let expected_tables = export_tables.iter().cloned().collect::<BTreeSet<_>>();
-    let manifest_tables = payload
-        .manifest()
-        .row_counts
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
+    let manifest_tables = row_counts.keys().cloned().collect::<BTreeSet<_>>();
     if manifest_tables != expected_tables {
         let missing = expected_tables
             .difference(&manifest_tables)
@@ -161,7 +197,6 @@ pub async fn restore_backup_bundle_into_postgres_pool(
         })?;
     }
 
-    let tables_dir = payload.tables_dir();
     for table in &export_tables {
         import_table_part(
             &mut tx,
@@ -174,7 +209,7 @@ pub async fn restore_backup_bundle_into_postgres_pool(
     rebuild_title_search_projection(&mut tx).await?;
     repair_sequences(&mut tx).await?;
 
-    for (table, expected_rows) in &payload.manifest().row_counts {
+    for (table, expected_rows) in row_counts {
         let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
         let actual_rows: i64 =
             sqlx::query_scalar(&sql)
@@ -196,12 +231,7 @@ pub async fn restore_backup_bundle_into_postgres_pool(
         AppError::Repository(format!("failed to commit PostgreSQL restore: {error}"))
     })?;
 
-    Ok(
-        BackupRestorePreparedBundle::from_summary_and_instance_secrets_env(
-            payload.summary(),
-            payload.instance_secrets_env()?,
-        ),
-    )
+    Ok(())
 }
 
 async fn validate_backup_catalog(pool: &PgPool) -> AppResult<()> {

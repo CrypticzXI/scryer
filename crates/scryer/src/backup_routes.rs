@@ -6,7 +6,10 @@ use axum::extract::{Path as AxumPath, RawQuery, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase, BackupInfo, BackupService, BackupStatus};
-use scryer_infrastructure::{DatastoreConfig, DatastoreEngine, datastore_file_path};
+use scryer_infrastructure::{
+    DatastoreConfig, DatastoreEngine, datastore_file_path,
+    restore_prepared_backup_directory_to_datastore,
+};
 use serde::Serialize;
 use tokio_util::io::ReaderStream;
 
@@ -19,6 +22,7 @@ const LEGACY_BACKUP_PLAINTEXT_EXTENSION: &str = ".scryer-backup.tar.zst";
 const LEGACY_BACKUP_ENCRYPTED_EXTENSION: &str = ".scryer-backup.enc";
 const INSTANCE_SECRETS_ENV_FILENAME: &str = "instance-secrets.env";
 const PENDING_RESTORE_DB_FILENAME: &str = "restored-scryer.db";
+const PENDING_RESTORE_PREPARED_BUNDLE_DIRNAME: &str = "prepared-bundle";
 const PENDING_RESTORE_DIRNAME: &str = "restore-pending";
 const PENDING_RESTORE_READY_FILENAME: &str = "restore-ready";
 
@@ -38,6 +42,10 @@ fn pending_restore_dir(data_dir: &Path) -> PathBuf {
 
 fn pending_restore_db_path(data_dir: &Path) -> PathBuf {
     pending_restore_dir(data_dir).join(PENDING_RESTORE_DB_FILENAME)
+}
+
+fn pending_restore_prepared_bundle_dir(data_dir: &Path) -> PathBuf {
+    pending_restore_dir(data_dir).join(PENDING_RESTORE_PREPARED_BUNDLE_DIRNAME)
 }
 
 fn pending_restore_instance_secrets_path(data_dir: &Path) -> PathBuf {
@@ -365,6 +373,38 @@ pub(crate) fn finalize_pending_restore_if_present(
     data_dir: &Path,
     datastore_config: &DatastoreConfig,
 ) -> std::io::Result<bool> {
+    finalize_pending_restore_if_present_with_postgres_restore(
+        data_dir,
+        datastore_config,
+        |prepared_bundle_dir, datastore_config| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to start restore runtime while finalizing pending restore: {error}"
+                    ))
+                })?;
+            runtime.block_on(async {
+                restore_prepared_backup_directory_to_datastore(
+                    datastore_config.clone(),
+                    prepared_bundle_dir,
+                )
+                .await?;
+                Ok(())
+            })
+        },
+    )
+}
+
+fn finalize_pending_restore_if_present_with_postgres_restore<F>(
+    data_dir: &Path,
+    datastore_config: &DatastoreConfig,
+    restore_postgres_bundle: F,
+) -> std::io::Result<bool>
+where
+    F: FnOnce(&Path, &DatastoreConfig) -> Result<(), AppError>,
+{
     let pending_dir = pending_restore_dir(data_dir);
     let pending_ready = pending_restore_ready_path(data_dir);
     if !pending_dir.exists() {
@@ -389,6 +429,15 @@ pub(crate) fn finalize_pending_restore_if_present(
 
     let promotion_result = match datastore_config.engine {
         DatastoreEngine::Postgres => {
+            let prepared_bundle_dir = pending_restore_prepared_bundle_dir(data_dir);
+            if !prepared_bundle_dir.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "pending restore bundle is missing",
+                ));
+            }
+            restore_postgres_bundle(&prepared_bundle_dir, datastore_config)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
             stage_file_for_promotion(&pending_secrets, &target_secrets)?;
             promote_staged_file(&target_secrets)
         }
@@ -406,8 +455,9 @@ pub(crate) fn finalize_pending_restore_if_present(
             promotion_targets.extend(target_db_paths.clone());
             recover_interrupted_restore_promotion(&target_db_paths)?;
 
-            for (pending_path, target_path) in
-                sqlite_related_paths(&pending_db).into_iter().zip(target_db_paths.iter())
+            for (pending_path, target_path) in sqlite_related_paths(&pending_db)
+                .into_iter()
+                .zip(target_db_paths.iter())
             {
                 if pending_path.exists() {
                     stage_file_for_promotion(&pending_path, target_path)?;
@@ -415,8 +465,9 @@ pub(crate) fn finalize_pending_restore_if_present(
             }
             stage_file_for_promotion(&pending_secrets, &target_secrets)?;
 
-            for (pending_path, target_path) in
-                sqlite_related_paths(&pending_db).into_iter().zip(target_db_paths.iter())
+            for (pending_path, target_path) in sqlite_related_paths(&pending_db)
+                .into_iter()
+                .zip(target_db_paths.iter())
             {
                 if pending_path.exists() {
                     promote_staged_file(target_path)?;
@@ -531,6 +582,8 @@ mod tests {
         let data_dir = temp.path();
         let pending_dir = pending_restore_dir(data_dir);
         std::fs::create_dir_all(&pending_dir).expect("pending dir");
+        std::fs::create_dir_all(pending_restore_prepared_bundle_dir(data_dir))
+            .expect("prepared bundle dir");
         std::fs::write(
             pending_restore_instance_secrets_path(data_dir),
             b"SCRYER_ENCRYPTION_KEY=\"restored\"\n",
@@ -541,7 +594,7 @@ mod tests {
         let target_secrets = managed_instance_secrets_path(data_dir);
         std::fs::write(&target_secrets, b"old").expect("target secrets");
 
-        let restored = finalize_pending_restore_if_present(
+        let restored = finalize_pending_restore_if_present_with_postgres_restore(
             data_dir,
             &DatastoreConfig::postgres(
                 "postgres://localhost/scryer".to_string(),
@@ -550,6 +603,13 @@ mod tests {
                 data_dir,
                 scryer_infrastructure::MigrationMode::Apply,
             ),
+            |prepared_bundle_dir, _| {
+                assert_eq!(
+                    prepared_bundle_dir,
+                    pending_restore_prepared_bundle_dir(data_dir)
+                );
+                Ok(())
+            },
         )
         .expect("finalize");
 
@@ -559,6 +619,45 @@ mod tests {
             "SCRYER_ENCRYPTION_KEY=\"restored\"\n",
         );
         assert!(!pending_dir.exists());
+    }
+
+    #[test]
+    fn finalize_pending_restore_preserves_postgres_pending_state_on_restore_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path();
+        let pending_dir = pending_restore_dir(data_dir);
+        std::fs::create_dir_all(&pending_dir).expect("pending dir");
+        std::fs::create_dir_all(pending_restore_prepared_bundle_dir(data_dir))
+            .expect("prepared bundle dir");
+        std::fs::write(
+            pending_restore_instance_secrets_path(data_dir),
+            b"SCRYER_ENCRYPTION_KEY=\"restored\"\n",
+        )
+        .expect("pending secrets");
+        std::fs::write(pending_restore_ready_path(data_dir), b"ready").expect("ready marker");
+
+        let target_secrets = managed_instance_secrets_path(data_dir);
+        std::fs::write(&target_secrets, b"old").expect("target secrets");
+
+        let error = finalize_pending_restore_if_present_with_postgres_restore(
+            data_dir,
+            &DatastoreConfig::postgres(
+                "postgres://localhost/scryer".to_string(),
+                "postgres://localhost/scryer".to_string(),
+                scryer_infrastructure::DatastoreConfigSource::EnvDbUrl,
+                data_dir,
+                scryer_infrastructure::MigrationMode::Apply,
+            ),
+            |_, _| Err(AppError::Repository("restore failed".into())),
+        )
+        .expect_err("restore should fail");
+
+        assert!(error.to_string().contains("restore failed"));
+        assert_eq!(
+            std::fs::read_to_string(&target_secrets).expect("target secrets"),
+            "old",
+        );
+        assert!(pending_dir.exists());
     }
 
     #[test]

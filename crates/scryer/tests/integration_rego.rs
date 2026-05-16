@@ -73,6 +73,15 @@ score_entry["eng_bonus"] := 50 if {
 }
 "#;
 
+const UNKNOWN_RELEASE_FIELD_REGO: &str = r#"
+package scryer.rules.user.placeholder
+import rego.v1
+
+score_entry["bad"] := 100 if {
+    input.release.password_protected != null
+}
+"#;
+
 const FLOAT_REGO: &str = r#"
 package scryer.rules.user.placeholder
 import rego.v1
@@ -161,6 +170,7 @@ fn test_input() -> scryer_rules::UserRuleInput {
             is_repack: false,
             is_ai_enhanced: false,
             is_hardcoded_subs: false,
+            is_password_protected: Some(false),
             is_hdr10plus: false,
             is_hlg: false,
             is_10bit: false,
@@ -650,6 +660,29 @@ async fn rego_validate_lang_matches_accepted() {
 }
 
 #[tokio::test]
+async fn rego_validate_unknown_input_path_rejected() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: ValidateRuleSetInput!) {
+            validateRuleSet(input: $input) { valid errors }
+        }"#,
+        json!({ "input": { "regoSource": UNKNOWN_RELEASE_FIELD_REGO } }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["validateRuleSet"]["valid"], false);
+    let errors = body["data"]["validateRuleSet"]["errors"]
+        .as_array()
+        .unwrap();
+    assert!(errors.iter().any(|error| {
+        error
+            .as_str()
+            .is_some_and(|value| value.contains("input.release.password_protected"))
+    }));
+}
+
+#[tokio::test]
 async fn rego_create_invalid_rego_fails() {
     let ctx = TestContext::new().await;
     let body = gql(
@@ -669,6 +702,57 @@ async fn rego_create_invalid_rego_fails() {
         body.get("errors").is_some(),
         "creating a rule with invalid Rego should return errors"
     );
+}
+
+#[tokio::test]
+async fn rego_create_unknown_input_path_fails() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: CreateRuleSetInput!) {
+            createRuleSet(input: $input) { id }
+        }"#,
+        json!({
+            "input": {
+                "name": "Unknown Input Rule",
+                "regoSource": UNKNOWN_RELEASE_FIELD_REGO,
+            }
+        }),
+    )
+    .await;
+    assert!(body.get("errors").is_some());
+    let errors = body["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|error| {
+        error["message"]
+            .as_str()
+            .is_some_and(|value| value.contains("input.release.password_protected"))
+    }));
+}
+
+#[tokio::test]
+async fn rego_update_unknown_input_path_fails() {
+    let ctx = TestContext::new().await;
+    let id = create_rule(&ctx, "Update Unknown Input", SIMPLE_BONUS_REGO).await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: UpdateRuleSetInput!) {
+            updateRuleSet(input: $input) { id }
+        }"#,
+        json!({
+            "input": {
+                "id": id,
+                "regoSource": UNKNOWN_RELEASE_FIELD_REGO,
+            }
+        }),
+    )
+    .await;
+    assert!(body.get("errors").is_some());
+    let errors = body["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|error| {
+        error["message"]
+            .as_str()
+            .is_some_and(|value| value.contains("input.release.password_protected"))
+    }));
 }
 
 // ===========================================================================

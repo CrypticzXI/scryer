@@ -206,6 +206,7 @@ const en: LocaleDictionary = {
   "settings.libraryEffectiveAudio": "Effective: {{value}}",
   "settings.libraryQualityProfileLabel": "Quality profile",
   "settings.libraryInheritFacet": "Inherit catalog default",
+  "settings.libraryCustomRouting": "Custom library routing",
   "settings.libraryEffectiveProfile": "Effective: {{value}}",
   "settings.libraryScoringPersonaLabel": "Scoring persona",
   "settings.libraryEffectivePersona": "Effective: {{value}}",
@@ -418,9 +419,32 @@ const en: LocaleDictionary = {
     "It removes failed downloads from the download client history.",
   "settings.downloadClientEnabledInfo":
     "When disabled, this client is skipped during download routing.",
+  "settings.downloadClientEnabledLabel": "Enable download client",
+  "settings.downloadClientFilesystemPathMapping":
+    "Filesystem Path Mapping (Advanced)",
+  "settings.downloadClientFilesystemPathMappingHelp":
+    "Remote path mappings are rarely needed. Use them only when Scryer and this download client see the same download folder at different filesystem paths.",
   "settings.downloadClientRemotePathMappings": "Remote Path Mappings",
   "settings.downloadClientRemotePathMappingsHelp":
-    "Map download-client paths reported inside its container or host to local paths Scryer can read. Enter one rule per line as REMOTE => LOCAL.",
+    "Each rule is saved as REMOTE => LOCAL.",
+  "settings.downloadClientRemotePathMappingsRemoteLabel": "Remote Path",
+  "settings.downloadClientRemotePathMappingsRemoteHelp":
+    "Path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsLocalLabel": "Local Path",
+  "settings.downloadClientRemotePathMappingsLocalHelp":
+    "Path Scryer should use on this machine.",
+  "settings.downloadClientRemotePathMappingsAdd": "Add Mapping",
+  "settings.downloadClientRemotePathMappingsEmptyState":
+    "No path mappings configured yet. Add one only if Scryer cannot read the path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsExampleLabel": "Example",
+  "settings.downloadClientRemotePathMappingsRemoteRequired":
+    "Remote Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalRequired":
+    "Local Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalAbsolute":
+    "Local Path must be an absolute path.",
+  "settings.downloadClientRemotePathMappingsRemoteDuplicate":
+    "Remote Path duplicates another mapping in this client.",
   "settings.downloadClientSabnzbdAuthHelp":
     "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
   "settings.downloadClientSabnzbdNzbdavHelp":
@@ -976,6 +1000,8 @@ const en: LocaleDictionary = {
   "settings.indexerUpdate": "Update Indexer",
   "settings.indexerCreate": "Create Indexer",
   "settings.indexerCreateNew": "Create new indexer",
+  "settings.indexerManagedParentHint":
+    "Prowlarr parent configs are management-only. Search modes come from synced child indexers.",
   "settings.indexerConfirmDiscardTitle": "Discard current indexer edits?",
   "settings.indexerConfirmDiscardDescription":
     "Your current indexer edits will be lost.",
@@ -1073,6 +1099,8 @@ const en: LocaleDictionary = {
     "True when the parser detected an AI-enhanced encode marker",
   "settings.refReleaseIsHardcodedSubs":
     "True when hardcoded subtitles are detected in the release name",
+  "settings.refReleaseIsPasswordProtected":
+    "True when the indexer supplied a normalized archive or pack password hint for the release",
   "settings.refReleaseIsHdr10Plus":
     "True when HDR10+ is detected from the release metadata",
   "settings.refReleaseIsHlg":

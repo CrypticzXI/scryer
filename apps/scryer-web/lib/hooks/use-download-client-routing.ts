@@ -8,12 +8,15 @@ import {
 } from "@/lib/constants/nzbget";
 import { useClient } from "urql";
 import {
-  buildRoutingOrder,
   getDefaultRoutingOrder,
   areNzbgetRoutingMapsEqual,
   areRoutingOrdersEqual,
   type NzbgetRoutingOrder,
 } from "@/lib/utils/media-content";
+import {
+  buildDownloadClientRoutingState,
+  serializeDownloadClientRoutingEntries,
+} from "@/lib/utils/download-client-routing";
 import type {
   DownloadClientRecord,
   DownloadClientRoutingEntry,
@@ -59,22 +62,6 @@ export type DownloadClientRoutingHookResult = {
   moveDownloadClientInScope: (clientId: string, direction: Direction) => void;
 };
 
-function normalizeRoutingEntry(
-  entry: DownloadClientRoutingEntry | undefined,
-): DownloadClientRoutingSettings {
-  return {
-    enabled: entry?.enabled ?? DOWNLOAD_CLIENT_ROUTING_EMPTY.enabled,
-    category: entry?.category ?? DOWNLOAD_CLIENT_ROUTING_EMPTY.category,
-    recentQueuePriority:
-      entry?.recentQueuePriority ?? DOWNLOAD_CLIENT_ROUTING_EMPTY.recentQueuePriority,
-    olderQueuePriority:
-      entry?.olderQueuePriority ?? DOWNLOAD_CLIENT_ROUTING_EMPTY.olderQueuePriority,
-    removeCompleted:
-      entry?.removeCompleted ?? DOWNLOAD_CLIENT_ROUTING_EMPTY.removeCompleted,
-    removeFailed: entry?.removeFailed ?? DOWNLOAD_CLIENT_ROUTING_EMPTY.removeFailed,
-  };
-}
-
 export function useDownloadClientRouting({
   activeQualityScopeId,
 }: DownloadClientRoutingHookArgs): DownloadClientRoutingHookResult {
@@ -113,18 +100,11 @@ export function useDownloadClientRouting({
       clients: DownloadClientRecord[],
       routingEntries: DownloadClientRoutingEntry[],
     ) => {
-      const parsedRouting = Object.fromEntries(
-        routingEntries.map((entry) => [entry.clientId, normalizeRoutingEntry(entry)]),
-      ) as DownloadClientRoutingSettingsByClient;
+      const nextState = buildDownloadClientRoutingState(clients, routingEntries);
+      const scopeRouting = nextState.routing;
+      const nextOrder = nextState.order;
 
       setDownloadClients(clients);
-
-      const scopeRouting: DownloadClientRoutingSettingsByClient = {};
-      for (const client of clients) {
-        scopeRouting[client.id] =
-          parsedRouting[client.id] ?? DOWNLOAD_CLIENT_ROUTING_EMPTY;
-      }
-
       setDownloadClientRoutingByScope((previous) => {
         const currentScopeRouting = previous[activeQualityScopeId] ?? {};
         if (areNzbgetRoutingMapsEqual(currentScopeRouting, scopeRouting)) {
@@ -136,10 +116,6 @@ export function useDownloadClientRouting({
           [activeQualityScopeId]: scopeRouting,
         };
       });
-      const nextOrder = buildRoutingOrder(
-        clients.map((client) => client.id),
-        scopeRouting,
-      );
       setDownloadClientRoutingOrderByScope((previous) => {
         const currentOrder = previous[activeQualityScopeId] ?? [];
         if (areRoutingOrdersEqual(currentOrder, nextOrder)) {
@@ -195,62 +171,26 @@ export function useDownloadClientRouting({
         [scopeId]: true,
       }));
       try {
-        const payload: Record<string, DownloadClientRoutingSettings> = {};
-
-        for (const clientId of order) {
-          if (scopeRouting[clientId]) {
-            payload[clientId] = scopeRouting[clientId];
-          }
-        }
-
-        for (const client of downloadClients) {
-          if (!payload[client.id]) {
-            payload[client.id] =
-              scopeRouting[client.id] ?? DOWNLOAD_CLIENT_ROUTING_EMPTY;
-          }
-        }
-
         const { data: saveData, error: saveError } = await client
           .mutation(updateDownloadClientRoutingMutation, {
             input: {
               scope: scopeId,
-              entries: Object.entries(payload).map(([clientId, routing]) => ({
-                clientId,
-                enabled: routing.enabled,
-                category: routing.category || null,
-                recentQueuePriority: routing.recentQueuePriority || null,
-                olderQueuePriority: routing.olderQueuePriority || null,
-                removeCompleted: routing.removeCompleted,
-                removeFailed: routing.removeFailed,
-              })),
+              entries: serializeDownloadClientRoutingEntries(
+                downloadClients,
+                scopeRouting,
+                order,
+              ),
             },
           })
           .toPromise();
         if (saveError) throw saveError;
 
-        const savedRouting = Object.fromEntries(
-          (saveData.updateDownloadClientRouting || []).map(
-            (entry: DownloadClientRoutingEntry) => [
-              entry.clientId,
-              normalizeRoutingEntry(entry),
-            ],
-          ),
-        ) as DownloadClientRoutingSettingsByClient;
-        const normalizedSavedRouting: DownloadClientRoutingSettingsByClient = {};
-        for (const client of downloadClients) {
-          const routing =
-            savedRouting[client.id] ??
-            scopeRouting[client.id] ??
-            DOWNLOAD_CLIENT_ROUTING_EMPTY;
-          normalizedSavedRouting[client.id] = {
-            ...DOWNLOAD_CLIENT_ROUTING_EMPTY,
-            ...routing,
-          };
-        }
-        const nextOrder = buildRoutingOrder(
-          downloadClients.map((client) => client.id),
-          normalizedSavedRouting,
+        const savedState = buildDownloadClientRoutingState(
+          downloadClients,
+          saveData.updateDownloadClientRouting || [],
         );
+        const normalizedSavedRouting = savedState.routing;
+        const nextOrder = savedState.order;
 
         setDownloadClientRoutingByScope((previous) => {
           const currentScopeRouting = previous[scopeId] ?? {};

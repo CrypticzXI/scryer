@@ -24,6 +24,9 @@ use serde_json::Value;
 pub const PROWLARR_PROVIDER_TYPE: &str = "prowlarr";
 
 const USER_AGENT: &str = "scryer-prowlarr/0.1";
+const SYSTEM_STATUS_PATH: &str = "/api/v1/system/status";
+const INDEXER_PATH: &str = "/api/v1/indexer";
+const APP_PROFILE_PATH: &str = "/api/v1/appprofile";
 
 #[derive(Debug, Clone)]
 struct ProwlarrConfig {
@@ -96,10 +99,12 @@ impl ProwlarrRequestError {
 
     fn into_app_error(self) -> AppError {
         match self {
-            Self::InvalidConfig(message)
-            | Self::AuthFailed(message)
-            | Self::Unreachable(message)
-            | Self::Unsupported(message) => AppError::Repository(message),
+            Self::InvalidConfig(message) | Self::AuthFailed(message) => {
+                AppError::Validation(message)
+            }
+            Self::Unreachable(message) | Self::Unsupported(message) => {
+                AppError::Repository(message)
+            }
             Self::RateLimited(message, Some(retry_after_seconds)) => {
                 AppError::Repository(format!("{message} (retry after {retry_after_seconds}s)"))
             }
@@ -110,6 +115,8 @@ impl ProwlarrRequestError {
 
 #[derive(Debug, Deserialize)]
 struct ProwlarrSystemStatus {
+    #[serde(default, rename = "appName")]
+    app_name: String,
     version: String,
 }
 
@@ -216,7 +223,7 @@ impl ProwlarrManagementClient {
     }
 
     async fn fetch_system_status(&self) -> Result<ProwlarrSystemStatus, ProwlarrRequestError> {
-        self.get_json_raw("/api/v1/system/status").await
+        self.get_json_raw(SYSTEM_STATUS_PATH).await
     }
 
     async fn get_json<T>(&self, path: &str) -> AppResult<T>
@@ -282,7 +289,7 @@ impl ProwlarrManagementClient {
             });
         }
 
-        Err(map_http_error(status, &body, retry_after_seconds))
+        Err(map_http_error(path, status, &body, retry_after_seconds))
     }
 
     fn request_policy(&self, path: &str) -> RequestPolicy {
@@ -326,19 +333,33 @@ impl IndexerClient for ProwlarrSearchStub {
 impl IndexerManagementClient for ProwlarrManagementClient {
     async fn validate_connection(&self) -> AppResult<IndexerValidationResult> {
         match self.fetch_system_status().await {
-            Ok(status) => Ok(validation_result(
-                "valid",
-                Some(&format!("Connected to Prowlarr {}", status.version)),
-                None,
-            )),
+            Ok(status) => {
+                if !status.app_name.trim().eq_ignore_ascii_case("Prowlarr") {
+                    let message = if status.app_name.trim().is_empty() {
+                        "base_url responded but did not identify itself as Prowlarr".to_string()
+                    } else {
+                        format!(
+                            "base_url responded as '{}', not Prowlarr",
+                            status.app_name.trim()
+                        )
+                    };
+                    return Ok(ProwlarrRequestError::InvalidConfig(message).to_validation_result());
+                }
+
+                Ok(validation_result(
+                    "valid",
+                    Some(&format!("Connected to Prowlarr {}", status.version)),
+                    None,
+                ))
+            }
             Err(error) => Ok(error.to_validation_result()),
         }
     }
 
     async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
         let config = self.config()?.clone();
-        let indexers: Vec<ProwlarrIndexerResource> = self.get_json("/api/v1/indexer").await?;
-        let app_profiles: Vec<ProwlarrAppProfile> = self.get_json("/api/v1/appProfile").await?;
+        let indexers: Vec<ProwlarrIndexerResource> = self.get_json(INDEXER_PATH).await?;
+        let app_profiles: Vec<ProwlarrAppProfile> = self.get_json(APP_PROFILE_PATH).await?;
         let app_profiles_by_id = app_profiles
             .into_iter()
             .map(|profile| (profile.id, profile))
@@ -733,6 +754,7 @@ fn retry_after_seconds(headers: &reqwest::header::HeaderMap) -> Option<i64> {
 }
 
 fn map_http_error(
+    path: &str,
     status: StatusCode,
     body: &[u8],
     retry_after_seconds: Option<i64>,
@@ -747,10 +769,13 @@ fn map_http_error(
             body_text,
             "Prowlarr rejected the API key",
         )),
-        404 => ProwlarrRequestError::InvalidConfig(non_empty_or(
-            body_text,
-            "base_url does not appear to point at a Prowlarr API",
-        )),
+        404 => ProwlarrRequestError::InvalidConfig(match path {
+            SYSTEM_STATUS_PATH => "base_url does not appear to point at a Prowlarr API".to_string(),
+            INDEXER_PATH | APP_PROFILE_PATH => {
+                format!("Prowlarr sync endpoint '{path}' was not found")
+            }
+            _ => format!("Prowlarr endpoint '{path}' was not found"),
+        }),
         429 => ProwlarrRequestError::RateLimited(
             non_empty_or(body_text, "Prowlarr rate limited the request"),
             retry_after_seconds,
@@ -781,6 +806,41 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use scryer_domain::IndexerConfig;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_indexer_config(base_url: &str) -> IndexerConfig {
+        IndexerConfig {
+            id: "cfg-1".to_string(),
+            name: "Prowlarr".to_string(),
+            provider_type: PROWLARR_PROVIDER_TYPE.to_string(),
+            base_url: base_url.to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: false,
+            enable_auto_search: false,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(
+                json!({
+                    "base_url": base_url,
+                    "api_key": "secret",
+                })
+                .to_string(),
+            ),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
 
     #[test]
     fn anime_subcategories_do_not_leak_into_series_routing() {
@@ -897,5 +957,116 @@ mod tests {
         assert!(!child.enable_auto_search);
         assert!(!metadata.enable_rss);
         assert!(!metadata.enable_automatic_search);
+    }
+
+    #[tokio::test]
+    async fn validate_connection_rejects_non_prowlarr_app_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Sonarr",
+                "version": "4.0.0"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let result = client
+            .validate_connection()
+            .await
+            .expect("validation result");
+
+        assert_eq!(result.status, "invalid_config");
+        assert_eq!(
+            result.message.as_deref(),
+            Some("base_url responded as 'Sonarr', not Prowlarr")
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_sync_uses_lowercase_appprofile_route() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(INDEXER_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(APP_PROFILE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let plan = client.plan_sync("parent").await.expect("sync plan");
+
+        assert!(plan.children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn system_status_404_keeps_base_url_message() {
+        let server = MockServer::start().await;
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let result = client
+            .validate_connection()
+            .await
+            .expect("validation result");
+
+        assert_eq!(result.status, "invalid_config");
+        assert_eq!(
+            result.message.as_deref(),
+            Some("base_url does not appear to point at a Prowlarr API")
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_endpoint_404_names_missing_path() {
+        for missing_path in [INDEXER_PATH, APP_PROFILE_PATH] {
+            let server = MockServer::start().await;
+            if missing_path != INDEXER_PATH {
+                Mock::given(method("GET"))
+                    .and(path(INDEXER_PATH))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+                    .mount(&server)
+                    .await;
+            }
+            if missing_path != APP_PROFILE_PATH {
+                Mock::given(method("GET"))
+                    .and(path(APP_PROFILE_PATH))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+                    .mount(&server)
+                    .await;
+            }
+
+            let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+            let error = client
+                .plan_sync("parent")
+                .await
+                .expect_err("missing endpoint");
+
+            assert_eq!(
+                error.to_string(),
+                format!("validation: Prowlarr sync endpoint '{missing_path}' was not found")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_endpoint_auth_failure_maps_to_validation() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(INDEXER_PATH))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let error = client.plan_sync("parent").await.expect_err("auth failure");
+
+        assert_eq!(
+            error.to_string(),
+            "validation: Prowlarr rejected the API key"
+        );
     }
 }

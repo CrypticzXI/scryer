@@ -31,6 +31,7 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 
 type DownloadClientTypeLogoOption = {
   value: string;
@@ -222,6 +223,7 @@ export type SettingsDownloadClientsSectionProps = {
   isSavingOrder: boolean;
   isEditorOpen: boolean;
   editorMode: "create" | "edit";
+  localPathStyle: LocalPathStyle;
   startCreateDownloadClient: () => void;
 };
 
@@ -315,6 +317,7 @@ export function SettingsDownloadClientsSection({
   isSavingOrder,
   isEditorOpen,
   editorMode,
+  localPathStyle,
   startCreateDownloadClient,
 }: SettingsDownloadClientsSectionProps) {
   const t = useTranslate();
@@ -380,6 +383,45 @@ export function SettingsDownloadClientsSection({
     normalizedClientType === "nzbget" || normalizedClientType === "sabnzbd";
   const optionalCredentialLabel = hasOptionalCredentials ? " (optional)" : "";
   const isEditing = editorMode === "edit";
+  const [areRemotePathMappingsValid, setAreRemotePathMappingsValid] = React.useState(true);
+  const [isFilesystemPathMappingOpen, setIsFilesystemPathMappingOpen] = React.useState(() =>
+    downloadClientDraft.remotePathMappings.trim().length > 0,
+  );
+  const editorIdentity = `${isEditorOpen ? "open" : "closed"}:${editorMode}:${editingDownloadClientId ?? "new"}`;
+  const previousEditorIdentity = React.useRef(editorIdentity);
+
+  React.useEffect(() => {
+    if (previousEditorIdentity.current === editorIdentity) {
+      return;
+    }
+
+    previousEditorIdentity.current = editorIdentity;
+    setAreRemotePathMappingsValid(true);
+    setIsFilesystemPathMappingOpen(
+      downloadClientDraft.remotePathMappings.trim().length > 0,
+    );
+  }, [downloadClientDraft.remotePathMappings, editorIdentity]);
+
+  React.useEffect(() => {
+    if (downloadClientDraft.remotePathMappings.trim().length > 0 || !areRemotePathMappingsValid) {
+      setIsFilesystemPathMappingOpen(true);
+    } else {
+      setIsFilesystemPathMappingOpen(false);
+    }
+  }, [areRemotePathMappingsValid, downloadClientDraft.remotePathMappings]);
+
+  const handleSubmitDownloadClient = React.useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      if (!areRemotePathMappingsValid) {
+        event.preventDefault();
+        setIsFilesystemPathMappingOpen(true);
+        return;
+      }
+
+      return submitDownloadClient(event);
+    },
+    [areRemotePathMappingsValid, submitDownloadClient],
+  );
 
   return (
     <div className="space-y-4 text-sm">
@@ -512,7 +554,7 @@ export function SettingsDownloadClientsSection({
               <form
                 id="settings-download-client-form"
                 className="space-y-3"
-                onSubmit={submitDownloadClient}
+                onSubmit={handleSubmitDownloadClient}
               >
             <div className="grid gap-3 md:grid-cols-3">
               <div>
@@ -645,6 +687,26 @@ export function SettingsDownloadClientsSection({
                 <Label className="mb-2 block">{t("settings.downloadClientUrlPreview")}</Label>
                 <Input value={urlPreview || "https://..."} readOnly disabled className="text-muted-foreground" />
               </label>
+              <div className="md:col-span-3 rounded-xl border border-border bg-card/60 p-3">
+                <label className="flex items-center gap-3">
+                  <Checkbox
+                    checked={downloadClientDraft.isEnabled}
+                    onCheckedChange={(checked) =>
+                      setDownloadClientDraft((prev: DownloadClientDraft) => ({
+                        ...prev,
+                        isEnabled: checked === true,
+                      }))
+                    }
+                  />
+                  <span className="inline-flex items-center gap-2 text-sm font-medium">
+                    {t("settings.downloadClientEnabledLabel")}
+                    <InfoHelp
+                      ariaLabel={t("settings.downloadClientEnabledLabel")}
+                      text={t("settings.downloadClientEnabledInfo")}
+                    />
+                  </span>
+                </label>
+              </div>
               {hasApiKeyField ? (
                 <div>
                   <Label className="mb-2 block" htmlFor="settings-download-client-api-key">
@@ -735,34 +797,27 @@ export function SettingsDownloadClientsSection({
                   {t("settings.downloadClientDecypharrFilesystemHelp")}
                 </p>
               ) : null}
-              <details className="md:col-span-3 rounded-xl border border-border bg-card p-3" open>
+              <details
+                className="md:col-span-3 rounded-xl border border-border bg-card p-3"
+                open={isFilesystemPathMappingOpen}
+                onToggle={(event) =>
+                  setIsFilesystemPathMappingOpen(event.currentTarget.open)
+                }
+              >
                 <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
-                  {t("qualityProfile.otherOptions")}
+                  {t("settings.downloadClientFilesystemPathMapping")}
                 </summary>
                 <div className="mt-3 space-y-3">
-                  <label className="mb-2 flex items-center gap-3">
-                    <Checkbox
-                      checked={downloadClientDraft.isEnabled}
-                      onCheckedChange={(checked) =>
-                        setDownloadClientDraft((prev: DownloadClientDraft) => ({
-                          ...prev,
-                          isEnabled: checked === true,
-                        }))
-                      }
-                    />
-                    <span className="inline-flex items-center gap-2 text-sm">
-                      {t("form.enabled")}
-                      <InfoHelp
-                        ariaLabel={t("form.enabled")}
-                        text={t("settings.downloadClientEnabledInfo")}
-                      />
-                    </span>
-                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.downloadClientFilesystemPathMappingHelp")}
+                  </p>
                   <DownloadClientRemotePathMappingsField
                     fieldKey="remote_path_mappings"
                     label={t("settings.downloadClientRemotePathMappings")}
                     value={downloadClientDraft.remotePathMappings}
                     helpText={t("settings.downloadClientRemotePathMappingsHelp")}
+                    localPathStyle={localPathStyle}
+                    onValidityChange={setAreRemotePathMappingsValid}
                     onChange={(_, value) =>
                       setDownloadClientDraft((prev: DownloadClientDraft) => ({
                         ...prev,
@@ -777,7 +832,7 @@ export function SettingsDownloadClientsSection({
                 <Button
                   id="settings-download-client-save"
                   type="submit"
-                  disabled={mutatingDownloadClientId === "new"}
+                  disabled={mutatingDownloadClientId === "new" || !areRemotePathMappingsValid}
                 >
                   {mutatingDownloadClientId === "new"
                     ? t("label.saving")
@@ -790,7 +845,11 @@ export function SettingsDownloadClientsSection({
                 type="button"
                 variant="secondary"
                 onClick={() => void testDownloadClientConnection()}
-                disabled={isTestingDownloadClientConnection || mutatingDownloadClientId !== null}
+                disabled={
+                  isTestingDownloadClientConnection ||
+                  mutatingDownloadClientId !== null ||
+                  !areRemotePathMappingsValid
+                }
               >
                 {isTestingDownloadClientConnection
                   ? t("status.testingDownloadClient", { client: selectedDownloadClientLabel })

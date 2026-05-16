@@ -391,6 +391,29 @@ const es: LocaleDictionary = {
   "settings.downloadClientRemotePathMappings": "Mapeos de rutas remotas",
   "settings.downloadClientRemotePathMappingsHelp":
     "Asigna las rutas que el cliente de descarga informa dentro de su contenedor o host a rutas locales que Scryer puede leer. Introduce una regla por línea como REMOTE => LOCAL.",
+  "settings.downloadClientEnabledLabel": "Enable download client",
+  "settings.downloadClientFilesystemPathMapping":
+    "Filesystem Path Mapping (Advanced)",
+  "settings.downloadClientFilesystemPathMappingHelp":
+    "Remote path mappings are rarely needed. Use them only when Scryer and this download client see the same download folder at different filesystem paths.",
+  "settings.downloadClientRemotePathMappingsRemoteLabel": "Remote Path",
+  "settings.downloadClientRemotePathMappingsRemoteHelp":
+    "Path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsLocalLabel": "Local Path",
+  "settings.downloadClientRemotePathMappingsLocalHelp":
+    "Path Scryer should use on this machine.",
+  "settings.downloadClientRemotePathMappingsAdd": "Add Mapping",
+  "settings.downloadClientRemotePathMappingsEmptyState":
+    "No path mappings configured yet. Add one only if Scryer cannot read the path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsExampleLabel": "Example",
+  "settings.downloadClientRemotePathMappingsRemoteRequired":
+    "Remote Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalRequired":
+    "Local Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalAbsolute":
+    "Local Path must be an absolute path.",
+  "settings.downloadClientRemotePathMappingsRemoteDuplicate":
+    "Remote Path duplicates another mapping in this client.",
   "settings.downloadClientSabnzbdAuthHelp":
     "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
   "settings.downloadClientSabnzbdNzbdavHelp":

@@ -15,7 +15,7 @@ use crate::postgres::{
     PostgresCatalogStore, PostgresConfigStore, PostgresCustomizationStore,
     PostgresLibraryStateStore, PostgresLogicalBackupExporter, PostgresNotificationStore,
     PostgresReleaseStore, PostgresServices, PostgresSettingsStore, PostgresWorkflowStore,
-    restore_backup_bundle_into_postgres_pool,
+    restore_backup_bundle_into_postgres_pool, restore_prepared_backup_directory_into_postgres_pool,
 };
 use crate::{
     FileSystemStagedNzbStore, InMemoryIndexerStatsTracker, MetadataGatewayClient, MigrationMode,
@@ -1301,6 +1301,28 @@ pub async fn restore_backup_bundle_to_datastore(
             let restore_result =
                 restore_backup_bundle_into_postgres_pool(services.pool(), bundle_path, passphrase)
                     .await;
+            services.pool().close().await;
+            restore_result
+        }
+    }
+}
+
+pub async fn restore_prepared_backup_directory_to_datastore(
+    config: DatastoreConfig,
+    prepared_root: &Path,
+) -> AppResult<scryer_application::BackupRestorePreparedBundle> {
+    match config.engine {
+        DatastoreEngine::Sqlite => Err(AppError::Validation(
+            "prepared backup directory restore is only supported for PostgreSQL".into(),
+        )),
+        DatastoreEngine::Postgres => {
+            let services =
+                PostgresServices::new_with_mode(config.database_url, config.migration_mode).await?;
+            let restore_result = restore_prepared_backup_directory_into_postgres_pool(
+                services.pool(),
+                prepared_root,
+            )
+            .await;
             services.pool().close().await;
             restore_result
         }

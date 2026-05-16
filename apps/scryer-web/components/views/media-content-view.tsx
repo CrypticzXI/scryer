@@ -10,6 +10,7 @@ import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/comp
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   DownloadClientRecord,
+  DownloadClientRoutingEntry,
   IndexerCategoryRoutingSettings,
   IndexerRecord,
   LibraryScanSummary,
@@ -246,7 +247,12 @@ export function MediaContentView({
     selectedLibraryIds: string[];
     allLibrariesValue: string;
     setSelectedLibraryIds: (value: string[]) => void;
+    libraryDownloadClients: DownloadClientRecord[];
+    libraryDownloadClientsLoading: boolean;
     loadLibrarySettings: (libraryId: string) => Promise<LibrarySettingsRecord | null>;
+    loadFacetDownloadClientRouting: (
+      scopeId: Facet,
+    ) => Promise<DownloadClientRoutingEntry[]>;
     createLibrary: (input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
     updateLibrary: (libraryId: string, input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
     deleteLibrary: (libraryId: string) => Promise<boolean | void> | boolean | void;
@@ -361,6 +367,8 @@ export function MediaContentView({
     libraryScanSummary,
     libraries,
     librariesLoading,
+    libraryDownloadClients,
+    libraryDownloadClientsLoading,
     rootValidationLibraries,
     rootValidationLibrariesLoading,
     invalidRootLibraryIds,
@@ -695,7 +703,10 @@ export function MediaContentView({
             scanNotice={libraryScanNotice}
             scanSummary={libraryScanSummary}
             qualityProfiles={qualityProfiles}
+            downloadClients={libraryDownloadClients}
+            downloadClientsLoading={libraryDownloadClientsLoading}
             loadLibrarySettings={state.loadLibrarySettings}
+            loadFacetDownloadClientRouting={state.loadFacetDownloadClientRouting}
             onCreateLibrary={state.createLibrary}
             onUpdateLibrary={state.updateLibrary}
             onDeleteLibrary={state.deleteLibrary}

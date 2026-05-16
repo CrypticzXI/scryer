@@ -1681,7 +1681,11 @@ pub(crate) async fn process_download_failure(
     if context.remove_from_client_if_configured
         && let Some(title) = attribution.title.as_ref()
         && app
-            .should_remove_failed_download(&title.facet, &context.client_id)
+            .should_remove_failed_download(
+                Some(title.library_id.as_str()),
+                &title.facet,
+                &context.client_id,
+            )
             .await
         && let Err(error) = app
             .services

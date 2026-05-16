@@ -34,6 +34,10 @@ import {
   normalizeDownloadClientType,
 } from "@/lib/utils/download-clients";
 import {
+  resolveLocalPathStyle,
+  type LocalPathStyle,
+} from "@/lib/utils/local-path-style";
+import {
   qualityProfileSettingsToEntries,
   qualityProfileEntryToMutationInput,
 } from "@/lib/utils/quality-profiles";
@@ -275,6 +279,9 @@ export function SetupWizardContainer({
   const [dcTypeOptions, setDcTypeOptions] = useState<DownloadClientTypeOption[]>(
     () => buildDownloadClientTypeOptions([]),
   );
+  const [dcLocalPathStyle, setDcLocalPathStyle] = useState<LocalPathStyle>(() =>
+    resolveLocalPathStyle(null),
+  );
   const [dcTesting, setDcTesting] = useState(false);
   const [dcTestResult, setDcTestResult] = useState<"success" | "failed" | null>(null);
   const [dcSaving, setDcSaving] = useState(false);
@@ -368,6 +375,7 @@ export function SetupWizardContainer({
       const { data, error } = await client.query(setupWizardProviderTypesInitQuery, {}).toPromise();
       if (error && !data?.downloadClientProviderTypes && !data?.indexerProviderTypes) throw error;
 
+      setDcLocalPathStyle(resolveLocalPathStyle(data?.systemHealth?.dbPath));
       setDcTypeOptions(
         buildDownloadClientTypeOptions(
           (data?.downloadClientProviderTypes as ProviderTypeInfo[] | undefined) ?? [],
@@ -805,6 +813,32 @@ export function SetupWizardContainer({
       setMediaPathsSaving(false);
     }
   }, [client, moviesPath, seriesPath, animePath, goToStep]);
+
+  const handleDcDraftChange = useCallback(
+    (updates: Partial<DownloadClientDraft>) => {
+      const next = { ...dcDraft, ...updates };
+      if (updates.clientType && updates.clientType !== dcDraft.clientType) {
+        const prevDefault = DEFAULT_PORT_FOR_CLIENT_TYPE[dcDraft.clientType] ?? "8080";
+        if (dcDraft.port === "" || dcDraft.port === prevDefault) {
+          next.port = DEFAULT_PORT_FOR_CLIENT_TYPE[updates.clientType] ?? "8080";
+        }
+      }
+
+      const hasChanged = (
+        Object.keys(next) as Array<keyof DownloadClientDraft>
+      ).some((key) => next[key] !== dcDraft[key]);
+
+      if (!hasChanged) {
+        return;
+      }
+
+      setDcDraft(next);
+      setDcSaved(false);
+      setDcTestResult(null);
+      setDcError(null);
+    },
+    [dcDraft],
+  );
 
   // ── Download client test ────────────────────────────────────────────
   const testDownloadClient = useCallback(async () => {
@@ -1520,18 +1554,8 @@ export function SetupWizardContainer({
           t={t}
           draft={dcDraft}
           downloadClientTypeOptions={availableDcTypeOptions}
-          onDraftChange={(updates) =>
-            setDcDraft((prev) => {
-              const next = { ...prev, ...updates };
-              if (updates.clientType && updates.clientType !== prev.clientType) {
-                const prevDefault = DEFAULT_PORT_FOR_CLIENT_TYPE[prev.clientType] ?? "8080";
-                if (prev.port === "" || prev.port === prevDefault) {
-                  next.port = DEFAULT_PORT_FOR_CLIENT_TYPE[updates.clientType] ?? "8080";
-                }
-              }
-              return next;
-            })
-          }
+          localPathStyle={dcLocalPathStyle}
+          onDraftChange={handleDcDraftChange}
           onTestConnection={dcSaved ? testDownloadClient : handleDcTestAndSave}
           onNext={() => goToStep(5)}
           onBack={() => goToStep(3)}

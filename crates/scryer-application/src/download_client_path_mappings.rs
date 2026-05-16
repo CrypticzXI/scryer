@@ -430,6 +430,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_download_client_remote_path_mappings_accepts_ui_serialized_remote_to_local_rules() {
+        let mappings = parse_download_client_remote_path_mappings(
+            r#"{"remote_path_mappings":"/downloads/tv => /Volumes/media/downloads/tv\nD:\\Data\\Anime => /Volumes/anime"}"#,
+        )
+        .expect("parse mappings");
+
+        assert_eq!(
+            remap_remote_path("/downloads/tv/Show.Name", &mappings).as_deref(),
+            Some("/Volumes/media/downloads/tv/Show.Name"),
+        );
+        assert_eq!(
+            remap_remote_path(r#"D:\Data\Anime\Series.Name"#, &mappings).as_deref(),
+            Some("/Volumes/anime/Series.Name"),
+        );
+    }
+
+    #[test]
     fn parse_download_client_remote_path_mappings_rejects_remote_whitespace() {
         let error = parse_download_client_remote_path_mappings(
             r#"{"remote_path_mappings":" /downloads => /Volumes/downloads"}"#,

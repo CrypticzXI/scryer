@@ -19,8 +19,7 @@ use crate::facet_handler::{RenameFacetSettings, rename_facet_settings};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity,
-    ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

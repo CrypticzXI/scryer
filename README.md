@@ -72,11 +72,9 @@ Scryer ships as a single Rust binary with:
 
 ## Docker
 
-Scryer publishes a first-party container image family:
+Scryer publishes a first-party container image:
 
-- `ghcr.io/scryer-media/scryer:latest` for the broadest compatibility with portable plus optimized Linux payloads
-- `ghcr.io/scryer-media/scryer:latest-slim` for the same multi-payload runtime with zstd-compressed OCI image layers
-- `ghcr.io/scryer-media/scryer:latest-modern` for zstd-compressed OCI image layers plus only the optimized Linux payload per architecture
+- `ghcr.io/scryer-media/scryer:latest` auto-selects the best embedded Linux payload for the host CPU while keeping portable plus optimized Linux payloads in one image
 
 The Docker contract is intentionally small:
 
@@ -85,8 +83,6 @@ The Docker contract is intentionally small:
 - `TZ` defaults to `Etc/UTC`
 - `UMASK` is optional and accepts standard octal values such as `022`
 - `--user=1000:1000` and `--read-only=true` are both supported
-
-Use `latest-modern` only on hosts that satisfy the optimized CPU baseline. If the host does not qualify, the entrypoint exits with a clear error that points you back to `latest-slim` or the plain `latest` tag.
 
 ### docker-compose
 
@@ -128,11 +124,9 @@ docker run -d \
   ghcr.io/scryer-media/scryer:latest
 ```
 
-If you run the container as root, the entrypoint will re-own `/config` to `PUID` / `PGID`, migrate a legacy `/data/scryer.db` into `/config` when needed, and then drop privileges before starting `scryer`. If you run with `--user=1000:1000`, make sure the bind mount is already owned by that uid/gid because the ownership repair path is skipped in non-root mode.
+If you run the container as root, the entrypoint will re-own `/config` to `PUID` / `PGID` and then drop privileges before starting `scryer`. If you run with `--user=1000:1000`, make sure the bind mount is already owned by that uid/gid because the ownership repair path is skipped in non-root mode.
 
 For hardened deployments, `scryer` supports `--read-only=true` as long as `/config` remains writable.
-
-The `latest-slim` and `latest-modern` tags use zstd-compressed OCI image layers. The plain `latest` tag keeps the broadest pull compatibility by shipping the same runtime without zstd layer compression.
 
 ## Development
 

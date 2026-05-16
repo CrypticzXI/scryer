@@ -31,6 +31,10 @@ import {
   isBuiltInDownloadClientType,
   normalizeDownloadClientType,
 } from "@/lib/utils/download-clients";
+import {
+  resolveLocalPathStyle,
+  type LocalPathStyle,
+} from "@/lib/utils/local-path-style";
 import type {
   DownloadClientRecord,
   DownloadClientDraft,
@@ -79,6 +83,9 @@ export function SettingsDownloadClientsContainer({
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
+  const [localPathStyle, setLocalPathStyle] = useState<LocalPathStyle>(() =>
+    resolveLocalPathStyle(null),
+  );
   const [pendingEditorAction, setPendingEditorAction] =
     useState<PendingDownloadClientEditorAction>(null);
   const [draftBaseline, setDraftBaseline] = useState<DownloadClientDraft>(() =>
@@ -152,6 +159,7 @@ export function SettingsDownloadClientsContainer({
         const clients: DownloadClientRecord[] = data?.downloadClientConfigs || [];
         setSettingsDownloadClients(clients);
         setDownloadClientOrder(clients.map((clientRecord) => clientRecord.id));
+        setLocalPathStyle(resolveLocalPathStyle(data?.systemHealth?.dbPath));
         setDownloadClientTypeOptions(
           buildDownloadClientTypeOptions(
             (data?.downloadClientProviderTypes as ProviderTypeInfo[] | undefined) ?? [],
@@ -567,12 +575,13 @@ export function SettingsDownloadClientsContainer({
         toggleDownloadClientEnabled={toggleDownloadClientEnabled}
         deleteDownloadClient={deleteDownloadClient}
         downloadClientOrder={downloadClientOrder}
-        moveDownloadClient={moveDownloadClient}
-        isSavingOrder={isSavingOrder}
-        isEditorOpen={isEditorOpen}
-        editorMode={editorMode}
-        startCreateDownloadClient={requestCreateEditor}
-      />
+      moveDownloadClient={moveDownloadClient}
+      isSavingOrder={isSavingOrder}
+      isEditorOpen={isEditorOpen}
+      editorMode={editorMode}
+      localPathStyle={localPathStyle}
+      startCreateDownloadClient={requestCreateEditor}
+    />
       <ConfirmDialog
         open={pendingEditorAction !== null}
         title={t("settings.downloadClientConfirmDiscardTitle")}

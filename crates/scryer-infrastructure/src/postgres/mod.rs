@@ -11,7 +11,10 @@ mod settings_store;
 mod timestamp;
 mod workflow_store;
 
-pub use backup::{PostgresLogicalBackupExporter, restore_backup_bundle_into_postgres_pool};
+pub use backup::{
+    PostgresLogicalBackupExporter, restore_backup_bundle_into_postgres_pool,
+    restore_prepared_backup_directory_into_postgres_pool,
+};
 pub use catalog_store::PostgresCatalogStore;
 pub use config_store::PostgresConfigStore;
 pub use customization_store::PostgresCustomizationStore;

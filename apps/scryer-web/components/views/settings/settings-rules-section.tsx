@@ -146,6 +146,11 @@ const RELEASE_FIELDS: RefField[] = [
     descKey: "settings.refReleaseIsHardcodedSubs",
   },
   {
+    field: "is_password_protected",
+    type: "bool?",
+    descKey: "settings.refReleaseIsPasswordProtected",
+  },
+  {
     field: "is_hdr10plus",
     type: "bool",
     descKey: "settings.refReleaseIsHdr10Plus",

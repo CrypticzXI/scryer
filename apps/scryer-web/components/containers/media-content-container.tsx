@@ -19,6 +19,8 @@ import {
   buildDeleteTitlePreviewBatchQuery,
   browsePathQuery,
   deleteTitlePreviewQuery,
+  downloadClientRoutingQuery,
+  downloadClientsInitQuery,
   librariesQuery,
   librarySettingsQuery,
   ruleSetsQuery,
@@ -49,6 +51,8 @@ import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { useQueueFormState } from "@/lib/hooks/use-queue-form-state";
 import { useTitleManagementState } from "@/lib/hooks/use-title-management-state";
 import type {
+  DownloadClientRecord,
+  DownloadClientRoutingEntry,
   LibraryRecord,
   LibrarySettingsDraft,
   LibrarySettingsRecord,
@@ -459,6 +463,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = React.useState(false);
+  const [libraryDownloadClients, setLibraryDownloadClients] = React.useState<
+    DownloadClientRecord[]
+  >([]);
+  const [libraryDownloadClientsLoading, setLibraryDownloadClientsLoading] =
+    React.useState(false);
   const [catalogBootstrapState, setCatalogBootstrapState] = React.useState({
     facet: activeFacet,
     loading: false,
@@ -2058,6 +2067,68 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [client],
   );
 
+  const loadFacetDownloadClientRouting = React.useCallback(
+    async (
+      scopeId: LibraryRecord["facet"],
+    ): Promise<DownloadClientRoutingEntry[]> => {
+      const { data, error } = await client
+        .query<{ downloadClientRouting: DownloadClientRoutingEntry[] }>(
+          downloadClientRoutingQuery,
+          { scopeId },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      return data?.downloadClientRouting ?? [];
+    },
+    [client],
+  );
+
+  React.useEffect(() => {
+    if (!isMediaView || contentSettingsSection !== "library") {
+      setLibraryDownloadClientsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLibraryDownloadClientsLoading(true);
+    void client
+      .query<{ downloadClientConfigs: DownloadClientRecord[] }>(
+        downloadClientsInitQuery,
+        {},
+        { requestPolicy: "network-only" },
+      )
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled) {
+          return;
+        }
+        if (error) {
+          throw error;
+        }
+        setLibraryDownloadClients(data?.downloadClientConfigs ?? []);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToLoad"),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLibraryDownloadClientsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, contentSettingsSection, isMediaView, setGlobalStatus, t]);
+
   const createLibrary = React.useCallback(
     async (input: { name: string; roots: RootFolderOption[]; settings?: LibrarySettingsDraft }) => {
       setLibrarySettingsSaving(true);
@@ -2534,6 +2605,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           libraryScanSummary,
           libraries,
           librariesLoading,
+          libraryDownloadClients,
+          libraryDownloadClientsLoading,
           rootValidationLibraries,
           rootValidationLibrariesLoading,
           invalidRootLibraryIds,
@@ -2541,6 +2614,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           allLibrariesValue: ALL_LIBRARIES_VALUE,
           setSelectedLibraryIds,
           loadLibrarySettings,
+          loadFacetDownloadClientRouting,
           createLibrary,
           updateLibrary,
           deleteLibrary,

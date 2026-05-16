@@ -205,7 +205,8 @@ pub use security::backup_bundle::{
     BackupBundleInspectSummary, BackupBundleRestorePayload, BackupBundleStaging,
     BackupExportOutcome, BackupExportSecrets, BackupInstanceSecrets, BackupRestorePreparedBundle,
     BackupTableCatalogEntry, BackupTableClassification, EXPORT_BATCH_SIZE,
-    backup_table_part_filename, inspect_backup_bundle, prepare_backup_restore_payload,
+    PreparedBackupBundleDirectory, backup_table_part_filename, inspect_backup_bundle,
+    prepare_backup_restore_payload,
 };
 pub use settings::settings::{
     AcquisitionSettings, AutoBackupSettings, DownloadClientRoutingSettingsEntry,

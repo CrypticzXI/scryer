@@ -57,7 +57,8 @@ pub use datastore::{
     DatastoreAssembly, DatastoreConfig, DatastoreConfigSource, DatastoreCustomizationStore,
     DatastoreEngine, DatastoreSettingsStore, datastore_file_path,
     resolve_datastore_config_from_env, restore_backup_bundle_to_datastore,
-    restore_backup_bundle_to_datastore_path, validate_datastore,
+    restore_backup_bundle_to_datastore_path, restore_prepared_backup_directory_to_datastore,
+    validate_datastore,
 };
 pub use download_clients::{
     MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter,

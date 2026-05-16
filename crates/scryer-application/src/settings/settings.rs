@@ -379,6 +379,50 @@ fn download_client_routing_payload(
     Ok(payload)
 }
 
+fn download_client_routing_settings_entry_from_domain(
+    client_id: String,
+    entry: crate::catalog_helpers::DownloadClientRoutingEntry,
+) -> DownloadClientRoutingSettingsEntry {
+    DownloadClientRoutingSettingsEntry {
+        client_id,
+        enabled: entry.enabled,
+        category: entry.category,
+        recent_queue_priority: entry.recent_queue_priority,
+        older_queue_priority: entry.older_queue_priority,
+        remove_completed: entry.remove_completed,
+        remove_failed: entry.remove_failed,
+    }
+}
+
+fn disabled_download_client_routing_settings_entry(
+    client_id: String,
+) -> DownloadClientRoutingSettingsEntry {
+    let mut entry = crate::catalog_helpers::default_download_client_routing_entry();
+    entry.enabled = false;
+    download_client_routing_settings_entry_from_domain(client_id, entry)
+}
+
+fn normalize_download_client_routing_settings_entry(
+    entry: DownloadClientRoutingSettingsEntry,
+) -> AppResult<DownloadClientRoutingSettingsEntry> {
+    let client_id = entry.client_id.trim().to_string();
+    if client_id.is_empty() {
+        return Err(AppError::Validation(
+            "download client routing entry requires client_id".to_string(),
+        ));
+    }
+
+    Ok(DownloadClientRoutingSettingsEntry {
+        client_id,
+        enabled: entry.enabled,
+        category: normalize_optional_string(entry.category),
+        recent_queue_priority: normalize_optional_string(entry.recent_queue_priority),
+        older_queue_priority: normalize_optional_string(entry.older_queue_priority),
+        remove_completed: entry.remove_completed,
+        remove_failed: entry.remove_failed,
+    })
+}
+
 fn indexer_routing_payload(
     entries: Vec<IndexerRoutingSettingsEntry>,
 ) -> AppResult<serde_json::Map<String, serde_json::Value>> {
@@ -1171,6 +1215,27 @@ impl AppUseCase {
             .await
     }
 
+    async fn load_explicit_download_client_routing_json(
+        &self,
+        scope_id: &str,
+    ) -> AppResult<Option<String>> {
+        if let Some(raw_json) = self
+            .read_setting_string_value_explicit(
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                Some(scope_id),
+            )
+            .await?
+        {
+            return Ok(Some(raw_json));
+        }
+
+        self.read_setting_string_value_explicit(
+            LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+            Some(scope_id),
+        )
+        .await
+    }
+
     async fn emit_settings_saved(
         &self,
         actor: &User,
@@ -1553,35 +1618,59 @@ impl AppUseCase {
         library_id: &str,
     ) -> AppResult<Option<Vec<DownloadClientRoutingSettingsEntry>>> {
         let Some(raw_json) = self
-            .read_setting_string_value_explicit(
-                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
-                Some(library_id),
-            )
+            .load_explicit_download_client_routing_json(library_id)
             .await?
         else {
             return Ok(None);
         };
         let Some(entries) = crate::catalog_helpers::parse_download_client_routing_map(&raw_json)
         else {
-            return Ok(Some(Vec::new()));
+            warn!(
+                library_id,
+                "ignoring invalid library-scoped download client routing override in settings"
+            );
+            return Ok(None);
         };
-        let mut routing = entries
+        let entries = entries
             .into_iter()
             .map(|(client_id, config)| {
                 let entry = crate::catalog_helpers::parse_download_client_routing_entry(&config);
-                DownloadClientRoutingSettingsEntry {
-                    client_id,
-                    enabled: entry.enabled,
-                    category: entry.category,
-                    recent_queue_priority: entry.recent_queue_priority,
-                    older_queue_priority: entry.older_queue_priority,
-                    remove_completed: entry.remove_completed,
-                    remove_failed: entry.remove_failed,
-                }
+                download_client_routing_settings_entry_from_domain(client_id, entry)
             })
             .collect::<Vec<_>>();
-        routing.sort_by(|left, right| left.client_id.cmp(&right.client_id));
+        let routing = self
+            .complete_library_download_client_routing_entries(entries)
+            .await?;
         Ok(Some(routing))
+    }
+
+    async fn complete_library_download_client_routing_entries(
+        &self,
+        entries: Vec<DownloadClientRoutingSettingsEntry>,
+    ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
+        let mut completed = Vec::new();
+        let mut seen = HashSet::new();
+
+        for entry in entries {
+            let entry = normalize_download_client_routing_settings_entry(entry)?;
+            if seen.insert(entry.client_id.clone()) {
+                completed.push(entry);
+            }
+        }
+
+        for config in self
+            .services
+            .integrations
+            .download_client_configs
+            .list(None)
+            .await?
+        {
+            if seen.insert(config.id.clone()) {
+                completed.push(disabled_download_client_routing_settings_entry(config.id));
+            }
+        }
+
+        Ok(completed)
     }
 
     async fn load_indexer_routing_override(
@@ -1990,6 +2079,9 @@ impl AppUseCase {
         }
 
         if let Some(entries) = settings.download_client_routing {
+            let entries = self
+                .complete_library_download_client_routing_entries(entries)
+                .await?;
             let payload = download_client_routing_payload(entries)?;
             self.upsert_scoped_system_setting_json(
                 DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
@@ -1998,9 +2090,19 @@ impl AppUseCase {
                 Some(actor.id.clone()),
             )
             .await?;
+            self.delete_scoped_system_setting(
+                LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+                &library.id,
+            )
+            .await?;
         } else {
             self.delete_scoped_system_setting(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, &library.id)
                 .await?;
+            self.delete_scoped_system_setting(
+                LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+                &library.id,
+            )
+            .await?;
         }
 
         let mut changed_keys = vec![

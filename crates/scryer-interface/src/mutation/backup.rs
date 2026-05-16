@@ -15,12 +15,12 @@ use scryer_application::{
 };
 use scryer_domain::AppPermission;
 use scryer_infrastructure::{
-    DatastoreConfig, DatastoreEngine, restore_backup_bundle_to_datastore,
-    restore_backup_bundle_to_datastore_path,
+    DatastoreConfig, DatastoreEngine, restore_backup_bundle_to_datastore_path,
 };
 
 const INSTANCE_SECRETS_ENV_FILENAME: &str = "instance-secrets.env";
 const PENDING_RESTORE_DB_FILENAME: &str = "restored-scryer.db";
+const PENDING_RESTORE_PREPARED_BUNDLE_DIRNAME: &str = "prepared-bundle";
 const PENDING_RESTORE_DIRNAME: &str = "restore-pending";
 const PENDING_RESTORE_READY_FILENAME: &str = "restore-ready";
 const RESTORE_STAGING_DIRNAME: &str = "restore-staging";
@@ -273,6 +273,10 @@ fn pending_restore_db_path(data_dir: &Path) -> PathBuf {
     pending_restore_dir(data_dir).join(PENDING_RESTORE_DB_FILENAME)
 }
 
+fn pending_restore_prepared_bundle_dir(data_dir: &Path) -> PathBuf {
+    pending_restore_dir(data_dir).join(PENDING_RESTORE_PREPARED_BUNDLE_DIRNAME)
+}
+
 fn pending_restore_instance_secrets_path(data_dir: &Path) -> PathBuf {
     pending_restore_dir(data_dir).join(INSTANCE_SECRETS_ENV_FILENAME)
 }
@@ -380,6 +384,7 @@ fn stage_restore_bundle(
 ) -> Result<RestoreSummaryPayload, AppError> {
     let pending_dir = pending_restore_dir(&data_dir);
     let pending_db_path = pending_restore_db_path(&data_dir);
+    let pending_prepared_bundle_dir = pending_restore_prepared_bundle_dir(&data_dir);
     let pending_secrets_path = pending_restore_instance_secrets_path(&data_dir);
     let pending_ready_path = pending_restore_ready_path(&data_dir);
     let _ = std::fs::remove_dir_all(&pending_dir);
@@ -404,20 +409,11 @@ fn stage_restore_bundle(
     let result = runtime.block_on(async move {
         match datastore_config.engine {
             DatastoreEngine::Postgres => {
-                let prepared =
-                    prepare_backup_restore_payload(&bundle_path, password.as_deref())?;
+                let prepared = prepare_backup_restore_payload(&bundle_path, password.as_deref())?;
                 let summary = restore_summary_payload(&prepared.summary());
                 let instance_secrets_env = prepared.instance_secrets_env()?;
-                write_owner_only_file_atomically(
-                    &pending_secrets_path,
-                    &instance_secrets_env,
-                )?;
-                restore_backup_bundle_to_datastore(
-                    datastore_config,
-                    &bundle_path,
-                    password.as_deref(),
-                )
-                .await?;
+                write_owner_only_file_atomically(&pending_secrets_path, &instance_secrets_env)?;
+                prepared.persist_extracted_dir(&pending_prepared_bundle_dir)?;
                 Ok::<_, AppError>(summary)
             }
             DatastoreEngine::Sqlite => {

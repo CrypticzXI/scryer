@@ -778,6 +778,7 @@ mod tests {
                 is_repack: false,
                 is_ai_enhanced: false,
                 is_hardcoded_subs: false,
+                is_password_protected: None,
                 is_hdr10plus: false,
                 is_hlg: false,
                 is_10bit: false,

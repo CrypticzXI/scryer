@@ -7,6 +7,7 @@ pub(crate) struct ReleaseRuntimeInfo<'a> {
     pub published_at: Option<&'a str>,
     pub thumbs_up: Option<i32>,
     pub thumbs_down: Option<i32>,
+    pub source_password: Option<&'a str>,
     pub extra: Option<&'a HashMap<String, serde_json::Value>>,
     pub indexer_languages: Option<&'a [String]>,
 }
@@ -71,6 +72,7 @@ pub(crate) fn build_rule_input(
             is_repack: parsed.is_repack,
             is_ai_enhanced: parsed.is_ai_enhanced,
             is_hardcoded_subs: parsed.is_hardcoded_subs,
+            is_password_protected: release_runtime.source_password.map(|_| true),
             is_hdr10plus: parsed.is_hdr10plus,
             is_hlg: parsed.is_hlg,
             is_10bit: parsed.is_10bit,
@@ -229,6 +231,7 @@ pub(crate) fn build_search_rule_input(
             published_at: result.published_at.as_deref(),
             thumbs_up: result.thumbs_up,
             thumbs_down: result.thumbs_down,
+            source_password: result.password_hint.as_deref(),
             extra: Some(&result.extra),
             indexer_languages: result.indexer_languages.as_deref(),
         },
@@ -381,7 +384,7 @@ mod tests {
                 indexer_languages: None,
                 indexer_subtitles: None,
                 indexer_grabs: None,
-                password_hint: None,
+                password_hint: Some("secret".to_string()),
                 parsed_release_metadata: None,
                 quality_profile_decision: None,
                 extra: HashMap::from([("indexer".to_string(), serde_json::json!("test"))]),
@@ -407,6 +410,7 @@ mod tests {
         assert!(value["file"].is_null());
         assert_eq!(value["context"]["library_name"], "Movies");
         assert_eq!(value["release"]["extra"]["indexer"], "test");
+        assert_eq!(value["release"]["is_password_protected"], true);
     }
 
     #[test]
@@ -430,6 +434,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                source_password: None,
                 extra: None,
                 indexer_languages: None,
             },
@@ -450,6 +455,7 @@ mod tests {
         let value = serde_json::to_value(input).unwrap();
         assert_eq!(value["context"]["search_mode"], "post_download");
         assert_eq!(value["context"]["existing_score"], 900);
+        assert!(value["release"]["is_password_protected"].is_null());
         assert_eq!(value["file"]["num_chapters"], 0);
         assert_eq!(value["file"]["audio_profile"], "LC");
         assert_eq!(value["file"]["audio_streams"][0]["codec"], "aac");
@@ -467,6 +473,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                source_password: None,
                 extra: None,
                 indexer_languages: Some(&["English".to_string(), "French".to_string()]),
             },
@@ -508,6 +515,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                source_password: None,
                 extra: None,
                 indexer_languages: Some(&["French".to_string()]),
             },
@@ -545,6 +553,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                source_password: None,
                 extra: None,
                 indexer_languages: Some(&[
                     "Filipino".to_string(),
@@ -581,6 +590,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                source_password: None,
                 extra: None,
                 indexer_languages: None,
             },
@@ -619,6 +629,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                source_password: None,
                 extra: None,
                 indexer_languages: None,
             },

@@ -1069,6 +1069,72 @@ async fn explicit_setting_query_skips_definition_defaults_for_missing_scopes() {
 }
 
 #[tokio::test]
+async fn sqlite_library_scoped_download_client_routing_round_trips_explicit_json() {
+    let (services, db) = temp_services("scryer_library_download_client_routing").await;
+    let settings = SqliteSettingsStore::new(&services);
+
+    settings
+        .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
+            category: "media".to_string(),
+            scope: "system".to_string(),
+            key_name: "download_client.routing".to_string(),
+            data_type: "json".to_string(),
+            default_value_json: "{}".to_string(),
+            is_sensitive: false,
+            validation_json: None,
+        }])
+        .await
+        .expect("definitions should seed");
+
+    let library_id = "series_default_library";
+    let value_json = serde_json::json!({
+        "weaver": {
+            "enabled": true,
+            "category": "series",
+            "recentQueuePriority": "high",
+            "olderQueuePriority": "normal",
+            "removeCompleted": true,
+            "removeFailed": false
+        }
+    })
+    .to_string();
+
+    SettingsRepository::upsert_setting_json(
+        &settings,
+        "system",
+        "download_client.routing",
+        Some(library_id.to_string()),
+        value_json.clone(),
+        "test",
+        None,
+    )
+    .await
+    .expect("library-scoped routing should save");
+
+    let explicit = SettingsRepository::get_setting_json_explicit(
+        &settings,
+        "system",
+        "download_client.routing",
+        Some(library_id.to_string()),
+    )
+    .await
+    .expect("explicit lookup should succeed");
+    assert_eq!(explicit.as_deref(), Some(value_json.as_str()));
+
+    let default_lookup = SettingsRepository::get_setting_json(
+        &settings,
+        "system",
+        "download_client.routing",
+        Some("another_library".to_string()),
+    )
+    .await
+    .expect("default lookup should succeed");
+    assert_eq!(default_lookup.as_deref(), Some("{}"));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn serialized_writer_handles_notification_channel_and_subscription_round_trip() {
     let (services, db) = temp_services("scryer_notification_writer").await;
     services

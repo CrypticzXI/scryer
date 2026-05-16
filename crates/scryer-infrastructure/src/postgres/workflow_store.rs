@@ -767,7 +767,11 @@ impl WorkflowSql for PostgresWorkflowSql {
         }
         builder.push(" ORDER BY updated_at DESC");
 
-        let rows = builder.build().fetch_all(&self.pool).await.map_err(repo_err)?;
+        let rows = builder
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(repo_err)?;
         rows.iter().map(import_record_from_row).collect()
     }
 

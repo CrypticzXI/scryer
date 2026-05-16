@@ -1527,7 +1527,9 @@ mod tests {
             let artifacts = self.artifacts.lock().await;
             Ok(artifacts
                 .iter()
-                .filter(|artifact| artifact.source_identity() == *identity && artifact.result == result)
+                .filter(|artifact| {
+                    artifact.source_identity() == *identity && artifact.result == result
+                })
                 .count() as u64)
         }
     }

@@ -1027,25 +1027,31 @@ pub(crate) fn normalize_indexer_config_json(
     let persisted = parse_indexer_config_json(persisted_config_json)?;
 
     for field in fields {
-        if config_value_is_empty(object.get(&field.key)) {
-            if field.field_type == scryer_domain::ConfigFieldType::Password
-                && let Some(stored) = persisted.get(&field.key)
-                && !config_value_is_empty(Some(stored))
-            {
-                object.insert(field.key.clone(), stored.clone());
-                continue;
+        let should_restore_persisted = match field.field_type {
+            scryer_domain::ConfigFieldType::Password => {
+                config_value_is_empty(object.get(&field.key))
             }
-            if let Some(default_value) = field
+            _ => !object.contains_key(&field.key),
+        };
+
+        if should_restore_persisted
+            && let Some(stored) = persisted.get(&field.key)
+            && !config_value_is_empty(Some(stored))
+        {
+            object.insert(field.key.clone(), stored.clone());
+        }
+
+        if config_value_is_empty(object.get(&field.key))
+            && let Some(default_value) = field
                 .default_value
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-            {
-                object.insert(
-                    field.key.clone(),
-                    serde_json::Value::String(default_value.to_string()),
-                );
-            }
+        {
+            object.insert(
+                field.key.clone(),
+                serde_json::Value::String(default_value.to_string()),
+            );
         }
 
         if field.required && config_value_is_empty(object.get(&field.key)) {
@@ -1364,6 +1370,19 @@ impl AppUseCase {
             .await?;
         self.ensure_indexer_routing_entry_for_indexer(actor, &created.id)
             .await?;
+        if management_capabilities.supports_managed_children_sync
+            && let Err(error) = self.sync_indexer_config(actor, &created.id).await
+        {
+            if let Err(cleanup_error) = self.delete_indexer_config(actor, &created.id).await {
+                tracing::warn!(
+                    config_id = %created.id,
+                    sync_error = %error,
+                    cleanup_error = %cleanup_error,
+                    "failed to roll back managed indexer after auto-sync failure"
+                );
+            }
+            return Err(error);
+        }
         Ok(created)
     }
 

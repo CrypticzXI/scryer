@@ -1364,7 +1364,13 @@ fn parse_identity_for_unit(
 ) -> Option<(usize, ReleaseIdentity, usize, i32, &'static str)> {
     parse_identity_at(family, tokens, unit.start_token, context)
         .map(|(identity, last_token, family_bonus, evidence)| {
-            (unit.start_token, identity, last_token, family_bonus, evidence)
+            (
+                unit.start_token,
+                identity,
+                last_token,
+                family_bonus,
+                evidence,
+            )
         })
         .or_else(|| {
             (family == ParseFamily::DailyEpisode && unit.end_token > unit.start_token + 1).then(
@@ -5119,15 +5125,10 @@ fn parse_versioned_absolute(token: &str) -> Option<(u32, u32)> {
 
 fn parse_daily_token(token: &str) -> Option<NaiveDate> {
     [
-        "%Y.%m.%d",
-        "%Y-%m-%d",
-        "%d.%m.%Y",
-        "%d-%m-%Y",
-        "%d.%b.%Y",
-        "%b.%d.%Y",
+        "%Y.%m.%d", "%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%d.%b.%Y", "%b.%d.%Y",
     ]
-        .into_iter()
-        .find_map(|format| NaiveDate::parse_from_str(token, format).ok())
+    .into_iter()
+    .find_map(|format| NaiveDate::parse_from_str(token, format).ok())
 }
 
 fn is_checksum(token: &str) -> bool {

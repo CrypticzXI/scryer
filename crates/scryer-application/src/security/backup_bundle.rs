@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -831,6 +831,12 @@ pub struct BackupRestorePreparedBundle {
     instance_secrets_env: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct PreparedBackupBundleDirectory {
+    root: PathBuf,
+    manifest: BackupBundleManifest,
+}
+
 impl BackupRestorePreparedBundle {
     pub fn from_summary_and_instance_secrets_env(
         summary: BackupBundleInspectSummary,
@@ -848,6 +854,33 @@ impl BackupRestorePreparedBundle {
 
     pub fn instance_secrets_env(&self) -> String {
         self.instance_secrets_env.clone()
+    }
+}
+
+impl PreparedBackupBundleDirectory {
+    pub fn load(root: &Path) -> AppResult<Self> {
+        let manifest = load_manifest(root)?;
+        validate_extracted_bundle(root, &manifest)?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            manifest,
+        })
+    }
+
+    pub fn tables_dir(&self) -> PathBuf {
+        self.root.join(TABLES_DIRNAME)
+    }
+
+    pub fn manifest(&self) -> &BackupBundleManifest {
+        &self.manifest
+    }
+
+    pub fn summary(&self) -> BackupBundleInspectSummary {
+        self.manifest.summary()
+    }
+
+    pub fn instance_secrets_env(&self) -> AppResult<String> {
+        Ok(load_instance_secrets(&self.root)?.to_env_file())
     }
 }
 
@@ -955,6 +988,18 @@ impl BackupBundleRestorePayload {
 
     pub fn instance_secrets_env(&self) -> AppResult<String> {
         Ok(load_instance_secrets(self.extracted.path())?.to_env_file())
+    }
+
+    pub fn persist_extracted_dir(&self, target_root: &Path) -> AppResult<()> {
+        if target_root.exists() {
+            std::fs::remove_dir_all(target_root).map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to clear prepared backup directory {}: {error}",
+                    target_root.display()
+                ))
+            })?;
+        }
+        copy_directory_contents(self.extracted.path(), target_root)
     }
 }
 
@@ -1263,6 +1308,62 @@ fn load_instance_secrets(root: &Path) -> AppResult<BackupInstanceSecrets> {
     })
 }
 
+fn expected_bundle_parts(manifest: &BackupBundleManifest) -> BTreeSet<String> {
+    manifest
+        .row_counts
+        .keys()
+        .map(|table| backup_table_part_relative_path(table))
+        .chain(std::iter::once(INSTANCE_SECRETS_FILENAME.to_string()))
+        .collect()
+}
+
+fn copy_directory_contents(source: &Path, target: &Path) -> AppResult<()> {
+    std::fs::create_dir_all(target).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to create prepared backup directory {}: {error}",
+            target.display()
+        ))
+    })?;
+
+    for entry in std::fs::read_dir(source).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to read prepared backup directory {}: {error}",
+            source.display()
+        ))
+    })? {
+        let entry = entry.map_err(|error| {
+            AppError::Repository(format!(
+                "failed to inspect prepared backup directory {}: {error}",
+                source.display()
+            ))
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            AppError::Repository(format!(
+                "failed to inspect prepared backup entry {}: {error}",
+                entry.path().display()
+            ))
+        })?;
+        let destination = target.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_directory_contents(&entry.path(), &destination)?;
+        } else if file_type.is_file() {
+            std::fs::copy(entry.path(), &destination).map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to stage prepared backup file {}: {error}",
+                    destination.display()
+                ))
+            })?;
+        } else {
+            return Err(AppError::Validation(format!(
+                "prepared backup directory contains unsupported entry {}",
+                entry.path().display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_extracted_bundle(root: &Path, manifest: &BackupBundleManifest) -> AppResult<()> {
     if manifest.format_version != BACKUP_FORMAT_VERSION {
         return Err(AppError::Validation(format!(
@@ -1319,6 +1420,28 @@ fn validate_extracted_bundle(root: &Path, manifest: &BackupBundleManifest) -> Ap
         }
     }
 
+    let expected_parts = expected_bundle_parts(manifest);
+    let actual_parts = manifest
+        .part_checksums
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if actual_parts != expected_parts {
+        let missing = expected_parts
+            .difference(&actual_parts)
+            .cloned()
+            .collect::<Vec<_>>();
+        let unexpected = actual_parts
+            .difference(&expected_parts)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(AppError::Validation(format!(
+            "backup checksum manifest is incomplete: missing [{}], unexpected [{}]",
+            missing.join(", "),
+            unexpected.join(", ")
+        )));
+    }
+
     Ok(())
 }
 
@@ -1346,6 +1469,16 @@ mod tests {
     use std::io::{Seek, SeekFrom, Write};
 
     fn manifest_with_part(part: &str, checksum: &str) -> BackupBundleManifest {
+        manifest_with_parts(
+            BTreeMap::new(),
+            BTreeMap::from([(part.to_string(), checksum.to_string())]),
+        )
+    }
+
+    fn manifest_with_parts(
+        row_counts: BTreeMap<String, u64>,
+        part_checksums: BTreeMap<String, String>,
+    ) -> BackupBundleManifest {
         BackupBundleManifest {
             format_version: BACKUP_FORMAT_VERSION.to_string(),
             created_at: "2026-05-15T00:00:00Z".to_string(),
@@ -1353,8 +1486,8 @@ mod tests {
             source_engine: "sqlite".to_string(),
             source_migration_key: None,
             encrypted: false,
-            row_counts: BTreeMap::new(),
-            part_checksums: BTreeMap::from([(part.to_string(), checksum.to_string())]),
+            row_counts,
+            part_checksums,
         }
     }
 
@@ -1376,12 +1509,26 @@ mod tests {
     #[test]
     fn validate_extracted_bundle_accepts_relative_regular_files() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let payload = temp.path().join("payload.txt");
-        std::fs::write(&payload, b"ok").expect("payload");
-        let checksum = checksum_hex(&payload).expect("checksum");
+        let tables_dir = temp.path().join(TABLES_DIRNAME);
+        std::fs::create_dir_all(&tables_dir).expect("tables dir");
+        let table_path = tables_dir.join("titles.ndjson");
+        let secrets_path = temp.path().join(INSTANCE_SECRETS_FILENAME);
+        std::fs::write(&table_path, b"[]").expect("table payload");
+        std::fs::write(&secrets_path, b"{}").expect("secrets");
+        let table_checksum = checksum_hex(&table_path).expect("checksum");
+        let secrets_checksum = checksum_hex(&secrets_path).expect("checksum");
 
-        validate_extracted_bundle(temp.path(), &manifest_with_part("payload.txt", &checksum))
-            .expect("bundle should validate");
+        validate_extracted_bundle(
+            temp.path(),
+            &manifest_with_parts(
+                BTreeMap::from([("titles".to_string(), 0)]),
+                BTreeMap::from([
+                    (backup_table_part_relative_path("titles"), table_checksum),
+                    (INSTANCE_SECRETS_FILENAME.to_string(), secrets_checksum),
+                ]),
+            ),
+        )
+        .expect("bundle should validate");
     }
 
     #[test]
@@ -1397,7 +1544,9 @@ mod tests {
         )
         .expect_err("absolute path should fail");
 
-        assert!(matches!(error, AppError::Validation(message) if message.contains("must be relative")));
+        assert!(
+            matches!(error, AppError::Validation(message) if message.contains("must be relative"))
+        );
     }
 
     #[test]
@@ -1413,7 +1562,9 @@ mod tests {
         )
         .expect_err("traversal path should fail");
 
-        assert!(matches!(error, AppError::Validation(message) if message.contains("escapes the bundle root")));
+        assert!(
+            matches!(error, AppError::Validation(message) if message.contains("escapes the bundle root"))
+        );
     }
 
     #[test]
@@ -1421,13 +1572,78 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(temp.path().join("nested")).expect("nested dir");
 
-        let error = validate_extracted_bundle(
-            temp.path(),
-            &manifest_with_part("nested", "ignored"),
-        )
-        .expect_err("directories should fail");
+        let error =
+            validate_extracted_bundle(temp.path(), &manifest_with_part("nested", "ignored"))
+                .expect_err("directories should fail");
 
         assert!(matches!(error, AppError::Validation(message) if message.contains("regular file")));
+    }
+
+    #[test]
+    fn validate_extracted_bundle_requires_secrets_checksum() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let table_path = temp.path().join(TABLES_DIRNAME).join("titles.ndjson");
+        std::fs::create_dir_all(table_path.parent().expect("tables dir")).expect("tables dir");
+        std::fs::write(&table_path, b"[]").expect("table payload");
+        std::fs::write(temp.path().join(INSTANCE_SECRETS_FILENAME), b"{}").expect("secrets");
+
+        let checksum = checksum_hex(&table_path).expect("checksum");
+        let manifest = manifest_with_parts(
+            BTreeMap::from([("titles".to_string(), 0)]),
+            BTreeMap::from([(backup_table_part_relative_path("titles"), checksum)]),
+        );
+
+        let error = validate_extracted_bundle(temp.path(), &manifest)
+            .expect_err("missing secrets checksum should fail");
+
+        assert!(
+            matches!(error, AppError::Validation(message) if message.contains(INSTANCE_SECRETS_FILENAME))
+        );
+    }
+
+    #[test]
+    fn validate_extracted_bundle_requires_table_checksums_for_all_manifest_tables() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join(INSTANCE_SECRETS_FILENAME), b"{}").expect("secrets");
+        let secrets_checksum =
+            checksum_hex(temp.path().join(INSTANCE_SECRETS_FILENAME)).expect("checksum");
+
+        let manifest = manifest_with_parts(
+            BTreeMap::from([("titles".to_string(), 0)]),
+            BTreeMap::from([(INSTANCE_SECRETS_FILENAME.to_string(), secrets_checksum)]),
+        );
+
+        let error = validate_extracted_bundle(temp.path(), &manifest)
+            .expect_err("missing table checksum should fail");
+
+        assert!(
+            matches!(error, AppError::Validation(message) if message.contains("tables/titles.ndjson"))
+        );
+    }
+
+    #[test]
+    fn prepared_backup_directory_round_trip_preserves_restore_inputs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle_path = temp.path().join("roundtrip.scryer-backup.enc");
+        write_test_bundle(&bundle_path, Some("backup-passphrase")).expect("write bundle");
+
+        let prepared = prepare_backup_restore_payload(&bundle_path, Some("backup-passphrase"))
+            .expect("prepare restore payload");
+        let prepared_dir = temp.path().join("prepared");
+        prepared
+            .persist_extracted_dir(&prepared_dir)
+            .expect("persist extracted dir");
+
+        let staged =
+            PreparedBackupBundleDirectory::load(&prepared_dir).expect("load prepared backup dir");
+        assert_eq!(staged.manifest().row_counts.get("titles"), Some(&1));
+        assert_eq!(staged.summary().source_scryer_version, "test");
+        assert!(
+            staged
+                .instance_secrets_env()
+                .expect("instance secrets env")
+                .contains("SCRYER_ENCRYPTION_KEY=\"master-key\"")
+        );
     }
 
     #[test]

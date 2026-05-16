@@ -854,8 +854,7 @@ impl ImportRepository for TrackingImportRepo {
             .iter()
             .rev()
             .find(|record| {
-                record.source_client_id.as_deref().unwrap_or("")
-                    == identity.client_id_or_empty()
+                record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
                     && record.source_system == identity.client_type
                     && record.source_ref == identity.item_id
             })
@@ -5589,12 +5588,266 @@ async fn remove_completed_download_defaults_true_when_scope_has_no_saved_entry()
         bootstrap_with_search_settings_and_indexer(settings, Arc::new(MockIndexerClient));
 
     assert!(
-        app.should_remove_completed_download(&MediaFacet::Movie, "weaver")
+        app.should_remove_completed_download(None, &MediaFacet::Movie, "weaver")
             .await
     );
     assert!(
-        !app.should_remove_failed_download(&MediaFacet::Movie, "weaver")
+        !app.should_remove_failed_download(None, &MediaFacet::Movie, "weaver")
             .await
+    );
+}
+
+#[tokio::test]
+async fn library_cleanup_routing_override_beats_facet_cleanup_flags() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+            &serde_json::json!({
+                "weaver": {
+                    "enabled": true,
+                    "removeCompleted": true,
+                    "removeFailed": false
+                }
+            })
+            .to_string(),
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+            &serde_json::json!({
+                "weaver": {
+                    "enabled": true,
+                    "removeCompleted": false,
+                    "removeFailed": true
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings, Arc::new(MockIndexerClient));
+
+    assert!(
+        !app.should_remove_completed_download(
+            Some(movie_library_id.as_str()),
+            &MediaFacet::Movie,
+            "weaver"
+        )
+        .await
+    );
+    assert!(
+        app.should_remove_failed_download(
+            Some(movie_library_id.as_str()),
+            &MediaFacet::Movie,
+            "weaver"
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn library_settings_download_client_routing_override_normalizes_current_clients_and_hydrates_new_ones()
+ {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let primary = create_enabled_download_client_config(&app, &user, "Primary", "weaver").await;
+    let secondary =
+        create_enabled_download_client_config(&app, &user, "Secondary", "sabnzbd").await;
+
+    app.update_library_settings(
+        &user,
+        &movie_library_id,
+        LibrarySettingsOverrideDraft {
+            download_client_routing: Some(vec![DownloadClientRoutingSettingsEntry {
+                client_id: primary.id.clone(),
+                enabled: true,
+                category: Some("movies".to_string()),
+                recent_queue_priority: Some("high".to_string()),
+                older_queue_priority: Some("low".to_string()),
+                remove_completed: false,
+                remove_failed: true,
+            }]),
+            ..empty_library_settings_override()
+        },
+    )
+    .await
+    .expect("library routing override should save");
+
+    let raw = settings
+        .get_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+        )
+        .await
+        .expect("saved library routing JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("saved library routing JSON should parse");
+    assert_eq!(
+        parsed[secondary.id.as_str()]["enabled"],
+        serde_json::json!(false),
+        "saving a library override should materialize current missing clients as disabled",
+    );
+
+    let tertiary = create_enabled_download_client_config(&app, &user, "Tertiary", "nzbget").await;
+    let library_settings = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("library settings should reload");
+    let routing = library_settings
+        .download_client_routing_override
+        .expect("library override should be present");
+
+    assert_eq!(routing[0].client_id, primary.id);
+    assert_eq!(routing[0].category.as_deref(), Some("movies"));
+    assert_eq!(routing[0].recent_queue_priority.as_deref(), Some("high"));
+    assert_eq!(routing[0].older_queue_priority.as_deref(), Some("low"));
+    assert!(!routing[0].remove_completed);
+    assert!(routing[0].remove_failed);
+
+    let secondary_entry = routing
+        .iter()
+        .find(|entry| entry.client_id == secondary.id)
+        .expect("secondary client should be present");
+    assert!(!secondary_entry.enabled);
+    assert_eq!(secondary_entry.category, None);
+    assert_eq!(secondary_entry.recent_queue_priority, None);
+    assert_eq!(secondary_entry.older_queue_priority, None);
+    assert!(secondary_entry.remove_completed);
+    assert!(!secondary_entry.remove_failed);
+
+    let tertiary_entry = routing
+        .iter()
+        .find(|entry| entry.client_id == tertiary.id)
+        .expect("newly added client should be hydrated as disabled");
+    assert!(!tertiary_entry.enabled);
+    assert_eq!(tertiary_entry.category, None);
+    assert_eq!(tertiary_entry.recent_queue_priority, None);
+    assert_eq!(tertiary_entry.older_queue_priority, None);
+    assert!(tertiary_entry.remove_completed);
+    assert!(!tertiary_entry.remove_failed);
+}
+
+#[tokio::test]
+async fn library_settings_download_client_routing_override_reads_legacy_key_and_clears_it_when_reset()
+ {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let primary = create_enabled_download_client_config(&app, &user, "Primary", "weaver").await;
+    let secondary =
+        create_enabled_download_client_config(&app, &user, "Secondary", "sabnzbd").await;
+
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+            &serde_json::json!({
+                primary.id.as_str(): {
+                    "enabled": true,
+                    "category": "movies",
+                    "recentQueuePriority": "high",
+                    "olderQueuePriority": "low",
+                    "removeCompleted": false,
+                    "removeFailed": true
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let library_settings = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("library settings should read legacy routing override");
+    let routing = library_settings
+        .download_client_routing_override
+        .expect("legacy routing override should be surfaced");
+
+    let primary_entry = routing
+        .iter()
+        .find(|entry| entry.client_id == primary.id)
+        .expect("primary client should be present");
+    assert!(primary_entry.enabled);
+    assert_eq!(primary_entry.category.as_deref(), Some("movies"));
+    assert_eq!(primary_entry.recent_queue_priority.as_deref(), Some("high"));
+    assert_eq!(primary_entry.older_queue_priority.as_deref(), Some("low"));
+    assert!(!primary_entry.remove_completed);
+    assert!(primary_entry.remove_failed);
+
+    let secondary_entry = routing
+        .iter()
+        .find(|entry| entry.client_id == secondary.id)
+        .expect("missing clients should hydrate as disabled");
+    assert!(!secondary_entry.enabled);
+
+    app.update_library_settings(&user, &movie_library_id, empty_library_settings_override())
+        .await
+        .expect("resetting library settings should succeed");
+
+    assert!(
+        settings
+            .get_scoped_value(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                &movie_library_id,
+            )
+            .await
+            .is_none(),
+        "resetting should remove the canonical library override",
+    );
+    assert!(
+        settings
+            .get_scoped_value(
+                SETTINGS_SCOPE_SYSTEM,
+                LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+                &movie_library_id,
+            )
+            .await
+            .is_none(),
+        "resetting should remove the legacy library override too",
+    );
+}
+
+#[tokio::test]
+async fn library_settings_download_client_routing_override_ignores_invalid_json() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+            "[]",
+        )
+        .await;
+
+    let library_settings = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("library settings should load");
+
+    assert!(
+        library_settings.download_client_routing_override.is_none(),
+        "invalid library routing JSON should be ignored instead of materialized as a disabled override",
     );
 }
 

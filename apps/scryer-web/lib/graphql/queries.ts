@@ -1484,6 +1484,9 @@ export const downloadClientsInitQuery = `query DownloadClientsInit {
   }
   downloadClientProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
+  systemHealth {
+    dbPath
+  }
 }`;
 
 export const indexersInitQuery = `query IndexersInit($providerType: String) {
@@ -1497,6 +1500,9 @@ export const setupWizardProviderTypesInitQuery = `query SetupWizardProviderTypes
   downloadClientProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
   indexerProviderTypes {${PROVIDER_TYPE_FIELDS}
+  }
+  systemHealth {
+    dbPath
   }
 }`;
 
@@ -1641,6 +1647,11 @@ export const subtitleSettingsInitQuery = `query SubtitleSettingsInit {
 export const downloadClientRoutingInitQuery = `query DownloadClientRoutingInit($scopeId: ContentScopeValue!) {
   downloadClientConfigs {${downloadClientFieldSelection}
   }
+  downloadClientRouting(scope: $scopeId) {${downloadClientRoutingFieldSelection}
+  }
+}`;
+
+export const downloadClientRoutingQuery = `query DownloadClientRouting($scopeId: ContentScopeValue!) {
   downloadClientRouting(scope: $scopeId) {${downloadClientRoutingFieldSelection}
   }
 }`;

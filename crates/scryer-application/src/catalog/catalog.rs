@@ -624,6 +624,27 @@ impl AppUseCase {
             .await
     }
 
+    async fn read_explicit_download_client_routing_value(
+        &self,
+        scope_id: &str,
+    ) -> AppResult<Option<String>> {
+        if let Some(value) = self
+            .read_setting_string_value_explicit(
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                Some(scope_id),
+            )
+            .await?
+        {
+            return Ok(Some(value));
+        }
+
+        self.read_setting_string_value_explicit(
+            LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+            Some(scope_id),
+        )
+        .await
+    }
+
     /// Returns `Some(entry)` when the persisted JSON has an entry for this
     /// client in this scope, else `None`. Callers are responsible for applying
     /// the canonical default — the explicit fallback site — so the read path
@@ -631,9 +652,30 @@ impl AppUseCase {
     /// the startup `normalize_routing_settings` pass.
     async fn read_download_client_routing_entry(
         &self,
+        library_id: Option<&str>,
         facet: &MediaFacet,
         client_id: &str,
     ) -> AppResult<Option<DownloadClientRoutingEntry>> {
+        let client_id = client_id.trim();
+        if client_id.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(library_id) = library_id.map(str::trim).filter(|value| !value.is_empty())
+            && let Some(raw_json) = self
+                .read_explicit_download_client_routing_value(library_id)
+                .await?
+            && let Some(routing_map) = parse_download_client_routing_map(&raw_json)
+        {
+            if let Some(config) = routing_map.get(client_id) {
+                return Ok(Some(parse_download_client_routing_entry(config)));
+            }
+
+            let mut disabled_entry = default_download_client_routing_entry();
+            disabled_entry.enabled = false;
+            return Ok(Some(disabled_entry));
+        }
+
         let scope_id = facet.as_str();
 
         let Some(raw_json) = self.read_download_client_routing_value(scope_id).await? else {
@@ -651,11 +693,12 @@ impl AppUseCase {
 
     pub(crate) async fn should_remove_completed_download(
         &self,
+        library_id: Option<&str>,
         facet: &MediaFacet,
         client_id: &str,
     ) -> bool {
         match self
-            .read_download_client_routing_entry(facet, client_id)
+            .read_download_client_routing_entry(library_id, facet, client_id)
             .await
             .ok()
             .flatten()
@@ -667,11 +710,12 @@ impl AppUseCase {
 
     pub(crate) async fn should_remove_failed_download(
         &self,
+        library_id: Option<&str>,
         facet: &MediaFacet,
         client_id: &str,
     ) -> bool {
         match self
-            .read_download_client_routing_entry(facet, client_id)
+            .read_download_client_routing_entry(library_id, facet, client_id)
             .await
             .ok()
             .flatten()

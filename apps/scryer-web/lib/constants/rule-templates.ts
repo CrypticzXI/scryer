@@ -66,7 +66,7 @@ score_entry["poorly_seeded"] := -300 if {
     regoSource: `import rego.v1
 
 score_entry["prefer_webdl"] := 100 if {
-    scryer.normalize_source(input.release.source) == "web-dl"
+    scryer.normalize_source(input.release.source) == "WEB-DL"
 }`,
   },
   {
@@ -78,7 +78,7 @@ score_entry["prefer_webdl"] := 100 if {
 
 score_entry["x265_bonus"] := 100 if {
     codec := scryer.normalize_codec(input.release.video_codec)
-    codec == "hevc"
+    codec == "H.265"
 }`,
   },
   {
@@ -89,8 +89,8 @@ score_entry["x265_bonus"] := 100 if {
     regoSource: `import rego.v1
 
 score_entry["x264_4k_penalty"] := -200 if {
-    input.release.quality == "2160p"
-    scryer.normalize_codec(input.release.video_codec) == "avc"
+    input.release.quality == "2160P"
+    scryer.normalize_codec(input.release.video_codec) == "H.264"
 }`,
   },
 
@@ -213,6 +213,8 @@ score_entry["atmos_missing"] := -20 if {
 preferred_groups := {"subsplease", "erai-raws", "ember", "yameii"}
 
 score_entry["preferred_anime_group"] := 400 if {
+    input.release.release_group != null
+    input.release.release_group != ""
     group := lower(input.release.release_group)
     preferred_groups[group]
 }`,
@@ -228,6 +230,8 @@ score_entry["preferred_anime_group"] := 400 if {
 mini_groups := {"judas", "bonkai77", "mini-encode", "minifreeza", "smallsizedanime"}
 
 score_entry["block_mini_encode"] := scryer.block_score() if {
+    input.release.release_group != null
+    input.release.release_group != ""
     group := lower(input.release.release_group)
     mini_groups[group]
 }`,
@@ -253,8 +257,7 @@ score_entry["too_old"] := scryer.block_score() if {
     regoSource: `import rego.v1
 
 score_entry["password_protected"] := scryer.block_score() if {
-    input.release.password_protected != null
-    input.release.password_protected != "0"
+    input.release.is_password_protected == true
 }`,
   },
   {
@@ -293,6 +296,8 @@ score_entry["retagged_release"] := scryer.block_score() if {
 blocked_groups := {"yify", "yts"}
 
 score_entry["blocked_group"] := scryer.block_score() if {
+    input.release.release_group != null
+    input.release.release_group != ""
     group := lower(input.release.release_group)
     blocked_groups[group]
 }`,

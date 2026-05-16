@@ -1,0 +1,2 @@
+processor : 0
+Features  : fp asimd aes sha2 crc32 atomics fphp asimdrdm

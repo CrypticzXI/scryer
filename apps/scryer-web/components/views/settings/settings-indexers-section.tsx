@@ -361,6 +361,7 @@ export function SettingsIndexersSection({
 }: SettingsIndexersSectionProps) {
   const t = useTranslate();
   const normalizedProviderType = indexerDraft.providerType.trim().toLowerCase();
+  const isManagedSyncProvider = normalizedProviderType === "prowlarr";
   const isEditing = editorMode === "edit";
   const indexersById = React.useMemo(() => {
     return new Map(settingsIndexers.map((indexer) => [indexer.id, indexer]));
@@ -555,16 +556,34 @@ export function SettingsIndexersSection({
                     />
                   </TableCell>
                   <TableCell className="text-center">
-                    <RenderBooleanIcon
-                      value={indexer.enableInteractiveSearch}
-                      label={`${t("settings.indexerInteractiveSearch")}: ${indexer.name}`}
-                    />
+                    {indexer.supportsManagedChildrenSync ? (
+                      <span
+                        className="text-muted-foreground"
+                        title={t("settings.indexerManagedParentHint")}
+                      >
+                        —
+                      </span>
+                    ) : (
+                      <RenderBooleanIcon
+                        value={indexer.enableInteractiveSearch}
+                        label={`${t("settings.indexerInteractiveSearch")}: ${indexer.name}`}
+                      />
+                    )}
                   </TableCell>
                   <TableCell className="text-center">
-                    <RenderBooleanIcon
-                      value={indexer.enableAutoSearch}
-                      label={`${t("settings.indexerAutoSearch")}: ${indexer.name}`}
-                    />
+                    {indexer.supportsManagedChildrenSync ? (
+                      <span
+                        className="text-muted-foreground"
+                        title={t("settings.indexerManagedParentHint")}
+                      >
+                        —
+                      </span>
+                    ) : (
+                      <RenderBooleanIcon
+                        value={indexer.enableAutoSearch}
+                        label={`${t("settings.indexerAutoSearch")}: ${indexer.name}`}
+                      />
+                    )}
                   </TableCell>
                   <TableCell>
                     <IndexerStatusCell indexer={indexer} />
@@ -744,40 +763,46 @@ export function SettingsIndexersSection({
               </div>
             ) : null}
 
-            <div className="flex items-center gap-6">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={indexerDraft.enableInteractiveSearch}
-                  onChange={(event) =>
-                    setIndexerDraft((prev: IndexerDraft) => ({
-                      ...prev,
-                      enableInteractiveSearch: event.target.checked,
-                    }))
-                  }
-                  className="accent-primary"
-                />
-                <span className="text-sm">
-                  {t("settings.indexerInteractiveSearch")}
-                </span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={indexerDraft.enableAutoSearch}
-                  onChange={(event) =>
-                    setIndexerDraft((prev: IndexerDraft) => ({
-                      ...prev,
-                      enableAutoSearch: event.target.checked,
-                    }))
-                  }
-                  className="accent-primary"
-                />
-                <span className="text-sm">
-                  {t("settings.indexerAutoSearch")}
-                </span>
-              </label>
-            </div>
+            {isManagedSyncProvider ? (
+              <p className="text-sm text-muted-foreground">
+                {t("settings.indexerManagedParentHint")}
+              </p>
+            ) : (
+              <div className="flex items-center gap-6">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={indexerDraft.enableInteractiveSearch}
+                    onChange={(event) =>
+                      setIndexerDraft((prev: IndexerDraft) => ({
+                        ...prev,
+                        enableInteractiveSearch: event.target.checked,
+                      }))
+                    }
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">
+                    {t("settings.indexerInteractiveSearch")}
+                  </span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={indexerDraft.enableAutoSearch}
+                    onChange={(event) =>
+                      setIndexerDraft((prev: IndexerDraft) => ({
+                        ...prev,
+                        enableAutoSearch: event.target.checked,
+                      }))
+                    }
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">
+                    {t("settings.indexerAutoSearch")}
+                  </span>
+                </label>
+              </div>
+            )}
             <div className="flex gap-2">
               <Button type="submit" disabled={mutatingIndexerId === "new"}>
                 {mutatingIndexerId === "new"

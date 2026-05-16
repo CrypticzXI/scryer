@@ -404,6 +404,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn postgres_library_scoped_download_client_routing_round_trips_explicit_json()
+    -> AppResult<()> {
+        let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            eprintln!(
+                "skipping PostgreSQL library download client routing test; SCRYER_TEST_POSTGRES_URL is not set"
+            );
+            return Ok(());
+        };
+
+        let admin_pool = sqlx::PgPool::connect(&raw_url).await.map_err(|error| {
+            AppError::Repository(format!("failed to connect to postgres: {error}"))
+        })?;
+        let schema = next_test_schema_name();
+
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin_pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to create test schema: {error}"))
+            })?;
+
+        let result = async {
+            let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
+            let services =
+                PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
+            let settings = super::super::PostgresSettingsStore::new(&services);
+
+            settings
+                .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
+                    category: "media".to_string(),
+                    scope: "system".to_string(),
+                    key_name: "download_client.routing".to_string(),
+                    data_type: "json".to_string(),
+                    default_value_json: "{}".to_string(),
+                    is_sensitive: false,
+                    validation_json: None,
+                }])
+                .await?;
+
+            let library_id = "series_default_library";
+            let value_json = serde_json::json!({
+                "weaver": {
+                    "enabled": true,
+                    "category": "series",
+                    "recentQueuePriority": "high",
+                    "olderQueuePriority": "normal",
+                    "removeCompleted": true,
+                    "removeFailed": false
+                }
+            })
+            .to_string();
+
+            SettingsRepository::upsert_setting_json(
+                &settings,
+                "system",
+                "download_client.routing",
+                Some(library_id.to_string()),
+                value_json.clone(),
+                "test",
+                None,
+            )
+            .await?;
+
+            let explicit = SettingsRepository::get_setting_json_explicit(
+                &settings,
+                "system",
+                "download_client.routing",
+                Some(library_id.to_string()),
+            )
+            .await?;
+            assert_eq!(explicit.as_deref(), Some(value_json.as_str()));
+
+            let default_lookup = SettingsRepository::get_setting_json(
+                &settings,
+                "system",
+                "download_client.routing",
+                Some("another_library".to_string()),
+            )
+            .await?;
+            assert_eq!(default_lookup.as_deref(), Some("{}"));
+
+            services.pool().close().await;
+            Ok::<_, AppError>(())
+        }
+        .await;
+
+        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin_pool)
+            .await;
+        admin_pool.close().await;
+        if let Err(error) = cleanup {
+            return Err(AppError::Repository(format!(
+                "failed to drop test schema {schema}: {error}"
+            )));
+        }
+        result
+    }
+
+    #[tokio::test]
     async fn postgres_collection_round_trips_canonical_interstitial_columns() -> AppResult<()> {
         let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
             .ok()

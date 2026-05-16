@@ -753,6 +753,7 @@ async fn reconcile_terminal_download_cleanup(
     client_id: &str,
     client_type: &str,
     download_client_item_id: &str,
+    library_id: Option<&str>,
     facet: Option<&MediaFacet>,
     state: TrackedDownloadState,
 ) -> TerminalDownloadCleanupOutcome {
@@ -766,13 +767,16 @@ async fn reconcile_terminal_download_cleanup(
     let should_remove = match state {
         TrackedDownloadState::Imported => match facet {
             Some(facet) => {
-                app.should_remove_completed_download(facet, routing_key)
+                app.should_remove_completed_download(library_id, facet, routing_key)
                     .await
             }
             None => false,
         },
         TrackedDownloadState::Failed => match facet {
-            Some(facet) => app.should_remove_failed_download(facet, routing_key).await,
+            Some(facet) => {
+                app.should_remove_failed_download(library_id, facet, routing_key)
+                    .await
+            }
             None => false,
         },
         TrackedDownloadState::Ignored => true,
@@ -840,17 +844,35 @@ async fn reconcile_terminal_download_cleanup(
     }
 }
 
+async fn cleanup_routing_scope_for_title_id(
+    app: &AppUseCase,
+    title_id: Option<&str>,
+) -> (Option<String>, Option<MediaFacet>) {
+    let Some(title_id) = title_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return (None, None);
+    };
+
+    match app.services.catalog.titles.get_by_id(title_id).await {
+        Ok(Some(title)) => (Some(title.library_id), Some(title.facet)),
+        Ok(None) | Err(_) => (None, None),
+    }
+}
+
 pub(crate) async fn reconcile_terminal_download_cleanup_for_completed(
     app: &AppUseCase,
     completed: &CompletedDownload,
     state: TrackedDownloadState,
 ) -> TerminalDownloadCleanupOutcome {
-    let facet = facet_for_completed_download(completed);
+    let title_id = extract_parameter(&completed.parameters, "*scryer_title_id").unwrap_or_default();
+    let (library_id, resolved_facet) =
+        cleanup_routing_scope_for_title_id(app, Some(title_id.as_str())).await;
+    let facet = resolved_facet.or_else(|| facet_for_completed_download(completed));
     reconcile_terminal_download_cleanup(
         app,
         &completed.client_id,
         &completed.client_type,
         &completed.download_client_item_id,
+        library_id.as_deref(),
         facet.as_ref(),
         state,
     )
@@ -862,12 +884,15 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
     tracked: &crate::tracked_downloads::TrackedDownload,
     state: TrackedDownloadState,
 ) -> TerminalDownloadCleanupOutcome {
-    let facet = facet_from_tracked_label(tracked.facet.as_deref());
+    let (library_id, resolved_facet) =
+        cleanup_routing_scope_for_title_id(app, tracked.title_id.as_deref()).await;
+    let facet = resolved_facet.or_else(|| facet_from_tracked_label(tracked.facet.as_deref()));
     reconcile_terminal_download_cleanup(
         app,
         &tracked.client_id,
         &tracked.client_type,
         &tracked.client_item.download_client_item_id,
+        library_id.as_deref(),
         facet.as_ref(),
         state,
     )
@@ -915,13 +940,8 @@ async fn maybe_remove_completed_manual_import_download(
         return;
     };
 
-    let facet = match title_id.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(title_id) => match app.services.catalog.titles.get_by_id(title_id).await {
-            Ok(Some(title)) => Some(title.facet),
-            Ok(None) | Err(_) => facet_for_completed_download(completed),
-        },
-        None => facet_for_completed_download(completed),
-    };
+    let (library_id, resolved_facet) = cleanup_routing_scope_for_title_id(app, title_id).await;
+    let facet = resolved_facet.or_else(|| facet_for_completed_download(completed));
 
     let Some(facet) = facet else {
         return;
@@ -932,6 +952,7 @@ async fn maybe_remove_completed_manual_import_download(
         &completed.client_id,
         &completed.client_type,
         &completed.download_client_item_id,
+        library_id.as_deref(),
         Some(&facet),
         TrackedDownloadState::Imported,
     )

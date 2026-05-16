@@ -2,7 +2,14 @@ use crate::{
     AudioStreamDoc, BuiltinScoreDoc, ContextDoc, FileDoc, ProfileDoc, ReleaseDoc, RulesError,
     SubtitleStreamDoc, UserRuleInput, builtins,
 };
-use regorus::{Engine, Value};
+use regorus::{
+    Engine, Value,
+    unstable::{Expr, Literal, Module, Parser, Query, Rule, RuleBody, RuleHead, Source},
+};
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::OnceLock,
+};
 
 /// Result of validating a user-authored Rego rule.
 #[derive(Debug, Clone)]
@@ -24,6 +31,464 @@ impl ValidationResult {
             valid: false,
             errors: vec![message.into()],
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InputPathComponent {
+    Field(String),
+    ArrayItem,
+    Dynamic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputReferencePath {
+    components: Vec<InputPathComponent>,
+    display: String,
+}
+
+impl InputReferencePath {
+    fn normalized(&self) -> String {
+        let mut out = String::new();
+        for component in &self.components {
+            match component {
+                InputPathComponent::Field(field) => {
+                    if !out.is_empty() {
+                        out.push('.');
+                    }
+                    out.push_str(field);
+                }
+                InputPathComponent::ArrayItem => out.push_str("[]"),
+                InputPathComponent::Dynamic => out.push_str("[*]"),
+            }
+        }
+        out
+    }
+
+    fn is_dynamic_extra_path(&self) -> bool {
+        matches!(
+            self.components.as_slice(),
+            [
+                InputPathComponent::Field(input),
+                InputPathComponent::Field(release),
+                InputPathComponent::Field(extra),
+                ..,
+            ] if input == "input" && release == "release" && extra == "extra"
+        )
+    }
+
+    fn has_dynamic_component(&self) -> bool {
+        self.components
+            .iter()
+            .any(|component| matches!(component, InputPathComponent::Dynamic))
+    }
+}
+
+fn known_rule_input_paths() -> &'static HashSet<&'static str> {
+    static PATHS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    PATHS.get_or_init(|| {
+        HashSet::from([
+            "input",
+            "input.release",
+            "input.release.raw_title",
+            "input.release.quality",
+            "input.release.source",
+            "input.release.video_codec",
+            "input.release.audio",
+            "input.release.audio_codecs",
+            "input.release.audio_codecs[]",
+            "input.release.audio_channels",
+            "input.release.languages_audio",
+            "input.release.languages_audio[]",
+            "input.release.languages_subtitles",
+            "input.release.languages_subtitles[]",
+            "input.release.is_dual_audio",
+            "input.release.is_atmos",
+            "input.release.is_dolby_vision",
+            "input.release.detected_hdr",
+            "input.release.is_remux",
+            "input.release.is_bd_disk",
+            "input.release.is_proper_upload",
+            "input.release.is_repack",
+            "input.release.is_ai_enhanced",
+            "input.release.is_hardcoded_subs",
+            "input.release.is_password_protected",
+            "input.release.is_hdr10plus",
+            "input.release.is_hlg",
+            "input.release.is_10bit",
+            "input.release.is_uncensored",
+            "input.release.is_dubs_only",
+            "input.release.has_release_group",
+            "input.release.is_obfuscated",
+            "input.release.is_retagged",
+            "input.release.streaming_service",
+            "input.release.edition",
+            "input.release.anime_version",
+            "input.release.episode_release_type",
+            "input.release.is_season_pack",
+            "input.release.is_multi_episode",
+            "input.release.release_group",
+            "input.release.year",
+            "input.release.parse_confidence",
+            "input.release.size_bytes",
+            "input.release.age_days",
+            "input.release.thumbs_up",
+            "input.release.thumbs_down",
+            "input.release.extra",
+            "input.profile",
+            "input.profile.id",
+            "input.profile.name",
+            "input.profile.quality_tiers",
+            "input.profile.quality_tiers[]",
+            "input.profile.archival_quality",
+            "input.profile.allow_unknown_quality",
+            "input.profile.source_allowlist",
+            "input.profile.source_allowlist[]",
+            "input.profile.source_blocklist",
+            "input.profile.source_blocklist[]",
+            "input.profile.video_codec_allowlist",
+            "input.profile.video_codec_allowlist[]",
+            "input.profile.video_codec_blocklist",
+            "input.profile.video_codec_blocklist[]",
+            "input.profile.audio_codec_allowlist",
+            "input.profile.audio_codec_allowlist[]",
+            "input.profile.audio_codec_blocklist",
+            "input.profile.audio_codec_blocklist[]",
+            "input.profile.atmos_preferred",
+            "input.profile.dolby_vision_allowed",
+            "input.profile.detected_hdr_allowed",
+            "input.profile.prefer_remux",
+            "input.profile.allow_bd_disk",
+            "input.profile.allow_upgrades",
+            "input.profile.prefer_dual_audio",
+            "input.profile.required_audio_languages",
+            "input.profile.required_audio_languages[]",
+            "input.context",
+            "input.context.title_id",
+            "input.context.library_name",
+            "input.context.media_type",
+            "input.context.category",
+            "input.context.tags",
+            "input.context.tags[]",
+            "input.context.has_existing_file",
+            "input.context.existing_score",
+            "input.context.search_mode",
+            "input.context.runtime_minutes",
+            "input.context.is_anime",
+            "input.context.is_filler",
+            "input.builtin_score",
+            "input.builtin_score.total",
+            "input.builtin_score.blocked",
+            "input.builtin_score.codes",
+            "input.builtin_score.codes[]",
+            "input.file",
+            "input.file.video_codec",
+            "input.file.video_width",
+            "input.file.video_height",
+            "input.file.video_bitrate_kbps",
+            "input.file.video_bit_depth",
+            "input.file.video_hdr_format",
+            "input.file.dovi_profile",
+            "input.file.dovi_bl_compat_id",
+            "input.file.video_frame_rate",
+            "input.file.video_profile",
+            "input.file.audio_codec",
+            "input.file.audio_profile",
+            "input.file.audio_channels",
+            "input.file.audio_bitrate_kbps",
+            "input.file.audio_languages",
+            "input.file.audio_languages[]",
+            "input.file.audio_streams",
+            "input.file.audio_streams[]",
+            "input.file.audio_streams[].codec",
+            "input.file.audio_streams[].profile",
+            "input.file.audio_streams[].channels",
+            "input.file.audio_streams[].language",
+            "input.file.audio_streams[].bitrate_kbps",
+            "input.file.subtitle_languages",
+            "input.file.subtitle_languages[]",
+            "input.file.subtitle_codecs",
+            "input.file.subtitle_codecs[]",
+            "input.file.subtitle_streams",
+            "input.file.subtitle_streams[]",
+            "input.file.subtitle_streams[].codec",
+            "input.file.subtitle_streams[].language",
+            "input.file.subtitle_streams[].name",
+            "input.file.subtitle_streams[].forced",
+            "input.file.subtitle_streams[].default",
+            "input.file.has_multiaudio",
+            "input.file.duration_seconds",
+            "input.file.num_chapters",
+            "input.file.container_format",
+        ])
+    })
+}
+
+fn array_container_paths() -> &'static HashSet<&'static str> {
+    static PATHS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    PATHS.get_or_init(|| {
+        HashSet::from([
+            "input.release.audio_codecs",
+            "input.release.languages_audio",
+            "input.release.languages_subtitles",
+            "input.profile.quality_tiers",
+            "input.profile.source_allowlist",
+            "input.profile.source_blocklist",
+            "input.profile.video_codec_allowlist",
+            "input.profile.video_codec_blocklist",
+            "input.profile.audio_codec_allowlist",
+            "input.profile.audio_codec_blocklist",
+            "input.profile.required_audio_languages",
+            "input.context.tags",
+            "input.builtin_score.codes",
+            "input.file.audio_languages",
+            "input.file.audio_streams",
+            "input.file.subtitle_languages",
+            "input.file.subtitle_codecs",
+            "input.file.subtitle_streams",
+        ])
+    })
+}
+
+fn collect_unknown_input_path_errors(
+    rego_source: &str,
+    policy_path: &str,
+) -> Result<Vec<String>, String> {
+    let source = Source::from_contents(policy_path.to_string(), rego_source.to_string())
+        .map_err(|e| e.to_string())?;
+    let mut parser = Parser::new(&source).map_err(|e| e.to_string())?;
+    parser.enable_rego_v1().map_err(|e| e.to_string())?;
+    let module: Module = parser.parse().map_err(|e| e.to_string())?;
+
+    let mut errors = BTreeSet::new();
+    for rule in &module.policy {
+        visit_rule(rule, &mut errors);
+    }
+
+    Ok(errors.into_iter().collect())
+}
+
+fn visit_rule(rule: &Rule, errors: &mut BTreeSet<String>) {
+    match rule {
+        Rule::Spec { head, bodies, .. } => {
+            visit_rule_head(head, errors);
+            for body in bodies {
+                visit_rule_body(body, errors);
+            }
+        }
+        Rule::Default {
+            refr, args, value, ..
+        } => {
+            visit_expr(refr, errors);
+            for arg in args {
+                visit_expr(arg, errors);
+            }
+            visit_expr(value, errors);
+        }
+    }
+}
+
+fn visit_rule_head(head: &RuleHead, errors: &mut BTreeSet<String>) {
+    match head {
+        RuleHead::Compr { refr, assign, .. } => {
+            visit_expr(refr, errors);
+            if let Some(assign) = assign {
+                visit_expr(&assign.value, errors);
+            }
+        }
+        RuleHead::Set { refr, key, .. } => {
+            visit_expr(refr, errors);
+            if let Some(key) = key {
+                visit_expr(key, errors);
+            }
+        }
+        RuleHead::Func {
+            refr, args, assign, ..
+        } => {
+            visit_expr(refr, errors);
+            for arg in args {
+                visit_expr(arg, errors);
+            }
+            if let Some(assign) = assign {
+                visit_expr(&assign.value, errors);
+            }
+        }
+    }
+}
+
+fn visit_rule_body(body: &RuleBody, errors: &mut BTreeSet<String>) {
+    if let Some(assign) = &body.assign {
+        visit_expr(&assign.value, errors);
+    }
+    visit_query(&body.query, errors);
+}
+
+fn visit_query(query: &Query, errors: &mut BTreeSet<String>) {
+    for stmt in &query.stmts {
+        visit_literal(&stmt.literal, errors);
+        for with_mod in &stmt.with_mods {
+            visit_expr(&with_mod.refr, errors);
+            visit_expr(&with_mod.r#as, errors);
+        }
+    }
+}
+
+fn visit_literal(literal: &Literal, errors: &mut BTreeSet<String>) {
+    match literal {
+        Literal::SomeVars { .. } => {}
+        Literal::SomeIn {
+            key,
+            value,
+            collection,
+            ..
+        } => {
+            if let Some(key) = key {
+                visit_expr(key, errors);
+            }
+            visit_expr(value, errors);
+            visit_expr(collection, errors);
+        }
+        Literal::Expr { expr, .. } | Literal::NotExpr { expr, .. } => visit_expr(expr, errors),
+        Literal::Every { domain, query, .. } => {
+            visit_expr(domain, errors);
+            visit_query(query, errors);
+        }
+    }
+}
+
+fn visit_expr(expr: &Expr, errors: &mut BTreeSet<String>) {
+    if let Some(path) = extract_input_reference_path(expr)
+        && let Some(error) = validate_input_reference_path(&path)
+    {
+        errors.insert(error);
+    }
+
+    match expr {
+        Expr::Array { items, .. } | Expr::Set { items, .. } => {
+            for item in items {
+                visit_expr(item, errors);
+            }
+        }
+        Expr::Object { fields, .. } => {
+            for (_, key, value) in fields {
+                visit_expr(key, errors);
+                visit_expr(value, errors);
+            }
+        }
+        Expr::ArrayCompr { term, query, .. } | Expr::SetCompr { term, query, .. } => {
+            visit_expr(term, errors);
+            visit_query(query, errors);
+        }
+        Expr::ObjectCompr {
+            key, value, query, ..
+        } => {
+            visit_expr(key, errors);
+            visit_expr(value, errors);
+            visit_query(query, errors);
+        }
+        Expr::Call { fcn, params, .. } => {
+            visit_expr(fcn, errors);
+            for param in params {
+                visit_expr(param, errors);
+            }
+        }
+        Expr::UnaryExpr { expr, .. } => visit_expr(expr, errors),
+        Expr::RefDot { refr, .. } => visit_expr(refr, errors),
+        Expr::RefBrack { refr, index, .. } => {
+            visit_expr(refr, errors);
+            visit_expr(index, errors);
+        }
+        Expr::BinExpr { lhs, rhs, .. }
+        | Expr::BoolExpr { lhs, rhs, .. }
+        | Expr::ArithExpr { lhs, rhs, .. }
+        | Expr::AssignExpr { lhs, rhs, .. } => {
+            visit_expr(lhs, errors);
+            visit_expr(rhs, errors);
+        }
+        Expr::Membership {
+            key,
+            value,
+            collection,
+            ..
+        } => {
+            if let Some(key) = key {
+                visit_expr(key, errors);
+            }
+            visit_expr(value, errors);
+            visit_expr(collection, errors);
+        }
+        Expr::String { .. }
+        | Expr::RawString { .. }
+        | Expr::Number { .. }
+        | Expr::Bool { .. }
+        | Expr::Null { .. }
+        | Expr::Var { .. } => {}
+        Expr::OrExpr { lhs, rhs, .. } => {
+            visit_expr(lhs, errors);
+            visit_expr(rhs, errors);
+        }
+    }
+}
+
+fn extract_input_reference_path(expr: &Expr) -> Option<InputReferencePath> {
+    match expr {
+        Expr::Var { span, .. } if span.text() == "input" => Some(InputReferencePath {
+            components: vec![InputPathComponent::Field("input".to_string())],
+            display: "input".to_string(),
+        }),
+        Expr::RefDot { refr, field, .. } => {
+            let mut path = extract_input_reference_path(refr)?;
+            let field_name = field.1.as_string().ok()?.to_string();
+            path.display.push('.');
+            path.display.push_str(&field_name);
+            path.components.push(InputPathComponent::Field(field_name));
+            Some(path)
+        }
+        Expr::RefBrack { refr, index, .. } => {
+            let mut path = extract_input_reference_path(refr)?;
+            path.display.push('[');
+            path.display.push_str(index.span().text());
+            path.display.push(']');
+
+            match index.as_ref() {
+                Expr::String { value, .. } | Expr::RawString { value, .. } => {
+                    let current_path = path.normalized();
+                    if array_container_paths().contains(current_path.as_str()) {
+                        path.components.push(InputPathComponent::ArrayItem);
+                    } else {
+                        let field_name = value.as_string().ok()?.to_string();
+                        path.components.push(InputPathComponent::Field(field_name));
+                    }
+                }
+                Expr::Number { .. } => path.components.push(InputPathComponent::ArrayItem),
+                Expr::Var { span, .. } if span.text() == "_" => {
+                    path.components.push(InputPathComponent::ArrayItem);
+                }
+                _ => path.components.push(InputPathComponent::Dynamic),
+            }
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
+fn validate_input_reference_path(path: &InputReferencePath) -> Option<String> {
+    if path.is_dynamic_extra_path() {
+        return None;
+    }
+
+    if path.has_dynamic_component() {
+        return Some(format!(
+            "unsupported dynamic rule input path: {}",
+            path.display
+        ));
+    }
+
+    let normalized = path.normalized();
+    if known_rule_input_paths().contains(normalized.as_str()) {
+        None
+    } else {
+        Some(format!("unknown rule input path: {normalized}"))
     }
 }
 
@@ -56,8 +521,17 @@ pub fn validate_user_rule(
     builtins::register_builtins(&mut engine);
 
     let policy_path = format!("user/{rule_set_id}.rego");
-    if let Err(e) = engine.add_policy(policy_path, rego_source.to_string()) {
+    if let Err(e) = engine.add_policy(policy_path.clone(), rego_source.to_string()) {
         return Ok(ValidationResult::invalid(format!("compilation error: {e}")));
+    }
+
+    let input_path_errors = collect_unknown_input_path_errors(rego_source, &policy_path)
+        .map_err(RulesError::Compilation)?;
+    if !input_path_errors.is_empty() {
+        return Ok(ValidationResult {
+            valid: false,
+            errors: input_path_errors,
+        });
     }
 
     // Dry-run against synthetic input
@@ -150,6 +624,7 @@ fn synthetic_test_input() -> UserRuleInput {
             is_repack: false,
             is_ai_enhanced: false,
             is_hardcoded_subs: false,
+            is_password_protected: Some(false),
             is_hdr10plus: false,
             is_hlg: false,
             is_10bit: false,
@@ -255,6 +730,74 @@ fn synthetic_test_input() -> UserRuleInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, path::PathBuf};
+
+    fn built_in_templates() -> Vec<(String, String)> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("apps")
+            .join("scryer-web")
+            .join("lib")
+            .join("constants")
+            .join("rule-templates.ts");
+        let source = fs::read_to_string(path).expect("rule templates file should be readable");
+        let mut templates = Vec::new();
+        let mut cursor = source.as_str();
+
+        while let Some(id_start) = cursor.find("id: \"") {
+            cursor = &cursor[id_start + 5..];
+            let id_end = cursor
+                .find('"')
+                .expect("template id should be terminated by a quote");
+            let id = cursor[..id_end].to_string();
+            cursor = &cursor[id_end..];
+
+            let rego_marker = "regoSource: `";
+            let rego_start = cursor
+                .find(rego_marker)
+                .expect("template should define regoSource");
+            cursor = &cursor[rego_start + rego_marker.len()..];
+            let rego_end = cursor
+                .find("`,")
+                .expect("template regoSource should terminate with backtick-comma");
+            let rego_source = cursor[..rego_end].to_string();
+            templates.push((id, rego_source));
+            cursor = &cursor[rego_end + 2..];
+        }
+
+        assert!(!templates.is_empty(), "should parse built-in templates");
+        templates
+    }
+
+    fn built_in_template_source(template_id: &str) -> String {
+        built_in_templates()
+            .into_iter()
+            .find(|(id, _)| id == template_id)
+            .map(|(_, rego_source)| rego_source)
+            .unwrap_or_else(|| panic!("missing built-in template {template_id}"))
+    }
+
+    fn evaluate_template(
+        template_id: &str,
+        input: UserRuleInput,
+        facet: &str,
+    ) -> crate::EvalResult {
+        let policy_id = format!("builtin_{}", template_id.replace('-', "_"));
+        let rego_source =
+            crate::rewrite_package_declaration(&built_in_template_source(template_id), &policy_id);
+        let engine = crate::UserRulesEngine::build(&[crate::UserPolicy {
+            id: policy_id,
+            name: template_id.to_string(),
+            rego_source,
+            applied_facets: Vec::new(),
+        }])
+        .expect("template policy should compile");
+        let mut evaluator = engine.evaluator();
+        evaluator
+            .evaluate(&input, facet)
+            .expect("template evaluation should succeed")
+    }
 
     #[test]
     fn valid_rule_passes_validation() {
@@ -331,5 +874,136 @@ mod tests {
         let result = validate_user_rule(source, "float_rule").unwrap();
         assert!(!result.valid);
         assert!(result.errors[0].contains("float"));
+    }
+
+    #[test]
+    fn unknown_release_field_rejected() {
+        let source = r#"
+            package scryer.rules.user.unknown_release_field
+            import rego.v1
+
+            score_entry["bad"] := 100 if {
+                input.release.password_protected != null
+            }
+        "#;
+        let result = validate_user_rule(source, "unknown_release_field").unwrap();
+        assert!(!result.valid);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("input.release.password_protected"))
+        );
+    }
+
+    #[test]
+    fn unknown_context_field_rejected() {
+        let source = r#"
+            package scryer.rules.user.unknown_context_field
+            import rego.v1
+
+            score_entry["bad"] := 100 if {
+                input.context.missing_flag
+            }
+        "#;
+        let result = validate_user_rule(source, "unknown_context_field").unwrap();
+        assert!(!result.valid);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("input.context.missing_flag"))
+        );
+    }
+
+    #[test]
+    fn release_extra_dot_access_is_allowed() {
+        let source = r#"
+            package scryer.rules.user.release_extra_field
+            import rego.v1
+
+            score_entry["bonus"] := 100 if {
+                input.release.extra.freeleech == true
+            }
+        "#;
+        let result = validate_user_rule(source, "release_extra_field").unwrap();
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn all_built_in_templates_validate_after_rewrite() {
+        for (index, (template_id, rego_source)) in built_in_templates().into_iter().enumerate() {
+            let rule_id = format!("builtin_{index}");
+            let rewritten = crate::rewrite_package_declaration(&rego_source, &rule_id);
+            let result = validate_user_rule(&rewritten, &rule_id).unwrap();
+            assert!(result.valid, "{template_id}: {:?}", result.errors);
+        }
+    }
+
+    #[test]
+    fn canonical_quality_templates_fire() {
+        let webdl_result = evaluate_template("prefer-web-dl", synthetic_test_input(), "movie");
+        assert!(
+            webdl_result
+                .entries
+                .iter()
+                .any(|entry| entry.code == "prefer_webdl" && entry.delta == 100),
+            "prefer-web-dl should match canonical WEB-DL input"
+        );
+
+        let x265_result = evaluate_template("prefer-x265", synthetic_test_input(), "movie");
+        assert!(
+            x265_result
+                .entries
+                .iter()
+                .any(|entry| entry.code == "x265_bonus" && entry.delta == 100),
+            "prefer-x265 should match canonical H.265 input"
+        );
+
+        let mut x264_input = synthetic_test_input();
+        x264_input.release.video_codec = Some("H.264".to_string());
+        let x264_result = evaluate_template("penalize-x264-4k", x264_input, "movie");
+        assert!(
+            x264_result
+                .entries
+                .iter()
+                .any(|entry| entry.code == "x264_4k_penalty" && entry.delta == -200),
+            "penalize-x264-4k should match canonical 2160P H.264 input"
+        );
+    }
+
+    #[test]
+    fn group_templates_noop_when_release_group_is_missing() {
+        for template_id in [
+            "anime-group-preference",
+            "block-mini-encodes",
+            "block-low-quality-groups",
+        ] {
+            let mut input = synthetic_test_input();
+            input.release.release_group = None;
+            let result = evaluate_template(template_id, input, "anime");
+            assert!(
+                result.errors.is_empty(),
+                "{template_id} should not raise runtime errors when release_group is null"
+            );
+            assert!(
+                result.entries.is_empty(),
+                "{template_id} should no-op when release_group is null"
+            );
+        }
+    }
+
+    #[test]
+    fn password_protected_template_matches_injected_signal() {
+        let mut input = synthetic_test_input();
+        input.release.is_password_protected = Some(true);
+        let result = evaluate_template("block-password-protected", input, "movie");
+        assert!(
+            result
+                .entries
+                .iter()
+                .any(|entry| entry.code == "password_protected"),
+            "password-protected template should block when the signal is injected"
+        );
     }
 }
