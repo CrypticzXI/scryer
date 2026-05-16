@@ -114,7 +114,6 @@ pub struct PendingTitleHydration {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorMovieEntry {
-    pub root_path: String,
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub monitored: bool,
@@ -136,11 +135,80 @@ pub struct ExternalImportMonitorEpisodeEntry {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorSeriesEntry {
-    pub root_path: String,
     pub tvdb_id: Option<String>,
     pub monitored: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seasons: Vec<ExternalImportMonitorSeasonEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub episodes: Vec<ExternalImportMonitorEpisodeEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalImportMonitorSnapshotEntryKind {
+    Movie,
+    Series,
+}
+
+impl ExternalImportMonitorSnapshotEntryKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Movie => "movie",
+            Self::Series => "series",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "movie" => Some(Self::Movie),
+            "series" => Some(Self::Series),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalImportMonitorSnapshotChunkScopeKind {
+    WarmupSession,
+    Facet,
+}
+
+impl ExternalImportMonitorSnapshotChunkScopeKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::WarmupSession => "warmup_session",
+            Self::Facet => "facet",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "warmup_session" => Some(Self::WarmupSession),
+            "facet" => Some(Self::Facet),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalImportMonitorChunkedPayload {
+    pub entry_kind: ExternalImportMonitorSnapshotEntryKind,
+    pub chunk_count: i32,
+    pub entry_count: i32,
+    pub total_bytes: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalImportMonitorSnapshotChunk {
+    pub scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+    pub scope_key: String,
+    pub entry_kind: ExternalImportMonitorSnapshotEntryKind,
+    pub chunk_index: i32,
+    pub payload_ndjson: String,
+    pub entry_count: i32,
+    pub byte_len: i64,
+    pub created_at: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,6 +219,9 @@ pub enum ExternalImportMonitorSnapshotPayload {
     },
     Series {
         entries: Vec<ExternalImportMonitorSeriesEntry>,
+    },
+    Chunked {
+        manifest: ExternalImportMonitorChunkedPayload,
     },
 }
 

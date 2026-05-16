@@ -1674,6 +1674,16 @@ async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
     }
 }
 
+#[test]
+fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_table() {
+    let keys = crate::migrations::list_embedded_migration_keys();
+    assert!(
+        keys.iter()
+            .any(|key| key == "0117_external_import_monitor_snapshot_chunks"),
+        "embedded migration bundle is missing 0117_external_import_monitor_snapshot_chunks: {keys:?}"
+    );
+}
+
 #[tokio::test]
 async fn review_regression_download_client_identity_migration_deduplicates_legacy_submissions() {
     let pool = SqlitePoolOptions::new()

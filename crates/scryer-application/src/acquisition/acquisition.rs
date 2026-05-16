@@ -4495,6 +4495,11 @@ pub async fn start_background_acquisition_poller(
         Utc::now() + chrono::Duration::hours(24),
     )
     .await;
+    app.set_job_next_run_at(
+        JobKey::ProwlarrSync,
+        Utc::now() + chrono::Duration::minutes(5),
+    )
+    .await;
     app.set_job_next_run_at(JobKey::RssSync, Utc::now() + chrono::Duration::minutes(15))
         .await;
     app.set_job_next_run_at(
@@ -4514,6 +4519,7 @@ pub async fn start_background_acquisition_poller(
     let mut health_check_interval = tokio::time::interval(std::time::Duration::from_hours(6));
     let mut staged_nzb_prune_interval = tokio::time::interval(std::time::Duration::from_hours(1));
     let mut housekeeping_interval = tokio::time::interval(std::time::Duration::from_hours(24));
+    let mut prowlarr_sync_interval = tokio::time::interval(std::time::Duration::from_mins(5));
     let mut rss_sync_interval = tokio::time::interval(std::time::Duration::from_mins(15));
     let mut pending_release_interval = tokio::time::interval(std::time::Duration::from_mins(1));
 
@@ -4525,6 +4531,7 @@ pub async fn start_background_acquisition_poller(
     health_check_interval.tick().await;
     staged_nzb_prune_interval.tick().await;
     housekeeping_interval.tick().await;
+    prowlarr_sync_interval.tick().await;
     rss_sync_interval.tick().await;
     pending_release_interval.tick().await;
 
@@ -4662,6 +4669,19 @@ pub async fn start_background_acquisition_poller(
                     if let Err(e) = app.run_scheduled_job_now(JobKey::PendingReleaseProcessing, JobTriggerSource::ScheduledInterval).await {
                         warn!(error = %e, "pending release processor failed");
                         metrics::counter!("scryer_task_errors_total", "task" => "pending_releases").increment(1);
+                    }
+                }).await;
+            }
+            _ = prowlarr_sync_interval.tick() => {
+                let app = app.clone();
+                run_task("prowlarr_sync", async move {
+                    app.set_job_next_run_at(
+                        JobKey::ProwlarrSync,
+                        Utc::now() + chrono::Duration::minutes(5),
+                    ).await;
+                    if let Err(e) = app.run_scheduled_job_now(JobKey::ProwlarrSync, JobTriggerSource::ScheduledInterval).await {
+                        warn!(error = %e, "periodic Prowlarr sync failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "prowlarr_sync").increment(1);
                     }
                 }).await;
             }

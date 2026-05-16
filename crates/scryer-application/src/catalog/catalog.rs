@@ -31,6 +31,7 @@ const REMATCH_DERIVED_TAG_PREFIXES: &[&str] = &[
     "scryer:anime-status:",
 ];
 pub(crate) const HYDRATION_BULK_BATCH_SIZE: usize = 20;
+const EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE: i32 = 4;
 
 fn blocklist_episode_ids(data_json: Option<&str>) -> Vec<String> {
     let Some(raw) = data_json else {
@@ -103,24 +104,13 @@ fn unique_title_match(map: &HashMap<String, Vec<Title>>, key: Option<&str>) -> O
     (matches.len() == 1).then(|| matches[0].clone())
 }
 
-fn unique_episode_match(
-    episodes_by_tvdb: &HashMap<String, Vec<Episode>>,
-    episodes_by_number: &HashMap<(String, String), Vec<Episode>>,
-    tvdb_id: Option<&str>,
-    season_number: i32,
-    episode_number: i32,
-) -> Option<Episode> {
-    let tvdb_match = tvdb_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| episodes_by_tvdb.get(value))
-        .and_then(|matches| (matches.len() == 1).then(|| matches[0].clone()));
-
-    tvdb_match.or_else(|| {
-        let key = (season_number.to_string(), episode_number.to_string());
-        episodes_by_number
-            .get(&key)
-            .and_then(|matches| (matches.len() == 1).then(|| matches[0].clone()))
+fn parse_external_import_monitor_snapshot_line<T: serde::de::DeserializeOwned>(
+    line: &str,
+) -> AppResult<T> {
+    serde_json::from_str(line).map_err(|err| {
+        AppError::Validation(format!(
+            "failed to parse external import monitor snapshot line: {err}"
+        ))
     })
 }
 
@@ -3425,6 +3415,238 @@ impl AppUseCase {
         Ok(())
     }
 
+    async fn apply_movie_monitor_snapshot_chunks(
+        &self,
+        manifest: &ExternalImportMonitorChunkedPayload,
+        now: &DateTime<Utc>,
+    ) -> AppResult<()> {
+        if manifest.entry_kind != ExternalImportMonitorSnapshotEntryKind::Movie {
+            return Err(AppError::Validation(
+                "movie monitor snapshot manifest did not contain movie entries".into(),
+            ));
+        }
+
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list(Some(MediaFacet::Movie), None)
+            .await?;
+        let mut titles_by_tmdb = HashMap::<String, Vec<Title>>::new();
+        let mut titles_by_imdb = HashMap::<String, Vec<Title>>::new();
+
+        for title in &titles {
+            push_title_external_id_index(
+                &mut titles_by_tmdb,
+                title_external_id_value(title, "tmdb"),
+                title,
+            );
+            push_title_external_id_index(
+                &mut titles_by_imdb,
+                title_external_id_value(title, "imdb"),
+                title,
+            );
+        }
+
+        let mut touched_title_ids = HashSet::new();
+        let mut after_chunk_index = None;
+        loop {
+            let chunks = self
+                .services
+                .workflow
+                .external_import_monitor_snapshots
+                .list_external_import_monitor_snapshot_chunk_batch(
+                    ExternalImportMonitorSnapshotChunkScopeKind::Facet,
+                    MediaFacet::Movie.as_str(),
+                    ExternalImportMonitorSnapshotEntryKind::Movie,
+                    after_chunk_index,
+                    EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE,
+                )
+                .await?;
+            if chunks.is_empty() {
+                break;
+            }
+
+            for chunk in chunks {
+                after_chunk_index = Some(chunk.chunk_index);
+                for line in chunk
+                    .payload_ndjson
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                {
+                    let entry: ExternalImportMonitorMovieEntry =
+                        parse_external_import_monitor_snapshot_line(line)?;
+                    let matched_title =
+                        unique_title_match(&titles_by_tmdb, entry.tmdb_id.as_deref()).or_else(
+                            || unique_title_match(&titles_by_imdb, entry.imdb_id.as_deref()),
+                        );
+                    let Some(title) = matched_title else { continue };
+
+                    let updated = self
+                        .apply_title_monitoring_change(None, &title.id, entry.monitored)
+                        .await?;
+                    touched_title_ids.insert(updated.id);
+                }
+            }
+        }
+
+        for title_id in touched_title_ids {
+            let Some(title) = self.services.catalog.titles.get_by_id(&title_id).await? else {
+                continue;
+            };
+
+            if title.monitored {
+                self.sync_wanted_movie_inner(&title, now, true).await;
+            } else {
+                self.services
+                    .workflow
+                    .wanted_items
+                    .delete_wanted_items_for_title(&title.id)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn apply_series_monitor_snapshot_entry(
+        &self,
+        title: &Title,
+        entry: &ExternalImportMonitorSeriesEntry,
+    ) -> AppResult<(bool, bool)> {
+        let updated_title = self
+            .apply_title_monitoring_change(None, &title.id, entry.monitored)
+            .await?;
+        let collections = self
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(&title.id)
+            .await?;
+        let episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await?;
+
+        let mut season_overrides = HashMap::<String, bool>::new();
+        for season in &entry.seasons {
+            season_overrides.insert(season.season_number.to_string(), season.monitored);
+        }
+
+        let mut episode_overrides_by_tvdb = HashMap::<String, bool>::new();
+        let mut episode_overrides_by_number = HashMap::<(String, String), bool>::new();
+        for episode in &entry.episodes {
+            if let Some(tvdb_id) = episode.tvdb_id.as_deref().map(str::trim)
+                && !tvdb_id.is_empty()
+            {
+                episode_overrides_by_tvdb.insert(tvdb_id.to_string(), episode.monitored);
+            }
+            episode_overrides_by_number.insert(
+                (
+                    episode.season_number.to_string(),
+                    episode.episode_number.to_string(),
+                ),
+                episode.monitored,
+            );
+        }
+
+        let mut collections_with_monitored_episodes = HashSet::new();
+        let mut episodes_to_enable = Vec::new();
+        let mut episodes_to_disable = Vec::new();
+        for episode in &episodes {
+            let season_default = episode
+                .season_number
+                .as_deref()
+                .map(str::trim)
+                .and_then(|season_number| season_overrides.get(season_number))
+                .copied()
+                .unwrap_or(entry.monitored);
+            let desired = episode
+                .tvdb_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .and_then(|tvdb_id| episode_overrides_by_tvdb.get(tvdb_id))
+                .copied()
+                .or_else(|| {
+                    let season_number = episode.season_number.as_deref()?.trim();
+                    let episode_number = episode.episode_number.as_deref()?.trim();
+                    episode_overrides_by_number
+                        .get(&(season_number.to_string(), episode_number.to_string()))
+                        .copied()
+                })
+                .unwrap_or(season_default);
+            if desired && let Some(collection_id) = episode.collection_id.as_deref() {
+                collections_with_monitored_episodes.insert(collection_id.to_string());
+            }
+            if episode.monitored != desired {
+                if desired {
+                    episodes_to_enable.push(episode.id.clone());
+                } else {
+                    episodes_to_disable.push(episode.id.clone());
+                }
+            }
+        }
+
+        let mut collections_to_enable = Vec::new();
+        let mut collections_to_disable = Vec::new();
+        for collection in &collections {
+            let desired = season_overrides
+                .get(collection.collection_index.trim())
+                .copied()
+                .unwrap_or(entry.monitored)
+                || collections_with_monitored_episodes.contains(&collection.id);
+            if collection.monitored != desired {
+                if desired {
+                    collections_to_enable.push(collection.id.clone());
+                } else {
+                    collections_to_disable.push(collection.id.clone());
+                }
+            }
+        }
+
+        if !collections_to_disable.is_empty() {
+            self.services
+                .catalog
+                .shows
+                .set_collections_monitored(&collections_to_disable, false)
+                .await?;
+        }
+        if !collections_to_enable.is_empty() {
+            self.services
+                .catalog
+                .shows
+                .set_collections_monitored(&collections_to_enable, true)
+                .await?;
+        }
+        if !episodes_to_disable.is_empty() {
+            self.services
+                .catalog
+                .shows
+                .set_episodes_monitored(&episodes_to_disable, false)
+                .await?;
+        }
+        if !episodes_to_enable.is_empty() {
+            self.services
+                .catalog
+                .shows
+                .set_episodes_monitored(&episodes_to_enable, true)
+                .await?;
+        }
+
+        Ok((
+            updated_title.monitored != title.monitored
+                || !collections_to_enable.is_empty()
+                || !collections_to_disable.is_empty()
+                || !episodes_to_enable.is_empty()
+                || !episodes_to_disable.is_empty(),
+            updated_title.monitored != title.monitored,
+        ))
+    }
+
     async fn apply_series_monitor_snapshot_entries(
         &self,
         facet: &MediaFacet,
@@ -3448,98 +3670,108 @@ impl AppUseCase {
         }
 
         let mut touched_title_ids = HashSet::new();
+        let mut title_ids_needing_activity = HashSet::new();
         for entry in entries {
             let Some(title) = unique_title_match(&titles_by_tvdb, entry.tvdb_id.as_deref()) else {
                 continue;
             };
 
-            let updated_title = self
-                .apply_title_monitoring_change(None, &title.id, entry.monitored)
+            let (changed, title_activity_emitted) = self
+                .apply_series_monitor_snapshot_entry(&title, entry)
                 .await?;
-            touched_title_ids.insert(updated_title.id.clone());
+            if changed {
+                touched_title_ids.insert(title.id.clone());
+                if !title_activity_emitted {
+                    title_ids_needing_activity.insert(title.id.clone());
+                }
+            }
+        }
 
-            let collections = self
+        for title_id in touched_title_ids {
+            let Some(title) = self.services.catalog.titles.get_by_id(&title_id).await? else {
+                continue;
+            };
+
+            if title_ids_needing_activity.contains(&title_id) {
+                self.emit_title_updated_activity(None, &title).await;
+            }
+            self.sync_wanted_series_inner(&title, now, true).await;
+        }
+
+        Ok(())
+    }
+
+    async fn apply_series_monitor_snapshot_chunks(
+        &self,
+        facet: &MediaFacet,
+        manifest: &ExternalImportMonitorChunkedPayload,
+        now: &DateTime<Utc>,
+    ) -> AppResult<()> {
+        if manifest.entry_kind != ExternalImportMonitorSnapshotEntryKind::Series {
+            return Err(AppError::Validation(
+                "series monitor snapshot manifest did not contain series entries".into(),
+            ));
+        }
+
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list(Some(facet.clone()), None)
+            .await?;
+        let mut titles_by_tvdb = HashMap::<String, Vec<Title>>::new();
+
+        for title in &titles {
+            push_title_external_id_index(
+                &mut titles_by_tvdb,
+                title_external_id_value(title, "tvdb"),
+                title,
+            );
+        }
+
+        let mut touched_title_ids = HashSet::new();
+        let mut title_ids_needing_activity = HashSet::<String>::new();
+        let mut after_chunk_index = None;
+        loop {
+            let chunks = self
                 .services
-                .catalog
-                .shows
-                .list_collections_for_title(&updated_title.id)
+                .workflow
+                .external_import_monitor_snapshots
+                .list_external_import_monitor_snapshot_chunk_batch(
+                    ExternalImportMonitorSnapshotChunkScopeKind::Facet,
+                    facet.as_str(),
+                    ExternalImportMonitorSnapshotEntryKind::Series,
+                    after_chunk_index,
+                    EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE,
+                )
                 .await?;
-            let episodes = self
-                .services
-                .catalog
-                .shows
-                .list_episodes_for_title(&updated_title.id)
-                .await?;
-
-            let mut collections_by_season = HashMap::<String, Collection>::new();
-            let mut episodes_by_tvdb = HashMap::<String, Vec<Episode>>::new();
-            let mut episodes_by_number = HashMap::<(String, String), Vec<Episode>>::new();
-
-            for collection in &collections {
-                collections_by_season
-                    .entry(collection.collection_index.clone())
-                    .or_insert_with(|| collection.clone());
+            if chunks.is_empty() {
+                break;
             }
 
-            for episode in &episodes {
-                if let Some(tvdb_id) = episode.tvdb_id.as_deref().filter(|value| !value.is_empty())
+            for chunk in chunks {
+                after_chunk_index = Some(chunk.chunk_index);
+                for line in chunk
+                    .payload_ndjson
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
                 {
-                    episodes_by_tvdb
-                        .entry(tvdb_id.to_string())
-                        .or_default()
-                        .push(episode.clone());
-                }
-                if let (Some(season_number), Some(episode_number)) = (
-                    episode.season_number.as_deref(),
-                    episode.episode_number.as_deref(),
-                ) {
-                    episodes_by_number
-                        .entry((season_number.to_string(), episode_number.to_string()))
-                        .or_default()
-                        .push(episode.clone());
-                }
-            }
+                    let entry: ExternalImportMonitorSeriesEntry =
+                        parse_external_import_monitor_snapshot_line(line)?;
+                    let Some(title) = unique_title_match(&titles_by_tvdb, entry.tvdb_id.as_deref())
+                    else {
+                        continue;
+                    };
 
-            for collection in &collections {
-                self.apply_collection_monitoring_change(None, &collection.id, false, false, false)
-                    .await?;
-            }
-            for episode in &episodes {
-                self.apply_episode_monitoring_change(None, &episode.id, false, false)
-                    .await?;
-            }
-
-            if updated_title.monitored {
-                for season in entry.seasons.iter().filter(|season| season.monitored) {
-                    if let Some(collection) =
-                        collections_by_season.get(&season.season_number.to_string())
-                    {
-                        self.apply_collection_monitoring_change(
-                            None,
-                            &collection.id,
-                            true,
-                            false,
-                            false,
-                        )
+                    let (changed, title_activity_emitted) = self
+                        .apply_series_monitor_snapshot_entry(&title, &entry)
                         .await?;
-                    }
-                }
-
-                for episode in entry.episodes.iter().filter(|episode| episode.monitored) {
-                    if let Some(matched_episode) = unique_episode_match(
-                        &episodes_by_tvdb,
-                        &episodes_by_number,
-                        episode.tvdb_id.as_deref(),
-                        episode.season_number,
-                        episode.episode_number,
-                    ) {
-                        self.apply_episode_monitoring_change(
-                            None,
-                            &matched_episode.id,
-                            true,
-                            false,
-                        )
-                        .await?;
+                    if changed {
+                        touched_title_ids.insert(title.id.clone());
+                        if !title_activity_emitted {
+                            title_ids_needing_activity.insert(title.id.clone());
+                        }
                     }
                 }
             }
@@ -3550,15 +3782,10 @@ impl AppUseCase {
                 continue;
             };
 
-            if title.monitored {
-                self.sync_wanted_series_inner(&title, now, true).await;
-            } else {
-                self.services
-                    .workflow
-                    .wanted_items
-                    .delete_wanted_items_for_title(&title.id)
-                    .await?;
+            if title_ids_needing_activity.contains(&title_id) {
+                self.emit_title_updated_activity(None, &title).await;
             }
+            self.sync_wanted_series_inner(&title, now, true).await;
         }
 
         Ok(())
@@ -3578,11 +3805,22 @@ impl AppUseCase {
                 self.apply_movie_monitor_snapshot_entries(entries, &now)
                     .await?;
             }
+            (MediaFacet::Movie, ExternalImportMonitorSnapshotPayload::Chunked { manifest }) => {
+                self.apply_movie_monitor_snapshot_chunks(manifest, &now)
+                    .await?;
+            }
             (
                 MediaFacet::Series | MediaFacet::Anime,
                 ExternalImportMonitorSnapshotPayload::Series { entries },
             ) => {
                 self.apply_series_monitor_snapshot_entries(&snapshot.facet, entries, &now)
+                    .await?;
+            }
+            (
+                MediaFacet::Series | MediaFacet::Anime,
+                ExternalImportMonitorSnapshotPayload::Chunked { manifest },
+            ) => {
+                self.apply_series_monitor_snapshot_chunks(&snapshot.facet, manifest, &now)
                     .await?;
             }
             (snapshot_facet, _) => {

@@ -255,6 +255,11 @@ pub trait ShowRepository: Send + Sync {
         collection_id: &str,
         monitored: bool,
     ) -> AppResult<()>;
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()>;
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()>;
     async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>>;
@@ -264,6 +269,11 @@ pub trait ShowRepository: Send + Sync {
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>>;
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode>;
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode>;
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()>;
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()>;
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn find_episode_by_title_and_numbers(
@@ -718,6 +728,42 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
         &self,
         snapshot: &crate::ExternalImportMonitorSnapshot,
     ) -> AppResult<()>;
+
+    async fn append_external_import_monitor_snapshot_chunk(
+        &self,
+        chunk: &crate::ExternalImportMonitorSnapshotChunk,
+    ) -> AppResult<()>;
+
+    async fn list_external_import_monitor_snapshot_chunks(
+        &self,
+        scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+        entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
+    ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>>;
+
+    async fn list_external_import_monitor_snapshot_chunk_batch(
+        &self,
+        scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+        entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
+        after_chunk_index: Option<i32>,
+        limit: i32,
+    ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>>;
+
+    async fn delete_external_import_monitor_snapshot_chunks(
+        &self,
+        scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+    ) -> AppResult<()>;
+
+    async fn copy_external_import_monitor_snapshot_chunks(
+        &self,
+        from_scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        from_scope_key: &str,
+        to_scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        to_scope_key: &str,
+        entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
+    ) -> AppResult<(i32, i32, i64)>;
 
     async fn get_external_import_monitor_snapshot(
         &self,

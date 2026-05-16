@@ -676,9 +676,11 @@ async fn rego_validate_unknown_input_path_rejected() {
         .as_array()
         .unwrap();
     assert!(errors.iter().any(|error| {
-        error
-            .as_str()
-            .is_some_and(|value| value.contains("input.release.password_protected"))
+        error.as_str().is_some_and(|value| {
+            value.contains("input.release.password_protected")
+                && value.contains("input.release.is_password_protected")
+                && value.contains("Rules Context Reference")
+        })
     }));
 }
 
@@ -723,9 +725,11 @@ async fn rego_create_unknown_input_path_fails() {
     assert!(body.get("errors").is_some());
     let errors = body["errors"].as_array().unwrap();
     assert!(errors.iter().any(|error| {
-        error["message"]
-            .as_str()
-            .is_some_and(|value| value.contains("input.release.password_protected"))
+        error["message"].as_str().is_some_and(|value| {
+            value.contains("Rule validation failed:")
+                && value.contains("input.release.password_protected")
+                && value.contains("input.release.is_password_protected")
+        })
     }));
 }
 
@@ -749,9 +753,11 @@ async fn rego_update_unknown_input_path_fails() {
     assert!(body.get("errors").is_some());
     let errors = body["errors"].as_array().unwrap();
     assert!(errors.iter().any(|error| {
-        error["message"]
-            .as_str()
-            .is_some_and(|value| value.contains("input.release.password_protected"))
+        error["message"].as_str().is_some_and(|value| {
+            value.contains("Rule validation failed:")
+                && value.contains("input.release.password_protected")
+                && value.contains("input.release.is_password_protected")
+        })
     }));
 }
 

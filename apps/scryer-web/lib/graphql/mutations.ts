@@ -1342,12 +1342,44 @@ export const completeSetupMutation = `mutation CompleteSetup {
 
 // ── External Import (Sonarr/Radarr) ──────────────────────────────────
 
+const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
+    sessionId
+    status
+    phase
+    startedAt
+    updatedAt
+    overallTotalKnown
+    overallProgress { total completed failed }
+    moviesTotalKnown
+    moviesProgress { total completed failed }
+    seriesTotalKnown
+    seriesProgress { total completed failed }
+    episodeFetchTotalKnown
+    episodeFetchExpectedTotal
+    episodeFetchExpectedMonitoredTotal
+    episodeFetchProgress { total completed failed }
+    snapshotBuildTotalKnown
+    snapshotBuildProgress { total completed failed }
+    matchedMovieCount
+    matchedSeriesCount
+    unmatchedMovieCount
+    unmatchedSeriesCount
+    ambiguousMovieCount
+    ambiguousSeriesCount
+    errorMessage
+`;
+
 export const previewExternalImportMutation = `mutation PreviewExternalImport($input: PreviewExternalImportInput!) {
   previewExternalImport(input: $input) {
     sonarrConnected
     radarrConnected
+    prowlarrConnected
     sonarrVersion
     radarrVersion
+    prowlarrVersion
+    sonarrError
+    radarrError
+    prowlarrError
     rootFolders { source path }
     downloadClients {
       sources name implementation scryerClientType
@@ -1362,6 +1394,15 @@ export const previewExternalImportMutation = `mutation PreviewExternalImport($in
   }
 }`;
 
+export const startExternalImportMonitorWarmupMutation = `mutation StartExternalImportMonitorWarmup($input: StartExternalImportMonitorWarmupInput!) {
+  startExternalImportMonitorWarmup(input: $input) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+export const cancelExternalImportMonitorWarmupMutation = `mutation CancelExternalImportMonitorWarmup($input: CancelExternalImportMonitorWarmupInput!) {
+  cancelExternalImportMonitorWarmup(input: $input)
+}`;
+
 export const executeExternalImportMutation = `mutation ExecuteExternalImport($input: ExecuteExternalImportInput!) {
   executeExternalImport(input: $input) {
     mediaPathsSaved
@@ -1370,6 +1411,10 @@ export const executeExternalImportMutation = `mutation ExecuteExternalImport($in
     pluginsInstalled
     errors
   }
+}`;
+
+export const finalizeExternalImportMutation = `mutation FinalizeExternalImport($input: FinalizeExternalImportInput!) {
+  finalizeExternalImport(input: $input)
 }`;
 
 export const rehydrateAllMetadataMutation = `mutation RehydrateAllMetadata($language: String!) {

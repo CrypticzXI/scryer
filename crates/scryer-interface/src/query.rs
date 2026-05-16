@@ -16,15 +16,16 @@ use crate::mappers::{
     from_activity_event, from_backup_info, from_calendar_episode, from_collection,
     from_delete_preview, from_disk_space, from_domain_event, from_download_client_config,
     from_download_client_routing_entry, from_download_queue_item, from_episode,
-    from_health_check_result, from_indexer_config_with_fields, from_indexer_routing_entry,
-    from_job_definition, from_job_run, from_library, from_library_paths_settings,
-    from_library_scan_session, from_library_settings, from_media_rename_plan, from_media_settings,
-    from_pending_import_connection, from_pending_import_counts, from_pending_release,
-    from_provider_type, from_quality_profile_settings, from_release_decision,
-    from_service_settings, from_smg_version_compatibility_notice, from_submission_scope,
-    from_subtitle_provider_config, from_system_health, from_title,
-    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
-    from_title_media_file, from_title_release_blocklist_entry, from_user, from_wanted_item,
+    from_external_import_monitor_warmup_progress, from_health_check_result,
+    from_indexer_config_with_fields, from_indexer_routing_entry, from_job_definition, from_job_run,
+    from_library, from_library_paths_settings, from_library_scan_session, from_library_settings,
+    from_media_rename_plan, from_media_settings, from_pending_import_connection,
+    from_pending_import_counts, from_pending_release, from_provider_type,
+    from_quality_profile_settings, from_release_decision, from_service_settings,
+    from_smg_version_compatibility_notice, from_submission_scope, from_subtitle_provider_config,
+    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    from_title_history_record, from_title_media_file, from_title_release_blocklist_entry,
+    from_user, from_wanted_item,
 };
 use crate::types::*;
 
@@ -815,6 +816,20 @@ impl QueryRoot {
             .into_iter()
             .map(from_library_scan_session)
             .collect())
+    }
+
+    async fn external_import_monitor_warmup_status(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let snapshot = app
+            .get_external_import_monitor_warmup_status(&actor, &session_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_external_import_monitor_warmup_progress(snapshot))
     }
 
     async fn pending_import_counts(

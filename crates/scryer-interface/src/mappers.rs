@@ -1739,6 +1739,78 @@ pub(crate) fn from_plugin_install_progress(
     }
 }
 
+pub(crate) fn from_external_import_monitor_warmup_progress(
+    snapshot: scryer_application::ExternalImportMonitorWarmupProgressSnapshot,
+) -> ExternalImportMonitorWarmupProgressPayload {
+    let map_phase_progress =
+        |progress: scryer_application::ExternalImportMonitorWarmupPhaseProgress| {
+            LibraryScanPhaseProgressPayload {
+                total: progress.total,
+                completed: progress.completed,
+                failed: progress.failed,
+            }
+        };
+
+    ExternalImportMonitorWarmupProgressPayload {
+        session_id: snapshot.session_id,
+        status: match snapshot.status {
+            scryer_application::ExternalImportMonitorWarmupStatus::Queued => {
+                ExternalImportMonitorWarmupStatusValue::Queued
+            }
+            scryer_application::ExternalImportMonitorWarmupStatus::Running => {
+                ExternalImportMonitorWarmupStatusValue::Running
+            }
+            scryer_application::ExternalImportMonitorWarmupStatus::Completed => {
+                ExternalImportMonitorWarmupStatusValue::Completed
+            }
+            scryer_application::ExternalImportMonitorWarmupStatus::Canceled => {
+                ExternalImportMonitorWarmupStatusValue::Canceled
+            }
+            scryer_application::ExternalImportMonitorWarmupStatus::Failed => {
+                ExternalImportMonitorWarmupStatusValue::Failed
+            }
+        },
+        phase: match snapshot.phase {
+            scryer_application::ExternalImportMonitorWarmupPhase::LoadingMovies => {
+                ExternalImportMonitorWarmupPhaseValue::LoadingMovies
+            }
+            scryer_application::ExternalImportMonitorWarmupPhase::LoadingSeries => {
+                ExternalImportMonitorWarmupPhaseValue::LoadingSeries
+            }
+            scryer_application::ExternalImportMonitorWarmupPhase::LoadingEpisodes => {
+                ExternalImportMonitorWarmupPhaseValue::LoadingEpisodes
+            }
+            scryer_application::ExternalImportMonitorWarmupPhase::BuildingSnapshot => {
+                ExternalImportMonitorWarmupPhaseValue::BuildingSnapshot
+            }
+            scryer_application::ExternalImportMonitorWarmupPhase::Ready => {
+                ExternalImportMonitorWarmupPhaseValue::Ready
+            }
+        },
+        started_at: snapshot.started_at,
+        updated_at: snapshot.updated_at,
+        overall_total_known: snapshot.overall_total_known,
+        overall_progress: map_phase_progress(snapshot.overall_progress),
+        movies_total_known: snapshot.movies_total_known,
+        movies_progress: map_phase_progress(snapshot.movies_progress),
+        series_total_known: snapshot.series_total_known,
+        series_progress: map_phase_progress(snapshot.series_progress),
+        episode_fetch_total_known: snapshot.episode_fetch_total_known,
+        episode_fetch_expected_total: snapshot.episode_fetch_expected_total,
+        episode_fetch_expected_monitored_total: snapshot.episode_fetch_expected_monitored_total,
+        episode_fetch_progress: map_phase_progress(snapshot.episode_fetch_progress),
+        snapshot_build_total_known: snapshot.snapshot_build_total_known,
+        snapshot_build_progress: map_phase_progress(snapshot.snapshot_build_progress),
+        matched_movie_count: snapshot.matched_movie_count,
+        matched_series_count: snapshot.matched_series_count,
+        unmatched_movie_count: snapshot.unmatched_movie_count,
+        unmatched_series_count: snapshot.unmatched_series_count,
+        ambiguous_movie_count: snapshot.ambiguous_movie_count,
+        ambiguous_series_count: snapshot.ambiguous_series_count,
+        error_message: snapshot.error_message,
+    }
+}
+
 pub(crate) fn from_notification_channel(
     ch: scryer_domain::NotificationChannelConfig,
 ) -> NotificationChannelPayload {

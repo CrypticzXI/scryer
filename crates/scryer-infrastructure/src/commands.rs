@@ -1,6 +1,6 @@
 use crate::queries::{
     blocklist as blocklist_queries, library_scan_unmatched as library_scan_unmatched_queries,
-    plugin_installation::BuiltinPluginSeed, title::*,
+    plugin_installation::BuiltinPluginSeed, show, sql_runtime::SqlTarget, title::*,
 };
 use crate::{
     encryption::EncryptionKey,
@@ -1148,7 +1148,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                 DbCommand::DeleteEpisode { episode_id, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("delete_episode", || {
-                            delete_episode_query(&pool, &episode_id)
+                            show::delete_episode_query(SqlTarget::Sqlite(&pool), &episode_id)
                         })
                         .await,
                     );
@@ -1281,8 +1281,8 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         run_with_sqlite_busy_retries(
                             "replace_anibridge_scoped_external_ids_for_title",
                             || {
-                                replace_anibridge_scoped_external_ids_for_title_query(
-                                    &pool,
+                                show::replace_anibridge_scoped_external_ids_for_title(
+                                    SqlTarget::Sqlite(&pool),
                                     &title_id,
                                     &collection_ids,
                                     &episode_ids,
@@ -1346,8 +1346,8 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                 } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("update_interstitial_season_episode", || {
-                            update_interstitial_season_episode_query(
-                                &pool,
+                            show::update_interstitial_season_episode_query(
+                                SqlTarget::Sqlite(&pool),
                                 &collection_id,
                                 season_episode.as_deref(),
                             )
@@ -1362,8 +1362,8 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                 } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("set_collection_episodes_monitored", || {
-                            set_collection_episodes_monitored_query(
-                                &pool,
+                            show::set_collection_episodes_monitored_query(
+                                SqlTarget::Sqlite(&pool),
                                 &collection_id,
                                 monitored,
                             )
@@ -1377,7 +1377,7 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                 } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("delete_collection", || {
-                            delete_collection_query(&pool, &collection_id)
+                            show::delete_collection_query(SqlTarget::Sqlite(&pool), &collection_id)
                         })
                         .await,
                     );
@@ -1385,7 +1385,10 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                 DbCommand::DeleteCollectionsForTitle { title_id, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("delete_collections_for_title", || {
-                            delete_collections_for_title_query(&pool, &title_id)
+                            show::delete_collections_for_title_query(
+                                SqlTarget::Sqlite(&pool),
+                                &title_id,
+                            )
                         })
                         .await,
                     );
@@ -1393,7 +1396,10 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                 DbCommand::DeleteEpisodesForTitle { title_id, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("delete_episodes_for_title", || {
-                            delete_episodes_for_title_query(&pool, &title_id)
+                            show::delete_episodes_for_title_query(
+                                SqlTarget::Sqlite(&pool),
+                                &title_id,
+                            )
                         })
                         .await,
                     );
@@ -2530,7 +2536,10 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     );
                 }
                 DbCommand::ListEpisodesForTitle { title_id, reply } => {
-                    let _ = reply.send(list_episodes_for_title_query(&pool, &title_id).await);
+                    let _ = reply.send(
+                        show::list_episodes_for_title_query(SqlTarget::Sqlite(&pool), &title_id)
+                            .await,
+                    );
                 }
                 DbCommand::FindEpisodeByTitleAndNumbers {
                     title_id,
@@ -2554,8 +2563,8 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                     reply,
                 } => {
                     let _ = reply.send(
-                        find_episode_by_title_and_absolute_number_query(
-                            &pool,
+                        show::find_episode_by_title_and_absolute_number_query(
+                            SqlTarget::Sqlite(&pool),
                             &title_id,
                             &absolute_number,
                         )

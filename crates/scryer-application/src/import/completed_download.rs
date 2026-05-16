@@ -1380,6 +1380,21 @@ mod tests {
             Ok(())
         }
 
+        async fn set_collections_monitored(
+            &self,
+            collection_ids: &[String],
+            monitored: bool,
+        ) -> AppResult<()> {
+            let wanted = collection_ids.iter().cloned().collect::<HashSet<_>>();
+            let mut collections = self.collections.lock().await;
+            for collection in collections.iter_mut() {
+                if wanted.contains(&collection.id) {
+                    collection.monitored = monitored;
+                }
+            }
+            Ok(())
+        }
+
         async fn delete_collection(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -1428,6 +1443,21 @@ mod tests {
 
         async fn update_episode(&self, _: &str, _: EpisodeUpdate) -> AppResult<Episode> {
             Err(AppError::Repository("not needed in test".into()))
+        }
+
+        async fn set_episodes_monitored(
+            &self,
+            episode_ids: &[String],
+            monitored: bool,
+        ) -> AppResult<()> {
+            let wanted = episode_ids.iter().cloned().collect::<HashSet<_>>();
+            let mut episodes = self.episodes.lock().await;
+            for episode in episodes.iter_mut() {
+                if wanted.contains(&episode.id) {
+                    episode.monitored = monitored;
+                }
+            }
+            Ok(())
         }
 
         async fn delete_episode(&self, _: &str) -> AppResult<()> {

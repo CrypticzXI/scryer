@@ -20,13 +20,86 @@ use scryer_outbound_http::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::RwLock;
 
 pub const PROWLARR_PROVIDER_TYPE: &str = "prowlarr";
 
 const USER_AGENT: &str = "scryer-prowlarr/0.1";
-const SYSTEM_STATUS_PATH: &str = "/api/v1/system/status";
-const INDEXER_PATH: &str = "/api/v1/indexer";
-const APP_PROFILE_PATH: &str = "/api/v1/appprofile";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProwlarrApiBucket {
+    V2,
+}
+
+impl ProwlarrApiBucket {
+    const fn system_status_path(self) -> &'static str {
+        match self {
+            Self::V2 => "/api/v1/system/status",
+        }
+    }
+
+    const fn indexer_path(self) -> &'static str {
+        match self {
+            Self::V2 => "/api/v1/indexer",
+        }
+    }
+
+    const fn app_profile_path(self) -> &'static str {
+        match self {
+            Self::V2 => "/api/v1/appprofile",
+        }
+    }
+
+    const fn supported_major(self) -> u64 {
+        match self {
+            Self::V2 => 2,
+        }
+    }
+
+    const fn request_namespace(self) -> &'static str {
+        match self {
+            Self::V2 => "prowlarr_v2",
+        }
+    }
+
+    fn validate_status(self, status: &ProwlarrSystemStatus) -> Result<(), ProwlarrRequestError> {
+        let app_name = status.app_name.trim();
+        if !app_name.eq_ignore_ascii_case("Prowlarr") {
+            let message = if app_name.is_empty() {
+                "base_url responded but did not identify itself as Prowlarr".to_string()
+            } else {
+                format!("base_url responded as '{}', not Prowlarr", app_name)
+            };
+            return Err(ProwlarrRequestError::InvalidConfig(message));
+        }
+
+        let version = status.version.trim();
+        let Some(version_major) = prowlarr_version_major(version) else {
+            return Err(ProwlarrRequestError::Unsupported(format!(
+                "could not determine Prowlarr version from '{}'",
+                version
+            )));
+        };
+
+        if version_major != self.supported_major() {
+            return Err(ProwlarrRequestError::Unsupported(format!(
+                "unsupported Prowlarr version '{}'; expected major {}",
+                version,
+                self.supported_major()
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+const SYSTEM_STATUS_PATH: &str = ProwlarrApiBucket::V2.system_status_path();
+const INDEXER_PATH: &str = ProwlarrApiBucket::V2.indexer_path();
+const APP_PROFILE_PATH: &str = ProwlarrApiBucket::V2.app_profile_path();
+
+fn prowlarr_version_major(version: &str) -> Option<u64> {
+    version.trim().split('.').next()?.parse().ok()
+}
 
 #[derive(Debug, Clone)]
 struct ProwlarrConfig {
@@ -113,11 +186,17 @@ impl ProwlarrRequestError {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ProwlarrSystemStatus {
     #[serde(default, rename = "appName")]
     app_name: String,
     version: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedProwlarrApi {
+    bucket: ProwlarrApiBucket,
+    status: ProwlarrSystemStatus,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -205,6 +284,7 @@ impl NativeProwlarrIndexerProvider {
 pub struct ProwlarrManagementClient {
     config: Result<ProwlarrConfig, String>,
     outbound_http: OutboundHttpClient,
+    api_state: Arc<RwLock<Option<ResolvedProwlarrApi>>>,
 }
 
 impl ProwlarrManagementClient {
@@ -213,6 +293,7 @@ impl ProwlarrManagementClient {
         Self {
             config: ProwlarrConfig::from_indexer_config(config),
             outbound_http: OutboundHttpClient::new(http_client, RateLimitRegistry::new()),
+            api_state: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -223,7 +304,7 @@ impl ProwlarrManagementClient {
     }
 
     async fn fetch_system_status(&self) -> Result<ProwlarrSystemStatus, ProwlarrRequestError> {
-        self.get_json_raw(SYSTEM_STATUS_PATH).await
+        Ok(self.ensure_supported_api_bucket().await?.status)
     }
 
     async fn get_json<T>(&self, path: &str) -> AppResult<T>
@@ -233,6 +314,28 @@ impl ProwlarrManagementClient {
         self.get_json_raw(path)
             .await
             .map_err(ProwlarrRequestError::into_app_error)
+    }
+
+    async fn ensure_supported_api_bucket(
+        &self,
+    ) -> Result<ResolvedProwlarrApi, ProwlarrRequestError> {
+        if let Some(api) = self.api_state.read().await.clone() {
+            return Ok(api);
+        }
+
+        let mut guard = self.api_state.write().await;
+        if let Some(api) = guard.clone() {
+            return Ok(api);
+        }
+
+        let status: ProwlarrSystemStatus = self.get_json_raw(SYSTEM_STATUS_PATH).await?;
+        let api = ResolvedProwlarrApi {
+            bucket: ProwlarrApiBucket::V2,
+            status,
+        };
+        api.bucket.validate_status(&api.status)?;
+        *guard = Some(api.clone());
+        Ok(api)
     }
 
     async fn get_json_raw<T>(&self, path: &str) -> Result<T, ProwlarrRequestError>
@@ -298,9 +401,18 @@ impl ProwlarrManagementClient {
             .as_ref()
             .map(|config| config.base_url.as_str())
             .unwrap_or("invalid-config");
-        RequestPolicy::safe_read(format!("prowlarr:{base_url}"), format!("prowlarr:{path}"))
-            .with_max_retries(2)
-            .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+        let request_namespace = self
+            .api_state
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|api| api.bucket.request_namespace()))
+            .unwrap_or(ProwlarrApiBucket::V2.request_namespace());
+        RequestPolicy::safe_read(
+            format!("prowlarr:{request_namespace}:{base_url}"),
+            format!("prowlarr:{request_namespace}:{path}"),
+        )
+        .with_max_retries(2)
+        .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
     }
 }
 
@@ -358,8 +470,14 @@ impl IndexerManagementClient for ProwlarrManagementClient {
 
     async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
         let config = self.config()?.clone();
-        let indexers: Vec<ProwlarrIndexerResource> = self.get_json(INDEXER_PATH).await?;
-        let app_profiles: Vec<ProwlarrAppProfile> = self.get_json(APP_PROFILE_PATH).await?;
+        let api = self
+            .ensure_supported_api_bucket()
+            .await
+            .map_err(ProwlarrRequestError::into_app_error)?;
+        let indexers: Vec<ProwlarrIndexerResource> =
+            self.get_json(api.bucket.indexer_path()).await?;
+        let app_profiles: Vec<ProwlarrAppProfile> =
+            self.get_json(api.bucket.app_profile_path()).await?;
         let app_profiles_by_id = app_profiles
             .into_iter()
             .map(|profile| (profile.id, profile))
@@ -985,8 +1103,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validate_connection_rejects_unsupported_major_version() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "3.0.0"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let result = client
+            .validate_connection()
+            .await
+            .expect("validation result");
+
+        assert_eq!(result.status, "unsupported");
+        assert_eq!(
+            result.message.as_deref(),
+            Some("unsupported Prowlarr version '3.0.0'; expected major 2")
+        );
+    }
+
+    #[tokio::test]
     async fn plan_sync_uses_lowercase_appprofile_route() {
         let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "2.0.0"
+            })))
+            .mount(&server)
+            .await;
         Mock::given(method("GET"))
             .and(path(INDEXER_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
@@ -1024,6 +1175,14 @@ mod tests {
     async fn sync_endpoint_404_names_missing_path() {
         for missing_path in [INDEXER_PATH, APP_PROFILE_PATH] {
             let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(SYSTEM_STATUS_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "appName": "Prowlarr",
+                    "version": "2.0.0"
+                })))
+                .mount(&server)
+                .await;
             if missing_path != INDEXER_PATH {
                 Mock::given(method("GET"))
                     .and(path(INDEXER_PATH))
@@ -1055,6 +1214,14 @@ mod tests {
     #[tokio::test]
     async fn sync_endpoint_auth_failure_maps_to_validation() {
         let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "2.0.0"
+            })))
+            .mount(&server)
+            .await;
         Mock::given(method("GET"))
             .and(path(INDEXER_PATH))
             .respond_with(ResponseTemplate::new(401))

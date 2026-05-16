@@ -144,6 +144,7 @@ pub enum JobKey {
     BackgroundLibraryRefreshMovies,
     BackgroundLibraryRefreshSeries,
     BackgroundLibraryRefreshAnime,
+    ProwlarrSync,
     RssSync,
     SubtitleSearch,
     MetadataRefresh,
@@ -165,6 +166,7 @@ impl JobKey {
             Self::BackgroundLibraryRefreshMovies => "background_library_refresh_movies",
             Self::BackgroundLibraryRefreshSeries => "background_library_refresh_series",
             Self::BackgroundLibraryRefreshAnime => "background_library_refresh_anime",
+            Self::ProwlarrSync => "prowlarr_sync",
             Self::RssSync => "rss_sync",
             Self::SubtitleSearch => "subtitle_search",
             Self::MetadataRefresh => "metadata_refresh",
@@ -186,6 +188,7 @@ impl JobKey {
             "background_library_refresh_movies" => Some(Self::BackgroundLibraryRefreshMovies),
             "background_library_refresh_series" => Some(Self::BackgroundLibraryRefreshSeries),
             "background_library_refresh_anime" => Some(Self::BackgroundLibraryRefreshAnime),
+            "prowlarr_sync" => Some(Self::ProwlarrSync),
             "rss_sync" => Some(Self::RssSync),
             "subtitle_search" => Some(Self::SubtitleSearch),
             "metadata_refresh" => Some(Self::MetadataRefresh),
@@ -208,6 +211,7 @@ impl JobKey {
             Self::BackgroundLibraryRefreshMovies => "Background Library Refresh: Movies",
             Self::BackgroundLibraryRefreshSeries => "Background Library Refresh: Series",
             Self::BackgroundLibraryRefreshAnime => "Background Library Refresh: Anime",
+            Self::ProwlarrSync => "Prowlarr Sync",
             Self::RssSync => "RSS Sync",
             Self::SubtitleSearch => "Subtitle Search",
             Self::MetadataRefresh => "Metadata Refresh",
@@ -235,6 +239,9 @@ impl JobKey {
             Self::BackgroundLibraryRefreshAnime => {
                 "Lightweight anime refresh that discovers new folders and additive file changes."
             }
+            Self::ProwlarrSync => {
+                "Sync enabled managed Prowlarr parents and reconcile child indexers."
+            }
             Self::RssSync => "Fetch RSS feeds from enabled indexers and evaluate new releases.",
             Self::SubtitleSearch => "Search for missing subtitles for monitored media.",
             Self::MetadataRefresh => "Refresh metadata for monitored episodic titles.",
@@ -260,7 +267,7 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
             | Self::BackgroundLibraryRefreshAnime => JobCategory::Library,
-            Self::RssSync | Self::MetadataRefresh => JobCategory::Acquisition,
+            Self::ProwlarrSync | Self::RssSync | Self::MetadataRefresh => JobCategory::Acquisition,
             Self::SubtitleSearch => JobCategory::Subtitles,
             Self::PluginRegistryRefresh | Self::HealthChecks | Self::AutoBackup => {
                 JobCategory::System
@@ -286,7 +293,8 @@ impl JobKey {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
             | Self::BackgroundLibraryRefreshAnime => JobScheduleKind::StartupAndInterval,
-            Self::RssSync
+            Self::ProwlarrSync
+            | Self::RssSync
             | Self::SubtitleSearch
             | Self::MetadataRefresh
             | Self::PluginRegistryRefresh
@@ -307,6 +315,7 @@ impl JobKey {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
             | Self::BackgroundLibraryRefreshAnime => "Hourly",
+            Self::ProwlarrSync => "Every 5 minutes",
             Self::RssSync => "Every 15 minutes",
             Self::SubtitleSearch => "Based on subtitle settings interval",
             Self::MetadataRefresh => "Every 12 hours",
@@ -328,6 +337,7 @@ impl JobKey {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
             | Self::BackgroundLibraryRefreshAnime => Some(3600),
+            Self::ProwlarrSync => Some(5 * 60),
             Self::RssSync => Some(15 * 60),
             Self::MetadataRefresh => Some(12 * 3600),
             Self::PluginRegistryRefresh => Some(24 * 3600),

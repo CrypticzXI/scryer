@@ -309,7 +309,7 @@ pub(crate) async fn probe_and_validate(
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
-                source_password: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: None,
             },

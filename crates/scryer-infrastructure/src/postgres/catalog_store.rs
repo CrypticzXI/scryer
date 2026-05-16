@@ -10,9 +10,8 @@ use scryer_application::{
     },
 };
 use scryer_domain::{
-    AppPermissionMask, CalendarEpisode, Collection, Entitlement, Episode, ExternalId, Id,
-    InterstitialMovieMetadata, Library, LibraryGrant, LibraryPermissionMask, LibraryRoot,
-    MediaFacet, TaggedAlias, Title, User,
+    AppPermissionMask, CalendarEpisode, Collection, Entitlement, Episode, ExternalId, Id, Library,
+    LibraryGrant, LibraryPermissionMask, LibraryRoot, MediaFacet, TaggedAlias, Title, User,
 };
 use serde_json::Value;
 use sqlx::{Row, types::Json};
@@ -20,6 +19,8 @@ use sqlx::{Row, types::Json};
 use crate::catalog_store::{CatalogStore, LibrarySql, ShowSql, TitleSql, UserSql};
 use crate::postgres::timestamp::parse_rfc3339_timestamp;
 use crate::queries::{
+    show,
+    sql_runtime::SqlTarget,
     title::collection_interstitial_column_values,
     title_search::{self, replace_title_search_projection_pg_tx},
 };
@@ -1417,83 +1418,30 @@ impl TitleSql for PostgresCatalogSql {
 #[async_trait]
 impl ShowSql for PostgresCatalogSql {
     async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
-        let rows = sqlx::query(
-            "SELECT * FROM collections WHERE title_id = $1 ORDER BY collection_index, id",
-        )
-        .bind(title_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        rows.iter().map(row_to_collection).collect()
+        show::list_collections_for_title_query(SqlTarget::Postgres(&self.pool), title_id).await
     }
     async fn list_collection_external_ids(
         &self,
         collection_id: &str,
     ) -> AppResult<Vec<ScopedExternalId>> {
-        let rows = sqlx::query(
-            "SELECT collection_id AS scope_id, source, external_id, provenance, source_scope
-               FROM collection_external_ids
-              WHERE collection_id = $1
-              ORDER BY source, external_id",
-        )
-        .bind(collection_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        rows.iter()
-            .map(|row| {
-                Ok(ScopedExternalId {
-                    scope_id: row.try_get("scope_id").map_err(repo_err)?,
-                    source: row.try_get("source").map_err(repo_err)?,
-                    external_id: row.try_get("external_id").map_err(repo_err)?,
-                    provenance: row
-                        .try_get("provenance")
-                        .unwrap_or_else(|_| "metadata".into()),
-                    source_scope: row.try_get("source_scope").unwrap_or(None),
-                })
-            })
-            .collect()
+        show::list_collection_external_ids_query(SqlTarget::Postgres(&self.pool), collection_id)
+            .await
     }
     async fn list_collections_for_titles(
         &self,
         title_ids: &[String],
     ) -> AppResult<HashMap<String, Vec<Collection>>> {
-        if title_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let rows = sqlx::query("SELECT * FROM collections WHERE title_id = ANY($1) ORDER BY title_id, collection_index, id")
-            .bind(title_ids)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        let mut grouped: HashMap<String, Vec<Collection>> = HashMap::new();
-        for row in &rows {
-            let collection = row_to_collection(row)?;
-            grouped
-                .entry(collection.title_id.clone())
-                .or_default()
-                .push(collection);
-        }
-        Ok(grouped)
+        show::list_collections_for_titles_query(SqlTarget::Postgres(&self.pool), title_ids).await
     }
     async fn get_collection_by_id(&self, collection_id: &str) -> AppResult<Option<Collection>> {
-        let row = sqlx::query("SELECT * FROM collections WHERE id = $1")
-            .bind(collection_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        row.as_ref().map(row_to_collection).transpose()
+        show::get_collection_by_id_query(SqlTarget::Postgres(&self.pool), collection_id).await
     }
     async fn get_collection_by_ordered_path(
         &self,
         ordered_path: &str,
     ) -> AppResult<Option<Collection>> {
-        let row = sqlx::query("SELECT * FROM collections WHERE ordered_path = $1 LIMIT 1")
-            .bind(ordered_path)
-            .fetch_optional(&self.pool)
+        show::get_collection_by_ordered_path_query(SqlTarget::Postgres(&self.pool), ordered_path)
             .await
-            .map_err(repo_err)?;
-        row.as_ref().map(row_to_collection).transpose()
     }
     async fn create_collection(&self, collection: Collection) -> AppResult<Collection> {
         let interstitial = collection_interstitial_column_values(&collection)?;
@@ -1656,98 +1604,58 @@ impl ShowSql for PostgresCatalogSql {
         collection_id: &str,
         season_episode: Option<String>,
     ) -> AppResult<()> {
-        sqlx::query("UPDATE collections SET interstitial_season_episode = $2, updated_at = NOW() WHERE id = $1")
-            .bind(collection_id)
-            .bind(season_episode)
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        Ok(())
+        show::update_interstitial_season_episode_query(
+            SqlTarget::Postgres(&self.pool),
+            collection_id,
+            season_episode.as_deref(),
+        )
+        .await
     }
     async fn set_collection_episodes_monitored(
         &self,
         collection_id: &str,
         monitored: bool,
     ) -> AppResult<()> {
-        sqlx::query(
-            "UPDATE episodes SET monitored = $2, updated_at = NOW() WHERE collection_id = $1",
+        show::set_collection_episodes_monitored_query(
+            SqlTarget::Postgres(&self.pool),
+            collection_id,
+            monitored,
         )
-        .bind(collection_id)
-        .bind(monitored)
-        .execute(&self.pool)
         .await
-        .map_err(repo_err)?;
-        Ok(())
+    }
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        show::set_collections_monitored_query(
+            SqlTarget::Postgres(&self.pool),
+            collection_ids,
+            monitored,
+        )
+        .await
     }
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
-        sqlx::query("DELETE FROM collections WHERE id = $1")
-            .bind(collection_id)
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        Ok(())
+        show::delete_collection_query(SqlTarget::Postgres(&self.pool), collection_id).await
     }
     async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()> {
-        sqlx::query("DELETE FROM collections WHERE title_id = $1")
-            .bind(title_id)
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        Ok(())
+        show::delete_collections_for_title_query(SqlTarget::Postgres(&self.pool), title_id).await
     }
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>> {
-        let rows = sqlx::query("SELECT * FROM episodes WHERE collection_id = $1 ORDER BY season_number, episode_number, id")
-            .bind(collection_id)
-            .fetch_all(&self.pool)
+        show::list_episodes_for_collection_query(SqlTarget::Postgres(&self.pool), collection_id)
             .await
-            .map_err(repo_err)?;
-        rows.iter().map(row_to_episode).collect()
     }
     async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>> {
-        let rows = sqlx::query(
-            "SELECT * FROM episodes WHERE title_id = $1 ORDER BY season_number, episode_number, id",
-        )
-        .bind(title_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        rows.iter().map(row_to_episode).collect()
+        show::list_episodes_for_title_query(SqlTarget::Postgres(&self.pool), title_id).await
     }
     async fn list_episode_external_ids(
         &self,
         episode_id: &str,
     ) -> AppResult<Vec<ScopedExternalId>> {
-        let rows = sqlx::query(
-            "SELECT episode_id AS scope_id, source, external_id, provenance, source_scope
-               FROM episode_external_ids
-              WHERE episode_id = $1
-              ORDER BY source, external_id",
-        )
-        .bind(episode_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        rows.iter()
-            .map(|row| {
-                Ok(ScopedExternalId {
-                    scope_id: row.try_get("scope_id").map_err(repo_err)?,
-                    source: row.try_get("source").map_err(repo_err)?,
-                    external_id: row.try_get("external_id").map_err(repo_err)?,
-                    provenance: row
-                        .try_get("provenance")
-                        .unwrap_or_else(|_| "metadata".into()),
-                    source_scope: row.try_get("source_scope").unwrap_or(None),
-                })
-            })
-            .collect()
+        show::list_episode_external_ids_query(SqlTarget::Postgres(&self.pool), episode_id).await
     }
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
-        let row = sqlx::query("SELECT * FROM episodes WHERE id = $1")
-            .bind(episode_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        row.as_ref().map(row_to_episode).transpose()
+        show::get_episode_by_id_query(SqlTarget::Postgres(&self.pool), episode_id).await
     }
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode> {
         sqlx::query(
@@ -1846,21 +1754,19 @@ impl ShowSql for PostgresCatalogSql {
         self.create_episode(episode.clone()).await?;
         Ok(episode)
     }
-    async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
-        sqlx::query("DELETE FROM episodes WHERE id = $1")
-            .bind(episode_id)
-            .execute(&self.pool)
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        show::set_episodes_monitored_query(SqlTarget::Postgres(&self.pool), episode_ids, monitored)
             .await
-            .map_err(repo_err)?;
-        Ok(())
+    }
+    async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
+        show::delete_episode_query(SqlTarget::Postgres(&self.pool), episode_id).await
     }
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()> {
-        sqlx::query("DELETE FROM episodes WHERE title_id = $1")
-            .bind(title_id)
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        Ok(())
+        show::delete_episodes_for_title_query(SqlTarget::Postgres(&self.pool), title_id).await
     }
     async fn find_episode_by_title_and_numbers(
         &self,
@@ -1886,17 +1792,12 @@ impl ShowSql for PostgresCatalogSql {
         title_id: &str,
         absolute_number: &str,
     ) -> AppResult<Option<Episode>> {
-        let row = sqlx::query(
-            "SELECT * FROM episodes
-              WHERE title_id = $1 AND absolute_number = $2
-              LIMIT 1",
+        show::find_episode_by_title_and_absolute_number_query(
+            SqlTarget::Postgres(&self.pool),
+            title_id,
+            absolute_number,
         )
-        .bind(title_id)
-        .bind(absolute_number)
-        .fetch_optional(&self.pool)
         .await
-        .map_err(repo_err)?;
-        row.as_ref().map(row_to_episode).transpose()
     }
     async fn list_primary_collection_summaries(
         &self,
@@ -1974,59 +1875,13 @@ impl ShowSql for PostgresCatalogSql {
         collection_ids: Vec<ScopedExternalId>,
         episode_ids: Vec<ScopedExternalId>,
     ) -> AppResult<()> {
-        let mut tx = self.pool.begin().await.map_err(repo_err)?;
-        sqlx::query(
-            "DELETE FROM collection_external_ids
-              WHERE collection_id IN (SELECT id FROM collections WHERE title_id = $1)
-                AND source = 'anibridge'",
+        show::replace_anibridge_scoped_external_ids_for_title(
+            SqlTarget::Postgres(&self.pool),
+            title_id,
+            &collection_ids,
+            &episode_ids,
         )
-        .bind(title_id)
-        .execute(&mut *tx)
         .await
-        .map_err(repo_err)?;
-        sqlx::query(
-            "DELETE FROM episode_external_ids
-              WHERE episode_id IN (SELECT id FROM episodes WHERE title_id = $1)
-                AND source = 'anibridge'",
-        )
-        .bind(title_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(repo_err)?;
-        for external_id in collection_ids {
-            sqlx::query(
-                "INSERT INTO collection_external_ids
-                 (id, collection_id, source, external_id, provenance, source_scope, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())",
-            )
-            .bind(Id::new().0)
-            .bind(&external_id.scope_id)
-            .bind(&external_id.source)
-            .bind(&external_id.external_id)
-            .bind(&external_id.provenance)
-            .bind(&external_id.source_scope)
-            .execute(&mut *tx)
-            .await
-            .map_err(repo_err)?;
-        }
-        for external_id in episode_ids {
-            sqlx::query(
-                "INSERT INTO episode_external_ids
-                 (id, episode_id, source, external_id, provenance, source_scope, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())",
-            )
-            .bind(Id::new().0)
-            .bind(&external_id.scope_id)
-            .bind(&external_id.source)
-            .bind(&external_id.external_id)
-            .bind(&external_id.provenance)
-            .bind(&external_id.source_scope)
-            .execute(&mut *tx)
-            .await
-            .map_err(repo_err)?;
-        }
-        tx.commit().await.map_err(repo_err)?;
-        Ok(())
     }
 }
 
@@ -2249,90 +2104,6 @@ fn repo_err(error: impl ToString) -> AppError {
 
 fn row_timestamp(row: &sqlx::postgres::PgRow, column: &str) -> AppResult<DateTime<Utc>> {
     row.try_get(column).map_err(repo_err)
-}
-
-fn row_to_collection(row: &sqlx::postgres::PgRow) -> AppResult<Collection> {
-    let collection_type_raw: String = row.try_get("collection_type").map_err(repo_err)?;
-    let collection_type =
-        scryer_domain::CollectionType::parse(&collection_type_raw).ok_or_else(|| {
-            AppError::Repository(format!("invalid collection type {collection_type_raw}"))
-        })?;
-    let interstitial_movie = row
-        .try_get::<Option<String>, _>("interstitial_tvdb_id")
-        .ok()
-        .flatten()
-        .map(|tvdb_id| {
-            let genres = row
-                .try_get::<Option<Value>, _>("interstitial_genres_json")
-                .ok()
-                .flatten()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(repo_err)?
-                .unwrap_or_default();
-            let runtime_minutes = row
-                .try_get::<Option<i64>, _>("interstitial_runtime_minutes")
-                .unwrap_or(None)
-                .unwrap_or_default() as i32;
-            Ok::<_, AppError>(InterstitialMovieMetadata {
-                tvdb_id,
-                name: row.try_get("interstitial_name").unwrap_or_default(),
-                slug: row.try_get("interstitial_slug").unwrap_or_default(),
-                year: row.try_get("interstitial_year").unwrap_or(None),
-                content_status: row
-                    .try_get("interstitial_content_status")
-                    .unwrap_or_default(),
-                overview: row.try_get("interstitial_overview").unwrap_or_default(),
-                poster_url: row.try_get("interstitial_poster_url").unwrap_or_default(),
-                language: row.try_get("interstitial_language").unwrap_or_default(),
-                runtime_minutes,
-                sort_title: row.try_get("interstitial_sort_title").unwrap_or_default(),
-                imdb_id: row.try_get("interstitial_imdb_id").unwrap_or_default(),
-                genres,
-                studio: row.try_get("interstitial_studio").unwrap_or_default(),
-                digital_release_date: row
-                    .try_get("interstitial_digital_release_date")
-                    .unwrap_or(None),
-                association_confidence: row
-                    .try_get("interstitial_association_confidence")
-                    .unwrap_or(None),
-                continuity_status: row
-                    .try_get("interstitial_continuity_status")
-                    .unwrap_or(None),
-                movie_form: row.try_get("interstitial_movie_form").unwrap_or(None),
-                confidence: row.try_get("interstitial_confidence").unwrap_or(None),
-                signal_summary: row.try_get("interstitial_signal_summary").unwrap_or(None),
-                placement: row.try_get("interstitial_placement").unwrap_or(None),
-                movie_tmdb_id: row.try_get("interstitial_movie_tmdb_id").unwrap_or(None),
-                movie_mal_id: row.try_get("interstitial_movie_mal_id").unwrap_or(None),
-                movie_anidb_id: row.try_get("interstitial_movie_anidb_id").unwrap_or(None),
-            })
-        })
-        .transpose()?;
-    let specials_movies = row
-        .try_get::<Option<Value>, _>("special_movies_json")
-        .ok()
-        .flatten()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(repo_err)?
-        .unwrap_or_default();
-    Ok(Collection {
-        id: row.try_get("id").map_err(repo_err)?,
-        title_id: row.try_get("title_id").map_err(repo_err)?,
-        collection_type,
-        collection_index: row.try_get("collection_index").map_err(repo_err)?,
-        label: row.try_get("label").unwrap_or(None),
-        ordered_path: row.try_get("ordered_path").unwrap_or(None),
-        narrative_order: row.try_get("narrative_order").unwrap_or(None),
-        first_episode_number: row.try_get("first_episode_number").unwrap_or(None),
-        last_episode_number: row.try_get("last_episode_number").unwrap_or(None),
-        interstitial_movie,
-        specials_movies,
-        interstitial_season_episode: row.try_get("interstitial_season_episode").unwrap_or(None),
-        monitored: row.try_get("monitored").unwrap_or(true),
-        created_at: row_timestamp(row, "created_at")?,
-    })
 }
 
 fn row_to_episode(row: &sqlx::postgres::PgRow) -> AppResult<Episode> {

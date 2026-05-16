@@ -407,6 +407,298 @@ impl PluginInstallOrchestrator {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalImportMonitorWarmupStatus {
+    Queued,
+    Running,
+    Completed,
+    Canceled,
+    Failed,
+}
+
+impl ExternalImportMonitorWarmupStatus {
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Canceled | Self::Failed)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalImportMonitorWarmupPhase {
+    LoadingMovies,
+    LoadingSeries,
+    LoadingEpisodes,
+    BuildingSnapshot,
+    Ready,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExternalImportMonitorWarmupPhaseProgress {
+    pub total: i32,
+    pub completed: i32,
+    pub failed: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalImportMonitorWarmupProgressSnapshot {
+    pub session_id: String,
+    pub status: ExternalImportMonitorWarmupStatus,
+    pub phase: ExternalImportMonitorWarmupPhase,
+    pub started_at: String,
+    pub updated_at: String,
+    pub overall_total_known: bool,
+    pub overall_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub movies_total_known: bool,
+    pub movies_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub series_total_known: bool,
+    pub series_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub episode_fetch_total_known: bool,
+    pub episode_fetch_expected_total: Option<i32>,
+    pub episode_fetch_expected_monitored_total: Option<i32>,
+    pub episode_fetch_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub snapshot_build_total_known: bool,
+    pub snapshot_build_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub matched_movie_count: i32,
+    pub matched_series_count: i32,
+    pub unmatched_movie_count: i32,
+    pub unmatched_series_count: i32,
+    pub ambiguous_movie_count: i32,
+    pub ambiguous_series_count: i32,
+    pub error_message: Option<String>,
+}
+
+impl ExternalImportMonitorWarmupProgressSnapshot {
+    pub fn new(session_id: String) -> Self {
+        let now = Utc::now().to_rfc3339();
+        Self {
+            session_id,
+            status: ExternalImportMonitorWarmupStatus::Queued,
+            phase: ExternalImportMonitorWarmupPhase::LoadingMovies,
+            started_at: now.clone(),
+            updated_at: now,
+            overall_total_known: false,
+            overall_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            movies_total_known: false,
+            movies_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            series_total_known: false,
+            series_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            episode_fetch_total_known: false,
+            episode_fetch_expected_total: None,
+            episode_fetch_expected_monitored_total: None,
+            episode_fetch_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            snapshot_build_total_known: false,
+            snapshot_build_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            matched_movie_count: 0,
+            matched_series_count: 0,
+            unmatched_movie_count: 0,
+            unmatched_series_count: 0,
+            ambiguous_movie_count: 0,
+            ambiguous_series_count: 0,
+            error_message: None,
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.updated_at = Utc::now().to_rfc3339();
+    }
+}
+
+#[derive(Clone)]
+pub struct ExternalImportMonitorWarmupBeginResult {
+    pub snapshot: ExternalImportMonitorWarmupProgressSnapshot,
+    pub created: bool,
+    pub cancel_token: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Clone)]
+struct ExternalImportMonitorWarmupSessionHandle {
+    actor_user_id: String,
+    connection_fingerprint: String,
+    claimed: bool,
+    cancel_token: tokio_util::sync::CancellationToken,
+    tx: tokio::sync::watch::Sender<ExternalImportMonitorWarmupProgressSnapshot>,
+}
+
+#[derive(Default)]
+struct ExternalImportMonitorWarmupOrchestratorState {
+    session_ids_by_actor_fingerprint: HashMap<(String, String), String>,
+    sessions_by_id: HashMap<String, ExternalImportMonitorWarmupSessionHandle>,
+}
+
+#[derive(Clone, Default)]
+pub struct ExternalImportMonitorWarmupOrchestrator {
+    state: Arc<tokio::sync::Mutex<ExternalImportMonitorWarmupOrchestratorState>>,
+}
+
+impl ExternalImportMonitorWarmupOrchestrator {
+    pub async fn begin(
+        &self,
+        actor_user_id: &str,
+        connection_fingerprint: &str,
+        initial_snapshot: ExternalImportMonitorWarmupProgressSnapshot,
+    ) -> ExternalImportMonitorWarmupBeginResult {
+        let actor_key = (
+            actor_user_id.to_string(),
+            connection_fingerprint.to_string(),
+        );
+        let mut state = self.state.lock().await;
+
+        if let Some(existing_session_id) = state
+            .session_ids_by_actor_fingerprint
+            .get(&actor_key)
+            .cloned()
+        {
+            if let Some(existing_handle) = state.sessions_by_id.get(&existing_session_id) {
+                let existing_snapshot = existing_handle.tx.borrow().clone();
+                if matches!(
+                    existing_snapshot.status,
+                    ExternalImportMonitorWarmupStatus::Queued
+                        | ExternalImportMonitorWarmupStatus::Running
+                ) {
+                    return ExternalImportMonitorWarmupBeginResult {
+                        snapshot: existing_snapshot,
+                        created: false,
+                        cancel_token: existing_handle.cancel_token.clone(),
+                    };
+                }
+            }
+
+            state.session_ids_by_actor_fingerprint.remove(&actor_key);
+        }
+
+        for ((session_actor_user_id, session_fingerprint), session_id) in
+            state.session_ids_by_actor_fingerprint.clone()
+        {
+            if session_actor_user_id != actor_user_id
+                || session_fingerprint == connection_fingerprint
+            {
+                continue;
+            }
+
+            if let Some(handle) = state.sessions_by_id.get_mut(&session_id) {
+                if !handle.claimed {
+                    let mut snapshot = handle.tx.borrow().clone();
+                    if !snapshot.status.is_terminal() {
+                        snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
+                        snapshot.error_message = None;
+                        snapshot.touch();
+                        handle.tx.send_replace(snapshot);
+                    }
+                    handle.cancel_token.cancel();
+                }
+            }
+            state
+                .session_ids_by_actor_fingerprint
+                .remove(&(session_actor_user_id, session_fingerprint));
+        }
+
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let (tx, _rx) = tokio::sync::watch::channel(initial_snapshot.clone());
+        state
+            .session_ids_by_actor_fingerprint
+            .insert(actor_key, initial_snapshot.session_id.clone());
+        state.sessions_by_id.insert(
+            initial_snapshot.session_id.clone(),
+            ExternalImportMonitorWarmupSessionHandle {
+                actor_user_id: actor_user_id.to_string(),
+                connection_fingerprint: connection_fingerprint.to_string(),
+                claimed: false,
+                cancel_token: cancel_token.clone(),
+                tx,
+            },
+        );
+
+        ExternalImportMonitorWarmupBeginResult {
+            snapshot: initial_snapshot,
+            created: true,
+            cancel_token,
+        }
+    }
+
+    pub async fn subscribe(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<tokio::sync::watch::Receiver<ExternalImportMonitorWarmupProgressSnapshot>> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id).then(|| handle.tx.subscribe())
+        })
+    }
+
+    pub async fn snapshot(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<ExternalImportMonitorWarmupProgressSnapshot> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id).then(|| handle.tx.borrow().clone())
+        })
+    }
+
+    pub async fn update(
+        &self,
+        session_id: &str,
+        snapshot: ExternalImportMonitorWarmupProgressSnapshot,
+    ) -> bool {
+        let state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get(session_id) else {
+            return false;
+        };
+        handle.tx.send_replace(snapshot);
+        true
+    }
+
+    pub async fn cancel(&self, actor_user_id: &str, session_id: &str) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
+            return false;
+        };
+        if handle.actor_user_id != actor_user_id || handle.claimed {
+            return false;
+        }
+
+        let mut snapshot = handle.tx.borrow().clone();
+        if !snapshot.status.is_terminal() {
+            snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
+            snapshot.error_message = None;
+            snapshot.touch();
+            handle.tx.send_replace(snapshot);
+        }
+        handle.cancel_token.cancel();
+
+        state
+            .session_ids_by_actor_fingerprint
+            .retain(|_, existing_session_id| existing_session_id != session_id);
+        true
+    }
+
+    pub async fn claim(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<ExternalImportMonitorWarmupProgressSnapshot> {
+        let mut state = self.state.lock().await;
+        let handle = state.sessions_by_id.get_mut(session_id)?;
+        if handle.actor_user_id != actor_user_id {
+            return None;
+        }
+        handle.claimed = true;
+        Some(handle.tx.borrow().clone())
+    }
+
+    pub async fn connection_fingerprint(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<String> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id).then(|| handle.connection_fingerprint.clone())
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ProviderCatalogFamily {
     Subtitle,
@@ -468,6 +760,11 @@ pub struct AppRuntimeAcquisitionState {
 }
 
 #[derive(Clone)]
+pub struct AppRuntimeImportState {
+    pub external_import_warmup_orchestrator: ExternalImportMonitorWarmupOrchestrator,
+}
+
+#[derive(Clone)]
 pub struct AppRuntimeLibraryState {
     pub library_scan_tracker: LibraryScanTracker,
     pub library_scan_cancellation_tokens:
@@ -497,6 +794,7 @@ pub struct AppRuntimeState {
     pub events: AppRuntimeEventState,
     pub catalog: AppRuntimeCatalogState,
     pub acquisition: AppRuntimeAcquisitionState,
+    pub imports: AppRuntimeImportState,
     pub library: AppRuntimeLibraryState,
     pub jobs: AppRuntimeJobState,
     pub health: AppRuntimeHealthState,
@@ -537,6 +835,10 @@ impl Default for AppRuntimeState {
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            },
+            imports: AppRuntimeImportState {
+                external_import_warmup_orchestrator:
+                    ExternalImportMonitorWarmupOrchestrator::default(),
             },
             library: AppRuntimeLibraryState {
                 library_scan_tracker: LibraryScanTracker::new(),
@@ -2175,6 +2477,82 @@ mod tests {
     #[test]
     fn build_partial_for_tests_allows_partial_test_assemblies() {
         let _ = test_builder().build_partial_for_tests();
+    }
+
+    #[tokio::test]
+    async fn external_import_warmup_begin_creates_new_session_after_completion() {
+        let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
+        let first = orchestrator
+            .begin(
+                "user-1",
+                "fingerprint-1",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-1".into()),
+            )
+            .await;
+        assert!(first.created);
+        let _subscription = orchestrator
+            .subscribe("user-1", &first.snapshot.session_id)
+            .await
+            .expect("subscribe to first session");
+
+        let mut completed = first.snapshot.clone();
+        completed.status = ExternalImportMonitorWarmupStatus::Completed;
+        assert!(
+            orchestrator
+                .update(&completed.session_id, completed.clone())
+                .await
+        );
+
+        let second = orchestrator
+            .begin(
+                "user-1",
+                "fingerprint-1",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-2".into()),
+            )
+            .await;
+
+        assert!(second.created);
+        assert_ne!(second.snapshot.session_id, first.snapshot.session_id);
+    }
+
+    #[tokio::test]
+    async fn external_import_warmup_update_persists_without_active_subscribers() {
+        let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
+        let begin = orchestrator
+            .begin(
+                "user-1",
+                "fingerprint-1",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-1".into()),
+            )
+            .await;
+        assert!(begin.created);
+
+        let mut running = begin.snapshot.clone();
+        running.status = ExternalImportMonitorWarmupStatus::Running;
+        running.phase = ExternalImportMonitorWarmupPhase::LoadingSeries;
+        running.series_total_known = true;
+        running.series_progress.total = 42;
+        running.series_progress.completed = 17;
+
+        assert!(
+            orchestrator
+                .update(&running.session_id, running.clone())
+                .await
+        );
+
+        let snapshot = orchestrator
+            .snapshot("user-1", &running.session_id)
+            .await
+            .expect("stored snapshot");
+
+        assert_eq!(snapshot.status, ExternalImportMonitorWarmupStatus::Running);
+        assert_eq!(
+            snapshot.phase,
+            ExternalImportMonitorWarmupPhase::LoadingSeries
+        );
+        assert!(snapshot.series_total_known);
+        assert_eq!(snapshot.series_progress.total, 42);
+        assert_eq!(snapshot.series_progress.completed, 17);
     }
 
     #[tokio::test]

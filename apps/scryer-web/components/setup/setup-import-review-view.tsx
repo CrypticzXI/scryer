@@ -151,6 +151,13 @@ export function SetupImportReviewView({
             Radarr {preview.radarrVersion ? `v${preview.radarrVersion}` : ""} {t("setup.connected")}
           </span>
         ) : null}
+        {preview.prowlarrConnected ? (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+            <Check className="h-3 w-3" />
+            Prowlarr {preview.prowlarrVersion ? `v${preview.prowlarrVersion}` : ""}{" "}
+            {t("setup.connected")}
+          </span>
+        ) : null}
       </div>
 
       {(preview.radarrConnected || preview.sonarrConnected) ? (
@@ -267,6 +274,7 @@ export function SetupImportReviewView({
                 : (indexerProviderConfigFieldsByType.get(idx.scryerProviderType) ?? []);
             const isSelected = selectedIdxKeys.has(idx.dedupKey);
             const isProwlarr = idx.scryerProviderType === "prowlarr";
+            const isDirectProwlarr = isProwlarr && idx.sources.includes("prowlarr");
             const needsApiKey = externalImportIndexerNeedsUserSuppliedApiKey(
               idx,
               providerConfigFields,
@@ -275,14 +283,18 @@ export function SetupImportReviewView({
               <div key={idx.dedupKey}>
                 <label
                   className={`flex items-center gap-3 rounded px-2 py-2 text-sm ${
-                    idx.supported ? "cursor-pointer hover:bg-muted" : "cursor-not-allowed opacity-50"
+                    idx.supported
+                      ? isDirectProwlarr
+                        ? "cursor-default"
+                        : "cursor-pointer hover:bg-muted"
+                      : "cursor-not-allowed opacity-50"
                   }`}
                 >
                   <input
                     type="checkbox"
                     checked={isSelected}
                     onChange={() => onToggleIdx(idx.dedupKey)}
-                    disabled={!idx.supported}
+                    disabled={!idx.supported || isDirectProwlarr}
                     className="accent-primary"
                   />
                   <div className="flex-1">
@@ -292,9 +304,25 @@ export function SetupImportReviewView({
                       {idx.baseUrl ? ` @ ${idx.baseUrl}` : ""}
                     </span>
                     {isProwlarr ? (
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {t("setup.prowlarrManagedChildren")}: {idx.childCount}
-                        {idx.childNames.length > 0 ? ` · ${idx.childNames.join(", ")}` : ""}
+                      <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        <div>
+                          {t("setup.prowlarrManagedChildren")}: {idx.childCount}
+                        </div>
+                        {idx.childNames.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {idx.childNames.map((childName) => (
+                              <span
+                                key={`${idx.dedupKey}:${childName}`}
+                                className="rounded border border-border/70 bg-muted/40 px-1.5 py-0.5"
+                              >
+                                {childName}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {isDirectProwlarr ? (
+                          <div>{t("setup.prowlarrManagedChildrenReadOnly")}</div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -466,16 +494,23 @@ function SourceBadges({ sources, t }: { sources: string[]; t: (key: string) => s
     <span className="flex gap-1">
       {sources.map((source) => {
         const isSonarr = source === "sonarr";
+        const isProwlarr = source === "prowlarr";
         return (
           <span
             key={source}
             className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
               isSonarr
                 ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                : isProwlarr
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
             }`}
           >
-            {isSonarr ? t("setup.fromSonarr") : t("setup.fromRadarr")}
+            {isSonarr
+              ? t("setup.fromSonarr")
+              : isProwlarr
+                ? t("setup.fromProwlarr")
+                : t("setup.fromRadarr")}
           </span>
         );
       })}

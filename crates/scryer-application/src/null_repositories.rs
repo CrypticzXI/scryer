@@ -105,6 +105,52 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
         Ok(())
     }
 
+    async fn append_external_import_monitor_snapshot_chunk(
+        &self,
+        _: &crate::ExternalImportMonitorSnapshotChunk,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_external_import_monitor_snapshot_chunks(
+        &self,
+        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        _: &str,
+        _: crate::ExternalImportMonitorSnapshotEntryKind,
+    ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>> {
+        Ok(vec![])
+    }
+
+    async fn list_external_import_monitor_snapshot_chunk_batch(
+        &self,
+        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        _: &str,
+        _: crate::ExternalImportMonitorSnapshotEntryKind,
+        _: Option<i32>,
+        _: i32,
+    ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>> {
+        Ok(vec![])
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks(
+        &self,
+        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        _: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn copy_external_import_monitor_snapshot_chunks(
+        &self,
+        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        _: &str,
+        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
+        _: &str,
+        _: crate::ExternalImportMonitorSnapshotEntryKind,
+    ) -> AppResult<(i32, i32, i64)> {
+        Ok((0, 0, 0))
+    }
+
     async fn get_external_import_monitor_snapshot(
         &self,
         _: &crate::MediaFacet,
@@ -1615,6 +1661,9 @@ pub mod test_nulls {
         async fn set_collection_episodes_monitored(&self, _: &str, _: bool) -> AppResult<()> {
             Ok(())
         }
+        async fn set_collections_monitored(&self, _: &[String], _: bool) -> AppResult<()> {
+            Ok(())
+        }
         async fn delete_collection(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -1638,6 +1687,9 @@ pub mod test_nulls {
         }
         async fn update_episode(&self, _: &str, _: EpisodeUpdate) -> AppResult<Episode> {
             Err(AppError::Repository("not configured".into()))
+        }
+        async fn set_episodes_monitored(&self, _: &[String], _: bool) -> AppResult<()> {
+            Ok(())
         }
         async fn delete_episode(&self, _: &str) -> AppResult<()> {
             Ok(())

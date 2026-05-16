@@ -7,7 +7,7 @@ pub(crate) struct ReleaseRuntimeInfo<'a> {
     pub published_at: Option<&'a str>,
     pub thumbs_up: Option<i32>,
     pub thumbs_down: Option<i32>,
-    pub source_password: Option<&'a str>,
+    pub is_password_protected: Option<bool>,
     pub extra: Option<&'a HashMap<String, serde_json::Value>>,
     pub indexer_languages: Option<&'a [String]>,
 }
@@ -72,7 +72,7 @@ pub(crate) fn build_rule_input(
             is_repack: parsed.is_repack,
             is_ai_enhanced: parsed.is_ai_enhanced,
             is_hardcoded_subs: parsed.is_hardcoded_subs,
-            is_password_protected: release_runtime.source_password.map(|_| true),
+            is_password_protected: release_runtime.is_password_protected,
             is_hdr10plus: parsed.is_hdr10plus,
             is_hlg: parsed.is_hlg,
             is_10bit: parsed.is_10bit,
@@ -231,7 +231,10 @@ pub(crate) fn build_search_rule_input(
             published_at: result.published_at.as_deref(),
             thumbs_up: result.thumbs_up,
             thumbs_down: result.thumbs_down,
-            source_password: result.password_hint.as_deref(),
+            is_password_protected: crate::normalize_release_password(
+                result.password_hint.as_deref(),
+            )
+            .map(|_| true),
             extra: Some(&result.extra),
             indexer_languages: result.indexer_languages.as_deref(),
         },
@@ -414,6 +417,55 @@ mod tests {
     }
 
     #[test]
+    fn build_search_rule_input_normalizes_password_placeholders() {
+        for password_hint in [Some("0".to_string()), Some("   ".to_string())] {
+            let input = build_search_rule_input(
+                &test_parsed(),
+                &test_profile(),
+                &IndexerSearchResult {
+                    source: "test-indexer".to_string(),
+                    title: "Test Movie".to_string(),
+                    link: None,
+                    download_url: None,
+                    source_kind: None,
+                    size_bytes: Some(8_000_000_000),
+                    published_at: Some("2026-03-10T12:00:00Z".to_string()),
+                    thumbs_up: Some(5),
+                    thumbs_down: Some(1),
+                    indexer_languages: None,
+                    indexer_subtitles: None,
+                    indexer_grabs: None,
+                    password_hint,
+                    parsed_release_metadata: None,
+                    quality_profile_decision: None,
+                    extra: HashMap::new(),
+                    guid: None,
+                    info_url: None,
+                    provenance: None,
+                    candidate_token: None,
+                    queue_scope: None,
+                    auto_eligible: None,
+                    auto_decision_code: None,
+                    auto_decision_summary: None,
+                },
+                &test_decision(),
+                SearchRuleInputContext {
+                    category: Some("movie"),
+                    library_name: Some("Movies"),
+                    title_tags: &[],
+                    runtime_minutes: Some(120),
+                },
+            );
+
+            let value = serde_json::to_value(input).unwrap();
+            assert!(
+                value["release"]["is_password_protected"].is_null(),
+                "placeholder password hints should normalize away"
+            );
+        }
+    }
+
+    #[test]
     fn build_rule_input_populates_post_download_file_doc() {
         let analysis = scryer_mediainfo::analyze_file(
             &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -434,7 +486,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
-                source_password: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: None,
             },
@@ -473,7 +525,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
-                source_password: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: Some(&["English".to_string(), "French".to_string()]),
             },
@@ -515,7 +567,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
-                source_password: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: Some(&["French".to_string()]),
             },
@@ -553,7 +605,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
-                source_password: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: Some(&[
                     "Filipino".to_string(),
@@ -590,7 +642,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
-                source_password: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: None,
             },
@@ -629,7 +681,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
-                source_password: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: None,
             },

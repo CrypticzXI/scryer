@@ -10,8 +10,15 @@ import {
   Trash2,
 } from "lucide-react";
 import { useClient } from "urql";
-import { RULE_TEMPLATES, RULE_TEMPLATE_CATEGORIES, type RuleTemplate } from "@/lib/constants/rule-templates";
-import { rulePackRegistryQuery, rulePackTemplatesQuery } from "@/lib/graphql/queries";
+import {
+  RULE_TEMPLATES,
+  RULE_TEMPLATE_CATEGORIES,
+  type RuleTemplate,
+} from "@/lib/constants/rule-templates";
+import {
+  rulePackRegistryQuery,
+  rulePackTemplatesQuery,
+} from "@/lib/graphql/queries";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -41,6 +48,7 @@ import type {
   RuleSetDraft,
   RuleValidationResult,
 } from "@/lib/types/rule-sets";
+import ruleInputContract from "../../../../../crates/scryer-rules/rule-input-contract.json";
 
 type SettingsRulesSectionProps = {
   isEditorOpen: boolean;
@@ -77,502 +85,8 @@ const FACET_OPTIONS = [
 
 type RefField = { field: string; type: string; descKey: string };
 
-const RELEASE_FIELDS: RefField[] = [
-  {
-    field: "raw_title",
-    type: "string",
-    descKey: "settings.refReleaseRawTitle",
-  },
-  { field: "quality", type: "string?", descKey: "settings.refReleaseQuality" },
-  { field: "source", type: "string?", descKey: "settings.refReleaseSource" },
-  {
-    field: "video_codec",
-    type: "string?",
-    descKey: "settings.refReleaseVideoCodec",
-  },
-  { field: "audio", type: "string?", descKey: "settings.refReleaseAudio" },
-  {
-    field: "audio_codecs",
-    type: "string[]",
-    descKey: "settings.refReleaseAudioCodecs",
-  },
-  {
-    field: "audio_channels",
-    type: "string?",
-    descKey: "settings.refReleaseAudioChannels",
-  },
-  {
-    field: "languages_audio",
-    type: "string[]",
-    descKey: "settings.refReleaseLangsAudio",
-  },
-  {
-    field: "languages_subtitles",
-    type: "string[]",
-    descKey: "settings.refReleaseLangsSub",
-  },
-  {
-    field: "is_dual_audio",
-    type: "bool",
-    descKey: "settings.refReleaseIsDualAudio",
-  },
-  { field: "is_atmos", type: "bool", descKey: "settings.refReleaseIsAtmos" },
-  {
-    field: "is_dolby_vision",
-    type: "bool",
-    descKey: "settings.refReleaseIsDV",
-  },
-  {
-    field: "detected_hdr",
-    type: "bool",
-    descKey: "settings.refReleaseDetectedHdr",
-  },
-  { field: "is_remux", type: "bool", descKey: "settings.refReleaseIsRemux" },
-  { field: "is_bd_disk", type: "bool", descKey: "settings.refReleaseIsBdDisk" },
-  {
-    field: "is_proper_upload",
-    type: "bool",
-    descKey: "settings.refReleaseIsProper",
-  },
-  { field: "is_repack", type: "bool", descKey: "settings.refReleaseIsRepack" },
-  {
-    field: "is_ai_enhanced",
-    type: "bool",
-    descKey: "settings.refReleaseIsAiEnhanced",
-  },
-  {
-    field: "is_hardcoded_subs",
-    type: "bool",
-    descKey: "settings.refReleaseIsHardcodedSubs",
-  },
-  {
-    field: "is_password_protected",
-    type: "bool?",
-    descKey: "settings.refReleaseIsPasswordProtected",
-  },
-  {
-    field: "is_hdr10plus",
-    type: "bool",
-    descKey: "settings.refReleaseIsHdr10Plus",
-  },
-  { field: "is_hlg", type: "bool", descKey: "settings.refReleaseIsHlg" },
-  { field: "is_10bit", type: "bool", descKey: "settings.refReleaseIs10Bit" },
-  {
-    field: "is_uncensored",
-    type: "bool",
-    descKey: "settings.refReleaseIsUncensored",
-  },
-  {
-    field: "is_dubs_only",
-    type: "bool",
-    descKey: "settings.refReleaseIsDubsOnly",
-  },
-  {
-    field: "has_release_group",
-    type: "bool",
-    descKey: "settings.refReleaseHasReleaseGroup",
-  },
-  {
-    field: "is_obfuscated",
-    type: "bool",
-    descKey: "settings.refReleaseIsObfuscated",
-  },
-  {
-    field: "is_retagged",
-    type: "bool",
-    descKey: "settings.refReleaseIsRetagged",
-  },
-  {
-    field: "streaming_service",
-    type: "string?",
-    descKey: "settings.refReleaseStreamingService",
-  },
-  { field: "edition", type: "string?", descKey: "settings.refReleaseEdition" },
-  {
-    field: "anime_version",
-    type: "number?",
-    descKey: "settings.refReleaseAnimeVersion",
-  },
-  {
-    field: "episode_release_type",
-    type: "string?",
-    descKey: "settings.refReleaseEpisodeReleaseType",
-  },
-  {
-    field: "is_season_pack",
-    type: "bool",
-    descKey: "settings.refReleaseIsSeasonPack",
-  },
-  {
-    field: "is_multi_episode",
-    type: "bool",
-    descKey: "settings.refReleaseIsMultiEpisode",
-  },
-  {
-    field: "release_group",
-    type: "string?",
-    descKey: "settings.refReleaseGroup",
-  },
-  { field: "year", type: "number?", descKey: "settings.refReleaseYear" },
-  {
-    field: "parse_confidence",
-    type: "float",
-    descKey: "settings.refReleaseParseConf",
-  },
-  {
-    field: "size_bytes",
-    type: "number?",
-    descKey: "settings.refReleaseSizeBytes",
-  },
-  { field: "age_days", type: "number?", descKey: "settings.refReleaseAgeDays" },
-  {
-    field: "thumbs_up",
-    type: "number?",
-    descKey: "settings.refReleaseThumbsUp",
-  },
-  {
-    field: "thumbs_down",
-    type: "number?",
-    descKey: "settings.refReleaseThumbsDown",
-  },
-  { field: "extra", type: "object", descKey: "settings.refReleaseExtra" },
-];
-
-const PROFILE_FIELDS: RefField[] = [
-  { field: "id", type: "string", descKey: "settings.refProfileId" },
-  { field: "name", type: "string", descKey: "settings.refProfileName" },
-  {
-    field: "quality_tiers",
-    type: "string[]",
-    descKey: "settings.refProfileQualityTiers",
-  },
-  {
-    field: "archival_quality",
-    type: "string?",
-    descKey: "settings.refProfileArchivalQuality",
-  },
-  {
-    field: "allow_unknown_quality",
-    type: "bool",
-    descKey: "settings.refProfileAllowUnknown",
-  },
-  {
-    field: "source_allowlist",
-    type: "string[]",
-    descKey: "settings.refProfileSourceAllow",
-  },
-  {
-    field: "source_blocklist",
-    type: "string[]",
-    descKey: "settings.refProfileSourceBlock",
-  },
-  {
-    field: "video_codec_allowlist",
-    type: "string[]",
-    descKey: "settings.refProfileVCodecAllow",
-  },
-  {
-    field: "video_codec_blocklist",
-    type: "string[]",
-    descKey: "settings.refProfileVCodecBlock",
-  },
-  {
-    field: "audio_codec_allowlist",
-    type: "string[]",
-    descKey: "settings.refProfileACodecAllow",
-  },
-  {
-    field: "audio_codec_blocklist",
-    type: "string[]",
-    descKey: "settings.refProfileACodecBlock",
-  },
-  {
-    field: "atmos_preferred",
-    type: "bool",
-    descKey: "settings.refProfileAtmosPreferred",
-  },
-  {
-    field: "dolby_vision_allowed",
-    type: "bool",
-    descKey: "settings.refProfileDVAllowed",
-  },
-  {
-    field: "detected_hdr_allowed",
-    type: "bool",
-    descKey: "settings.refProfileHdrAllowed",
-  },
-  {
-    field: "prefer_remux",
-    type: "bool",
-    descKey: "settings.refProfilePreferRemux",
-  },
-  {
-    field: "allow_bd_disk",
-    type: "bool",
-    descKey: "settings.refProfileAllowBdDisk",
-  },
-  {
-    field: "allow_upgrades",
-    type: "bool",
-    descKey: "settings.refProfileAllowUpgrades",
-  },
-  {
-    field: "prefer_dual_audio",
-    type: "bool",
-    descKey: "settings.refProfilePreferDualAudio",
-  },
-  {
-    field: "required_audio_languages",
-    type: "string[]",
-    descKey: "settings.refProfileRequiredLangs",
-  },
-];
-
-const CONTEXT_FIELDS: RefField[] = [
-  { field: "title_id", type: "string?", descKey: "settings.refCtxTitleId" },
-  {
-    field: "library_name",
-    type: "string?",
-    descKey: "settings.refCtxLibraryName",
-  },
-  { field: "media_type", type: "string", descKey: "settings.refCtxMediaType" },
-  { field: "category", type: "string", descKey: "settings.refCtxCategory" },
-  { field: "tags", type: "string[]", descKey: "settings.refCtxTags" },
-  {
-    field: "has_existing_file",
-    type: "bool",
-    descKey: "settings.refCtxHasExisting",
-  },
-  {
-    field: "existing_score",
-    type: "number?",
-    descKey: "settings.refCtxExistingScore",
-  },
-  {
-    field: "search_mode",
-    type: "string",
-    descKey: "settings.refCtxSearchMode",
-  },
-  {
-    field: "runtime_minutes",
-    type: "number?",
-    descKey: "settings.refCtxRuntimeMin",
-  },
-  { field: "is_anime", type: "bool", descKey: "settings.refCtxIsAnime" },
-  { field: "is_filler", type: "bool", descKey: "settings.refCtxIsFiller" },
-];
-
-const BUILTIN_SCORE_FIELDS: RefField[] = [
-  { field: "total", type: "number", descKey: "settings.refBuiltinTotal" },
-  { field: "blocked", type: "bool", descKey: "settings.refBuiltinBlocked" },
-  { field: "codes", type: "string[]", descKey: "settings.refBuiltinCodes" },
-];
-
-const FILE_FIELDS: RefField[] = [
-  {
-    field: "video_codec",
-    type: "string?",
-    descKey: "settings.refFileVideoCodec",
-  },
-  {
-    field: "video_width",
-    type: "number?",
-    descKey: "settings.refFileVideoWidth",
-  },
-  {
-    field: "video_height",
-    type: "number?",
-    descKey: "settings.refFileVideoHeight",
-  },
-  {
-    field: "video_bitrate_kbps",
-    type: "number?",
-    descKey: "settings.refFileVideoBitrateKbps",
-  },
-  {
-    field: "video_bit_depth",
-    type: "number?",
-    descKey: "settings.refFileVideoBitDepth",
-  },
-  {
-    field: "video_hdr_format",
-    type: "string?",
-    descKey: "settings.refFileVideoHdrFormat",
-  },
-  {
-    field: "dovi_profile",
-    type: "number?",
-    descKey: "settings.refFileDoviProfile",
-  },
-  {
-    field: "dovi_bl_compat_id",
-    type: "number?",
-    descKey: "settings.refFileDoviBlCompatId",
-  },
-  {
-    field: "video_frame_rate",
-    type: "string?",
-    descKey: "settings.refFileVideoFrameRate",
-  },
-  {
-    field: "video_profile",
-    type: "string?",
-    descKey: "settings.refFileVideoProfile",
-  },
-  {
-    field: "audio_codec",
-    type: "string?",
-    descKey: "settings.refFileAudioCodec",
-  },
-  {
-    field: "audio_profile",
-    type: "string?",
-    descKey: "settings.refFileAudioProfile",
-  },
-  {
-    field: "audio_channels",
-    type: "number?",
-    descKey: "settings.refFileAudioChannels",
-  },
-  {
-    field: "audio_bitrate_kbps",
-    type: "number?",
-    descKey: "settings.refFileAudioBitrateKbps",
-  },
-  {
-    field: "audio_languages",
-    type: "string[]",
-    descKey: "settings.refFileAudioLanguages",
-  },
-  {
-    field: "audio_streams",
-    type: "object[]",
-    descKey: "settings.refFileAudioStreams",
-  },
-  {
-    field: "subtitle_languages",
-    type: "string[]",
-    descKey: "settings.refFileSubtitleLanguages",
-  },
-  {
-    field: "subtitle_codecs",
-    type: "string[]",
-    descKey: "settings.refFileSubtitleCodecs",
-  },
-  {
-    field: "subtitle_streams",
-    type: "object[]",
-    descKey: "settings.refFileSubtitleStreams",
-  },
-  {
-    field: "has_multiaudio",
-    type: "bool",
-    descKey: "settings.refFileHasMultiAudio",
-  },
-  {
-    field: "duration_seconds",
-    type: "number?",
-    descKey: "settings.refFileDurationSeconds",
-  },
-  {
-    field: "num_chapters",
-    type: "number?",
-    descKey: "settings.refFileNumChapters",
-  },
-  {
-    field: "container_format",
-    type: "string?",
-    descKey: "settings.refFileContainerFormat",
-  },
-];
-
-const AUDIO_STREAM_FIELDS: RefField[] = [
-  { field: "codec", type: "string?", descKey: "settings.refAudioStreamCodec" },
-  {
-    field: "profile",
-    type: "string?",
-    descKey: "settings.refAudioStreamProfile",
-  },
-  {
-    field: "channels",
-    type: "number?",
-    descKey: "settings.refAudioStreamChannels",
-  },
-  {
-    field: "language",
-    type: "string?",
-    descKey: "settings.refAudioStreamLanguage",
-  },
-  {
-    field: "bitrate_kbps",
-    type: "number?",
-    descKey: "settings.refAudioStreamBitrateKbps",
-  },
-];
-
-const SUBTITLE_STREAM_FIELDS: RefField[] = [
-  {
-    field: "codec",
-    type: "string?",
-    descKey: "settings.refSubtitleStreamCodec",
-  },
-  {
-    field: "language",
-    type: "string?",
-    descKey: "settings.refSubtitleStreamLanguage",
-  },
-  { field: "name", type: "string?", descKey: "settings.refSubtitleStreamName" },
-  {
-    field: "forced",
-    type: "bool",
-    descKey: "settings.refSubtitleStreamForced",
-  },
-  {
-    field: "default",
-    type: "bool",
-    descKey: "settings.refSubtitleStreamDefault",
-  },
-];
-
 type RefSectionDef = { titleKey: string; path: string; fields: RefField[] };
-
-const REF_SECTIONS: RefSectionDef[] = [
-  {
-    titleKey: "settings.refSectionRelease",
-    path: "input.release",
-    fields: RELEASE_FIELDS,
-  },
-  {
-    titleKey: "settings.refSectionProfile",
-    path: "input.profile",
-    fields: PROFILE_FIELDS,
-  },
-  {
-    titleKey: "settings.refSectionContext",
-    path: "input.context",
-    fields: CONTEXT_FIELDS,
-  },
-  {
-    titleKey: "settings.refSectionBuiltinScore",
-    path: "input.builtin_score",
-    fields: BUILTIN_SCORE_FIELDS,
-  },
-  {
-    titleKey: "settings.refSectionFile",
-    path: "input.file",
-    fields: FILE_FIELDS,
-  },
-  {
-    titleKey: "settings.refSectionAudioStreams",
-    path: "input.file.audio_streams[]",
-    fields: AUDIO_STREAM_FIELDS,
-  },
-  {
-    titleKey: "settings.refSectionSubtitleStreams",
-    path: "input.file.subtitle_streams[]",
-    fields: SUBTITLE_STREAM_FIELDS,
-  },
-];
+const REF_SECTIONS = ruleInputContract.sections as RefSectionDef[];
 
 function RefFieldTable({ section }: { section: RefSectionDef }) {
   const t = useTranslate();
@@ -855,10 +369,29 @@ function FacetBadges({ facets }: { facets: string[] }) {
   );
 }
 
-type CommunityPack = { id: string; name: string; description: string; author: string; version: string };
-type CommunityTemplate = { id: string; title: string; description: string; category: string; regoSource: string; appliedFacets: string[] };
+type CommunityPack = {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  version: string;
+};
+type CommunityTemplate = {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  regoSource: string;
+  appliedFacets: string[];
+};
 
-function RuleLibrary({ onApply, defaultOpen }: { onApply: (template: RuleTemplate) => void; defaultOpen?: boolean }) {
+function RuleLibrary({
+  onApply,
+  defaultOpen,
+}: {
+  onApply: (template: RuleTemplate) => void;
+  defaultOpen?: boolean;
+}) {
   const t = useTranslate();
   const client = useClient();
   const [open, setOpen] = React.useState(defaultOpen ?? false);
@@ -866,39 +399,55 @@ function RuleLibrary({ onApply, defaultOpen }: { onApply: (template: RuleTemplat
   const [categoryFilter, setCategoryFilter] = React.useState<string>("All");
 
   // Community state
-  const [communityPacks, setCommunityPacks] = React.useState<CommunityPack[]>([]);
+  const [communityPacks, setCommunityPacks] = React.useState<CommunityPack[]>(
+    [],
+  );
   const [communityPacksLoaded, setCommunityPacksLoaded] = React.useState(false);
-  const [selectedPack, setSelectedPack] = React.useState<CommunityPack | null>(null);
-  const [packTemplates, setPackTemplates] = React.useState<CommunityTemplate[]>([]);
+  const [selectedPack, setSelectedPack] = React.useState<CommunityPack | null>(
+    null,
+  );
+  const [packTemplates, setPackTemplates] = React.useState<CommunityTemplate[]>(
+    [],
+  );
   const [packLoading, setPackLoading] = React.useState(false);
 
   React.useEffect(() => {
     if (tab === "community" && !communityPacksLoaded) {
-      client.query(rulePackRegistryQuery, {}).toPromise().then(({ data }) => {
-        setCommunityPacks(data?.rulePackRegistry ?? []);
-        setCommunityPacksLoaded(true);
-      }).catch(() => {
-        setCommunityPacksLoaded(true);
-      });
+      client
+        .query(rulePackRegistryQuery, {})
+        .toPromise()
+        .then(({ data }) => {
+          setCommunityPacks(data?.rulePackRegistry ?? []);
+          setCommunityPacksLoaded(true);
+        })
+        .catch(() => {
+          setCommunityPacksLoaded(true);
+        });
     }
   }, [tab, communityPacksLoaded, client]);
 
-  const loadPack = React.useCallback(async (pack: CommunityPack) => {
-    setSelectedPack(pack);
-    setPackLoading(true);
-    try {
-      const { data } = await client.query(rulePackTemplatesQuery, { packId: pack.id }).toPromise();
-      setPackTemplates(data?.rulePackTemplates ?? []);
-    } catch {
-      setPackTemplates([]);
-    } finally {
-      setPackLoading(false);
-    }
-  }, [client]);
+  const loadPack = React.useCallback(
+    async (pack: CommunityPack) => {
+      setSelectedPack(pack);
+      setPackLoading(true);
+      try {
+        const { data } = await client
+          .query(rulePackTemplatesQuery, { packId: pack.id })
+          .toPromise();
+        setPackTemplates(data?.rulePackTemplates ?? []);
+      } catch {
+        setPackTemplates([]);
+      } finally {
+        setPackLoading(false);
+      }
+    },
+    [client],
+  );
 
-  const filtered = categoryFilter === "All"
-    ? RULE_TEMPLATES
-    : RULE_TEMPLATES.filter((tpl) => tpl.category === categoryFilter);
+  const filtered =
+    categoryFilter === "All"
+      ? RULE_TEMPLATES
+      : RULE_TEMPLATES.filter((tpl) => tpl.category === categoryFilter);
 
   return (
     <Card>
@@ -913,7 +462,9 @@ function RuleLibrary({ onApply, defaultOpen }: { onApply: (template: RuleTemplat
             className={`ml-auto h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`}
           />
         </CardTitle>
-        <p className="text-xs text-muted-foreground">{t("settings.ruleLibraryDescription")}</p>
+        <p className="text-xs text-muted-foreground">
+          {t("settings.ruleLibraryDescription")}
+        </p>
       </CardHeader>
       {open ? (
         <CardContent>
@@ -923,7 +474,9 @@ function RuleLibrary({ onApply, defaultOpen }: { onApply: (template: RuleTemplat
               type="button"
               className={cn(
                 "px-3 py-1.5 text-sm font-medium transition-colors rounded-t",
-                tab === "builtin" ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground",
+                tab === "builtin"
+                  ? "text-primary border-b-2 border-primary"
+                  : "text-muted-foreground hover:text-foreground",
               )}
               onClick={() => setTab("builtin")}
             >
@@ -933,7 +486,9 @@ function RuleLibrary({ onApply, defaultOpen }: { onApply: (template: RuleTemplat
               type="button"
               className={cn(
                 "px-3 py-1.5 text-sm font-medium transition-colors rounded-t",
-                tab === "community" ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground",
+                tab === "community"
+                  ? "text-primary border-b-2 border-primary"
+                  : "text-muted-foreground hover:text-foreground",
               )}
               onClick={() => setTab("community")}
             >
@@ -944,9 +499,14 @@ function RuleLibrary({ onApply, defaultOpen }: { onApply: (template: RuleTemplat
           {tab === "builtin" ? (
             <>
               <div className="mb-3 flex flex-wrap gap-1">
-                {[t("settings.ruleLibraryAll"), ...RULE_TEMPLATE_CATEGORIES].map((cat) => {
+                {[
+                  t("settings.ruleLibraryAll"),
+                  ...RULE_TEMPLATE_CATEGORIES,
+                ].map((cat) => {
                   const isAll = cat === t("settings.ruleLibraryAll");
-                  const active = isAll ? categoryFilter === "All" : categoryFilter === cat;
+                  const active = isAll
+                    ? categoryFilter === "All"
+                    : categoryFilter === cat;
                   return (
                     <button
                       key={cat}
@@ -966,68 +526,81 @@ function RuleLibrary({ onApply, defaultOpen }: { onApply: (template: RuleTemplat
               </div>
               <TemplateGrid
                 templates={filtered}
-                onApply={(tpl) => { onApply(tpl); setOpen(false); }}
+                onApply={(tpl) => {
+                  onApply(tpl);
+                  setOpen(false);
+                }}
               />
             </>
+          ) : /* Community tab */
+          selectedPack ? (
+            <div>
+              <button
+                type="button"
+                className="mb-3 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  setSelectedPack(null);
+                  setPackTemplates([]);
+                }}
+              >
+                &larr; Back to packs
+              </button>
+              <p className="mb-1 text-sm font-medium">{selectedPack.name}</p>
+              <p className="mb-3 text-xs text-muted-foreground">
+                {selectedPack.description}
+              </p>
+              {packLoading ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("label.loading")}
+                </p>
+              ) : (
+                <TemplateGrid
+                  templates={packTemplates.map((t) => ({
+                    id: t.id,
+                    title: t.title,
+                    description: t.description,
+                    category: t.category,
+                    regoSource: t.regoSource,
+                    appliedFacets: t.appliedFacets,
+                  }))}
+                  onApply={(tpl) => {
+                    onApply(tpl);
+                    setOpen(false);
+                  }}
+                />
+              )}
+            </div>
           ) : (
-            /* Community tab */
-            selectedPack ? (
-              <div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {communityPacks.length === 0 && communityPacksLoaded ? (
+                <p className="col-span-full text-sm text-muted-foreground">
+                  {t("settings.ruleLibraryCommunityEmpty")}
+                </p>
+              ) : null}
+              {communityPacks.map((pack) => (
                 <button
+                  key={pack.id}
                   type="button"
-                  className="mb-3 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => { setSelectedPack(null); setPackTemplates([]); }}
+                  className="group rounded-lg border border-border bg-card/50 p-3 text-left transition-colors hover:border-primary/40 hover:bg-card"
+                  onClick={() => void loadPack(pack)}
                 >
-                  &larr; Back to packs
-                </button>
-                <p className="mb-1 text-sm font-medium">{selectedPack.name}</p>
-                <p className="mb-3 text-xs text-muted-foreground">{selectedPack.description}</p>
-                {packLoading ? (
-                  <p className="text-sm text-muted-foreground">{t("label.loading")}</p>
-                ) : (
-                  <TemplateGrid
-                    templates={packTemplates.map((t) => ({
-                      id: t.id,
-                      title: t.title,
-                      description: t.description,
-                      category: t.category,
-                      regoSource: t.regoSource,
-                      appliedFacets: t.appliedFacets,
-                    }))}
-                    onApply={(tpl) => { onApply(tpl); setOpen(false); }}
-                  />
-                )}
-              </div>
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {communityPacks.length === 0 && communityPacksLoaded ? (
-                  <p className="col-span-full text-sm text-muted-foreground">
-                    {t("settings.ruleLibraryCommunityEmpty")}
+                  <p className="text-sm font-medium text-foreground group-hover:text-primary">
+                    {pack.name}
                   </p>
-                ) : null}
-                {communityPacks.map((pack) => (
-                  <button
-                    key={pack.id}
-                    type="button"
-                    className="group rounded-lg border border-border bg-card/50 p-3 text-left transition-colors hover:border-primary/40 hover:bg-card"
-                    onClick={() => void loadPack(pack)}
-                  >
-                    <p className="text-sm font-medium text-foreground group-hover:text-primary">
-                      {pack.name}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
-                      {pack.description}
-                    </p>
-                    <div className="mt-2 flex items-center gap-2">
-                      <span className="rounded bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-700 dark:text-teal-300">
-                        {pack.author}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">v{pack.version}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )
+                  <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+                    {pack.description}
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="rounded bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-700 dark:text-teal-300">
+                      {pack.author}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">
+                      v{pack.version}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
           )}
         </CardContent>
       ) : null}
@@ -1064,7 +637,10 @@ function TemplateGrid({
             {tpl.appliedFacets
               ?.filter((f) => f.toLowerCase() !== tpl.category.toLowerCase())
               .map((f) => (
-                <span key={f} className="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-700 dark:text-blue-300">
+                <span
+                  key={f}
+                  className="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-700 dark:text-blue-300"
+                >
                   {f}
                 </span>
               ))}
@@ -1156,13 +732,23 @@ export function SettingsRulesSection({
                         type="button"
                         size="icon-sm"
                         variant="secondary"
-                        title={record.enabled ? t("label.disable") : t("label.enable")}
-                        aria-label={record.enabled ? t("label.disable") : t("label.enable")}
+                        title={
+                          record.enabled
+                            ? t("label.disable")
+                            : t("label.enable")
+                        }
+                        aria-label={
+                          record.enabled
+                            ? t("label.disable")
+                            : t("label.enable")
+                        }
                         onClick={() => void toggleRuleSetEnabled(record)}
                         disabled={mutatingRuleSetId === record.id}
                         className={cn(
                           boxedActionButtonBaseClass,
-                          boxedActionButtonToneClass[record.enabled ? "disabled" : "enabled"],
+                          boxedActionButtonToneClass[
+                            record.enabled ? "disabled" : "enabled"
+                          ],
                         )}
                       >
                         <Power className="h-4 w-4" />
@@ -1223,185 +809,195 @@ export function SettingsRulesSection({
 
       {isEditorOpen ? (
         <>
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            {editingRuleSetId
-              ? t("settings.ruleUpdate")
-              : t("settings.ruleCreate")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form className="space-y-3" onSubmit={submitRuleSet}>
-            <div className="grid gap-3 md:grid-cols-3">
-              <label>
-                <Label className="mb-2 block">{t("label.name")}</Label>
-                <Input
-                  value={ruleSetDraft.name}
-                  onChange={(e) =>
-                    setRuleSetDraft((prev) => ({
-                      ...prev,
-                      name: e.target.value,
-                    }))
-                  }
-                  required
-                  placeholder="my_rule"
-                />
-              </label>
-              <label>
-                <Label className="mb-2 block">
-                  {t("settings.ruleDescription")}
-                </Label>
-                <Input
-                  value={ruleSetDraft.description}
-                  onChange={(e) =>
-                    setRuleSetDraft((prev) => ({
-                      ...prev,
-                      description: e.target.value,
-                    }))
-                  }
-                  placeholder="Block releases over 100 GiB"
-                />
-              </label>
-              <label>
-                <Label className="mb-2 block">
-                  {t("settings.rulePriority")}
-                </Label>
-                <Input
-                  {...integerInputProps}
-                  value={ruleSetDraft.priority}
-                  onChange={(e) =>
-                    setRuleSetDraft((prev) => ({
-                      ...prev,
-                      priority: Number(sanitizeDigits(e.target.value)) || 0,
-                    }))
-                  }
-                  placeholder="0"
-                />
-              </label>
-            </div>
-
-            <div>
-              <Label className="mb-2 block">
-                {t("settings.ruleRegoSource")}
-              </Label>
-              <LazyRegoEditor
-                value={ruleSetDraft.regoSource}
-                onChange={(value) =>
-                  setRuleSetDraft((prev) => ({ ...prev, regoSource: value }))
-                }
-                minLines={20}
-                maxLines={50}
-              />
-            </div>
-
-            <div>
-              <Label className="mb-2 block">
-                {t("settings.ruleAppliedFacets")}
-              </Label>
-              <p className="mb-2 text-xs text-muted-foreground">
-                {t("settings.ruleAppliedFacetsHelp")}
-              </p>
-              <div className="flex items-center gap-4">
-                {FACET_OPTIONS.map((opt) => (
-                  <label key={opt.value} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={ruleSetDraft.appliedFacets.includes(opt.value)}
-                      onChange={(e) => {
-                        setRuleSetDraft((prev) => {
-                          const next = e.target.checked
-                            ? [...prev.appliedFacets, opt.value]
-                            : prev.appliedFacets.filter((f) => f !== opt.value);
-                          return { ...prev, appliedFacets: next };
-                        });
-                      }}
-                      className="accent-primary"
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                {editingRuleSetId
+                  ? t("settings.ruleUpdate")
+                  : t("settings.ruleCreate")}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form className="space-y-3" onSubmit={submitRuleSet}>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label>
+                    <Label className="mb-2 block">{t("label.name")}</Label>
+                    <Input
+                      value={ruleSetDraft.name}
+                      onChange={(e) =>
+                        setRuleSetDraft((prev) => ({
+                          ...prev,
+                          name: e.target.value,
+                        }))
+                      }
+                      required
+                      placeholder="my_rule"
                     />
-                    <span className="text-sm">{opt.label}</span>
                   </label>
-                ))}
-              </div>
-            </div>
+                  <label>
+                    <Label className="mb-2 block">
+                      {t("settings.ruleDescription")}
+                    </Label>
+                    <Input
+                      value={ruleSetDraft.description}
+                      onChange={(e) =>
+                        setRuleSetDraft((prev) => ({
+                          ...prev,
+                          description: e.target.value,
+                        }))
+                      }
+                      placeholder="Block releases over 100 GiB"
+                    />
+                  </label>
+                  <label>
+                    <Label className="mb-2 block">
+                      {t("settings.rulePriority")}
+                    </Label>
+                    <Input
+                      {...integerInputProps}
+                      value={ruleSetDraft.priority}
+                      onChange={(e) =>
+                        setRuleSetDraft((prev) => ({
+                          ...prev,
+                          priority: Number(sanitizeDigits(e.target.value)) || 0,
+                        }))
+                      }
+                      placeholder="0"
+                    />
+                  </label>
+                </div>
 
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={ruleSetDraft.enabled}
-                onChange={(e) =>
-                  setRuleSetDraft((prev) => ({
-                    ...prev,
-                    enabled: e.target.checked,
-                  }))
-                }
-                className="accent-primary"
-              />
-              <span className="text-sm">{t("label.enabled")}</span>
-            </label>
+                <div>
+                  <Label className="mb-2 block">
+                    {t("settings.ruleRegoSource")}
+                  </Label>
+                  <LazyRegoEditor
+                    value={ruleSetDraft.regoSource}
+                    onChange={(value) =>
+                      setRuleSetDraft((prev) => ({
+                        ...prev,
+                        regoSource: value,
+                      }))
+                    }
+                    minLines={20}
+                    maxLines={50}
+                  />
+                </div>
 
-            {validationResult ? (
-              <div
-                className={`rounded border px-3 py-2 text-sm ${
-                  validationResult.valid
-                    ? "border-emerald-700/50 bg-emerald-900/30 text-emerald-300"
-                    : "border-red-700/50 bg-red-900/30 text-red-300"
-                }`}
-              >
-                {validationResult.valid ? (
-                  t("settings.ruleValid")
-                ) : (
-                  <ul className="list-inside list-disc space-y-1">
-                    {validationResult.errors.map((err, i) => (
-                      <li key={i}>{err}</li>
+                <div>
+                  <Label className="mb-2 block">
+                    {t("settings.ruleAppliedFacets")}
+                  </Label>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    {t("settings.ruleAppliedFacetsHelp")}
+                  </p>
+                  <div className="flex items-center gap-4">
+                    {FACET_OPTIONS.map((opt) => (
+                      <label
+                        key={opt.value}
+                        className="flex items-center gap-2"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={ruleSetDraft.appliedFacets.includes(
+                            opt.value,
+                          )}
+                          onChange={(e) => {
+                            setRuleSetDraft((prev) => {
+                              const next = e.target.checked
+                                ? [...prev.appliedFacets, opt.value]
+                                : prev.appliedFacets.filter(
+                                    (f) => f !== opt.value,
+                                  );
+                              return { ...prev, appliedFacets: next };
+                            });
+                          }}
+                          className="accent-primary"
+                        />
+                        <span className="text-sm">{opt.label}</span>
+                      </label>
                     ))}
-                  </ul>
-                )}
-              </div>
-            ) : null}
+                  </div>
+                </div>
 
-            <div className="flex gap-2">
-              <Button type="submit" disabled={mutatingRuleSetId !== null}>
-                {mutatingRuleSetId !== null
-                  ? t("label.saving")
-                  : editingRuleSetId
-                    ? t("settings.ruleUpdate")
-                    : t("settings.ruleCreate")}
-              </Button>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={ruleSetDraft.enabled}
+                    onChange={(e) =>
+                      setRuleSetDraft((prev) => ({
+                        ...prev,
+                        enabled: e.target.checked,
+                      }))
+                    }
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">{t("label.enabled")}</span>
+                </label>
+
+                {validationResult ? (
+                  <div
+                    className={`rounded border px-3 py-2 text-sm ${
+                      validationResult.valid
+                        ? "border-emerald-700/50 bg-emerald-900/30 text-emerald-300"
+                        : "border-red-700/50 bg-red-900/30 text-red-300"
+                    }`}
+                  >
+                    {validationResult.valid ? (
+                      t("settings.ruleValid")
+                    ) : (
+                      <ul className="list-inside list-disc space-y-1">
+                        {validationResult.errors.map((err, i) => (
+                          <li key={i}>{err}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
+
+                <div className="flex gap-2">
+                  <Button type="submit" disabled={mutatingRuleSetId !== null}>
+                    {mutatingRuleSetId !== null
+                      ? t("label.saving")
+                      : editingRuleSetId
+                        ? t("settings.ruleUpdate")
+                        : t("settings.ruleCreate")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void validateDraft()}
+                    disabled={validating || !ruleSetDraft.regoSource.trim()}
+                  >
+                    {validating
+                      ? t("settings.ruleValidating")
+                      : t("settings.ruleValidate")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={resetRuleSetDraft}
+                  >
+                    {t("label.cancel")}
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+          {editorMode === "edit" ? (
+            <div className="flex justify-center">
               <Button
                 type="button"
-                variant="secondary"
-                onClick={() => void validateDraft()}
-                disabled={validating || !ruleSetDraft.regoSource.trim()}
+                size="lg"
+                onClick={startCreateRuleSet}
+                disabled={mutatingRuleSetId !== null}
+                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
               >
-                {validating
-                  ? t("settings.ruleValidating")
-                  : t("settings.ruleValidate")}
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={resetRuleSetDraft}
-              >
-                {t("label.cancel")}
+                <Plus className="h-5 w-5" />
+                {t("settings.ruleCreateNew")}
               </Button>
             </div>
-          </form>
-        </CardContent>
-      </Card>
-      {editorMode === "edit" ? (
-        <div className="flex justify-center">
-          <Button
-            type="button"
-            size="lg"
-            onClick={startCreateRuleSet}
-            disabled={mutatingRuleSetId !== null}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.ruleCreateNew")}
-          </Button>
-        </div>
-      ) : null}
+          ) : null}
         </>
       ) : (
         <div className="flex justify-center">

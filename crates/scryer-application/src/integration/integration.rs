@@ -1290,6 +1290,35 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn sync_enabled_prowlarr_indexers(
+        &self,
+        actor: &User,
+    ) -> AppResult<(u32, Vec<String>)> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let parents = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(Some("prowlarr".to_string()))
+            .await?
+            .into_iter()
+            .filter(|config| config.managed_parent_config_id.is_none() && config.is_enabled)
+            .collect::<Vec<_>>();
+
+        let mut synced_count = 0;
+        let mut failures = Vec::new();
+        for parent in parents {
+            match self.sync_indexer_config(actor, &parent.id).await {
+                Ok(_) => synced_count += 1,
+                Err(error) => failures.push(format!("{}: {error}", parent.name)),
+            }
+        }
+
+        Ok((synced_count, failures))
+    }
+
     pub async fn get_indexer_config(
         &self,
         actor: &User,
@@ -1457,6 +1486,13 @@ impl AppUseCase {
         let should_validate_connection = normalized_provider.is_some()
             || normalized_config_json.is_some()
             || matches!(update.is_enabled, Some(true)) && !existing.is_enabled;
+        let should_sync_managed_children = management_capabilities.supports_managed_children_sync
+            && updated_managed_parent_requires_sync(
+                &existing,
+                update.is_enabled,
+                normalized_provider.is_some(),
+                normalized_config_json.is_some(),
+            );
 
         if should_validate_connection {
             let validation_config_json = normalized_config_json
@@ -1495,6 +1531,14 @@ impl AppUseCase {
                 config_json: normalized_config_json,
             })
             .await?;
+        if should_sync_managed_children {
+            if updated.is_enabled {
+                self.sync_indexer_config(actor, &updated.id).await?;
+            } else if existing.is_enabled != updated.is_enabled {
+                self.set_managed_child_indexers_enabled_state(&updated.id, false)
+                    .await?;
+            }
+        }
         Ok(updated)
     }
 
@@ -1721,9 +1765,42 @@ impl AppUseCase {
         Ok(result)
     }
 
+    async fn set_managed_child_indexers_enabled_state(
+        &self,
+        parent_config_id: &str,
+        is_enabled: bool,
+    ) -> AppResult<()> {
+        let children = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await?
+            .into_iter()
+            .filter(|candidate| {
+                candidate.managed_parent_config_id.as_deref() == Some(parent_config_id)
+                    && candidate.is_enabled != is_enabled
+            })
+            .collect::<Vec<_>>();
+
+        for child in children {
+            self.services
+                .integrations
+                .indexer_configs
+                .update(IndexerConfigUpdate {
+                    id: child.id,
+                    is_enabled: Some(is_enabled),
+                    ..Default::default()
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
     async fn prepare_managed_indexer_sync_plan(
         &self,
-        _parent: &IndexerConfig,
+        parent: &IndexerConfig,
         plan: IndexerSyncPlan,
     ) -> AppResult<Vec<PreparedManagedIndexerChild>> {
         let mut seen_child_keys = HashSet::new();
@@ -1775,7 +1852,7 @@ impl AppUseCase {
                 provider_type,
                 base_url,
                 config_json,
-                is_enabled: child.is_enabled,
+                is_enabled: parent.is_enabled && child.is_enabled,
                 enable_interactive_search: child.enable_interactive_search,
                 enable_auto_search: child.enable_auto_search,
                 managed_metadata_json,
@@ -3457,6 +3534,22 @@ impl AppUseCase {
             .reorder(ordered_ids)
             .await
     }
+}
+
+fn updated_managed_parent_requires_sync(
+    existing: &IndexerConfig,
+    updated_enabled_state: Option<bool>,
+    provider_changed: bool,
+    config_changed: bool,
+) -> bool {
+    if !existing.is_enabled && !matches!(updated_enabled_state, Some(true)) {
+        return false;
+    }
+
+    provider_changed
+        || config_changed
+        || (matches!(updated_enabled_state, Some(true)) && !existing.is_enabled)
+        || (matches!(updated_enabled_state, Some(false)) && existing.is_enabled)
 }
 
 pub async fn start_download_queue_poller(

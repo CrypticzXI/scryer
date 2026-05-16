@@ -500,6 +500,7 @@ export default function HomePage() {
           (mod) => mod.backendClient.query(
             `query SetupStatus { setupStatus { setupComplete } }`,
             {},
+            { requestPolicy: "network-only" },
           ).toPromise(),
         );
         if (data?.setupStatus?.setupComplete === false) {

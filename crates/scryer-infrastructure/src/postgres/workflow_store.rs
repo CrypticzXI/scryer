@@ -2,8 +2,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, DownloadQueueCommandRecord, DownloadSourceIdentity, DownloadSubmission,
-    ExternalImportMonitorSnapshot, ImportArtifact, JobKey, JobRunRecord, JobRunStatus,
-    JobTriggerSource, SubmissionScope, SuccessfulGrabCommit, WorkflowOperationInfo,
+    ExternalImportMonitorSnapshot, ExternalImportMonitorSnapshotChunk,
+    ExternalImportMonitorSnapshotChunkScopeKind, ExternalImportMonitorSnapshotEntryKind,
+    ImportArtifact, JobKey, JobRunRecord, JobRunStatus, JobTriggerSource, SubmissionScope,
+    SuccessfulGrabCommit, WorkflowOperationInfo,
 };
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventStream, DomainEventType,
@@ -817,7 +819,174 @@ impl WorkflowSql for PostgresWorkflowSql {
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
+
+        sqlx::query(
+            "DELETE FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = $1 AND scope_key = $2",
+        )
+        .bind(ExternalImportMonitorSnapshotChunkScopeKind::Facet.as_str())
+        .bind(snapshot.facet.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(())
+    }
+
+    async fn append_external_import_monitor_snapshot_chunk(
+        &self,
+        chunk: &ExternalImportMonitorSnapshotChunk,
+    ) -> AppResult<()> {
+        sqlx::query(
+            "INSERT INTO external_import_monitor_snapshot_chunks
+             (scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (scope_kind, scope_key, entry_kind, chunk_index) DO UPDATE SET
+                payload_ndjson = EXCLUDED.payload_ndjson,
+                entry_count = EXCLUDED.entry_count,
+                byte_len = EXCLUDED.byte_len,
+                created_at = EXCLUDED.created_at",
+        )
+        .bind(chunk.scope_kind.as_str())
+        .bind(&chunk.scope_key)
+        .bind(chunk.entry_kind.as_str())
+        .bind(chunk.chunk_index)
+        .bind(&chunk.payload_ndjson)
+        .bind(chunk.entry_count)
+        .bind(chunk.byte_len)
+        .bind(parse_rfc3339_or_now(&chunk.created_at))
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn list_external_import_monitor_snapshot_chunks(
+        &self,
+        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+        entry_kind: ExternalImportMonitorSnapshotEntryKind,
+    ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
+        let rows = sqlx::query(
+            "SELECT scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at
+             FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = $1 AND scope_key = $2 AND entry_kind = $3
+             ORDER BY chunk_index ASC",
+        )
+        .bind(scope_kind.as_str())
+        .bind(scope_key)
+        .bind(entry_kind.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter().map(snapshot_chunk_from_row).collect()
+    }
+
+    async fn list_external_import_monitor_snapshot_chunk_batch(
+        &self,
+        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+        entry_kind: ExternalImportMonitorSnapshotEntryKind,
+        after_chunk_index: Option<i32>,
+        limit: i32,
+    ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
+        let rows = sqlx::query(
+            "SELECT scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at
+             FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = $1
+               AND scope_key = $2
+               AND entry_kind = $3
+               AND ($4::INTEGER IS NULL OR chunk_index > $4)
+             ORDER BY chunk_index ASC
+             LIMIT $5",
+        )
+        .bind(scope_kind.as_str())
+        .bind(scope_key)
+        .bind(entry_kind.as_str())
+        .bind(after_chunk_index)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter().map(snapshot_chunk_from_row).collect()
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks(
+        &self,
+        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+    ) -> AppResult<()> {
+        sqlx::query(
+            "DELETE FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = $1 AND scope_key = $2",
+        )
+        .bind(scope_kind.as_str())
+        .bind(scope_key)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn copy_external_import_monitor_snapshot_chunks(
+        &self,
+        from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        from_scope_key: &str,
+        to_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        to_scope_key: &str,
+        entry_kind: ExternalImportMonitorSnapshotEntryKind,
+    ) -> AppResult<(i32, i32, i64)> {
+        let mut tx = self.pool.begin().await.map_err(repo_err)?;
+
+        sqlx::query(
+            "DELETE FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = $1 AND scope_key = $2 AND entry_kind = $3",
+        )
+        .bind(to_scope_kind.as_str())
+        .bind(to_scope_key)
+        .bind(entry_kind.as_str())
+        .execute(tx.as_mut())
+        .await
+        .map_err(repo_err)?;
+
+        sqlx::query(
+            "INSERT INTO external_import_monitor_snapshot_chunks
+             (scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at)
+             SELECT $1, $2, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, $3
+             FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = $4 AND scope_key = $5 AND entry_kind = $6
+             ORDER BY chunk_index ASC",
+        )
+        .bind(to_scope_kind.as_str())
+        .bind(to_scope_key)
+        .bind(Utc::now())
+        .bind(from_scope_kind.as_str())
+        .bind(from_scope_key)
+        .bind(entry_kind.as_str())
+        .execute(tx.as_mut())
+        .await
+        .map_err(repo_err)?;
+
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS chunk_count,
+                    COALESCE(SUM(entry_count), 0) AS entry_count,
+                    COALESCE(SUM(byte_len), 0) AS total_bytes
+             FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = $1 AND scope_key = $2 AND entry_kind = $3",
+        )
+        .bind(from_scope_kind.as_str())
+        .bind(from_scope_key)
+        .bind(entry_kind.as_str())
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(repo_err)?;
+
+        tx.commit().await.map_err(repo_err)?;
+
+        Ok((
+            row.try_get::<i32, _>("chunk_count").map_err(repo_err)?,
+            row.try_get::<i32, _>("entry_count").map_err(repo_err)?,
+            row.try_get::<i64, _>("total_bytes").map_err(repo_err)?,
+        ))
     }
 
     async fn get_external_import_monitor_snapshot(
@@ -842,6 +1011,15 @@ impl WorkflowSql for PostgresWorkflowSql {
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;
+        sqlx::query(
+            "DELETE FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = $1 AND scope_key = $2",
+        )
+        .bind(ExternalImportMonitorSnapshotChunkScopeKind::Facet.as_str())
+        .bind(facet.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(())
     }
     async fn queue_delete_command(
@@ -1311,6 +1489,38 @@ fn snapshot_from_row(row: &sqlx::postgres::PgRow) -> AppResult<ExternalImportMon
         facet,
         payload: serde_json::from_value(row.try_get("payload_json").map_err(repo_err)?)
             .map_err(repo_err)?,
+        created_at: row
+            .try_get::<DateTime<Utc>, _>("created_at")
+            .map_err(repo_err)?
+            .to_rfc3339(),
+    })
+}
+
+fn snapshot_chunk_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> AppResult<ExternalImportMonitorSnapshotChunk> {
+    let scope_kind_raw: String = row.try_get("scope_kind").map_err(repo_err)?;
+    let entry_kind_raw: String = row.try_get("entry_kind").map_err(repo_err)?;
+
+    Ok(ExternalImportMonitorSnapshotChunk {
+        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind::parse(&scope_kind_raw)
+            .ok_or_else(|| {
+                AppError::Repository(format!(
+                    "invalid monitor snapshot chunk scope kind: {scope_kind_raw}"
+                ))
+            })?,
+        scope_key: row.try_get("scope_key").map_err(repo_err)?,
+        entry_kind: ExternalImportMonitorSnapshotEntryKind::parse(&entry_kind_raw).ok_or_else(
+            || {
+                AppError::Repository(format!(
+                    "invalid monitor snapshot chunk entry kind: {entry_kind_raw}"
+                ))
+            },
+        )?,
+        chunk_index: row.try_get("chunk_index").map_err(repo_err)?,
+        payload_ndjson: row.try_get("payload_ndjson").map_err(repo_err)?,
+        entry_count: row.try_get("entry_count").map_err(repo_err)?,
+        byte_len: row.try_get("byte_len").map_err(repo_err)?,
         created_at: row
             .try_get::<DateTime<Utc>, _>("created_at")
             .map_err(repo_err)?

@@ -270,6 +270,23 @@ file = "postgres/migrations/0116_import_identity_client_scope.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 117
+description = "external import monitor snapshot chunks"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0117_external_import_monitor_snapshot_chunks.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0117_external_import_monitor_snapshot_chunks.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"

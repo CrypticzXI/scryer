@@ -1,6 +1,11 @@
 import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import type {
+  ExternalImportMonitorWarmupPhaseProgress,
+  ExternalImportMonitorWarmupProgress,
+} from "@/lib/types/external-import";
 import type { FacetQualityPrefs, ViewCategoryId } from "@/lib/types/quality-profiles";
 
 interface SummaryItem {
@@ -18,6 +23,8 @@ interface SetupSummaryViewProps {
   indexerName: string;
   importedDcCount?: number;
   importedIdxCount?: number;
+  monitorWarmupProgress?: ExternalImportMonitorWarmupProgress | null;
+  monitorWarmupError?: string | null;
   onFinish?: () => void;
   onImportOnly?: () => void;
   onImportAndScan?: () => void;
@@ -45,6 +52,48 @@ function formatFacetPrefs(
     .join(", ");
 }
 
+function activeWarmupPhaseState(
+  progress: ExternalImportMonitorWarmupProgress,
+  t: (key: string) => string,
+): {
+  label: string;
+  totalKnown: boolean;
+  phaseProgress: ExternalImportMonitorWarmupPhaseProgress;
+} {
+  switch (progress.phase) {
+    case "loading_movies":
+      return {
+        label: t("setup.monitorWarmupLoadingMovies"),
+        totalKnown: progress.moviesTotalKnown,
+        phaseProgress: progress.moviesProgress,
+      };
+    case "loading_series":
+      return {
+        label: t("setup.monitorWarmupLoadingSeries"),
+        totalKnown: progress.seriesTotalKnown,
+        phaseProgress: progress.seriesProgress,
+      };
+    case "loading_episodes":
+      return {
+        label: t("setup.monitorWarmupLoadingEpisodes"),
+        totalKnown: progress.episodeFetchTotalKnown,
+        phaseProgress: progress.episodeFetchProgress,
+      };
+    case "building_snapshot":
+      return {
+        label: t("setup.monitorWarmupBuildingSnapshot"),
+        totalKnown: progress.snapshotBuildTotalKnown,
+        phaseProgress: progress.snapshotBuildProgress,
+      };
+    case "ready":
+      return {
+        label: t("setup.monitorWarmupReady"),
+        totalKnown: progress.overallTotalKnown,
+        phaseProgress: progress.overallProgress,
+      };
+  }
+}
+
 export function SetupSummaryView({
   t,
   facetPrefs,
@@ -55,6 +104,8 @@ export function SetupSummaryView({
   indexerName,
   importedDcCount,
   importedIdxCount,
+  monitorWarmupProgress,
+  monitorWarmupError,
   onFinish,
   onImportOnly,
   onImportAndScan,
@@ -64,6 +115,22 @@ export function SetupSummaryView({
 }: SetupSummaryViewProps) {
   const isImportPath = importedDcCount !== undefined || importedIdxCount !== undefined;
   const mediaPathsSummary = [...moviesPaths, ...seriesPaths, ...(animePaths ?? [])].join(", ");
+  const warmupPhaseState = monitorWarmupProgress
+    ? activeWarmupPhaseState(monitorWarmupProgress, t)
+    : null;
+  const showWarmupCard = Boolean(
+    isImportPath &&
+      (monitorWarmupError ||
+        (monitorWarmupProgress && monitorWarmupProgress.status !== "completed")),
+  );
+  const warmupPercent =
+    warmupPhaseState &&
+    warmupPhaseState.totalKnown &&
+    warmupPhaseState.phaseProgress.total > 0
+      ? Math.round(
+          (warmupPhaseState.phaseProgress.completed / warmupPhaseState.phaseProgress.total) * 100,
+        )
+      : null;
 
   const items: SummaryItem[] = [
     { label: t("setup.summaryPersona"), value: formatFacetPrefs(facetPrefs, t) },
@@ -107,6 +174,49 @@ export function SetupSummaryView({
           ))}
         </CardContent>
       </Card>
+      {showWarmupCard ? (
+        <Card className="mx-auto w-full max-w-md border-emerald-500/30">
+          <CardContent className="flex flex-col gap-3 p-5">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">{t("setup.monitorWarmupTitle")}</p>
+              <p className="text-sm text-muted-foreground">
+                {monitorWarmupError
+                  ? t("setup.monitorWarmupFailed")
+                  : monitorWarmupProgress?.status === "failed"
+                  ? t("setup.monitorWarmupFailed")
+                  : monitorWarmupProgress?.status === "canceled"
+                    ? t("setup.monitorWarmupCanceled")
+                    : t("setup.monitorWarmupDescription")}
+              </p>
+            </div>
+            {monitorWarmupProgress && warmupPhaseState ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="font-medium">{warmupPhaseState.label}</span>
+                  {warmupPercent !== null ? <span>{warmupPercent}%</span> : null}
+                </div>
+                <Progress
+                  value={warmupPercent ?? undefined}
+                  indeterminate={warmupPercent === null}
+                  indicatorClassName="bg-emerald-500"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {warmupPhaseState.totalKnown
+                    ? `${warmupPhaseState.phaseProgress.completed} / ${warmupPhaseState.phaseProgress.total}`
+                    : t("setup.monitorWarmupQueued")}
+                </p>
+                {monitorWarmupProgress.errorMessage ? (
+                  <p className="text-xs text-destructive">
+                    {monitorWarmupProgress.errorMessage}
+                  </p>
+                ) : null}
+              </div>
+            ) : monitorWarmupError ? (
+              <p className="text-xs text-destructive">{monitorWarmupError}</p>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
       <div className="flex justify-between pt-2">
         <Button variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
         {isImportPath && onImportOnly && onImportAndScan ? (

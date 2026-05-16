@@ -5,7 +5,9 @@ import { toast } from "sonner";
 import { useClient } from "urql";
 
 import {
+  externalImportMonitorWarmupStatusQuery,
   pluginsQuery,
+  externalImportMonitorWarmupProgressSubscription,
   pluginInstallProgressSubscription,
   qualityProfilesInitQuery,
   setupWizardProviderTypesInitQuery,
@@ -20,6 +22,9 @@ import {
   completeSetupMutation,
   previewExternalImportMutation,
   executeExternalImportMutation,
+  startExternalImportMonitorWarmupMutation,
+  cancelExternalImportMonitorWarmupMutation,
+  finalizeExternalImportMutation,
   beginInstallPluginMutation,
   refreshPluginCatalogMutation,
   uninstallPluginMutation,
@@ -43,7 +48,12 @@ import {
 } from "@/lib/utils/quality-profiles";
 import type { DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types/download-clients";
 import type { FacetQualityPrefs, ViewCategoryId } from "@/lib/types/quality-profiles";
-import type { ExternalImportPreview, ExternalImportResult } from "@/lib/types/external-import";
+import type {
+  ExternalImportConnection,
+  ExternalImportMonitorWarmupProgress,
+  ExternalImportPreview,
+  ExternalImportResult,
+} from "@/lib/types/external-import";
 import type { ConfigFieldDef, ProviderTypeInfo } from "@/lib/types";
 
 import { SetupProgressBar } from "./setup-progress-bar";
@@ -146,6 +156,12 @@ function findMissingSetupIndexerField(
 type PluginInstallProgressSubscriptionResult = {
   data?: {
     pluginInstallProgress?: PluginInstallProgressRecord;
+  };
+};
+
+type ExternalImportMonitorWarmupProgressSubscriptionResult = {
+  data?: {
+    externalImportMonitorWarmupProgress?: ExternalImportMonitorWarmupProgress;
   };
 };
 
@@ -315,6 +331,8 @@ export function SetupWizardContainer({
   const [sonarrApiKey, setSonarrApiKey] = useState("");
   const [radarrUrl, setRadarrUrl] = useState("");
   const [radarrApiKey, setRadarrApiKey] = useState("");
+  const [prowlarrUrl, setProwlarrUrl] = useState("");
+  const [prowlarrApiKey, setProwlarrApiKey] = useState("");
   const [importConnecting, setImportConnecting] = useState(false);
   const [importConnectError, setImportConnectError] = useState<string | null>(null);
 
@@ -334,6 +352,10 @@ export function SetupWizardContainer({
   const [importExecuting, setImportExecuting] = useState(false);
   const [importExecuteError, setImportExecuteError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<ExternalImportResult | null>(null);
+  const [importWarmupProgress, setImportWarmupProgress] =
+    useState<ExternalImportMonitorWarmupProgress | null>(null);
+  const [importWarmupError, setImportWarmupError] = useState<string | null>(null);
+  const warmupSubscriptionRef = useRef<(() => void) | null>(null);
 
   // ── Summary / Finish ────────────────────────────────────────────────
   const [finishingAction, setFinishingAction] = useState<
@@ -369,6 +391,98 @@ export function SetupWizardContainer({
       installProgressSubscriptionsRef.current.delete(pluginId);
     }
   }, []);
+
+  const stopImportWarmupProgressSubscription = useCallback(() => {
+    if (warmupSubscriptionRef.current) {
+      warmupSubscriptionRef.current();
+      warmupSubscriptionRef.current = null;
+    }
+  }, []);
+
+  const externalImportConnections = useMemo<{
+    sonarr: ExternalImportConnection | null;
+    radarr: ExternalImportConnection | null;
+  }>(() => ({
+    sonarr:
+      sonarrUrl.trim() && sonarrApiKey.trim()
+        ? { baseUrl: sonarrUrl.trim(), apiKey: sonarrApiKey.trim() }
+        : null,
+    radarr:
+      radarrUrl.trim() && radarrApiKey.trim()
+        ? { baseUrl: radarrUrl.trim(), apiKey: radarrApiKey.trim() }
+        : null,
+  }), [radarrApiKey, radarrUrl, sonarrApiKey, sonarrUrl]);
+
+  const beginImportWarmupProgressSubscription = useCallback(
+    (sessionId: string, initialSnapshot?: ExternalImportMonitorWarmupProgress | null) => {
+      stopImportWarmupProgressSubscription();
+      if (initialSnapshot) {
+        setImportWarmupProgress(initialSnapshot);
+      }
+      const unsubscribe = wsClient.subscribe(
+        {
+          query: externalImportMonitorWarmupProgressSubscription,
+          variables: { sessionId },
+        },
+        {
+          next: (result: ExternalImportMonitorWarmupProgressSubscriptionResult) => {
+            const snapshot = result.data?.externalImportMonitorWarmupProgress;
+            if (!snapshot) {
+              return;
+            }
+
+            setImportWarmupProgress(snapshot);
+            setImportWarmupError(snapshot.errorMessage ?? null);
+            if (
+              snapshot.status === "completed" ||
+              snapshot.status === "failed" ||
+              snapshot.status === "canceled"
+            ) {
+              stopImportWarmupProgressSubscription();
+            }
+          },
+          error: (error) => {
+            stopImportWarmupProgressSubscription();
+            setImportWarmupError(
+              error instanceof Error ? error.message : t("setup.connectError"),
+            );
+          },
+          complete: () => {
+            warmupSubscriptionRef.current = null;
+          },
+        },
+      );
+      warmupSubscriptionRef.current = unsubscribe;
+    },
+    [stopImportWarmupProgressSubscription, t],
+  );
+
+  const refreshImportWarmupStatus = useCallback(
+    async (sessionId: string) => {
+      const { data, error } = await client
+        .query(
+          externalImportMonitorWarmupStatusQuery,
+          { sessionId },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+
+      const snapshot = data?.externalImportMonitorWarmupStatus as
+        | ExternalImportMonitorWarmupProgress
+        | undefined;
+      if (!snapshot) {
+        return null;
+      }
+
+      setImportWarmupProgress(snapshot);
+      setImportWarmupError(snapshot.errorMessage ?? null);
+      return snapshot;
+    },
+    [client],
+  );
 
   const refreshProviderOptions = useCallback(async () => {
     try {
@@ -1028,10 +1142,14 @@ export function SetupWizardContainer({
         radarrUrl.trim() && radarrApiKey.trim()
           ? { baseUrl: radarrUrl.trim(), apiKey: radarrApiKey.trim() }
           : undefined;
+      const prowlarr =
+        prowlarrUrl.trim() && prowlarrApiKey.trim()
+          ? { baseUrl: prowlarrUrl.trim(), apiKey: prowlarrApiKey.trim() }
+          : undefined;
 
       const { data, error } = await client
         .mutation(previewExternalImportMutation, {
-          input: { sonarr: sonarr ?? null, radarr: radarr ?? null },
+          input: { sonarr: sonarr ?? null, radarr: radarr ?? null, prowlarr: prowlarr ?? null },
         })
         .toPromise();
       if (error) throw error;
@@ -1039,12 +1157,23 @@ export function SetupWizardContainer({
       const preview: ExternalImportPreview = data.previewExternalImport;
 
       if (!preview.sonarrConnected && sonarr) {
-        setImportConnectError("Could not connect to Sonarr. Check the URL and API key.");
+        setImportConnectError(
+          preview.sonarrError ?? "Could not connect to Sonarr. Check the URL and API key.",
+        );
         setImportConnecting(false);
         return;
       }
       if (!preview.radarrConnected && radarr) {
-        setImportConnectError("Could not connect to Radarr. Check the URL and API key.");
+        setImportConnectError(
+          preview.radarrError ?? "Could not connect to Radarr. Check the URL and API key.",
+        );
+        setImportConnecting(false);
+        return;
+      }
+      if (!preview.prowlarrConnected && prowlarr) {
+        setImportConnectError(
+          preview.prowlarrError ?? "Could not connect to Prowlarr. Check the URL and API key.",
+        );
         setImportConnecting(false);
         return;
       }
@@ -1083,7 +1212,170 @@ export function SetupWizardContainer({
     } finally {
       setImportConnecting(false);
     }
-  }, [client, sonarrUrl, sonarrApiKey, radarrUrl, radarrApiKey, goToStep]);
+  }, [
+    client,
+    sonarrUrl,
+    sonarrApiKey,
+    radarrUrl,
+    radarrApiKey,
+    prowlarrUrl,
+    prowlarrApiKey,
+    goToStep,
+  ]);
+
+  useEffect(() => {
+    if (wizardPath !== "import" || currentStep !== 2 || !importPreview) {
+      return;
+    }
+    if (!externalImportConnections.sonarr && !externalImportConnections.radarr) {
+      return;
+    }
+    if (
+      importWarmupProgress?.status === "queued"
+      || importWarmupProgress?.status === "running"
+      || importWarmupProgress?.status === "completed"
+      || importWarmupProgress?.status === "failed"
+      || importWarmupProgress?.status === "canceled"
+    ) {
+      return;
+    }
+
+    let canceled = false;
+    void (async () => {
+      try {
+        const { data, error } = await client
+          .mutation(startExternalImportMonitorWarmupMutation, {
+            input: {
+              sonarr: externalImportConnections.sonarr,
+              radarr: externalImportConnections.radarr,
+            },
+          })
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+
+        const snapshot = data?.startExternalImportMonitorWarmup as
+          | ExternalImportMonitorWarmupProgress
+          | undefined;
+        if (!snapshot || canceled) {
+          return;
+        }
+
+        setImportWarmupProgress(snapshot);
+        setImportWarmupError(snapshot.errorMessage ?? null);
+        if (snapshot.status === "queued" || snapshot.status === "running") {
+          beginImportWarmupProgressSubscription(snapshot.sessionId, snapshot);
+        } else {
+          stopImportWarmupProgressSubscription();
+        }
+      } catch (error) {
+        if (!canceled) {
+          setImportWarmupError(error instanceof Error ? error.message : t("setup.connectError"));
+        }
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [
+    beginImportWarmupProgressSubscription,
+    client,
+    currentStep,
+    externalImportConnections.radarr,
+    externalImportConnections.sonarr,
+    importPreview,
+    importWarmupProgress?.status,
+    stopImportWarmupProgressSubscription,
+    t,
+    wizardPath,
+  ]);
+
+  useEffect(() => {
+    if (wizardPath === "import" && currentStep >= 2) {
+      return;
+    }
+
+    const sessionId = importWarmupProgress?.sessionId;
+    if (!sessionId) {
+      stopImportWarmupProgressSubscription();
+      return;
+    }
+
+    stopImportWarmupProgressSubscription();
+    if (
+      importWarmupProgress.status !== "completed" &&
+      importWarmupProgress.status !== "failed" &&
+      importWarmupProgress.status !== "canceled"
+    ) {
+      void client.mutation(cancelExternalImportMonitorWarmupMutation, {
+        input: { sessionId },
+      }).toPromise();
+    }
+    setImportWarmupProgress(null);
+    setImportWarmupError(null);
+  }, [
+    client,
+    currentStep,
+    importWarmupProgress,
+    stopImportWarmupProgressSubscription,
+    wizardPath,
+  ]);
+
+  useEffect(() => {
+    const sessionId = importWarmupProgress?.sessionId;
+    if (!sessionId) {
+      return;
+    }
+    if (
+      importWarmupProgress.status === "completed" ||
+      importWarmupProgress.status === "failed" ||
+      importWarmupProgress.status === "canceled"
+    ) {
+      return;
+    }
+
+    let canceled = false;
+    const sync = async () => {
+      try {
+        const snapshot = await refreshImportWarmupStatus(sessionId);
+        if (!snapshot || canceled) {
+          return;
+        }
+        if (
+          snapshot.status === "completed" ||
+          snapshot.status === "failed" ||
+          snapshot.status === "canceled"
+        ) {
+          stopImportWarmupProgressSubscription();
+        }
+      } catch (error) {
+        if (!canceled) {
+          console.warn("[setup] failed to refresh import warmup status", error);
+        }
+      }
+    };
+
+    void sync();
+    const intervalId = window.setInterval(() => {
+      void sync();
+    }, 3000);
+
+    return () => {
+      canceled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    importWarmupProgress?.sessionId,
+    importWarmupProgress?.status,
+    refreshImportWarmupStatus,
+    stopImportWarmupProgressSubscription,
+  ]);
+
+  useEffect(() => () => {
+    stopImportWarmupProgressSubscription();
+  }, [stopImportWarmupProgressSubscription]);
 
   // ── Import: Execute ─────────────────────────────────────────────────
   const buildSelectedImportPaths = useCallback(
@@ -1148,6 +1440,10 @@ export function SetupWizardContainer({
         radarrUrl.trim() && radarrApiKey.trim()
           ? { baseUrl: radarrUrl.trim(), apiKey: radarrApiKey.trim() }
           : undefined;
+      const prowlarr =
+        prowlarrUrl.trim() && prowlarrApiKey.trim()
+          ? { baseUrl: prowlarrUrl.trim(), apiKey: prowlarrApiKey.trim() }
+          : undefined;
       const downloadClientDedupKeys = new Set(
         importPreview?.downloadClients.map((downloadClient) => downloadClient.dedupKey) ?? [],
       );
@@ -1160,6 +1456,7 @@ export function SetupWizardContainer({
           input: {
             sonarr: sonarr ?? null,
             radarr: radarr ?? null,
+            prowlarr: prowlarr ?? null,
             selectedMoviesPaths: finalSelectedMoviesPaths,
             selectedSeriesPaths: finalSelectedSeriesPaths,
             selectedAnimePaths: finalSelectedAnimePaths,
@@ -1200,6 +1497,8 @@ export function SetupWizardContainer({
     sonarrApiKey,
     radarrUrl,
     radarrApiKey,
+    prowlarrUrl,
+    prowlarrApiKey,
     finalSelectedMoviesPaths,
     finalSelectedSeriesPaths,
     finalSelectedAnimePaths,
@@ -1218,15 +1517,62 @@ export function SetupWizardContainer({
     navigate(isReentry ? "/settings" : "/movies", { replace: true });
   }, [isReentry, navigate]);
 
+  const finalizeImportedMonitorSnapshots = useCallback(async () => {
+    const { data, error } = await client
+      .mutation(finalizeExternalImportMutation, {
+        input: {
+          sonarr: externalImportConnections.sonarr,
+          radarr: externalImportConnections.radarr,
+          monitorWarmupSessionId: importWarmupProgress?.sessionId ?? null,
+          selectedMoviesPaths: finalSelectedMoviesPaths,
+          selectedSeriesPaths: finalSelectedSeriesPaths,
+          selectedAnimePaths: finalSelectedAnimePaths,
+        },
+      })
+      .toPromise();
+    if (error) {
+      throw error;
+    }
+    if (!data?.finalizeExternalImport) {
+      throw new Error(t("setup.importFinalizeFailed"));
+    }
+  }, [
+    client,
+    externalImportConnections.radarr,
+    externalImportConnections.sonarr,
+    finalSelectedAnimePaths,
+    finalSelectedMoviesPaths,
+    finalSelectedSeriesPaths,
+    importWarmupProgress?.sessionId,
+    t,
+  ]);
+
   const finishSetup = useCallback(async (action: "finish" | "importOnly" = "finish") => {
     setFinishingAction(action);
     try {
-      await client.mutation(completeSetupMutation, {}).toPromise();
-    } catch {
-      // Setup completion falling through to navigation keeps the wizard resilient.
+      if (action === "importOnly") {
+        await finalizeImportedMonitorSnapshots();
+      }
+      const { data, error } = await client.mutation(completeSetupMutation, {}).toPromise();
+      if (error) {
+        throw error;
+      }
+      if (!data?.completeSetup) {
+        throw new Error(t("setup.connectError"));
+      }
+      navigateAfterSetup();
+    } catch (error) {
+      if (action === "importOnly") {
+        toast.warning(
+          error instanceof Error ? error.message : t("setup.importFinalizeFailed"),
+        );
+      } else {
+        navigateAfterSetup();
+      }
+    } finally {
+      setFinishingAction(null);
     }
-    navigateAfterSetup();
-  }, [client, navigateAfterSetup]);
+  }, [client, finalizeImportedMonitorSnapshots, navigateAfterSetup, t]);
 
   const finishImportAndScan = useCallback(async () => {
     setFinishingAction("importAndScan");
@@ -1264,7 +1610,14 @@ export function SetupWizardContainer({
     );
 
     try {
-      await client.mutation(completeSetupMutation, {}).toPromise();
+      await finalizeImportedMonitorSnapshots();
+      const { data, error } = await client.mutation(completeSetupMutation, {}).toPromise();
+      if (error) {
+        throw error;
+      }
+      if (!data?.completeSetup) {
+        throw new Error(t("setup.importFinalizeFailed"));
+      }
 
       await Promise.all(
         selectedFacets.map(async ({ libraryId, label }) => {
@@ -1289,16 +1642,20 @@ export function SetupWizardContainer({
           }
         }),
       );
-    } catch {
-      // Still navigate into the app even if setup completion reporting fails.
+      navigateAfterSetup();
+    } catch (error) {
+      toast.warning(
+        error instanceof Error ? error.message : t("setup.importFinalizeFailed"),
+      );
+    } finally {
+      setFinishingAction(null);
     }
-
-    navigateAfterSetup();
   }, [
     client,
     finalSelectedAnimePaths.length,
     finalSelectedMoviesPaths.length,
     finalSelectedSeriesPaths.length,
+    finalizeImportedMonitorSnapshots,
     navigateAfterSetup,
     t,
   ]);
@@ -1475,9 +1832,15 @@ export function SetupWizardContainer({
 
   // Step mapping for progress bar (step 0 = welcome, not shown in bar)
   const progressStep = currentStep > 0 ? currentStep - 1 : -1;
+  const isWideImportStep =
+    currentStep === 0 || (wizardPath === "import" && (currentStep === 1 || currentStep === 2));
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-2xl flex-col items-center justify-center px-4 py-10">
+    <div
+      className={`mx-auto flex min-h-screen w-full flex-col items-center justify-center px-4 py-10 ${
+        isWideImportStep ? "max-w-6xl" : "max-w-2xl"
+      }`}
+    >
       {currentStep > 0 && (
         <div className="mb-8 w-full">
           <SetupProgressBar currentStep={progressStep} stepLabels={stepLabels} />
@@ -1625,10 +1988,14 @@ export function SetupWizardContainer({
           sonarrApiKey={sonarrApiKey}
           radarrUrl={radarrUrl}
           radarrApiKey={radarrApiKey}
+          prowlarrUrl={prowlarrUrl}
+          prowlarrApiKey={prowlarrApiKey}
           onSonarrUrlChange={setSonarrUrl}
           onSonarrApiKeyChange={setSonarrApiKey}
           onRadarrUrlChange={setRadarrUrl}
           onRadarrApiKeyChange={setRadarrApiKey}
+          onProwlarrUrlChange={setProwlarrUrl}
+          onProwlarrApiKeyChange={setProwlarrApiKey}
           onConnect={handleImportConnect}
           onBack={() => goToStep(0)}
           connecting={importConnecting}
@@ -1695,6 +2062,8 @@ export function SetupWizardContainer({
           indexerName=""
           importedDcCount={importResult?.downloadClientsCreated}
           importedIdxCount={importResult?.indexersCreated}
+          monitorWarmupProgress={importWarmupProgress}
+          monitorWarmupError={importWarmupError}
           onImportOnly={() => finishSetup("importOnly")}
           onImportAndScan={finishImportAndScan}
           onBack={() => goToStep(3)}

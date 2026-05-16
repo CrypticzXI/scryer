@@ -2,6 +2,13 @@ use super::*;
 use scryer_domain::RuleSet;
 use scryer_rules::validation::{ValidationResult, validate_user_rule};
 
+fn format_rule_validation_errors(validation: &ValidationResult) -> String {
+    format!(
+        "Rule validation failed:\n- {}",
+        validation.errors.join("\n- ")
+    )
+}
+
 impl AppUseCase {
     pub async fn list_rule_sets(&self, actor: &User) -> AppResult<Vec<RuleSet>> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
@@ -36,7 +43,9 @@ impl AppUseCase {
         let validation = validate_user_rule(&rewritten_source, &id)
             .map_err(|e| AppError::Validation(format!("rule validation failed: {e}")))?;
         if !validation.valid {
-            return Err(AppError::Validation(validation.errors.join("; ")));
+            return Err(AppError::Validation(format_rule_validation_errors(
+                &validation,
+            )));
         }
 
         let now = Utc::now();
@@ -121,7 +130,9 @@ impl AppUseCase {
             let validation = validate_user_rule(&rewritten, &rule_set.id)
                 .map_err(|e| AppError::Validation(format!("rule validation failed: {e}")))?;
             if !validation.valid {
-                return Err(AppError::Validation(validation.errors.join("; ")));
+                return Err(AppError::Validation(format_rule_validation_errors(
+                    &validation,
+                )));
             }
             rule_set.rego_source = rewritten;
         }

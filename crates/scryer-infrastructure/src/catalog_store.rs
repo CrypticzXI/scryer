@@ -11,7 +11,7 @@ use scryer_domain::{
 use std::collections::HashMap;
 
 use crate::SqliteServices;
-use crate::queries::{library, title, user};
+use crate::queries::{library, show, sql_runtime::SqlTarget, title, user};
 
 #[async_trait]
 pub trait TitleSql: Clone + Send + Sync + 'static {
@@ -219,6 +219,11 @@ pub trait ShowSql: Clone + Send + Sync + 'static {
         collection_id: &str,
         monitored: bool,
     ) -> AppResult<()>;
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()>;
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()>;
     async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>>;
@@ -228,6 +233,11 @@ pub trait ShowSql: Clone + Send + Sync + 'static {
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>>;
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode>;
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode>;
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()>;
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()>;
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn find_episode_by_title_and_numbers(
@@ -539,29 +549,21 @@ impl LibrarySql for SqliteCatalogSql {
 #[async_trait]
 impl ShowSql for SqliteCatalogSql {
     async fn list_collections_for_title(&self, title_id: &str) -> AppResult<Vec<Collection>> {
-        title::list_collections_for_title_query(&self.pool, title_id).await
+        show::list_collections_for_title_query(SqlTarget::Sqlite(&self.pool), title_id).await
     }
 
     async fn list_collection_external_ids(
         &self,
         collection_id: &str,
     ) -> AppResult<Vec<ScopedExternalId>> {
-        title::list_collection_external_ids_query(&self.pool, collection_id).await
+        show::list_collection_external_ids_query(SqlTarget::Sqlite(&self.pool), collection_id).await
     }
 
     async fn list_collections_for_titles(
         &self,
         title_ids: &[String],
     ) -> AppResult<HashMap<String, Vec<Collection>>> {
-        let collections = title::list_collections_for_titles_query(&self.pool, title_ids).await?;
-        let mut grouped = HashMap::<String, Vec<Collection>>::new();
-        for collection in collections {
-            grouped
-                .entry(collection.title_id.clone())
-                .or_default()
-                .push(collection);
-        }
-        Ok(grouped)
+        show::list_collections_for_titles_query(SqlTarget::Sqlite(&self.pool), title_ids).await
     }
 
     async fn list_primary_collection_summaries(
@@ -572,14 +574,15 @@ impl ShowSql for SqliteCatalogSql {
     }
 
     async fn get_collection_by_id(&self, collection_id: &str) -> AppResult<Option<Collection>> {
-        title::get_collection_by_id_query(&self.pool, collection_id).await
+        show::get_collection_by_id_query(SqlTarget::Sqlite(&self.pool), collection_id).await
     }
 
     async fn get_collection_by_ordered_path(
         &self,
         ordered_path: &str,
     ) -> AppResult<Option<Collection>> {
-        title::get_collection_by_ordered_path_query(&self.pool, ordered_path).await
+        show::get_collection_by_ordered_path_query(SqlTarget::Sqlite(&self.pool), ordered_path)
+            .await
     }
 
     async fn create_collection(&self, collection: Collection) -> AppResult<Collection> {
@@ -634,6 +637,19 @@ impl ShowSql for SqliteCatalogSql {
             .await
     }
 
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        show::set_collections_monitored_query(
+            SqlTarget::Sqlite(&self.pool),
+            collection_ids,
+            monitored,
+        )
+        .await
+    }
+
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
         self.db.delete_collection(collection_id).await
     }
@@ -643,22 +659,22 @@ impl ShowSql for SqliteCatalogSql {
     }
 
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>> {
-        title::list_episodes_for_collection_query(&self.pool, collection_id).await
+        show::list_episodes_for_collection_query(SqlTarget::Sqlite(&self.pool), collection_id).await
     }
 
     async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>> {
-        title::list_episodes_for_title_query(&self.pool, title_id).await
+        show::list_episodes_for_title_query(SqlTarget::Sqlite(&self.pool), title_id).await
     }
 
     async fn list_episode_external_ids(
         &self,
         episode_id: &str,
     ) -> AppResult<Vec<ScopedExternalId>> {
-        title::list_episode_external_ids_query(&self.pool, episode_id).await
+        show::list_episode_external_ids_query(SqlTarget::Sqlite(&self.pool), episode_id).await
     }
 
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
-        title::get_episode_by_id_query(&self.pool, episode_id).await
+        show::get_episode_by_id_query(SqlTarget::Sqlite(&self.pool), episode_id).await
     }
 
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode> {
@@ -667,6 +683,15 @@ impl ShowSql for SqliteCatalogSql {
 
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode> {
         self.db.update_episode(episode_id, update).await
+    }
+
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        show::set_episodes_monitored_query(SqlTarget::Sqlite(&self.pool), episode_ids, monitored)
+            .await
     }
 
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
@@ -697,8 +722,8 @@ impl ShowSql for SqliteCatalogSql {
         title_id: &str,
         absolute_number: &str,
     ) -> AppResult<Option<Episode>> {
-        title::find_episode_by_title_and_absolute_number_query(
-            &self.pool,
+        show::find_episode_by_title_and_absolute_number_query(
+            SqlTarget::Sqlite(&self.pool),
             title_id,
             absolute_number,
         )
@@ -1114,6 +1139,16 @@ impl<S: ShowSql> ShowRepository for CatalogStore<S> {
             .await
     }
 
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        self.sql
+            .set_collections_monitored(collection_ids, monitored)
+            .await
+    }
+
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
         self.sql.delete_collection(collection_id).await
     }
@@ -1147,6 +1182,16 @@ impl<S: ShowSql> ShowRepository for CatalogStore<S> {
 
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode> {
         self.sql.update_episode(episode_id, update).await
+    }
+
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        self.sql
+            .set_episodes_monitored(episode_ids, monitored)
+            .await
     }
 
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {

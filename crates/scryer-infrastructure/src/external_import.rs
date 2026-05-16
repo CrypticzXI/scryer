@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use scryer_application::{AppError, AppResult};
@@ -6,7 +7,9 @@ use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
     external_arr_reqwest_client,
 };
+use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::RwLock;
 
 /// Root folder discovered from a Sonarr/Radarr instance.
 #[derive(Debug, Clone)]
@@ -55,6 +58,12 @@ pub struct ArrSeriesSeason {
     pub monitored: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ArrSeriesStatistics {
+    pub total_episode_count: Option<i32>,
+    pub monitored_episode_count: Option<i32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ArrSeries {
     pub id: i64,
@@ -62,6 +71,7 @@ pub struct ArrSeries {
     pub tvdb_id: Option<String>,
     pub monitored: bool,
     pub seasons: Vec<ArrSeriesSeason>,
+    pub statistics: ArrSeriesStatistics,
 }
 
 #[derive(Debug, Clone)]
@@ -74,38 +84,157 @@ pub struct ArrEpisode {
     pub monitored: bool,
 }
 
-/// HTTP client for Sonarr/Radarr v3 API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalArrApiBucket {
+    SonarrV4,
+    RadarrV6,
+}
+
+impl ExternalArrApiBucket {
+    const fn expected_app_name(self) -> &'static str {
+        match self {
+            Self::SonarrV4 => "Sonarr",
+            Self::RadarrV6 => "Radarr",
+        }
+    }
+
+    const fn minimum_supported_major(self) -> u64 {
+        match self {
+            Self::SonarrV4 => 4,
+            Self::RadarrV6 => 6,
+        }
+    }
+
+    const fn supported_api_prefixes(self) -> &'static [&'static str] {
+        match self {
+            Self::SonarrV4 => &["v3", "v4", "v5"],
+            Self::RadarrV6 => &["v3"],
+        }
+    }
+
+    const fn request_namespace(self) -> &'static str {
+        match self {
+            Self::SonarrV4 => "sonarr_v4",
+            Self::RadarrV6 => "radarr_v6",
+        }
+    }
+
+    fn validate_status(self, app_name: &str, version: &str) -> AppResult<()> {
+        let app_name = app_name.trim();
+        if !app_name.eq_ignore_ascii_case(self.expected_app_name()) {
+            let message = if app_name.is_empty() {
+                format!(
+                    "base_url responded but did not identify itself as {}",
+                    self.expected_app_name()
+                )
+            } else {
+                format!(
+                    "base_url responded as '{}', not {}",
+                    app_name,
+                    self.expected_app_name()
+                )
+            };
+            return Err(AppError::Validation(message));
+        }
+
+        let version = version.trim();
+        let Some(version_major) = external_arr_version_major(version) else {
+            return Err(AppError::Validation(format!(
+                "could not determine {} version from '{}'",
+                self.expected_app_name(),
+                version
+            )));
+        };
+
+        if version_major < self.minimum_supported_major() {
+            return Err(AppError::Validation(format!(
+                "unsupported {} version '{}'; expected major {} or newer",
+                self.expected_app_name(),
+                version,
+                self.minimum_supported_major()
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn validate_api_prefix(self, api_prefix: &str) -> AppResult<()> {
+        let api_prefix = api_prefix.trim().trim_matches('/').to_ascii_lowercase();
+        if api_prefix.is_empty() {
+            return Err(AppError::Validation(format!(
+                "{} did not report an API version",
+                self.expected_app_name()
+            )));
+        }
+
+        if self
+            .supported_api_prefixes()
+            .iter()
+            .any(|supported| supported.eq_ignore_ascii_case(&api_prefix))
+        {
+            return Ok(());
+        }
+
+        Err(AppError::Validation(format!(
+            "unsupported {} API version '{}'; expected one of {}",
+            self.expected_app_name(),
+            api_prefix,
+            self.supported_api_prefixes().join(", ")
+        )))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExternalArrApiInfo {
+    current: String,
+}
+
+#[derive(Debug, Clone)]
+struct ExternalArrSystemStatus {
+    app_name: String,
+    version: String,
+}
+
+fn external_arr_version_major(version: &str) -> Option<u64> {
+    version.trim().split('.').next()?.parse().ok()
+}
+
+/// HTTP client for Sonarr/Radarr APIs pinned to supported product-major buckets.
 #[derive(Clone)]
 pub struct ExternalArrClient {
     base_url: String,
     api_key: String,
     outbound_http: OutboundHttpClient,
+    api_bucket: ExternalArrApiBucket,
+    api_prefix: Arc<RwLock<Option<String>>>,
+    system_status: Arc<RwLock<Option<ExternalArrSystemStatus>>>,
 }
 
 impl ExternalArrClient {
-    pub fn new(base_url: String, api_key: String) -> Self {
+    pub fn for_sonarr_v4(base_url: String, api_key: String) -> Self {
+        Self::new(base_url, api_key, ExternalArrApiBucket::SonarrV4)
+    }
+
+    pub fn for_radarr_v6(base_url: String, api_key: String) -> Self {
+        Self::new(base_url, api_key, ExternalArrApiBucket::RadarrV6)
+    }
+
+    fn new(base_url: String, api_key: String, api_bucket: ExternalArrApiBucket) -> Self {
         let http_client = external_arr_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
+            api_bucket,
+            api_prefix: Arc::new(RwLock::new(None)),
+            system_status: Arc::new(RwLock::new(None)),
         }
     }
 
     /// Test connectivity and return (app_name, version).
     pub async fn test_connection(&self) -> AppResult<(String, String)> {
-        let json = self.api_get("system/status").await?;
-        let app_name = json
-            .get("appName")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        let version = json
-            .get("version")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        Ok((app_name, version))
+        let status = self.ensure_supported_system_status().await?;
+        Ok((status.app_name, status.version))
     }
 
     /// Fetch root folders (media library paths).
@@ -316,6 +445,17 @@ impl ExternalArrClient {
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                     seasons,
+                    statistics: item
+                        .get("statistics")
+                        .and_then(Value::as_object)
+                        .map(|statistics| ArrSeriesStatistics {
+                            total_episode_count: value_i32(statistics.get("totalEpisodeCount"))
+                                .or_else(|| value_i32(statistics.get("episodeCount"))),
+                            monitored_episode_count: value_i32(
+                                statistics.get("monitoredEpisodeCount"),
+                            ),
+                        })
+                        .unwrap_or_default(),
                 })
             })
             .collect())
@@ -360,13 +500,92 @@ impl ExternalArrClient {
     }
 
     async fn api_get(&self, path: &str) -> AppResult<Value> {
-        let url = format!("{}/api/v3/{}", self.base_url, path);
+        self.ensure_supported_system_status().await?;
+        let api_prefix = self.ensure_supported_api_prefix().await?;
+        self.api_get_with_prefix(&api_prefix, path).await
+    }
+
+    async fn ensure_supported_system_status(&self) -> AppResult<ExternalArrSystemStatus> {
+        if let Some(status) = self.system_status.read().await.clone() {
+            return Ok(status);
+        }
+
+        let mut guard = self.system_status.write().await;
+        if let Some(status) = guard.clone() {
+            return Ok(status);
+        }
+
+        let api_prefix = self.ensure_supported_api_prefix().await?;
+        let json = self
+            .api_get_with_prefix(&api_prefix, "system/status")
+            .await?;
+        let status = ExternalArrSystemStatus {
+            app_name: json
+                .get("appName")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            version: json
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        };
+        self.api_bucket
+            .validate_status(&status.app_name, &status.version)?;
+        *guard = Some(status.clone());
+        Ok(status)
+    }
+
+    async fn ensure_supported_api_prefix(&self) -> AppResult<String> {
+        if let Some(api_prefix) = self.api_prefix.read().await.clone() {
+            return Ok(api_prefix);
+        }
+
+        let mut guard = self.api_prefix.write().await;
+        if let Some(api_prefix) = guard.clone() {
+            return Ok(api_prefix);
+        }
+
+        let api_info: ExternalArrApiInfo = self.api_get_unversioned("api").await?;
+        let api_prefix = api_info
+            .current
+            .trim()
+            .trim_matches('/')
+            .split('/')
+            .next_back()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        self.api_bucket.validate_api_prefix(&api_prefix)?;
+        *guard = Some(api_prefix.clone());
+        Ok(api_prefix)
+    }
+
+    async fn api_get_with_prefix(&self, api_prefix: &str, path: &str) -> AppResult<Value> {
+        let url = format!("{}/api/{}/{}", self.base_url, api_prefix, path);
+        self.request_json(&url, path).await
+    }
+
+    async fn api_get_unversioned<T>(&self, path: &str) -> AppResult<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
+        self.request_json(&url, path).await
+    }
+
+    async fn request_json<T>(&self, url: &str, path: &str) -> AppResult<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
         let response = self
             .outbound_http
             .send(self.request_policy(path), || {
                 self.outbound_http
                     .client()
-                    .get(&url)
+                    .get(url)
                     .header("X-Api-Key", &self.api_key)
             })
             .await
@@ -406,8 +625,15 @@ impl ExternalArrClient {
 
     fn request_policy(&self, path: &str) -> RequestPolicy {
         RequestPolicy::safe_read(
-            format!("external_arr:{}", self.base_url),
-            format!("external_arr:{path}"),
+            format!(
+                "external_arr:{}:{}",
+                self.api_bucket.request_namespace(),
+                self.base_url
+            ),
+            format!(
+                "external_arr:{}:{path}",
+                self.api_bucket.request_namespace()
+            ),
         )
         .with_max_retries(2)
         .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
@@ -499,7 +725,7 @@ fn known_native_indexer_provider_type(
     }
 }
 
-/// Sonarr v4+ / Radarr v5+ replace sensitive field values with this placeholder
+/// Supported Sonarr v4+ / Radarr v6+ builds replace sensitive field values with this placeholder
 /// in all API responses (both list and individual GET endpoints).
 const ARR_MASKED_VALUE: &str = "********";
 
@@ -551,6 +777,12 @@ fn value_str_or_number(value: Option<&Value>) -> Option<String> {
     })
 }
 
+fn value_i32(value: Option<&Value>) -> Option<i32> {
+    value
+        .and_then(Value::as_i64)
+        .and_then(|value| value.try_into().ok())
+}
+
 fn flatten_arr_fields(fields: &[Value]) -> HashMap<String, Value> {
     fields
         .iter()
@@ -569,9 +801,33 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        ArrIndexer, detect_prowlarr_proxy_indexer, map_download_client_type,
+        ArrIndexer, ExternalArrApiBucket, detect_prowlarr_proxy_indexer, map_download_client_type,
         map_indexer_provider_type,
     };
+
+    #[test]
+    fn sonarr_v4_bucket_accepts_sonarr_v4_status() {
+        ExternalArrApiBucket::SonarrV4
+            .validate_status("Sonarr", "4.0.17.2952")
+            .expect("supported version");
+    }
+
+    #[test]
+    fn sonarr_v4_bucket_accepts_supported_api_prefixes() {
+        ExternalArrApiBucket::SonarrV4
+            .validate_api_prefix("v3")
+            .expect("legacy Sonarr v4 api prefix should be supported");
+        ExternalArrApiBucket::SonarrV4
+            .validate_api_prefix("v5")
+            .expect("newer Sonarr api prefix should be supported");
+    }
+
+    #[test]
+    fn radarr_v6_bucket_accepts_matching_major_version() {
+        ExternalArrApiBucket::RadarrV6
+            .validate_status("Radarr", "6.0.1.0")
+            .expect("supported version");
+    }
 
     #[test]
     fn map_download_client_type_recognizes_qbittorrent_variants() {

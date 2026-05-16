@@ -11,6 +11,30 @@ use std::{
     sync::OnceLock,
 };
 
+#[derive(Debug, serde::Deserialize)]
+struct RuleInputContract {
+    sections: Vec<RuleInputContractSection>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RuleInputContractSection {
+    path: String,
+    fields: Vec<RuleInputContractField>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RuleInputContractField {
+    field: String,
+    #[serde(rename = "type")]
+    field_type: String,
+}
+
+#[derive(Debug)]
+struct RuleInputCatalog {
+    known_paths: HashSet<String>,
+    array_container_paths: HashSet<String>,
+}
+
 /// Result of validating a user-authored Rego rule.
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
@@ -84,170 +108,55 @@ impl InputReferencePath {
     }
 }
 
-fn known_rule_input_paths() -> &'static HashSet<&'static str> {
-    static PATHS: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    PATHS.get_or_init(|| {
-        HashSet::from([
-            "input",
-            "input.release",
-            "input.release.raw_title",
-            "input.release.quality",
-            "input.release.source",
-            "input.release.video_codec",
-            "input.release.audio",
-            "input.release.audio_codecs",
-            "input.release.audio_codecs[]",
-            "input.release.audio_channels",
-            "input.release.languages_audio",
-            "input.release.languages_audio[]",
-            "input.release.languages_subtitles",
-            "input.release.languages_subtitles[]",
-            "input.release.is_dual_audio",
-            "input.release.is_atmos",
-            "input.release.is_dolby_vision",
-            "input.release.detected_hdr",
-            "input.release.is_remux",
-            "input.release.is_bd_disk",
-            "input.release.is_proper_upload",
-            "input.release.is_repack",
-            "input.release.is_ai_enhanced",
-            "input.release.is_hardcoded_subs",
-            "input.release.is_password_protected",
-            "input.release.is_hdr10plus",
-            "input.release.is_hlg",
-            "input.release.is_10bit",
-            "input.release.is_uncensored",
-            "input.release.is_dubs_only",
-            "input.release.has_release_group",
-            "input.release.is_obfuscated",
-            "input.release.is_retagged",
-            "input.release.streaming_service",
-            "input.release.edition",
-            "input.release.anime_version",
-            "input.release.episode_release_type",
-            "input.release.is_season_pack",
-            "input.release.is_multi_episode",
-            "input.release.release_group",
-            "input.release.year",
-            "input.release.parse_confidence",
-            "input.release.size_bytes",
-            "input.release.age_days",
-            "input.release.thumbs_up",
-            "input.release.thumbs_down",
-            "input.release.extra",
-            "input.profile",
-            "input.profile.id",
-            "input.profile.name",
-            "input.profile.quality_tiers",
-            "input.profile.quality_tiers[]",
-            "input.profile.archival_quality",
-            "input.profile.allow_unknown_quality",
-            "input.profile.source_allowlist",
-            "input.profile.source_allowlist[]",
-            "input.profile.source_blocklist",
-            "input.profile.source_blocklist[]",
-            "input.profile.video_codec_allowlist",
-            "input.profile.video_codec_allowlist[]",
-            "input.profile.video_codec_blocklist",
-            "input.profile.video_codec_blocklist[]",
-            "input.profile.audio_codec_allowlist",
-            "input.profile.audio_codec_allowlist[]",
-            "input.profile.audio_codec_blocklist",
-            "input.profile.audio_codec_blocklist[]",
-            "input.profile.atmos_preferred",
-            "input.profile.dolby_vision_allowed",
-            "input.profile.detected_hdr_allowed",
-            "input.profile.prefer_remux",
-            "input.profile.allow_bd_disk",
-            "input.profile.allow_upgrades",
-            "input.profile.prefer_dual_audio",
-            "input.profile.required_audio_languages",
-            "input.profile.required_audio_languages[]",
-            "input.context",
-            "input.context.title_id",
-            "input.context.library_name",
-            "input.context.media_type",
-            "input.context.category",
-            "input.context.tags",
-            "input.context.tags[]",
-            "input.context.has_existing_file",
-            "input.context.existing_score",
-            "input.context.search_mode",
-            "input.context.runtime_minutes",
-            "input.context.is_anime",
-            "input.context.is_filler",
-            "input.builtin_score",
-            "input.builtin_score.total",
-            "input.builtin_score.blocked",
-            "input.builtin_score.codes",
-            "input.builtin_score.codes[]",
-            "input.file",
-            "input.file.video_codec",
-            "input.file.video_width",
-            "input.file.video_height",
-            "input.file.video_bitrate_kbps",
-            "input.file.video_bit_depth",
-            "input.file.video_hdr_format",
-            "input.file.dovi_profile",
-            "input.file.dovi_bl_compat_id",
-            "input.file.video_frame_rate",
-            "input.file.video_profile",
-            "input.file.audio_codec",
-            "input.file.audio_profile",
-            "input.file.audio_channels",
-            "input.file.audio_bitrate_kbps",
-            "input.file.audio_languages",
-            "input.file.audio_languages[]",
-            "input.file.audio_streams",
-            "input.file.audio_streams[]",
-            "input.file.audio_streams[].codec",
-            "input.file.audio_streams[].profile",
-            "input.file.audio_streams[].channels",
-            "input.file.audio_streams[].language",
-            "input.file.audio_streams[].bitrate_kbps",
-            "input.file.subtitle_languages",
-            "input.file.subtitle_languages[]",
-            "input.file.subtitle_codecs",
-            "input.file.subtitle_codecs[]",
-            "input.file.subtitle_streams",
-            "input.file.subtitle_streams[]",
-            "input.file.subtitle_streams[].codec",
-            "input.file.subtitle_streams[].language",
-            "input.file.subtitle_streams[].name",
-            "input.file.subtitle_streams[].forced",
-            "input.file.subtitle_streams[].default",
-            "input.file.has_multiaudio",
-            "input.file.duration_seconds",
-            "input.file.num_chapters",
-            "input.file.container_format",
-        ])
+fn rule_input_catalog() -> &'static RuleInputCatalog {
+    static CATALOG: OnceLock<RuleInputCatalog> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let contract: RuleInputContract =
+            serde_json::from_str(include_str!("../rule-input-contract.json"))
+                .expect("rule-input-contract.json should be valid");
+
+        let mut known_paths = HashSet::new();
+        let mut array_container_paths = HashSet::new();
+        known_paths.insert("input".to_string());
+
+        for section in contract.sections {
+            known_paths.insert(section.path.clone());
+            if let Some(base_path) = section.path.strip_suffix("[]") {
+                array_container_paths.insert(base_path.to_string());
+            }
+
+            for field in section.fields {
+                let field_path = format!("{}.{}", section.path, field.field);
+                known_paths.insert(field_path.clone());
+                if field.field_type.ends_with("[]") {
+                    array_container_paths.insert(field_path.clone());
+                    known_paths.insert(format!("{field_path}[]"));
+                }
+            }
+        }
+
+        RuleInputCatalog {
+            known_paths,
+            array_container_paths,
+        }
     })
 }
 
-fn array_container_paths() -> &'static HashSet<&'static str> {
-    static PATHS: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    PATHS.get_or_init(|| {
-        HashSet::from([
-            "input.release.audio_codecs",
-            "input.release.languages_audio",
-            "input.release.languages_subtitles",
-            "input.profile.quality_tiers",
-            "input.profile.source_allowlist",
-            "input.profile.source_blocklist",
-            "input.profile.video_codec_allowlist",
-            "input.profile.video_codec_blocklist",
-            "input.profile.audio_codec_allowlist",
-            "input.profile.audio_codec_blocklist",
-            "input.profile.required_audio_languages",
-            "input.context.tags",
-            "input.builtin_score.codes",
-            "input.file.audio_languages",
-            "input.file.audio_streams",
-            "input.file.subtitle_languages",
-            "input.file.subtitle_codecs",
-            "input.file.subtitle_streams",
-        ])
-    })
+fn unknown_rule_input_path_message(path: &str) -> String {
+    match path {
+        "input.release.password_protected" => format!(
+            "Unknown rule input path '{path}'. Use a documented field from the Rules Context Reference. For password-protected releases, use 'input.release.is_password_protected'."
+        ),
+        _ => format!(
+            "Unknown rule input path '{path}'. Use one of the documented input fields from the Rules Context Reference."
+        ),
+    }
+}
+
+fn unsupported_dynamic_input_path_message(path: &str) -> String {
+    format!(
+        "Unsupported dynamic rule input path '{path}'. Use documented field access, documented array indexing, or input.release.extra.<key>."
+    )
 }
 
 fn collect_unknown_input_path_errors(
@@ -450,21 +359,24 @@ fn extract_input_reference_path(expr: &Expr) -> Option<InputReferencePath> {
             path.display.push_str(index.span().text());
             path.display.push(']');
 
-            match index.as_ref() {
-                Expr::String { value, .. } | Expr::RawString { value, .. } => {
-                    let current_path = path.normalized();
-                    if array_container_paths().contains(current_path.as_str()) {
-                        path.components.push(InputPathComponent::ArrayItem);
-                    } else {
+            let current_path = path.normalized();
+            if rule_input_catalog()
+                .array_container_paths
+                .contains(current_path.as_str())
+            {
+                path.components.push(InputPathComponent::ArrayItem);
+            } else {
+                match index.as_ref() {
+                    Expr::String { value, .. } | Expr::RawString { value, .. } => {
                         let field_name = value.as_string().ok()?.to_string();
                         path.components.push(InputPathComponent::Field(field_name));
                     }
+                    Expr::Number { .. } => path.components.push(InputPathComponent::ArrayItem),
+                    Expr::Var { span, .. } if span.text() == "_" => {
+                        path.components.push(InputPathComponent::ArrayItem);
+                    }
+                    _ => path.components.push(InputPathComponent::Dynamic),
                 }
-                Expr::Number { .. } => path.components.push(InputPathComponent::ArrayItem),
-                Expr::Var { span, .. } if span.text() == "_" => {
-                    path.components.push(InputPathComponent::ArrayItem);
-                }
-                _ => path.components.push(InputPathComponent::Dynamic),
             }
             Some(path)
         }
@@ -478,17 +390,17 @@ fn validate_input_reference_path(path: &InputReferencePath) -> Option<String> {
     }
 
     if path.has_dynamic_component() {
-        return Some(format!(
-            "unsupported dynamic rule input path: {}",
-            path.display
-        ));
+        return Some(unsupported_dynamic_input_path_message(&path.display));
     }
 
     let normalized = path.normalized();
-    if known_rule_input_paths().contains(normalized.as_str()) {
+    if rule_input_catalog()
+        .known_paths
+        .contains(normalized.as_str())
+    {
         None
     } else {
-        Some(format!("unknown rule input path: {normalized}"))
+        Some(unknown_rule_input_path_message(&normalized))
     }
 }
 
@@ -894,6 +806,10 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("input.release.password_protected"))
         );
+        assert!(result.errors.iter().any(|error| {
+            error.contains("input.release.is_password_protected")
+                && error.contains("Rules Context Reference")
+        }));
     }
 
     #[test]
@@ -914,6 +830,12 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("input.context.missing_flag"))
         );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("Rules Context Reference"))
+        );
     }
 
     #[test]
@@ -928,6 +850,41 @@ mod tests {
         "#;
         let result = validate_user_rule(source, "release_extra_field").unwrap();
         assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn array_variable_index_access_is_allowed() {
+        let source = r#"
+            package scryer.rules.user.array_variable_index
+            import rego.v1
+
+            score_entry["eng_bonus"] := 100 if {
+                some i
+                input.file.audio_languages[i] == "eng"
+            }
+        "#;
+        let result = validate_user_rule(source, "array_variable_index").unwrap();
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn unsupported_dynamic_non_extra_path_rejected_with_guidance() {
+        let source = r#"
+            package scryer.rules.user.dynamic_context_lookup
+            import rego.v1
+
+            score_entry["bad"] := 100 if {
+                some key
+                input.context[key]
+            }
+        "#;
+        let result = validate_user_rule(source, "dynamic_context_lookup").unwrap();
+        assert!(!result.valid);
+        assert!(result.errors.iter().any(|error| {
+            error.contains("Unsupported dynamic rule input path")
+                && error.contains("documented array indexing")
+                && error.contains("input.release.extra.<key>")
+        }));
     }
 
     #[test]

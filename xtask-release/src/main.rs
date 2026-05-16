@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
 use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
@@ -2401,8 +2401,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         ok("Nothing to commit");
     }
 
-    prune_scryer_release_history(ctx)?;
-
+    // Stable release artifacts and GHCR tags are intentionally retained.
     step(format!("Creating signed tag {tag_name}"));
     let mut tag = ctx.release_command_in("git", &ctx.repo_root);
     tag.args(["tag", "-s", &tag_name, "-m", &format!("Release {tag_name}")]);
@@ -2864,163 +2863,6 @@ fn run_scryer_nextest_validation(ctx: &TaskContext, prefix: &'static str) -> Res
     nextest.arg("--locked");
     run_streaming(&mut nextest, prefix)?;
     prefixed_ok(prefix, "Rust tests passed");
-    Ok(())
-}
-
-fn prune_scryer_release_history(ctx: &TaskContext) -> Result<()> {
-    const KEEP_RELEASES: usize = 4;
-    step(format!(
-        "Pruning old releases and artifacts (keeping {KEEP_RELEASES} most recent)"
-    ));
-
-    let mut list = ctx.command_in("gh", &ctx.repo_root);
-    list.args([
-        "release",
-        "list",
-        "--limit",
-        "100",
-        "--json",
-        "tagName,publishedAt",
-    ]);
-    let mut releases: Vec<GhRelease> = serde_json::from_str(&run_capture(&mut list)?)?;
-    releases.sort_by_key(|release| release.published_at.clone());
-    releases.reverse();
-
-    let releases_to_delete = releases
-        .iter()
-        .skip(KEEP_RELEASES)
-        .map(|release| release.tag_name.clone())
-        .collect::<Vec<_>>();
-    if releases_to_delete.is_empty() {
-        ok("No old releases to prune");
-    } else {
-        for tag in &releases_to_delete {
-            println!("   deleting release: {tag}");
-            let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
-            delete.args(["release", "delete", tag, "--yes"]);
-            if let Err(error) = run_checked(&mut delete) {
-                warn(format!("failed to delete release {tag}: {error:#}"));
-            }
-        }
-        ok(format!(
-            "Deleted {} old release(s)",
-            releases_to_delete.len()
-        ));
-    }
-
-    let keep_tags = releases
-        .iter()
-        .take(KEEP_RELEASES)
-        .map(|release| release.tag_name.clone())
-        .collect::<Vec<_>>();
-
-    let mut artifacts = ctx.command_in("gh", &ctx.repo_root);
-    artifacts.args([
-        "api",
-        "repos/{owner}/{repo}/actions/artifacts",
-        "--paginate",
-        "--jq",
-        ".artifacts[] | [(.id | tostring), .workflow_run.head_branch] | @tsv",
-    ]);
-    let artifact_rows = run_capture(&mut artifacts)?;
-    let mut deleted = 0;
-    for row in artifact_rows.lines() {
-        let mut fields = row.split('\t');
-        let Some(id) = fields.next() else {
-            continue;
-        };
-        let Some(branch) = fields.next() else {
-            continue;
-        };
-        if keep_tags.iter().any(|tag| tag == branch) {
-            continue;
-        }
-        let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
-        delete.args([
-            "api",
-            "-X",
-            "DELETE",
-            &format!("repos/{{owner}}/{{repo}}/actions/artifacts/{id}"),
-        ]);
-        let _ = run_checked(&mut delete);
-        deleted += 1;
-    }
-    if deleted == 0 {
-        ok("No old artifacts to prune");
-    } else {
-        ok(format!("Deleted {deleted} old artifact(s)"));
-    }
-
-    let mut package_check = ctx.release_command_in("gh", &ctx.repo_root);
-    package_check.args(["api", "orgs/scryer-media/packages/container/scryer"]);
-    if !run_status(&mut package_check)?.success() {
-        ok("No GHCR package found — skipping Docker cleanup");
-        return Ok(());
-    }
-
-    let mut versions = ctx.command_in("gh", &ctx.repo_root);
-    versions.args([
-        "api",
-        "orgs/scryer-media/packages/container/scryer/versions",
-        "--paginate",
-        "--jq",
-        ".[] | [(.id | tostring), .created_at, ((.metadata.container.tags | length) | tostring)] | @tsv",
-    ]);
-    let versions = run_capture(&mut versions)?;
-    let mut rows = Vec::new();
-    for row in versions.lines() {
-        let mut fields = row.split('\t');
-        let Some(id) = fields.next() else {
-            continue;
-        };
-        let Some(created_at) = fields.next() else {
-            continue;
-        };
-        let Some(tag_count) = fields.next() else {
-            continue;
-        };
-        rows.push((
-            id.to_string(),
-            DateTime::parse_from_rfc3339(created_at)?.with_timezone(&Utc),
-            tag_count.parse::<usize>()?,
-        ));
-    }
-    let mut tagged = rows
-        .iter()
-        .filter(|(_, _, tag_count)| *tag_count > 0)
-        .map(|(_, created_at, _)| *created_at)
-        .collect::<Vec<_>>();
-    tagged.sort_by_key(|created_at| *created_at);
-    tagged.reverse();
-    if tagged.len() < KEEP_RELEASES {
-        ok(format!(
-            "Fewer than {KEEP_RELEASES} Docker releases — nothing to cull"
-        ));
-        return Ok(());
-    }
-    let cutoff = tagged[KEEP_RELEASES - 1] - Duration::seconds(60);
-    let mut deleted_versions = 0;
-    for (id, created_at, _) in rows {
-        if created_at >= cutoff {
-            continue;
-        }
-        let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
-        delete.args([
-            "api",
-            "--method",
-            "DELETE",
-            &format!("orgs/scryer-media/packages/container/scryer/versions/{id}"),
-        ]);
-        let _ = run_checked(&mut delete);
-        deleted_versions += 1;
-    }
-    if deleted_versions == 0 {
-        ok("No old Docker images to cull");
-    } else {
-        ok(format!(
-            "Deleted {deleted_versions} old Docker image version(s) from ghcr.io/scryer-media/scryer"
-        ));
-    }
     Ok(())
 }
 

@@ -974,6 +974,7 @@ impl MockDomainEventRepo {
 #[derive(Default)]
 struct MockExternalImportMonitorSnapshotRepo {
     snapshots: Arc<Mutex<Vec<ExternalImportMonitorSnapshot>>>,
+    chunks: Arc<Mutex<Vec<ExternalImportMonitorSnapshotChunk>>>,
 }
 
 #[async_trait]
@@ -986,6 +987,119 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
         snapshots.retain(|existing| existing.facet != snapshot.facet);
         snapshots.push(snapshot.clone());
         Ok(())
+    }
+
+    async fn append_external_import_monitor_snapshot_chunk(
+        &self,
+        chunk: &ExternalImportMonitorSnapshotChunk,
+    ) -> AppResult<()> {
+        self.chunks.lock().await.push(chunk.clone());
+        Ok(())
+    }
+
+    async fn list_external_import_monitor_snapshot_chunks(
+        &self,
+        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+        entry_kind: ExternalImportMonitorSnapshotEntryKind,
+    ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
+        let chunks = self.chunks.lock().await;
+        let mut matched = chunks
+            .iter()
+            .filter(|chunk| {
+                chunk.scope_kind == scope_kind
+                    && chunk.scope_key == scope_key
+                    && chunk.entry_kind == entry_kind
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        matched.sort_by_key(|chunk| chunk.chunk_index);
+        Ok(matched)
+    }
+
+    async fn list_external_import_monitor_snapshot_chunk_batch(
+        &self,
+        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+        entry_kind: ExternalImportMonitorSnapshotEntryKind,
+        after_chunk_index: Option<i32>,
+        limit: i32,
+    ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
+        let chunks = self.chunks.lock().await;
+        let mut matched = chunks
+            .iter()
+            .filter(|chunk| {
+                chunk.scope_kind == scope_kind
+                    && chunk.scope_key == scope_key
+                    && chunk.entry_kind == entry_kind
+                    && after_chunk_index
+                        .map(|after| chunk.chunk_index > after)
+                        .unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        matched.sort_by_key(|chunk| chunk.chunk_index);
+        matched.truncate(limit.max(0) as usize);
+        Ok(matched)
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks(
+        &self,
+        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        scope_key: &str,
+    ) -> AppResult<()> {
+        let mut chunks = self.chunks.lock().await;
+        chunks.retain(|chunk| !(chunk.scope_kind == scope_kind && chunk.scope_key == scope_key));
+        Ok(())
+    }
+
+    async fn copy_external_import_monitor_snapshot_chunks(
+        &self,
+        from_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        from_scope_key: &str,
+        to_scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
+        to_scope_key: &str,
+        entry_kind: ExternalImportMonitorSnapshotEntryKind,
+    ) -> AppResult<(i32, i32, i64)> {
+        let source_chunks = {
+            let chunks = self.chunks.lock().await;
+            chunks
+                .iter()
+                .filter(|chunk| {
+                    chunk.scope_kind == from_scope_kind
+                        && chunk.scope_key == from_scope_key
+                        && chunk.entry_kind == entry_kind
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+
+        let mut copied_count = 0_i32;
+        let mut max_chunk_index = 0_i32;
+        let mut total_bytes = 0_i64;
+        let mut chunks = self.chunks.lock().await;
+        chunks.retain(|chunk| {
+            !(chunk.scope_kind == to_scope_kind
+                && chunk.scope_key == to_scope_key
+                && chunk.entry_kind == entry_kind)
+        });
+        for chunk in source_chunks {
+            copied_count = copied_count.saturating_add(1);
+            max_chunk_index = max_chunk_index.max(chunk.chunk_index);
+            total_bytes = total_bytes.saturating_add(chunk.byte_len);
+            chunks.push(ExternalImportMonitorSnapshotChunk {
+                scope_kind: to_scope_kind.clone(),
+                scope_key: to_scope_key.to_string(),
+                entry_kind: entry_kind.clone(),
+                chunk_index: chunk.chunk_index,
+                payload_ndjson: chunk.payload_ndjson,
+                entry_count: chunk.entry_count,
+                byte_len: chunk.byte_len,
+                created_at: chunk.created_at,
+            });
+        }
+
+        Ok((copied_count, max_chunk_index, total_bytes))
     }
 
     async fn get_external_import_monitor_snapshot(
@@ -1511,6 +1625,21 @@ impl ShowRepository for MockShowRepo {
         Ok(())
     }
 
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        let wanted = collection_ids.iter().cloned().collect::<HashSet<_>>();
+        let mut collections = self.collections.lock().await;
+        for collection in collections.iter_mut() {
+            if wanted.contains(&collection.id) {
+                collection.monitored = monitored;
+            }
+        }
+        Ok(())
+    }
+
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
         let mut collections = self.collections.lock().await;
         let index = collections
@@ -1629,6 +1758,21 @@ impl ShowRepository for MockShowRepo {
         }
 
         Ok(item.clone())
+    }
+
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        let wanted = episode_ids.iter().cloned().collect::<HashSet<_>>();
+        let mut episodes = self.episodes.lock().await;
+        for episode in episodes.iter_mut() {
+            if wanted.contains(&episode.id) {
+                episode.monitored = monitored;
+            }
+        }
+        Ok(())
     }
 
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
@@ -17466,7 +17610,6 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
         MediaFacet::Series,
         ExternalImportMonitorSnapshotPayload::Series {
             entries: vec![ExternalImportMonitorSeriesEntry {
-                root_path: "/media/series".to_string(),
                 tvdb_id: Some("4242".to_string()),
                 monitored: false,
                 seasons: vec![],
@@ -17484,7 +17627,7 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
 
     assert!(applied);
     let events = title_updated_events(&app, &title.id).await;
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 1);
     assert!(events.iter().all(|event| event.actor_user_id.is_none()));
 
     app.save_external_import_monitor_snapshot(
@@ -17492,7 +17635,6 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
         MediaFacet::Series,
         ExternalImportMonitorSnapshotPayload::Series {
             entries: vec![ExternalImportMonitorSeriesEntry {
-                root_path: "/media/series".to_string(),
                 tvdb_id: Some("4242".to_string()),
                 monitored: false,
                 seasons: vec![],
@@ -17510,7 +17652,7 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
 
     assert!(reapplied);
     let replay_events = title_updated_events(&app, &title.id).await;
-    assert_eq!(replay_events.len(), 3);
+    assert_eq!(replay_events.len(), 1);
     assert!(
         replay_events
             .iter()
@@ -17571,29 +17713,32 @@ async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
         )
         .await
         .expect("create collection");
-    app.create_episode(
-        &user,
-        title.id.clone(),
-        Some(collection.id),
-        "standard".into(),
-        Some("1".into()),
-        Some("1".into()),
-        Some("Pilot".into()),
-        Some("Pilot".into()),
-        None,
-        Some(1_200),
-        false,
-        false,
-    )
-    .await
-    .expect("create episode");
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+    app.set_episode_monitored(&user, &episode.id, false)
+        .await
+        .expect("disable episode");
 
     app.save_external_import_monitor_snapshot(
         &user,
         MediaFacet::Series,
         ExternalImportMonitorSnapshotPayload::Series {
             entries: vec![ExternalImportMonitorSeriesEntry {
-                root_path: "/media/series".to_string(),
                 tvdb_id: Some("5150".to_string()),
                 monitored: true,
                 seasons: vec![ExternalImportMonitorSeasonEntry {
@@ -17619,6 +17764,232 @@ async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
         .expect("apply monitor snapshot");
 
     assert!(applied);
+    let upserts_after_apply = wanted_items.upsert_call_count();
+    assert_eq!(upserts_after_apply - upserts_before_apply, 1);
+}
+
+#[tokio::test]
+async fn external_import_monitor_snapshot_emits_title_updated_for_child_only_changes() {
+    let (app, user) = bootstrap();
+    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
+    let app = app.with_test_overrides(|services| {
+        services.with_external_import_monitor_snapshots(snapshots.clone())
+    });
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Snapshot Child Activity Fixture".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "6262".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+    app.set_episode_monitored(&user, &episode.id, false)
+        .await
+        .expect("disable episode");
+
+    let events_before_apply = title_updated_events(&app, &title.id).await.len();
+
+    app.save_external_import_monitor_snapshot(
+        &user,
+        MediaFacet::Series,
+        ExternalImportMonitorSnapshotPayload::Series {
+            entries: vec![ExternalImportMonitorSeriesEntry {
+                tvdb_id: Some("6262".to_string()),
+                monitored: true,
+                seasons: vec![ExternalImportMonitorSeasonEntry {
+                    season_number: 1,
+                    monitored: true,
+                }],
+                episodes: vec![ExternalImportMonitorEpisodeEntry {
+                    tvdb_id: None,
+                    season_number: 1,
+                    episode_number: 1,
+                    monitored: true,
+                }],
+            }],
+        },
+    )
+    .await
+    .expect("save monitor snapshot");
+
+    let applied = app
+        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
+        .await
+        .expect("apply monitor snapshot");
+
+    assert!(applied);
+    let updated_episode = app
+        .get_episode(&user, &episode.id)
+        .await
+        .expect("get episode")
+        .expect("episode exists");
+    assert!(updated_episode.monitored);
+
+    let events_after_apply = title_updated_events(&app, &title.id).await;
+    assert_eq!(events_after_apply.len(), events_before_apply + 1);
+    assert!(
+        events_after_apply
+            .last()
+            .expect("latest event")
+            .actor_user_id
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn external_import_monitor_snapshot_enables_collection_for_monitored_episode_override() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+    );
+    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
+    let app = app.with_test_overrides(|services| {
+        services.with_external_import_monitor_snapshots(snapshots.clone())
+    });
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Snapshot Episode Override Fixture".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "7373".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Series)
+        .await;
+
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id.clone()),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+    app.set_collection_monitored(&user, &collection.id, false)
+        .await
+        .expect("disable collection");
+
+    app.save_external_import_monitor_snapshot(
+        &user,
+        MediaFacet::Series,
+        ExternalImportMonitorSnapshotPayload::Series {
+            entries: vec![ExternalImportMonitorSeriesEntry {
+                tvdb_id: Some("7373".to_string()),
+                monitored: false,
+                seasons: vec![],
+                episodes: vec![ExternalImportMonitorEpisodeEntry {
+                    tvdb_id: None,
+                    season_number: 1,
+                    episode_number: 1,
+                    monitored: true,
+                }],
+            }],
+        },
+    )
+    .await
+    .expect("save monitor snapshot");
+
+    let upserts_before_apply = wanted_items.upsert_call_count();
+    let applied = app
+        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
+        .await
+        .expect("apply monitor snapshot");
+
+    assert!(applied);
+    let updated_collection = app
+        .get_collection(&user, &collection.id)
+        .await
+        .expect("get collection")
+        .expect("collection exists");
+    let updated_episode = app
+        .get_episode(&user, &episode.id)
+        .await
+        .expect("get episode")
+        .expect("episode exists");
+    assert!(updated_collection.monitored);
+    assert!(updated_episode.monitored);
+
     let upserts_after_apply = wanted_items.upsert_call_count();
     assert_eq!(upserts_after_apply - upserts_before_apply, 1);
 }

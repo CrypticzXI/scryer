@@ -1,6 +1,6 @@
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, CreateTitleOutcome, EpisodeUpdate,
-    PendingTitleHydration, PrimaryCollectionSummary, ScopedExternalId, TitleMetadataUpdate,
+    PendingTitleHydration, PrimaryCollectionSummary, TitleMetadataUpdate,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -490,56 +490,6 @@ fn normalized_external_ids(external_ids: &[ExternalId]) -> Vec<(String, String)>
     out
 }
 
-fn normalized_scoped_external_id(
-    scoped_id: &ScopedExternalId,
-) -> Option<(String, String, String, String)> {
-    let scope_id = scoped_id.scope_id.trim();
-    let source = scoped_id.source.trim().to_ascii_lowercase();
-    let external_id = scoped_id.external_id.trim();
-    if scope_id.is_empty() || source.is_empty() || external_id.is_empty() {
-        return None;
-    }
-
-    let source_scope = scoped_id
-        .source_scope
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_string();
-
-    Some((
-        scope_id.to_string(),
-        source,
-        external_id.to_string(),
-        source_scope,
-    ))
-}
-
-fn row_to_scoped_external_id(row: &sqlx::sqlite::SqliteRow) -> AppResult<ScopedExternalId> {
-    let source_scope: String = row
-        .try_get("source_scope")
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    Ok(ScopedExternalId {
-        scope_id: row
-            .try_get("scope_id")
-            .map_err(|err| AppError::Repository(err.to_string()))?,
-        source: row
-            .try_get("source")
-            .map_err(|err| AppError::Repository(err.to_string()))?,
-        external_id: row
-            .try_get("external_id")
-            .map_err(|err| AppError::Repository(err.to_string()))?,
-        provenance: row
-            .try_get("provenance")
-            .map_err(|err| AppError::Repository(err.to_string()))?,
-        source_scope: if source_scope.trim().is_empty() {
-            None
-        } else {
-            Some(source_scope)
-        },
-    })
-}
-
 async fn list_existing_title_ids_for_external_ids_tx(
     tx: &mut Transaction<'_, Sqlite>,
     library_id: &str,
@@ -777,78 +727,6 @@ fn row_to_title(
     ))
 }
 
-pub(crate) async fn list_collections_for_title_query(
-    pool: &SqlitePool,
-    title_id: &str,
-) -> AppResult<Vec<Collection>> {
-    let rows = sqlx::query(
-        "SELECT id, title_id, collection_type, collection_index, label, ordered_path,
-                narrative_order, first_episode_number, last_episode_number,
-                interstitial_tvdb_id, interstitial_name, interstitial_slug, interstitial_year,
-                interstitial_content_status, interstitial_overview, interstitial_poster_url,
-                interstitial_language, interstitial_runtime_minutes, interstitial_sort_title,
-                interstitial_imdb_id, interstitial_genres_json, interstitial_studio,
-                interstitial_digital_release_date, interstitial_association_confidence,
-                interstitial_continuity_status, interstitial_movie_form, interstitial_confidence,
-                interstitial_signal_summary, interstitial_placement, interstitial_movie_tmdb_id,
-                interstitial_movie_mal_id, interstitial_movie_anidb_id, interstitial_season_episode,
-                special_movies_json, monitored, created_at
-         FROM collections WHERE title_id = ? ORDER BY collection_index ASC, id ASC",
-    )
-    .bind(title_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(row_to_collection(&row)?);
-    }
-    Ok(out)
-}
-
-pub(crate) async fn list_collections_for_titles_query(
-    pool: &SqlitePool,
-    title_ids: &[String],
-) -> AppResult<Vec<Collection>> {
-    if title_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let placeholders: String = title_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT id, title_id, collection_type, collection_index, label, ordered_path,
-                narrative_order, first_episode_number, last_episode_number,
-                interstitial_tvdb_id, interstitial_name, interstitial_slug, interstitial_year,
-                interstitial_content_status, interstitial_overview, interstitial_poster_url,
-                interstitial_language, interstitial_runtime_minutes, interstitial_sort_title,
-                interstitial_imdb_id, interstitial_genres_json, interstitial_studio,
-                interstitial_digital_release_date, interstitial_association_confidence,
-                interstitial_continuity_status, interstitial_movie_form, interstitial_confidence,
-                interstitial_signal_summary, interstitial_placement, interstitial_movie_tmdb_id,
-                interstitial_movie_mal_id, interstitial_movie_anidb_id, interstitial_season_episode,
-                special_movies_json, monitored, created_at
-         FROM collections WHERE title_id IN ({placeholders})
-         ORDER BY title_id ASC, collection_index ASC, id ASC"
-    );
-
-    let mut query = sqlx::query(&sql);
-    for title_id in title_ids {
-        query = query.bind(title_id);
-    }
-
-    let rows = query
-        .fetch_all(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(row_to_collection(&row)?);
-    }
-    Ok(out)
-}
-
 pub(crate) async fn list_primary_collection_summaries_query(
     pool: &SqlitePool,
     title_ids: &[String],
@@ -940,35 +818,6 @@ fn summary_candidate_sort_key(candidate: &SummaryCandidate) -> (String, bool, bo
     )
 }
 
-pub(crate) async fn get_collection_by_id_query(
-    pool: &SqlitePool,
-    collection_id: &str,
-) -> AppResult<Option<Collection>> {
-    let row = sqlx::query(
-        "SELECT id, title_id, collection_type, collection_index, label, ordered_path,
-                narrative_order, first_episode_number, last_episode_number,
-                interstitial_tvdb_id, interstitial_name, interstitial_slug, interstitial_year,
-                interstitial_content_status, interstitial_overview, interstitial_poster_url,
-                interstitial_language, interstitial_runtime_minutes, interstitial_sort_title,
-                interstitial_imdb_id, interstitial_genres_json, interstitial_studio,
-                interstitial_digital_release_date, interstitial_association_confidence,
-                interstitial_continuity_status, interstitial_movie_form, interstitial_confidence,
-                interstitial_signal_summary, interstitial_placement, interstitial_movie_tmdb_id,
-                interstitial_movie_mal_id, interstitial_movie_anidb_id, interstitial_season_episode,
-                special_movies_json, monitored, created_at
-         FROM collections WHERE id = ?",
-    )
-    .bind(collection_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    match row {
-        Some(row) => Ok(Some(row_to_collection(&row)?)),
-        None => Ok(None),
-    }
-}
-
 async fn get_collection_by_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     collection_id: &str,
@@ -989,38 +838,6 @@ async fn get_collection_by_id_tx(
     )
     .bind(collection_id)
     .fetch_optional(&mut **tx)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    match row {
-        Some(row) => Ok(Some(row_to_collection(&row)?)),
-        None => Ok(None),
-    }
-}
-
-pub(crate) async fn get_collection_by_ordered_path_query(
-    pool: &SqlitePool,
-    ordered_path: &str,
-) -> AppResult<Option<Collection>> {
-    let row = sqlx::query(
-        "SELECT id, title_id, collection_type, collection_index, label, ordered_path,
-                narrative_order, first_episode_number, last_episode_number,
-                interstitial_tvdb_id, interstitial_name, interstitial_slug, interstitial_year,
-                interstitial_content_status, interstitial_overview, interstitial_poster_url,
-                interstitial_language, interstitial_runtime_minutes, interstitial_sort_title,
-                interstitial_imdb_id, interstitial_genres_json, interstitial_studio,
-                interstitial_digital_release_date, interstitial_association_confidence,
-                interstitial_continuity_status, interstitial_movie_form, interstitial_confidence,
-                interstitial_signal_summary, interstitial_placement, interstitial_movie_tmdb_id,
-                interstitial_movie_mal_id, interstitial_movie_anidb_id, interstitial_season_episode,
-                special_movies_json, monitored, created_at
-         FROM collections
-         WHERE ordered_path = ?
-         ORDER BY id ASC
-         LIMIT 1",
-    )
-    .bind(ordered_path)
-    .fetch_optional(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
@@ -1280,159 +1097,6 @@ pub(crate) async fn update_collection_specials_movies_query(
     Ok(collection)
 }
 
-pub(crate) async fn list_episodes_for_collection_query(
-    pool: &SqlitePool,
-    collection_id: &str,
-) -> AppResult<Vec<Episode>> {
-    let rows = sqlx::query(
-        "SELECT id, title_id, collection_id, episode_type, episode_number, season_number,
-                episode_label, title, air_date, duration_seconds, has_multi_audio,
-                has_subtitle, is_filler, is_recap, absolute_number, overview, tvdb_id, monitored, created_at
-         FROM episodes WHERE collection_id = ? ORDER BY episode_number ASC, id ASC",
-    )
-    .bind(collection_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(row_to_episode(&row)?);
-    }
-    Ok(out)
-}
-
-pub(crate) async fn list_episodes_for_title_query(
-    pool: &SqlitePool,
-    title_id: &str,
-) -> AppResult<Vec<Episode>> {
-    let rows = sqlx::query(
-        "SELECT id, title_id, collection_id, episode_type, episode_number, season_number,
-                episode_label, title, air_date, duration_seconds, has_multi_audio,
-                has_subtitle, is_filler, is_recap, absolute_number, overview, tvdb_id, monitored, created_at
-         FROM episodes WHERE title_id = ? ORDER BY season_number ASC, episode_number ASC, id ASC",
-    )
-    .bind(title_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(row_to_episode(&row)?);
-    }
-    Ok(out)
-}
-
-pub(crate) async fn list_collection_external_ids_query(
-    pool: &SqlitePool,
-    collection_id: &str,
-) -> AppResult<Vec<ScopedExternalId>> {
-    let rows = sqlx::query(
-        "SELECT collection_id AS scope_id, source, external_id, provenance, source_scope
-         FROM collection_external_ids
-         WHERE collection_id = ?
-         ORDER BY source ASC, external_id ASC, source_scope ASC",
-    )
-    .bind(collection_id)
-    .fetch_all(pool)
-    .await
-    .map_err(repository_error_from_sqlx)?;
-
-    rows.iter().map(row_to_scoped_external_id).collect()
-}
-
-pub(crate) async fn list_episode_external_ids_query(
-    pool: &SqlitePool,
-    episode_id: &str,
-) -> AppResult<Vec<ScopedExternalId>> {
-    let rows = sqlx::query(
-        "SELECT episode_id AS scope_id, source, external_id, provenance, source_scope
-         FROM episode_external_ids
-         WHERE episode_id = ?
-         ORDER BY source ASC, external_id ASC, source_scope ASC",
-    )
-    .bind(episode_id)
-    .fetch_all(pool)
-    .await
-    .map_err(repository_error_from_sqlx)?;
-
-    rows.iter().map(row_to_scoped_external_id).collect()
-}
-
-pub(crate) async fn replace_anibridge_scoped_external_ids_for_title_query(
-    pool: &SqlitePool,
-    title_id: &str,
-    collection_ids: &[ScopedExternalId],
-    episode_ids: &[ScopedExternalId],
-) -> AppResult<()> {
-    let mut tx = pool.begin().await.map_err(repository_error_from_sqlx)?;
-
-    sqlx::query(
-        "DELETE FROM collection_external_ids WHERE title_id = ? AND provenance = 'anibridge'",
-    )
-    .bind(title_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(repository_error_from_sqlx)?;
-    sqlx::query("DELETE FROM episode_external_ids WHERE title_id = ? AND provenance = 'anibridge'")
-        .bind(title_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(repository_error_from_sqlx)?;
-
-    let now = chrono::Utc::now().to_rfc3339();
-    for scoped_id in collection_ids {
-        let Some((collection_id, source, external_id, source_scope)) =
-            normalized_scoped_external_id(scoped_id)
-        else {
-            continue;
-        };
-        sqlx::query(
-            "INSERT OR IGNORE INTO collection_external_ids
-             (id, title_id, collection_id, source, external_id, provenance, source_scope, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'anibridge', ?, ?, ?)",
-        )
-        .bind(scryer_domain::Id::new().0)
-        .bind(title_id)
-        .bind(collection_id)
-        .bind(source)
-        .bind(external_id)
-        .bind(source_scope)
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await
-        .map_err(repository_error_from_sqlx)?;
-    }
-
-    for scoped_id in episode_ids {
-        let Some((episode_id, source, external_id, source_scope)) =
-            normalized_scoped_external_id(scoped_id)
-        else {
-            continue;
-        };
-        sqlx::query(
-            "INSERT OR IGNORE INTO episode_external_ids
-             (id, title_id, episode_id, source, external_id, provenance, source_scope, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'anibridge', ?, ?, ?)",
-        )
-        .bind(scryer_domain::Id::new().0)
-        .bind(title_id)
-        .bind(episode_id)
-        .bind(source)
-        .bind(external_id)
-        .bind(source_scope)
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await
-        .map_err(repository_error_from_sqlx)?;
-    }
-
-    tx.commit().await.map_err(repository_error_from_sqlx)
-}
-
 pub(crate) async fn list_anime_title_ids_missing_anibridge_scoped_external_ids_query(
     pool: &SqlitePool,
     limit: usize,
@@ -1503,27 +1167,6 @@ pub(crate) async fn list_anime_title_ids_missing_title_anidb_external_ids_query(
         );
     }
     Ok(ids)
-}
-
-pub(crate) async fn get_episode_by_id_query(
-    pool: &SqlitePool,
-    episode_id: &str,
-) -> AppResult<Option<Episode>> {
-    let row = sqlx::query(
-        "SELECT id, title_id, collection_id, episode_type, episode_number, season_number,
-                episode_label, title, air_date, duration_seconds, has_multi_audio,
-                has_subtitle, is_filler, is_recap, absolute_number, overview, tvdb_id, monitored, created_at
-         FROM episodes WHERE id = ?",
-    )
-    .bind(episode_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    match row {
-        Some(row) => Ok(Some(row_to_episode(&row)?)),
-        None => Ok(None),
-    }
 }
 
 async fn get_episode_by_id_tx(
@@ -1719,63 +1362,6 @@ pub(crate) async fn create_episode_query(
     Ok(episode.clone())
 }
 
-pub(crate) async fn delete_collection_query(
-    pool: &SqlitePool,
-    collection_id: &str,
-) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM collections WHERE id = ?")
-        .bind(collection_id)
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("collection {}", collection_id)));
-    }
-
-    Ok(())
-}
-
-pub(crate) async fn delete_collections_for_title_query(
-    pool: &SqlitePool,
-    title_id: &str,
-) -> AppResult<()> {
-    sqlx::query("DELETE FROM collections WHERE title_id = ?")
-        .bind(title_id)
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    Ok(())
-}
-
-pub(crate) async fn delete_episode_query(pool: &SqlitePool, episode_id: &str) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM episodes WHERE id = ?")
-        .bind(episode_id)
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("episode {}", episode_id)));
-    }
-
-    Ok(())
-}
-
-pub(crate) async fn delete_episodes_for_title_query(
-    pool: &SqlitePool,
-    title_id: &str,
-) -> AppResult<()> {
-    sqlx::query("DELETE FROM episodes WHERE title_id = ?")
-        .bind(title_id)
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    Ok(())
-}
-
 pub(crate) async fn find_episode_by_title_and_numbers_query(
     pool: &SqlitePool,
     title_id: &str,
@@ -1797,33 +1383,6 @@ pub(crate) async fn find_episode_by_title_and_numbers_query(
     .bind(title_id)
     .bind(season_number)
     .bind(episode_number)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    match row {
-        Some(row) => Ok(Some(row_to_episode(&row)?)),
-        None => Ok(None),
-    }
-}
-
-pub(crate) async fn find_episode_by_title_and_absolute_number_query(
-    pool: &SqlitePool,
-    title_id: &str,
-    absolute_number: &str,
-) -> AppResult<Option<Episode>> {
-    let row = sqlx::query(
-        "SELECT e.id, e.title_id, e.collection_id, e.episode_type, e.episode_number,
-                e.season_number, e.episode_label, e.title, e.air_date, e.duration_seconds,
-                e.has_multi_audio, e.has_subtitle, e.is_filler, e.is_recap, e.absolute_number,
-                e.overview, e.tvdb_id, e.monitored, e.created_at
-         FROM episodes e
-         WHERE e.title_id = ?
-           AND e.absolute_number = ?
-         LIMIT 1",
-    )
-    .bind(title_id)
-    .bind(absolute_number)
     .fetch_optional(pool)
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
@@ -1876,34 +1435,6 @@ pub(crate) async fn list_episodes_in_date_range_query(
         });
     }
     Ok(out)
-}
-
-pub(crate) async fn update_interstitial_season_episode_query(
-    pool: &SqlitePool,
-    collection_id: &str,
-    season_episode: Option<&str>,
-) -> AppResult<()> {
-    sqlx::query("UPDATE collections SET interstitial_season_episode = ? WHERE id = ?")
-        .bind(season_episode)
-        .bind(collection_id)
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    Ok(())
-}
-
-pub(crate) async fn set_collection_episodes_monitored_query(
-    pool: &SqlitePool,
-    collection_id: &str,
-    monitored: bool,
-) -> AppResult<()> {
-    sqlx::query("UPDATE episodes SET monitored = ? WHERE collection_id = ?")
-        .bind(if monitored { 1_i64 } else { 0_i64 })
-        .bind(collection_id)
-        .execute(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    Ok(())
 }
 
 fn row_to_collection(row: &sqlx::sqlite::SqliteRow) -> AppResult<Collection> {

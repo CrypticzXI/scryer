@@ -313,7 +313,12 @@ pub use quality_profile::{
     default_quality_profile_1080p_for_search, default_quality_profile_for_search,
     evaluate_against_profile, parse_profile_catalog_from_json,
 };
-pub use services::{AppServices, AppServicesBuilder, AppUseCase, ProviderCatalogFamily};
+pub use services::{
+    AppServices, AppServicesBuilder, AppUseCase, ExternalImportMonitorWarmupBeginResult,
+    ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupPhaseProgress,
+    ExternalImportMonitorWarmupProgressSnapshot, ExternalImportMonitorWarmupStatus,
+    ProviderCatalogFamily,
+};
 pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
     ANIME_MONITOR_SPECIALS_KEY, ANIME_PATH_KEY, ANIME_RECAP_POLICY_KEY, ANIME_ROOT_FOLDERS_KEY,
@@ -367,9 +372,11 @@ pub use types::{
     WantedSearchTransition, WantedStatus, WantedStatusCount,
 };
 pub use types::{
-    ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
-    ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
-    ExternalImportMonitorSnapshot, ExternalImportMonitorSnapshotPayload,
+    ExternalImportMonitorChunkedPayload, ExternalImportMonitorEpisodeEntry,
+    ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
+    ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshot,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotChunkScopeKind,
+    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotPayload,
 };
 pub use types::{
     IndexerSearchResponse, IndexerSearchResult, ReleaseCandidateProvenance,

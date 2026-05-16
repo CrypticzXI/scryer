@@ -75,6 +75,8 @@ Scryer ships as a single Rust binary with:
 Scryer publishes a first-party container image:
 
 - `ghcr.io/scryer-media/scryer:latest` auto-selects the best embedded Linux payload for the host CPU while keeping portable plus optimized Linux payloads in one image
+- `ghcr.io/scryer-media/scryer:<minor>-latest` tracks a stable release line without moving to the next breaking branch, for example `15-latest` for the `0.15.x` line
+- `ghcr.io/scryer-media/scryer:pr-<number>-rc` and `ghcr.io/scryer-media/scryer:pr-<number>-<shortsha>` are PR candidate images; they never move `latest`
 
 The Docker contract is intentionally small:
 

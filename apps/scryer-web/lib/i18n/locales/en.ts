@@ -2205,17 +2205,19 @@ const en: LocaleDictionary = {
   "setup.skipSetup": "Skip setup entirely",
   "setup.skipping": "Skipping…",
 
-  "setup.connectTitle": "Connect to Sonarr & Radarr",
+  "setup.connectTitle": "Connect to Sonarr, Radarr & Prowlarr",
   "setup.connectDescription":
-    "Enter the URL and API key for your Sonarr and/or Radarr instance. At least one is required.",
+    "Enter the URL and API key for your Sonarr, Radarr, and/or Prowlarr instance. At least one is required.",
   "setup.sonarrUrl": "Sonarr URL",
   "setup.sonarrApiKey": "Sonarr API Key",
   "setup.radarrUrl": "Radarr URL",
   "setup.radarrApiKey": "Radarr API Key",
+  "setup.prowlarrUrl": "Prowlarr URL",
+  "setup.prowlarrApiKey": "Prowlarr API Key",
   "setup.findApiKey": "Find your API key",
   "setup.connectAndScan": "Connect & Scan",
   "setup.connectError": "Connection failed",
-  "setup.atLeastOneRequired": "Enter at least one of Sonarr or Radarr.",
+  "setup.atLeastOneRequired": "Enter at least one of Sonarr, Radarr, or Prowlarr.",
   "setup.urlPlaceholder": "http://localhost:8989",
 
   "setup.reviewTitle": "Review & Import",
@@ -2230,6 +2232,7 @@ const en: LocaleDictionary = {
   "setup.notSupported": "Not supported",
   "setup.fromSonarr": "Sonarr",
   "setup.fromRadarr": "Radarr",
+  "setup.fromProwlarr": "Prowlarr",
   "setup.importSelected": "Import Selected",
   "setup.importing": "Importing…",
   "setup.noneSelected": "Select at least one item to import.",
@@ -2240,11 +2243,28 @@ const en: LocaleDictionary = {
     "Do you use custom formats? Many of those features are covered in the Persona section. More customization is available after setup.",
   "setup.summaryImportedClients": "Download clients imported",
   "setup.summaryImportedIndexers": "Indexers imported",
+  "setup.monitorWarmupTitle": "Preparing monitored-state import",
+  "setup.monitorWarmupDescription":
+    "Scryer is pulling monitored status in the background so the final import step is faster.",
+  "setup.monitorWarmupQueued": "Waiting for progress details…",
+  "setup.monitorWarmupLoadingMovies": "Loading movies",
+  "setup.monitorWarmupLoadingSeries": "Loading series",
+  "setup.monitorWarmupLoadingEpisodes": "Loading episodes",
+  "setup.monitorWarmupBuildingSnapshot": "Building snapshot",
+  "setup.monitorWarmupReady": "Ready",
+  "setup.monitorWarmupFailed":
+    "Background preparation hit an error. Scryer will retry when you start the import.",
+  "setup.monitorWarmupCanceled":
+    "Background preparation was canceled. Scryer will restart it if needed.",
+  "setup.importFinalizeFailed":
+    "Scryer could not finish preparing monitored state for this import.",
   "setup.apiKeyMasked":
     "Sonarr/Radarr hides this API key. Enter it manually to continue importing:",
   "setup.apiKeyPlaceholder": "Paste API key…",
   "setup.apiKeyHelpLink": "Find it in SABnzbd → Config → General",
   "setup.prowlarrManagedChildren": "Managed indexers",
+  "setup.prowlarrManagedChildrenReadOnly":
+    "Managed indexers are shown for review only and are created by the Prowlarr parent sync.",
   "setup.prowlarrApiKeyMasked":
     "Sonarr/Radarr hides the Prowlarr API key, or the detected keys conflict. Enter the Prowlarr API key from Settings → General:",
   "setup.prowlarrApiKeyRequired":

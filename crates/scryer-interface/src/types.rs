@@ -1372,6 +1372,7 @@ pub enum JobKeyValue {
     Housekeeping,
     HealthChecks,
     AutoBackup,
+    ProwlarrSync,
     WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
@@ -1393,6 +1394,7 @@ impl JobKeyValue {
             Self::Housekeeping => AppJobKey::Housekeeping,
             Self::HealthChecks => AppJobKey::HealthChecks,
             Self::AutoBackup => AppJobKey::AutoBackup,
+            Self::ProwlarrSync => AppJobKey::ProwlarrSync,
             Self::WantedSync => AppJobKey::WantedSync,
             Self::PendingReleaseProcessing => AppJobKey::PendingReleaseProcessing,
             Self::StagedNzbPrune => AppJobKey::StagedNzbPrune,
@@ -1414,6 +1416,7 @@ impl JobKeyValue {
             AppJobKey::Housekeeping => Self::Housekeeping,
             AppJobKey::HealthChecks => Self::HealthChecks,
             AppJobKey::AutoBackup => Self::AutoBackup,
+            AppJobKey::ProwlarrSync => Self::ProwlarrSync,
             AppJobKey::WantedSync => Self::WantedSync,
             AppJobKey::PendingReleaseProcessing => Self::PendingReleaseProcessing,
             AppJobKey::StagedNzbPrune => Self::StagedNzbPrune,
@@ -3858,7 +3861,7 @@ pub struct DirectoryEntryPayload {
 
 // ── External Import (Sonarr/Radarr) ────────────────────────────────────────
 
-#[derive(InputObject)]
+#[derive(InputObject, Clone)]
 pub struct ExternalImportConnectionInput {
     pub base_url: String,
     pub api_key: String,
@@ -3868,6 +3871,7 @@ pub struct ExternalImportConnectionInput {
 pub struct PreviewExternalImportInput {
     pub sonarr: Option<ExternalImportConnectionInput>,
     pub radarr: Option<ExternalImportConnectionInput>,
+    pub prowlarr: Option<ExternalImportConnectionInput>,
 }
 
 /// API key supplied by the user for a download client whose key was masked by
@@ -3891,6 +3895,7 @@ pub struct IndexerApiKeyOverrideInput {
 pub struct ExecuteExternalImportInput {
     pub sonarr: Option<ExternalImportConnectionInput>,
     pub radarr: Option<ExternalImportConnectionInput>,
+    pub prowlarr: Option<ExternalImportConnectionInput>,
     pub selected_movies_paths: Vec<String>,
     pub selected_series_paths: Vec<String>,
     pub selected_anime_paths: Vec<String>,
@@ -3904,12 +3909,86 @@ pub struct ExecuteExternalImportInput {
     pub indexer_api_key_overrides: Vec<IndexerApiKeyOverrideInput>,
 }
 
+#[derive(InputObject)]
+pub struct StartExternalImportMonitorWarmupInput {
+    pub sonarr: Option<ExternalImportConnectionInput>,
+    pub radarr: Option<ExternalImportConnectionInput>,
+}
+
+#[derive(InputObject)]
+pub struct CancelExternalImportMonitorWarmupInput {
+    pub session_id: String,
+}
+
+#[derive(InputObject)]
+pub struct FinalizeExternalImportInput {
+    pub sonarr: Option<ExternalImportConnectionInput>,
+    pub radarr: Option<ExternalImportConnectionInput>,
+    pub monitor_warmup_session_id: Option<String>,
+    pub selected_movies_paths: Vec<String>,
+    pub selected_series_paths: Vec<String>,
+    pub selected_anime_paths: Vec<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalImportMonitorWarmupStatusValue {
+    Queued,
+    Running,
+    Completed,
+    Canceled,
+    Failed,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalImportMonitorWarmupPhaseValue {
+    LoadingMovies,
+    LoadingSeries,
+    LoadingEpisodes,
+    BuildingSnapshot,
+    Ready,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportMonitorWarmupProgressPayload {
+    pub session_id: String,
+    pub status: ExternalImportMonitorWarmupStatusValue,
+    pub phase: ExternalImportMonitorWarmupPhaseValue,
+    pub started_at: String,
+    pub updated_at: String,
+    pub overall_total_known: bool,
+    pub overall_progress: LibraryScanPhaseProgressPayload,
+    pub movies_total_known: bool,
+    pub movies_progress: LibraryScanPhaseProgressPayload,
+    pub series_total_known: bool,
+    pub series_progress: LibraryScanPhaseProgressPayload,
+    pub episode_fetch_total_known: bool,
+    pub episode_fetch_expected_total: Option<i32>,
+    pub episode_fetch_expected_monitored_total: Option<i32>,
+    pub episode_fetch_progress: LibraryScanPhaseProgressPayload,
+    pub snapshot_build_total_known: bool,
+    pub snapshot_build_progress: LibraryScanPhaseProgressPayload,
+    pub matched_movie_count: i32,
+    pub matched_series_count: i32,
+    pub unmatched_movie_count: i32,
+    pub unmatched_series_count: i32,
+    pub ambiguous_movie_count: i32,
+    pub ambiguous_series_count: i32,
+    pub error_message: Option<String>,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct ExternalImportPreviewPayload {
     pub sonarr_connected: bool,
     pub radarr_connected: bool,
+    pub prowlarr_connected: bool,
     pub sonarr_version: Option<String>,
     pub radarr_version: Option<String>,
+    pub prowlarr_version: Option<String>,
+    pub sonarr_error: Option<String>,
+    pub radarr_error: Option<String>,
+    pub prowlarr_error: Option<String>,
     pub root_folders: Vec<ExternalImportRootFolderPayload>,
     pub download_clients: Vec<ExternalImportDownloadClientPayload>,
     pub indexers: Vec<ExternalImportIndexerPayload>,

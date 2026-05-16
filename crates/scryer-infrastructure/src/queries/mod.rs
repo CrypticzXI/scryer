@@ -15,6 +15,8 @@ pub mod post_processing_script;
 pub mod quality;
 pub mod rule_set;
 pub mod settings;
+pub mod show;
+pub mod sql_runtime;
 pub mod subtitle;
 pub mod subtitle_provider;
 pub mod title;

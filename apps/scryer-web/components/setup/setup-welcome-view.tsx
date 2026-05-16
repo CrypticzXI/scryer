@@ -29,7 +29,7 @@ export function SetupWelcomeView({
         </h1>
         <p className="text-muted-foreground">{t("setup.welcomeDescription")}</p>
       </div>
-      <div className="grid w-full max-w-3xl gap-4 md:grid-cols-3">
+      <div className="grid w-full max-w-5xl gap-4 xl:grid-cols-3">
         <Card
           className="cursor-pointer transition-colors hover:border-primary"
           onClick={onFreshSetup}

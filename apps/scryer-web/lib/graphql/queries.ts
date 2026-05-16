@@ -1709,6 +1709,43 @@ export const pluginInstallProgressSubscription = `subscription PluginInstallProg
   }
 }`;
 
+const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
+    sessionId
+    status
+    phase
+    startedAt
+    updatedAt
+    overallTotalKnown
+    overallProgress { total completed failed }
+    moviesTotalKnown
+    moviesProgress { total completed failed }
+    seriesTotalKnown
+    seriesProgress { total completed failed }
+    episodeFetchTotalKnown
+    episodeFetchExpectedTotal
+    episodeFetchExpectedMonitoredTotal
+    episodeFetchProgress { total completed failed }
+    snapshotBuildTotalKnown
+    snapshotBuildProgress { total completed failed }
+    matchedMovieCount
+    matchedSeriesCount
+    unmatchedMovieCount
+    unmatchedSeriesCount
+    ambiguousMovieCount
+    ambiguousSeriesCount
+    errorMessage
+`;
+
+export const externalImportMonitorWarmupStatusQuery = `query ExternalImportMonitorWarmupStatus($sessionId: String!) {
+  externalImportMonitorWarmupStatus(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+export const externalImportMonitorWarmupProgressSubscription = `subscription ExternalImportMonitorWarmupProgress($sessionId: String!) {
+  externalImportMonitorWarmupProgress(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
 export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
 }`;

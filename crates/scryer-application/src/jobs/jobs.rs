@@ -645,6 +645,35 @@ impl AppUseCase {
                 };
                 Ok(JobExecutionOutcome::from_library_scan(&summary))
             }
+            JobKey::ProwlarrSync => {
+                let actor = match actor {
+                    Some(actor) => actor,
+                    None => self.find_or_create_default_user().await?,
+                };
+                let (synced_count, failures) = self.sync_enabled_prowlarr_indexers(&actor).await?;
+                if failures.is_empty() {
+                    Ok(JobExecutionOutcome::new(
+                        Some(format!("Synced {synced_count} enabled Prowlarr parent(s)")),
+                        serde_json::to_string(&CountSummary {
+                            count: synced_count,
+                        })
+                        .ok(),
+                    ))
+                } else {
+                    Ok(JobExecutionOutcome::warning(
+                        Some(format!(
+                            "Synced {synced_count} enabled Prowlarr parent(s); {} failed",
+                            failures.len()
+                        )),
+                        serde_json::to_string(&json!({
+                            "syncedCount": synced_count,
+                            "failedCount": failures.len(),
+                            "failures": failures,
+                        }))
+                        .ok(),
+                    ))
+                }
+            }
             JobKey::RssSync => {
                 let report = self.run_scheduled_rss_sync().await?;
                 Ok(JobExecutionOutcome::new(
