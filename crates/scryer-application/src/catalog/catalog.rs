@@ -3449,6 +3449,8 @@ impl AppUseCase {
         }
 
         let mut touched_title_ids = HashSet::new();
+        let mut processed_chunk_count = 0i32;
+        let mut processed_entry_count = 0i32;
         let mut after_chunk_index = None;
         loop {
             let chunks = self
@@ -3469,6 +3471,8 @@ impl AppUseCase {
 
             for chunk in chunks {
                 after_chunk_index = Some(chunk.chunk_index);
+                processed_chunk_count += 1;
+                processed_entry_count += chunk.entry_count;
                 for line in chunk
                     .payload_ndjson
                     .lines()
@@ -3489,6 +3493,17 @@ impl AppUseCase {
                     touched_title_ids.insert(updated.id);
                 }
             }
+        }
+
+        if processed_chunk_count != manifest.chunk_count || processed_entry_count != manifest.entry_count
+        {
+            return Err(AppError::Repository(format!(
+                "movie monitor snapshot chunk manifest mismatch: expected {} chunk(s) / {} entrie(s), loaded {} chunk(s) / {} entrie(s)",
+                manifest.chunk_count,
+                manifest.entry_count,
+                processed_chunk_count,
+                processed_entry_count
+            )));
         }
 
         for title_id in touched_title_ids {
@@ -3731,6 +3746,8 @@ impl AppUseCase {
 
         let mut touched_title_ids = HashSet::new();
         let mut title_ids_needing_activity = HashSet::<String>::new();
+        let mut processed_chunk_count = 0i32;
+        let mut processed_entry_count = 0i32;
         let mut after_chunk_index = None;
         loop {
             let chunks = self
@@ -3751,6 +3768,8 @@ impl AppUseCase {
 
             for chunk in chunks {
                 after_chunk_index = Some(chunk.chunk_index);
+                processed_chunk_count += 1;
+                processed_entry_count += chunk.entry_count;
                 for line in chunk
                     .payload_ndjson
                     .lines()
@@ -3775,6 +3794,18 @@ impl AppUseCase {
                     }
                 }
             }
+        }
+
+        if processed_chunk_count != manifest.chunk_count || processed_entry_count != manifest.entry_count
+        {
+            return Err(AppError::Repository(format!(
+                "{} monitor snapshot chunk manifest mismatch: expected {} chunk(s) / {} entrie(s), loaded {} chunk(s) / {} entrie(s)",
+                facet.as_str(),
+                manifest.chunk_count,
+                manifest.entry_count,
+                processed_chunk_count,
+                processed_entry_count
+            )));
         }
 
         for title_id in touched_title_ids {

@@ -3,15 +3,19 @@ use chrono::Utc;
 use scryer_application::{
     CollectionUpdate, DownloadClientConfigRepository, DownloadQueueCommandRepository,
     DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate,
-    ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
-    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
-    PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
-    ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
-    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
-    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
-    WantedItemsQuery, WantedStatus,
+    ExternalImportMonitorChunkedPayload, ExternalImportMonitorSnapshot,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotChunkScopeKind,
+    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotPayload,
+    ExternalImportMonitorSnapshotRepository, ImportRepository, InsertMediaFileInput,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
+    NotificationSubscriptionRepository, PendingImportStatus, PluginInstallationRepository,
+    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome,
+    ScopedExternalId, SettingsRepository, ShowRepository, SubmissionScope,
+    SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
+    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
+    WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -1423,6 +1427,10 @@ fn catalog_store(services: &SqliteServices) -> SqliteCatalogStore {
     SqliteCatalogStore::new(services)
 }
 
+fn workflow_store(services: &SqliteServices) -> SqliteWorkflowStore {
+    SqliteWorkflowStore::new(services)
+}
+
 fn library_state_store(services: &SqliteServices) -> SqliteLibraryStateStore {
     SqliteLibraryStateStore::new(services)
 }
@@ -1682,6 +1690,53 @@ fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_tab
             .any(|key| key == "0117_external_import_monitor_snapshot_chunks"),
         "embedded migration bundle is missing 0117_external_import_monitor_snapshot_chunks: {keys:?}"
     );
+}
+
+#[tokio::test]
+async fn chunked_external_import_snapshot_upsert_preserves_facet_chunks() {
+    let (services, _db) = temp_services("scryer_chunked_external_import_snapshot").await;
+    let workflow = workflow_store(&services);
+    let chunk = ExternalImportMonitorSnapshotChunk {
+        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind::Facet,
+        scope_key: MediaFacet::Movie.as_str().to_string(),
+        entry_kind: ExternalImportMonitorSnapshotEntryKind::Movie,
+        chunk_index: 0,
+        payload_ndjson: r#"{"monitored":true,"tmdb_id":"680","imdb_id":"tt0110912"}"#.to_string(),
+        entry_count: 1,
+        byte_len: 64,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    workflow
+        .append_external_import_monitor_snapshot_chunk(&chunk)
+        .await
+        .expect("facet chunk should append");
+
+    workflow
+        .upsert_external_import_monitor_snapshot(&ExternalImportMonitorSnapshot {
+            facet: MediaFacet::Movie,
+            payload: ExternalImportMonitorSnapshotPayload::Chunked {
+                manifest: ExternalImportMonitorChunkedPayload {
+                    entry_kind: ExternalImportMonitorSnapshotEntryKind::Movie,
+                    chunk_count: 1,
+                    entry_count: 1,
+                    total_bytes: 64,
+                },
+            },
+            created_at: Utc::now().to_rfc3339(),
+        })
+        .await
+        .expect("chunked snapshot manifest should upsert");
+
+    let chunks = workflow
+        .list_external_import_monitor_snapshot_chunks(
+            ExternalImportMonitorSnapshotChunkScopeKind::Facet,
+            MediaFacet::Movie.as_str(),
+            ExternalImportMonitorSnapshotEntryKind::Movie,
+        )
+        .await
+        .expect("facet chunks should remain readable");
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].payload_ndjson, chunk.payload_ndjson);
 }
 
 #[tokio::test]

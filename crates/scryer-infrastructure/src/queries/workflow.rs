@@ -3,8 +3,9 @@ use scryer_application::{
     AppError, AppResult, DownloadQueueCommandRecord as AppDownloadQueueCommandRecord,
     DownloadSourceIdentity, DownloadSubmission, ExternalImportMonitorSnapshot,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotChunkScopeKind,
-    ExternalImportMonitorSnapshotEntryKind, PendingReleaseStatus, ReleaseDownloadAttemptOutcome,
-    SubmissionScope, SuccessfulGrabCommit, WantedStatus,
+    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotPayload,
+    PendingReleaseStatus, ReleaseDownloadAttemptOutcome, SubmissionScope, SuccessfulGrabCommit,
+    WantedStatus,
 };
 use scryer_domain::{
     DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus,
@@ -323,6 +324,10 @@ pub(crate) async fn upsert_external_import_monitor_snapshot_query(
 ) -> AppResult<()> {
     let payload_json = serde_json::to_string(&snapshot.payload)
         .map_err(|err| AppError::Repository(err.to_string()))?;
+    let clear_facet_chunks = !matches!(
+        snapshot.payload,
+        ExternalImportMonitorSnapshotPayload::Chunked { .. }
+    );
 
     sqlx::query(
         "INSERT INTO external_import_monitor_snapshots (facet, payload_json, created_at)
@@ -338,15 +343,17 @@ pub(crate) async fn upsert_external_import_monitor_snapshot_query(
     .await
     .map_err(|err| AppError::Repository(err.to_string()))?;
 
-    sqlx::query(
-        "DELETE FROM external_import_monitor_snapshot_chunks
-         WHERE scope_kind = ? AND scope_key = ?",
-    )
-    .bind(ExternalImportMonitorSnapshotChunkScopeKind::Facet.as_str())
-    .bind(snapshot.facet.as_str())
-    .execute(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
+    if clear_facet_chunks {
+        sqlx::query(
+            "DELETE FROM external_import_monitor_snapshot_chunks
+             WHERE scope_kind = ? AND scope_key = ?",
+        )
+        .bind(ExternalImportMonitorSnapshotChunkScopeKind::Facet.as_str())
+        .bind(snapshot.facet.as_str())
+        .execute(pool)
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
+    }
 
     Ok(())
 }
