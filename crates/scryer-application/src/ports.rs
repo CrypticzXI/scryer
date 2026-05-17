@@ -310,11 +310,6 @@ pub trait UserRepository: Send + Sync {
     async fn create(&self, user: User) -> AppResult<User>;
     async fn list_all(&self) -> AppResult<Vec<User>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<User>>;
-    async fn update_entitlements(
-        &self,
-        id: &str,
-        entitlements: Vec<Entitlement>,
-    ) -> AppResult<User>;
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }

@@ -369,7 +369,9 @@ fn scryer_runtime_does_not_import_engine_datastore_implementations() {
     let forbidden = [
         "SqliteServices",
         "SqliteCatalogStore",
-        "SqliteConfigStore",
+        "IndexerConfigStore",
+        "DownloadClientConfigStore",
+        "SubtitleProviderConfigStore",
         "SqliteSettingsStore",
         "SqliteWorkflowStore",
         "SqliteReleaseStore",
@@ -378,7 +380,6 @@ fn scryer_runtime_does_not_import_engine_datastore_implementations() {
         "SqliteLibraryStateStore",
         "PostgresServices",
         "PostgresCatalogStore",
-        "PostgresConfigStore",
         "PostgresSettingsStore",
         "PostgresReleaseStore",
         "PostgresCustomizationStore",
@@ -757,38 +758,68 @@ fn backup_catalog_exports_foreign_key_parents() {
 #[test]
 fn config_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let sqlite_config =
+    let config_helper =
         production_rust_source(&root.join("crates/scryer-infrastructure/src/config_store.rs"));
-    let postgres_config = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/config_store.rs"),
+    let indexer_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/indexer_config_store.rs"),
     );
+    let download_client_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/download_client_config_store.rs"),
+    );
+    let subtitle_provider_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/subtitle_provider_config_store.rs"),
+    );
+    let stores = [
+        (
+            "IndexerConfigStore",
+            "IndexerConfigRepository",
+            indexer_store.as_str(),
+        ),
+        (
+            "DownloadClientConfigStore",
+            "DownloadClientConfigRepository",
+            download_client_store.as_str(),
+        ),
+        (
+            "SubtitleProviderConfigStore",
+            "SubtitleProviderConfigRepository",
+            subtitle_provider_store.as_str(),
+        ),
+    ];
 
-    assert!(
-        sqlite_config.contains("pub struct ConfigStore<S>"),
-        "config should expose one shared repository kernel"
-    );
-    assert!(
-        sqlite_config.contains("pub type SqliteConfigStore = ConfigStore<SqliteConfigSql>;"),
-        "SQLite config should be a primitive adapter over the shared kernel"
-    );
-    assert!(
-        postgres_config.contains("pub type PostgresConfigStore = ConfigStore<PostgresConfigSql>;"),
-        "PostgreSQL config should be a primitive adapter over the shared kernel"
-    );
+    for (store_name, trait_name, source) in stores {
+        assert!(
+            source.contains(&format!("pub struct {store_name}")),
+            "config repository must expose concrete store `{store_name}`"
+        );
+        assert!(
+            source.contains("datastore: StoreDatastore"),
+            "`{store_name}` must own StoreDatastore"
+        );
+        assert!(
+            source.contains(&format!("impl {trait_name} for {store_name}")),
+            "`{store_name}` must implement `{trait_name}` directly"
+        );
+        assert!(
+            source.contains("SqlRuntime::"),
+            "`{store_name}` must use the shared SQL runtime"
+        );
+    }
 
+    let combined = format!(
+        "{config_helper}\n{indexer_store}\n{download_client_store}\n{subtitle_provider_store}"
+    );
     for forbidden in [
-        "pub struct SqliteConfigStore",
-        "pub struct PostgresConfigStore",
-        "impl IndexerConfigRepository for SqliteConfigStore",
-        "impl IndexerConfigRepository for PostgresConfigStore",
-        "impl DownloadClientConfigRepository for SqliteConfigStore",
-        "impl DownloadClientConfigRepository for PostgresConfigStore",
-        "impl SubtitleProviderConfigRepository for SqliteConfigStore",
-        "impl SubtitleProviderConfigRepository for PostgresConfigStore",
+        "trait ConfigSql",
+        "ConfigStore<",
+        "SqliteConfigStore",
+        "PostgresConfigStore",
+        "SqliteConfigSql",
+        "PostgresConfigSql",
     ] {
         assert!(
-            !sqlite_config.contains(forbidden) && !postgres_config.contains(forbidden),
-            "config repository must not reintroduce paired full-store implementation `{forbidden}`"
+            !combined.contains(forbidden),
+            "config repository must not reintroduce `{forbidden}`"
         );
     }
 }
@@ -1036,6 +1067,47 @@ fn catalog_repository_has_been_evacuated_to_domain_stores() {
             "{file} should route through the shared datastore runtime"
         );
     }
+}
+
+#[test]
+fn legacy_entitlement_runtime_model_has_been_removed() {
+    let root = repo_root();
+    let checked_roots = [
+        root.join("crates/scryer-domain/src"),
+        root.join("crates/scryer-application/src"),
+        root.join("crates/scryer-infrastructure/src"),
+        root.join("crates/scryer-interface/src"),
+    ];
+    let forbidden = [
+        "Entitlement",
+        "users.entitlements",
+        "user_entitlements",
+        "update_entitlements",
+        "has_entitlement",
+        "all_entitlements",
+        "migrate_user_entitlements",
+    ];
+    let mut failures = Vec::new();
+
+    for checked_root in checked_roots {
+        for path in rust_files_under(&checked_root) {
+            let source = production_rust_source(&path);
+            for needle in forbidden {
+                if source.contains(needle) {
+                    failures.push(format!(
+                        "{} contains legacy entitlement runtime marker `{needle}`",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "legacy entitlement runtime model should stay removed:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]

@@ -22,9 +22,10 @@ use scryer_infrastructure::sqlite::{
     UserStore,
 };
 use scryer_infrastructure::{
-    FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient,
-    MultiIndexerSearchClient, NzbgetDownloadClient, SmgEnrollmentConfig, SqliteConfigStore,
-    SqliteLibraryStateStore, SqliteReleaseStore, SqliteServices, SqliteSettingsStore,
+    DownloadClientConfigStore, FileSystemLibraryScanner, FileSystemStagedNzbStore,
+    IndexerConfigStore, MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient,
+    SmgEnrollmentConfig, SqliteLibraryStateStore, SqliteReleaseStore, SqliteServices,
+    SqliteSettingsStore,
 };
 use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{ApiSchema, build_schema};
@@ -98,7 +99,9 @@ impl TestContext {
             staged_nzb_pipeline_limit.clone(),
         );
 
-        let config_store = Arc::new(SqliteConfigStore::new(&db));
+        let indexer_config_store = Arc::new(IndexerConfigStore::from_sqlite_services(&db));
+        let download_client_config_store =
+            Arc::new(DownloadClientConfigStore::from_sqlite_services(&db));
 
         // Build indexer client backed by built-in WASM plugins (using DynamicPluginProvider
         // so reload_plugins works in integration tests)
@@ -112,7 +115,7 @@ impl TestContext {
             scryer_infrastructure::InMemoryIndexerStatsTracker::new(None),
         );
         let indexer_client = MultiIndexerSearchClient::new(
-            config_store.clone(),
+            indexer_config_store.clone(),
             indexer_stats.clone(),
             plugin_provider.clone(),
         );
@@ -136,9 +139,9 @@ impl TestContext {
         let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(show_store.clone());
         let users: Arc<dyn scryer_application::UserRepository> = Arc::new(user_store.clone());
         let indexer_configs: Arc<dyn scryer_application::IndexerConfigRepository> =
-            config_store.clone();
+            indexer_config_store;
         let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
-            config_store.clone();
+            download_client_config_store;
         let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
         let settings: Arc<dyn scryer_application::SettingsRepository> = settings_store.clone();
         let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =

@@ -335,6 +335,27 @@ impl Default for UserAuthorization {
 }
 
 impl UserAuthorization {
+    pub fn full_admin() -> Self {
+        Self {
+            app: AppPermissionMask::from_permissions([
+                AppPermission::ManageUsers,
+                AppPermission::ManagePermissions,
+                AppPermission::ManageSystemSettings,
+                AppPermission::ManageCatalogSettings,
+            ]),
+            libraries: std::collections::HashMap::new(),
+            default_library: LibraryPermissionMask::from_permissions([
+                LibraryPermission::View,
+                LibraryPermission::ManageTitles,
+                LibraryPermission::ResolveImports,
+                LibraryPermission::ManageLibrary,
+                LibraryPermission::Request,
+                LibraryPermission::AutoApproveRequests,
+            ]),
+            loaded: true,
+        }
+    }
+
     pub fn library_permissions(&self, library_id: &str) -> LibraryPermissionMask {
         self.libraries
             .get(library_id)
@@ -2451,21 +2472,11 @@ pub struct RuleSet {
     pub managed_key: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum Entitlement {
-    ViewCatalog,
-    ManageTitle,
-    ManageUsers,
-    ManageConfig,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
     pub id: String,
     pub username: String,
     pub password_hash: Option<String>,
-    pub entitlements: Vec<Entitlement>,
     #[serde(default)]
     pub authorization: UserAuthorization,
 }
@@ -2476,18 +2487,8 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: None,
-            entitlements: Self::all_entitlements(),
-            authorization: UserAuthorization::default(),
+            authorization: UserAuthorization::full_admin(),
         }
-    }
-
-    pub fn all_entitlements() -> Vec<Entitlement> {
-        vec![
-            Entitlement::ViewCatalog,
-            Entitlement::ManageTitle,
-            Entitlement::ManageUsers,
-            Entitlement::ManageConfig,
-        ]
     }
 
     pub fn with_password_hash(
@@ -2498,50 +2499,8 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: Some(password_hash.into()),
-            entitlements: Self::all_entitlements(),
-            authorization: UserAuthorization::default(),
+            authorization: UserAuthorization::full_admin(),
         }
-    }
-
-    pub fn has_entitlement(&self, required: &Entitlement) -> bool {
-        if !self.authorization.loaded {
-            return self.entitlements.contains(required);
-        }
-
-        match required {
-            Entitlement::ViewCatalog => {
-                self.authorization
-                    .default_library
-                    .contains(LibraryPermissionMask::VIEW)
-                    || self
-                        .authorization
-                        .libraries
-                        .values()
-                        .any(|permissions| permissions.contains(LibraryPermissionMask::VIEW))
-            }
-            Entitlement::ManageTitle => {
-                self.authorization
-                    .default_library
-                    .contains(LibraryPermissionMask::MANAGE_TITLES)
-                    || self.authorization.libraries.values().any(|permissions| {
-                        permissions.contains(LibraryPermissionMask::MANAGE_TITLES)
-                    })
-            }
-            Entitlement::ManageUsers => self
-                .authorization
-                .app
-                .contains(AppPermissionMask::MANAGE_USERS),
-            Entitlement::ManageConfig => self
-                .authorization
-                .app
-                .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS),
-        }
-    }
-
-    pub fn has_all_entitlements(&self) -> bool {
-        let all = Self::all_entitlements();
-        all.iter()
-            .all(|entitlement| self.has_entitlement(entitlement))
     }
 }
 
@@ -2549,7 +2508,6 @@ impl User {
 pub struct NewUser {
     pub username: String,
     pub password: String,
-    pub entitlements: Vec<Entitlement>,
 }
 
 #[derive(Debug, Error)]
@@ -3264,10 +3222,20 @@ mod tests {
     }
 
     #[test]
-    fn admin_has_all_entitlements() {
+    fn admin_has_full_permission_masks() {
         let admin = User::new_admin("root");
-        assert!(admin.has_entitlement(&Entitlement::ManageConfig));
-        assert!(admin.has_entitlement(&Entitlement::ManageUsers));
+        assert!(
+            admin
+                .authorization
+                .app
+                .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS)
+        );
+        assert!(
+            admin
+                .authorization
+                .app
+                .contains(AppPermissionMask::MANAGE_USERS)
+        );
     }
 }
 

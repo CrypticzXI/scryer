@@ -1,13 +1,11 @@
 use scryer_application::{
-    AppError, AppResult, DownloadClientConfigUpdate, DownloadQueueCommandRecord,
-    DownloadSourceIdentity, ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate,
-    QualityProfile, ReleaseDownloadAttemptOutcome, SubtitleProviderConfigUpdate,
+    AppError, AppResult, DownloadQueueCommandRecord, DownloadSourceIdentity,
+    ExternalImportMonitorSnapshot, ImportArtifact, QualityProfile, ReleaseDownloadAttemptOutcome,
     SuccessfulGrabCommit, TitleImageReplacement, WantedItemsQuery, WorkflowOperationInfo,
 };
 use scryer_domain::{
-    BlocklistEntry, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus, ImportStatus,
-    ImportType, IndexerConfig, MediaFacet, NewDomainEvent, NotificationChannelConfig,
-    NotificationSubscription, SubtitleDownload, SubtitleProviderConfig,
+    BlocklistEntry, DomainEvent, DownloadQueueDeleteStatus, ImportStatus, ImportType, MediaFacet,
+    NewDomainEvent, NotificationChannelConfig, NotificationSubscription, SubtitleDownload,
 };
 use sqlx::ConnectOptions;
 use std::sync::{Arc, RwLock};
@@ -172,21 +170,6 @@ impl DbRuntime {
             Some(key);
 
         Ok(())
-    }
-
-    pub async fn migrate_legacy_indexer_config_sources(&self) -> AppResult<u64> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::MigrateLegacyIndexerConfigSources {
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
     pub async fn upsert_library_scan_unmatched_item(
@@ -1236,187 +1219,6 @@ impl DbRuntime {
                 provider_file_id: provider_file_id.to_string(),
                 language: language.to_string(),
                 reason: reason.map(str::to_string),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_indexer_config(&self, config: IndexerConfig) -> AppResult<IndexerConfig> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateIndexerConfig {
-                config,
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn touch_indexer_last_error(&self, provider_type: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::TouchIndexerLastError {
-                provider_type: provider_type.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_indexer_config(
-        &self,
-        update: IndexerConfigUpdate,
-    ) -> AppResult<IndexerConfig> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateIndexerConfig {
-                update,
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_indexer_config(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteIndexerConfig {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_download_client_config(
-        &self,
-        config: DownloadClientConfig,
-    ) -> AppResult<DownloadClientConfig> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateDownloadClientConfig {
-                config,
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_download_client_config(
-        &self,
-        update: DownloadClientConfigUpdate,
-    ) -> AppResult<DownloadClientConfig> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateDownloadClientConfig {
-                update,
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_download_client_config(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteDownloadClientConfig {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn reorder_download_client_configs(&self, ordered_ids: Vec<String>) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::ReorderDownloadClientConfigs {
-                ordered_ids,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_subtitle_provider_config(
-        &self,
-        config: SubtitleProviderConfig,
-    ) -> AppResult<SubtitleProviderConfig> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateSubtitleProviderConfig {
-                config,
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_subtitle_provider_config(
-        &self,
-        update: SubtitleProviderConfigUpdate,
-    ) -> AppResult<SubtitleProviderConfig> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateSubtitleProviderConfig {
-                update,
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_subtitle_provider_config(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteSubtitleProviderConfig {
-                id: id.to_string(),
                 reply: reply_tx,
             })
             .await

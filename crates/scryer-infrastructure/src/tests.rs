@@ -8,17 +8,16 @@ use scryer_application::{
     NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
     PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
     ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
-    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
-    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
-    WantedItemsQuery, WantedStatus,
+    SubmissionScope, SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate,
+    TitleImageBlob, TitleImageKind, TitleImageReplacement, TitleImageRepository,
+    TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
+    UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
-    ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
-    Entitlement, Episode, ExternalId, ImportType, InterstitialMovieMetadata, MediaFacet,
-    NotificationChannelConfig, NotificationEventType, NotificationSubscription,
-    SubtitleProviderConfig, TaggedAlias, Title,
+    ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus, Episode,
+    ExternalId, ImportType, InterstitialMovieMetadata, MediaFacet, NotificationChannelConfig,
+    NotificationEventType, NotificationSubscription, SubtitleProviderConfig, TaggedAlias, Title,
 };
 use sqlx::{Row, sqlite::SqlitePoolOptions};
 use std::collections::HashSet;
@@ -1231,7 +1230,7 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
 #[tokio::test]
 async fn serialized_writer_handles_download_client_reorder() {
     let (services, db) = temp_services("scryer_download_client_writer").await;
-    let store = SqliteConfigStore::new(&services);
+    let store = DownloadClientConfigStore::from_sqlite_services(&services);
     let now = Utc::now();
 
     let client_a = DownloadClientConfig {
@@ -2007,6 +2006,7 @@ async fn review_regression_download_submission_episode_links_cascade_with_parent
 #[tokio::test]
 async fn review_regression_subtitle_provider_update_sets_and_clears_disabled_until() {
     let (services, db) = single_connection_services("scryer_subtitle_disabled_until").await;
+    let store = SubtitleProviderConfigStore::from_sqlite_services(&services);
     let now = Utc::now();
     let config = SubtitleProviderConfig {
         id: "subtitle-provider-1".to_string(),
@@ -2022,32 +2022,35 @@ async fn review_regression_subtitle_provider_update_sets_and_clears_disabled_unt
         created_at: now,
         updated_at: now,
     };
-    services
-        .create_subtitle_provider_config(config)
+    SubtitleProviderConfigRepository::create(&store, config)
         .await
         .expect("subtitle provider should be created");
 
     let disabled_until = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
         .expect("fixed timestamp should parse")
         .with_timezone(&Utc);
-    let updated = services
-        .update_subtitle_provider_config(SubtitleProviderConfigUpdate {
+    let updated = SubtitleProviderConfigRepository::update(
+        &store,
+        SubtitleProviderConfigUpdate {
             id: "subtitle-provider-1".to_string(),
             disabled_until: Some(Some(disabled_until)),
             ..Default::default()
-        })
-        .await
-        .expect("subtitle provider disabled_until should update");
+        },
+    )
+    .await
+    .expect("subtitle provider disabled_until should update");
     assert_eq!(updated.disabled_until, Some(disabled_until));
 
-    let updated = services
-        .update_subtitle_provider_config(SubtitleProviderConfigUpdate {
+    let updated = SubtitleProviderConfigRepository::update(
+        &store,
+        SubtitleProviderConfigUpdate {
             id: "subtitle-provider-1".to_string(),
             disabled_until: Some(None),
             ..Default::default()
-        })
-        .await
-        .expect("subtitle provider disabled_until should clear");
+        },
+    )
+    .await
+    .expect("subtitle provider disabled_until should clear");
     assert_eq!(updated.disabled_until, None);
 
     let _ = std::fs::remove_file(db);
@@ -5821,7 +5824,7 @@ async fn queued_delete_stale_recovery_only_recovers_stale_rows() {
 }
 
 #[tokio::test]
-async fn unique_constraints_enforce_settings_and_user_entitlements() {
+async fn unique_constraints_enforce_settings_and_user_permission_masks() {
     let db = std::env::temp_dir().join(format!(
         "scryer_unique_constraints_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -5892,47 +5895,34 @@ async fn unique_constraints_enforce_settings_and_user_entitlements() {
     .await;
     assert!(duplicate_setting_value.is_err());
 
-    sqlx::query("INSERT INTO users (id, username, entitlements) VALUES (?, ?, ?)")
+    sqlx::query("INSERT INTO users (id, username) VALUES (?, ?)")
         .bind("user-1")
         .bind("constraint_user")
-        .bind("[]")
         .execute(&pool)
         .await
         .expect("insert user");
 
-    sqlx::query("INSERT INTO entitlements (code, description, category) VALUES (?, ?, ?)")
-        .bind("ent.code.manage")
-        .bind("Manage")
-        .bind("admin")
-        .execute(&pool)
-        .await
-        .expect("insert entitlement");
-
     sqlx::query(
-        "INSERT INTO user_entitlements (user_id, entitlement_code, granted_by_user_id, granted_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO user_app_permission_masks (user_id, permission_mask, updated_at)
+        VALUES (?, ?, ?)",
     )
     .bind("user-1")
-    .bind("ent.code.manage")
-    .bind(Option::<String>::None)
+    .bind(1_i64)
     .bind(&now)
-    .bind(Option::<String>::None)
     .execute(&pool)
     .await
-    .expect("insert first user entitlement");
+    .expect("insert first app permission mask");
 
-    let duplicate_user_entitlement = sqlx::query(
-        "INSERT INTO user_entitlements (user_id, entitlement_code, granted_by_user_id, granted_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)",
+    let duplicate_app_permission_mask = sqlx::query(
+        "INSERT INTO user_app_permission_masks (user_id, permission_mask, updated_at)
+        VALUES (?, ?, ?)",
     )
     .bind("user-1")
-    .bind("ent.code.manage")
-    .bind(Option::<String>::None)
+    .bind(1_i64)
     .bind(&now)
-    .bind(Option::<String>::None)
     .execute(&pool)
     .await;
-    assert!(duplicate_user_entitlement.is_err());
+    assert!(duplicate_app_permission_mask.is_err());
 
     let _ = std::fs::remove_file(db);
 }
@@ -5953,7 +5943,6 @@ async fn user_crud_queries_work() {
         scryer_domain::User {
             id: "u-1".to_string(),
             username: "editor".to_string(),
-            entitlements: vec![Entitlement::ViewCatalog],
             password_hash: None,
             authorization: Default::default(),
         },
@@ -5967,14 +5956,11 @@ async fn user_crud_queries_work() {
         .expect("id should exist");
     assert_eq!(from_db.username, created.username);
 
-    let updated = UserRepository::update_entitlements(
-        &users,
-        &created.id,
-        vec![Entitlement::ManageTitle, Entitlement::ManageUsers],
-    )
-    .await
-    .expect("update entitlements");
-    assert!(updated.entitlements.contains(&Entitlement::ManageTitle));
+    let updated =
+        UserRepository::update_password_hash(&users, &created.id, "hashed-password".to_string())
+            .await
+            .expect("update password hash");
+    assert_eq!(updated.password_hash.as_deref(), Some("hashed-password"));
 
     UserRepository::delete(&users, &created.id)
         .await

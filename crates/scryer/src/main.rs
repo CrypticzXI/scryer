@@ -928,10 +928,6 @@ async fn bootstrap_application(
         tracing::warn!(error = %e, "failed to refresh plugin catalog on startup");
     }
 
-    if let Err(e) = app_use_case.migrate_user_entitlements().await {
-        tracing::warn!(error = %e, "failed to migrate stored user entitlements on startup");
-    }
-
     if let Err(e) = app_use_case.migrate_legacy_persona_preferences().await {
         tracing::warn!(error = %e, "failed to migrate legacy persona preferences on startup");
     }

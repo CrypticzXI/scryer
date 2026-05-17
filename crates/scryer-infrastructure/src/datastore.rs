@@ -12,18 +12,18 @@ use scryer_application::{
 };
 
 use crate::postgres::{
-    PostgresConfigStore, PostgresLibraryStateStore, PostgresLogicalBackupExporter,
-    PostgresNotificationStore, PostgresReleaseStore, PostgresServices, PostgresSettingsStore,
-    PostgresWorkflowStore, restore_backup_bundle_into_postgres_pool,
-    restore_prepared_backup_directory_into_postgres_pool,
+    PostgresLibraryStateStore, PostgresLogicalBackupExporter, PostgresNotificationStore,
+    PostgresReleaseStore, PostgresServices, PostgresSettingsStore, PostgresWorkflowStore,
+    restore_backup_bundle_into_postgres_pool, restore_prepared_backup_directory_into_postgres_pool,
 };
 use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
-    FileSystemStagedNzbStore, InMemoryIndexerStatsTracker, MetadataGatewayClient, MigrationMode,
-    PluginStore, PostProcessingScriptStore, RuleSetStore, ShowStore, SmgEnrollmentConfig,
-    SqliteConfigStore, SqliteLibraryStateStore, SqliteLogicalBackupExporter,
-    SqliteNotificationStore, SqliteReleaseStore, SqliteServices, SqliteSettingsStore,
-    SqliteTitleImageProcessor, SqliteWorkflowStore, TitleStore,
+    DownloadClientConfigStore, FileSystemStagedNzbStore, InMemoryIndexerStatsTracker,
+    IndexerConfigStore, MetadataGatewayClient, MigrationMode, PluginStore,
+    PostProcessingScriptStore, RuleSetStore, ShowStore, SmgEnrollmentConfig,
+    SqliteLibraryStateStore, SqliteLogicalBackupExporter, SqliteNotificationStore,
+    SqliteReleaseStore, SqliteServices, SqliteSettingsStore, SqliteTitleImageProcessor,
+    SqliteWorkflowStore, SubtitleProviderConfigStore, TitleStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -901,7 +901,9 @@ enum DatastoreStores {
         show_store: Arc<ShowStore>,
         library_store: Arc<LibraryStore>,
         user_store: Arc<UserStore>,
-        config_store: Arc<SqliteConfigStore>,
+        indexer_config_store: Arc<IndexerConfigStore>,
+        download_client_config_store: Arc<DownloadClientConfigStore>,
+        subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
         rule_set_store: Arc<RuleSetStore>,
         post_processing_script_store: Arc<PostProcessingScriptStore>,
         plugin_store: Arc<PluginStore>,
@@ -918,7 +920,9 @@ enum DatastoreStores {
         show_store: Arc<ShowStore>,
         library_store: Arc<LibraryStore>,
         user_store: Arc<UserStore>,
-        config_store: Arc<PostgresConfigStore>,
+        indexer_config_store: Arc<IndexerConfigStore>,
+        download_client_config_store: Arc<DownloadClientConfigStore>,
+        subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
         rule_set_store: Arc<RuleSetStore>,
         post_processing_script_store: Arc<PostProcessingScriptStore>,
         plugin_store: Arc<PluginStore>,
@@ -950,7 +954,18 @@ impl DatastoreAssembly {
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
-        let config_store = Arc::new(SqliteConfigStore::new(&db));
+        let indexer_config_store = Arc::new(IndexerConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let subtitle_provider_config_store = Arc::new(SubtitleProviderConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let rule_set_store = Arc::new(RuleSetStore::new(datastore.clone()));
         let post_processing_script_store =
             Arc::new(PostProcessingScriptStore::new(datastore.clone()));
@@ -970,7 +985,9 @@ impl DatastoreAssembly {
             show_store,
             library_store,
             user_store,
-            config_store,
+            indexer_config_store,
+            download_client_config_store,
+            subtitle_provider_config_store,
             rule_set_store,
             post_processing_script_store,
             plugin_store,
@@ -996,7 +1013,18 @@ impl DatastoreAssembly {
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
-        let config_store = Arc::new(PostgresConfigStore::new(&db));
+        let indexer_config_store = Arc::new(IndexerConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let subtitle_provider_config_store = Arc::new(SubtitleProviderConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let rule_set_store = Arc::new(RuleSetStore::new(datastore.clone()));
         let post_processing_script_store =
             Arc::new(PostProcessingScriptStore::new(datastore.clone()));
@@ -1014,7 +1042,9 @@ impl DatastoreAssembly {
             show_store,
             library_store,
             user_store,
-            config_store,
+            indexer_config_store,
+            download_client_config_store,
+            subtitle_provider_config_store,
             rule_set_store,
             post_processing_script_store,
             plugin_store,
@@ -1084,7 +1114,11 @@ impl DatastoreAssembly {
 
     pub async fn bootstrap_encryption(&self) -> Result<u64, String> {
         match &self.stores {
-            DatastoreStores::Sqlite { db, .. } => {
+            DatastoreStores::Sqlite {
+                db,
+                indexer_config_store,
+                ..
+            } => {
                 let encryption_key = crate::encryption::ensure_encryption_key(
                     db,
                     Some(self.config.data_dir.clone()),
@@ -1093,7 +1127,8 @@ impl DatastoreAssembly {
                 db.set_encryption_key(encryption_key)
                     .await
                     .map_err(|error| error.to_string())?;
-                db.migrate_legacy_indexer_config_sources()
+                indexer_config_store
+                    .migrate_legacy_indexer_config_sources()
                     .await
                     .map_err(|error| error.to_string())
             }
@@ -1112,22 +1147,40 @@ impl DatastoreAssembly {
 
     pub fn indexer_configs(&self) -> Arc<dyn IndexerConfigRepository> {
         match &self.stores {
-            DatastoreStores::Sqlite { config_store, .. } => config_store.clone(),
-            DatastoreStores::Postgres { config_store, .. } => config_store.clone(),
+            DatastoreStores::Sqlite {
+                indexer_config_store,
+                ..
+            } => indexer_config_store.clone(),
+            DatastoreStores::Postgres {
+                indexer_config_store,
+                ..
+            } => indexer_config_store.clone(),
         }
     }
 
     pub fn download_client_configs(&self) -> Arc<dyn DownloadClientConfigRepository> {
         match &self.stores {
-            DatastoreStores::Sqlite { config_store, .. } => config_store.clone(),
-            DatastoreStores::Postgres { config_store, .. } => config_store.clone(),
+            DatastoreStores::Sqlite {
+                download_client_config_store,
+                ..
+            } => download_client_config_store.clone(),
+            DatastoreStores::Postgres {
+                download_client_config_store,
+                ..
+            } => download_client_config_store.clone(),
         }
     }
 
     pub fn subtitle_provider_configs(&self) -> Arc<dyn SubtitleProviderConfigRepository> {
         match &self.stores {
-            DatastoreStores::Sqlite { config_store, .. } => config_store.clone(),
-            DatastoreStores::Postgres { config_store, .. } => config_store.clone(),
+            DatastoreStores::Sqlite {
+                subtitle_provider_config_store,
+                ..
+            } => subtitle_provider_config_store.clone(),
+            DatastoreStores::Postgres {
+                subtitle_provider_config_store,
+                ..
+            } => subtitle_provider_config_store.clone(),
         }
     }
 

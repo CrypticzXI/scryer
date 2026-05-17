@@ -7,17 +7,15 @@ use crate::{
     types::{SettingDefinitionSeed, SettingsValueRecord},
 };
 use scryer_application::{
-    AppError, AppResult, DownloadClientConfigUpdate, DownloadQueueCommandRecord,
-    DownloadSourceIdentity, ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate,
-    InsertMediaFileInput, LibraryScanUnmatchedItem, MediaFileAnalysis, PendingRelease,
-    PendingReleaseStatus, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement, WantedItem,
+    AppError, AppResult, DownloadQueueCommandRecord, DownloadSourceIdentity,
+    ExternalImportMonitorSnapshot, ImportArtifact, InsertMediaFileInput, LibraryScanUnmatchedItem,
+    MediaFileAnalysis, PendingRelease, PendingReleaseStatus, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, SuccessfulGrabCommit, TitleImageReplacement, WantedItem,
     WantedItemsQuery, WorkflowOperationInfo,
 };
 use scryer_domain::{
-    BlocklistEntry, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus, ImportType,
-    IndexerConfig, MediaFacet, NewDomainEvent, NotificationChannelConfig, NotificationSubscription,
-    SubtitleDownload, SubtitleProviderConfig,
+    BlocklistEntry, DomainEvent, DownloadQueueDeleteStatus, ImportType, MediaFacet, NewDomainEvent,
+    NotificationChannelConfig, NotificationSubscription, SubtitleDownload,
 };
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -280,60 +278,6 @@ pub(crate) enum DbCommand {
         language: String,
         reason: Option<String>,
         reply: Sender<AppResult<String>>,
-    },
-    CreateIndexerConfig {
-        config: IndexerConfig,
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<IndexerConfig>>,
-    },
-    MigrateLegacyIndexerConfigSources {
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<u64>>,
-    },
-    TouchIndexerLastError {
-        provider_type: String,
-        reply: Sender<AppResult<()>>,
-    },
-    UpdateIndexerConfig {
-        update: IndexerConfigUpdate,
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<IndexerConfig>>,
-    },
-    DeleteIndexerConfig {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    CreateDownloadClientConfig {
-        config: DownloadClientConfig,
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<DownloadClientConfig>>,
-    },
-    UpdateDownloadClientConfig {
-        update: DownloadClientConfigUpdate,
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<DownloadClientConfig>>,
-    },
-    DeleteDownloadClientConfig {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    ReorderDownloadClientConfigs {
-        ordered_ids: Vec<String>,
-        reply: Sender<AppResult<()>>,
-    },
-    CreateSubtitleProviderConfig {
-        config: SubtitleProviderConfig,
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<SubtitleProviderConfig>>,
-    },
-    UpdateSubtitleProviderConfig {
-        update: SubtitleProviderConfigUpdate,
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<SubtitleProviderConfig>>,
-    },
-    DeleteSubtitleProviderConfig {
-        id: String,
-        reply: Sender<AppResult<()>>,
     },
     BatchEnsureSettingDefinitions {
         definitions: Vec<SettingDefinitionSeed>,
@@ -1306,169 +1250,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                                 &provider_file_id,
                                 &language,
                                 reason.as_deref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreateIndexerConfig {
-                    config,
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_indexer_config", || {
-                            crate::queries::indexer::create_indexer_config_query(
-                                &pool,
-                                &config,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::MigrateLegacyIndexerConfigSources {
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("migrate_legacy_indexer_config_sources", || {
-                            crate::queries::indexer::migrate_legacy_indexer_config_sources_query(
-                                &pool,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::TouchIndexerLastError {
-                    provider_type,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("touch_indexer_last_error", || {
-                            crate::queries::indexer::touch_indexer_last_error_query(
-                                &pool,
-                                &provider_type,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateIndexerConfig {
-                    update,
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_indexer_config", || {
-                            crate::queries::indexer::update_indexer_config_query(
-                                &pool,
-                                &update,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteIndexerConfig { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_indexer_config", || {
-                            crate::queries::indexer::delete_indexer_config_query(&pool, &id)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreateDownloadClientConfig {
-                    config,
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_download_client_config", || {
-                            crate::queries::download_client::create_download_client_config_query(
-                                &pool,
-                                &config,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateDownloadClientConfig {
-                    update,
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_download_client_config", || {
-                            crate::queries::download_client::update_download_client_config_query(
-                                &pool,
-                                &update,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteDownloadClientConfig { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_download_client_config", || {
-                            crate::queries::download_client::delete_download_client_config_query(
-                                &pool, &id,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::ReorderDownloadClientConfigs { ordered_ids, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("reorder_download_client_configs", || {
-                            crate::queries::download_client::reorder_download_client_configs_query(
-                                &pool,
-                                &ordered_ids,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreateSubtitleProviderConfig {
-                    config,
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_subtitle_provider_config", || {
-                            crate::queries::subtitle_provider::create_subtitle_provider_config_query(
-                                &pool,
-                                &config,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateSubtitleProviderConfig {
-                    update,
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_subtitle_provider_config", || {
-                            crate::queries::subtitle_provider::update_subtitle_provider_config_query(
-                                &pool,
-                                &update,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteSubtitleProviderConfig { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_subtitle_provider_config", || {
-                            crate::queries::subtitle_provider::delete_subtitle_provider_config_query(
-                                &pool, &id,
                             )
                         })
                         .await,

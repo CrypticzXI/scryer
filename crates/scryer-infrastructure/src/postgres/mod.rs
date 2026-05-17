@@ -1,5 +1,4 @@
 mod backup;
-mod config_store;
 mod library_state_store;
 mod migrations;
 mod notification_store;
@@ -13,7 +12,6 @@ pub use backup::{
     PostgresLogicalBackupExporter, restore_backup_bundle_into_postgres_pool,
     restore_prepared_backup_directory_into_postgres_pool,
 };
-pub use config_store::PostgresConfigStore;
 pub use library_state_store::PostgresLibraryStateStore;
 pub use migrations::{replay_catalog_into_fresh_db, replay_source_catalog_for_fresh_install};
 pub use notification_store::PostgresNotificationStore;

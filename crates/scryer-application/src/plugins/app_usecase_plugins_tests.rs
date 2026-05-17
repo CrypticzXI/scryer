@@ -748,8 +748,13 @@ fn viewer() -> User {
         id: scryer_domain::Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
-        entitlements: vec![scryer_domain::Entitlement::ViewCatalog],
-        authorization: Default::default(),
+        authorization: scryer_domain::UserAuthorization {
+            default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+                scryer_domain::LibraryPermission::View,
+            ]),
+            loaded: true,
+            ..Default::default()
+        },
     }
 }
 
@@ -758,10 +763,6 @@ fn config_admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "config-admin".to_string(),
         password_hash: None,
-        entitlements: vec![
-            scryer_domain::Entitlement::ViewCatalog,
-            scryer_domain::Entitlement::ManageConfig,
-        ],
         authorization: scryer_domain::UserAuthorization {
             app: scryer_domain::AppPermissionMask::from_permissions([
                 scryer_domain::AppPermission::ManageSystemSettings,

@@ -1062,8 +1062,6 @@ pub(crate) struct JwtClaims {
     pub iss: String,
     #[serde(default)]
     pub username: String,
-    #[serde(default)]
-    pub entitlements: Vec<String>,
     #[serde(default, rename = "appPermissions")]
     pub app_permissions: Vec<String>,
     #[serde(default, rename = "libraryPermissions")]

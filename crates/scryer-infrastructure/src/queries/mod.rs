@@ -1,7 +1,6 @@
 pub mod blocklist;
 pub mod common;
 pub mod domain_event;
-pub mod download_client;
 pub mod housekeeping;
 pub mod indexer;
 pub mod library_scan_unmatched;
@@ -13,7 +12,6 @@ pub mod quality;
 pub mod settings;
 pub mod sql_runtime;
 pub mod subtitle;
-pub mod subtitle_provider;
 pub mod title;
 pub mod title_search;
 pub mod wanted;

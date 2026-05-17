@@ -1418,7 +1418,16 @@ impl QueryRoot {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let user = app.get_user(&actor, &id).await.map_err(to_gql_error)?;
-        Ok(user.map(from_user))
+        match user {
+            Some(user) => {
+                let user = app
+                    .attach_user_authorization(user)
+                    .await
+                    .map_err(to_gql_error)?;
+                Ok(Some(from_user(user)))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn system_health(&self, ctx: &Context<'_>) -> GqlResult<SystemHealthPayload> {

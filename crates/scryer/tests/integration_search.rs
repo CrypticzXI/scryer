@@ -10,14 +10,13 @@ use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
 use scryer_application::{IndexerClient, IndexerPluginProvider, MetadataSearchQuery, SearchMode};
-use scryer_domain::{Entitlement, LibraryPermissionMask, User, UserAuthorization};
+use scryer_domain::{LibraryPermissionMask, User, UserAuthorization};
 
 fn admin() -> User {
     User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageConfig],
         authorization: UserAuthorization {
             loaded: true,
             default_library: LibraryPermissionMask::from_permissions([

@@ -1465,8 +1465,7 @@ pub mod test_nulls {
     };
     use async_trait::async_trait;
     use scryer_domain::{
-        CalendarEpisode, Collection, DownloadClientConfig, Entitlement, Episode, MediaFacet, Title,
-        User,
+        CalendarEpisode, Collection, DownloadClientConfig, Episode, MediaFacet, Title, User,
     };
 
     #[derive(Default)]
@@ -1737,9 +1736,6 @@ pub mod test_nulls {
         }
         async fn get_by_id(&self, _: &str) -> AppResult<Option<User>> {
             Ok(None)
-        }
-        async fn update_entitlements(&self, _: &str, _: Vec<Entitlement>) -> AppResult<User> {
-            Err(AppError::Repository("not configured".into()))
         }
         async fn update_password_hash(&self, _: &str, _: String) -> AppResult<User> {
             Err(AppError::Repository("not configured".into()))

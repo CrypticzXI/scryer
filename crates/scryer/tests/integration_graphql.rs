@@ -21,10 +21,10 @@ use scryer_domain::{
     MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title, TitleContextSnapshot,
     User, UserAuthorization,
 };
+use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
     FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteLibraryStateStore, SqliteWorkflowStore,
 };
-use scryer_infrastructure::sqlite::ShowStore;
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::collections::{BTreeMap, HashMap};
@@ -1143,11 +1143,7 @@ async fn create_series_scan_title(
         digital_release_date: None,
         folder_path: None,
     };
-    let title = ctx
-        .titles
-        .create(title)
-        .await
-        .expect("create series title");
+    let title = ctx.titles.create(title).await.expect("create series title");
 
     let collection = Collection {
         id: Id::new().0,
@@ -12039,7 +12035,7 @@ async fn graphql_batch_request_not_supported_via_single() {
 async fn login_with_valid_credentials_returns_token() {
     let ctx = TestContext::new().await;
 
-    // Need an actor to create the test user — admin has all entitlements.
+    // Need an actor to create the test user; admin carries the required masks.
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     ctx.app
         .create_user(
@@ -12183,11 +12179,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         digital_release_date: Some("2024-01-01".to_string()),
         folder_path: None,
     };
-    let title = ctx
-        .titles
-        .create(title)
-        .await
-        .expect("create scoped title");
+    let title = ctx.titles.create(title).await.expect("create scoped title");
 
     let file_path = media_root.path().join("Scoped.Delete.Movie.2024.1080p.mkv");
     std::fs::write(&file_path, b"scoped-delete").expect("write media file");
@@ -12228,7 +12220,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         id: Id::new().0,
         username: "scoped-delete-user".to_string(),
         password_hash: None,
-        entitlements: vec![],
         authorization: UserAuthorization {
             app: scryer_domain::AppPermissionMask::NONE,
             libraries: HashMap::from([(

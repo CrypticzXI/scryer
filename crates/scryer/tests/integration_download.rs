@@ -24,8 +24,8 @@ use scryer_application::{
 };
 use scryer_domain::DownloadClientConfig;
 use scryer_infrastructure::{
-    FileSystemStagedNzbStore, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
-    SabnzbdDownloadClient, SqliteConfigStore, WeaverDownloadClient,
+    DownloadClientConfigStore, FileSystemStagedNzbStore, NzbgetDownloadClient,
+    PrioritizedDownloadClientRouter, SabnzbdDownloadClient, WeaverDownloadClient,
 };
 use scryer_plugins::WasmDownloadClientPluginProvider;
 
@@ -349,7 +349,7 @@ fn request_with_staged_nzb(
 fn download_client_config_repo(
     ctx: &TestContext,
 ) -> Arc<dyn scryer_application::DownloadClientConfigRepository> {
-    Arc::new(SqliteConfigStore::new(&ctx.db))
+    Arc::new(DownloadClientConfigStore::from_sqlite_services(&ctx.db))
 }
 
 async fn insert_download_client_config(ctx: &TestContext, config: DownloadClientConfig) {

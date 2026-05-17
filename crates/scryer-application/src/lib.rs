@@ -103,12 +103,11 @@ use chrono::{DateTime, Duration, Utc};
 use scryer_domain::{
     AppPermission, AppPermissionMask, BlocklistEntry, CalendarEpisode, Collection, CollectionType,
     CompletedDownload, DomainEvent, DomainEventFilter, DomainEventType, DownloadClientConfig,
-    DownloadQueueItem, DownloadQueueState, Entitlement, Episode, ExternalId, HistoryEvent, Id,
-    ImportFileResult, ImportRecord, ImportResult, ImportStatus, IndexerConfig, Library,
-    LibraryGrant, MediaFacet, NewDomainEvent, NewDownloadClientConfig, NewIndexerConfig, NewTitle,
-    PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput,
-    RuleSet, SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord,
-    User,
+    DownloadQueueItem, DownloadQueueState, Episode, ExternalId, HistoryEvent, Id, ImportFileResult,
+    ImportRecord, ImportResult, ImportStatus, IndexerConfig, Library, LibraryGrant, MediaFacet,
+    NewDomainEvent, NewDownloadClientConfig, NewIndexerConfig, NewTitle, PluginCatalogSource,
+    PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput, RuleSet,
+    SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord, User,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

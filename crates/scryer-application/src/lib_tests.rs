@@ -923,20 +923,6 @@ impl UserRepository for MockUserRepo {
         Ok(self.store.lock().await.clone())
     }
 
-    async fn update_entitlements(
-        &self,
-        id: &str,
-        entitlements: Vec<Entitlement>,
-    ) -> AppResult<User> {
-        let mut users = self.store.lock().await;
-        let user = users
-            .iter_mut()
-            .find(|entry| entry.id == id)
-            .ok_or_else(|| AppError::NotFound(format!("user {}", id)))?;
-        user.entitlements = entitlements;
-        Ok(user.clone())
-    }
-
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
         let mut users = self.store.lock().await;
         let user = users
@@ -5266,7 +5252,6 @@ fn test_user_with_app_permissions(username: &str, app_permissions: AppPermission
         id: Id::new().0,
         username: username.to_string(),
         password_hash: None,
-        entitlements: Vec::new(),
         authorization: Default::default(),
     };
     user.authorization.app = app_permissions;
@@ -10361,7 +10346,10 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
         &admin,
         "token_queue_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await;
 
@@ -11075,12 +11063,15 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
     .await
     .expect("create download client config");
 
-    let search_user = create_user_from_entitlements(
+    let search_user = create_user_with_permissions(
         &app,
         &user,
         "title_search_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await
     .expect("create search user");
@@ -11181,7 +11172,6 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
         id: "ghost-search-user".to_string(),
         username: "ghost".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
         authorization: Default::default(),
     };
     ghost_actor.authorization = scryer_domain::UserAuthorization {
@@ -11206,12 +11196,15 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
 async fn create_user_and_list_users() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "editor",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await
     .expect("create user");
@@ -11284,12 +11277,12 @@ async fn create_user_with_library_permission_grants_requires_manage_permissions(
 async fn get_user_by_id_returns_created_user() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "viewer",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -11306,22 +11299,22 @@ async fn get_user_by_id_returns_created_user() {
 async fn create_user_rejects_duplicate_username() {
     let (app, user) = bootstrap();
 
-    let _created = create_user_from_entitlements(
+    let _created = create_user_with_permissions(
         &app,
         &user,
         "editor",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("first create");
 
-    let second = create_user_from_entitlements(
+    let second = create_user_with_permissions(
         &app,
         &user,
         "editor",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
 
@@ -17219,19 +17212,19 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
 async fn update_user_library_permissions_changes_grants() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "editor",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
 
-    let grants = test_library_grants_from_entitlements(&[
-        Entitlement::ViewCatalog,
-        Entitlement::ManageTitle,
+    let grants = test_library_grants_from_presets(&[
+        TestPermissionPreset::CatalogView,
+        TestPermissionPreset::TitleManagement,
     ]);
     let updated = app
         .set_user_library_permissions(&user, &created.id, grants)
@@ -17251,12 +17244,12 @@ async fn update_user_library_permissions_changes_grants() {
 async fn update_user_password_is_hashed() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "password-user",
         "before-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -17278,12 +17271,12 @@ async fn update_user_password_is_hashed() {
 async fn self_password_change_is_hashed() {
     let (app, admin) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &admin,
         "self-password-user",
         "before-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -17309,12 +17302,12 @@ async fn self_password_change_is_hashed() {
 async fn delete_other_user_removes_user() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "removable",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -19641,19 +19634,52 @@ fn validate_password_unknown_version_returns_error() {
 
 // ── JWT round-trip ────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestPermissionPreset {
+    CatalogView,
+    TitleManagement,
+    UserManagement,
+    ConfigManagement,
+}
+
 /// Derive a per-user JWT signing key (mirrors `AppUseCase::derive_jwt_key`).
-fn test_derive_jwt_key(salt: &str, password_hash: &str, entitlements: &[Entitlement]) -> Vec<u8> {
+fn test_derive_jwt_key(
+    salt: &str,
+    password_hash: &str,
+    permissions: &[TestPermissionPreset],
+) -> Vec<u8> {
     use aws_lc_rs::hmac;
-    let mut entitlement_claims = entitlements
-        .iter()
-        .map(AppUseCase::entitlement_claim_string)
+    let app_permissions = test_app_permissions_from_presets(permissions);
+    let library_grants = test_library_grants_from_presets(permissions);
+    let mut app_claims = app_permissions
+        .to_permissions()
+        .into_iter()
+        .map(AppUseCase::app_permission_claim_string)
         .map(str::to_string)
         .collect::<Vec<_>>();
-    entitlement_claims.sort();
-    entitlement_claims.dedup();
-    let legacy_claims = entitlement_claims.join("\n");
-    let authorization_fingerprint =
-        sha256_hex(format!("app\n\nlibrary\n\nlegacy\n{legacy_claims}"));
+    app_claims.sort();
+    app_claims.dedup();
+    let mut library_claims = library_grants
+        .into_iter()
+        .map(|grant| {
+            let mut permissions = grant
+                .permissions
+                .to_permissions()
+                .into_iter()
+                .map(AppUseCase::library_permission_claim_string)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            permissions.sort();
+            permissions.dedup();
+            format!("{}:{}", grant.library_id, permissions.join(","))
+        })
+        .collect::<Vec<_>>();
+    library_claims.sort();
+    let authorization_fingerprint = sha256_hex(format!(
+        "app\n{}\nlibrary\n{}",
+        app_claims.join("\n"),
+        library_claims.join("\n")
+    ));
     let signing_material = format!("{password_hash}\n{authorization_fingerprint}");
     let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, salt.as_bytes());
     hmac::sign(&hmac_key, signing_material.as_bytes())
@@ -19663,29 +19689,29 @@ fn test_derive_jwt_key(salt: &str, password_hash: &str, entitlements: &[Entitlem
 
 const TEST_PASSWORD_HASH: &str = "v2$argon2id$v=19$m=19456,t=2,p=1$dGVzdHNhbHQ$dGVzdGhhc2g";
 
-fn test_app_permissions_from_entitlements(
-    entitlements: &[Entitlement],
+fn test_app_permissions_from_presets(
+    permissions: &[TestPermissionPreset],
 ) -> scryer_domain::AppPermissionMask {
-    let mut permissions = scryer_domain::AppPermissionMask::NONE;
-    if entitlements.contains(&Entitlement::ManageUsers) {
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_USERS);
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_PERMISSIONS);
+    let mut mask = scryer_domain::AppPermissionMask::NONE;
+    if permissions.contains(&TestPermissionPreset::UserManagement) {
+        mask.insert(scryer_domain::AppPermissionMask::MANAGE_USERS);
+        mask.insert(scryer_domain::AppPermissionMask::MANAGE_PERMISSIONS);
     }
-    if entitlements.contains(&Entitlement::ManageConfig) {
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_SYSTEM_SETTINGS);
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_CATALOG_SETTINGS);
+    if permissions.contains(&TestPermissionPreset::ConfigManagement) {
+        mask.insert(scryer_domain::AppPermissionMask::MANAGE_SYSTEM_SETTINGS);
+        mask.insert(scryer_domain::AppPermissionMask::MANAGE_CATALOG_SETTINGS);
     }
-    permissions
+    mask
 }
 
-fn test_library_grants_from_entitlements(
-    entitlements: &[Entitlement],
+fn test_library_grants_from_presets(
+    presets: &[TestPermissionPreset],
 ) -> Vec<scryer_domain::LibraryGrant> {
     let mut permissions = scryer_domain::LibraryPermissionMask::NONE;
-    if entitlements.contains(&Entitlement::ViewCatalog) {
+    if presets.contains(&TestPermissionPreset::CatalogView) {
         permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);
     }
-    if entitlements.contains(&Entitlement::ManageTitle) {
+    if presets.contains(&TestPermissionPreset::TitleManagement) {
         permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);
         permissions.insert(scryer_domain::LibraryPermissionMask::MANAGE_TITLES);
         permissions.insert(scryer_domain::LibraryPermissionMask::RESOLVE_IMPORTS);
@@ -19704,19 +19730,19 @@ fn test_library_grants_from_entitlements(
         .collect()
 }
 
-async fn create_user_from_entitlements(
+async fn create_user_with_permissions(
     app: &AppUseCase,
     actor: &User,
     username: &str,
     password: &str,
-    entitlements: Vec<Entitlement>,
+    permissions: Vec<TestPermissionPreset>,
 ) -> AppResult<User> {
     app.create_user(
         actor,
         username.to_string(),
         password.to_string(),
-        test_app_permissions_from_entitlements(&entitlements),
-        test_library_grants_from_entitlements(&entitlements),
+        test_app_permissions_from_presets(&permissions),
+        test_library_grants_from_presets(&permissions),
     )
     .await
 }
@@ -19726,9 +19752,9 @@ async fn create_authenticated_user(
     admin: &User,
     username: &str,
     password: &str,
-    entitlements: Vec<Entitlement>,
+    permissions: Vec<TestPermissionPreset>,
 ) -> (User, User) {
-    let created = create_user_from_entitlements(app, admin, username, password, entitlements)
+    let created = create_user_with_permissions(app, admin, username, password, permissions)
         .await
         .expect("create user");
     let token = app.issue_access_token(&created).await.expect("issue token");
@@ -19747,7 +19773,6 @@ async fn issue_and_authenticate_token_round_trips() {
         id: "user-jwt-1".to_string(),
         username: "jwt_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog],
         authorization: Default::default(),
     };
     app.services
@@ -19766,28 +19791,40 @@ async fn issue_and_authenticate_token_round_trips() {
 }
 
 #[tokio::test]
-async fn entitlements_survive_token_round_trip() {
-    let (app, _) = bootstrap();
-    let user = User {
-        id: "user-jwt-2".to_string(),
-        username: "ent_user".to_string(),
-        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
-        authorization: Default::default(),
-    };
-    app.services
-        .identity
-        .users
-        .create(user.clone())
-        .await
-        .unwrap();
+async fn permission_claims_survive_token_round_trip() {
+    let (app, admin) = bootstrap();
+    let user = create_user_with_permissions(
+        &app,
+        &admin,
+        "permission_claims_user",
+        "password123",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+            TestPermissionPreset::UserManagement,
+        ],
+    )
+    .await
+    .expect("create user");
     let token = app.issue_access_token(&user).await.expect("issue token");
-    let decoded = app
-        .authenticate_token(&token)
-        .await
-        .expect("authenticate token");
-    assert!(decoded.entitlements.contains(&Entitlement::ViewCatalog));
-    assert!(decoded.entitlements.contains(&Entitlement::ManageTitle));
+    let decoded =
+        jsonwebtoken::dangerous::insecure_decode::<JwtClaims>(&token).expect("token should decode");
+    assert!(
+        decoded
+            .claims
+            .app_permissions
+            .contains(&"manageUsers".to_string())
+    );
+    assert!(
+        decoded
+            .claims
+            .app_permissions
+            .contains(&"managePermissions".to_string())
+    );
+    assert!(decoded.claims.library_permissions.iter().any(|grant| {
+        grant.permissions.contains(&"view".to_string())
+            && grant.permissions.contains(&"manageTitles".to_string())
+    }));
 }
 
 #[tokio::test]
@@ -19798,7 +19835,10 @@ async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope(
         &admin,
         "release_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19839,7 +19879,10 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
         &admin,
         "release_episode_set_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19876,7 +19919,7 @@ async fn release_candidate_token_rejects_tampering() {
         &admin,
         "release_user_2",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19917,7 +19960,7 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         &admin,
         "release_user_3",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let (_other_created, other_authenticated_user) = create_authenticated_user(
@@ -19925,7 +19968,7 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         &admin,
         "release_user_4",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19989,7 +20032,7 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
         &admin,
         "candidate_pw_rotate",
         "before-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -20033,7 +20076,7 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         &admin,
         "candidate_permission_rotate",
         "same-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -20051,9 +20094,9 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         .await
         .expect("candidate token should issue");
 
-    let grants = test_library_grants_from_entitlements(&[
-        Entitlement::ViewCatalog,
-        Entitlement::ManageTitle,
+    let grants = test_library_grants_from_presets(&[
+        TestPermissionPreset::CatalogView,
+        TestPermissionPreset::TitleManagement,
     ]);
     app.set_user_library_permissions(&admin, &created.id, grants)
         .await
@@ -20081,7 +20124,7 @@ async fn backup_download_token_round_trips() {
         &admin,
         "backup_download_user",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
 
@@ -20107,7 +20150,7 @@ async fn backup_download_token_rejects_tampering_and_filename_mismatch() {
         &admin,
         "backup_download_user_2",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
 
@@ -20148,7 +20191,7 @@ async fn backup_download_token_rejects_wrong_kind_and_expired_claims() {
         &admin,
         "backup_download_user_3",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
 
@@ -20211,7 +20254,7 @@ async fn backup_download_token_is_invalidated_by_permission_change() {
         &admin,
         "backup_download_permission_rotate",
         "same-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
 
@@ -20223,9 +20266,9 @@ async fn backup_download_token_is_invalidated_by_permission_change() {
         .await
         .expect("backup download token should issue");
 
-    let grants = test_library_grants_from_entitlements(&[
-        Entitlement::ViewCatalog,
-        Entitlement::ManageTitle,
+    let grants = test_library_grants_from_presets(&[
+        TestPermissionPreset::CatalogView,
+        TestPermissionPreset::TitleManagement,
     ]);
     app.set_user_library_permissions(&admin, &created.id, grants)
         .await
@@ -20251,7 +20294,6 @@ async fn expired_token_returns_unauthorized() {
         id: "user-jwt-3".to_string(),
         username: "exp_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![],
         authorization: Default::default(),
     };
     app.services
@@ -20267,7 +20309,6 @@ async fn expired_token_returns_unauthorized() {
         iat: Utc::now().timestamp() - 200,
         iss: app.auth.issuer.clone(),
         username: user.username.clone(),
-        entitlements: vec![],
         app_permissions: vec![],
         library_permissions: vec![],
     };
@@ -20286,7 +20327,6 @@ async fn wrong_issuer_token_returns_unauthorized() {
         id: "user-jwt-4".to_string(),
         username: "iss_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog],
         authorization: Default::default(),
     };
     app.services
@@ -20301,16 +20341,11 @@ async fn wrong_issuer_token_returns_unauthorized() {
         iat: Utc::now().timestamp(),
         iss: "wrong-issuer".to_string(),
         username: user.username.clone(),
-        entitlements: vec!["view_catalog".to_string()],
         app_permissions: vec![],
         library_permissions: vec![],
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-    let signing_key = test_derive_jwt_key(
-        &app.auth.jwt_signing_salt,
-        TEST_PASSWORD_HASH,
-        &user.entitlements,
-    );
+    let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
     let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
     let bad_token = jsonwebtoken::encode(&header, &claims, &key).expect("encode");
     let result = app.authenticate_token(&bad_token).await;
@@ -20328,7 +20363,6 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
         id: "user-jwt-cache-1".to_string(),
         username: "cache_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog],
         authorization: Default::default(),
     };
     app.services
@@ -20353,12 +20387,12 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
 #[tokio::test]
 async fn password_change_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &admin,
         "pw_rotate",
         "before-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -20378,20 +20412,20 @@ async fn password_change_invalidates_existing_token_immediately() {
 #[tokio::test]
 async fn permission_change_invalidates_existing_token_and_relogin_works() {
     let (app, admin) = bootstrap();
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &admin,
         "permission_rotate",
         "same-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
     let old_token = app.issue_access_token(&created).await.expect("issue token");
 
-    let grants = test_library_grants_from_entitlements(&[
-        Entitlement::ViewCatalog,
-        Entitlement::ManageTitle,
+    let grants = test_library_grants_from_presets(&[
+        TestPermissionPreset::CatalogView,
+        TestPermissionPreset::TitleManagement,
     ]);
     let updated = app
         .set_user_library_permissions(&admin, &created.id, grants)
@@ -20430,12 +20464,12 @@ async fn permission_change_invalidates_existing_token_and_relogin_works() {
 #[tokio::test]
 async fn deleting_user_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &admin,
         "gone_user",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -20450,17 +20484,23 @@ async fn deleting_user_invalidates_existing_token_immediately() {
 }
 
 #[test]
-fn jwt_key_derivation_is_stable_across_entitlement_order() {
+fn jwt_key_derivation_is_stable_across_permission_order() {
     let (app, _) = bootstrap();
     let key_a = test_derive_jwt_key(
         &app.auth.jwt_signing_salt,
         TEST_PASSWORD_HASH,
-        &[Entitlement::ManageTitle, Entitlement::ViewCatalog],
+        &[
+            TestPermissionPreset::TitleManagement,
+            TestPermissionPreset::CatalogView,
+        ],
     );
     let key_b = test_derive_jwt_key(
         &app.auth.jwt_signing_salt,
         TEST_PASSWORD_HASH,
-        &[Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        &[
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     );
 
     assert_eq!(key_a, key_b);
@@ -20473,7 +20513,6 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         id: "user-jwt-malformed".to_string(),
         username: "jwt_claims".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog],
         authorization: Default::default(),
     };
     app.services
@@ -20492,16 +20531,11 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         iat: Utc::now().timestamp(),
         iss: app.auth.issuer.clone(),
         username: user.username.clone(),
-        entitlements: vec!["definitely_not_real".to_string()],
         app_permissions: vec!["manageSystemSettings".to_string()],
         library_permissions: vec![],
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-    let signing_key = test_derive_jwt_key(
-        &app.auth.jwt_signing_salt,
-        TEST_PASSWORD_HASH,
-        &user.entitlements,
-    );
+    let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
     let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
     let token = jsonwebtoken::encode(&header, &claims, &key).expect("encode");
 

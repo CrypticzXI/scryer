@@ -2,11 +2,13 @@ mod backup_import_normalization;
 pub(crate) mod commands;
 mod config_store;
 mod datastore;
+mod download_client_config_store;
 mod download_clients;
 pub mod encryption;
 pub mod external_import;
 mod file_importer;
 mod graphql;
+mod indexer_config_store;
 mod indexer_stats;
 pub mod keystore;
 mod library_renamer;
@@ -32,6 +34,7 @@ mod spellfix;
 mod sqlite_backup;
 mod sqlite_services;
 mod staged_nzb_store;
+mod subtitle_provider_config_store;
 mod title_images;
 mod title_store;
 mod types;
@@ -42,7 +45,8 @@ mod workflow_store;
 mod tests;
 
 pub mod sqlite {
-    pub use crate::config_store::SqliteConfigStore;
+    pub use crate::download_client_config_store::DownloadClientConfigStore;
+    pub use crate::indexer_config_store::IndexerConfigStore;
     pub use crate::library_state_store::SqliteLibraryStateStore;
     pub use crate::library_store::LibraryStore;
     pub use crate::notification_store::SqliteNotificationStore;
@@ -54,13 +58,13 @@ pub mod sqlite {
     pub use crate::show_store::ShowStore;
     pub use crate::sqlite_backup::SqliteLogicalBackupExporter;
     pub use crate::sqlite_services::{DbRuntime, SqliteServices};
+    pub use crate::subtitle_provider_config_store::SubtitleProviderConfigStore;
     pub use crate::title_images::SqliteTitleImageProcessor;
     pub use crate::title_store::TitleStore;
     pub use crate::user_store::UserStore;
     pub use crate::workflow_store::SqliteWorkflowStore;
 }
 
-pub use config_store::SqliteConfigStore;
 pub use datastore::{
     DatastoreAssembly, DatastoreConfig, DatastoreConfigSource, DatastoreCustomizationStore,
     DatastoreEngine, DatastoreSettingsStore, datastore_file_path,
@@ -68,6 +72,7 @@ pub use datastore::{
     restore_backup_bundle_to_datastore_path, restore_prepared_backup_directory_to_datastore,
     validate_datastore,
 };
+pub use download_client_config_store::DownloadClientConfigStore;
 pub use download_clients::{
     MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
     SabnzbdDownloadClient, WeaverDownloadClient, resolve_base_url_from_config_json,
@@ -75,6 +80,7 @@ pub use download_clients::{
 };
 pub use encryption::EncryptionKey;
 pub use file_importer::FsFileImporter;
+pub use indexer_config_store::IndexerConfigStore;
 pub use indexer_stats::InMemoryIndexerStatsTracker;
 pub use library_renamer::FileSystemLibraryRenamer;
 pub use library_scanner::FileSystemLibraryScanner;
@@ -86,8 +92,7 @@ pub use notification_store::SqliteNotificationStore;
 pub use plugin_store::PluginStore;
 pub use post_processing_script_store::PostProcessingScriptStore;
 pub use postgres::{
-    PostgresConfigStore, PostgresLogicalBackupExporter, PostgresReleaseStore, PostgresServices,
-    PostgresSettingsStore,
+    PostgresLogicalBackupExporter, PostgresReleaseStore, PostgresServices, PostgresSettingsStore,
 };
 pub use prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
 pub use release_store::SqliteReleaseStore;
@@ -98,6 +103,7 @@ pub use spellfix::register_spellfix_auto_extension;
 pub use sqlite_backup::SqliteLogicalBackupExporter;
 pub use sqlite_services::{DbRuntime, SqliteServices};
 pub use staged_nzb_store::FileSystemStagedNzbStore;
+pub use subtitle_provider_config_store::SubtitleProviderConfigStore;
 pub use title_images::SqliteTitleImageProcessor;
 pub use title_store::TitleStore;
 pub(crate) use types::sqlite_url_with_create;

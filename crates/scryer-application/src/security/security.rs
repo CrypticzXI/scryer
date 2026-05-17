@@ -16,7 +16,9 @@ impl AppUseCase {
     const RELEASE_CANDIDATE_TOKEN_KIND: &'static str = "release_candidate_v1";
     const RELEASE_CANDIDATE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
-    fn app_permission_claim_string(permission: scryer_domain::AppPermission) -> &'static str {
+    pub(crate) fn app_permission_claim_string(
+        permission: scryer_domain::AppPermission,
+    ) -> &'static str {
         match permission {
             scryer_domain::AppPermission::ManageUsers => "manageUsers",
             scryer_domain::AppPermission::ManagePermissions => "managePermissions",
@@ -25,7 +27,7 @@ impl AppUseCase {
         }
     }
 
-    fn library_permission_claim_string(
+    pub(crate) fn library_permission_claim_string(
         permission: scryer_domain::LibraryPermission,
     ) -> &'static str {
         match permission {
@@ -100,25 +102,6 @@ impl AppUseCase {
         Ok(candidate == stored_hash)
     }
 
-    pub(crate) fn entitlement_claim_string(entitlement: &Entitlement) -> &'static str {
-        match entitlement {
-            Entitlement::ViewCatalog => "view_catalog",
-            Entitlement::ManageTitle => "manage_title",
-            Entitlement::ManageUsers => "manage_users",
-            Entitlement::ManageConfig => "manage_config",
-        }
-    }
-
-    fn canonical_entitlement_claims(entitlements: &[Entitlement]) -> Vec<String> {
-        let mut claims = entitlements
-            .iter()
-            .map(|entitlement| Self::entitlement_claim_string(entitlement).to_string())
-            .collect::<Vec<_>>();
-        claims.sort();
-        claims.dedup();
-        claims
-    }
-
     fn canonical_app_permission_claims(user: &User) -> Vec<String> {
         let mut claims = user
             .authorization
@@ -164,14 +147,11 @@ impl AppUseCase {
             .map(|grant| format!("{}:{}", grant.library_id, grant.permissions.join(",")))
             .collect::<Vec<_>>()
             .join("\n");
-        let legacy_claims = Self::canonical_entitlement_claims(&user.entitlements).join("\n");
-        sha256_hex(format!(
-            "app\n{app_claims}\nlibrary\n{library_claims}\nlegacy\n{legacy_claims}"
-        ))
+        sha256_hex(format!("app\n{app_claims}\nlibrary\n{library_claims}"))
     }
 
     /// Derive a per-user JWT signing key:
-    /// HMAC-SHA256(key=salt, msg="{password_hash}\n{entitlements_fingerprint}").
+    /// HMAC-SHA256(key=salt, msg="{password_hash}\n{authorization_fingerprint}").
     ///
     /// The salt is the registration secret baked into the binary, so an offline
     /// DB dump alone cannot forge tokens.
@@ -278,7 +258,6 @@ impl AppUseCase {
         let iat = now.timestamp();
         let exp = (now + Duration::seconds(self.token_lifetime())).timestamp();
 
-        let entitlements = Self::canonical_entitlement_claims(&actor.entitlements);
         let app_permissions = Self::canonical_app_permission_claims(&actor);
         let library_permissions = Self::canonical_library_permission_claims(&actor);
 
@@ -288,7 +267,6 @@ impl AppUseCase {
             iat,
             iss: self.auth.issuer.clone(),
             username: actor.username.clone(),
-            entitlements,
             app_permissions,
             library_permissions,
         };

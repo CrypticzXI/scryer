@@ -99,12 +99,11 @@ fn domain_event_type_all_includes_title_rematched() {
 }
 
 #[test]
-fn loaded_catalog_settings_permission_does_not_satisfy_legacy_manage_config() {
+fn catalog_settings_permission_does_not_include_system_settings() {
     let mut user = User {
         id: Id::new().0,
         username: "catalog-settings".to_string(),
         password_hash: None,
-        entitlements: vec![],
         authorization: UserAuthorization::default(),
     };
     user.authorization.loaded = true;
@@ -112,7 +111,12 @@ fn loaded_catalog_settings_permission_does_not_satisfy_legacy_manage_config() {
         .app
         .insert(AppPermissionMask::MANAGE_CATALOG_SETTINGS);
 
-    assert!(!user.has_entitlement(&Entitlement::ManageConfig));
+    assert!(
+        !user
+            .authorization
+            .app
+            .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS)
+    );
 }
 
 // ── match_fuzzy ───────────────────────────────────────────────────────────
@@ -226,51 +230,103 @@ fn notification_channel_type_normalizes_provider_string() {
     assert_eq!(provider.as_str(), "jellyfin");
 }
 
-// ── User entitlements ─────────────────────────────────────────────────────
+// ── User permission masks ─────────────────────────────────────────────────
 
 #[test]
-fn admin_has_all_entitlements() {
+fn admin_has_full_permission_masks() {
     let admin = User::new_admin("root");
-    assert!(admin.has_all_entitlements());
-    assert!(admin.has_entitlement(&Entitlement::ViewCatalog));
-    assert!(admin.has_entitlement(&Entitlement::ManageTitle));
-    assert!(admin.has_entitlement(&Entitlement::ManageUsers));
-    assert!(admin.has_entitlement(&Entitlement::ManageConfig));
+    assert!(admin.authorization.loaded);
+    assert!(
+        admin
+            .authorization
+            .default_library
+            .contains(LibraryPermissionMask::VIEW)
+    );
+    assert!(
+        admin
+            .authorization
+            .default_library
+            .contains(LibraryPermissionMask::MANAGE_TITLES)
+    );
+    assert!(
+        admin
+            .authorization
+            .app
+            .contains(AppPermissionMask::MANAGE_USERS)
+    );
+    assert!(
+        admin
+            .authorization
+            .app
+            .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS)
+    );
 }
 
 #[test]
-fn user_with_limited_entitlements() {
+fn user_with_limited_permission_masks() {
     let user = User {
         id: Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
-        authorization: Default::default(),
+        authorization: UserAuthorization {
+            default_library: LibraryPermissionMask::from_permissions([
+                LibraryPermission::View,
+                LibraryPermission::ManageTitles,
+            ]),
+            loaded: true,
+            ..Default::default()
+        },
     };
-    assert!(user.has_entitlement(&Entitlement::ViewCatalog));
-    assert!(user.has_entitlement(&Entitlement::ManageTitle));
-    assert!(!user.has_entitlement(&Entitlement::ManageConfig));
-    assert!(!user.has_entitlement(&Entitlement::ManageUsers));
-    assert!(!user.has_all_entitlements());
+    assert!(
+        user.authorization
+            .default_library
+            .contains(LibraryPermissionMask::VIEW)
+    );
+    assert!(
+        user.authorization
+            .default_library
+            .contains(LibraryPermissionMask::MANAGE_TITLES)
+    );
+    assert!(
+        !user
+            .authorization
+            .app
+            .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS)
+    );
+    assert!(
+        !user
+            .authorization
+            .app
+            .contains(AppPermissionMask::MANAGE_USERS)
+    );
 }
 
 #[test]
-fn user_with_no_entitlements() {
+fn user_with_no_permission_masks() {
     let user = User {
         id: Id::new().0,
         username: "empty".to_string(),
         password_hash: None,
-        entitlements: vec![],
         authorization: Default::default(),
     };
-    assert!(!user.has_entitlement(&Entitlement::ViewCatalog));
-    assert!(!user.has_all_entitlements());
+    assert!(
+        !user
+            .authorization
+            .default_library
+            .contains(LibraryPermissionMask::VIEW)
+    );
+    assert!(user.authorization.app.is_empty());
 }
 
 #[test]
-fn user_with_password_hash_has_all_entitlements() {
+fn user_with_password_hash_has_full_permission_masks() {
     let user = User::with_password_hash("admin", "hashed_pw");
-    assert!(user.has_all_entitlements());
+    assert!(user.authorization.loaded);
+    assert!(
+        user.authorization
+            .app
+            .contains(AppPermissionMask::MANAGE_USERS)
+    );
     assert_eq!(user.password_hash.as_deref(), Some("hashed_pw"));
 }
 

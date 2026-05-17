@@ -13,10 +13,6 @@ fn admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
-        entitlements: vec![
-            scryer_domain::Entitlement::ViewCatalog,
-            scryer_domain::Entitlement::ManageConfig,
-        ],
         authorization: scryer_domain::UserAuthorization {
             app: scryer_domain::AppPermissionMask::from_permissions([
                 scryer_domain::AppPermission::ManageSystemSettings,

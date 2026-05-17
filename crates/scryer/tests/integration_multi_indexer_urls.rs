@@ -13,14 +13,14 @@ use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
     MovieFacetHandler, SeriesFacetHandler,
 };
-use scryer_domain::{Entitlement, ExternalId, MediaFacet, NewTitle, User};
+use scryer_domain::{ExternalId, MediaFacet, NewTitle, User};
 use scryer_infrastructure::sqlite::{
     PluginStore, PostProcessingScriptStore, RuleSetStore, ShowStore, TitleStore, UserStore,
 };
 use scryer_infrastructure::{
-    FileSystemLibraryScanner, InMemoryIndexerStatsTracker, MultiIndexerSearchClient,
-    SqliteConfigStore, SqliteLibraryStateStore, SqliteReleaseStore, SqliteServices,
-    SqliteSettingsStore, SqliteWorkflowStore,
+    DownloadClientConfigStore, FileSystemLibraryScanner, InMemoryIndexerStatsTracker,
+    IndexerConfigStore, MultiIndexerSearchClient, SqliteLibraryStateStore, SqliteReleaseStore,
+    SqliteServices, SqliteSettingsStore, SqliteWorkflowStore,
 };
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -59,7 +59,9 @@ async fn setup() -> (
     let db = SqliteServices::new(":memory:")
         .await
         .expect("in-memory SQLite");
-    let config_store = Arc::new(SqliteConfigStore::new(&db));
+    let indexer_config_store = Arc::new(IndexerConfigStore::from_sqlite_services(&db));
+    let download_client_config_store =
+        Arc::new(DownloadClientConfigStore::from_sqlite_services(&db));
     let release_store = Arc::new(SqliteReleaseStore::new(&db));
     let settings_store = Arc::new(SqliteSettingsStore::new(&db));
     let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
@@ -76,7 +78,7 @@ async fn setup() -> (
         Arc::new(InMemoryIndexerStatsTracker::new(None));
 
     let indexer_client = MultiIndexerSearchClient::new(
-        config_store.clone(),
+        indexer_config_store.clone(),
         indexer_stats.clone(),
         plugin_provider.clone(),
     );
@@ -140,14 +142,14 @@ async fn setup() -> (
             updated_at: now,
         },
     ] {
-        config_store
+        indexer_config_store
             .create(config)
             .await
             .expect("create indexer config");
     }
 
     scryer_application::DownloadClientConfigRepository::create(
-        &*config_store,
+        &*download_client_config_store,
         scryer_domain::DownloadClientConfig {
             id: "nzbget-1".into(),
             name: "NZBGet".into(),
@@ -201,9 +203,9 @@ async fn setup() -> (
     let shows: Arc<dyn scryer_application::ShowRepository> = show_store;
     let users: Arc<dyn scryer_application::UserRepository> = user_store;
     let indexer_configs_repo: Arc<dyn scryer_application::IndexerConfigRepository> =
-        config_store.clone();
+        indexer_config_store;
     let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
-        config_store.clone();
+        download_client_config_store;
     let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
     let settings: Arc<dyn scryer_application::SettingsRepository> = settings_store.clone();
     let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
@@ -265,12 +267,11 @@ async fn setup() -> (
         Arc::new(registry),
     );
 
-    // Create a test user with ViewCatalog entitlement
+    // Create a test user with catalog and title permissions.
     let mut user = User {
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
         authorization: Default::default(),
     };
 

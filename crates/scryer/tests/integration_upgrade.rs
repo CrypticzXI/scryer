@@ -13,9 +13,7 @@ use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
     ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, TitleRepository,
 };
-use scryer_domain::{
-    Entitlement, LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization,
-};
+use scryer_domain::{LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization};
 use scryer_infrastructure::FsFileImporter;
 
 // ---------------------------------------------------------------------------
@@ -120,7 +118,6 @@ fn test_actor() -> User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageConfig],
         authorization: UserAuthorization {
             loaded: true,
             default_library: LibraryPermissionMask::from_permissions([

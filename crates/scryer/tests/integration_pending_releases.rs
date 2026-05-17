@@ -204,7 +204,6 @@ async fn direct_wanted_item_lookup_requires_access_to_item_library() {
             id: user_id.clone(),
             username: "default-viewer".to_string(),
             password_hash: None,
-            entitlements: vec![],
             authorization: Default::default(),
         },
     )

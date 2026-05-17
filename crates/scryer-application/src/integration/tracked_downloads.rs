@@ -783,9 +783,8 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Utc;
     use scryer_domain::{
-        CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Entitlement, Id,
-        ImportRecord, ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title,
-        TitleHistoryEventType, User,
+        CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Id, ImportRecord,
+        ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title, TitleHistoryEventType, User,
     };
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -1614,7 +1613,6 @@ mod tests {
             id: "user-1".to_string(),
             username: "user@example.test".to_string(),
             password_hash: None,
-            entitlements: vec![Entitlement::ManageTitle],
             authorization: scryer_domain::UserAuthorization {
                 app: scryer_domain::AppPermissionMask::NONE,
                 libraries,

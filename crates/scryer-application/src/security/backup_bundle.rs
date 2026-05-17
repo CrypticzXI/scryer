@@ -474,10 +474,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "entitlements",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "episode_external_ids",
         classification: BackupTableClassification::Export,
     },
@@ -687,10 +683,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "user_app_permission_masks",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "user_entitlements",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
