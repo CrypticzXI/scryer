@@ -3213,10 +3213,6 @@ impl AppUseCase {
         let mut changed_keys = Vec::new();
 
         if let Some(normalized) = root_folder_update {
-            warn!(
-                facet = facet.as_str(),
-                "UpdateMediaSettings.root_folders is deprecated; updating default library roots"
-            );
             changed_keys.extend(
                 self.update_default_library_roots_from_entries(
                     &facet,
@@ -3227,10 +3223,6 @@ impl AppUseCase {
                 .await?,
             );
         } else if let Some(library_path) = normalize_optional_string(input.library_path) {
-            warn!(
-                facet = facet.as_str(),
-                "UpdateMediaSettings.library_path is deprecated; updating default library roots"
-            );
             let root_folders = normalize_root_folders(vec![RootFolderEntry {
                 path: library_path,
                 is_default: true,

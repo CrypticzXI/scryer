@@ -177,24 +177,6 @@ pub struct ExternalImportMonitorSnapshotChunk {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ExternalImportMonitorSnapshotPayload {
-    Movie {
-        entries: Vec<ExternalImportMonitorMovieEntry>,
-    },
-    Series {
-        entries: Vec<ExternalImportMonitorSeriesEntry>,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExternalImportMonitorSnapshot {
-    pub facet: scryer_domain::MediaFacet,
-    pub payload: ExternalImportMonitorSnapshotPayload,
-    pub created_at: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DownloadQueueCommandRecord {
     pub id: String,
     pub action: DownloadQueueCommandAction,

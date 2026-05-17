@@ -373,8 +373,7 @@ pub use types::{
 pub use types::{
     ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
     ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
-    ExternalImportMonitorSnapshot, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotPayload,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
 };
 pub use types::{
     IndexerSearchResponse, IndexerSearchResult, ReleaseCandidateProvenance,

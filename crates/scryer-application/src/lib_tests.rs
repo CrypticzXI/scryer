@@ -959,43 +959,17 @@ impl MockDomainEventRepo {
 
 #[derive(Default)]
 struct MockExternalImportMonitorSnapshotRepo {
-    snapshots: Arc<Mutex<Vec<ExternalImportMonitorSnapshot>>>,
     chunks: Arc<Mutex<Vec<ExternalImportMonitorSnapshotChunk>>>,
 }
 
 #[async_trait]
 impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapshotRepo {
-    async fn upsert_external_import_monitor_snapshot(
-        &self,
-        snapshot: &ExternalImportMonitorSnapshot,
-    ) -> AppResult<()> {
-        let mut snapshots = self.snapshots.lock().await;
-        snapshots.retain(|existing| existing.facet != snapshot.facet);
-        snapshots.push(snapshot.clone());
-        Ok(())
-    }
-
     async fn append_external_import_monitor_snapshot_chunk(
         &self,
         chunk: &ExternalImportMonitorSnapshotChunk,
     ) -> AppResult<()> {
         self.chunks.lock().await.push(chunk.clone());
         Ok(())
-    }
-
-    async fn list_external_import_monitor_snapshot_chunks(
-        &self,
-        facet: MediaFacet,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
-        let chunks = self.chunks.lock().await;
-        let mut matched = chunks
-            .iter()
-            .filter(|chunk| chunk.facet == facet && chunk.entry_kind == entry_kind)
-            .cloned()
-            .collect::<Vec<_>>();
-        matched.sort_by_key(|chunk| chunk.chunk_index);
-        Ok(matched)
     }
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
@@ -1030,23 +1004,31 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
         chunks.retain(|chunk| chunk.facet != facet);
         Ok(())
     }
+}
 
-    async fn get_external_import_monitor_snapshot(
-        &self,
-        facet: &MediaFacet,
-    ) -> AppResult<Option<ExternalImportMonitorSnapshot>> {
-        let snapshots = self.snapshots.lock().await;
-        Ok(snapshots
-            .iter()
-            .find(|snapshot| &snapshot.facet == facet)
-            .cloned())
-    }
-
-    async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()> {
-        let mut snapshots = self.snapshots.lock().await;
-        snapshots.retain(|snapshot| &snapshot.facet != facet);
-        Ok(())
-    }
+async fn append_series_monitor_snapshot_chunk(
+    app: &AppUseCase,
+    user: &User,
+    facet: MediaFacet,
+    entries: Vec<ExternalImportMonitorSeriesEntry>,
+) {
+    let payload_ndjson = entries
+        .into_iter()
+        .map(|entry| serde_json::to_string(&entry).expect("serialize series snapshot entry"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.append_external_import_monitor_snapshot_chunk(
+        user,
+        ExternalImportMonitorSnapshotChunk {
+            facet,
+            entry_kind: ExternalImportMonitorSnapshotEntryKind::Series,
+            chunk_index: 0,
+            payload_ndjson,
+            created_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .await
+    .expect("append monitor snapshot chunk");
 }
 
 #[async_trait]
@@ -17541,20 +17523,18 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
     .await
     .expect("create episode");
 
-    app.save_external_import_monitor_snapshot(
+    append_series_monitor_snapshot_chunk(
+        &app,
         &user,
         MediaFacet::Series,
-        ExternalImportMonitorSnapshotPayload::Series {
-            entries: vec![ExternalImportMonitorSeriesEntry {
-                tvdb_id: Some("4242".to_string()),
-                monitored: false,
-                seasons: vec![],
-                episodes: vec![],
-            }],
-        },
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("4242".to_string()),
+            monitored: false,
+            seasons: vec![],
+            episodes: vec![],
+        }],
     )
-    .await
-    .expect("save monitor snapshot");
+    .await;
 
     let applied = app
         .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
@@ -17566,20 +17546,18 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
     assert_eq!(events.len(), 1);
     assert!(events.iter().all(|event| event.actor_user_id.is_none()));
 
-    app.save_external_import_monitor_snapshot(
+    append_series_monitor_snapshot_chunk(
+        &app,
         &user,
         MediaFacet::Series,
-        ExternalImportMonitorSnapshotPayload::Series {
-            entries: vec![ExternalImportMonitorSeriesEntry {
-                tvdb_id: Some("4242".to_string()),
-                monitored: false,
-                seasons: vec![],
-                episodes: vec![],
-            }],
-        },
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("4242".to_string()),
+            monitored: false,
+            seasons: vec![],
+            episodes: vec![],
+        }],
     )
-    .await
-    .expect("save unchanged monitor snapshot");
+    .await;
 
     let reapplied = app
         .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
@@ -17670,28 +17648,26 @@ async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
         .await
         .expect("disable episode");
 
-    app.save_external_import_monitor_snapshot(
+    append_series_monitor_snapshot_chunk(
+        &app,
         &user,
         MediaFacet::Series,
-        ExternalImportMonitorSnapshotPayload::Series {
-            entries: vec![ExternalImportMonitorSeriesEntry {
-                tvdb_id: Some("5150".to_string()),
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("5150".to_string()),
+            monitored: true,
+            seasons: vec![ExternalImportMonitorSeasonEntry {
+                season_number: 1,
                 monitored: true,
-                seasons: vec![ExternalImportMonitorSeasonEntry {
-                    season_number: 1,
-                    monitored: true,
-                }],
-                episodes: vec![ExternalImportMonitorEpisodeEntry {
-                    tvdb_id: None,
-                    season_number: 1,
-                    episode_number: 1,
-                    monitored: true,
-                }],
             }],
-        },
+            episodes: vec![ExternalImportMonitorEpisodeEntry {
+                tvdb_id: None,
+                season_number: 1,
+                episode_number: 1,
+                monitored: true,
+            }],
+        }],
     )
-    .await
-    .expect("save monitor snapshot");
+    .await;
 
     let upserts_before_apply = wanted_items.upsert_call_count();
     let applied = app
@@ -17766,28 +17742,26 @@ async fn external_import_monitor_snapshot_emits_title_updated_for_child_only_cha
 
     let events_before_apply = title_updated_events(&app, &title.id).await.len();
 
-    app.save_external_import_monitor_snapshot(
+    append_series_monitor_snapshot_chunk(
+        &app,
         &user,
         MediaFacet::Series,
-        ExternalImportMonitorSnapshotPayload::Series {
-            entries: vec![ExternalImportMonitorSeriesEntry {
-                tvdb_id: Some("6262".to_string()),
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("6262".to_string()),
+            monitored: true,
+            seasons: vec![ExternalImportMonitorSeasonEntry {
+                season_number: 1,
                 monitored: true,
-                seasons: vec![ExternalImportMonitorSeasonEntry {
-                    season_number: 1,
-                    monitored: true,
-                }],
-                episodes: vec![ExternalImportMonitorEpisodeEntry {
-                    tvdb_id: None,
-                    season_number: 1,
-                    episode_number: 1,
-                    monitored: true,
-                }],
             }],
-        },
+            episodes: vec![ExternalImportMonitorEpisodeEntry {
+                tvdb_id: None,
+                season_number: 1,
+                episode_number: 1,
+                monitored: true,
+            }],
+        }],
     )
-    .await
-    .expect("save monitor snapshot");
+    .await;
 
     let applied = app
         .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
@@ -17886,25 +17860,23 @@ async fn external_import_monitor_snapshot_enables_collection_for_monitored_episo
         .await
         .expect("disable collection");
 
-    app.save_external_import_monitor_snapshot(
+    append_series_monitor_snapshot_chunk(
+        &app,
         &user,
         MediaFacet::Series,
-        ExternalImportMonitorSnapshotPayload::Series {
-            entries: vec![ExternalImportMonitorSeriesEntry {
-                tvdb_id: Some("7373".to_string()),
-                monitored: false,
-                seasons: vec![],
-                episodes: vec![ExternalImportMonitorEpisodeEntry {
-                    tvdb_id: None,
-                    season_number: 1,
-                    episode_number: 1,
-                    monitored: true,
-                }],
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("7373".to_string()),
+            monitored: false,
+            seasons: vec![],
+            episodes: vec![ExternalImportMonitorEpisodeEntry {
+                tvdb_id: None,
+                season_number: 1,
+                episode_number: 1,
+                monitored: true,
             }],
-        },
+        }],
     )
-    .await
-    .expect("save monitor snapshot");
+    .await;
 
     let upserts_before_apply = wanted_items.upsert_call_count();
     let applied = app

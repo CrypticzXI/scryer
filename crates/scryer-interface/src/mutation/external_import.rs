@@ -107,8 +107,6 @@ async fn clear_external_import_monitor_apply_target(
     actor: &scryer_domain::User,
     facet: MediaFacet,
 ) -> scryer_application::AppResult<()> {
-    app.clear_external_import_monitor_snapshot(actor, facet.clone())
-        .await?;
     app.clear_external_import_monitor_snapshot_chunks(actor, facet)
         .await
 }
@@ -1028,7 +1026,7 @@ impl ExternalImportMutations {
 
         for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
             if let Err(err) = app
-                .clear_external_import_monitor_snapshot(&actor, facet.clone())
+                .clear_external_import_monitor_snapshot_chunks(&actor, facet.clone())
                 .await
             {
                 result.errors.push(format!(

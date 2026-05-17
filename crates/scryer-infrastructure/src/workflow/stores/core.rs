@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
-    DownloadSubmission, DownloadSubmissionRepository, ExternalImportMonitorSnapshot,
-    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
+    DownloadSubmission, DownloadSubmissionRepository, ExternalImportMonitorSnapshotChunk,
+    ExternalImportMonitorSnapshotEntryKind,
     ExternalImportMonitorSnapshotRepository, ImportArtifact, ImportArtifactRepository,
     ImportRepository, JobKey, JobRunRecord, JobRunRepository, JobRunStatus, JobTriggerSource,
     PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
@@ -17,7 +17,6 @@ use scryer_domain::{
     DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus, ImportType, MediaFacet,
     NewDomainEvent, TitleHistoryEventType,
 };
-use serde_json::Value as JsonValue;
 use sqlx::{Row, types::Json};
 
 use crate::queries::sql_runtime::{
@@ -733,39 +732,6 @@ impl ImportArtifactRepository for ImportStore {
 
 #[async_trait]
 impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
-    async fn upsert_external_import_monitor_snapshot(
-        &self,
-        snapshot: &ExternalImportMonitorSnapshot,
-    ) -> AppResult<()> {
-        let snapshot = snapshot.clone();
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "upsert_external_import_monitor_snapshot",
-            move |tx| {
-                let snapshot = snapshot.clone();
-                Box::pin(async move {
-                    let payload = serde_json::to_value(&snapshot.payload).map_err(repo_err)?;
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "INSERT INTO external_import_monitor_snapshots (facet, payload_json, created_at)
-                         VALUES ({}, {}, {})
-                         ON CONFLICT(facet) DO UPDATE SET
-                             payload_json = excluded.payload_json,
-                             created_at = excluded.created_at",
-                        &[
-                            SqlArg::Text(snapshot.facet.as_str().to_string()),
-                            SqlArg::Json(payload),
-                            SqlArg::Timestamp(parse_datetime_or_now(Some(&snapshot.created_at))),
-                        ],
-                    )
-                    .await?;
-                    Ok(())
-                })
-            },
-        )
-        .await
-    }
-
     async fn append_external_import_monitor_snapshot_chunk(
         &self,
         chunk: &ExternalImportMonitorSnapshotChunk,
@@ -798,25 +764,6 @@ impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
                     Ok(())
                 })
             },
-        )
-        .await
-    }
-
-    async fn list_external_import_monitor_snapshot_chunks(
-        &self,
-        facet: MediaFacet,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
-        fetch_snapshot_chunks(
-            self.datastore.read_exec(),
-            "SELECT facet, entry_kind, chunk_index, payload_ndjson, created_at
-             FROM external_import_monitor_snapshot_chunks
-             WHERE facet = {} AND entry_kind = {}
-             ORDER BY chunk_index ASC",
-            &[
-                SqlArg::Text(facet.as_str().to_string()),
-                SqlArg::Text(entry_kind.as_str().to_string()),
-            ],
         )
         .await
     }
@@ -859,52 +806,6 @@ impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
         .await
         .map_err(map_snapshot_chunk_error)?;
         Ok(())
-    }
-
-    async fn get_external_import_monitor_snapshot(
-        &self,
-        facet: &MediaFacet,
-    ) -> AppResult<Option<ExternalImportMonitorSnapshot>> {
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            "SELECT facet, payload_json, created_at
-             FROM external_import_monitor_snapshots
-             WHERE facet = {}",
-            &[SqlArg::Text(facet.as_str().to_string())],
-        )
-        .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        snapshot_from_row(&row)
-    }
-
-    async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()> {
-        let facet = facet.clone();
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "delete_external_import_monitor_snapshot",
-            move |tx| {
-                let facet = facet.clone();
-                Box::pin(async move {
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "DELETE FROM external_import_monitor_snapshots WHERE facet = {}",
-                        &[SqlArg::Text(facet.as_str().to_string())],
-                    )
-                    .await?;
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "DELETE FROM external_import_monitor_snapshot_chunks WHERE facet = {}",
-                        &[SqlArg::Text(facet.as_str().to_string())],
-                    )
-                    .await
-                    .map_err(map_snapshot_chunk_error)?;
-                    Ok(())
-                })
-            },
-        )
-        .await
     }
 }
 
@@ -2125,21 +2026,6 @@ fn import_artifact_from_row(row: &SqlRow) -> AppResult<ImportArtifact> {
         imported_media_file_id: row.opt_text("imported_media_file_id")?,
         created_at: row.timestamp("created_at")?,
     })
-}
-
-fn snapshot_from_row(row: &SqlRow) -> AppResult<Option<ExternalImportMonitorSnapshot>> {
-    let facet_raw = row.text("facet")?;
-    let facet = MediaFacet::parse(&facet_raw)
-        .ok_or_else(|| AppError::Repository(format!("invalid snapshot facet: {facet_raw}")))?;
-    let payload = json_from_row(row, "payload_json")?;
-    if payload.get("kind").and_then(JsonValue::as_str) == Some("chunked") {
-        return Ok(None);
-    }
-    Ok(Some(ExternalImportMonitorSnapshot {
-        facet,
-        payload: serde_json::from_value(payload).map_err(repo_err)?,
-        created_at: timestamp_string(row, "created_at")?,
-    }))
 }
 
 fn snapshot_chunk_from_row(row: &SqlRow) -> AppResult<ExternalImportMonitorSnapshotChunk> {

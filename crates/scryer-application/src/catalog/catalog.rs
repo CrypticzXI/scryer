@@ -3805,54 +3805,24 @@ impl AppUseCase {
             )
             .await?;
 
-        if !chunk_batch.is_empty() {
-            match facet {
-                MediaFacet::Movie => {
-                    self.apply_movie_monitor_snapshot_chunks(&now).await?;
-                }
-                MediaFacet::Series | MediaFacet::Anime => {
-                    self.apply_series_monitor_snapshot_chunks(facet, &now)
-                        .await?;
-                }
-            }
-
-            self.services
-                .workflow
-                .external_import_monitor_snapshots
-                .delete_external_import_monitor_snapshot(facet)
-                .await?;
-
-            return Ok(true);
+        if chunk_batch.is_empty() {
+            return Ok(false);
         }
 
-        let Some(snapshot) = self.pending_external_import_monitor_snapshot(facet).await? else {
-            return Ok(false);
-        };
-
-        match (&snapshot.facet, &snapshot.payload) {
-            (MediaFacet::Movie, ExternalImportMonitorSnapshotPayload::Movie { entries }) => {
-                self.apply_movie_monitor_snapshot_entries(entries, &now)
-                    .await?;
+        match facet {
+            MediaFacet::Movie => {
+                self.apply_movie_monitor_snapshot_chunks(&now).await?;
             }
-            (
-                MediaFacet::Series | MediaFacet::Anime,
-                ExternalImportMonitorSnapshotPayload::Series { entries },
-            ) => {
-                self.apply_series_monitor_snapshot_entries(&snapshot.facet, entries, &now)
+            MediaFacet::Series | MediaFacet::Anime => {
+                self.apply_series_monitor_snapshot_chunks(facet, &now)
                     .await?;
-            }
-            (snapshot_facet, _) => {
-                return Err(AppError::Validation(format!(
-                    "monitor snapshot payload did not match facet {}",
-                    snapshot_facet.as_str()
-                )));
             }
         }
 
         self.services
             .workflow
             .external_import_monitor_snapshots
-            .delete_external_import_monitor_snapshot(facet)
+            .delete_external_import_monitor_snapshot_chunks(facet.clone())
             .await?;
 
         Ok(true)

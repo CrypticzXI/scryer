@@ -722,21 +722,10 @@ pub trait ImportRepository: Send + Sync {
 
 #[async_trait]
 pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
-    async fn upsert_external_import_monitor_snapshot(
-        &self,
-        snapshot: &crate::ExternalImportMonitorSnapshot,
-    ) -> AppResult<()>;
-
     async fn append_external_import_monitor_snapshot_chunk(
         &self,
         chunk: &crate::ExternalImportMonitorSnapshotChunk,
     ) -> AppResult<()>;
-
-    async fn list_external_import_monitor_snapshot_chunks(
-        &self,
-        facet: MediaFacet,
-        entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>>;
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
@@ -750,13 +739,6 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
         &self,
         facet: MediaFacet,
     ) -> AppResult<()>;
-
-    async fn get_external_import_monitor_snapshot(
-        &self,
-        facet: &MediaFacet,
-    ) -> AppResult<Option<crate::ExternalImportMonitorSnapshot>>;
-
-    async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()>;
 }
 
 #[async_trait]

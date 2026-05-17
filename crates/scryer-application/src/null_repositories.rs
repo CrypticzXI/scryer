@@ -98,26 +98,11 @@ pub struct NullExternalImportMonitorSnapshotRepository;
 
 #[async_trait]
 impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapshotRepository {
-    async fn upsert_external_import_monitor_snapshot(
-        &self,
-        _: &crate::ExternalImportMonitorSnapshot,
-    ) -> AppResult<()> {
-        Ok(())
-    }
-
     async fn append_external_import_monitor_snapshot_chunk(
         &self,
         _: &crate::ExternalImportMonitorSnapshotChunk,
     ) -> AppResult<()> {
         Ok(())
-    }
-
-    async fn list_external_import_monitor_snapshot_chunks(
-        &self,
-        _: crate::MediaFacet,
-        _: crate::ExternalImportMonitorSnapshotEntryKind,
-    ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>> {
-        Ok(vec![])
     }
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
@@ -133,20 +118,6 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
         _: crate::MediaFacet,
-    ) -> AppResult<()> {
-        Ok(())
-    }
-
-    async fn get_external_import_monitor_snapshot(
-        &self,
-        _: &crate::MediaFacet,
-    ) -> AppResult<Option<crate::ExternalImportMonitorSnapshot>> {
-        Ok(None)
-    }
-
-    async fn delete_external_import_monitor_snapshot(
-        &self,
-        _: &crate::MediaFacet,
     ) -> AppResult<()> {
         Ok(())
     }
