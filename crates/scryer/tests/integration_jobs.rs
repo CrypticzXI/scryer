@@ -190,7 +190,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
         Some(show_dir.to_string_lossy().as_ref())
     );
     assert!(
-        ctx.library_state
+        ctx.media_files
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files")

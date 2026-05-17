@@ -23,7 +23,7 @@ use scryer_infrastructure::FsFileImporter;
 fn app_with_real_fs(ctx: &TestContext) -> scryer_application::AppUseCase {
     ctx.app.with_test_overrides(|builder| {
         builder
-            .with_media_files(Arc::new(ctx.library_state.clone()))
+            .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_file_importer(Arc::new(FsFileImporter))
     })
 }
@@ -95,12 +95,12 @@ async fn seed_media_file(
         ..Default::default()
     };
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&input)
         .await
         .expect("insert");
     let files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(title_id)
         .await
         .unwrap();
@@ -199,7 +199,7 @@ async fn upgrade_replaces_old_file_with_new() {
 
     // DB should have the new file, not the old one
     let files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title("title-1")
         .await
         .unwrap();

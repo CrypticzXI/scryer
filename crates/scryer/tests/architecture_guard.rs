@@ -436,7 +436,7 @@ fn application_boundary_stays_sqlite_agnostic() {
 
 #[test]
 fn datastore_assembly_does_not_wire_null_repositories_for_engines() {
-    let datastore = repo_root().join("crates/scryer-infrastructure/src/datastore.rs");
+    let datastore = repo_root().join("crates/scryer-infrastructure/src/storage/assembly.rs");
     let source = production_rust_source(&datastore);
     let forbidden = [
         "NullAcquisitionStateRepository",
@@ -469,7 +469,7 @@ fn datastore_assembly_does_not_wire_null_repositories_for_engines() {
 
 #[test]
 fn postgres_runtime_paths_do_not_ship_unsupported_markers() {
-    let postgres_src = repo_root().join("crates/scryer-infrastructure/src/postgres");
+    let postgres_src = repo_root().join("crates/scryer-infrastructure/src/storage/postgres");
     let forbidden = ["not implemented", "unsupported("];
 
     for path in rust_files_under(&postgres_src) {
@@ -574,7 +574,7 @@ fn postgres_runtime_sql_references_match_0115_baseline_columns() {
     let ignored_tables = BTreeSet::from(["_sqlx_migrations"]);
     let mut failures = Vec::new();
 
-    for path in rust_files_under(&root.join("crates/scryer-infrastructure/src/postgres")) {
+    for path in rust_files_under(&root.join("crates/scryer-infrastructure/src/storage/postgres")) {
         let source = production_rust_source(&path);
 
         for identifier in removed_runtime_identifiers {
@@ -694,10 +694,11 @@ fn postgres_schema_declares_every_logical_backup_export_table() {
 #[test]
 fn settings_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let settings_store =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/settings_store.rs"));
+    let settings_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/settings/settings_store.rs"),
+    );
     let quality_profile_store = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/quality_profile_store.rs"),
+        &root.join("crates/scryer-infrastructure/src/settings/quality_profile_store.rs"),
     );
 
     assert!(
@@ -772,15 +773,15 @@ fn backup_catalog_exports_foreign_key_parents() {
 fn config_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
     let config_helper =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/config_store.rs"));
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/settings/crypto.rs"));
     let indexer_store = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/indexer_config_store.rs"),
+        &root.join("crates/scryer-infrastructure/src/indexers/config_store.rs"),
     );
     let download_client_store = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/download_client_config_store.rs"),
+        &root.join("crates/scryer-infrastructure/src/downloads/config_store.rs"),
     );
     let subtitle_provider_store = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/subtitle_provider_config_store.rs"),
+        &root.join("crates/scryer-infrastructure/src/settings/subtitle_provider_config_store.rs"),
     );
     let stores = [
         (
@@ -841,7 +842,7 @@ fn config_repository_uses_shared_runtime_kernel() {
 fn notification_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
     let notification_store = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/notification_store.rs"),
+        &root.join("crates/scryer-infrastructure/src/notifications/store.rs"),
     );
 
     assert!(
@@ -884,9 +885,11 @@ fn notification_repository_uses_shared_runtime_kernel() {
 #[test]
 fn release_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let release_store =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/release_store.rs"));
-    let postgres_release = root.join("crates/scryer-infrastructure/src/postgres/release_store.rs");
+    let release_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/workflow/release_store.rs"),
+    );
+    let postgres_release =
+        root.join("crates/scryer-infrastructure/src/storage/postgres/release_store.rs");
 
     assert!(
         release_store.contains("pub struct ReleaseStore {"),
@@ -928,13 +931,16 @@ fn release_repository_uses_shared_runtime_kernel() {
 #[test]
 fn customization_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let rule_sets =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/rule_set_store.rs"));
-    let scripts = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/post_processing_script_store.rs"),
+    let rule_sets = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/customization/rule_set_store.rs"),
     );
-    let plugins =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/plugin_store.rs"));
+    let scripts = production_rust_source(
+        &root
+            .join("crates/scryer-infrastructure/src/customization/post_processing_script_store.rs"),
+    );
+    let plugins = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/customization/plugin_store.rs"),
+    );
 
     for (name, source, trait_impl) in [
         (
@@ -988,13 +994,122 @@ fn customization_repository_uses_shared_runtime_kernel() {
             "customization repositories must not reintroduce monolithic or paired implementation `{forbidden}`"
         );
     }
+
+    for forbidden in [
+        "RULE_SET_UPSERT_SQL",
+        "POST_PROCESSING_SCRIPT_UPSERT_SQL",
+        "POST_PROCESSING_RUN_UPSERT_SQL",
+        "PLUGIN_INSTALLATION_UPSERT_POSTGRES",
+        "CAST({} AS jsonb)",
+        "applied_facets ?",
+    ] {
+        assert!(
+            !rule_sets.contains(forbidden)
+                && !scripts.contains(forbidden)
+                && !plugins.contains(forbidden),
+            "customization stores must keep PostgreSQL behavior on the shared SQLite-canonical path; found `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn json_parity_stores_do_not_bind_repository_payloads_as_jsonb() {
+    let root = repo_root();
+    let files = [
+        "crates/scryer-infrastructure/src/customization/rule_set_store.rs",
+        "crates/scryer-infrastructure/src/customization/post_processing_script_store.rs",
+        "crates/scryer-infrastructure/src/customization/plugin_store.rs",
+        "crates/scryer-infrastructure/src/notifications/store.rs",
+        "crates/scryer-infrastructure/src/media/libraries/scan_unmatched_store.rs",
+        "crates/scryer-infrastructure/src/media/shows/store.rs",
+    ];
+
+    for file in files {
+        let source = production_rust_source(&root.join(file));
+        for forbidden in ["SqlArg::Json", "SqlArg::OptJson", "types::Json", "::jsonb"] {
+            assert!(
+                !source.contains(forbidden),
+                "{file} must store touched repository JSON as canonical text; found `{forbidden}`"
+            );
+        }
+    }
+
+    let show_store =
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/media/shows/store.rs"));
+    for forbidden in [
+        "COLLECTION_INSERT_SQL_POSTGRES",
+        "COLLECTION_UPDATE_SQL_POSTGRES",
+        "EPISODE_INSERT_SQL_POSTGRES",
+        "EPISODE_UPDATE_SQL_POSTGRES",
+        "updated_at = {}",
+    ] {
+        assert!(
+            !show_store.contains(forbidden),
+            "ShowStore must not keep PostgreSQL-only collection/episode persistence behavior `{forbidden}`"
+        );
+    }
+
+    let media_file_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/media/search/media_file_store.rs"),
+    );
+    for forbidden in [
+        "SqlArg::Json",
+        "SqlArg::OptJson",
+        "json_arg_for_datastore",
+        "analysis_json ->",
+        "json_extract(mf.analysis_json",
+    ] {
+        assert!(
+            !media_file_store.contains(forbidden),
+            "MediaFileStore must decode analysis_json in Rust and keep only true aggregate SQL splits; found `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn postgres_json_text_parity_migration_covers_touched_columns() {
+    let root = repo_root();
+    let manifest = fs::read_to_string(root.join("crates/scryer/src/db/migration_manifest.toml"))
+        .expect("read migration manifest");
+    assert!(
+        manifest.contains("version = 120")
+            && manifest.contains("postgres/migrations/0120_json_text_parity.sql"),
+        "migration manifest should include the JSON text parity migration"
+    );
+
+    let sql = fs::read_to_string(
+        root.join("crates/scryer/src/db/postgres/migrations/0120_json_text_parity.sql"),
+    )
+    .expect("read Postgres JSON text parity migration");
+    for required in [
+        "rule_sets",
+        "applied_facets TYPE text",
+        "post_processing_scripts",
+        "plugin_installations",
+        "descriptor_json TYPE text",
+        "notification_channels",
+        "config_json TYPE text",
+        "library_scan_unmatched_items",
+        "search_attempts_json TYPE text",
+        "media_files",
+        "analysis_json TYPE text",
+        "collections",
+        "interstitial_genres_json TYPE text",
+        "special_movies_json TYPE text",
+    ] {
+        assert!(
+            sql.contains(required),
+            "Postgres JSON text parity migration is missing `{required}`"
+        );
+    }
 }
 
 #[test]
 fn workflow_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let workflow_store =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/workflow_store.rs"));
+    let workflow_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/workflow/stores/core.rs"),
+    );
 
     for concrete_store in [
         "pub struct DomainEventStore",
@@ -1069,22 +1184,22 @@ fn catalog_repository_has_been_evacuated_to_domain_stores() {
 
     let stores = [
         (
-            "title_store.rs",
+            "media/titles/store.rs",
             "pub struct TitleStore",
             "impl TitleRepository for TitleStore",
         ),
         (
-            "show_store.rs",
+            "media/shows/store.rs",
             "pub struct ShowStore",
             "impl ShowRepository for ShowStore",
         ),
         (
-            "library_store.rs",
+            "media/libraries/store.rs",
             "pub struct LibraryStore",
             "impl LibraryRepository for LibraryStore",
         ),
         (
-            "user_store.rs",
+            "users/store.rs",
             "pub struct UserStore",
             "impl UserRepository for UserStore",
         ),
@@ -1153,68 +1268,149 @@ fn legacy_entitlement_runtime_model_has_been_removed() {
 fn library_state_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
     let library_state = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/library_state_store.rs"),
+        &root.join("crates/scryer-infrastructure/src/media/libraries/state_store/store.rs"),
     );
-    let library_state_postgres = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/library_state_store/postgres.rs"),
+    let media_file_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/media/search/media_file_store.rs"),
+    );
+    let library_scan_unmatched_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/media/libraries/scan_unmatched_store.rs"),
     );
     let app_services =
         production_rust_source(&root.join("crates/scryer-application/src/services.rs"));
 
     assert!(
         library_state.contains("pub struct LibraryProbeStore")
-            && library_state.contains("pub struct LibraryStateStore"),
-        "library state should expose separate concrete probe and state stores"
+            && library_state.contains("pub struct WantedStore")
+            && library_state.contains("pub struct PendingReleaseStore")
+            && library_state.contains("pub struct BlocklistStore")
+            && library_state.contains("pub struct SubtitleDownloadStore")
+            && library_state.contains("pub struct HousekeepingStore"),
+        "library state should expose concrete split stores for each repository slice"
     );
     assert!(
-        library_state.contains("datastore: StoreDatastore"),
-        "library probe and state stores must own StoreDatastore"
+        library_state.contains("datastore: StoreDatastore")
+            && media_file_store.contains("datastore: StoreDatastore")
+            && library_scan_unmatched_store.contains("datastore: StoreDatastore"),
+        "library concern stores must own StoreDatastore"
     );
     assert!(
         library_state.contains("impl LibraryProbeRepository for LibraryProbeStore"),
         "LibraryProbeStore should implement LibraryProbeRepository directly"
     );
     assert!(
-        library_state.contains("SqlRuntime::fetch_optional")
-            && library_state.contains("SqlRuntime::run_in_transaction"),
-        "library state should use the shared SQL runtime for shared probe reads and writes"
+        media_file_store.contains("impl MediaFileRepository for MediaFileStore")
+            && library_scan_unmatched_store
+                .contains("impl LibraryScanUnmatchedItemRepository for LibraryScanUnmatchedStore"),
+        "media files and unmatched scan items should be concrete concern stores"
     );
     assert!(
-        library_state.contains("impl LibraryScanUnmatchedItemRepository for LibraryStateStore")
-            && library_state.contains("impl MediaFileRepository for LibraryStateStore")
-            && library_state.contains("impl WantedItemRepository for LibraryStateStore")
-            && library_state.contains("impl HousekeepingRepository for LibraryStateStore")
-            && library_state.contains("impl PendingReleaseRepository for LibraryStateStore")
-            && library_state.contains("impl BlocklistRepository for LibraryStateStore")
-            && library_state.contains("impl SubtitleDownloadRepository for LibraryStateStore"),
-        "LibraryStateStore should implement the remaining library-state traits directly"
+        library_state.contains("SqlRuntime::fetch_optional")
+            && library_state.contains("SqlRuntime::run_in_transaction")
+            && media_file_store.contains("SqlRuntime::")
+            && library_scan_unmatched_store.contains("SqlRuntime::"),
+        "library concern stores should use the shared SQL runtime"
+    );
+    assert!(
+        library_state.contains("impl WantedItemRepository for WantedStore")
+            && library_state.contains("impl HousekeepingRepository for HousekeepingStore")
+            && library_state.contains("impl PendingReleaseRepository for PendingReleaseStore")
+            && library_state.contains("impl BlocklistRepository for BlocklistStore")
+            && library_state.contains("impl SubtitleDownloadRepository for SubtitleDownloadStore")
+            && library_state.contains("async fn run_database_maintenance(&self) -> AppResult<()>"),
+        "split library-state stores should implement the remaining traits directly"
     );
     assert!(
         !root
-            .join("crates/scryer-infrastructure/src/postgres/library_state_store.rs")
+            .join("crates/scryer-infrastructure/src/storage/postgres/library_state_store.rs")
+            .exists(),
+        "library state should not retain a postgres sidecar store file"
+    );
+    assert!(
+        !root
+            .join("crates/scryer-infrastructure/src/media/libraries/state_store/postgres.rs")
             .exists(),
         "library state should not retain a postgres sidecar store file"
     );
 
-    let combined = format!("{library_state}\n{library_state_postgres}\n{app_services}");
+    let combined = format!(
+        "{library_state}\n{media_file_store}\n{library_scan_unmatched_store}\n{app_services}"
+    );
     for forbidden in [
         "trait LibraryStateSql",
         "LibraryStateStore<",
+        "SqliteLibraryStateSql",
+        "PostgresLibraryStateSql",
         "SqliteLibraryStateStore",
         "PostgresLibraryStateStore",
         "with_library_state_store(",
         "LibraryStateSqlHandle",
         "fn library_state_sql(",
         "dispatch_library_state_sql!",
+        "dispatch_library_state_backend!",
         "impl LibraryProbeRepository for SqliteLibraryStateSql",
         "impl LibraryProbeRepository for PostgresLibraryStateSql",
         "impl TitleImageRepository for LibraryStateStore",
         "impl TitleImageRepository for SqliteLibraryStateSql",
         "impl TitleImageRepository for PostgresLibraryStateSql",
+        "impl MediaFileRepository for LibraryStateStore",
+        "impl MediaFileRepository for SqliteLibraryStateSql",
+        "impl MediaFileRepository for PostgresLibraryStateSql",
+        "impl LibraryScanUnmatchedItemRepository for LibraryStateStore",
+        "impl LibraryScanUnmatchedItemRepository for SqliteLibraryStateSql",
+        "impl LibraryScanUnmatchedItemRepository for PostgresLibraryStateSql",
+        "impl WantedItemRepository for SqliteLibraryStateSql",
+        "impl WantedItemRepository for PostgresLibraryStateSql",
+        "impl PendingReleaseRepository for SqliteLibraryStateSql",
+        "impl PendingReleaseRepository for PostgresLibraryStateSql",
+        "impl BlocklistRepository for SqliteLibraryStateSql",
+        "impl BlocklistRepository for PostgresLibraryStateSql",
+        "impl SubtitleDownloadRepository for SqliteLibraryStateSql",
+        "impl SubtitleDownloadRepository for PostgresLibraryStateSql",
+        "UpsertLibraryScanUnmatchedItem",
+        "InsertMediaFile {",
     ] {
         assert!(
             !combined.contains(forbidden),
             "library-state slice must not reintroduce `{forbidden}`"
+        );
+    }
+
+    for removed_query in [
+        "crates/scryer-infrastructure/src/queries/media_file.rs",
+        "crates/scryer-infrastructure/src/queries/library_scan_unmatched.rs",
+        "crates/scryer-infrastructure/src/media/search/blocklist.rs",
+        "crates/scryer-infrastructure/src/media/search/pending_releases.rs",
+        "crates/scryer-infrastructure/src/media/search/subtitle.rs",
+        "crates/scryer-infrastructure/src/workflow/housekeeping.rs",
+    ] {
+        assert!(
+            !root.join(removed_query).exists(),
+            "migrated library-state query module should stay removed: {removed_query}"
+        );
+    }
+}
+
+#[test]
+fn sqlite_command_bus_stays_removed() {
+    let root = repo_root();
+    let infrastructure_src = root.join("crates/scryer-infrastructure/src");
+    let combined = rust_files_under(&infrastructure_src)
+        .into_iter()
+        .map(|path| production_rust_source(&path))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for forbidden in [
+        "DbCommand",
+        "spawn_db_command_worker",
+        "Sender<DbCommand>",
+        "pub type SqliteServices = DbRuntime",
+        "pub struct DbRuntime",
+    ] {
+        assert!(
+            !combined.contains(forbidden),
+            "SQLite command bus must stay removed; found `{forbidden}`"
         );
     }
 }
@@ -1222,14 +1418,17 @@ fn library_state_repository_uses_shared_runtime_kernel() {
 #[test]
 fn title_image_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let title_image_store =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/title_image_store.rs"));
+    let title_image_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/media/images/title_image_store.rs"),
+    );
     let datastore =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/datastore.rs"));
-    let commands =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/commands.rs"));
-    let sqlite_services =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/sqlite_services.rs"));
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/storage/assembly.rs"));
+    let commands = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/storage/sqlite/writer.rs"),
+    );
+    let sqlite_services = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/storage/sqlite/services.rs"),
+    );
 
     assert!(
         title_image_store.contains("pub struct TitleImageStore")
@@ -1273,8 +1472,9 @@ fn title_image_repository_uses_shared_runtime_kernel() {
 #[test]
 fn title_store_keeps_runtime_parity_for_backfills_and_transactions() {
     let root = repo_root();
-    let title_store =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/title_store.rs"));
+    let title_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/media/titles/store.rs"),
+    );
 
     assert!(
         !title_store.contains(
@@ -1300,7 +1500,7 @@ fn title_store_keeps_runtime_parity_for_backfills_and_transactions() {
 fn datastore_bootstrap_wrappers_do_not_use_engine_forwarding_enums() {
     let root = repo_root();
     let datastore =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/datastore.rs"));
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/storage/assembly.rs"));
 
     for forbidden in [
         "DatastoreSettingsStore",
@@ -1337,7 +1537,7 @@ fn runtime_sql_sharing_stays_concern_local() {
 #[test]
 fn engine_query_modules_do_not_leak_other_engine_json_sql() {
     let root = repo_root();
-    let postgres_src = root.join("crates/scryer-infrastructure/src/postgres");
+    let postgres_src = root.join("crates/scryer-infrastructure/src/storage/postgres");
     let sqlite_src = root.join("crates/scryer-infrastructure/src");
     let postgres_forbidden = ["json_extract", "json_each", "json_valid"];
     let sqlite_forbidden = ["jsonb_", "jsonb_array_elements", "::jsonb", "->>", "->'"];
@@ -1362,7 +1562,10 @@ fn engine_query_modules_do_not_leak_other_engine_json_sql() {
         }) || path
             .file_name()
             .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("postgres.rs"));
-        if is_postgres_module_path {
+        let is_shared_runtime_engine_split = path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy() == "media_file_store.rs");
+        if is_postgres_module_path || is_shared_runtime_engine_split {
             continue;
         }
         let source = production_rust_source(&path);

@@ -20,9 +20,10 @@ use scryer_infrastructure::sqlite::{
 };
 use scryer_infrastructure::{
     AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadSubmissionStore,
-    FileSystemLibraryScanner, ImportStore, InMemoryIndexerStatsTracker, IndexerConfigStore,
-    LibraryProbeStore, LibraryStateStore, MultiIndexerSearchClient, ReleaseStore, SqliteServices,
-    TitleImageStore, WorkflowOperationStore,
+    FileSystemLibraryScanner, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
+    IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
+    MultiIndexerSearchClient, PendingReleaseStore, ReleaseStore, SqliteServices,
+    SubtitleDownloadStore, TitleImageStore, WantedStore, WorkflowOperationStore,
 };
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -219,7 +220,16 @@ async fn setup() -> (
         quality_profile_store.clone();
 
     let library_probe_store = Arc::new(LibraryProbeStore::from_sqlite_services(&db));
-    let library_state_store = Arc::new(LibraryStateStore::from_sqlite_services(&db));
+    let wanted_store = Arc::new(WantedStore::from_sqlite_services(&db));
+    let pending_release_store = Arc::new(PendingReleaseStore::from_sqlite_services(&db));
+    let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::from_sqlite_services(
+        &db,
+    ));
+    let housekeeping_store = Arc::new(HousekeepingStore::from_sqlite_services(&db));
+    let subtitle_download_store = Arc::new(SubtitleDownloadStore::from_sqlite_services(&db));
+    let library_scan_unmatched_store =
+        Arc::new(LibraryScanUnmatchedStore::from_sqlite_services(&db));
+    let media_file_store = Arc::new(MediaFileStore::from_sqlite_services(&db));
     let title_image_store = Arc::new(TitleImageStore::from_sqlite_services(&db));
     let rule_set_store = Arc::new(RuleSetStore::from_sqlite_services(&db));
     let post_processing_script_store =
@@ -238,15 +248,15 @@ async fn setup() -> (
         quality_profiles,
         ":memory:".to_string(),
     )
-    .with_media_files(library_state_store.clone())
-    .with_wanted_items(library_state_store.clone())
-    .with_pending_releases(library_state_store.clone())
-    .with_blocklist_repo(library_state_store.clone())
+    .with_media_files(media_file_store)
+    .with_wanted_items(wanted_store)
+    .with_pending_releases(pending_release_store)
+    .with_blocklist_repo(blocklist_store)
     .with_library_probe_signatures(library_probe_store)
-    .with_library_scan_unmatched_items(library_state_store.clone())
+    .with_library_scan_unmatched_items(library_scan_unmatched_store)
     .with_title_images(title_image_store)
-    .with_housekeeping(library_state_store.clone())
-    .with_subtitle_downloads(library_state_store)
+    .with_housekeeping(housekeeping_store)
+    .with_subtitle_downloads(subtitle_download_store)
     .with_rule_set_store(rule_set_store)
     .with_post_processing_script_store(post_processing_script_store)
     .with_plugin_installation_store(plugin_store)

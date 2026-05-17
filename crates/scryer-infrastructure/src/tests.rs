@@ -3,16 +3,16 @@ use chrono::Utc;
 use scryer_application::{
     CollectionUpdate, DomainEventRepository, DownloadClientConfigRepository,
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, EpisodeUpdate, ImportRepository, InsertMediaFileInput,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    DownloadSubmissionRepository, EpisodeUpdate, HousekeepingRepository, ImportRepository,
+    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
     LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
     NotificationSubscriptionRepository, PendingImportStatus, PluginInstallationRepository,
     ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    SettingsRepository, ShowRepository, SubmissionScope, SubtitleProviderConfigRepository,
-    SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord, TitleMetadataUpdate,
-    TitleRepository, UserRepository, WantedItem, WantedItemRepository, WantedItemsQuery,
-    WantedStatus,
+    SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
+    SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
+    TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
+    WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -1547,8 +1547,24 @@ fn user_store(services: &SqliteServices) -> UserStore {
     UserStore::sqlite(services)
 }
 
-fn library_state_store(services: &SqliteServices) -> LibraryStateStore {
-    LibraryStateStore::from_sqlite_services(services)
+fn wanted_store(services: &SqliteServices) -> WantedStore {
+    WantedStore::from_sqlite_services(services)
+}
+
+fn housekeeping_store(services: &SqliteServices) -> HousekeepingStore {
+    HousekeepingStore::from_sqlite_services(services)
+}
+
+fn subtitle_download_store(services: &SqliteServices) -> SubtitleDownloadStore {
+    SubtitleDownloadStore::from_sqlite_services(services)
+}
+
+fn media_file_store(services: &SqliteServices) -> MediaFileStore {
+    MediaFileStore::from_sqlite_services(services)
+}
+
+fn library_scan_unmatched_store(services: &SqliteServices) -> LibraryScanUnmatchedStore {
+    LibraryScanUnmatchedStore::from_sqlite_services(services)
 }
 
 fn title_image_store(services: &SqliteServices) -> TitleImageStore {
@@ -1568,17 +1584,30 @@ async fn temp_services(prefix: &str) -> (SqliteServices, std::path::PathBuf) {
 }
 
 #[tokio::test]
+async fn sqlite_database_maintenance_runs_without_command_bus() {
+    let (services, db) = temp_services("scryer_sqlite_database_maintenance").await;
+    let housekeeping = housekeeping_store(&services);
+
+    housekeeping
+        .run_database_maintenance()
+        .await
+        .expect("database maintenance should complete");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn external_subtitle_probe_cache_round_trips_replace_and_delete() {
     let (services, db) = temp_services("scryer_external_subtitle_probe_cache").await;
-    let pool = services.pool();
     let catalog = title_store(&services);
-    let library_state = library_state_store(&services);
+    let media_files = media_file_store(&services);
+    let subtitles = subtitle_download_store(&services);
 
     let title = make_test_title("title-probe-cache", None);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
-    let media_file_id = library_state
+    let media_file_id = media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: "/library/Example.Movie.mkv".to_string(),
@@ -1601,16 +1630,15 @@ async fn external_subtitle_probe_cache_round_trips_replace_and_delete() {
         updated_at: "2026-04-29T00:00:01Z".to_string(),
     };
 
-    crate::queries::subtitle::upsert_external_subtitle_probe_cache_entry(pool, &initial)
+    subtitles
+        .upsert_probe_cache_entry(&initial)
         .await
         .expect("initial probe cache row should insert");
 
-    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
-        pool,
-        &media_file_id,
-    )
-    .await
-    .expect("probe cache rows should list");
+    let listed = subtitles
+        .list_probe_cache_for_media_file(&media_file_id)
+        .await
+        .expect("probe cache rows should list");
     assert_eq!(listed, vec![initial.clone()]);
 
     let replaced = ExternalSubtitleProbeCacheEntry {
@@ -1622,32 +1650,26 @@ async fn external_subtitle_probe_cache_round_trips_replace_and_delete() {
         ..initial
     };
 
-    crate::queries::subtitle::upsert_external_subtitle_probe_cache_entry(pool, &replaced)
+    subtitles
+        .upsert_probe_cache_entry(&replaced)
         .await
         .expect("probe cache row should replace");
 
-    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
-        pool,
-        &media_file_id,
-    )
-    .await
-    .expect("replaced probe cache row should list");
+    let listed = subtitles
+        .list_probe_cache_for_media_file(&media_file_id)
+        .await
+        .expect("replaced probe cache row should list");
     assert_eq!(listed, vec![replaced.clone()]);
 
-    crate::queries::subtitle::delete_external_subtitle_probe_cache_entry(
-        pool,
-        &media_file_id,
-        "/tmp/Example.Movie.srt",
-    )
-    .await
-    .expect("probe cache row should delete");
+    subtitles
+        .delete_probe_cache_entry(&media_file_id, "/tmp/Example.Movie.srt")
+        .await
+        .expect("probe cache row should delete");
 
-    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
-        pool,
-        &media_file_id,
-    )
-    .await
-    .expect("probe cache rows should list after delete");
+    let listed = subtitles
+        .list_probe_cache_for_media_file(&media_file_id)
+        .await
+        .expect("probe cache rows should list after delete");
     assert!(listed.is_empty());
 
     let _ = std::fs::remove_file(db);
@@ -2197,7 +2219,6 @@ async fn single_connection_services(name: &str) -> (SqliteServices, std::path::P
         .expect("migrations should apply");
 
     let services = SqliteServices {
-        sender: crate::commands::spawn_db_command_worker(pool.clone()),
         pool,
         encryption_key: Arc::new(RwLock::new(None)),
         writer_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -3329,14 +3350,14 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
         .await
         .expect("db should initialize");
     let catalog = title_store(&services);
-    let library_state = library_state_store(&services);
+    let media_files = media_file_store(&services);
 
     let title = make_test_title("title-media-file", None);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    let file_id = library_state
+    let file_id = media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: "/library/Movie.Title.2024.mkv".to_string(),
@@ -3352,7 +3373,7 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
         .await
         .expect("scan status should update");
 
-    library_state
+    media_files
         .update_media_file_source_signature(
             &file_id,
             4_096,
@@ -3362,7 +3383,7 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
         .await
         .expect("source signature should refresh");
 
-    let media_file = library_state
+    let media_file = media_files
         .get_media_file_by_id(&file_id)
         .await
         .expect("lookup should succeed")
@@ -4602,7 +4623,7 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = library_state_store(&services);
+    let workflow = wanted_store(&services);
     let catalog = title_store(&services);
     let now = Utc::now().to_rfc3339();
 
@@ -4673,7 +4694,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = library_state_store(&services);
+    let workflow = wanted_store(&services);
     let catalog = title_store(&services);
     let shows = show_store(&services);
     let now = Utc::now().to_rfc3339();
@@ -4883,14 +4904,14 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             .expect("wanted item should insert");
     }
 
-    let rows = crate::queries::wanted::list_due_wanted_items_query(
-        services.pool(),
-        "2024-01-02T00:00:00Z",
-        2,
-        &[MediaFacet::Movie, MediaFacet::Anime],
-    )
-    .await
-    .expect("due wanted items query should succeed");
+    let rows = workflow
+        .list_due_wanted_items(
+            "2024-01-02T00:00:00Z",
+            2,
+            &[MediaFacet::Movie, MediaFacet::Anime],
+        )
+        .await
+        .expect("due wanted items query should succeed");
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "wanted-series-episode");
@@ -4901,7 +4922,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
 #[tokio::test]
 async fn list_wanted_items_filters_on_latest_decision_code() {
     let (services, db) = temp_services("scryer_wanted_latest_decision").await;
-    let workflow = library_state_store(&services);
+    let workflow = wanted_store(&services);
     let catalog = title_store(&services);
     let now = Utc::now();
 
@@ -5237,7 +5258,7 @@ async fn title_search_projection_refreshes_after_hydrated_metadata_update_and_de
 #[tokio::test]
 async fn list_wanted_items_filters_with_fuzzy_title_search() {
     let (services, db) = temp_services("scryer_wanted_title_search").await;
-    let workflow = library_state_store(&services);
+    let workflow = wanted_store(&services);
     let catalog = title_store(&services);
     let now = Utc::now();
 
@@ -5767,7 +5788,12 @@ async fn migration_0084_backfills_analysis_json_and_preserves_stream_reads() {
     assert!(stored_analysis_json.get("audio_streams").is_some());
     assert!(stored_analysis_json.get("tracks").is_none());
 
-    let media_file = crate::queries::media_file::get_media_file_by_id_query(&pool, "file-legacy")
+    let media_files = MediaFileStore::new(crate::queries::sql_runtime::StoreDatastore::Sqlite {
+        pool: pool.clone(),
+        writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+    });
+    let media_file = media_files
+        .get_media_file_by_id("file-legacy")
         .await
         .expect("lookup should succeed")
         .expect("media file should exist");
@@ -6457,7 +6483,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let library_state = library_state_store(&services);
+    let library_scan_unmatched = library_scan_unmatched_store(&services);
 
     let created_at = "2026-04-07T00:00:00Z".to_string();
     let updated_at = "2026-04-07T00:00:00Z".to_string();
@@ -6484,12 +6510,12 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         updated_at: updated_at.clone(),
     };
 
-    library_state
+    library_scan_unmatched
         .upsert_library_scan_unmatched_item(&item)
         .await
         .expect("insert unmatched item");
 
-    let count = library_state
+    let count = library_scan_unmatched
         .count_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -6499,7 +6525,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         .expect("count unmatched items after insert");
     assert_eq!(count, 1);
 
-    let listed = library_state
+    let listed = library_scan_unmatched
         .list_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -6530,12 +6556,12 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         ..item.clone()
     };
 
-    library_state
+    library_scan_unmatched
         .upsert_library_scan_unmatched_item(&updated)
         .await
         .expect("update unmatched item");
 
-    let listed_after_update = library_state
+    let listed_after_update = library_scan_unmatched
         .list_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -6555,12 +6581,12 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     assert_eq!(listed_after_update[0].updated_at, updated.updated_at);
     assert_eq!(listed_after_update[0].search_attempts[0].result_count, 2);
 
-    library_state
+    library_scan_unmatched
         .delete_library_scan_unmatched_item(&item.library_id, MediaFacet::Movie, &item.item_path)
         .await
         .expect("delete unmatched item");
 
-    let count_after_delete = library_state
+    let count_after_delete = library_scan_unmatched
         .count_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -6582,7 +6608,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let library_state = library_state_store(&services);
+    let library_scan_unmatched = library_scan_unmatched_store(&services);
 
     let ignored_item = LibraryScanUnmatchedItem {
         id: "library_scan_unmatched:ignored".to_string(),
@@ -6603,7 +6629,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
         updated_at: "2026-04-07T00:00:00Z".to_string(),
     };
 
-    library_state
+    library_scan_unmatched
         .upsert_library_scan_unmatched_item(&ignored_item)
         .await
         .expect("seed ignored item");
@@ -6615,12 +6641,12 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
         ..ignored_item.clone()
     };
 
-    library_state
+    library_scan_unmatched
         .upsert_library_scan_unmatched_item(&scan_refresh)
         .await
         .expect("refresh ignored item from scan");
 
-    let pending_count = library_state
+    let pending_count = library_scan_unmatched
         .count_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -6628,7 +6654,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
         )
         .await
         .expect("count pending items");
-    let ignored_count = library_state
+    let ignored_count = library_scan_unmatched
         .count_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -6639,7 +6665,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
     assert_eq!(pending_count, 0);
     assert_eq!(ignored_count, 1);
 
-    let stored = library_state
+    let stored = library_scan_unmatched
         .get_library_scan_unmatched_item(&ignored_item.id)
         .await
         .expect("load stored item")

@@ -458,6 +458,9 @@ pub trait HousekeepingRepository: Send + Sync {
     async fn delete_release_attempts_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>>;
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32>;
+    async fn run_database_maintenance(&self) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 pub trait IndexerStatsTracker: Send + Sync {

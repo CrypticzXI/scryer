@@ -321,6 +321,23 @@ file = "postgres/migrations/0119_remove_legacy_entitlements.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 120
+description = "postgres json text parity"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0120_postgres_json_text_parity.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0120_json_text_parity.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"

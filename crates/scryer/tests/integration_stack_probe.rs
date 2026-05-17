@@ -185,7 +185,7 @@ async fn run_iron_vale_stack_probe() {
     );
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&titles[0].id)
         .await
         .expect("list anime media files after stack probe");
@@ -555,7 +555,7 @@ async fn wait_for_iron_vale_scan_to_settle(
         if last_log.elapsed() >= Duration::from_secs(1) {
             if let Some(title) = title.as_ref() {
                 let media_files = ctx
-                    .library_state
+                    .media_files
                     .list_media_files_for_title(&title.id)
                     .await
                     .expect("list media files while logging stack probe wait state");
@@ -595,7 +595,7 @@ async fn wait_for_iron_vale_scan_to_settle(
                 .await
                 .expect("list collections while waiting for stack probe scan");
             let media_files = ctx
-                .library_state
+                .media_files
                 .list_media_files_for_title(&title.id)
                 .await
                 .expect("list media files while waiting for stack probe scan");

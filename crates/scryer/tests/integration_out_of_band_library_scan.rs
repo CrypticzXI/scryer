@@ -329,7 +329,7 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
     assert_eq!(pending_after.total, 0);
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list title media files");
@@ -453,7 +453,7 @@ async fn loose_root_series_file_imports_into_existing_title_without_rewriting_fo
     assert_eq!(summary.unmatched, 0);
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list title media files");
@@ -519,7 +519,7 @@ async fn resolving_missing_loose_file_does_not_clear_existing_title_folder_path(
         updated_at: now,
     };
     let pending_id = ctx
-        .library_state
+        .library_scan_unmatched
         .upsert_library_scan_unmatched_item(&pending_item)
         .await
         .expect("insert unmatched item");

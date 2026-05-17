@@ -1,125 +1,297 @@
-mod backup_import_normalization;
-pub(crate) mod commands;
-mod config_store;
-mod datastore;
-mod download_client_config_store;
-mod download_clients;
-pub mod encryption;
-pub mod external_import;
-mod file_importer;
-mod graphql;
-mod indexer_config_store;
-mod indexer_stats;
-pub mod keystore;
-mod library_renamer;
-mod library_scanner;
-mod library_state_store;
-mod library_store;
-mod metadata_gateway;
-pub mod migration_assets;
-mod migration_hook_ids;
-pub mod migrations;
-mod notification_store;
-mod plugin_store;
-mod post_processing_script_store;
-pub mod postgres;
-mod prowlarr;
-mod quality_profile_store;
-pub mod queries;
-mod release_store;
-mod rule_set_store;
-mod settings_store;
-mod show_store;
-pub mod smg_enrollment;
-mod spellfix;
-mod sqlite_backup;
-mod sqlite_services;
-mod staged_nzb_store;
-mod subtitle_provider_config_store;
-mod title_image_store;
-mod title_images;
-mod title_store;
-mod types;
-mod user_store;
-mod workflow_store;
+#![allow(unused_imports)]
+
+mod customization;
+mod downloads;
+mod indexers;
+mod media;
+mod metadata;
+mod notifications;
+pub mod security;
+mod settings;
+pub mod storage;
+mod users;
+mod workflow;
 
 #[cfg(test)]
 mod tests;
 
+pub(crate) mod backup_import_normalization {
+    pub(crate) use crate::workflow::backup_import_normalization::*;
+}
+
+pub(crate) mod config_store {
+    pub(crate) use crate::settings::crypto::*;
+}
+
+pub(crate) mod datastore {
+    pub(crate) use crate::storage::assembly::*;
+}
+
+pub(crate) mod download_client_config_store {
+    pub(crate) use crate::downloads::config_store::*;
+}
+
+pub(crate) mod download_clients {
+    pub(crate) use crate::downloads::clients::weaver;
+    pub(crate) use crate::downloads::clients::weaver_graphql;
+    pub use crate::downloads::clients::{
+        NzbgetDownloadClient, PrioritizedDownloadClientRouter, SabnzbdDownloadClient,
+        WeaverDownloadClient, resolve_base_url_from_config_json, start_weaver_subscription_bridge,
+    };
+    pub use crate::indexers::search_client::MultiIndexerSearchClient;
+}
+
+pub mod encryption {
+    pub use crate::security::encryption::*;
+}
+
+pub mod external_import {
+    pub use crate::workflow::external_import::*;
+}
+
+pub(crate) mod file_importer {
+    pub(crate) use crate::workflow::file_importer::*;
+}
+
+pub(crate) mod graphql {
+    pub(crate) use crate::downloads::clients::weaver_graphql as weaver;
+    pub(crate) use crate::metadata::gateway::graphql as metadata_gateway;
+}
+
+pub(crate) mod indexer_config_store {
+    pub(crate) use crate::indexers::config_store::*;
+}
+
+pub(crate) mod indexer_stats {
+    pub(crate) use crate::indexers::stats::*;
+}
+
+pub mod keystore {
+    pub use crate::security::keystore::*;
+}
+
+pub(crate) mod library_renamer {
+    pub(crate) use crate::media::libraries::renamer::*;
+}
+
+pub(crate) mod library_scan_unmatched_store {
+    pub(crate) use crate::media::libraries::scan_unmatched_store::*;
+}
+
+pub(crate) mod library_scanner {
+    pub(crate) use crate::media::libraries::scanner::*;
+}
+
+pub(crate) mod library_state_store {
+    pub(crate) use crate::media::libraries::state_store::*;
+}
+
+pub(crate) mod library_store {
+    pub(crate) use crate::media::libraries::store::*;
+}
+
+pub(crate) mod media_file_store {
+    pub(crate) use crate::media::search::media_file_store::*;
+}
+
+pub(crate) mod metadata_gateway {
+    pub(crate) use crate::metadata::gateway::client::*;
+}
+
+pub mod migration_assets {
+    pub use crate::storage::migrations::assets::*;
+}
+
+pub(crate) mod migration_hook_ids {
+    pub(crate) use crate::storage::migrations::hook_ids::*;
+}
+
+pub mod migrations {
+    pub use crate::storage::migrations::*;
+}
+
+pub(crate) mod notification_store {
+    pub(crate) use crate::notifications::store::*;
+}
+
+pub(crate) mod plugin_store {
+    pub(crate) use crate::customization::plugin_store::*;
+}
+
+pub(crate) mod post_processing_script_store {
+    pub(crate) use crate::customization::post_processing_script_store::*;
+}
+
+pub mod postgres {
+    pub(crate) use crate::storage::postgres::timestamp;
+    pub use crate::storage::postgres::*;
+}
+
+pub(crate) mod prowlarr {
+    pub(crate) use crate::indexers::providers::prowlarr::*;
+}
+
+pub(crate) mod queries {
+    pub(crate) use crate::indexers::db as indexer;
+    pub(crate) use crate::media::search::title_search;
+    pub(crate) use crate::media::search::wanted;
+    pub(crate) use crate::media::titles::db as title;
+    pub(crate) use crate::storage::sql::common;
+    pub(crate) use crate::storage::sql::runtime as sql_runtime;
+}
+
+pub(crate) mod quality_profile_store {
+    pub(crate) use crate::settings::quality_profile_store::*;
+}
+
+pub(crate) mod release_store {
+    pub(crate) use crate::workflow::release_store::*;
+}
+
+pub(crate) mod rule_set_store {
+    pub(crate) use crate::customization::rule_set_store::*;
+}
+
+pub(crate) mod settings_store {
+    pub(crate) use crate::settings::settings_store::*;
+}
+
+pub(crate) mod show_store {
+    pub(crate) use crate::media::shows::store::*;
+}
+
+pub mod smg_enrollment {
+    pub use crate::metadata::enrollment::*;
+}
+
+pub(crate) mod spellfix {
+    pub(crate) use crate::storage::sql::spellfix::*;
+}
+
+pub(crate) mod sqlite_backup {
+    pub(crate) use crate::storage::sqlite::backup::*;
+}
+
+pub(crate) mod sqlite_services {
+    pub(crate) use crate::storage::sqlite::services::*;
+}
+
+pub(crate) mod staged_nzb_store {
+    pub(crate) use crate::downloads::staged_nzb_store::*;
+}
+
+pub(crate) mod subtitle_provider_config_store {
+    pub(crate) use crate::settings::subtitle_provider_config_store::*;
+}
+
+pub(crate) mod title_image_store {
+    pub(crate) use crate::media::images::title_image_store::*;
+}
+
+pub(crate) mod title_images {
+    pub(crate) use crate::media::images::processor::*;
+}
+
+pub(crate) mod title_store {
+    pub(crate) use crate::media::titles::store::*;
+}
+
+pub(crate) mod types {
+    pub(crate) use crate::storage::types::*;
+}
+
+pub(crate) mod user_store {
+    pub(crate) use crate::users::store::*;
+}
+
+pub(crate) mod workflow_store {
+    pub(crate) use crate::workflow::stores::*;
+}
+
 pub mod sqlite {
-    pub use crate::download_client_config_store::DownloadClientConfigStore;
-    pub use crate::indexer_config_store::IndexerConfigStore;
-    pub use crate::library_state_store::{LibraryProbeStore, LibraryStateStore};
-    pub use crate::library_store::LibraryStore;
-    pub use crate::notification_store::NotificationStore;
-    pub use crate::plugin_store::PluginStore;
-    pub use crate::post_processing_script_store::PostProcessingScriptStore;
-    pub use crate::quality_profile_store::QualityProfileStore;
-    pub use crate::release_store::ReleaseStore;
-    pub use crate::rule_set_store::RuleSetStore;
-    pub use crate::settings_store::SettingsStore;
-    pub use crate::show_store::ShowStore;
-    pub use crate::sqlite_backup::SqliteLogicalBackupExporter;
-    pub use crate::sqlite_services::{DbRuntime, SqliteServices};
-    pub use crate::subtitle_provider_config_store::SubtitleProviderConfigStore;
-    pub use crate::title_image_store::TitleImageStore;
-    pub use crate::title_images::HttpTitleImageProcessor;
-    pub use crate::title_store::TitleStore;
-    pub use crate::user_store::UserStore;
-    pub use crate::workflow_store::{
+    pub use crate::customization::plugin_store::PluginStore;
+    pub use crate::customization::post_processing_script_store::PostProcessingScriptStore;
+    pub use crate::customization::rule_set_store::RuleSetStore;
+    pub use crate::downloads::config_store::DownloadClientConfigStore;
+    pub use crate::indexers::config_store::IndexerConfigStore;
+    pub use crate::media::images::processor::HttpTitleImageProcessor;
+    pub use crate::media::images::title_image_store::TitleImageStore;
+    pub use crate::media::libraries::scan_unmatched_store::LibraryScanUnmatchedStore;
+    pub use crate::media::libraries::state_store::{
+        BlocklistStore, HousekeepingStore, LibraryProbeStore, PendingReleaseStore,
+        SubtitleDownloadStore, WantedStore,
+    };
+    pub use crate::media::libraries::store::LibraryStore;
+    pub use crate::media::search::media_file_store::MediaFileStore;
+    pub use crate::media::shows::store::ShowStore;
+    pub use crate::media::titles::store::TitleStore;
+    pub use crate::notifications::store::NotificationStore;
+    pub use crate::settings::quality_profile_store::QualityProfileStore;
+    pub use crate::settings::settings_store::SettingsStore;
+    pub use crate::settings::subtitle_provider_config_store::SubtitleProviderConfigStore;
+    pub use crate::storage::sqlite::backup::SqliteLogicalBackupExporter;
+    pub use crate::storage::sqlite::services::SqliteServices;
+    pub use crate::users::store::UserStore;
+    pub use crate::workflow::release_store::ReleaseStore;
+    pub use crate::workflow::stores::{
         AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
         ExternalImportMonitorStore, ImportStore, WorkflowOperationStore,
     };
 }
 
-pub use datastore::{
+pub use customization::plugin_store::PluginStore;
+pub use customization::post_processing_script_store::PostProcessingScriptStore;
+pub use customization::rule_set_store::RuleSetStore;
+pub use downloads::clients::{
+    NzbgetDownloadClient, PrioritizedDownloadClientRouter, SabnzbdDownloadClient,
+    WeaverDownloadClient, resolve_base_url_from_config_json, start_weaver_subscription_bridge,
+};
+pub use downloads::config_store::DownloadClientConfigStore;
+pub use downloads::staged_nzb_store::FileSystemStagedNzbStore;
+pub use indexers::config_store::IndexerConfigStore;
+pub use indexers::providers::prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
+pub use indexers::search_client::MultiIndexerSearchClient;
+pub use indexers::stats::InMemoryIndexerStatsTracker;
+pub use media::images::processor::HttpTitleImageProcessor;
+pub use media::images::title_image_store::TitleImageStore;
+pub use media::libraries::renamer::FileSystemLibraryRenamer;
+pub use media::libraries::scan_unmatched_store::LibraryScanUnmatchedStore;
+pub use media::libraries::scanner::FileSystemLibraryScanner;
+pub use media::libraries::state_store::{
+    BlocklistStore, HousekeepingStore, LibraryProbeStore, PendingReleaseStore,
+    SubtitleDownloadStore, WantedStore,
+};
+pub use media::libraries::store::LibraryStore;
+pub use media::search::media_file_store::MediaFileStore;
+pub use media::shows::store::ShowStore;
+pub use media::titles::store::TitleStore;
+pub use metadata::gateway::client::{MetadataGatewayClient, SmgEnrollmentConfig};
+pub use notifications::store::NotificationStore;
+pub use security::encryption::EncryptionKey;
+pub use settings::quality_profile_store::QualityProfileStore;
+pub use settings::settings_store::SettingsStore;
+pub use settings::subtitle_provider_config_store::SubtitleProviderConfigStore;
+pub use storage::assembly::{
     DatastoreAssembly, DatastoreConfig, DatastoreConfigSource, DatastoreCustomizationStore,
     DatastoreEngine, datastore_file_path, resolve_datastore_config_from_env,
     restore_backup_bundle_to_datastore, restore_backup_bundle_to_datastore_path,
     restore_prepared_backup_directory_to_datastore, validate_datastore,
 };
-pub use download_client_config_store::DownloadClientConfigStore;
-pub use download_clients::{
-    MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
-    SabnzbdDownloadClient, WeaverDownloadClient, resolve_base_url_from_config_json,
-    start_weaver_subscription_bridge,
-};
-pub use encryption::EncryptionKey;
-pub use file_importer::FsFileImporter;
-pub use indexer_config_store::IndexerConfigStore;
-pub use indexer_stats::InMemoryIndexerStatsTracker;
-pub use library_renamer::FileSystemLibraryRenamer;
-pub use library_scanner::FileSystemLibraryScanner;
-pub use library_state_store::{LibraryProbeStore, LibraryStateStore};
-pub use library_store::LibraryStore;
-pub use metadata_gateway::{MetadataGatewayClient, SmgEnrollmentConfig};
-pub use migrations::{list_embedded_migration_keys, list_embedded_migrations};
-pub use notification_store::NotificationStore;
-pub use plugin_store::PluginStore;
-pub use post_processing_script_store::PostProcessingScriptStore;
-pub use postgres::{PostgresLogicalBackupExporter, PostgresServices};
-pub use prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
-pub use quality_profile_store::QualityProfileStore;
-pub use release_store::ReleaseStore;
-pub use rule_set_store::RuleSetStore;
-pub use settings_store::SettingsStore;
-pub use show_store::ShowStore;
-pub use spellfix::register_spellfix_auto_extension;
-pub use sqlite_backup::SqliteLogicalBackupExporter;
-pub use sqlite_services::{DbRuntime, SqliteServices};
-pub use staged_nzb_store::FileSystemStagedNzbStore;
-pub use subtitle_provider_config_store::SubtitleProviderConfigStore;
-pub use title_image_store::TitleImageStore;
-pub use title_images::HttpTitleImageProcessor;
-pub use title_store::TitleStore;
-pub(crate) use types::sqlite_url_with_create;
-pub use types::{
+pub use storage::migrations::{list_embedded_migration_keys, list_embedded_migrations};
+pub use storage::postgres::{PostgresLogicalBackupExporter, PostgresServices};
+pub use storage::sql::spellfix::register_spellfix_auto_extension;
+pub use storage::sqlite::backup::SqliteLogicalBackupExporter;
+pub use storage::sqlite::services::SqliteServices;
+pub(crate) use storage::types::sqlite_url_with_create;
+pub use storage::types::{
     DownloadQueueCommandRecord, EmbeddedMigrationDescriptor, LibraryProbeSignatureRecord,
     MigrationMode, MigrationStatus, SettingDefinitionSeed, SettingsDefinitionRecord,
     SettingsValueRecord, WorkflowOperationRecord,
 };
-pub use user_store::UserStore;
-pub use workflow_store::{
+pub use users::store::UserStore;
+pub use workflow::file_importer::FsFileImporter;
+pub use workflow::release_store::ReleaseStore;
+pub use workflow::stores::{
     AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
     ExternalImportMonitorStore, ImportStore, WorkflowOperationStore,
 };

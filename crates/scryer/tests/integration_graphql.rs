@@ -23,7 +23,7 @@ use scryer_domain::{
 };
 use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
-    DownloadSubmissionStore, FileSystemLibraryRenamer, LibraryStateStore, SettingDefinitionSeed,
+    DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, SettingDefinitionSeed,
 };
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -105,31 +105,22 @@ async fn set_rename_collision_policy(ctx: &TestContext, scope: &str, policy: &st
 }
 
 struct FailingMediaFileRepo {
-    inner: LibraryStateStore,
+    inner: MediaFileStore,
     fail_file_id: String,
 }
 
 #[async_trait]
 impl MediaFileRepository for FailingMediaFileRepo {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
-        <LibraryStateStore as MediaFileRepository>::insert_media_file(&self.inner, input).await
+        self.inner.insert_media_file(input).await
     }
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
-        <LibraryStateStore as MediaFileRepository>::link_file_to_episode(
-            &self.inner,
-            file_id,
-            episode_id,
-        )
-        .await
+        self.inner.link_file_to_episode(file_id, episode_id).await
     }
 
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
-        <LibraryStateStore as MediaFileRepository>::list_media_files_for_title(
-            &self.inner,
-            title_id,
-        )
-        .await
+        self.inner.list_media_files_for_title(title_id).await
     }
 
     async fn list_live_media_files_for_episode_ids(
@@ -137,56 +128,41 @@ impl MediaFileRepository for FailingMediaFileRepo {
         title_id: &str,
         episode_ids: &[String],
     ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
-        <LibraryStateStore as MediaFileRepository>::list_live_media_files_for_episode_ids(
-            &self.inner,
-            title_id,
-            episode_ids,
-        )
-        .await
+        self.inner
+            .list_live_media_files_for_episode_ids(title_id, episode_ids)
+            .await
     }
 
     async fn list_title_media_size_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>> {
-        <LibraryStateStore as MediaFileRepository>::list_title_media_size_summaries(
-            &self.inner,
-            title_ids,
-        )
-        .await
+        self.inner.list_title_media_size_summaries(title_ids).await
     }
 
     async fn list_title_quality_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
-        <LibraryStateStore as MediaFileRepository>::list_title_quality_summaries(
-            &self.inner,
-            title_ids,
-        )
-        .await
+        self.inner.list_title_quality_summaries(title_ids).await
     }
 
     async fn list_cutoff_unmet_quality_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
-        <LibraryStateStore as MediaFileRepository>::list_cutoff_unmet_quality_summaries(
-            &self.inner,
-            title_ids,
-        )
-        .await
+        self.inner
+            .list_cutoff_unmet_quality_summaries(title_ids)
+            .await
     }
 
     async fn list_title_episode_progress_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
-        <LibraryStateStore as MediaFileRepository>::list_title_episode_progress_summaries(
-            &self.inner,
-            title_ids,
-        )
-        .await
+        self.inner
+            .list_title_episode_progress_summaries(title_ids)
+            .await
     }
 
     async fn update_media_file_analysis(
@@ -194,12 +170,9 @@ impl MediaFileRepository for FailingMediaFileRepo {
         file_id: &str,
         analysis: MediaFileAnalysis,
     ) -> AppResult<()> {
-        <LibraryStateStore as MediaFileRepository>::update_media_file_analysis(
-            &self.inner,
-            file_id,
-            analysis,
-        )
-        .await
+        self.inner
+            .update_media_file_analysis(file_id, analysis)
+            .await
     }
 
     async fn update_media_file_source_signature(
@@ -209,14 +182,14 @@ impl MediaFileRepository for FailingMediaFileRepo {
         source_signature_scheme: Option<String>,
         source_signature_value: Option<String>,
     ) -> AppResult<()> {
-        <LibraryStateStore as MediaFileRepository>::update_media_file_source_signature(
-            &self.inner,
-            file_id,
-            size_bytes,
-            source_signature_scheme,
-            source_signature_value,
-        )
-        .await
+        self.inner
+            .update_media_file_source_signature(
+                file_id,
+                size_bytes,
+                source_signature_scheme,
+                source_signature_value,
+            )
+            .await
     }
 
     async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()> {
@@ -226,30 +199,23 @@ impl MediaFileRepository for FailingMediaFileRepo {
             )));
         }
 
-        <LibraryStateStore as MediaFileRepository>::update_media_file_path(
-            &self.inner,
-            file_id,
-            file_path,
-        )
-        .await
+        self.inner.update_media_file_path(file_id, file_path).await
     }
 
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
-        <LibraryStateStore as MediaFileRepository>::mark_scan_failed(&self.inner, file_id, error)
-            .await
+        self.inner.mark_scan_failed(file_id, error).await
     }
 
     async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
-        <LibraryStateStore as MediaFileRepository>::get_media_file_by_id(&self.inner, file_id).await
+        self.inner.get_media_file_by_id(file_id).await
     }
 
     async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
-        <LibraryStateStore as MediaFileRepository>::get_media_file_by_path(&self.inner, file_path)
-            .await
+        self.inner.get_media_file_by_path(file_path).await
     }
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
-        <LibraryStateStore as MediaFileRepository>::delete_media_file(&self.inner, file_id).await
+        self.inner.delete_media_file(file_id).await
     }
 }
 
@@ -1450,7 +1416,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
     std::fs::write(&file_path, b"anime-preview").expect("write preview file");
 
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -1460,7 +1426,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
         })
         .await
         .expect("insert media file");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&file_id, &episode.id)
         .await
         .expect("link file to episode");
@@ -1594,7 +1560,7 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
         .expect("create interstitial collection");
 
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -1731,7 +1697,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
     std::fs::write(&regular_file_path, b"anime-apply-episode").expect("write regular file");
 
     let regular_file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: regular_file_path.to_string_lossy().to_string(),
@@ -1741,7 +1707,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         })
         .await
         .expect("insert regular file");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&regular_file_id, &episode.id)
         .await
         .expect("link regular file");
@@ -1798,7 +1764,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .expect("create interstitial collection");
 
     let interstitial_file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: interstitial_file_path.to_string_lossy().to_string(),
@@ -1839,13 +1805,13 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .to_string();
 
     let updated_regular_file = ctx
-        .library_state
+        .media_files
         .get_media_file_by_id(&regular_file_id)
         .await
         .expect("load updated regular media file")
         .expect("regular media file");
     let updated_interstitial_file = ctx
-        .library_state
+        .media_files
         .get_media_file_by_id(&interstitial_file_id)
         .await
         .expect("load updated interstitial media file")
@@ -1924,7 +1890,7 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
         .await
         .expect("create movie collection");
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -2034,7 +2000,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
         .await
         .expect("create movie collection");
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: source_path.to_string_lossy().to_string(),
@@ -2080,7 +2046,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
         .expect("load movie collection")
         .expect("movie collection");
     let updated_file = ctx
-        .library_state
+        .media_files
         .get_media_file_by_id(&file_id)
         .await
         .expect("load movie media file")
@@ -2170,7 +2136,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
     let destination_path = season_dir.join("Tracked Collision Anime - S01E03 (012) - 1080p.mkv");
 
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: source_path.to_string_lossy().to_string(),
@@ -2180,7 +2146,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
         })
         .await
         .expect("insert source media file");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&file_id, &episode.id)
         .await
         .expect("link file to episode");
@@ -2197,7 +2163,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
         true,
     )
     .await;
-    ctx.library_state
+    ctx.media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: owning_title.id,
             file_path: destination_path.to_string_lossy().to_string(),
@@ -2425,7 +2391,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
     std::fs::write(&file_path, b"anime-range-preview").expect("write preview file");
 
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -2435,11 +2401,11 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
         })
         .await
         .expect("insert media file");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&file_id, &episode_one.id)
         .await
         .expect("link first episode");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&file_id, &episode_two.id)
         .await
         .expect("link second episode");
@@ -2655,7 +2621,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     std::fs::write(&source_path, b"anime-media-rollback").expect("write source file");
 
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: source_path.to_string_lossy().to_string(),
@@ -2665,14 +2631,14 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
         })
         .await
         .expect("insert media file");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&file_id, &episode.id)
         .await
         .expect("link file to episode");
 
     ctx.app = ctx.app.with_test_overrides(|builder| {
         builder.with_media_files(std::sync::Arc::new(FailingMediaFileRepo {
-            inner: ctx.library_state.clone(),
+            inner: ctx.media_files.clone(),
             fail_file_id: file_id.clone(),
         }))
     });
@@ -2727,7 +2693,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     );
 
     let stored = ctx
-        .library_state
+        .media_files
         .get_media_file_by_id(&file_id)
         .await
         .expect("load media file")
@@ -2817,7 +2783,7 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
         .expect("create interstitial collection");
 
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: source_path.to_string_lossy().to_string(),
@@ -2876,7 +2842,7 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
     );
 
     let stored_file = ctx
-        .library_state
+        .media_files
         .get_media_file_by_id(&file_id)
         .await
         .expect("load interstitial media file")
@@ -4905,7 +4871,7 @@ async fn graphql_traverses_core_graph_relationships() {
         .path()
         .join("Graph.Traversal.Show.S01E01.1080p.WEB-DL.mkv");
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -4916,7 +4882,7 @@ async fn graphql_traverses_core_graph_relationships() {
         })
         .await
         .expect("insert media file");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&file_id, &episode.id)
         .await
         .expect("link file to episode");
@@ -6519,7 +6485,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
             .path()
             .join(format!("Episode.Progress.Show.file-{index}.mkv"));
         let file_id = ctx
-            .library_state
+            .media_files
             .insert_media_file(&InsertMediaFileInput {
                 title_id: title.id.clone(),
                 file_path: file_path.to_string_lossy().to_string(),
@@ -6529,7 +6495,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
             })
             .await
             .expect("insert media file");
-        ctx.db
+        ctx.media_files
             .link_file_to_episode(&file_id, &episode.id)
             .await
             .expect("link file to episode");
@@ -6708,7 +6674,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             .path()
             .join(format!("Progress.Count.Filter.Show.file-{index}.mkv"));
         let file_id = ctx
-            .library_state
+            .media_files
             .insert_media_file(&InsertMediaFileInput {
                 title_id: title.id.clone(),
                 file_path: file_path.to_string_lossy().to_string(),
@@ -6718,7 +6684,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             })
             .await
             .expect("insert media file");
-        ctx.db
+        ctx.media_files
             .link_file_to_episode(&file_id, &episode.id)
             .await
             .expect("link file to episode");
@@ -6857,7 +6823,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
 
     let multi_episode_path = media_root.path().join("Matched.Size.Anime.S01E01-E02.mkv");
     let multi_episode_file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: multi_episode_path.to_string_lossy().to_string(),
@@ -6868,7 +6834,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
         .await
         .expect("insert multi-episode file");
     for episode_id in [&regular_episode_1.id, &regular_episode_2.id] {
-        ctx.db
+        ctx.media_files
             .link_file_to_episode(&multi_episode_file_id, episode_id)
             .await
             .expect("link multi-episode file");
@@ -6876,7 +6842,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
 
     let special_path = media_root.path().join("Matched.Size.Anime.Special.mkv");
     let special_file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: special_path.to_string_lossy().to_string(),
@@ -6886,14 +6852,14 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
         })
         .await
         .expect("insert special file");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&special_file_id, &special_episode.id)
         .await
         .expect("link special file");
 
     let season_zero_path = media_root.path().join("Matched.Size.Anime.Season.Zero.mkv");
     let season_zero_file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: season_zero_path.to_string_lossy().to_string(),
@@ -6903,12 +6869,12 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
         })
         .await
         .expect("insert season zero file");
-    ctx.db
+    ctx.media_files
         .link_file_to_episode(&season_zero_file_id, &season_zero_episode.id)
         .await
         .expect("link season zero file");
 
-    ctx.library_state
+    ctx.media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: interstitial_path.to_string_lossy().to_string(),
@@ -6919,7 +6885,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
         .await
         .expect("insert interstitial file");
 
-    ctx.library_state
+    ctx.media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: media_root
@@ -6988,7 +6954,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
         .await
         .expect("create movie collection");
 
-    ctx.library_state
+    ctx.media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: matched_path.to_string_lossy().to_string(),
@@ -6999,7 +6965,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
         .await
         .expect("insert matched movie file");
 
-    ctx.library_state
+    ctx.media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: media_root
@@ -8398,7 +8364,7 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
             .expect("list anime titles");
         assert_eq!(titles.len(), 1);
         let files = ctx
-            .library_state
+            .media_files
             .list_media_files_for_title(&titles[0].id)
             .await
             .expect("list media files");
@@ -8720,7 +8686,7 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
     let mut linked_files = Vec::new();
     for _ in 0..100 {
         linked_files = ctx
-            .library_state
+            .media_files
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files");
@@ -8842,7 +8808,7 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
     let mut linked_files = Vec::new();
     for _ in 0..100 {
         linked_files = ctx
-            .library_state
+            .media_files
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files");
@@ -8977,7 +8943,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
         .expect("load title")
         .expect("title exists");
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -9212,7 +9178,7 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
     );
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -9321,7 +9287,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
     );
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&hydrated_title.id)
         .await
         .expect("list media files");
@@ -11667,7 +11633,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
             let file_path = season_dir.join("Broken.Series.Match.S01E01.1080p.WEB-DL.mkv");
             std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
             let file_id = ctx
-                .library_state
+                .media_files
                 .insert_media_file(&InsertMediaFileInput {
                     title_id: title.id.clone(),
                     file_path: file_path.to_string_lossy().to_string(),
@@ -11677,7 +11643,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
                 })
                 .await
                 .expect("insert media file");
-            ctx.db
+            ctx.media_files
                 .link_file_to_episode(&file_id, &old_episode.id)
                 .await
                 .expect("link file to legacy episode");
@@ -12175,7 +12141,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
     std::fs::write(&file_path, b"scoped-delete").expect("write media file");
 
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -12267,7 +12233,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         "delete should remove the on-disk media file"
     );
     assert!(
-        ctx.library_state
+        ctx.media_files
             .get_media_file_by_id(&file_id)
             .await
             .expect("lookup deleted media file")
@@ -12339,7 +12305,7 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
     std::fs::write(&file_path, b"interstitial-delete").expect("write interstitial media file");
 
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: file_path.to_string_lossy().to_string(),
@@ -12423,7 +12389,7 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
         "delete should remove the interstitial file from disk"
     );
     assert!(
-        ctx.library_state
+        ctx.media_files
             .get_media_file_by_id(&file_id)
             .await
             .expect("lookup deleted interstitial media file")

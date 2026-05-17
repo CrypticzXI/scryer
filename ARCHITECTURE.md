@@ -552,8 +552,8 @@ Responsibilities:
 
 - engine-specific datastore implementations grouped by concern under explicit engine namespaces
 - shared datastore assembly that hides concrete engines from the application and binary crates
-- SQLite runtime support through `DbRuntime` / `SqliteServices`
-- one canonical serialized SQLite writer through `DbRuntime` / `DbCommand`
+- SQLite runtime support through `SqliteServices`, `StoreDatastore`, and the shared SQL runtime
+- one canonical serialized SQLite writer gate owned by `SqliteServices`
 - PostgreSQL runtime support through `PgPool`-backed services and explicit transactions
 - engine-specific read-query modules
 - download client integrations
@@ -697,7 +697,7 @@ State flows through:
 2. Add it to the smallest relevant grouped dependency struct inside `AppServices`.
 3. Implement it in infrastructure for every first-class datastore engine.
 4. Add explicit query support in the appropriate engine namespace.
-5. If the trait mutates SQLite state, route that mutation through `DbRuntime` / `DbCommand` instead of writing directly from the store.
+5. If the trait mutates database state, route that mutation through `SqlRuntime::run_in_transaction` so SQLite uses the shared writer gate and PostgreSQL uses an explicit transaction.
 6. If the trait performs a multi-step PostgreSQL mutation, wrap it in an explicit transaction.
 7. Add testing/null implementations as needed.
 8. Add parity coverage proving SQLite and PostgreSQL produce the same logical behavior.

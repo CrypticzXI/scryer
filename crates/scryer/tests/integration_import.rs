@@ -29,7 +29,7 @@ fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseCase {
         builder
             .with_imports(workflow_store)
             .with_file_importer(Arc::new(FsFileImporter))
-            .with_media_files(Arc::new(ctx.library_state.clone()))
+            .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_wanted_items(Arc::new(ctx.library_state.clone()))
     })
 }
@@ -534,7 +534,7 @@ async fn import_movie_strm_file_is_treated_as_video_artifact() {
     );
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -720,7 +720,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         "rejected movie should not create library artifacts"
     );
     assert!(
-        ctx.library_state
+        ctx.media_files
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files")
@@ -827,7 +827,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         Some(ImportSkipReason::PostDownloadRuleBlocked)
     );
     assert!(
-        ctx.library_state
+        ctx.media_files
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files")
@@ -894,7 +894,7 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
     assert!(results[0].success, "manual import should succeed");
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -935,7 +935,7 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
     )
     .await;
     let existing_file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&scryer_application::InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: dest_root
@@ -952,11 +952,11 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
         })
         .await
         .expect("insert incumbent pack");
-    ctx.library_state
+    ctx.media_files
         .link_file_to_episode(&existing_file_id, &episode1.id)
         .await
         .expect("link incumbent episode 1");
-    ctx.library_state
+    ctx.media_files
         .link_file_to_episode(&existing_file_id, &episode2.id)
         .await
         .expect("link incumbent episode 2");
@@ -994,7 +994,7 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
     );
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -1057,7 +1057,7 @@ score_entry["bad_runtime"] := count(input.file.video_width) if {
 
     assert_eq!(result.decision, ImportDecision::Imported);
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -1091,7 +1091,7 @@ async fn import_upgrade_rejected_by_post_download_rule_restores_prior_file() {
         .join("Upgrade.Movie.2024.1080p.WEB-DL.H264.mkv");
     std::fs::create_dir_all(old_path.parent().expect("old path parent")).expect("create old dir");
     std::fs::copy(mediainfo_fixture("h264_aac.mkv"), &old_path).expect("seed old movie file");
-    ctx.library_state
+    ctx.media_files
         .insert_media_file(&scryer_application::InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: old_path.to_string_lossy().to_string(),
@@ -1145,7 +1145,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         "old file should have been restored after rejected upgrade"
     );
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
