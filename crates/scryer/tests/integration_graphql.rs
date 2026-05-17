@@ -23,7 +23,7 @@ use scryer_domain::{
 };
 use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
-    FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteLibraryStateStore, SqliteWorkflowStore,
+    DownloadSubmissionStore, FileSystemLibraryRenamer, LibraryStateStore, SettingDefinitionSeed,
 };
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -105,19 +105,18 @@ async fn set_rename_collision_policy(ctx: &TestContext, scope: &str, policy: &st
 }
 
 struct FailingMediaFileRepo {
-    inner: SqliteLibraryStateStore,
+    inner: LibraryStateStore,
     fail_file_id: String,
 }
 
 #[async_trait]
 impl MediaFileRepository for FailingMediaFileRepo {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
-        <SqliteLibraryStateStore as MediaFileRepository>::insert_media_file(&self.inner, input)
-            .await
+        <LibraryStateStore as MediaFileRepository>::insert_media_file(&self.inner, input).await
     }
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
-        <SqliteLibraryStateStore as MediaFileRepository>::link_file_to_episode(
+        <LibraryStateStore as MediaFileRepository>::link_file_to_episode(
             &self.inner,
             file_id,
             episode_id,
@@ -126,7 +125,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
     }
 
     async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
-        <SqliteLibraryStateStore as MediaFileRepository>::list_media_files_for_title(
+        <LibraryStateStore as MediaFileRepository>::list_media_files_for_title(
             &self.inner,
             title_id,
         )
@@ -138,7 +137,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         title_id: &str,
         episode_ids: &[String],
     ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
-        <SqliteLibraryStateStore as MediaFileRepository>::list_live_media_files_for_episode_ids(
+        <LibraryStateStore as MediaFileRepository>::list_live_media_files_for_episode_ids(
             &self.inner,
             title_id,
             episode_ids,
@@ -150,7 +149,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleMediaSizeSummary>> {
-        <SqliteLibraryStateStore as MediaFileRepository>::list_title_media_size_summaries(
+        <LibraryStateStore as MediaFileRepository>::list_title_media_size_summaries(
             &self.inner,
             title_ids,
         )
@@ -161,7 +160,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
-        <SqliteLibraryStateStore as MediaFileRepository>::list_title_quality_summaries(
+        <LibraryStateStore as MediaFileRepository>::list_title_quality_summaries(
             &self.inner,
             title_ids,
         )
@@ -172,7 +171,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
-        <SqliteLibraryStateStore as MediaFileRepository>::list_cutoff_unmet_quality_summaries(
+        <LibraryStateStore as MediaFileRepository>::list_cutoff_unmet_quality_summaries(
             &self.inner,
             title_ids,
         )
@@ -183,7 +182,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
-        <SqliteLibraryStateStore as MediaFileRepository>::list_title_episode_progress_summaries(
+        <LibraryStateStore as MediaFileRepository>::list_title_episode_progress_summaries(
             &self.inner,
             title_ids,
         )
@@ -195,7 +194,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         file_id: &str,
         analysis: MediaFileAnalysis,
     ) -> AppResult<()> {
-        <SqliteLibraryStateStore as MediaFileRepository>::update_media_file_analysis(
+        <LibraryStateStore as MediaFileRepository>::update_media_file_analysis(
             &self.inner,
             file_id,
             analysis,
@@ -210,7 +209,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
         source_signature_scheme: Option<String>,
         source_signature_value: Option<String>,
     ) -> AppResult<()> {
-        <SqliteLibraryStateStore as MediaFileRepository>::update_media_file_source_signature(
+        <LibraryStateStore as MediaFileRepository>::update_media_file_source_signature(
             &self.inner,
             file_id,
             size_bytes,
@@ -227,7 +226,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
             )));
         }
 
-        <SqliteLibraryStateStore as MediaFileRepository>::update_media_file_path(
+        <LibraryStateStore as MediaFileRepository>::update_media_file_path(
             &self.inner,
             file_id,
             file_path,
@@ -236,30 +235,21 @@ impl MediaFileRepository for FailingMediaFileRepo {
     }
 
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
-        <SqliteLibraryStateStore as MediaFileRepository>::mark_scan_failed(
-            &self.inner,
-            file_id,
-            error,
-        )
-        .await
+        <LibraryStateStore as MediaFileRepository>::mark_scan_failed(&self.inner, file_id, error)
+            .await
     }
 
     async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
-        <SqliteLibraryStateStore as MediaFileRepository>::get_media_file_by_id(&self.inner, file_id)
-            .await
+        <LibraryStateStore as MediaFileRepository>::get_media_file_by_id(&self.inner, file_id).await
     }
 
     async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
-        <SqliteLibraryStateStore as MediaFileRepository>::get_media_file_by_path(
-            &self.inner,
-            file_path,
-        )
-        .await
+        <LibraryStateStore as MediaFileRepository>::get_media_file_by_path(&self.inner, file_path)
+            .await
     }
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
-        <SqliteLibraryStateStore as MediaFileRepository>::delete_media_file(&self.inner, file_id)
-            .await
+        <LibraryStateStore as MediaFileRepository>::delete_media_file(&self.inner, file_id).await
     }
 }
 
@@ -9571,7 +9561,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         })
         .await
         .expect("seed pending release");
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = DownloadSubmissionStore::from_sqlite_services(&ctx.db);
     workflow_store
         .record_submission(scryer_application::DownloadSubmission {
             title_id: id.clone(),
@@ -9969,7 +9959,7 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title()
         .await
         .expect("seed blocklist entry");
 
-    let release_store = scryer_infrastructure::SqliteReleaseStore::new(&ctx.db);
+    let release_store = scryer_infrastructure::ReleaseStore::from_sqlite_services(&ctx.db);
     scryer_application::ReleaseAttemptRepository::record_release_attempt(
         &release_store,
         Some(title_id.clone()),

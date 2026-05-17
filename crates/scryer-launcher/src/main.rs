@@ -274,11 +274,7 @@ fn resolve_runtime_launch<O: LauncherOps>(
 }
 
 fn detect_arch(override_value: Option<&str>) -> Arch {
-    let machine = override_value.unwrap_or(match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => other,
-    });
+    let machine = override_value.unwrap_or(std::env::consts::ARCH);
 
     match machine.to_ascii_lowercase().as_str() {
         "x86_64" | "amd64" => Arch::Amd64,
@@ -499,13 +495,14 @@ fn repair_ownership<O: LauncherOps>(ops: &O, config: &LaunchConfig, uid: u32, gi
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(CONFIG_DIR));
-    if db_dir != Path::new(CONFIG_DIR) && ops.path_is_dir(&db_dir) {
-        if let Err(error) = ops.chown_recursive(&db_dir, uid, gid) {
-            ops.warn(&format!(
-                "failed to re-own {} to {uid}:{gid}: {error}",
-                db_dir.display()
-            ));
-        }
+    if db_dir != Path::new(CONFIG_DIR)
+        && ops.path_is_dir(&db_dir)
+        && let Err(error) = ops.chown_recursive(&db_dir, uid, gid)
+    {
+        ops.warn(&format!(
+            "failed to re-own {} to {uid}:{gid}: {error}",
+            db_dir.display()
+        ));
     }
 }
 

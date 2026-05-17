@@ -63,20 +63,6 @@ pub struct LibraryProbeSignatureRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReleaseDownloadFailureSignatureRecord {
-    pub source_hint: Option<String>,
-    pub source_title: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TitleReleaseBlocklistRecord {
-    pub source_hint: Option<String>,
-    pub source_title: Option<String>,
-    pub error_message: Option<String>,
-    pub attempted_at: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct SettingsDefinitionRecord {
     pub id: String,
     pub category: String,

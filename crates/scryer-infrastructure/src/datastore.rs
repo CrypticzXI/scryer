@@ -6,24 +6,24 @@ use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
     DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
     LibraryRepository, LogicalBackupExporter, PluginInstallationRepository,
-    PostProcessingScriptRepository, QualityProfile, QualityProfileRepository, RuleSetRepository,
-    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, SystemInfoProvider,
-    TitleImageRepository, TitleRepository, UserRepository,
+    PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
+    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageRepository,
+    TitleRepository, UserRepository,
 };
 
 use crate::postgres::{
-    PostgresLibraryStateStore, PostgresLogicalBackupExporter, PostgresReleaseStore,
-    PostgresServices, PostgresSettingsStore, PostgresWorkflowStore,
-    restore_backup_bundle_into_postgres_pool, restore_prepared_backup_directory_into_postgres_pool,
+    PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
+    restore_prepared_backup_directory_into_postgres_pool,
 };
 use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
-    DownloadClientConfigStore, FileSystemStagedNzbStore, InMemoryIndexerStatsTracker,
-    IndexerConfigStore, MetadataGatewayClient, MigrationMode, NotificationStore, PluginStore,
-    PostProcessingScriptStore, RuleSetStore, ShowStore, SmgEnrollmentConfig,
-    SqliteLibraryStateStore, SqliteLogicalBackupExporter, SqliteReleaseStore, SqliteServices,
-    SqliteSettingsStore, SqliteTitleImageProcessor, SqliteWorkflowStore,
-    SubtitleProviderConfigStore, TitleStore,
+    AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadQueueCommandStore,
+    DownloadSubmissionStore, ExternalImportMonitorStore, FileSystemStagedNzbStore,
+    HttpTitleImageProcessor, ImportStore, InMemoryIndexerStatsTracker, IndexerConfigStore,
+    LibraryProbeStore, LibraryStateStore, MetadataGatewayClient, MigrationMode, NotificationStore,
+    PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore,
+    SettingsStore, ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
+    SubtitleProviderConfigStore, TitleImageStore, TitleStore, WorkflowOperationStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -298,328 +298,6 @@ fn env_string_raw(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
-#[async_trait]
-trait DatastoreSettingsStoreInner:
-    SettingsRepository + QualityProfileRepository + SystemInfoProvider + Send + Sync
-{
-    async fn batch_ensure_setting_definitions(
-        &self,
-        definitions: Vec<crate::SettingDefinitionSeed>,
-    ) -> AppResult<()>;
-
-    async fn batch_get_settings_with_defaults(
-        &self,
-        keys: Vec<(String, String, Option<String>)>,
-    ) -> AppResult<Vec<Option<crate::SettingsValueRecord>>>;
-
-    async fn batch_upsert_settings_if_not_overridden(
-        &self,
-        entries: Vec<(String, String, String, String)>,
-    ) -> AppResult<()>;
-
-    async fn get_setting_with_defaults(
-        &self,
-        scope: String,
-        key_name: String,
-        scope_id: Option<String>,
-    ) -> AppResult<Option<crate::SettingsValueRecord>>;
-
-    async fn upsert_setting_value(
-        &self,
-        scope: String,
-        key_name: String,
-        scope_id: Option<String>,
-        value_json: String,
-        source: String,
-        updated_by_user_id: Option<String>,
-    ) -> AppResult<crate::SettingsValueRecord>;
-
-    async fn list_settings_with_defaults(
-        &self,
-        scope: String,
-        scope_id: Option<String>,
-    ) -> AppResult<Vec<crate::SettingsValueRecord>>;
-
-    async fn list_applied_migrations(&self) -> AppResult<Vec<crate::MigrationStatus>>;
-}
-
-#[async_trait]
-impl<S> DatastoreSettingsStoreInner for crate::settings_store::SettingsStore<S>
-where
-    S: crate::settings_store::SettingsSql,
-{
-    async fn batch_ensure_setting_definitions(
-        &self,
-        definitions: Vec<crate::SettingDefinitionSeed>,
-    ) -> AppResult<()> {
-        crate::settings_store::SettingsStore::batch_ensure_setting_definitions(self, definitions)
-            .await
-    }
-
-    async fn batch_get_settings_with_defaults(
-        &self,
-        keys: Vec<(String, String, Option<String>)>,
-    ) -> AppResult<Vec<Option<crate::SettingsValueRecord>>> {
-        crate::settings_store::SettingsStore::batch_get_settings_with_defaults(self, keys).await
-    }
-
-    async fn batch_upsert_settings_if_not_overridden(
-        &self,
-        entries: Vec<(String, String, String, String)>,
-    ) -> AppResult<()> {
-        crate::settings_store::SettingsStore::batch_upsert_settings_if_not_overridden(self, entries)
-            .await
-    }
-
-    async fn get_setting_with_defaults(
-        &self,
-        scope: String,
-        key_name: String,
-        scope_id: Option<String>,
-    ) -> AppResult<Option<crate::SettingsValueRecord>> {
-        crate::settings_store::SettingsStore::get_setting_with_defaults(
-            self, scope, key_name, scope_id,
-        )
-        .await
-    }
-
-    async fn upsert_setting_value(
-        &self,
-        scope: String,
-        key_name: String,
-        scope_id: Option<String>,
-        value_json: String,
-        source: String,
-        updated_by_user_id: Option<String>,
-    ) -> AppResult<crate::SettingsValueRecord> {
-        crate::settings_store::SettingsStore::upsert_setting_value(
-            self,
-            scope,
-            key_name,
-            scope_id,
-            value_json,
-            source,
-            updated_by_user_id,
-        )
-        .await
-    }
-
-    async fn list_settings_with_defaults(
-        &self,
-        scope: String,
-        scope_id: Option<String>,
-    ) -> AppResult<Vec<crate::SettingsValueRecord>> {
-        crate::settings_store::SettingsStore::list_settings_with_defaults(self, scope, scope_id)
-            .await
-    }
-
-    async fn list_applied_migrations(&self) -> AppResult<Vec<crate::MigrationStatus>> {
-        crate::settings_store::SettingsStore::list_applied_migrations(self).await
-    }
-}
-
-#[derive(Clone)]
-pub struct DatastoreSettingsStore {
-    inner: Arc<dyn DatastoreSettingsStoreInner>,
-}
-
-impl DatastoreSettingsStore {
-    fn from_inner<T>(inner: T) -> Self
-    where
-        T: DatastoreSettingsStoreInner + 'static,
-    {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
-
-    pub fn from_sqlite(inner: SqliteSettingsStore) -> Self {
-        Self::from_inner(inner)
-    }
-
-    pub fn from_postgres(inner: PostgresSettingsStore) -> Self {
-        Self::from_inner(inner)
-    }
-
-    pub async fn batch_ensure_setting_definitions(
-        &self,
-        definitions: Vec<crate::SettingDefinitionSeed>,
-    ) -> AppResult<()> {
-        self.inner
-            .batch_ensure_setting_definitions(definitions)
-            .await
-    }
-
-    pub async fn batch_get_settings_with_defaults(
-        &self,
-        keys: Vec<(String, String, Option<String>)>,
-    ) -> AppResult<Vec<Option<crate::SettingsValueRecord>>> {
-        self.inner.batch_get_settings_with_defaults(keys).await
-    }
-
-    pub async fn batch_upsert_settings_if_not_overridden(
-        &self,
-        entries: Vec<(String, String, String, String)>,
-    ) -> AppResult<()> {
-        self.inner
-            .batch_upsert_settings_if_not_overridden(entries)
-            .await
-    }
-
-    pub async fn get_setting_with_defaults(
-        &self,
-        scope: impl Into<String>,
-        key_name: impl Into<String>,
-        scope_id: Option<String>,
-    ) -> AppResult<Option<crate::SettingsValueRecord>> {
-        self.inner
-            .get_setting_with_defaults(scope.into(), key_name.into(), scope_id)
-            .await
-    }
-
-    pub async fn upsert_setting_value(
-        &self,
-        scope: impl Into<String>,
-        key_name: impl Into<String>,
-        scope_id: Option<String>,
-        value_json: impl Into<String>,
-        source: impl Into<String>,
-        updated_by_user_id: Option<String>,
-    ) -> AppResult<crate::SettingsValueRecord> {
-        self.inner
-            .upsert_setting_value(
-                scope.into(),
-                key_name.into(),
-                scope_id,
-                value_json.into(),
-                source.into(),
-                updated_by_user_id,
-            )
-            .await
-    }
-
-    pub async fn list_settings_with_defaults(
-        &self,
-        scope: impl Into<String>,
-        scope_id: Option<String>,
-    ) -> AppResult<Vec<crate::SettingsValueRecord>> {
-        self.inner
-            .list_settings_with_defaults(scope.into(), scope_id)
-            .await
-    }
-
-    pub async fn delete_setting_value(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-    ) -> AppResult<()> {
-        self.inner
-            .delete_setting_value(scope, key_name, scope_id)
-            .await
-    }
-
-    pub async fn list_applied_migrations(&self) -> AppResult<Vec<crate::MigrationStatus>> {
-        self.inner.list_applied_migrations().await
-    }
-}
-
-#[async_trait]
-impl SettingsRepository for DatastoreSettingsStore {
-    async fn get_setting_json(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-    ) -> AppResult<Option<String>> {
-        self.inner.get_setting_json(scope, key_name, scope_id).await
-    }
-
-    async fn get_setting_json_explicit(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-    ) -> AppResult<Option<String>> {
-        self.inner
-            .get_setting_json_explicit(scope, key_name, scope_id)
-            .await
-    }
-
-    async fn upsert_setting_json(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-        value_json: String,
-        source: &str,
-        updated_by_user_id: Option<String>,
-    ) -> AppResult<()> {
-        self.inner
-            .upsert_setting_json(
-                scope,
-                key_name,
-                scope_id,
-                value_json,
-                source,
-                updated_by_user_id,
-            )
-            .await
-    }
-
-    async fn delete_setting_value(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-    ) -> AppResult<()> {
-        self.inner
-            .delete_setting_value(scope, key_name, scope_id)
-            .await
-    }
-
-    async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
-        self.inner.delete_values_for_scope_id(scope_id).await
-    }
-}
-
-#[async_trait]
-impl QualityProfileRepository for DatastoreSettingsStore {
-    async fn list_quality_profiles(
-        &self,
-        scope: &str,
-        scope_id: Option<String>,
-    ) -> AppResult<Vec<QualityProfile>> {
-        self.inner.list_quality_profiles(scope, scope_id).await
-    }
-
-    async fn replace_quality_profiles(
-        &self,
-        scope: &str,
-        scope_id: Option<String>,
-        profiles: Vec<QualityProfile>,
-    ) -> AppResult<()> {
-        self.inner
-            .replace_quality_profiles(scope, scope_id, profiles)
-            .await
-    }
-}
-
-#[async_trait]
-impl SystemInfoProvider for DatastoreSettingsStore {
-    async fn datastore_info(&self) -> AppResult<scryer_application::DatastoreInfo> {
-        self.inner.datastore_info().await
-    }
-
-    async fn current_migration_version(&self) -> AppResult<Option<String>> {
-        self.inner.current_migration_version().await
-    }
-
-    async fn current_encryption_key_base64(&self) -> AppResult<Option<String>> {
-        self.inner.current_encryption_key_base64().await
-    }
-}
-
 #[derive(Clone)]
 pub struct DatastoreCustomizationStore {
     rule_sets: Arc<RuleSetStore>,
@@ -638,6 +316,14 @@ impl DatastoreCustomizationStore {
             post_processing_scripts,
             plugins,
         }
+    }
+
+    pub fn from_sqlite_services(services: &SqliteServices) -> Self {
+        Self::from_stores(
+            Arc::new(RuleSetStore::from_sqlite_services(services)),
+            Arc::new(PostProcessingScriptStore::from_sqlite_services(services)),
+            Arc::new(PluginStore::from_sqlite_services(services)),
+        )
     }
 
     pub async fn delete_incompatible_external_plugin_installations(
@@ -907,11 +593,20 @@ enum DatastoreStores {
         rule_set_store: Arc<RuleSetStore>,
         post_processing_script_store: Arc<PostProcessingScriptStore>,
         plugin_store: Arc<PluginStore>,
-        library_state_store: Arc<SqliteLibraryStateStore>,
+        library_probe_store: Arc<LibraryProbeStore>,
+        library_state_store: Arc<LibraryStateStore>,
+        title_image_store: Arc<TitleImageStore>,
         notification_store: Arc<NotificationStore>,
-        release_store: Arc<SqliteReleaseStore>,
-        settings_store: Arc<SqliteSettingsStore>,
-        workflow_store: Arc<SqliteWorkflowStore>,
+        release_store: Arc<ReleaseStore>,
+        settings_store: Arc<SettingsStore>,
+        quality_profile_store: Arc<QualityProfileStore>,
+        domain_event_store: Arc<DomainEventStore>,
+        acquisition_store: Arc<AcquisitionStore>,
+        download_submission_store: Arc<DownloadSubmissionStore>,
+        import_store: Arc<ImportStore>,
+        external_import_monitor_store: Arc<ExternalImportMonitorStore>,
+        download_queue_command_store: Arc<DownloadQueueCommandStore>,
+        workflow_operation_store: Arc<WorkflowOperationStore>,
         backup_exporter: Arc<SqliteLogicalBackupExporter>,
     },
     Postgres {
@@ -926,11 +621,20 @@ enum DatastoreStores {
         rule_set_store: Arc<RuleSetStore>,
         post_processing_script_store: Arc<PostProcessingScriptStore>,
         plugin_store: Arc<PluginStore>,
-        library_state_store: Arc<PostgresLibraryStateStore>,
+        library_probe_store: Arc<LibraryProbeStore>,
+        library_state_store: Arc<LibraryStateStore>,
+        title_image_store: Arc<TitleImageStore>,
         notification_store: Arc<NotificationStore>,
-        release_store: Arc<PostgresReleaseStore>,
-        settings_store: Arc<PostgresSettingsStore>,
-        workflow_store: Arc<PostgresWorkflowStore>,
+        release_store: Arc<ReleaseStore>,
+        settings_store: Arc<SettingsStore>,
+        quality_profile_store: Arc<QualityProfileStore>,
+        domain_event_store: Arc<DomainEventStore>,
+        acquisition_store: Arc<AcquisitionStore>,
+        download_submission_store: Arc<DownloadSubmissionStore>,
+        import_store: Arc<ImportStore>,
+        external_import_monitor_store: Arc<ExternalImportMonitorStore>,
+        download_queue_command_store: Arc<DownloadQueueCommandStore>,
+        workflow_operation_store: Arc<WorkflowOperationStore>,
         backup_exporter: Arc<PostgresLogicalBackupExporter>,
     },
 }
@@ -973,11 +677,25 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
-        let plugin_store = Arc::new(PluginStore::new(datastore));
-        let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
-        let release_store = Arc::new(SqliteReleaseStore::new(&db));
-        let settings_store = Arc::new(SqliteSettingsStore::new(&db));
-        let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
+        let plugin_store = Arc::new(PluginStore::new(datastore.clone()));
+        let library_probe_store = Arc::new(LibraryProbeStore::new(datastore.clone()));
+        let library_state_store = Arc::new(LibraryStateStore::new(datastore.clone()));
+        let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
+        let release_store = Arc::new(ReleaseStore::from_sqlite_services(&db));
+        let settings_store = Arc::new(SettingsStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
+        let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
+        let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+        let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
+        let import_store = Arc::new(ImportStore::new(datastore.clone()));
+        let external_import_monitor_store =
+            Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let download_queue_command_store =
+            Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
+        let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
         let backup_exporter = Arc::new(SqliteLogicalBackupExporter::new(
             config.database_url.clone(),
         ));
@@ -994,11 +712,20 @@ impl DatastoreAssembly {
             rule_set_store,
             post_processing_script_store,
             plugin_store,
+            library_probe_store,
             library_state_store,
+            title_image_store,
             notification_store,
             release_store,
             settings_store,
-            workflow_store,
+            quality_profile_store,
+            domain_event_store,
+            acquisition_store,
+            download_submission_store,
+            import_store,
+            external_import_monitor_store,
+            download_queue_command_store,
+            workflow_operation_store,
             backup_exporter,
         };
 
@@ -1035,11 +762,25 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
-        let plugin_store = Arc::new(PluginStore::new(datastore));
-        let library_state_store = Arc::new(PostgresLibraryStateStore::new(&db));
-        let release_store = Arc::new(PostgresReleaseStore::new(&db));
-        let settings_store = Arc::new(PostgresSettingsStore::new(&db));
-        let workflow_store = Arc::new(PostgresWorkflowStore::new(&db));
+        let plugin_store = Arc::new(PluginStore::new(datastore.clone()));
+        let library_probe_store = Arc::new(LibraryProbeStore::new(datastore.clone()));
+        let library_state_store = Arc::new(LibraryStateStore::new(datastore.clone()));
+        let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
+        let release_store = Arc::new(ReleaseStore::from_postgres_services(&db));
+        let settings_store = Arc::new(SettingsStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
+        let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
+        let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+        let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
+        let import_store = Arc::new(ImportStore::new(datastore.clone()));
+        let external_import_monitor_store =
+            Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let download_queue_command_store =
+            Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
+        let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
         let backup_exporter = Arc::new(PostgresLogicalBackupExporter::new(&db));
 
         let stores = DatastoreStores::Postgres {
@@ -1054,11 +795,20 @@ impl DatastoreAssembly {
             rule_set_store,
             post_processing_script_store,
             plugin_store,
+            library_probe_store,
             library_state_store,
+            title_image_store,
             notification_store,
             release_store,
             settings_store,
-            workflow_store,
+            quality_profile_store,
+            domain_event_store,
+            acquisition_store,
+            download_submission_store,
+            import_store,
+            external_import_monitor_store,
+            download_queue_command_store,
+            workflow_operation_store,
             backup_exporter,
         };
 
@@ -1082,14 +832,23 @@ impl DatastoreAssembly {
         }
     }
 
-    pub fn bootstrap_settings_store(&self) -> DatastoreSettingsStore {
+    pub fn settings_store(&self) -> Arc<SettingsStore> {
         match &self.stores {
-            DatastoreStores::Sqlite { settings_store, .. } => {
-                DatastoreSettingsStore::from_sqlite((**settings_store).clone())
-            }
-            DatastoreStores::Postgres { settings_store, .. } => {
-                DatastoreSettingsStore::from_postgres((**settings_store).clone())
-            }
+            DatastoreStores::Sqlite { settings_store, .. } => settings_store.clone(),
+            DatastoreStores::Postgres { settings_store, .. } => settings_store.clone(),
+        }
+    }
+
+    pub fn quality_profile_store(&self) -> Arc<QualityProfileStore> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                quality_profile_store,
+                ..
+            } => quality_profile_store.clone(),
+            DatastoreStores::Postgres {
+                quality_profile_store,
+                ..
+            } => quality_profile_store.clone(),
         }
     }
 
@@ -1199,21 +958,25 @@ impl DatastoreAssembly {
 
     pub fn quality_profiles(&self) -> Arc<dyn QualityProfileRepository> {
         match &self.stores {
-            DatastoreStores::Sqlite { settings_store, .. } => settings_store.clone(),
-            DatastoreStores::Postgres { settings_store, .. } => settings_store.clone(),
+            DatastoreStores::Sqlite {
+                quality_profile_store,
+                ..
+            } => quality_profile_store.clone(),
+            DatastoreStores::Postgres {
+                quality_profile_store,
+                ..
+            } => quality_profile_store.clone(),
         }
     }
 
     pub fn title_images(&self) -> Arc<dyn TitleImageRepository> {
         match &self.stores {
             DatastoreStores::Sqlite {
-                library_state_store,
-                ..
-            } => library_state_store.clone(),
+                title_image_store, ..
+            } => title_image_store.clone(),
             DatastoreStores::Postgres {
-                library_state_store,
-                ..
-            } => library_state_store.clone(),
+                title_image_store, ..
+            } => title_image_store.clone(),
         }
     }
 
@@ -1275,11 +1038,19 @@ impl DatastoreAssembly {
                 library_store,
                 user_store,
                 release_store,
+                library_probe_store,
                 library_state_store,
+                title_image_store,
                 rule_set_store,
                 post_processing_script_store,
                 plugin_store,
-                workflow_store,
+                domain_event_store,
+                acquisition_store,
+                download_submission_store,
+                import_store,
+                external_import_monitor_store,
+                download_queue_command_store,
+                workflow_operation_store,
                 notification_store,
                 settings_store,
                 ..
@@ -1303,23 +1074,31 @@ impl DatastoreAssembly {
                     self.backup_dir(),
                 )
                 .with_libraries(libraries)
-                .with_library_state_store(library_state_store.clone())
+                .with_media_files(library_state_store.clone())
+                .with_wanted_items(library_state_store.clone())
+                .with_pending_releases(library_state_store.clone())
+                .with_blocklist_repo(library_state_store.clone())
+                .with_library_probe_signatures(library_probe_store.clone())
+                .with_library_scan_unmatched_items(library_state_store.clone())
+                .with_title_images(title_image_store.clone())
+                .with_housekeeping(library_state_store.clone())
+                .with_subtitle_downloads(library_state_store.clone())
                 .with_rule_set_store(rule_set_store.clone())
                 .with_post_processing_script_store(post_processing_script_store.clone())
                 .with_plugin_installation_store(plugin_store.clone())
-                .with_acquisition_state(workflow_store.clone())
-                .with_domain_events(workflow_store.clone())
-                .with_download_submissions(workflow_store.clone())
-                .with_download_queue_commands(workflow_store.clone())
-                .with_external_import_monitor_snapshots(workflow_store.clone())
-                .with_import_artifacts(workflow_store.clone())
-                .with_imports(workflow_store.clone())
-                .with_job_runs(workflow_store.clone())
+                .with_acquisition_state(acquisition_store.clone())
+                .with_domain_events(domain_event_store.clone())
+                .with_download_submissions(download_submission_store.clone())
+                .with_download_queue_commands(download_queue_command_store.clone())
+                .with_external_import_monitor_snapshots(external_import_monitor_store.clone())
+                .with_import_artifacts(import_store.clone())
+                .with_imports(import_store.clone())
+                .with_job_runs(workflow_operation_store.clone())
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())
-                .with_title_image_processor(Arc::new(SqliteTitleImageProcessor::new()))
-                .with_workflow_operations(workflow_store.clone())
+                .with_title_image_processor(Arc::new(HttpTitleImageProcessor::new()))
+                .with_workflow_operations(workflow_operation_store.clone())
             }
             DatastoreStores::Postgres {
                 title_store,
@@ -1329,11 +1108,19 @@ impl DatastoreAssembly {
                 rule_set_store,
                 post_processing_script_store,
                 plugin_store,
+                library_probe_store,
                 library_state_store,
+                title_image_store,
                 notification_store,
                 release_store,
                 settings_store,
-                workflow_store,
+                domain_event_store,
+                acquisition_store,
+                download_submission_store,
+                import_store,
+                external_import_monitor_store,
+                download_queue_command_store,
+                workflow_operation_store,
                 ..
             } => {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
@@ -1355,23 +1142,31 @@ impl DatastoreAssembly {
                     self.backup_dir(),
                 )
                 .with_libraries(libraries)
-                .with_library_state_store(library_state_store.clone())
+                .with_media_files(library_state_store.clone())
+                .with_wanted_items(library_state_store.clone())
+                .with_pending_releases(library_state_store.clone())
+                .with_blocklist_repo(library_state_store.clone())
+                .with_library_probe_signatures(library_probe_store.clone())
+                .with_library_scan_unmatched_items(library_state_store.clone())
+                .with_title_images(title_image_store.clone())
+                .with_housekeeping(library_state_store.clone())
+                .with_subtitle_downloads(library_state_store.clone())
                 .with_rule_set_store(rule_set_store.clone())
                 .with_post_processing_script_store(post_processing_script_store.clone())
                 .with_plugin_installation_store(plugin_store.clone())
-                .with_acquisition_state(workflow_store.clone())
-                .with_domain_events(workflow_store.clone())
-                .with_download_submissions(workflow_store.clone())
-                .with_download_queue_commands(workflow_store.clone())
-                .with_external_import_monitor_snapshots(workflow_store.clone())
-                .with_import_artifacts(workflow_store.clone())
-                .with_imports(workflow_store.clone())
-                .with_job_runs(workflow_store.clone())
+                .with_acquisition_state(acquisition_store.clone())
+                .with_domain_events(domain_event_store.clone())
+                .with_download_submissions(download_submission_store.clone())
+                .with_download_queue_commands(download_queue_command_store.clone())
+                .with_external_import_monitor_snapshots(external_import_monitor_store.clone())
+                .with_import_artifacts(import_store.clone())
+                .with_imports(import_store.clone())
+                .with_job_runs(workflow_operation_store.clone())
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())
-                .with_title_image_processor(Arc::new(SqliteTitleImageProcessor::new()))
-                .with_workflow_operations(workflow_store.clone())
+                .with_title_image_processor(Arc::new(HttpTitleImageProcessor::new()))
+                .with_workflow_operations(workflow_operation_store.clone())
             }
         }
     }
@@ -1941,7 +1736,7 @@ mod tests {
             match self.engine {
                 TestBackupEngine::Sqlite => {
                     let services = self.sqlite.as_ref().expect("sqlite source");
-                    let settings = SqliteSettingsStore::new(services);
+                    let settings = SettingsStore::from_sqlite_services(services);
                     let titles = TitleStore::new(StoreDatastore::Sqlite {
                         pool: services.pool().clone(),
                         writer_gate: services.writer_gate(),
@@ -1957,7 +1752,7 @@ mod tests {
                 }
                 TestBackupEngine::Postgres => {
                     let services = self.postgres.as_ref().expect("postgres source");
-                    let settings = PostgresSettingsStore::new(services);
+                    let settings = SettingsStore::from_postgres_services(services);
                     let titles = TitleStore::new(StoreDatastore::Postgres {
                         pool: services.pool().clone(),
                     });
@@ -2010,15 +1805,16 @@ mod tests {
         async fn current_migration_key(&self) -> AppResult<Option<String>> {
             match self.engine {
                 TestBackupEngine::Sqlite => {
-                    let settings =
-                        SqliteSettingsStore::new(self.sqlite.as_ref().expect("sqlite source"));
+                    let settings = SettingsStore::from_sqlite_services(
+                        self.sqlite.as_ref().expect("sqlite source"),
+                    );
                     settings
                         .datastore_info()
                         .await
                         .map(|info| info.current_migration_key)
                 }
                 TestBackupEngine::Postgres => {
-                    let settings = PostgresSettingsStore::new(
+                    let settings = SettingsStore::from_postgres_services(
                         self.postgres.as_ref().expect("postgres source"),
                     );
                     settings
@@ -2110,7 +1906,7 @@ mod tests {
                         MigrationMode::Apply,
                     )
                     .await?;
-                    let settings = SqliteSettingsStore::new(&services);
+                    let settings = SettingsStore::from_sqlite_services(&services);
                     let titles = TitleStore::new(StoreDatastore::Sqlite {
                         pool: services.pool().clone(),
                         writer_gate: services.writer_gate(),
@@ -2128,7 +1924,7 @@ mod tests {
                         MigrationMode::Apply,
                     )
                     .await?;
-                    let settings = PostgresSettingsStore::new(&services);
+                    let settings = SettingsStore::from_postgres_services(&services);
                     let titles = TitleStore::new(StoreDatastore::Postgres {
                         pool: services.pool().clone(),
                     });

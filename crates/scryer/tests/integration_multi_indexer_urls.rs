@@ -15,12 +15,14 @@ use scryer_application::{
 };
 use scryer_domain::{ExternalId, MediaFacet, NewTitle, User};
 use scryer_infrastructure::sqlite::{
-    PluginStore, PostProcessingScriptStore, RuleSetStore, ShowStore, TitleStore, UserStore,
+    PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore, SettingsStore,
+    ShowStore, TitleStore, UserStore,
 };
 use scryer_infrastructure::{
-    DownloadClientConfigStore, FileSystemLibraryScanner, InMemoryIndexerStatsTracker,
-    IndexerConfigStore, MultiIndexerSearchClient, SqliteLibraryStateStore, SqliteReleaseStore,
-    SqliteServices, SqliteSettingsStore, SqliteWorkflowStore,
+    AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadSubmissionStore,
+    FileSystemLibraryScanner, ImportStore, InMemoryIndexerStatsTracker, IndexerConfigStore,
+    LibraryProbeStore, LibraryStateStore, MultiIndexerSearchClient, ReleaseStore, SqliteServices,
+    TitleImageStore, WorkflowOperationStore,
 };
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -62,9 +64,14 @@ async fn setup() -> (
     let indexer_config_store = Arc::new(IndexerConfigStore::from_sqlite_services(&db));
     let download_client_config_store =
         Arc::new(DownloadClientConfigStore::from_sqlite_services(&db));
-    let release_store = Arc::new(SqliteReleaseStore::new(&db));
-    let settings_store = Arc::new(SqliteSettingsStore::new(&db));
-    let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
+    let release_store = Arc::new(ReleaseStore::from_sqlite_services(&db));
+    let settings_store = Arc::new(SettingsStore::from_sqlite_services(&db));
+    let quality_profile_store = Arc::new(QualityProfileStore::from_sqlite_services(&db));
+    let domain_event_store = Arc::new(DomainEventStore::from_sqlite_services(&db));
+    let acquisition_store = Arc::new(AcquisitionStore::from_sqlite_services(&db));
+    let download_submission_store = Arc::new(DownloadSubmissionStore::from_sqlite_services(&db));
+    let import_store = Arc::new(ImportStore::from_sqlite_services(&db));
+    let workflow_operation_store = Arc::new(WorkflowOperationStore::from_sqlite_services(&db));
 
     // Load the remaining bundled indexer plugins.
     let plugin_provider: Arc<dyn IndexerPluginProvider> =
@@ -209,9 +216,11 @@ async fn setup() -> (
     let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
     let settings: Arc<dyn scryer_application::SettingsRepository> = settings_store.clone();
     let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
-        settings_store.clone();
+        quality_profile_store.clone();
 
-    let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
+    let library_probe_store = Arc::new(LibraryProbeStore::from_sqlite_services(&db));
+    let library_state_store = Arc::new(LibraryStateStore::from_sqlite_services(&db));
+    let title_image_store = Arc::new(TitleImageStore::from_sqlite_services(&db));
     let rule_set_store = Arc::new(RuleSetStore::from_sqlite_services(&db));
     let post_processing_script_store =
         Arc::new(PostProcessingScriptStore::from_sqlite_services(&db));
@@ -229,23 +238,31 @@ async fn setup() -> (
         quality_profiles,
         ":memory:".to_string(),
     )
-    .with_library_state_store(library_state_store)
+    .with_media_files(library_state_store.clone())
+    .with_wanted_items(library_state_store.clone())
+    .with_pending_releases(library_state_store.clone())
+    .with_blocklist_repo(library_state_store.clone())
+    .with_library_probe_signatures(library_probe_store)
+    .with_library_scan_unmatched_items(library_state_store.clone())
+    .with_title_images(title_image_store)
+    .with_housekeeping(library_state_store.clone())
+    .with_subtitle_downloads(library_state_store)
     .with_rule_set_store(rule_set_store)
     .with_post_processing_script_store(post_processing_script_store)
     .with_plugin_installation_store(plugin_store)
-    .with_acquisition_state(workflow_store.clone())
-    .with_domain_events(workflow_store.clone())
-    .with_download_submissions(workflow_store.clone())
-    .with_import_artifacts(workflow_store.clone())
-    .with_imports(workflow_store.clone())
-    .with_job_runs(workflow_store.clone())
+    .with_acquisition_state(acquisition_store)
+    .with_domain_events(domain_event_store)
+    .with_download_submissions(download_submission_store)
+    .with_import_artifacts(import_store.clone())
+    .with_imports(import_store)
+    .with_job_runs(workflow_operation_store.clone())
     .with_system_info(settings_store)
     .with_metadata_gateway(Arc::new(smg))
     .with_library_scanner(Arc::new(FileSystemLibraryScanner::new()))
     .with_indexer_stats(indexer_stats)
     .with_plugin_provider(plugin_provider)
     .with_staged_nzb_store(staged_nzb_store)
-    .with_workflow_operations(workflow_store)
+    .with_workflow_operations(workflow_operation_store)
     .build();
 
     let mut registry = FacetRegistry::new();

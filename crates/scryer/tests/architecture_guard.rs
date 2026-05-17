@@ -694,36 +694,49 @@ fn postgres_schema_declares_every_logical_backup_export_table() {
 #[test]
 fn settings_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let sqlite_settings =
+    let settings_store =
         production_rust_source(&root.join("crates/scryer-infrastructure/src/settings_store.rs"));
-    let postgres_settings = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/settings_store.rs"),
+    let quality_profile_store = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/quality_profile_store.rs"),
     );
 
     assert!(
-        sqlite_settings.contains("pub struct SettingsStore<S>"),
-        "settings should expose one shared repository kernel"
+        settings_store.contains("pub struct SettingsStore"),
+        "settings should expose one canonical store"
     );
     assert!(
-        sqlite_settings
-            .contains("pub type SqliteSettingsStore = SettingsStore<SqliteSettingsSql>;"),
-        "SQLite settings should be a primitive adapter over the shared kernel"
+        settings_store.contains("StoreDatastore")
+            && settings_store.contains("SqlRuntime::run_in_transaction"),
+        "SettingsStore should run on the shared runtime kernel"
     );
     assert!(
-        postgres_settings
-            .contains("pub type PostgresSettingsStore = SettingsStore<PostgresSettingsSql>;"),
-        "PostgreSQL settings should be a primitive adapter over the shared kernel"
+        quality_profile_store.contains("pub struct QualityProfileStore")
+            && quality_profile_store.contains("StoreDatastore")
+            && quality_profile_store.contains("SqlRuntime::run_in_transaction"),
+        "QualityProfileStore should run on the shared runtime kernel"
     );
 
     for forbidden in [
-        "pub struct SqliteSettingsStore",
-        "pub struct PostgresSettingsStore",
-        "impl SettingsRepository for SqliteSettingsStore",
-        "impl SettingsRepository for PostgresSettingsStore",
+        "SettingsSql",
+        "SqliteSettingsSql",
+        "PostgresSettingsSql",
+        "SqliteSettingsStore",
+        "PostgresSettingsStore",
     ] {
         assert!(
-            !sqlite_settings.contains(forbidden) && !postgres_settings.contains(forbidden),
-            "settings repository must not reintroduce paired full-store implementation `{forbidden}`"
+            !settings_store.contains(forbidden) && !quality_profile_store.contains(forbidden),
+            "settings slice must not reintroduce adapter scar `{forbidden}`"
+        );
+    }
+
+    for deleted in [
+        "crates/scryer-infrastructure/src/postgres/settings_store.rs",
+        "crates/scryer-infrastructure/src/queries/settings.rs",
+        "crates/scryer-infrastructure/src/queries/quality.rs",
+    ] {
+        assert!(
+            !root.join(deleted).exists(),
+            "settings slice should delete legacy helper file {deleted}"
         );
     }
 }
@@ -871,35 +884,43 @@ fn notification_repository_uses_shared_runtime_kernel() {
 #[test]
 fn release_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let sqlite_release =
+    let release_store =
         production_rust_source(&root.join("crates/scryer-infrastructure/src/release_store.rs"));
-    let postgres_release = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/release_store.rs"),
-    );
+    let postgres_release = root.join("crates/scryer-infrastructure/src/postgres/release_store.rs");
 
     assert!(
-        sqlite_release.contains("pub struct ReleaseStore<S>"),
-        "release attempts should expose one shared repository kernel"
+        release_store.contains("pub struct ReleaseStore {"),
+        "release attempts should expose one canonical store"
     );
     assert!(
-        sqlite_release.contains("pub type SqliteReleaseStore = ReleaseStore<SqliteReleaseSql>;"),
-        "SQLite release attempts should be a primitive adapter over the shared kernel"
+        release_store.contains("datastore: StoreDatastore"),
+        "release attempts should carry only the shared datastore handle"
     );
     assert!(
-        postgres_release
-            .contains("pub type PostgresReleaseStore = ReleaseStore<PostgresReleaseSql>;"),
-        "PostgreSQL release attempts should be a primitive adapter over the shared kernel"
+        release_store.contains("SqlRuntime::run_in_transaction"),
+        "release writes should go through the shared transaction runtime"
+    );
+    assert!(
+        release_store.contains("SqlRuntime::fetch_all")
+            && release_store.contains("SqlRuntime::fetch_optional"),
+        "release reads should go through the shared runtime fetch helpers"
+    );
+    assert!(
+        !postgres_release.exists(),
+        "release repository should not retain a dedicated PostgreSQL store file"
     );
 
     for forbidden in [
-        "pub struct SqliteReleaseStore",
-        "pub struct PostgresReleaseStore",
-        "impl ReleaseAttemptRepository for SqliteReleaseStore",
-        "impl ReleaseAttemptRepository for PostgresReleaseStore",
+        "trait ReleaseSql",
+        "SqliteReleaseStore",
+        "PostgresReleaseStore",
+        "SqliteReleaseSql",
+        "PostgresReleaseSql",
+        "queries::workflow::",
     ] {
         assert!(
-            !sqlite_release.contains(forbidden) && !postgres_release.contains(forbidden),
-            "release repository must not reintroduce paired full-store implementation `{forbidden}`"
+            !release_store.contains(forbidden),
+            "release repository must not reintroduce legacy adapter scar `{forbidden}`"
         );
     }
 }
@@ -972,44 +993,60 @@ fn customization_repository_uses_shared_runtime_kernel() {
 #[test]
 fn workflow_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let sqlite_workflow =
+    let workflow_store =
         production_rust_source(&root.join("crates/scryer-infrastructure/src/workflow_store.rs"));
-    let postgres_workflow = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/workflow_store.rs"),
-    );
+
+    for concrete_store in [
+        "pub struct DomainEventStore",
+        "pub struct AcquisitionStore",
+        "pub struct DownloadSubmissionStore",
+        "pub struct ImportStore",
+        "pub struct ExternalImportMonitorStore",
+        "pub struct DownloadQueueCommandStore",
+        "pub struct WorkflowOperationStore",
+    ] {
+        assert!(
+            workflow_store.contains(concrete_store),
+            "workflow repository must expose concrete concern store `{concrete_store}`"
+        );
+    }
 
     assert!(
-        sqlite_workflow.contains("pub struct WorkflowStore<S>"),
-        "workflow should expose one shared repository kernel"
+        workflow_store.contains("datastore: StoreDatastore"),
+        "workflow concern stores must own StoreDatastore"
     );
+    for trait_impl in [
+        "impl DomainEventRepository for DomainEventStore",
+        "impl AcquisitionStateRepository for AcquisitionStore",
+        "impl DownloadSubmissionRepository for DownloadSubmissionStore",
+        "impl ImportRepository for ImportStore",
+        "impl ImportArtifactRepository for ImportStore",
+        "impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore",
+        "impl DownloadQueueCommandRepository for DownloadQueueCommandStore",
+        "impl WorkflowOperationRepository for WorkflowOperationStore",
+        "impl JobRunRepository for WorkflowOperationStore",
+    ] {
+        assert!(
+            workflow_store.contains(trait_impl),
+            "workflow concern store must implement `{trait_impl}` directly"
+        );
+    }
     assert!(
-        sqlite_workflow
-            .contains("pub type SqliteWorkflowStore = WorkflowStore<SqliteWorkflowSql>;"),
-        "SQLite workflow should be a primitive adapter over the shared kernel"
-    );
-    assert!(
-        postgres_workflow
-            .contains("pub type PostgresWorkflowStore = WorkflowStore<PostgresWorkflowSql>;"),
-        "PostgreSQL workflow should be a primitive adapter over the shared kernel"
+        workflow_store.contains("SqlRuntime::"),
+        "workflow concern stores must use the shared SQL runtime"
     );
 
     for forbidden in [
-        "pub struct SqliteWorkflowStore",
-        "pub struct PostgresWorkflowStore",
-        "impl AcquisitionStateRepository for SqliteWorkflowStore",
-        "impl AcquisitionStateRepository for PostgresWorkflowStore",
-        "impl DomainEventRepository for SqliteWorkflowStore",
-        "impl DomainEventRepository for PostgresWorkflowStore",
-        "impl DownloadSubmissionRepository for SqliteWorkflowStore",
-        "impl DownloadSubmissionRepository for PostgresWorkflowStore",
-        "impl ImportRepository for SqliteWorkflowStore",
-        "impl ImportRepository for PostgresWorkflowStore",
-        "impl WorkflowOperationRepository for SqliteWorkflowStore",
-        "impl WorkflowOperationRepository for PostgresWorkflowStore",
+        "trait WorkflowSql",
+        "WorkflowStore<",
+        "SqliteWorkflowStore",
+        "PostgresWorkflowStore",
+        "SqliteWorkflowSql",
+        "PostgresWorkflowSql",
     ] {
         assert!(
-            !sqlite_workflow.contains(forbidden) && !postgres_workflow.contains(forbidden),
-            "workflow repository must not reintroduce paired full-store implementation `{forbidden}`"
+            !workflow_store.contains(forbidden),
+            "workflow repository must not reintroduce `{forbidden}`"
         );
     }
 }
@@ -1115,70 +1152,120 @@ fn legacy_entitlement_runtime_model_has_been_removed() {
 #[test]
 fn library_state_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let sqlite_library_state = production_rust_source(
+    let library_state = production_rust_source(
         &root.join("crates/scryer-infrastructure/src/library_state_store.rs"),
     );
-    let postgres_library_state = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/library_state_store.rs"),
+    let library_state_postgres = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/library_state_store/postgres.rs"),
     );
+    let app_services =
+        production_rust_source(&root.join("crates/scryer-application/src/services.rs"));
 
     assert!(
-        sqlite_library_state.contains("pub struct LibraryStateStore<S>"),
-        "library state should expose one shared repository kernel"
+        library_state.contains("pub struct LibraryProbeStore")
+            && library_state.contains("pub struct LibraryStateStore"),
+        "library state should expose separate concrete probe and state stores"
     );
     assert!(
-        sqlite_library_state.contains("pub trait LibraryStateSql:"),
-        "library state should keep its engine adapter seam concern-local"
+        library_state.contains("datastore: StoreDatastore"),
+        "library probe and state stores must own StoreDatastore"
     );
+    assert!(
+        library_state.contains("impl LibraryProbeRepository for LibraryProbeStore"),
+        "LibraryProbeStore should implement LibraryProbeRepository directly"
+    );
+    assert!(
+        library_state.contains("SqlRuntime::fetch_optional")
+            && library_state.contains("SqlRuntime::run_in_transaction"),
+        "library state should use the shared SQL runtime for shared probe reads and writes"
+    );
+    assert!(
+        library_state.contains("impl LibraryScanUnmatchedItemRepository for LibraryStateStore")
+            && library_state.contains("impl MediaFileRepository for LibraryStateStore")
+            && library_state.contains("impl WantedItemRepository for LibraryStateStore")
+            && library_state.contains("impl HousekeepingRepository for LibraryStateStore")
+            && library_state.contains("impl PendingReleaseRepository for LibraryStateStore")
+            && library_state.contains("impl BlocklistRepository for LibraryStateStore")
+            && library_state.contains("impl SubtitleDownloadRepository for LibraryStateStore"),
+        "LibraryStateStore should implement the remaining library-state traits directly"
+    );
+    assert!(
+        !root
+            .join("crates/scryer-infrastructure/src/postgres/library_state_store.rs")
+            .exists(),
+        "library state should not retain a postgres sidecar store file"
+    );
+
+    let combined = format!("{library_state}\n{library_state_postgres}\n{app_services}");
     for forbidden in [
-        "pub trait LibraryStateSql:\n    LibraryProbeRepository",
-        "pub trait LibraryStateSql:\n    LibraryScanUnmatchedItemRepository",
-        "pub trait LibraryStateSql:\n    MediaFileRepository",
-        "pub trait LibraryStateSql:\n    WantedItemRepository",
-        "pub trait LibraryStateSql:\n    HousekeepingRepository",
-        "pub trait LibraryStateSql:\n    PendingReleaseRepository",
-        "pub trait LibraryStateSql:\n    BlocklistRepository",
-        "pub trait LibraryStateSql:\n    SubtitleDownloadRepository",
-        "pub trait LibraryStateSql:\n    TitleImageRepository",
+        "trait LibraryStateSql",
+        "LibraryStateStore<",
+        "SqliteLibraryStateStore",
+        "PostgresLibraryStateStore",
+        "with_library_state_store(",
+        "LibraryStateSqlHandle",
+        "fn library_state_sql(",
+        "dispatch_library_state_sql!",
+        "impl LibraryProbeRepository for SqliteLibraryStateSql",
+        "impl LibraryProbeRepository for PostgresLibraryStateSql",
+        "impl TitleImageRepository for LibraryStateStore",
+        "impl TitleImageRepository for SqliteLibraryStateSql",
+        "impl TitleImageRepository for PostgresLibraryStateSql",
     ] {
         assert!(
-            !sqlite_library_state.contains(forbidden),
-            "library-state SQL seam must not compose application repository traits directly: `{forbidden}`"
+            !combined.contains(forbidden),
+            "library-state slice must not reintroduce `{forbidden}`"
         );
     }
+}
+
+#[test]
+fn title_image_repository_uses_shared_runtime_kernel() {
+    let root = repo_root();
+    let title_image_store =
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/title_image_store.rs"));
+    let datastore =
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/datastore.rs"));
+    let commands =
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/commands.rs"));
+    let sqlite_services =
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/sqlite_services.rs"));
+
     assert!(
-        sqlite_library_state.contains(
-            "pub type SqliteLibraryStateStore = LibraryStateStore<SqliteLibraryStateSql>;"
-        ),
-        "SQLite library state should be a primitive adapter over the shared kernel"
+        title_image_store.contains("pub struct TitleImageStore")
+            && title_image_store.contains("datastore: StoreDatastore"),
+        "TitleImageStore should be a concrete store that owns StoreDatastore"
     );
     assert!(
-        postgres_library_state.contains(
-            "pub type PostgresLibraryStateStore = LibraryStateStore<PostgresLibraryStateSql>;"
-        ),
-        "PostgreSQL library state should be a primitive adapter over the shared kernel"
+        title_image_store.contains("impl TitleImageRepository for TitleImageStore"),
+        "TitleImageStore should implement TitleImageRepository directly"
+    );
+    assert!(
+        title_image_store.contains("SqlRuntime::fetch_all")
+            && title_image_store.contains("SqlRuntime::run_in_transaction")
+            && title_image_store.contains("SqlRuntime::fetch_optional"),
+        "title image reads and writes should run through the shared SQL runtime"
+    );
+    assert!(
+        datastore.contains("title_image_store: Arc<TitleImageStore>")
+            && datastore.contains(".with_title_images(title_image_store.clone())"),
+        "datastore assembly should wire TitleImageStore into the application title-image slot"
     );
 
+    let combined = format!("{title_image_store}\n{datastore}\n{commands}\n{sqlite_services}");
     for forbidden in [
-        "pub struct SqliteLibraryStateStore",
-        "pub struct PostgresLibraryStateStore",
-        "impl LibraryProbeRepository for SqliteLibraryStateStore",
-        "impl LibraryProbeRepository for PostgresLibraryStateStore",
-        "impl MediaFileRepository for SqliteLibraryStateStore",
-        "impl MediaFileRepository for PostgresLibraryStateStore",
-        "impl WantedItemRepository for SqliteLibraryStateStore",
-        "impl WantedItemRepository for PostgresLibraryStateStore",
-        "impl PendingReleaseRepository for SqliteLibraryStateStore",
-        "impl PendingReleaseRepository for PostgresLibraryStateStore",
-        "impl BlocklistRepository for SqliteLibraryStateStore",
-        "impl BlocklistRepository for PostgresLibraryStateStore",
-        "impl TitleImageRepository for SqliteLibraryStateStore",
-        "impl TitleImageRepository for PostgresLibraryStateStore",
+        "SqliteTitleImageProcessor",
+        "ReplaceTitleImage",
+        "replace_title_image_query",
+        "replace_title_image_and_append_event_query",
+        "get_title_image_blob_query",
+        "list_titles_requiring_image_refresh_query",
+        "pub async fn replace_title_image(",
+        "pub async fn replace_title_image_and_append_event(",
     ] {
         assert!(
-            !sqlite_library_state.contains(forbidden)
-                && !postgres_library_state.contains(forbidden),
-            "library-state repository must not reintroduce paired full-store implementation `{forbidden}`"
+            !combined.contains(forbidden),
+            "title-image slice must not retain `{forbidden}`"
         );
     }
 }
@@ -1216,6 +1303,7 @@ fn datastore_bootstrap_wrappers_do_not_use_engine_forwarding_enums() {
         production_rust_source(&root.join("crates/scryer-infrastructure/src/datastore.rs"));
 
     for forbidden in [
+        "DatastoreSettingsStore",
         "pub enum DatastoreSettingsStore",
         "pub enum DatastoreCustomizationStore",
         "Self::Sqlite(store) => store.get_setting_json",
@@ -1266,12 +1354,15 @@ fn engine_query_modules_do_not_leak_other_engine_json_sql() {
     }
 
     for path in rust_files_under(&sqlite_src) {
-        if path.components().any(|component| {
+        let is_postgres_module_path = path.components().any(|component| {
             component
                 .as_os_str()
                 .to_string_lossy()
                 .eq_ignore_ascii_case("postgres")
-        }) {
+        }) || path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("postgres.rs"));
+        if is_postgres_module_path {
             continue;
         }
         let source = production_rust_source(&path);

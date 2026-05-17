@@ -148,8 +148,8 @@ mod tests {
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
             let catalog = title_store(&services);
-            let images = super::super::PostgresLibraryStateStore::new(&services);
-            let settings = super::super::PostgresSettingsStore::new(&services);
+            let images = crate::TitleImageStore::from_postgres_services(&services);
+            let settings = crate::SettingsStore::from_postgres_services(&services);
             let info = settings.datastore_info().await?;
             assert_eq!(info.engine, "postgres");
             let current_migration_key = info.current_migration_key.as_deref().ok_or_else(|| {
@@ -345,7 +345,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let settings = super::super::PostgresSettingsStore::new(&services);
+            let settings = crate::SettingsStore::from_postgres_services(&services);
 
             settings
                 .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
@@ -452,7 +452,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let settings = super::super::PostgresSettingsStore::new(&services);
+            let settings = crate::SettingsStore::from_postgres_services(&services);
 
             settings
                 .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
@@ -700,23 +700,15 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let settings = super::super::PostgresSettingsStore::new(&services);
+            let quality_profiles = crate::QualityProfileStore::from_postgres_services(&services);
             let profiles = vec![default_quality_profile_for_search()];
 
-            <super::super::PostgresSettingsStore as QualityProfileRepository>::replace_quality_profiles(
-                &settings,
-                "system",
-                None,
-                profiles.clone(),
-            )
-            .await?;
+            quality_profiles
+                .replace_quality_profiles("system", None, profiles.clone())
+                .await?;
 
-            let stored =
-                <super::super::PostgresSettingsStore as QualityProfileRepository>::list_quality_profiles(
-                    &settings,
-                    "system",
-                    None,
-                )
+            let stored = quality_profiles
+                .list_quality_profiles("system", None)
                 .await?;
             assert_eq!(stored, profiles);
 
@@ -835,7 +827,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let store = super::super::PostgresLibraryStateStore::new(&services);
+            let store = crate::LibraryStateStore::from_postgres_services(&services);
             let now = chrono::Utc::now().to_rfc3339();
             let item = LibraryScanUnmatchedItem {
                 id: Id::new().0,

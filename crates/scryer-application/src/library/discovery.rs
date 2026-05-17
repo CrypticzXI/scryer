@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, UNIX_EPOCH};
 
 use super::*;
-use crate::helpers::{has_usable_release_title_signal, parse_usable_release_title};
+use crate::helpers::{
+    has_usable_release_title_signal, normalize_release_title_signal, parse_usable_release_title,
+};
 use scryer_domain::VIDEO_EXTENSIONS;
 
 const LIBRARY_SCAN_DISCOVERY_WORK_QUEUE_CAPACITY: usize = 16;
@@ -53,7 +55,7 @@ pub(crate) fn extract_library_queries(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or_default();
-    let parsed = parse_release_metadata(stem);
+    let parsed = normalize_release_title_signal(parse_release_metadata(stem));
     let parsed_has_usable_title_signal = has_usable_release_title_signal(&parsed);
     let parsed_queries = if parsed_has_usable_title_signal {
         if parsed.normalized_title_variants.is_empty() {

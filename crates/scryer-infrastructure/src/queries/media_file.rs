@@ -877,7 +877,7 @@ pub(crate) async fn delete_media_file_query(pool: &SqlitePool, file_id: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ShowStore, SqliteLibraryStateStore, SqliteServices, TitleStore};
+    use crate::{LibraryStateStore, ShowStore, SqliteServices, TitleStore};
     use chrono::Utc;
     use scryer_application::{
         AudioStreamDetail, MediaFileAnalysis, MediaFileRepository, ShowRepository, TitleRepository,
@@ -935,8 +935,8 @@ mod tests {
         })
     }
 
-    fn library_state_store(services: &SqliteServices) -> SqliteLibraryStateStore {
-        SqliteLibraryStateStore::new(services)
+    fn library_state_store(services: &SqliteServices) -> LibraryStateStore {
+        LibraryStateStore::from_sqlite_services(services)
     }
 
     #[tokio::test]

@@ -309,7 +309,7 @@ impl MetadataGatewayClient {
         Self::new_with_enrollment_store(
             endpoint,
             accept_invalid_certs,
-            Arc::new(crate::SqliteSettingsStore::new(&db)),
+            Arc::new(crate::SettingsStore::from_sqlite_services(&db)),
             enrollment_config,
         )
     }

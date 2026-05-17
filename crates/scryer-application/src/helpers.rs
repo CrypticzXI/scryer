@@ -122,9 +122,46 @@ pub(crate) fn has_usable_release_title_signal(parsed: &ParsedReleaseMetadata) ->
     !is_obfuscated_release_name(parsed)
 }
 
+pub(crate) fn normalize_release_title_signal(
+    mut parsed: ParsedReleaseMetadata,
+) -> ParsedReleaseMetadata {
+    parsed.normalized_title = normalize_compact_part_token(&parsed.normalized_title);
+    parsed.normalized_title_variants = parsed
+        .normalized_title_variants
+        .into_iter()
+        .map(|variant| normalize_compact_part_token(&variant))
+        .collect();
+    parsed
+}
+
 pub(crate) fn parse_usable_release_title(raw: &str) -> Option<ParsedReleaseMetadata> {
-    let parsed = parse_release_metadata(raw);
+    let parsed = normalize_release_title_signal(parse_release_metadata(raw));
     has_usable_release_title_signal(&parsed).then_some(parsed)
+}
+
+fn normalize_compact_part_token(title: &str) -> String {
+    let mut tokens = Vec::new();
+    let mut changed = false;
+
+    for token in title.split_whitespace() {
+        let upper = token.to_ascii_uppercase();
+        if let Some(number) = upper.strip_prefix("PART")
+            && !number.is_empty()
+            && number.chars().all(|ch| ch.is_ascii_digit())
+        {
+            tokens.push("PART".to_string());
+            tokens.push(number.to_string());
+            changed = true;
+        } else {
+            tokens.push(token.to_string());
+        }
+    }
+
+    if changed {
+        tokens.join(" ")
+    } else {
+        title.to_string()
+    }
 }
 
 pub(crate) fn normalize_release_selection_signature(

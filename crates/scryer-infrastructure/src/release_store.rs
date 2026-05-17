@@ -1,13 +1,96 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use scryer_application::{
     AppResult, ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome,
     ReleaseDownloadFailureSignature, TitleReleaseBlocklistEntry,
 };
+use scryer_domain::Id;
 
-use crate::SqliteServices;
+use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
+use crate::sqlite_services::SqliteServices;
+
+const FAILED_SIGNATURE_LIMIT_MAX: i64 = 20_000;
+const TITLE_FAILED_SIGNATURE_LIMIT_MAX: i64 = 1_000;
+
+const INSERT_RELEASE_ATTEMPT_SQL: &str = "INSERT INTO release_download_attempts (
+    id, title_id, source_hint, source_title, outcome, error_message, source_password,
+    attempted_at, created_at, updated_at
+) VALUES (
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+)";
+
+const LIST_FAILED_SIGNATURES_SQL: &str = "SELECT source_hint, source_title
+    FROM (
+        SELECT source_hint,
+               source_title,
+               attempted_at AS last_attempted_at,
+               ROW_NUMBER() OVER (
+                   PARTITION BY LOWER(TRIM(source_title))
+                   ORDER BY attempted_at DESC
+               ) AS row_number
+          FROM release_download_attempts
+         WHERE outcome = 'failed'
+           AND COALESCE(TRIM(source_title), '') <> ''
+    )
+    WHERE row_number = 1
+    ORDER BY last_attempted_at DESC
+    LIMIT {}";
+
+const LIST_FAILED_SIGNATURES_FOR_TITLE_SQL: &str =
+    "SELECT source_hint, source_title, error_message, attempted_at
+    FROM (
+        SELECT source_hint,
+               source_title,
+               error_message,
+               attempted_at,
+               ROW_NUMBER() OVER (
+                   PARTITION BY LOWER(TRIM(source_title))
+                   ORDER BY attempted_at DESC
+               ) AS row_number
+          FROM release_download_attempts
+         WHERE outcome = 'failed'
+           AND title_id = {}
+           AND COALESCE(TRIM(source_title), '') <> ''
+    )
+    WHERE row_number = 1
+    ORDER BY attempted_at DESC
+    LIMIT {}";
+
+const GET_LATEST_SOURCE_PASSWORD_SQL: &str = "SELECT source_password
+    FROM release_download_attempts
+    WHERE source_password IS NOT NULL
+      AND (CAST({} AS TEXT) IS NULL OR title_id = {})
+      AND (CAST({} AS TEXT) IS NULL OR source_hint = {})
+      AND (CAST({} AS TEXT) IS NULL OR source_title = {})
+    ORDER BY attempted_at DESC
+    LIMIT 1";
+
+#[derive(Clone)]
+pub struct ReleaseStore {
+    datastore: StoreDatastore,
+}
+
+impl ReleaseStore {
+    pub(crate) fn new(datastore: StoreDatastore) -> Self {
+        Self { datastore }
+    }
+
+    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
+        Self::new(StoreDatastore::Sqlite {
+            pool: db.pool().clone(),
+            writer_gate: db.writer_gate(),
+        })
+    }
+
+    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
+        Self::new(StoreDatastore::Postgres {
+            pool: db.pool().clone(),
+        })
+    }
+}
 
 #[async_trait]
-pub(crate) trait ReleaseSql: Clone + Send + Sync + 'static {
+impl ReleaseAttemptRepository for ReleaseStore {
     async fn record_release_attempt(
         &self,
         title_id: Option<String>,
@@ -16,197 +99,122 @@ pub(crate) trait ReleaseSql: Clone + Send + Sync + 'static {
         outcome: ReleaseDownloadAttemptOutcome,
         error_message: Option<String>,
         source_password: Option<String>,
-    ) -> AppResult<()>;
+    ) -> AppResult<()> {
+        let now = Utc::now();
+        let args = vec![
+            SqlArg::Text(Id::new().0),
+            SqlArg::OptText(title_id),
+            SqlArg::OptText(source_hint),
+            SqlArg::OptText(source_title),
+            SqlArg::Text(outcome.as_str().to_string()),
+            SqlArg::OptText(error_message),
+            SqlArg::OptText(source_password),
+            SqlArg::Timestamp(now),
+            SqlArg::Timestamp(now),
+            SqlArg::Timestamp(now),
+        ];
+
+        SqlRuntime::run_in_transaction(&self.datastore, "record_release_attempt", move |tx| {
+            let args = args.clone();
+            Box::pin(async move {
+                SqlRuntime::execute(SqlExec::Tx(tx), INSERT_RELEASE_ATTEMPT_SQL, &args).await?;
+                Ok(())
+            })
+        })
+        .await
+    }
 
     async fn list_failed_release_signatures(
         &self,
         limit: usize,
-    ) -> AppResult<Vec<ReleaseDownloadFailureSignature>>;
+    ) -> AppResult<Vec<ReleaseDownloadFailureSignature>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            LIST_FAILED_SIGNATURES_SQL,
+            &[SqlArg::I64(clamp_limit(limit, FAILED_SIGNATURE_LIMIT_MAX))],
+        )
+        .await?;
+
+        rows.into_iter().map(decode_failed_signature).collect()
+    }
 
     async fn list_failed_release_signatures_for_title(
         &self,
         title_id: &str,
         limit: usize,
-    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>>;
+    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            LIST_FAILED_SIGNATURES_FOR_TITLE_SQL,
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::I64(clamp_limit(limit, TITLE_FAILED_SIGNATURE_LIMIT_MAX)),
+            ],
+        )
+        .await?;
+
+        rows.into_iter()
+            .map(decode_title_release_blocklist)
+            .collect()
+    }
 
     async fn get_latest_source_password(
         &self,
         title_id: Option<&str>,
         source_hint: Option<&str>,
         source_title: Option<&str>,
-    ) -> AppResult<Option<String>>;
-}
+    ) -> AppResult<Option<String>> {
+        let title_id = title_id.map(str::to_string);
+        let source_hint = source_hint.map(str::to_string);
+        let source_title = source_title.map(str::to_string);
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            GET_LATEST_SOURCE_PASSWORD_SQL,
+            &[
+                SqlArg::OptText(title_id.clone()),
+                SqlArg::OptText(title_id),
+                SqlArg::OptText(source_hint.clone()),
+                SqlArg::OptText(source_hint),
+                SqlArg::OptText(source_title.clone()),
+                SqlArg::OptText(source_title),
+            ],
+        )
+        .await?;
 
-#[derive(Clone)]
-pub struct ReleaseStore<S> {
-    sql: S,
-}
-
-impl<S> ReleaseStore<S> {
-    pub(crate) fn from_sql(sql: S) -> Self {
-        Self { sql }
-    }
-}
-
-pub type SqliteReleaseStore = ReleaseStore<SqliteReleaseSql>;
-
-#[derive(Clone)]
-pub struct SqliteReleaseSql {
-    db: SqliteServices,
-    pool: sqlx::SqlitePool,
-}
-
-impl SqliteReleaseStore {
-    pub fn new(db: &SqliteServices) -> Self {
-        Self::from_sql(SqliteReleaseSql::new(db))
-    }
-}
-
-impl SqliteReleaseSql {
-    fn new(db: &SqliteServices) -> Self {
-        Self {
-            db: db.clone(),
-            pool: db.pool().clone(),
+        match row {
+            Some(row) => row.opt_text("source_password"),
+            None => Ok(None),
         }
     }
 }
 
-#[async_trait]
-impl ReleaseSql for SqliteReleaseSql {
-    async fn record_release_attempt(
-        &self,
-        title_id: Option<String>,
-        source_hint: Option<String>,
-        source_title: Option<String>,
-        outcome: ReleaseDownloadAttemptOutcome,
-        error_message: Option<String>,
-        source_password: Option<String>,
-    ) -> AppResult<()> {
-        self.db
-            .create_release_download_attempt(
-                title_id,
-                source_hint,
-                source_title,
-                outcome,
-                error_message,
-                source_password,
-            )
-            .await
-    }
-
-    async fn list_failed_release_signatures(
-        &self,
-        limit: usize,
-    ) -> AppResult<Vec<ReleaseDownloadFailureSignature>> {
-        Ok(
-            crate::queries::workflow::list_failed_release_download_attempts_query(
-                &self.pool,
-                limit as i64,
-            )
-            .await?
-            .into_iter()
-            .map(|record| ReleaseDownloadFailureSignature {
-                source_hint: record.source_hint,
-                source_title: record.source_title,
-            })
-            .collect(),
-        )
-    }
-
-    async fn list_failed_release_signatures_for_title(
-        &self,
-        title_id: &str,
-        limit: usize,
-    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
-        Ok(
-            crate::queries::workflow::list_failed_release_download_attempts_for_title_query(
-                &self.pool,
-                title_id,
-                limit as i64,
-            )
-            .await?
-            .into_iter()
-            .map(|record| TitleReleaseBlocklistEntry {
-                id: format!(
-                    "failed-attempt:{}:{}:{}",
-                    record.attempted_at,
-                    record.source_title.as_deref().unwrap_or_default(),
-                    record.source_hint.as_deref().unwrap_or_default(),
-                ),
-                source_hint: record.source_hint,
-                source_title: record.source_title,
-                error_message: record.error_message,
-                attempted_at: record.attempted_at,
-                episode_ids: Vec::new(),
-            })
-            .collect(),
-        )
-    }
-
-    async fn get_latest_source_password(
-        &self,
-        title_id: Option<&str>,
-        source_hint: Option<&str>,
-        source_title: Option<&str>,
-    ) -> AppResult<Option<String>> {
-        crate::queries::workflow::get_latest_source_password_query(
-            &self.pool,
-            title_id,
-            source_hint,
-            source_title,
-        )
-        .await
-    }
+fn clamp_limit(limit: usize, max: i64) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX).clamp(1, max)
 }
 
-#[async_trait]
-impl<S: ReleaseSql> ReleaseAttemptRepository for ReleaseStore<S> {
-    async fn record_release_attempt(
-        &self,
-        title_id: Option<String>,
-        source_hint: Option<String>,
-        source_title: Option<String>,
-        outcome: ReleaseDownloadAttemptOutcome,
-        error_message: Option<String>,
-        source_password: Option<String>,
-    ) -> AppResult<()> {
-        self.sql
-            .record_release_attempt(
-                title_id,
-                source_hint,
-                source_title,
-                outcome,
-                error_message,
-                source_password,
-            )
-            .await
-    }
+fn decode_failed_signature(row: SqlRow) -> AppResult<ReleaseDownloadFailureSignature> {
+    Ok(ReleaseDownloadFailureSignature {
+        source_hint: row.opt_text("source_hint")?,
+        source_title: row.opt_text("source_title")?,
+    })
+}
 
-    async fn list_failed_release_signatures(
-        &self,
-        limit: usize,
-    ) -> AppResult<Vec<ReleaseDownloadFailureSignature>> {
-        self.sql.list_failed_release_signatures(limit).await
-    }
+fn decode_title_release_blocklist(row: SqlRow) -> AppResult<TitleReleaseBlocklistEntry> {
+    let source_hint = row.opt_text("source_hint")?;
+    let source_title = row.opt_text("source_title")?;
+    let attempted_at = row.timestamp("attempted_at")?.to_rfc3339();
 
-    async fn list_failed_release_signatures_for_title(
-        &self,
-        title_id: &str,
-        limit: usize,
-    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
-        self.sql
-            .list_failed_release_signatures_for_title(title_id, limit)
-            .await
-    }
-
-    async fn get_latest_source_password(
-        &self,
-        title_id: Option<&str>,
-        source_hint: Option<&str>,
-        source_title: Option<&str>,
-    ) -> AppResult<Option<String>> {
-        self.sql
-            .get_latest_source_password(title_id, source_hint, source_title)
-            .await
-    }
+    Ok(TitleReleaseBlocklistEntry {
+        id: format!(
+            "failed-attempt:{}:{}:{}",
+            attempted_at,
+            source_title.as_deref().unwrap_or_default(),
+            source_hint.as_deref().unwrap_or_default(),
+        ),
+        source_hint,
+        source_title,
+        error_message: row.opt_text("error_message")?,
+        attempted_at,
+        episode_ids: Vec::new(),
+    })
 }

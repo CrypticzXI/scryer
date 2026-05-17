@@ -7,7 +7,9 @@ use crate::{
     domain_events::{
         created_media_update, deleted_media_update, new_title_domain_event, title_context_snapshot,
     },
-    helpers::{has_usable_release_title_signal, parse_usable_release_title},
+    helpers::{
+        has_usable_release_title_signal, normalize_release_title_signal, parse_usable_release_title,
+    },
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
@@ -1074,7 +1076,8 @@ async fn run_import(
     let dest_dir = Path::new(&completed.dest_dir);
     let mut extracted_dir: Option<PathBuf> = None;
     let mut title_evidence_video_files: Option<Vec<PathBuf>> = None;
-    let parsed_completed_name = parse_release_metadata(&completed.name);
+    let parsed_completed_name =
+        normalize_release_title_signal(parse_release_metadata(&completed.name));
     let parsed_completed_folder = parsed_release_from_folder_name(dest_dir);
     if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id") {
         let title_id = title_id.trim();
@@ -4022,7 +4025,7 @@ fn parsed_release_from_file_stem(path: &Path) -> ParsedReleaseMetadata {
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or(fallback);
-    parse_release_metadata(stem)
+    normalize_release_title_signal(parse_release_metadata(stem))
 }
 
 fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
@@ -4043,6 +4046,7 @@ fn parsed_release_from_folder_name(path: &Path) -> Option<ParsedReleaseMetadata>
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(parse_release_metadata)
+        .map(normalize_release_title_signal)
 }
 
 fn parsed_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
@@ -4090,6 +4094,13 @@ fn title_evidence_candidates_from_video_files(
     }
 
     candidates
+}
+
+fn clear_unusable_release_title_signal(parsed: &mut ParsedReleaseMetadata) {
+    if !has_usable_release_title_signal(parsed) {
+        parsed.normalized_title.clear();
+        parsed.normalized_title_variants.clear();
+    }
 }
 
 fn fill_missing_release_metadata(
@@ -4180,12 +4191,16 @@ fn build_augmented_episode_import_metadata(
     let mut parsed = parsed_release_from_file_stem(source_video);
     let file_episode = parsed.episode.clone();
     let file_has_usable_title_signal = has_usable_release_title_signal(&parsed);
+    if !file_has_usable_title_signal {
+        clear_unusable_release_title_signal(&mut parsed);
+    }
     let source_parent_info = if file_has_usable_title_signal {
         None
     } else {
         parsed_usable_release_from_parent_folder(source_video)
     };
-    let download_client_info = parse_release_metadata(&completed.name);
+    let download_client_info =
+        normalize_release_title_signal(parse_release_metadata(&completed.name));
     let folder_info = parsed_release_from_folder_name(Path::new(&completed.dest_dir));
 
     if !other_video_files {
@@ -4234,12 +4249,14 @@ fn build_augmented_movie_import_metadata(
     completed: &CompletedDownload,
 ) -> ParsedReleaseMetadata {
     let mut parsed = parsed_release_from_file_stem(source_video);
+    clear_unusable_release_title_signal(&mut parsed);
     if !has_usable_release_title_signal(&parsed)
         && let Some(source_parent_info) = parsed_usable_release_from_parent_folder(source_video)
     {
         fill_missing_release_metadata(&mut parsed, &source_parent_info, false);
     }
-    let download_client_info = parse_release_metadata(&completed.name);
+    let download_client_info =
+        normalize_release_title_signal(parse_release_metadata(&completed.name));
     fill_missing_release_metadata(&mut parsed, &download_client_info, false);
     if let Some(folder_info) = parsed_release_from_folder_name(Path::new(&completed.dest_dir)) {
         fill_missing_release_metadata(&mut parsed, &folder_info, false);

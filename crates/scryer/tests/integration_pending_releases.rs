@@ -14,6 +14,7 @@ use scryer_application::{
 use scryer_domain::{
     Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
 };
+use scryer_infrastructure::{AcquisitionStore, DownloadSubmissionStore};
 use sqlx::{Row, query};
 
 // ---------------------------------------------------------------------------
@@ -442,9 +443,10 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         "grabbed_at": grabbed_at.clone(),
     })
     .to_string();
-    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+    let acquisition_store = AcquisitionStore::from_sqlite_services(&ctx.db);
+    let download_submission_store = DownloadSubmissionStore::from_sqlite_services(&ctx.db);
 
-    workflow_store
+    acquisition_store
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             covered_wanted_item_ids: Vec::new(),
@@ -485,7 +487,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         Some(grabbed_release.as_str())
     );
 
-    let submission = workflow_store
+    let submission = download_submission_store
         .find_by_client_item_id(&DownloadSourceIdentity::new(None, "nzbget", "job-1"))
         .await
         .expect("find submission")
@@ -541,7 +543,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
     )
     .await;
     let grabbed_at = Utc::now().to_rfc3339();
-    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = AcquisitionStore::from_sqlite_services(&ctx.db);
 
     workflow_store
         .commit_successful_grab(&SuccessfulGrabCommit {
@@ -600,7 +602,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
 async fn download_submission_roundtrips_episode_scope() {
     let ctx = TestContext::new().await;
     seed_title(&ctx, "title-episode-scope").await;
-    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = DownloadSubmissionStore::from_sqlite_services(&ctx.db);
 
     workflow_store
         .record_submission(DownloadSubmission {
@@ -667,7 +669,7 @@ async fn download_submission_roundtrips_episode_scope() {
 async fn download_submission_legacy_rows_without_episode_id_still_load() {
     let ctx = TestContext::new().await;
     seed_title(&ctx, "title-legacy-scope").await;
-    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = DownloadSubmissionStore::from_sqlite_services(&ctx.db);
 
     query(
         "INSERT INTO download_submissions

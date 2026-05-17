@@ -20,13 +20,12 @@ INSERT INTO external_import_monitor_snapshot_chunks (
     created_at
 )
 SELECT
-    scope_key,
+    facet,
     entry_kind,
     chunk_index,
     payload_ndjson,
     created_at
 FROM external_import_monitor_snapshot_chunks_old
-WHERE scope_kind = 'facet'
-  AND scope_key IN ('movie', 'series', 'anime');
+WHERE facet IN ('movie', 'series', 'anime');
 
 DROP TABLE external_import_monitor_snapshot_chunks_old;

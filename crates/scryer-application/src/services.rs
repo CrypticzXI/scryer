@@ -574,17 +574,17 @@ impl ExternalImportMonitorWarmupOrchestrator {
                 continue;
             }
 
-            if let Some(handle) = state.sessions_by_id.get_mut(&session_id) {
-                if !handle.claimed {
-                    let mut snapshot = handle.tx.borrow().clone();
-                    if !snapshot.status.is_terminal() {
-                        snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
-                        snapshot.error_message = None;
-                        snapshot.touch();
-                        handle.tx.send_replace(snapshot);
-                    }
-                    handle.cancel_token.cancel();
+            if let Some(handle) = state.sessions_by_id.get_mut(&session_id)
+                && !handle.claimed
+            {
+                let mut snapshot = handle.tx.borrow().clone();
+                if !snapshot.status.is_terminal() {
+                    snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
+                    snapshot.error_message = None;
+                    snapshot.touch();
+                    handle.tx.send_replace(snapshot);
                 }
+                handle.cancel_token.cancel();
             }
             state
                 .session_ids_by_actor_fingerprint
@@ -1324,42 +1324,6 @@ impl AppServicesBuilder {
         catalog.libraries,
         Arc<dyn LibraryRepository>
     );
-    pub fn with_library_state_store<T>(mut self, store: Arc<T>) -> Self
-    where
-        T: BlocklistRepository
-            + HousekeepingRepository
-            + LibraryProbeRepository
-            + LibraryScanUnmatchedItemRepository
-            + MediaFileRepository
-            + PendingReleaseRepository
-            + SubtitleDownloadRepository
-            + TitleImageRepository
-            + WantedItemRepository
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.services.library.media_files = store.clone();
-        self.services.workflow.wanted_items = store.clone();
-        self.services.workflow.pending_releases = store.clone();
-        self.services.workflow.blocklist_repo = store.clone();
-        self.services.library.library_probe_signatures = store.clone();
-        self.services.library.library_scan_unmatched_items = store.clone();
-        self.services.library.title_images = store.clone();
-        self.services.workflow.housekeeping = store.clone();
-        self.services.workflow.subtitle_downloads = store;
-        self.configured.media_files = true;
-        self.configured.wanted_items = true;
-        self.configured.pending_releases = true;
-        self.configured.blocklist_repo = true;
-        self.configured.library_probe_signatures = true;
-        self.configured.library_scan_unmatched_items = true;
-        self.configured.title_images = true;
-        self.configured.housekeeping = true;
-        self.configured.subtitle_downloads = true;
-        self
-    }
-
     pub fn with_customization_store<T>(mut self, store: Arc<T>) -> Self
     where
         T: PluginInstallationRepository

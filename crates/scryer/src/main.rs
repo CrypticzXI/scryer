@@ -44,11 +44,10 @@ use scryer_application::{
 };
 use scryer_infrastructure::{
     DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreEngine,
-    DatastoreSettingsStore, FileSystemLibraryRenamer, FileSystemLibraryScanner,
-    FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient,
-    NzbgetDownloadClient, PrioritizedDownloadClientRouter, SmgEnrollmentConfig,
-    WeaverDownloadClient, resolve_datastore_config_from_env, start_weaver_subscription_bridge,
-    validate_datastore,
+    FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
+    MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient, NzbgetDownloadClient,
+    PrioritizedDownloadClientRouter, SettingsStore, SmgEnrollmentConfig, WeaverDownloadClient,
+    resolve_datastore_config_from_env, start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{
     AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, RestoreContext, RestoreRestartHandle,
@@ -558,7 +557,8 @@ async fn bootstrap_application(
     let datastore = DatastoreAssembly::connect(datastore_config)
         .await
         .map_err(|e| format!("failed to initialize datastore services: {e}"))?;
-    let bootstrap_settings_store = datastore.bootstrap_settings_store();
+    let bootstrap_settings_store = datastore.settings_store();
+    let bootstrap_quality_profile_store = datastore.quality_profile_store();
     let datastore_info = bootstrap_settings_store
         .datastore_info()
         .await
@@ -661,6 +661,7 @@ async fn bootstrap_application(
 
     if let Err(error) = normalize_quality_profile_settings(
         bootstrap_settings_store.clone(),
+        bootstrap_quality_profile_store.clone(),
         facet_registry
             .facet_ids()
             .into_iter()
@@ -1529,7 +1530,7 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-async fn check_version_upgrade(settings_store: DatastoreSettingsStore) -> VersionLifecycle {
+async fn check_version_upgrade(settings_store: Arc<SettingsStore>) -> VersionLifecycle {
     const SCOPE: &str = "system";
     const KEY: &str = "last_run_version";
 
@@ -1571,7 +1572,7 @@ async fn check_version_upgrade(settings_store: DatastoreSettingsStore) -> Versio
     lifecycle
 }
 
-async fn clear_legacy_history_retention_forever_override(settings_store: DatastoreSettingsStore) {
+async fn clear_legacy_history_retention_forever_override(settings_store: Arc<SettingsStore>) {
     let keep_forever = settings_store
         .get_setting_with_defaults("system", HISTORY_KEEP_FOREVER_KEY, None)
         .await
@@ -2001,8 +2002,7 @@ mod tests {
         TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
     };
     use scryer_infrastructure::{
-        DatastoreCustomizationStore, DatastoreSettingsStore, MigrationMode,
-        SqliteCustomizationStore, SqliteServices, SqliteSettingsStore,
+        DatastoreCustomizationStore, MigrationMode, SettingsStore, SqliteServices,
     };
     use tempfile::tempdir;
     use tower::ServiceExt;
@@ -2139,8 +2139,7 @@ mod tests {
         let services = SqliteServices::new(db_path.to_string_lossy())
             .await
             .unwrap();
-        let customization =
-            DatastoreCustomizationStore::from_sqlite(SqliteCustomizationStore::new(&services));
+        let customization = DatastoreCustomizationStore::from_sqlite_services(&services);
         let now = Utc::now();
 
         customization
@@ -2204,8 +2203,7 @@ mod tests {
         let services = SqliteServices::new(db_path.to_string_lossy())
             .await
             .unwrap();
-        let customization =
-            DatastoreCustomizationStore::from_sqlite(SqliteCustomizationStore::new(&services));
+        let customization = DatastoreCustomizationStore::from_sqlite_services(&services);
         let now = Utc::now();
         let compressed = vec![
             0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x00, 0x01, 0x00, 0x00, 0x99, 0xe9, 0xd8, 0x51,
@@ -2426,7 +2424,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    async fn bootstrap_settings_store() -> (tempfile::TempDir, DatastoreSettingsStore) {
+    async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let temp = tempdir().expect("tempdir");
         let db_path = temp.path().join("scryer.db");
         let services = SqliteServices::new_with_mode(
@@ -2435,7 +2433,7 @@ mod tests {
         )
         .await
         .expect("sqlite services");
-        let store = DatastoreSettingsStore::from_sqlite(SqliteSettingsStore::new(&services));
+        let store = Arc::new(SettingsStore::from_sqlite_services(&services));
         seed_service_setting_definitions(store.clone())
             .await
             .expect("seed setting definitions");

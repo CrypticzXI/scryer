@@ -21,6 +21,18 @@ pub struct PluginStore {
     datastore: StoreDatastore,
 }
 
+#[derive(Clone, Copy)]
+struct BuiltinPluginSeed<'a> {
+    plugin_id: &'a str,
+    name: &'a str,
+    description: &'a str,
+    version: &'a str,
+    sdk_version: &'a str,
+    sdk_constraint: &'a str,
+    plugin_type: &'a str,
+    provider_type: &'a str,
+}
+
 impl PluginStore {
     pub(crate) fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
@@ -156,41 +168,31 @@ impl PluginStore {
         Ok(installation.clone())
     }
 
-    async fn seed_builtin_sqlite(
-        &self,
-        plugin_id: &str,
-        name: &str,
-        description: &str,
-        version: &str,
-        sdk_version: &str,
-        sdk_constraint: &str,
-        plugin_type: &str,
-        provider_type: &str,
-    ) -> AppResult<()> {
+    async fn seed_builtin_sqlite(&self, seed: BuiltinPluginSeed<'_>) -> AppResult<()> {
         let now = Utc::now();
         let insert_args = vec![
             SqlArg::Text(Id::new().0),
-            SqlArg::Text(plugin_id.to_string()),
-            SqlArg::Text(name.to_string()),
-            SqlArg::Text(description.to_string()),
-            SqlArg::Text(version.to_string()),
-            SqlArg::Text(sdk_version.to_string()),
-            SqlArg::Text(sdk_constraint.to_string()),
-            SqlArg::Text(plugin_type.to_string()),
-            SqlArg::Text(provider_type.to_string()),
+            SqlArg::Text(seed.plugin_id.to_string()),
+            SqlArg::Text(seed.name.to_string()),
+            SqlArg::Text(seed.description.to_string()),
+            SqlArg::Text(seed.version.to_string()),
+            SqlArg::Text(seed.sdk_version.to_string()),
+            SqlArg::Text(seed.sdk_constraint.to_string()),
+            SqlArg::Text(seed.plugin_type.to_string()),
+            SqlArg::Text(seed.provider_type.to_string()),
             SqlArg::Timestamp(now),
             SqlArg::Timestamp(now),
         ];
         let update_args = vec![
-            SqlArg::Text(name.to_string()),
-            SqlArg::Text(description.to_string()),
-            SqlArg::Text(version.to_string()),
-            SqlArg::Text(sdk_version.to_string()),
-            SqlArg::Text(sdk_constraint.to_string()),
-            SqlArg::Text(plugin_type.to_string()),
-            SqlArg::Text(provider_type.to_string()),
+            SqlArg::Text(seed.name.to_string()),
+            SqlArg::Text(seed.description.to_string()),
+            SqlArg::Text(seed.version.to_string()),
+            SqlArg::Text(seed.sdk_version.to_string()),
+            SqlArg::Text(seed.sdk_constraint.to_string()),
+            SqlArg::Text(seed.plugin_type.to_string()),
+            SqlArg::Text(seed.provider_type.to_string()),
             SqlArg::Timestamp(now),
-            SqlArg::Text(plugin_id.to_string()),
+            SqlArg::Text(seed.plugin_id.to_string()),
         ];
 
         SqlRuntime::run_in_transaction(&self.datastore, "seed_builtin_plugin", move |tx| {
@@ -207,18 +209,8 @@ impl PluginStore {
         .await
     }
 
-    async fn seed_builtin_postgres(
-        &self,
-        plugin_id: &str,
-        name: &str,
-        description: &str,
-        version: &str,
-        sdk_version: &str,
-        sdk_constraint: &str,
-        plugin_type: &str,
-        provider_type: &str,
-    ) -> AppResult<()> {
-        let existing = self.get_plugin_installation(plugin_id).await?;
+    async fn seed_builtin_postgres(&self, seed: BuiltinPluginSeed<'_>) -> AppResult<()> {
+        let existing = self.get_plugin_installation(seed.plugin_id).await?;
         if existing
             .as_ref()
             .is_some_and(|installation| !installation.is_builtin)
@@ -232,15 +224,15 @@ impl PluginStore {
                 .as_ref()
                 .map(|installation| installation.id.clone())
                 .unwrap_or_else(|| Id::new().0),
-            plugin_id: plugin_id.to_string(),
-            name: name.to_string(),
-            description: description.to_string(),
-            version: version.to_string(),
-            sdk_version: sdk_version.to_string(),
-            sdk_constraint: sdk_constraint.to_string(),
+            plugin_id: seed.plugin_id.to_string(),
+            name: seed.name.to_string(),
+            description: seed.description.to_string(),
+            version: seed.version.to_string(),
+            sdk_version: seed.sdk_version.to_string(),
+            sdk_constraint: seed.sdk_constraint.to_string(),
             scryer_constraint: None,
-            plugin_type: plugin_type.to_string(),
-            provider_type: provider_type.to_string(),
+            plugin_type: seed.plugin_type.to_string(),
+            provider_type: seed.provider_type.to_string(),
             source_kind: PluginSourceKind::Bundled,
             is_enabled: true,
             is_builtin: true,
@@ -410,33 +402,19 @@ impl PluginInstallationRepository for PluginStore {
         plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()> {
+        let seed = BuiltinPluginSeed {
+            plugin_id,
+            name,
+            description,
+            version,
+            sdk_version,
+            sdk_constraint,
+            plugin_type,
+            provider_type,
+        };
         match &self.datastore {
-            StoreDatastore::Sqlite { .. } => {
-                self.seed_builtin_sqlite(
-                    plugin_id,
-                    name,
-                    description,
-                    version,
-                    sdk_version,
-                    sdk_constraint,
-                    plugin_type,
-                    provider_type,
-                )
-                .await
-            }
-            StoreDatastore::Postgres { .. } => {
-                self.seed_builtin_postgres(
-                    plugin_id,
-                    name,
-                    description,
-                    version,
-                    sdk_version,
-                    sdk_constraint,
-                    plugin_type,
-                    provider_type,
-                )
-                .await
-            }
+            StoreDatastore::Sqlite { .. } => self.seed_builtin_sqlite(seed).await,
+            StoreDatastore::Postgres { .. } => self.seed_builtin_postgres(seed).await,
         }
     }
 

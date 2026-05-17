@@ -1,13 +1,10 @@
 pub mod blocklist;
 pub mod common;
-pub mod domain_event;
 pub mod housekeeping;
 pub mod indexer;
 pub mod library_scan_unmatched;
 pub mod media_file;
 pub mod pending_releases;
-pub mod quality;
-pub mod settings;
 pub mod sql_runtime;
 pub mod subtitle;
 pub mod title;

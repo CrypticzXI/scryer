@@ -18,14 +18,15 @@ use scryer_application::{
     MovieFacetHandler, SeriesFacetHandler,
 };
 use scryer_infrastructure::sqlite::{
-    LibraryStore, PluginStore, PostProcessingScriptStore, RuleSetStore, ShowStore, TitleStore,
-    UserStore,
+    LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
+    SettingsStore, ShowStore, TitleStore, UserStore,
 };
 use scryer_infrastructure::{
-    DownloadClientConfigStore, FileSystemLibraryScanner, FileSystemStagedNzbStore,
-    IndexerConfigStore, MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient,
-    SmgEnrollmentConfig, SqliteLibraryStateStore, SqliteReleaseStore, SqliteServices,
-    SqliteSettingsStore,
+    AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadQueueCommandStore,
+    DownloadSubmissionStore, ExternalImportMonitorStore, FileSystemLibraryScanner,
+    FileSystemStagedNzbStore, ImportStore, IndexerConfigStore, LibraryProbeStore,
+    LibraryStateStore, MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient,
+    ReleaseStore, SmgEnrollmentConfig, SqliteServices, TitleImageStore, WorkflowOperationStore,
 };
 use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{ApiSchema, build_schema};
@@ -49,9 +50,10 @@ pub struct TestContext {
     pub libraries: LibraryStore,
     pub users: UserStore,
     pub customization: PluginStore,
-    pub library_state: SqliteLibraryStateStore,
+    pub library_probe: LibraryProbeStore,
+    pub library_state: LibraryStateStore,
     pub db: SqliteServices,
-    pub settings_store: SqliteSettingsStore,
+    pub settings_store: Arc<SettingsStore>,
     pub staged_nzb_store: Arc<FileSystemStagedNzbStore>,
     pub staged_nzb_dir: tempfile::TempDir,
 }
@@ -86,8 +88,9 @@ impl TestContext {
                 .expect("failed to create staged nzb store"),
         );
         let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
-        let release_store = Arc::new(SqliteReleaseStore::new(&db));
-        let settings_store = Arc::new(SqliteSettingsStore::new(&db));
+        let release_store = Arc::new(ReleaseStore::from_sqlite_services(&db));
+        let settings_store = Arc::new(SettingsStore::from_sqlite_services(&db));
+        let quality_profile_store = Arc::new(QualityProfileStore::from_sqlite_services(&db));
 
         // Real clients pointed at wiremock URLs
         let nzbget = NzbgetDownloadClient::with_staged_nzb_store(
@@ -145,13 +148,24 @@ impl TestContext {
         let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
         let settings: Arc<dyn scryer_application::SettingsRepository> = settings_store.clone();
         let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
-            settings_store.clone();
+            quality_profile_store.clone();
 
-        let library_state_store = SqliteLibraryStateStore::new(&db);
+        let library_probe_store = LibraryProbeStore::from_sqlite_services(&db);
+        let library_state_store = LibraryStateStore::from_sqlite_services(&db);
+        let title_image_store = TitleImageStore::from_sqlite_services(&db);
         let rule_set_store = RuleSetStore::from_sqlite_services(&db);
         let post_processing_script_store = PostProcessingScriptStore::from_sqlite_services(&db);
         let plugin_store = PluginStore::from_sqlite_services(&db);
-        let workflow_store = Arc::new(scryer_infrastructure::SqliteWorkflowStore::new(&db));
+        let domain_event_store = Arc::new(DomainEventStore::from_sqlite_services(&db));
+        let acquisition_store = Arc::new(AcquisitionStore::from_sqlite_services(&db));
+        let download_submission_store =
+            Arc::new(DownloadSubmissionStore::from_sqlite_services(&db));
+        let import_store = Arc::new(ImportStore::from_sqlite_services(&db));
+        let external_import_monitor_store =
+            Arc::new(ExternalImportMonitorStore::from_sqlite_services(&db));
+        let download_queue_command_store =
+            Arc::new(DownloadQueueCommandStore::from_sqlite_services(&db));
+        let workflow_operation_store = Arc::new(WorkflowOperationStore::from_sqlite_services(&db));
         let services = AppServices::builder(
             titles,
             shows,
@@ -165,18 +179,27 @@ impl TestContext {
             quality_profiles,
             ":memory:".to_string(),
         )
-        .with_library_state_store(Arc::new(library_state_store.clone()))
+        .with_media_files(Arc::new(library_state_store.clone()))
+        .with_wanted_items(Arc::new(library_state_store.clone()))
+        .with_pending_releases(Arc::new(library_state_store.clone()))
+        .with_blocklist_repo(Arc::new(library_state_store.clone()))
+        .with_library_probe_signatures(Arc::new(library_probe_store.clone()))
+        .with_library_scan_unmatched_items(Arc::new(library_state_store.clone()))
+        .with_title_images(Arc::new(title_image_store))
+        .with_housekeeping(Arc::new(library_state_store.clone()))
+        .with_subtitle_downloads(Arc::new(library_state_store.clone()))
         .with_libraries(Arc::new(library_store.clone()))
         .with_rule_set_store(Arc::new(rule_set_store))
         .with_post_processing_script_store(Arc::new(post_processing_script_store))
         .with_plugin_installation_store(Arc::new(plugin_store.clone()))
-        .with_acquisition_state(workflow_store.clone())
-        .with_domain_events(workflow_store.clone())
-        .with_download_queue_commands(workflow_store.clone())
-        .with_download_submissions(workflow_store.clone())
-        .with_import_artifacts(workflow_store.clone())
-        .with_imports(workflow_store.clone())
-        .with_job_runs(workflow_store.clone())
+        .with_acquisition_state(acquisition_store)
+        .with_domain_events(domain_event_store)
+        .with_download_queue_commands(download_queue_command_store)
+        .with_download_submissions(download_submission_store)
+        .with_external_import_monitor_snapshots(external_import_monitor_store)
+        .with_import_artifacts(import_store.clone())
+        .with_imports(import_store)
+        .with_job_runs(workflow_operation_store.clone())
         .with_system_info(settings_store.clone())
         .with_metadata_gateway(Arc::new(metadata_gateway))
         .with_library_scanner(Arc::new(FileSystemLibraryScanner::new()))
@@ -184,7 +207,7 @@ impl TestContext {
         .with_plugin_provider(plugin_provider)
         .with_staged_nzb_store(staged_nzb_store.clone())
         .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
-        .with_workflow_operations(workflow_store)
+        .with_workflow_operations(workflow_operation_store)
         .build();
 
         // Facet registry with all built-in facets
@@ -239,9 +262,10 @@ impl TestContext {
             libraries: library_store,
             users: user_store,
             customization: plugin_store,
+            library_probe: library_probe_store,
             library_state: library_state_store,
             db,
-            settings_store: settings_store.as_ref().clone(),
+            settings_store,
             staged_nzb_store,
             staged_nzb_dir,
         }

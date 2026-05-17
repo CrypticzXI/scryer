@@ -17,6 +17,7 @@ use tracing::{debug, info, warn};
 #[derive(Clone, Debug)]
 struct SearchStrategy {
     query: String,
+    request_query: String,
     ids: HashMap<String, String>,
     season: Option<u32>,
     episode: Option<u32>,
@@ -568,7 +569,7 @@ impl MultiIndexerSearchClient {
                 let response = tokio::time::timeout(
                     std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS),
                     client.search(
-                        strategy.query,
+                        strategy.request_query,
                         strategy.ids,
                         category,
                         Some(facet),
@@ -1273,7 +1274,8 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
         if facet == "anime" {
             if let Some(absolute_episode) = absolute_episode {
                 strategies.push(SearchStrategy {
-                    query: String::new(),
+                    query: query.to_string(),
+                    request_query: String::new(),
                     ids: filtered_ids.clone(),
                     season: None,
                     episode: None,
@@ -1284,7 +1286,8 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
 
             if episode.is_some() {
                 strategies.push(SearchStrategy {
-                    query: String::new(),
+                    query: query.to_string(),
+                    request_query: String::new(),
                     ids: filtered_ids.clone(),
                     season,
                     episode,
@@ -1296,11 +1299,8 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
 
         if strategies.is_empty() {
             strategies.push(SearchStrategy {
-                query: if caps.query_param.is_some() && !query.is_empty() {
-                    query.to_string()
-                } else {
-                    String::new()
-                },
+                query: query.to_string(),
+                request_query: String::new(),
                 ids: filtered_ids,
                 season,
                 episode,
@@ -1318,6 +1318,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     if caps.query_param.is_some() && !query.is_empty() && !skip_no_facet {
         strategies.push(SearchStrategy {
             query: query.to_string(),
+            request_query: query.to_string(),
             ids: HashMap::new(),
             season,
             episode,
@@ -1334,6 +1335,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     if strategies.is_empty() {
         strategies.push(SearchStrategy {
             query: query.to_string(),
+            request_query: query.to_string(),
             ids: ids.clone(),
             season,
             episode,

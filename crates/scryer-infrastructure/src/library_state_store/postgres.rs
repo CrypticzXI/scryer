@@ -5,25 +5,15 @@ use scryer_domain::*;
 use serde_json::Value;
 use sqlx::{Postgres, QueryBuilder, Row};
 
-use crate::library_state_store::LibraryStateStore;
-use crate::postgres::PostgresServices;
 use crate::postgres::timestamp::{parse_optional_rfc3339_timestamp, parse_rfc3339_timestamp};
 
-pub type PostgresLibraryStateStore = LibraryStateStore<PostgresLibraryStateSql>;
-
 #[derive(Clone)]
-pub struct PostgresLibraryStateSql {
+pub(super) struct PostgresLibraryStateSql {
     pool: sqlx::PgPool,
 }
 
-impl PostgresLibraryStateStore {
-    pub fn new(db: &PostgresServices) -> Self {
-        Self::from_sql(PostgresLibraryStateSql::new(db.pool().clone()))
-    }
-}
-
 impl PostgresLibraryStateSql {
-    fn new(pool: sqlx::PgPool) -> Self {
+    pub(super) fn new(pool: sqlx::PgPool) -> Self {
         Self { pool }
     }
 }
@@ -90,17 +80,6 @@ fn json_string_from_pg(row: &sqlx::postgres::PgRow, column: &str) -> Option<Stri
         .flatten()
         .map(|value| value.to_string())
         .or_else(|| row.try_get::<Option<String>, _>(column).ok().flatten())
-}
-
-fn content_type_for_format(format: String) -> String {
-    match format.trim().to_ascii_lowercase().as_str() {
-        "avif" => "image/avif",
-        "webp" => "image/webp",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        other => other,
-    }
-    .to_string()
 }
 
 fn row_to_release_decision_pg(row: &sqlx::postgres::PgRow) -> AppResult<ReleaseDecision> {
@@ -381,151 +360,6 @@ fn row_to_library_scan_unmatched_pg(
         search_attempts,
         created_at: required_timestamp_from_pg(row, "created_at")?,
         updated_at: required_timestamp_from_pg(row, "updated_at")?,
-    })
-}
-
-async fn replace_title_image_pg_tx(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
-    title_id: &str,
-    replacement: &TitleImageReplacement,
-) -> AppResult<()> {
-    let image_id: String = sqlx::query(
-        "INSERT INTO title_images (
-            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-            source_last_modified, source_format, source_width, source_height, storage_mode,
-            master_path, master_format, master_sha256, master_width, master_height, bytes,
-            created_at, updated_at
-         ) VALUES ($1, $2, 'tvdb', NULL, $3, $4, $5, $6, $7, $8, $9, $10,
-                   NULL, $11, $12, $13, $14, $15, NOW(), NOW())
-         ON CONFLICT (title_id, kind) DO UPDATE SET
-            source_url = EXCLUDED.source_url,
-            source_etag = EXCLUDED.source_etag,
-            source_last_modified = EXCLUDED.source_last_modified,
-            source_format = EXCLUDED.source_format,
-            source_width = EXCLUDED.source_width,
-            source_height = EXCLUDED.source_height,
-            storage_mode = EXCLUDED.storage_mode,
-            master_format = EXCLUDED.master_format,
-            master_sha256 = EXCLUDED.master_sha256,
-            master_width = EXCLUDED.master_width,
-            master_height = EXCLUDED.master_height,
-            bytes = EXCLUDED.bytes,
-            updated_at = NOW()
-         RETURNING id",
-    )
-    .bind(Id::new().0)
-    .bind(title_id)
-    .bind(replacement.kind.as_str())
-    .bind(&replacement.source_url)
-    .bind(&replacement.source_etag)
-    .bind(&replacement.source_last_modified)
-    .bind(&replacement.source_format)
-    .bind(replacement.source_width)
-    .bind(replacement.source_height)
-    .bind(replacement.storage_mode.as_str())
-    .bind(&replacement.master_format)
-    .bind(&replacement.master_sha256)
-    .bind(replacement.master_width)
-    .bind(replacement.master_height)
-    .bind(&replacement.master_bytes)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(repo_err)?
-    .try_get("id")
-    .map_err(repo_err)?;
-
-    sqlx::query("DELETE FROM title_image_variants WHERE title_image_id = $1")
-        .bind(&image_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(repo_err)?;
-
-    for variant in &replacement.variants {
-        sqlx::query(
-            "INSERT INTO title_image_variants
-             (id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at)
-             VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, NOW(), NOW())",
-        )
-        .bind(Id::new().0)
-        .bind(&image_id)
-        .bind(&variant.variant_key)
-        .bind(&variant.format)
-        .bind(variant.width)
-        .bind(variant.height)
-        .bind(&variant.bytes)
-        .bind(&variant.sha256)
-        .execute(&mut **tx)
-        .await
-        .map_err(repo_err)?;
-    }
-
-    let local_path = crate::title_images::materialize_local_title_image_path(
-        title_id,
-        replacement.kind,
-        replacement.storage_mode,
-        &replacement.master_sha256,
-        &replacement.variants,
-    );
-    let local_path_column = match replacement.kind {
-        TitleImageKind::Poster => "poster_local_path",
-        TitleImageKind::Banner => "banner_local_path",
-        TitleImageKind::Fanart => "background_local_path",
-    };
-    let update_title_sql = format!("UPDATE titles SET {local_path_column} = $1 WHERE id = $2");
-    let result = sqlx::query(&update_title_sql)
-        .bind(&local_path)
-        .bind(title_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(repo_err)?;
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("title {title_id}")));
-    }
-    Ok(())
-}
-
-async fn append_domain_event_pg_tx(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
-    event: &NewDomainEvent,
-) -> AppResult<DomainEvent> {
-    let payload = serde_json::to_value(&event.payload).map_err(repo_err)?;
-    let sequence: i64 = sqlx::query(
-        "INSERT INTO domain_events (
-            event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id,
-            schema_version, stream_kind, stream_id, event_type, payload_json
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
-         RETURNING sequence",
-    )
-    .bind(&event.event_id)
-    .bind(event.occurred_at)
-    .bind(&event.actor_user_id)
-    .bind(&event.title_id)
-    .bind(event.facet.as_ref().map(MediaFacet::as_str))
-    .bind(&event.correlation_id)
-    .bind(&event.causation_id)
-    .bind(event.schema_version)
-    .bind(event.stream.kind())
-    .bind(event.stream.identifier())
-    .bind(event.payload.event_type().as_str())
-    .bind(payload)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(repo_err)?
-    .try_get("sequence")
-    .map_err(repo_err)?;
-
-    Ok(DomainEvent {
-        sequence,
-        event_id: event.event_id.clone(),
-        occurred_at: event.occurred_at,
-        actor_user_id: event.actor_user_id.clone(),
-        title_id: event.title_id.clone(),
-        facet: event.facet.clone(),
-        correlation_id: event.correlation_id.clone(),
-        causation_id: event.causation_id.clone(),
-        schema_version: event.schema_version,
-        stream: event.stream.clone(),
-        payload: event.payload.clone(),
     })
 }
 
@@ -1831,76 +1665,6 @@ impl HousekeepingRepository for PostgresLibraryStateSql {
 }
 
 #[async_trait]
-impl LibraryProbeRepository for PostgresLibraryStateSql {
-    async fn get_probe_signature(
-        &self,
-        title_id: &str,
-    ) -> AppResult<Option<LibraryProbeSignature>> {
-        let row = sqlx::query(
-            "SELECT title_id, path, probe_signature_scheme, probe_signature_value,
-                    last_probed_at, last_changed_at
-               FROM library_probe_signatures
-              WHERE title_id = $1",
-        )
-        .bind(title_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        row.map(|row| {
-            Ok(LibraryProbeSignature {
-                title_id: row.try_get("title_id").map_err(repo_err)?,
-                path: row.try_get("path").map_err(repo_err)?,
-                probe_signature_scheme: text_from_pg(&row, "probe_signature_scheme"),
-                probe_signature_value: text_from_pg(&row, "probe_signature_value"),
-                last_probed_at: row
-                    .try_get::<Option<chrono::DateTime<Utc>>, _>("last_probed_at")
-                    .map_err(repo_err)?,
-                last_changed_at: row
-                    .try_get::<Option<chrono::DateTime<Utc>>, _>("last_changed_at")
-                    .map_err(repo_err)?,
-            })
-        })
-        .transpose()
-    }
-    async fn upsert_probe_signature(&self, probe: &LibraryProbeSignature) -> AppResult<()> {
-        sqlx::query(
-            "INSERT INTO library_probe_signatures
-             (title_id, path, probe_signature_scheme, probe_signature_value,
-              last_probed_at, last_changed_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-             ON CONFLICT (title_id) DO UPDATE SET
-                path = EXCLUDED.path,
-                probe_signature_scheme = EXCLUDED.probe_signature_scheme,
-                probe_signature_value = EXCLUDED.probe_signature_value,
-                last_probed_at = EXCLUDED.last_probed_at,
-                last_changed_at = EXCLUDED.last_changed_at,
-                updated_at = NOW()",
-        )
-        .bind(&probe.title_id)
-        .bind(&probe.path)
-        .bind(&probe.probe_signature_scheme)
-        .bind(&probe.probe_signature_value)
-        .bind(probe.last_probed_at)
-        .bind(probe.last_changed_at)
-        .execute(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        Ok(())
-    }
-    async fn delete_probe_signatures_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
-        if title_ids.is_empty() {
-            return Ok(0);
-        }
-        let result = sqlx::query("DELETE FROM library_probe_signatures WHERE title_id = ANY($1)")
-            .bind(title_ids)
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        Ok(result.rows_affected() as u32)
-    }
-}
-
-#[async_trait]
 impl LibraryScanUnmatchedItemRepository for PostgresLibraryStateSql {
     async fn upsert_library_scan_unmatched_item(
         &self,
@@ -2069,122 +1833,6 @@ impl LibraryScanUnmatchedItemRepository for PostgresLibraryStateSql {
             .await
             .map_err(repo_err)?;
         row.try_get("count").map_err(repo_err)
-    }
-}
-
-#[async_trait]
-impl TitleImageRepository for PostgresLibraryStateSql {
-    async fn list_titles_requiring_image_refresh(
-        &self,
-        kind: TitleImageKind,
-        limit: usize,
-    ) -> AppResult<Vec<TitleImageSyncTask>> {
-        let source_key = match kind {
-            TitleImageKind::Poster => "poster_url",
-            TitleImageKind::Banner => "banner_url",
-            TitleImageKind::Fanart => "background_url",
-        };
-        let source_expr = format!("t.{source_key}");
-        let sql = format!(
-            "SELECT t.id AS title_id, {source_expr} AS source_url, ti.source_url AS cached_source_url
-               FROM titles t
-               LEFT JOIN title_images ti ON ti.title_id = t.id AND ti.kind = $1
-              WHERE NULLIF(BTRIM({source_expr}), '') IS NOT NULL
-                AND (ti.id IS NULL OR ti.source_url IS DISTINCT FROM {source_expr})
-              ORDER BY t.updated_at ASC NULLS FIRST, t.id ASC
-              LIMIT $2"
-        );
-        let rows = sqlx::query(&sql)
-            .bind(kind.as_str())
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(repo_err)?;
-        rows.iter()
-            .map(|row| {
-                Ok(TitleImageSyncTask {
-                    title_id: row.try_get("title_id").map_err(repo_err)?,
-                    source_url: row.try_get("source_url").map_err(repo_err)?,
-                    cached_source_url: text_from_pg(row, "cached_source_url"),
-                })
-            })
-            .collect()
-    }
-    async fn replace_title_image(
-        &self,
-        title_id: &str,
-        replacement: TitleImageReplacement,
-    ) -> AppResult<()> {
-        let mut tx = self.pool.begin().await.map_err(repo_err)?;
-        replace_title_image_pg_tx(&mut tx, title_id, &replacement).await?;
-        tx.commit().await.map_err(repo_err)?;
-        Ok(())
-    }
-    async fn replace_title_image_and_append_event(
-        &self,
-        title_id: &str,
-        replacement: TitleImageReplacement,
-        event: NewDomainEvent,
-    ) -> AppResult<DomainEvent> {
-        let mut tx = self.pool.begin().await.map_err(repo_err)?;
-        replace_title_image_pg_tx(&mut tx, title_id, &replacement).await?;
-        let stored = append_domain_event_pg_tx(&mut tx, &event).await?;
-        tx.commit().await.map_err(repo_err)?;
-        Ok(stored)
-    }
-    async fn get_title_image_blob(
-        &self,
-        title_id: &str,
-        kind: TitleImageKind,
-        variant_key: &str,
-    ) -> AppResult<Option<TitleImageBlob>> {
-        if variant_key == "original"
-            || (variant_key == "master"
-                && matches!(kind, TitleImageKind::Banner | TitleImageKind::Fanart))
-        {
-            let row = sqlx::query(
-                "SELECT master_format, master_sha256, bytes
-                   FROM title_images
-                  WHERE title_id = $1 AND kind = $2",
-            )
-            .bind(title_id)
-            .bind(kind.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(repo_err)?;
-            return row
-                .map(|row| {
-                    Ok(TitleImageBlob {
-                        content_type: content_type_for_format(
-                            row.try_get("master_format").map_err(repo_err)?,
-                        ),
-                        etag: row.try_get("master_sha256").map_err(repo_err)?,
-                        bytes: row.try_get("bytes").map_err(repo_err)?,
-                    })
-                })
-                .transpose();
-        }
-
-        let row = sqlx::query(
-            "SELECT tiv.format, tiv.sha256, tiv.bytes
-               FROM title_image_variants tiv
-               JOIN title_images ti ON ti.id = tiv.title_image_id
-              WHERE ti.title_id = $1 AND ti.kind = $2 AND tiv.variant_key = $3",
-        )
-        .bind(title_id)
-        .bind(kind.as_str())
-        .bind(variant_key)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(repo_err)?;
-        row.map(|row| {
-            Ok(TitleImageBlob {
-                content_type: content_type_for_format(row.try_get("format").map_err(repo_err)?),
-                etag: row.try_get("sha256").map_err(repo_err)?,
-                bytes: row.try_get("bytes").map_err(repo_err)?,
-            })
-        })
-        .transpose()
     }
 }
 

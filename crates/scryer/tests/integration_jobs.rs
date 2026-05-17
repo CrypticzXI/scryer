@@ -15,7 +15,7 @@ use scryer_domain::{
     ConfigurationChangeAction, DomainEventFilter, DomainEventPayload, DomainEventType, ExternalId,
     Id, Library, LibraryGrant, LibraryPermissionMask, MediaFacet, Title, User,
 };
-use scryer_infrastructure::{SettingDefinitionSeed, SqliteWorkflowStore};
+use scryer_infrastructure::{SettingDefinitionSeed, WorkflowOperationStore};
 
 async fn seed_media_path_settings(ctx: &TestContext) {
     ctx.settings_store
@@ -198,8 +198,8 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
         "non-relinked additive refresh should not link files",
     );
 
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
-    let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+    let workflow_store = WorkflowOperationStore::from_sqlite_services(&ctx.db);
+    let runs = <WorkflowOperationStore as JobRunRepository>::list_job_runs(
         &workflow_store,
         Some(JobKey::BackgroundLibraryRefreshSeries),
         1,
@@ -259,8 +259,8 @@ async fn scheduled_background_refresh_creates_one_job_run_per_library() {
         .await
         .expect("scheduled refresh should run each library job");
 
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
-    let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+    let workflow_store = WorkflowOperationStore::from_sqlite_services(&ctx.db);
+    let runs = <WorkflowOperationStore as JobRunRepository>::list_job_runs(
         &workflow_store,
         Some(JobKey::BackgroundLibraryRefreshMovies),
         5,
@@ -357,7 +357,7 @@ async fn domain_events_omit_titleless_operational_events_for_library_viewer() {
 async fn manual_job_trigger_failure_is_persisted_and_broadcast() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = WorkflowOperationStore::from_sqlite_services(&ctx.db);
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let mut rx = ctx
         .app
@@ -398,7 +398,7 @@ async fn manual_job_trigger_failure_is_persisted_and_broadcast() {
     let stored = timeout(Duration::from_secs(5), async {
         loop {
             if let Some(run) =
-                <SqliteWorkflowStore as JobRunRepository>::get_job_run(&workflow_store, &run.id)
+                <WorkflowOperationStore as JobRunRepository>::get_job_run(&workflow_store, &run.id)
                     .await
                     .expect("load stored run")
                 && run.status == JobRunStatus::Failed
@@ -441,14 +441,14 @@ async fn automatic_backup_job_cannot_be_triggered_manually() {
 #[tokio::test]
 async fn health_check_job_persists_issue_details_in_summary_json() {
     let ctx = TestContext::new().await;
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = WorkflowOperationStore::from_sqlite_services(&ctx.db);
 
     ctx.app
         .run_scheduled_job_now(JobKey::HealthChecks, JobTriggerSource::ScheduledStartup)
         .await
         .expect("health checks should complete");
 
-    let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+    let runs = <WorkflowOperationStore as JobRunRepository>::list_job_runs(
         &workflow_store,
         Some(JobKey::HealthChecks),
         1,
@@ -483,7 +483,7 @@ async fn health_check_job_persists_issue_details_in_summary_json() {
 async fn scheduled_job_failure_returns_err_and_persists_failed_run() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = WorkflowOperationStore::from_sqlite_services(&ctx.db);
 
     let result = ctx
         .app
@@ -499,7 +499,7 @@ async fn scheduled_job_failure_returns_err_and_persists_failed_run() {
 
     let run = timeout(Duration::from_secs(5), async {
         loop {
-            let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+            let runs = <WorkflowOperationStore as JobRunRepository>::list_job_runs(
                 &workflow_store,
                 Some(JobKey::BackgroundLibraryRefreshMovies),
                 1,

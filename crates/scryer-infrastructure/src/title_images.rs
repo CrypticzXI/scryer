@@ -7,17 +7,14 @@ use image::codecs::avif::AvifEncoder;
 use image::{DynamicImage, ImageEncoder, ImageFormat, RgbaImage};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED};
 use scryer_application::{
-    AppError, AppResult, TitleImageBlob, TitleImageKind, TitleImageProcessor,
-    TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
+    AppError, AppResult, TitleImageKind, TitleImageProcessor, TitleImageReplacement,
+    TitleImageStorageMode, TitleImageVariantRecord,
 };
-use scryer_domain::{DomainEvent, NewDomainEvent};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
     title_image_reqwest_client,
 };
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tracing::warn;
-use uuid::Uuid;
 
 const MAX_SOURCE_BYTES: usize = 20 * 1024 * 1024;
 const POSTER_VARIANT_WIDTHS: [u32; 3] = [500, 250, 70];
@@ -29,13 +26,13 @@ const AVIF_QUALITY: u8 = if cfg!(debug_assertions) { 60 } else { 85 };
 const AVIF_ENCODER_THREADS: usize = 1;
 
 #[derive(Clone)]
-pub struct SqliteTitleImageProcessor {
+pub struct HttpTitleImageProcessor {
     outbound_http: OutboundHttpClient,
     max_source_bytes: usize,
     avif_enabled: bool,
 }
 
-impl SqliteTitleImageProcessor {
+impl HttpTitleImageProcessor {
     pub fn new() -> Self {
         let client = title_image_reqwest_client(
             &format!("scryer/{}", env!("CARGO_PKG_VERSION")),
@@ -265,14 +262,14 @@ fn title_image_scope(source_url: &str) -> String {
     }
 }
 
-impl Default for SqliteTitleImageProcessor {
+impl Default for HttpTitleImageProcessor {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl TitleImageProcessor for SqliteTitleImageProcessor {
+impl TitleImageProcessor for HttpTitleImageProcessor {
     async fn fetch_and_process_image(
         &self,
         kind: TitleImageKind,
@@ -297,7 +294,7 @@ fn preferred_local_route_key_for_kind(kind: TitleImageKind) -> &'static str {
     }
 }
 
-fn required_persisted_variant_for_kind(kind: TitleImageKind) -> Option<&'static str> {
+pub(crate) fn required_persisted_variant_for_kind(kind: TitleImageKind) -> Option<&'static str> {
     match kind {
         TitleImageKind::Poster => Some("w500"),
         TitleImageKind::Banner | TitleImageKind::Fanart => None,
@@ -332,309 +329,6 @@ pub(crate) fn materialize_local_title_image_path(
     };
 
     synthesize_local_title_image_url("", title_id, kind, variant_key, version_hash)
-}
-
-pub(crate) async fn list_titles_requiring_image_refresh_query(
-    pool: &SqlitePool,
-    kind: TitleImageKind,
-    limit: usize,
-) -> AppResult<Vec<TitleImageSyncTask>> {
-    let source_col = match kind {
-        TitleImageKind::Poster => "poster_url",
-        TitleImageKind::Banner => "banner_url",
-        TitleImageKind::Fanart => "background_url",
-    };
-    let required_variant = required_persisted_variant_for_kind(kind);
-
-    let mut sql = format!(
-        "SELECT t.id AS title_id, t.{source_col} AS source_url, ti.source_url AS cached_source_url
-         FROM titles t
-         LEFT JOIN title_images ti
-           ON ti.title_id = t.id
-          AND ti.kind = ?",
-    );
-    if let Some(required_variant) = required_variant {
-        sql.push_str(&format!(
-            "
-         LEFT JOIN title_image_variants pv
-           ON pv.title_image_id = ti.id
-          AND pv.variant_key = '{required_variant}'"
-        ));
-    }
-    sql.push_str(&format!(
-        "
-         WHERE NULLIF(TRIM(t.{source_col}), '') IS NOT NULL
-           AND (
-                ti.id IS NULL
-                OR ti.source_url <> t.{source_col}"
-    ));
-    if required_variant.is_some() {
-        sql.push_str(
-            "
-                OR (
-                    ti.storage_mode = ?
-                    AND pv.id IS NULL
-                )",
-        );
-    }
-    sql.push_str(
-        "
-           )
-         ORDER BY t.created_at ASC
-         LIMIT ?",
-    );
-
-    let mut query = sqlx::query(&sql).bind(kind.as_str());
-    if required_variant.is_some() {
-        query = query.bind(TitleImageStorageMode::AvifMaster.as_str());
-    }
-    let rows = query
-        .bind(limit as i64)
-        .fetch_all(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| TitleImageSyncTask {
-            title_id: row.get("title_id"),
-            source_url: row.get("source_url"),
-            cached_source_url: row.try_get("cached_source_url").unwrap_or(None),
-        })
-        .collect())
-}
-
-async fn replace_title_image_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    title_id: &str,
-    replacement: &TitleImageReplacement,
-) -> AppResult<()> {
-    let now = chrono::Utc::now().to_rfc3339();
-
-    let image_id = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM title_images WHERE title_id = ? AND kind = ?",
-    )
-    .bind(title_id)
-    .bind(replacement.kind.as_str())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?
-    .unwrap_or_else(|| Uuid::new_v4().to_string());
-
-    let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM title_images WHERE id = ?")
-        .bind(&image_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?
-        > 0;
-
-    if exists {
-        sqlx::query(
-            "UPDATE title_images SET
-                source_url = ?,
-                source_etag = ?,
-                source_last_modified = ?,
-                source_format = ?,
-                source_width = ?,
-                source_height = ?,
-                storage_mode = ?,
-                master_format = ?,
-                master_sha256 = ?,
-                master_width = ?,
-                master_height = ?,
-                bytes = ?,
-                updated_at = ?
-             WHERE id = ?",
-        )
-        .bind(&replacement.source_url)
-        .bind(&replacement.source_etag)
-        .bind(&replacement.source_last_modified)
-        .bind(&replacement.source_format)
-        .bind(replacement.source_width)
-        .bind(replacement.source_height)
-        .bind(replacement.storage_mode.as_str())
-        .bind(&replacement.master_format)
-        .bind(&replacement.master_sha256)
-        .bind(replacement.master_width)
-        .bind(replacement.master_height)
-        .bind(&replacement.master_bytes)
-        .bind(&now)
-        .bind(&image_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    } else {
-        sqlx::query(
-            "INSERT INTO title_images (
-                id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-                source_last_modified, source_format, source_width, source_height, storage_mode,
-                master_path, master_format, master_sha256, master_width, master_height, bytes,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&image_id)
-        .bind(title_id)
-        .bind("tvdb")
-        .bind(Option::<String>::None)
-        .bind(replacement.kind.as_str())
-        .bind(&replacement.source_url)
-        .bind(&replacement.source_etag)
-        .bind(&replacement.source_last_modified)
-        .bind(&replacement.source_format)
-        .bind(replacement.source_width)
-        .bind(replacement.source_height)
-        .bind(replacement.storage_mode.as_str())
-        .bind(Option::<String>::None)
-        .bind(&replacement.master_format)
-        .bind(&replacement.master_sha256)
-        .bind(replacement.master_width)
-        .bind(replacement.master_height)
-        .bind(&replacement.master_bytes)
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    }
-
-    sqlx::query("DELETE FROM title_image_variants WHERE title_image_id = ?")
-        .bind(&image_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    for variant in &replacement.variants {
-        sqlx::query(
-            "INSERT INTO title_image_variants (
-                id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(&image_id)
-        .bind(&variant.variant_key)
-        .bind(Option::<String>::None)
-        .bind(&variant.format)
-        .bind(variant.width)
-        .bind(variant.height)
-        .bind(&variant.bytes)
-        .bind(&variant.sha256)
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    }
-
-    let local_path = materialize_local_title_image_path(
-        title_id,
-        replacement.kind,
-        replacement.storage_mode,
-        &replacement.master_sha256,
-        &replacement.variants,
-    );
-    let local_path_column = match replacement.kind {
-        TitleImageKind::Poster => "poster_local_path",
-        TitleImageKind::Banner => "banner_local_path",
-        TitleImageKind::Fanart => "background_local_path",
-    };
-    let update_title_sql = format!("UPDATE titles SET {local_path_column} = ? WHERE id = ?");
-    let result = sqlx::query(&update_title_sql)
-        .bind(&local_path)
-        .bind(title_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("title {title_id}")));
-    }
-
-    Ok(())
-}
-
-pub(crate) async fn replace_title_image_query(
-    pool: &SqlitePool,
-    title_id: &str,
-    replacement: TitleImageReplacement,
-) -> AppResult<()> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    replace_title_image_tx(&mut tx, title_id, &replacement).await?;
-    tx.commit()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    Ok(())
-}
-
-pub(crate) async fn replace_title_image_and_append_event_query(
-    pool: &SqlitePool,
-    title_id: &str,
-    replacement: TitleImageReplacement,
-    event: NewDomainEvent,
-) -> AppResult<DomainEvent> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    replace_title_image_tx(&mut tx, title_id, &replacement).await?;
-    let stored = crate::queries::domain_event::append_domain_event_tx(&mut tx, &event).await?;
-    tx.commit()
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    Ok(stored)
-}
-
-pub(crate) async fn get_title_image_blob_query(
-    pool: &SqlitePool,
-    title_id: &str,
-    kind: TitleImageKind,
-    variant_key: &str,
-) -> AppResult<Option<TitleImageBlob>> {
-    if variant_key == "original"
-        || (variant_key == "master"
-            && matches!(kind, TitleImageKind::Banner | TitleImageKind::Fanart))
-    {
-        let row = sqlx::query(
-            "SELECT master_format, master_sha256, bytes
-             FROM title_images
-             WHERE title_id = ? AND kind = ?",
-        )
-        .bind(title_id)
-        .bind(kind.as_str())
-        .fetch_optional(pool)
-        .await
-        .map_err(|err| AppError::Repository(err.to_string()))?;
-
-        return Ok(row.map(|row| TitleImageBlob {
-            content_type: content_type_for_format(row.get::<String, _>("master_format")),
-            etag: row.get("master_sha256"),
-            bytes: row.get("bytes"),
-        }));
-    }
-
-    let row = sqlx::query(
-        "SELECT tiv.format, tiv.sha256, tiv.bytes
-         FROM title_image_variants tiv
-         INNER JOIN title_images ti ON ti.id = tiv.title_image_id
-         WHERE ti.title_id = ? AND ti.kind = ? AND tiv.variant_key = ?",
-    )
-    .bind(title_id)
-    .bind(kind.as_str())
-    .bind(variant_key)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| AppError::Repository(err.to_string()))?;
-
-    Ok(row.map(|row| TitleImageBlob {
-        content_type: content_type_for_format(row.get::<String, _>("format")),
-        etag: row.get("sha256"),
-        bytes: row.get("bytes"),
-    }))
 }
 
 fn build_image_variants(
@@ -781,7 +475,7 @@ pub(crate) fn synthesize_local_title_image_url(
     )
 }
 
-fn content_type_for_format(format: String) -> String {
+pub(crate) fn content_type_for_format(format: String) -> String {
     match format.trim().to_ascii_lowercase().as_str() {
         "jpeg" | "jpg" => "image/jpeg".to_string(),
         "png" => "image/png".to_string(),
@@ -873,7 +567,7 @@ mod tests {
 
     #[test]
     fn avif_pipeline_generates_expected_variants() {
-        let processor = SqliteTitleImageProcessor::new_for_tests(true);
+        let processor = HttpTitleImageProcessor::new_for_tests(true);
         let bytes = encode_test_image(ImageFormat::Png);
         let processed = processor
             .process_bytes_for_tests(
@@ -900,7 +594,7 @@ mod tests {
 
     #[test]
     fn banner_and_fanart_avif_pipeline_do_not_generate_persisted_variants() {
-        let processor = SqliteTitleImageProcessor::new_for_tests(true);
+        let processor = HttpTitleImageProcessor::new_for_tests(true);
         let bytes = encode_test_image(ImageFormat::Png);
 
         for kind in [TitleImageKind::Banner, TitleImageKind::Fanart] {
@@ -937,7 +631,7 @@ mod tests {
 
     #[test]
     fn original_fallback_stores_source_bytes_when_avif_disabled() {
-        let processor = SqliteTitleImageProcessor::new_for_tests(false);
+        let processor = HttpTitleImageProcessor::new_for_tests(false);
         let bytes = encode_test_image(ImageFormat::Jpeg);
         let processed = processor
             .process_bytes_for_tests(
@@ -955,7 +649,7 @@ mod tests {
 
     #[test]
     fn poster_variants_do_not_upscale_small_images() {
-        let processor = SqliteTitleImageProcessor::new_for_tests(true);
+        let processor = HttpTitleImageProcessor::new_for_tests(true);
         let mut image = RgbaImage::new(120, 180);
         for pixel in image.pixels_mut() {
             *pixel = image::Rgba([32, 96, 160, 255]);
@@ -989,7 +683,7 @@ mod tests {
 
     #[test]
     fn pipeline_decodes_supported_formats() {
-        let processor = SqliteTitleImageProcessor::new_for_tests(false);
+        let processor = HttpTitleImageProcessor::new_for_tests(false);
         for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
             let bytes = encode_test_image(format);
             let processed = processor

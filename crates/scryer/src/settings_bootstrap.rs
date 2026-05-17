@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use scryer_application::{
     ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
     AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
@@ -22,7 +24,7 @@ use scryer_application::{
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
 };
-use scryer_infrastructure::{DatastoreSettingsStore, SettingsValueRecord};
+use scryer_infrastructure::{QualityProfileStore, SettingsStore, SettingsValueRecord};
 use serde_json::{Value, json};
 
 use crate::{normalize_env_option, normalize_env_option_with_legacy};
@@ -797,7 +799,7 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
 }
 
 pub(crate) async fn seed_service_setting_definitions(
-    database: DatastoreSettingsStore,
+    database: Arc<SettingsStore>,
 ) -> Result<(), String> {
     let definitions: Vec<scryer_infrastructure::SettingDefinitionSeed> = service_setting_seeds()
         .iter()
@@ -819,7 +821,7 @@ pub(crate) async fn seed_service_setting_definitions(
 }
 
 pub(crate) async fn seed_service_settings_from_environment(
-    database: DatastoreSettingsStore,
+    database: Arc<SettingsStore>,
 ) -> Result<(), String> {
     let env_settings: Vec<(&str, &str, Option<Value>)> = vec![
         (
@@ -1000,7 +1002,7 @@ mod tests {
 }
 
 pub(crate) async fn migrate_legacy_download_client_routing_settings(
-    database: DatastoreSettingsStore,
+    database: Arc<SettingsStore>,
 ) -> Result<(), String> {
     for scope_id in [None, Some("movie"), Some("series"), Some("anime")] {
         let scope_id_string = scope_id.map(str::to_string);
@@ -1066,7 +1068,7 @@ pub(crate) async fn migrate_legacy_download_client_routing_settings(
 }
 
 pub(crate) async fn migrate_legacy_download_client_default_category_settings(
-    database: DatastoreSettingsStore,
+    database: Arc<SettingsStore>,
 ) -> Result<(), String> {
     for scope_id in [None, Some("movie"), Some("series"), Some("anime")] {
         let scope_id_string = scope_id.map(str::to_string);
@@ -1132,7 +1134,7 @@ pub(crate) async fn migrate_legacy_download_client_default_category_settings(
 }
 
 pub(crate) async fn normalize_media_path_setting(
-    database: DatastoreSettingsStore,
+    database: Arc<SettingsStore>,
     key_name: String,
 ) -> Result<(), String> {
     let media_key = key_name.clone();
@@ -1179,10 +1181,11 @@ pub(crate) async fn normalize_media_path_setting(
 }
 
 pub(crate) async fn normalize_quality_profile_settings(
-    database: DatastoreSettingsStore,
+    settings: Arc<SettingsStore>,
+    quality_profiles: Arc<QualityProfileStore>,
     scope_ids: Vec<String>,
 ) -> Result<(), String> {
-    let mut profiles = database
+    let mut profiles = quality_profiles
         .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
         .await
         .map_err(|error| format!("failed to list system quality profiles: {error}"))?;
@@ -1195,7 +1198,7 @@ pub(crate) async fn normalize_quality_profile_settings(
     let (final_profiles, changed) =
         merge_default_quality_profiles(std::mem::take(&mut profiles), default_profiles);
     if changed {
-        database
+        quality_profiles
             .replace_quality_profiles(SETTINGS_SCOPE_SYSTEM, None, final_profiles.clone())
             .await
             .map_err(|error| {
@@ -1204,25 +1207,29 @@ pub(crate) async fn normalize_quality_profile_settings(
     }
 
     let profile_ids = collect_profile_ids(&final_profiles);
-    normalize_quality_profile_id_setting(&database, None, &profile_ids).await?;
+    normalize_quality_profile_id_setting(settings.as_ref(), None, &profile_ids).await?;
 
     for scope_id in &scope_ids {
-        normalize_quality_profile_id_setting(&database, Some(scope_id.as_str()), &profile_ids)
-            .await?;
+        normalize_quality_profile_id_setting(
+            settings.as_ref(),
+            Some(scope_id.as_str()),
+            &profile_ids,
+        )
+        .await?;
     }
 
     // Anime defaults to 1080p (not 4K) when the user hasn't chosen a profile
     if profile_ids.iter().any(|id| id == "1080p") {
-        seed_scope_default_if_unset(&database, "anime", "1080p").await?;
+        seed_scope_default_if_unset(settings.as_ref(), "anime", "1080p").await?;
     }
 
-    sync_quality_profile_catalog_setting(&database, &final_profiles).await?;
+    sync_quality_profile_catalog_setting(settings.as_ref(), &final_profiles).await?;
 
     Ok(())
 }
 
 pub(crate) async fn sync_quality_profile_catalog_setting(
-    database: &DatastoreSettingsStore,
+    database: &SettingsStore,
     profiles: &[QualityProfile],
 ) -> Result<(), String> {
     let catalog: Vec<serde_json::Value> = profiles
@@ -1356,7 +1363,7 @@ fn legacy_seeded_default_quality_profile_1080p_for_search() -> QualityProfile {
 }
 
 pub(crate) async fn normalize_quality_profile_id_setting(
-    database: &DatastoreSettingsStore,
+    database: &SettingsStore,
     scope_id: Option<&str>,
     valid_profile_ids: &[String],
 ) -> Result<(), String> {
@@ -1428,7 +1435,7 @@ pub(crate) async fn normalize_quality_profile_id_setting(
 }
 
 async fn seed_scope_default_if_unset(
-    database: &DatastoreSettingsStore,
+    database: &SettingsStore,
     scope_id: &str,
     default_profile_id: &str,
 ) -> Result<(), String> {
@@ -1452,7 +1459,7 @@ async fn seed_scope_default_if_unset(
 }
 
 pub(crate) async fn upsert_quality_profile_setting(
-    database: &DatastoreSettingsStore,
+    database: &SettingsStore,
     scope_id: Option<String>,
     value: &str,
 ) -> Result<(), String> {
@@ -1517,7 +1524,7 @@ pub(crate) fn parse_quality_profile_id(raw_value: impl AsRef<str>) -> Option<Str
 }
 
 pub(crate) async fn load_service_runtime_settings(
-    database: DatastoreSettingsStore,
+    database: Arc<SettingsStore>,
 ) -> Result<ServiceRuntimeSettings, String> {
     let keys = vec![
         (
