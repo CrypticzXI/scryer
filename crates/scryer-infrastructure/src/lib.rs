@@ -49,7 +49,7 @@ pub mod sqlite {
     pub use crate::indexer_config_store::IndexerConfigStore;
     pub use crate::library_state_store::SqliteLibraryStateStore;
     pub use crate::library_store::LibraryStore;
-    pub use crate::notification_store::SqliteNotificationStore;
+    pub use crate::notification_store::NotificationStore;
     pub use crate::plugin_store::PluginStore;
     pub use crate::post_processing_script_store::PostProcessingScriptStore;
     pub use crate::release_store::SqliteReleaseStore;
@@ -88,7 +88,7 @@ pub use library_state_store::SqliteLibraryStateStore;
 pub use library_store::LibraryStore;
 pub use metadata_gateway::{MetadataGatewayClient, SmgEnrollmentConfig};
 pub use migrations::{list_embedded_migration_keys, list_embedded_migrations};
-pub use notification_store::SqliteNotificationStore;
+pub use notification_store::NotificationStore;
 pub use plugin_store::PluginStore;
 pub use post_processing_script_store::PostProcessingScriptStore;
 pub use postgres::{

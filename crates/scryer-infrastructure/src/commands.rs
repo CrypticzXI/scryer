@@ -15,7 +15,7 @@ use scryer_application::{
 };
 use scryer_domain::{
     BlocklistEntry, DomainEvent, DownloadQueueDeleteStatus, ImportType, MediaFacet, NewDomainEvent,
-    NotificationChannelConfig, NotificationSubscription, SubtitleDownload,
+    SubtitleDownload,
 };
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -322,32 +322,6 @@ pub(crate) enum DbCommand {
     },
     VacuumInto {
         dest_path: String,
-        reply: Sender<AppResult<()>>,
-    },
-    CreateNotificationChannel {
-        config: NotificationChannelConfig,
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<NotificationChannelConfig>>,
-    },
-    UpdateNotificationChannel {
-        config: NotificationChannelConfig,
-        encryption_key: Option<EncryptionKey>,
-        reply: Sender<AppResult<NotificationChannelConfig>>,
-    },
-    DeleteNotificationChannel {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    CreateNotificationSubscription {
-        subscription: NotificationSubscription,
-        reply: Sender<AppResult<NotificationSubscription>>,
-    },
-    UpdateNotificationSubscription {
-        subscription: NotificationSubscription,
-        reply: Sender<AppResult<NotificationSubscription>>,
-    },
-    DeleteNotificationSubscription {
-        id: String,
         reply: Sender<AppResult<()>>,
     },
     CreateReleaseDownloadAttempt {
@@ -1385,87 +1359,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                                 .await
                                 .map_err(|err| AppError::Repository(err.to_string()))?;
                             Ok(())
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreateNotificationChannel {
-                    config,
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_notification_channel", || {
-                            crate::queries::notification_channel::create_notification_channel_query(
-                                &pool,
-                                &config,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateNotificationChannel {
-                    config,
-                    encryption_key,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_notification_channel", || {
-                            crate::queries::notification_channel::update_notification_channel_query(
-                                &pool,
-                                &config,
-                                encryption_key.as_ref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteNotificationChannel { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_notification_channel", || {
-                            crate::queries::notification_channel::delete_notification_channel_query(
-                                &pool, &id,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreateNotificationSubscription {
-                    subscription,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_notification_subscription", || {
-                            crate::queries::notification_subscription::create_notification_subscription_query(
-                                &pool,
-                                &subscription,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateNotificationSubscription {
-                    subscription,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_notification_subscription", || {
-                            crate::queries::notification_subscription::update_notification_subscription_query(
-                                &pool,
-                                &subscription,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteNotificationSubscription { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_notification_subscription", || {
-                            crate::queries::notification_subscription::delete_notification_subscription_query(
-                                &pool,
-                                &id,
-                            )
                         })
                         .await,
                     );

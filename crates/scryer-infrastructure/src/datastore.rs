@@ -12,18 +12,18 @@ use scryer_application::{
 };
 
 use crate::postgres::{
-    PostgresLibraryStateStore, PostgresLogicalBackupExporter, PostgresNotificationStore,
-    PostgresReleaseStore, PostgresServices, PostgresSettingsStore, PostgresWorkflowStore,
+    PostgresLibraryStateStore, PostgresLogicalBackupExporter, PostgresReleaseStore,
+    PostgresServices, PostgresSettingsStore, PostgresWorkflowStore,
     restore_backup_bundle_into_postgres_pool, restore_prepared_backup_directory_into_postgres_pool,
 };
 use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
     DownloadClientConfigStore, FileSystemStagedNzbStore, InMemoryIndexerStatsTracker,
-    IndexerConfigStore, MetadataGatewayClient, MigrationMode, PluginStore,
+    IndexerConfigStore, MetadataGatewayClient, MigrationMode, NotificationStore, PluginStore,
     PostProcessingScriptStore, RuleSetStore, ShowStore, SmgEnrollmentConfig,
-    SqliteLibraryStateStore, SqliteLogicalBackupExporter, SqliteNotificationStore,
-    SqliteReleaseStore, SqliteServices, SqliteSettingsStore, SqliteTitleImageProcessor,
-    SqliteWorkflowStore, SubtitleProviderConfigStore, TitleStore,
+    SqliteLibraryStateStore, SqliteLogicalBackupExporter, SqliteReleaseStore, SqliteServices,
+    SqliteSettingsStore, SqliteTitleImageProcessor, SqliteWorkflowStore,
+    SubtitleProviderConfigStore, TitleStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -908,7 +908,7 @@ enum DatastoreStores {
         post_processing_script_store: Arc<PostProcessingScriptStore>,
         plugin_store: Arc<PluginStore>,
         library_state_store: Arc<SqliteLibraryStateStore>,
-        notification_store: Arc<SqliteNotificationStore>,
+        notification_store: Arc<NotificationStore>,
         release_store: Arc<SqliteReleaseStore>,
         settings_store: Arc<SqliteSettingsStore>,
         workflow_store: Arc<SqliteWorkflowStore>,
@@ -927,7 +927,7 @@ enum DatastoreStores {
         post_processing_script_store: Arc<PostProcessingScriptStore>,
         plugin_store: Arc<PluginStore>,
         library_state_store: Arc<PostgresLibraryStateStore>,
-        notification_store: Arc<PostgresNotificationStore>,
+        notification_store: Arc<NotificationStore>,
         release_store: Arc<PostgresReleaseStore>,
         settings_store: Arc<PostgresSettingsStore>,
         workflow_store: Arc<PostgresWorkflowStore>,
@@ -969,9 +969,12 @@ impl DatastoreAssembly {
         let rule_set_store = Arc::new(RuleSetStore::new(datastore.clone()));
         let post_processing_script_store =
             Arc::new(PostProcessingScriptStore::new(datastore.clone()));
+        let notification_store = Arc::new(NotificationStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let plugin_store = Arc::new(PluginStore::new(datastore));
         let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
-        let notification_store = Arc::new(SqliteNotificationStore::new(&db));
         let release_store = Arc::new(SqliteReleaseStore::new(&db));
         let settings_store = Arc::new(SqliteSettingsStore::new(&db));
         let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
@@ -1028,9 +1031,12 @@ impl DatastoreAssembly {
         let rule_set_store = Arc::new(RuleSetStore::new(datastore.clone()));
         let post_processing_script_store =
             Arc::new(PostProcessingScriptStore::new(datastore.clone()));
+        let notification_store = Arc::new(NotificationStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let plugin_store = Arc::new(PluginStore::new(datastore));
         let library_state_store = Arc::new(PostgresLibraryStateStore::new(&db));
-        let notification_store = Arc::new(PostgresNotificationStore::new(&db));
         let release_store = Arc::new(PostgresReleaseStore::new(&db));
         let settings_store = Arc::new(PostgresSettingsStore::new(&db));
         let workflow_store = Arc::new(PostgresWorkflowStore::new(&db));

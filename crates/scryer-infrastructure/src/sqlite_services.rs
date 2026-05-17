@@ -5,7 +5,7 @@ use scryer_application::{
 };
 use scryer_domain::{
     BlocklistEntry, DomainEvent, DownloadQueueDeleteStatus, ImportStatus, ImportType, MediaFacet,
-    NewDomainEvent, NotificationChannelConfig, NotificationSubscription, SubtitleDownload,
+    NewDomainEvent, SubtitleDownload,
 };
 use sqlx::ConnectOptions;
 use std::sync::{Arc, RwLock};
@@ -1319,106 +1319,6 @@ impl DbRuntime {
         self.sender
             .send(DbCommand::VacuumInto {
                 dest_path: dest_path.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_notification_channel(
-        &self,
-        config: NotificationChannelConfig,
-    ) -> AppResult<NotificationChannelConfig> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateNotificationChannel {
-                config,
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_notification_channel(
-        &self,
-        config: NotificationChannelConfig,
-    ) -> AppResult<NotificationChannelConfig> {
-        let encryption_key = self.current_encryption_key()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateNotificationChannel {
-                config,
-                encryption_key,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_notification_channel(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteNotificationChannel {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn create_notification_subscription(
-        &self,
-        subscription: NotificationSubscription,
-    ) -> AppResult<NotificationSubscription> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::CreateNotificationSubscription {
-                subscription,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn update_notification_subscription(
-        &self,
-        subscription: NotificationSubscription,
-    ) -> AppResult<NotificationSubscription> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::UpdateNotificationSubscription {
-                subscription,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        reply_rx
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?
-    }
-
-    pub async fn delete_notification_subscription(&self, id: &str) -> AppResult<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.sender
-            .send(DbCommand::DeleteNotificationSubscription {
-                id: id.to_string(),
                 reply: reply_tx,
             })
             .await

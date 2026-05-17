@@ -827,41 +827,43 @@ fn config_repository_uses_shared_runtime_kernel() {
 #[test]
 fn notification_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let sqlite_notification = production_rust_source(
+    let notification_store = production_rust_source(
         &root.join("crates/scryer-infrastructure/src/notification_store.rs"),
-    );
-    let postgres_notification = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/notification_store.rs"),
     );
 
     assert!(
-        sqlite_notification.contains("pub struct NotificationStore<S>"),
-        "notifications should expose one shared repository kernel"
+        notification_store.contains("pub struct NotificationStore"),
+        "notification repository must expose a concrete store"
     );
     assert!(
-        sqlite_notification.contains(
-            "pub type SqliteNotificationStore = NotificationStore<SqliteNotificationSql>;"
-        ),
-        "SQLite notifications should be a primitive adapter over the shared kernel"
+        notification_store.contains("datastore: StoreDatastore"),
+        "notification repository must own StoreDatastore"
     );
     assert!(
-        postgres_notification.contains(
-            "pub type PostgresNotificationStore = NotificationStore<PostgresNotificationSql>;"
-        ),
-        "PostgreSQL notifications should be a primitive adapter over the shared kernel"
+        notification_store.contains("impl NotificationChannelRepository for NotificationStore"),
+        "notification store must implement NotificationChannelRepository directly"
+    );
+    assert!(
+        notification_store
+            .contains("impl NotificationSubscriptionRepository for NotificationStore"),
+        "notification store must implement NotificationSubscriptionRepository directly"
+    );
+    assert!(
+        notification_store.contains("SqlRuntime::"),
+        "notification store must use the shared SQL runtime"
     );
 
     for forbidden in [
-        "pub struct SqliteNotificationStore",
-        "pub struct PostgresNotificationStore",
-        "impl NotificationChannelRepository for SqliteNotificationStore",
-        "impl NotificationChannelRepository for PostgresNotificationStore",
-        "impl NotificationSubscriptionRepository for SqliteNotificationStore",
-        "impl NotificationSubscriptionRepository for PostgresNotificationStore",
+        "trait NotificationSql",
+        "NotificationStore<",
+        "SqliteNotificationStore",
+        "PostgresNotificationStore",
+        "SqliteNotificationSql",
+        "PostgresNotificationSql",
     ] {
         assert!(
-            !sqlite_notification.contains(forbidden) && !postgres_notification.contains(forbidden),
-            "notification repository must not reintroduce paired full-store implementation `{forbidden}`"
+            !notification_store.contains(forbidden),
+            "notification repository must not reintroduce `{forbidden}`"
         );
     }
 }

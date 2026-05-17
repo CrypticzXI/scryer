@@ -22,7 +22,7 @@ use scryer_domain::{
     NewDomainEvent, NewTitle, NotificationChannelConfig, NotificationEventType,
     TitleContextSnapshot,
 };
-use scryer_infrastructure::SqliteNotificationStore;
+use scryer_infrastructure::NotificationStore;
 use scryer_interface::build_schema;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ use wiremock::{Mock, ResponseTemplate};
 /// return "not configured".
 fn app_with_notifications(ctx: &TestContext) -> scryer_application::AppUseCase {
     ctx.app.with_test_overrides(|builder| {
-        builder.with_notification_store(Arc::new(SqliteNotificationStore::new(&ctx.db)))
+        builder.with_notification_store(Arc::new(NotificationStore::from_sqlite_services(&ctx.db)))
     })
 }
 

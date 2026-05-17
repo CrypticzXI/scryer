@@ -1140,7 +1140,7 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
         .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([9; 32]))
         .await
         .expect("encryption key should set");
-    let store = SqliteNotificationStore::new(&services);
+    let store = NotificationStore::from_sqlite_services(&services);
     let now = Utc::now();
 
     let channel = NotificationChannelConfig {
@@ -1198,19 +1198,53 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
         .await
         .expect("subscription should update");
 
+    let later_subscription = NotificationSubscription {
+        id: "subscription-2".to_string(),
+        created_at: now + chrono::Duration::seconds(1),
+        updated_at: now + chrono::Duration::seconds(1),
+        ..subscription.clone()
+    };
+    NotificationSubscriptionRepository::create_subscription(&store, later_subscription.clone())
+        .await
+        .expect("second subscription should create");
+
+    let by_event = NotificationSubscriptionRepository::list_subscriptions_for_event(
+        &store,
+        NotificationEventType::ImportComplete,
+    )
+    .await
+    .expect("event subscriptions should load");
+    assert_eq!(by_event.len(), 2);
+    assert_eq!(by_event[0].id, later_subscription.id);
+    assert_eq!(by_event[1].id, subscription.id);
+    assert!(
+        !by_event[1].is_enabled,
+        "event listing should preserve disabled rows for dispatcher-side filtering"
+    );
+
     let by_channel =
         NotificationSubscriptionRepository::list_subscriptions_for_channel(&store, &updated.id)
             .await
             .expect("subscription list should load");
-    assert_eq!(by_channel.len(), 1);
-    assert!(!by_channel[0].is_enabled);
+    assert_eq!(by_channel.len(), 2);
 
     NotificationSubscriptionRepository::delete_subscription(&store, &subscription.id)
         .await
         .expect("subscription should delete");
+    NotificationSubscriptionRepository::delete_subscription(&store, &later_subscription.id)
+        .await
+        .expect("second subscription should delete");
+    assert!(matches!(
+        NotificationSubscriptionRepository::delete_subscription(&store, &subscription.id).await,
+        Err(scryer_application::AppError::NotFound(_))
+    ));
     NotificationChannelRepository::delete_channel(&store, &updated.id)
         .await
         .expect("channel should delete");
+    assert!(matches!(
+        NotificationChannelRepository::delete_channel(&store, &updated.id).await,
+        Err(scryer_application::AppError::NotFound(_))
+    ));
 
     let remaining =
         NotificationSubscriptionRepository::list_subscriptions_for_channel(&store, &updated.id)

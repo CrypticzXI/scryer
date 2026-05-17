@@ -5,8 +5,6 @@ pub mod housekeeping;
 pub mod indexer;
 pub mod library_scan_unmatched;
 pub mod media_file;
-pub mod notification_channel;
-pub mod notification_subscription;
 pub mod pending_releases;
 pub mod quality;
 pub mod settings;

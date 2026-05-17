@@ -1,7 +1,6 @@
 mod backup;
 mod library_state_store;
 mod migrations;
-mod notification_store;
 mod release_store;
 mod services;
 mod settings_store;
@@ -14,7 +13,6 @@ pub use backup::{
 };
 pub use library_state_store::PostgresLibraryStateStore;
 pub use migrations::{replay_catalog_into_fresh_db, replay_source_catalog_for_fresh_install};
-pub use notification_store::PostgresNotificationStore;
 pub use release_store::PostgresReleaseStore;
 pub use services::PostgresServices;
 pub use settings_store::PostgresSettingsStore;
