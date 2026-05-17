@@ -81,8 +81,7 @@ impl AppUseCase {
     pub async fn clear_external_import_monitor_snapshot_chunks(
         &self,
         actor: &User,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
     ) -> AppResult<()> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
@@ -90,7 +89,7 @@ impl AppUseCase {
         self.services
             .workflow
             .external_import_monitor_snapshots
-            .delete_external_import_monitor_snapshot_chunks(scope_kind, scope_key)
+            .delete_external_import_monitor_snapshot_chunks(facet)
             .await
     }
 

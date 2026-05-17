@@ -99,7 +99,26 @@ mod tests {
     use sqlx::Row;
     use tokio::task::JoinSet;
 
-    use crate::SettingDefinitionSeed;
+    use crate::queries::sql_runtime::StoreDatastore;
+    use crate::{LibraryStore, SettingDefinitionSeed, TitleStore, UserStore};
+
+    fn title_store(services: &PostgresServices) -> TitleStore {
+        TitleStore::new(StoreDatastore::Postgres {
+            pool: services.pool().clone(),
+        })
+    }
+
+    fn library_store(services: &PostgresServices) -> LibraryStore {
+        LibraryStore::new(StoreDatastore::Postgres {
+            pool: services.pool().clone(),
+        })
+    }
+
+    fn user_store(services: &PostgresServices) -> UserStore {
+        UserStore::new(StoreDatastore::Postgres {
+            pool: services.pool().clone(),
+        })
+    }
 
     #[tokio::test]
     async fn postgres_blank_install_smoke_from_env_url() -> AppResult<()> {
@@ -128,7 +147,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let catalog = super::super::PostgresCatalogStore::new(&services);
+            let catalog = title_store(&services);
             let images = super::super::PostgresLibraryStateStore::new(&services);
             let settings = super::super::PostgresSettingsStore::new(&services);
             let info = settings.datastore_info().await?;
@@ -535,7 +554,11 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let catalog = super::super::PostgresCatalogStore::new(&services);
+            let catalog = title_store(&services);
+            let shows =
+                crate::ShowStore::new(crate::queries::sql_runtime::StoreDatastore::Postgres {
+                    pool: services.pool().clone(),
+                });
 
             let mut title = sample_title("pg-collection-interstitial");
             title.facet = MediaFacet::Anime;
@@ -607,9 +630,9 @@ mod tests {
                 monitored: true,
                 created_at: chrono::Utc::now(),
             };
-            ShowRepository::create_collection(&catalog, collection.clone()).await?;
+            ShowRepository::create_collection(&shows, collection.clone()).await?;
 
-            let listed = ShowRepository::list_collections_for_title(&catalog, &title.id).await?;
+            let listed = ShowRepository::list_collections_for_title(&shows, &title.id).await?;
             assert_eq!(listed.len(), 1);
             assert_eq!(listed[0].id, collection.id);
             assert_eq!(
@@ -618,7 +641,7 @@ mod tests {
             );
             assert_eq!(listed[0].specials_movies, vec![special_movie.clone()]);
 
-            let loaded = ShowRepository::get_collection_by_id(&catalog, &collection.id)
+            let loaded = ShowRepository::get_collection_by_id(&shows, &collection.id)
                 .await?
                 .ok_or_else(|| {
                     AppError::Repository("expected collection to be readable by id".to_string())
@@ -910,7 +933,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let catalog = super::super::PostgresCatalogStore::new(&services);
+            let catalog = title_store(&services);
 
             let mut missing_anidb = sample_title("pg-anime-missing-anidb");
             missing_anidb.facet = MediaFacet::Anime;
@@ -1010,9 +1033,9 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let catalog = super::super::PostgresCatalogStore::new(&services);
-            let user =
-                UserRepository::create(&catalog, User::new_admin("admin-concurrency")).await?;
+            let users = user_store(&services);
+            let libraries = library_store(&services);
+            let user = UserRepository::create(&users, User::new_admin("admin-concurrency")).await?;
             let user_id = user.id.clone();
             let permissions = LibraryPermissionMask::from_permissions([
                 LibraryPermission::View,
@@ -1025,11 +1048,11 @@ mod tests {
 
             let mut tasks = JoinSet::new();
             for _ in 0..8 {
-                let catalog = catalog.clone();
+                let libraries = libraries.clone();
                 let user_id = user_id.clone();
                 tasks.spawn(async move {
                     LibraryRepository::set_grants_for_user(
-                        &catalog,
+                        &libraries,
                         &user_id,
                         vec![LibraryGrant {
                             user_id: user_id.clone(),
@@ -1047,7 +1070,7 @@ mod tests {
                     .map_err(|error| AppError::Repository(error.to_string()))?;
             }
 
-            let grants = LibraryRepository::permission_masks_for_user(&catalog, &user.id).await?;
+            let grants = LibraryRepository::permission_masks_for_user(&libraries, &user.id).await?;
             assert_eq!(grants.len(), 1, "expected exactly one library grant row");
             assert_eq!(grants[0].library_id, "movie_default_library");
             assert_eq!(grants[0].permissions, permissions);

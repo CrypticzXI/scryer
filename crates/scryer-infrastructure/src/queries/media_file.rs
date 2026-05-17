@@ -877,7 +877,7 @@ pub(crate) async fn delete_media_file_query(pool: &SqlitePool, file_id: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SqliteCatalogStore, SqliteLibraryStateStore, SqliteServices};
+    use crate::{ShowStore, SqliteLibraryStateStore, SqliteServices, TitleStore};
     use chrono::Utc;
     use scryer_application::{
         AudioStreamDetail, MediaFileAnalysis, MediaFileRepository, ShowRepository, TitleRepository,
@@ -924,8 +924,15 @@ mod tests {
         }
     }
 
-    fn catalog_store(services: &SqliteServices) -> SqliteCatalogStore {
-        SqliteCatalogStore::new(services)
+    fn title_store(services: &SqliteServices) -> TitleStore {
+        TitleStore::sqlite(services)
+    }
+
+    fn show_store(services: &SqliteServices) -> ShowStore {
+        ShowStore::new(crate::queries::sql_runtime::StoreDatastore::Sqlite {
+            pool: services.pool().clone(),
+            writer_gate: services.writer_gate(),
+        })
     }
 
     fn library_state_store(services: &SqliteServices) -> SqliteLibraryStateStore {
@@ -941,11 +948,12 @@ mod tests {
         let services = SqliteServices::new(db.to_string_lossy())
             .await
             .expect("db should initialize");
-        let catalog = catalog_store(&services);
+        let titles = title_store(&services);
+        let shows = show_store(&services);
         let library_state = library_state_store(&services);
 
         let title = make_test_series_title("title-live-query");
-        catalog
+        titles
             .create(title.clone())
             .await
             .expect("title should insert");
@@ -966,8 +974,7 @@ mod tests {
             monitored: true,
             created_at: Utc::now(),
         };
-        catalog
-            .create_collection(collection.clone())
+        ShowRepository::create_collection(&shows, collection.clone())
             .await
             .expect("collection should insert");
 
@@ -1013,12 +1020,10 @@ mod tests {
             monitored: true,
             created_at: Utc::now(),
         };
-        catalog
-            .create_episode(episode_one.clone())
+        ShowRepository::create_episode(&shows, episode_one.clone())
             .await
             .expect("episode one should insert");
-        catalog
-            .create_episode(episode_two.clone())
+        ShowRepository::create_episode(&shows, episode_two.clone())
             .await
             .expect("episode two should insert");
 
@@ -1093,11 +1098,11 @@ mod tests {
         let services = SqliteServices::new(db.to_string_lossy())
             .await
             .expect("db should initialize");
-        let catalog = catalog_store(&services);
+        let titles = title_store(&services);
         let library_state = library_state_store(&services);
 
         let title = make_test_series_title("title-quality-summary");
-        catalog
+        titles
             .create(title.clone())
             .await
             .expect("title should insert");
@@ -1157,11 +1162,12 @@ mod tests {
         let services = SqliteServices::new(db.to_string_lossy())
             .await
             .expect("db should initialize");
-        let catalog = catalog_store(&services);
+        let titles = title_store(&services);
         let library_state = library_state_store(&services);
+        let shows = show_store(&services);
 
         let title = make_test_series_title("title-cutoff-summary");
-        catalog
+        titles
             .create(title.clone())
             .await
             .expect("title should insert");
@@ -1182,8 +1188,7 @@ mod tests {
             monitored: true,
             created_at: Utc::now(),
         };
-        catalog
-            .create_collection(collection.clone())
+        ShowRepository::create_collection(&shows, collection.clone())
             .await
             .expect("collection should insert");
 
@@ -1255,8 +1260,7 @@ mod tests {
             &monitored_episode_two,
             &unmonitored_episode_three,
         ] {
-            catalog
-                .create_episode(episode.clone())
+            ShowRepository::create_episode(&shows, episode.clone())
                 .await
                 .expect("episode should insert");
         }
@@ -1308,11 +1312,12 @@ mod tests {
         let services = SqliteServices::new(db.to_string_lossy())
             .await
             .expect("db should initialize");
-        let catalog = catalog_store(&services);
+        let titles = title_store(&services);
+        let shows = show_store(&services);
         let library_state = library_state_store(&services);
 
         let title = make_test_series_title("title-episode-scope");
-        catalog
+        titles
             .create(title.clone())
             .await
             .expect("title should insert");
@@ -1333,8 +1338,7 @@ mod tests {
             monitored: true,
             created_at: Utc::now(),
         };
-        catalog
-            .create_collection(collection.clone())
+        ShowRepository::create_collection(&shows, collection.clone())
             .await
             .expect("collection should insert");
 
@@ -1402,8 +1406,7 @@ mod tests {
             created_at: Utc::now(),
         };
         for episode in [&episode_one, &episode_two, &episode_three] {
-            catalog
-                .create_episode(episode.clone())
+            ShowRepository::create_episode(&shows, episode.clone())
                 .await
                 .expect("episode should insert");
         }
@@ -1483,11 +1486,11 @@ mod tests {
         let services = SqliteServices::new(db.to_string_lossy())
             .await
             .expect("db should initialize");
-        let catalog = catalog_store(&services);
+        let titles = title_store(&services);
         let library_state = library_state_store(&services);
 
         let title = make_test_series_title("title-audio-profile");
-        catalog
+        titles
             .create(title.clone())
             .await
             .expect("title should insert");

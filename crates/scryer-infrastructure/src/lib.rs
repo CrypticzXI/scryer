@@ -1,8 +1,6 @@
 mod backup_import_normalization;
-mod catalog_store;
 pub(crate) mod commands;
 mod config_store;
-mod customization_store;
 mod datastore;
 mod download_clients;
 pub mod encryption;
@@ -14,16 +12,21 @@ pub mod keystore;
 mod library_renamer;
 mod library_scanner;
 mod library_state_store;
+mod library_store;
 mod metadata_gateway;
 pub mod migration_assets;
 mod migration_hook_ids;
 pub mod migrations;
 mod notification_store;
+mod plugin_store;
+mod post_processing_script_store;
 pub mod postgres;
 mod prowlarr;
 pub mod queries;
 mod release_store;
+mod rule_set_store;
 mod settings_store;
+mod show_store;
 pub mod smg_enrollment;
 mod spellfix;
 mod sqlite_backup;
@@ -32,29 +35,32 @@ mod staged_nzb_store;
 mod title_images;
 mod title_store;
 mod types;
+mod user_store;
 mod workflow_store;
 
 #[cfg(test)]
 mod tests;
 
 pub mod sqlite {
-    pub use crate::catalog_store::SqliteCatalogStore;
     pub use crate::config_store::SqliteConfigStore;
-    pub use crate::customization_store::SqliteCustomizationStore;
     pub use crate::library_state_store::SqliteLibraryStateStore;
+    pub use crate::library_store::LibraryStore;
     pub use crate::notification_store::SqliteNotificationStore;
+    pub use crate::plugin_store::PluginStore;
+    pub use crate::post_processing_script_store::PostProcessingScriptStore;
     pub use crate::release_store::SqliteReleaseStore;
+    pub use crate::rule_set_store::RuleSetStore;
     pub use crate::settings_store::SqliteSettingsStore;
+    pub use crate::show_store::ShowStore;
     pub use crate::sqlite_backup::SqliteLogicalBackupExporter;
     pub use crate::sqlite_services::{DbRuntime, SqliteServices};
     pub use crate::title_images::SqliteTitleImageProcessor;
     pub use crate::title_store::TitleStore;
+    pub use crate::user_store::UserStore;
     pub use crate::workflow_store::SqliteWorkflowStore;
 }
 
-pub use catalog_store::SqliteCatalogStore;
 pub use config_store::SqliteConfigStore;
-pub use customization_store::SqliteCustomizationStore;
 pub use datastore::{
     DatastoreAssembly, DatastoreConfig, DatastoreConfigSource, DatastoreCustomizationStore,
     DatastoreEngine, DatastoreSettingsStore, datastore_file_path,
@@ -73,16 +79,21 @@ pub use indexer_stats::InMemoryIndexerStatsTracker;
 pub use library_renamer::FileSystemLibraryRenamer;
 pub use library_scanner::FileSystemLibraryScanner;
 pub use library_state_store::SqliteLibraryStateStore;
+pub use library_store::LibraryStore;
 pub use metadata_gateway::{MetadataGatewayClient, SmgEnrollmentConfig};
 pub use migrations::{list_embedded_migration_keys, list_embedded_migrations};
 pub use notification_store::SqliteNotificationStore;
+pub use plugin_store::PluginStore;
+pub use post_processing_script_store::PostProcessingScriptStore;
 pub use postgres::{
-    PostgresCatalogStore, PostgresConfigStore, PostgresCustomizationStore,
-    PostgresLogicalBackupExporter, PostgresReleaseStore, PostgresServices, PostgresSettingsStore,
+    PostgresConfigStore, PostgresLogicalBackupExporter, PostgresReleaseStore, PostgresServices,
+    PostgresSettingsStore,
 };
 pub use prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
 pub use release_store::SqliteReleaseStore;
+pub use rule_set_store::RuleSetStore;
 pub use settings_store::SqliteSettingsStore;
+pub use show_store::ShowStore;
 pub use spellfix::register_spellfix_auto_extension;
 pub use sqlite_backup::SqliteLogicalBackupExporter;
 pub use sqlite_services::{DbRuntime, SqliteServices};
@@ -95,4 +106,5 @@ pub use types::{
     MigrationMode, MigrationStatus, SettingDefinitionSeed, SettingsDefinitionRecord,
     SettingsValueRecord, WorkflowOperationRecord,
 };
+pub use user_store::UserStore;
 pub use workflow_store::SqliteWorkflowStore;

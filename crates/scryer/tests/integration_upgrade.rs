@@ -68,7 +68,7 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.catalog.create(title.clone()).await.expect("seed title");
+    ctx.titles.create(title.clone()).await.expect("seed title");
     title
 }
 

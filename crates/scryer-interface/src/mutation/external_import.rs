@@ -6,9 +6,9 @@ use scryer_application::{
     AppError, ExternalImportLibraryPathsSelection, ExternalImportMonitorEpisodeEntry,
     ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
     ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotChunkScopeKind, ExternalImportMonitorSnapshotEntryKind,
-    ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupProgressSnapshot,
-    ExternalImportMonitorWarmupStatus, IndexerConfigUpdate,
+    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorWarmupPhase,
+    ExternalImportMonitorWarmupProgressSnapshot, ExternalImportMonitorWarmupStatus,
+    IndexerConfigUpdate,
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
 use scryer_infrastructure::external_import::{
@@ -38,7 +38,7 @@ struct ExternalImportWarmupConnections {
 struct SnapshotChunkWriter {
     app: scryer_application::AppUseCase,
     actor: scryer_domain::User,
-    scope_key: String,
+    facet: MediaFacet,
     entry_kind: ExternalImportMonitorSnapshotEntryKind,
     chunk_index: i32,
     buffered_ndjson: String,
@@ -48,13 +48,13 @@ impl SnapshotChunkWriter {
     fn new(
         app: scryer_application::AppUseCase,
         actor: scryer_domain::User,
-        scope_key: String,
+        facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
     ) -> Self {
         Self {
             app,
             actor,
-            scope_key,
+            facet,
             entry_kind,
             chunk_index: 0,
             buffered_ndjson: String::new(),
@@ -82,12 +82,9 @@ impl SnapshotChunkWriter {
 
         let payload_ndjson = std::mem::take(&mut self.buffered_ndjson);
         let chunk = ExternalImportMonitorSnapshotChunk {
-            scope_kind: ExternalImportMonitorSnapshotChunkScopeKind::Facet,
-            scope_key: self.scope_key.clone(),
+            facet: self.facet.clone(),
             entry_kind: self.entry_kind.clone(),
             chunk_index: self.chunk_index,
-            entry_count: 0,
-            byte_len: 0,
             payload_ndjson,
             created_at: Utc::now().to_rfc3339(),
         };
@@ -112,12 +109,8 @@ async fn clear_external_import_monitor_apply_target(
 ) -> scryer_application::AppResult<()> {
     app.clear_external_import_monitor_snapshot(actor, facet.clone())
         .await?;
-    app.clear_external_import_monitor_snapshot_chunks(
-        actor,
-        ExternalImportMonitorSnapshotChunkScopeKind::Facet,
-        facet.as_str(),
-    )
-    .await
+    app.clear_external_import_monitor_snapshot_chunks(actor, facet)
+        .await
 }
 
 async fn clear_external_import_monitor_apply_targets(
@@ -541,11 +534,7 @@ impl ExternalImportMutations {
         let canceled = app
             .cancel_external_import_monitor_warmup(&actor, &input.session_id)
             .await?;
-        if app
-            .external_import_monitor_warmup_connection_fingerprint(&actor, &input.session_id)
-            .await
-            .is_ok()
-        {
+        if canceled {
             let _ = clear_external_import_monitor_apply_targets(&app, &actor).await;
         }
 
@@ -1206,19 +1195,19 @@ async fn capture_external_import_monitor_warmup(
     let mut movie_writer = SnapshotChunkWriter::new(
         app.clone(),
         actor.clone(),
-        MediaFacet::Movie.as_str().to_string(),
+        MediaFacet::Movie,
         ExternalImportMonitorSnapshotEntryKind::Movie,
     );
     let mut series_writer = SnapshotChunkWriter::new(
         app.clone(),
         actor.clone(),
-        MediaFacet::Series.as_str().to_string(),
+        MediaFacet::Series,
         ExternalImportMonitorSnapshotEntryKind::Series,
     );
     let mut anime_writer = SnapshotChunkWriter::new(
         app.clone(),
         actor.clone(),
-        MediaFacet::Anime.as_str().to_string(),
+        MediaFacet::Anime,
         ExternalImportMonitorSnapshotEntryKind::Series,
     );
 

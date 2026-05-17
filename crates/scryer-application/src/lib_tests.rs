@@ -999,18 +999,13 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
 
     async fn list_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
         let chunks = self.chunks.lock().await;
         let mut matched = chunks
             .iter()
-            .filter(|chunk| {
-                chunk.scope_kind == scope_kind
-                    && chunk.scope_key == scope_key
-                    && chunk.entry_kind == entry_kind
-            })
+            .filter(|chunk| chunk.facet == facet && chunk.entry_kind == entry_kind)
             .cloned()
             .collect::<Vec<_>>();
         matched.sort_by_key(|chunk| chunk.chunk_index);
@@ -1019,8 +1014,7 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
         limit: i32,
@@ -1029,8 +1023,7 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
         let mut matched = chunks
             .iter()
             .filter(|chunk| {
-                chunk.scope_kind == scope_kind
-                    && chunk.scope_key == scope_key
+                chunk.facet == facet
                     && chunk.entry_kind == entry_kind
                     && after_chunk_index
                         .map(|after| chunk.chunk_index > after)
@@ -1045,11 +1038,10 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
     ) -> AppResult<()> {
         let mut chunks = self.chunks.lock().await;
-        chunks.retain(|chunk| !(chunk.scope_kind == scope_kind && chunk.scope_key == scope_key));
+        chunks.retain(|chunk| chunk.facet != facet);
         Ok(())
     }
 

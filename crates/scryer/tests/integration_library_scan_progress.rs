@@ -87,7 +87,7 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
         "anime.path" => ("anime_default_library", "Anime", "anime"),
         _ => return,
     };
-    ctx.catalog
+    ctx.libraries
         .update(
             library_id,
             name.to_string(),

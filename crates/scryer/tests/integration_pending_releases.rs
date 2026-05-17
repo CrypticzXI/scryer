@@ -68,7 +68,7 @@ async fn seed_title_in_library(ctx: &TestContext, id: &str, library_id: &str) {
         digital_release_date: None,
         folder_path: None,
     };
-    TitleRepository::create(&ctx.catalog, title)
+    TitleRepository::create(&ctx.titles, title)
         .await
         .expect("seed title");
 }
@@ -170,7 +170,7 @@ async fn direct_wanted_item_lookup_requires_access_to_item_library() {
     let adult_root = tempfile::tempdir().expect("adult library root");
     let now = Utc::now();
     LibraryRepository::create(
-        &ctx.catalog,
+        &ctx.libraries,
         Library {
             id: "movie_adult_library".to_string(),
             facet: MediaFacet::Movie,
@@ -199,7 +199,7 @@ async fn direct_wanted_item_lookup_requires_access_to_item_library() {
 
     let user_id = Id::new().0;
     let viewer = UserRepository::create(
-        &ctx.catalog,
+        &ctx.users,
         User {
             id: user_id.clone(),
             username: "default-viewer".to_string(),
@@ -211,7 +211,7 @@ async fn direct_wanted_item_lookup_requires_access_to_item_library() {
     .await
     .expect("create viewer");
     LibraryRepository::set_grants_for_user(
-        &ctx.catalog,
+        &ctx.libraries,
         &user_id,
         vec![LibraryGrant {
             user_id: user_id.clone(),

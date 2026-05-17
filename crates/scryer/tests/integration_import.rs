@@ -98,7 +98,7 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.catalog.create(title).await.expect("add movie title")
+    ctx.titles.create(title).await.expect("add movie title")
 }
 
 async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &str) -> Title {
@@ -139,7 +139,7 @@ async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.catalog.create(title).await.expect("add series title")
+    ctx.titles.create(title).await.expect("add series title")
 }
 
 fn mediainfo_fixture(name: &str) -> PathBuf {
@@ -214,7 +214,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_collection(collection.clone())
         .await
         .expect("create collection");
@@ -240,7 +240,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_episode(episode.clone())
         .await
         .expect("create episode");
@@ -354,7 +354,7 @@ async fn seed_series_episode_in_collection(
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_episode(episode.clone())
         .await
         .expect("create seeded episode");

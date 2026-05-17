@@ -161,7 +161,7 @@ async fn seed_series_title(
         digital_release_date: None,
         folder_path: folder_path.map(|path| path.to_string_lossy().to_string()),
     };
-    ctx.catalog.create(title.clone()).await.expect("seed title");
+    ctx.titles.create(title.clone()).await.expect("seed title");
     title
 }
 
@@ -182,7 +182,7 @@ async fn seed_collection(ctx: &TestContext, title: &Title, index: u32) -> Collec
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_collection(collection.clone())
         .await
         .expect("create collection");
@@ -220,7 +220,7 @@ async fn seed_episode(
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_episode(episode.clone())
         .await
         .expect("create episode");
@@ -465,7 +465,7 @@ async fn loose_root_series_file_imports_into_existing_title_without_rewriting_fo
     assert_eq!(PathBuf::from(&media_files[0].file_path), loose_file);
 
     let refreshed_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load refreshed title")
@@ -532,7 +532,7 @@ async fn resolving_missing_loose_file_does_not_clear_existing_title_folder_path(
     assert!(result.is_err(), "missing source file should not resolve");
 
     let refreshed_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load refreshed title")

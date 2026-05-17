@@ -168,38 +168,11 @@ impl ExternalImportMonitorSnapshotEntryKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExternalImportMonitorSnapshotChunkScopeKind {
-    WarmupSession,
-    Facet,
-}
-
-impl ExternalImportMonitorSnapshotChunkScopeKind {
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::WarmupSession => "warmup_session",
-            Self::Facet => "facet",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "warmup_session" => Some(Self::WarmupSession),
-            "facet" => Some(Self::Facet),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorSnapshotChunk {
-    pub scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-    pub scope_key: String,
+    pub facet: scryer_domain::MediaFacet,
     pub entry_kind: ExternalImportMonitorSnapshotEntryKind,
     pub chunk_index: i32,
     pub payload_ndjson: String,
-    pub entry_count: i32,
-    pub byte_len: i64,
     pub created_at: String,
 }
 

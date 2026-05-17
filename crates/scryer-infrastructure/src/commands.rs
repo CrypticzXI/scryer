@@ -1,27 +1,23 @@
 use crate::queries::{
     blocklist as blocklist_queries, library_scan_unmatched as library_scan_unmatched_queries,
-    plugin_installation::BuiltinPluginSeed,
-    show,
-    sql_runtime::{SqlTarget, run_with_sqlite_busy_retries},
-    title::*,
+    sql_runtime::run_with_sqlite_busy_retries,
 };
 use crate::{
     encryption::EncryptionKey,
     types::{SettingDefinitionSeed, SettingsValueRecord},
 };
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, DownloadClientConfigUpdate, DownloadQueueCommandRecord,
-    DownloadSourceIdentity, EpisodeUpdate, ExternalImportMonitorSnapshot, ImportArtifact,
-    IndexerConfigUpdate, InsertMediaFileInput, LibraryScanUnmatchedItem, MediaFileAnalysis,
-    PendingRelease, PendingReleaseStatus, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    ScopedExternalId, SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement,
-    WantedItem, WantedItemsQuery, WorkflowOperationInfo,
+    AppError, AppResult, DownloadClientConfigUpdate, DownloadQueueCommandRecord,
+    DownloadSourceIdentity, ExternalImportMonitorSnapshot, ImportArtifact, IndexerConfigUpdate,
+    InsertMediaFileInput, LibraryScanUnmatchedItem, MediaFileAnalysis, PendingRelease,
+    PendingReleaseStatus, ReleaseDecision, ReleaseDownloadAttemptOutcome,
+    SubtitleProviderConfigUpdate, SuccessfulGrabCommit, TitleImageReplacement, WantedItem,
+    WantedItemsQuery, WorkflowOperationInfo,
 };
 use scryer_domain::{
-    BlocklistEntry, Collection, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus,
-    Episode, ImportType, IndexerConfig, InterstitialMovieMetadata, MediaFacet, NewDomainEvent,
-    NotificationChannelConfig, NotificationSubscription, PluginInstallation, PostProcessingScript,
-    PostProcessingScriptRun, RuleSet, SubtitleDownload, SubtitleProviderConfig, User,
+    BlocklistEntry, DomainEvent, DownloadClientConfig, DownloadQueueDeleteStatus, ImportType,
+    IndexerConfig, MediaFacet, NewDomainEvent, NotificationChannelConfig, NotificationSubscription,
+    SubtitleDownload, SubtitleProviderConfig,
 };
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -49,10 +45,6 @@ pub(crate) enum DbCommand {
         replacement: TitleImageReplacement,
         event: NewDomainEvent,
         reply: Sender<AppResult<DomainEvent>>,
-    },
-    CreateCollection {
-        collection: Collection,
-        reply: Sender<AppResult<Collection>>,
     },
     InsertMediaFile {
         input: InsertMediaFileInput,
@@ -89,19 +81,6 @@ pub(crate) enum DbCommand {
         sequence: i64,
         reply: Sender<AppResult<()>>,
     },
-    CreateEpisode {
-        episode: Episode,
-        reply: Sender<AppResult<Episode>>,
-    },
-    UpdateEpisode {
-        episode_id: String,
-        update: EpisodeUpdate,
-        reply: Sender<AppResult<Episode>>,
-    },
-    DeleteEpisode {
-        episode_id: String,
-        reply: Sender<AppResult<()>>,
-    },
     RecoverStaleRunningDeleteDownloadCommands {
         stale_seconds: i64,
         reply: Sender<AppResult<u64>>,
@@ -110,67 +89,6 @@ pub(crate) enum DbCommand {
         id: String,
         status: DownloadQueueDeleteStatus,
         error_text: Option<String>,
-        reply: Sender<AppResult<()>>,
-    },
-    ReplaceAnibridgeScopedExternalIdsForTitle {
-        title_id: String,
-        collection_ids: Vec<ScopedExternalId>,
-        episode_ids: Vec<ScopedExternalId>,
-        reply: Sender<AppResult<()>>,
-    },
-    UpdateCollection {
-        collection_id: String,
-        update: CollectionUpdate,
-        reply: Sender<AppResult<Collection>>,
-    },
-    UpdateCollectionInterstitialMovie {
-        collection_id: String,
-        interstitial_movie: InterstitialMovieMetadata,
-        reply: Sender<AppResult<Collection>>,
-    },
-    UpdateCollectionSpecialsMovies {
-        collection_id: String,
-        specials_movies: Vec<InterstitialMovieMetadata>,
-        reply: Sender<AppResult<Collection>>,
-    },
-    UpdateInterstitialSeasonEpisode {
-        collection_id: String,
-        season_episode: Option<String>,
-        reply: Sender<AppResult<()>>,
-    },
-    SetCollectionEpisodesMonitored {
-        collection_id: String,
-        monitored: bool,
-        reply: Sender<AppResult<()>>,
-    },
-    DeleteCollection {
-        collection_id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    DeleteCollectionsForTitle {
-        title_id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    DeleteEpisodesForTitle {
-        title_id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    CreateUser {
-        user: User,
-        reply: Sender<AppResult<User>>,
-    },
-    UpdateUserEntitlements {
-        id: String,
-        entitlements_json: String,
-        reply: Sender<AppResult<User>>,
-    },
-    UpdateUserPasswordHash {
-        id: String,
-        password_hash: String,
-        reply: Sender<AppResult<User>>,
-    },
-    DeleteUser {
-        id: String,
         reply: Sender<AppResult<()>>,
     },
     CommitSuccessfulGrab {
@@ -462,64 +380,6 @@ pub(crate) enum DbCommand {
         dest_path: String,
         reply: Sender<AppResult<()>>,
     },
-    CreateRuleSet {
-        rule_set: RuleSet,
-        reply: Sender<AppResult<()>>,
-    },
-    UpdateRuleSet {
-        rule_set: RuleSet,
-        reply: Sender<AppResult<()>>,
-    },
-    DeleteRuleSet {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    RecordRuleSetHistory {
-        id: String,
-        rule_set_id: String,
-        action: String,
-        rego_source: Option<String>,
-        actor_id: Option<String>,
-        reply: Sender<AppResult<()>>,
-    },
-    DeleteRuleSetByManagedKey {
-        key: String,
-        reply: Sender<AppResult<()>>,
-    },
-    CreatePostProcessingScript {
-        script: PostProcessingScript,
-        reply: Sender<AppResult<PostProcessingScript>>,
-    },
-    UpdatePostProcessingScript {
-        script: PostProcessingScript,
-        reply: Sender<AppResult<PostProcessingScript>>,
-    },
-    DeletePostProcessingScript {
-        id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    RecordPostProcessingScriptRun {
-        run: PostProcessingScriptRun,
-        reply: Sender<AppResult<()>>,
-    },
-    CreatePluginInstallation {
-        installation: PluginInstallation,
-        wasm_bytes: Option<Vec<u8>>,
-        reply: Sender<AppResult<PluginInstallation>>,
-    },
-    UpdatePluginInstallation {
-        installation: PluginInstallation,
-        wasm_bytes: Option<Vec<u8>>,
-        reply: Sender<AppResult<PluginInstallation>>,
-    },
-    DeletePluginInstallation {
-        plugin_id: String,
-        reply: Sender<AppResult<()>>,
-    },
-    SeedBuiltinPlugin {
-        seed: BuiltinPluginSeed,
-        reply: Sender<AppResult<()>>,
-    },
     CreateNotificationChannel {
         config: NotificationChannelConfig,
         encryption_key: Option<EncryptionKey>,
@@ -554,21 +414,6 @@ pub(crate) enum DbCommand {
         error_message: Option<String>,
         source_password: Option<String>,
         reply: Sender<AppResult<()>>,
-    },
-    ListEpisodesForTitle {
-        title_id: String,
-        reply: Sender<AppResult<Vec<Episode>>>,
-    },
-    FindEpisodeByTitleAndNumbers {
-        title_id: String,
-        season_number: String,
-        episode_number: String,
-        reply: Sender<AppResult<Option<Episode>>>,
-    },
-    FindEpisodeByTitleAndAbsoluteNumber {
-        title_id: String,
-        absolute_number: String,
-        reply: Sender<AppResult<Option<Episode>>>,
     },
     UpsertWantedItem {
         item: WantedItem,
@@ -796,14 +641,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::CreateCollection { collection, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_collection", || {
-                            create_collection_query(&pool, &collection)
-                        })
-                        .await,
-                    );
-                }
                 DbCommand::InsertMediaFile { input, reply } => {
                     let _ = reply.send(
                         run_with_sqlite_busy_retries("insert_media_file", || {
@@ -900,34 +737,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::CreateEpisode { episode, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_episode", || {
-                            create_episode_query(&pool, &episode)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateEpisode {
-                    episode_id,
-                    update,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_episode", || {
-                            update_episode_query(&pool, &episode_id, update.clone())
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteEpisode { episode_id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_episode", || {
-                            show::delete_episode_query(SqlTarget::Sqlite(&pool), &episode_id)
-                        })
-                        .await,
-                    );
-                }
                 DbCommand::RecoverStaleRunningDeleteDownloadCommands {
                     stale_seconds,
                     reply,
@@ -959,187 +768,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                                 status,
                                 error_text.as_deref(),
                             )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::ReplaceAnibridgeScopedExternalIdsForTitle {
-                    title_id,
-                    collection_ids,
-                    episode_ids,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries(
-                            "replace_anibridge_scoped_external_ids_for_title",
-                            || {
-                                show::replace_anibridge_scoped_external_ids_for_title(
-                                    SqlTarget::Sqlite(&pool),
-                                    &title_id,
-                                    &collection_ids,
-                                    &episode_ids,
-                                )
-                            },
-                        )
-                        .await,
-                    );
-                }
-                DbCommand::UpdateCollection {
-                    collection_id,
-                    update,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_collection", || {
-                            update_collection_query(&pool, &collection_id, update.clone())
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateCollectionInterstitialMovie {
-                    collection_id,
-                    interstitial_movie,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries(
-                            "update_collection_interstitial_movie",
-                            || {
-                                update_collection_interstitial_movie_query(
-                                    &pool,
-                                    &collection_id,
-                                    &interstitial_movie,
-                                )
-                            },
-                        )
-                        .await,
-                    );
-                }
-                DbCommand::UpdateCollectionSpecialsMovies {
-                    collection_id,
-                    specials_movies,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_collection_specials_movies", || {
-                            update_collection_specials_movies_query(
-                                &pool,
-                                &collection_id,
-                                &specials_movies,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateInterstitialSeasonEpisode {
-                    collection_id,
-                    season_episode,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_interstitial_season_episode", || {
-                            show::update_interstitial_season_episode_query(
-                                SqlTarget::Sqlite(&pool),
-                                &collection_id,
-                                season_episode.as_deref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::SetCollectionEpisodesMonitored {
-                    collection_id,
-                    monitored,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("set_collection_episodes_monitored", || {
-                            show::set_collection_episodes_monitored_query(
-                                SqlTarget::Sqlite(&pool),
-                                &collection_id,
-                                monitored,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteCollection {
-                    collection_id,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_collection", || {
-                            show::delete_collection_query(SqlTarget::Sqlite(&pool), &collection_id)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteCollectionsForTitle { title_id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_collections_for_title", || {
-                            show::delete_collections_for_title_query(
-                                SqlTarget::Sqlite(&pool),
-                                &title_id,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteEpisodesForTitle { title_id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_episodes_for_title", || {
-                            show::delete_episodes_for_title_query(
-                                SqlTarget::Sqlite(&pool),
-                                &title_id,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreateUser { user, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_user", || {
-                            crate::queries::user::create_user_query(&pool, &user)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateUserEntitlements {
-                    id,
-                    entitlements_json,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_user_entitlements", || {
-                            crate::queries::user::update_user_entitlements_query(
-                                &pool,
-                                &id,
-                                &entitlements_json,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateUserPasswordHash {
-                    id,
-                    password_hash,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_user_password_hash", || {
-                            crate::queries::user::update_user_password_query(
-                                &pool,
-                                &id,
-                                &password_hash,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteUser { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_user", || {
-                            crate::queries::user::delete_user_query(&pool, &id)
                         })
                         .await,
                     );
@@ -1980,148 +1608,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                         .await,
                     );
                 }
-                DbCommand::CreateRuleSet { rule_set, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_rule_set", || {
-                            crate::queries::rule_set::insert_rule_set_query(&pool, &rule_set)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdateRuleSet { rule_set, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_rule_set", || {
-                            crate::queries::rule_set::update_rule_set_query(&pool, &rule_set)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteRuleSet { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_rule_set", || {
-                            crate::queries::rule_set::delete_rule_set_query(&pool, &id)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::RecordRuleSetHistory {
-                    id,
-                    rule_set_id,
-                    action,
-                    rego_source,
-                    actor_id,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("record_rule_set_history", || {
-                            crate::queries::rule_set::insert_rule_set_history_query(
-                                &pool,
-                                &id,
-                                &rule_set_id,
-                                &action,
-                                rego_source.as_deref(),
-                                actor_id.as_deref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeleteRuleSetByManagedKey { key, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_rule_set_by_managed_key", || {
-                            crate::queries::rule_set::delete_rule_set_by_managed_key_query(
-                                &pool, &key,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreatePostProcessingScript { script, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_post_processing_script", || {
-                            crate::queries::post_processing_script::insert_script_query(
-                                &pool, &script,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdatePostProcessingScript { script, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_post_processing_script", || {
-                            crate::queries::post_processing_script::update_script_query(
-                                &pool, &script,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeletePostProcessingScript { id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_post_processing_script", || {
-                            crate::queries::post_processing_script::delete_script_query(&pool, &id)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::RecordPostProcessingScriptRun { run, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("record_post_processing_script_run", || {
-                            crate::queries::post_processing_script::record_run_query(&pool, &run)
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::CreatePluginInstallation {
-                    installation,
-                    wasm_bytes,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("create_plugin_installation", || {
-                            crate::queries::plugin_installation::create_plugin_installation_query(
-                                &pool,
-                                &installation,
-                                wasm_bytes.as_deref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::UpdatePluginInstallation {
-                    installation,
-                    wasm_bytes,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("update_plugin_installation", || {
-                            crate::queries::plugin_installation::update_plugin_installation_query(
-                                &pool,
-                                &installation,
-                                wasm_bytes.as_deref(),
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::DeletePluginInstallation { plugin_id, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("delete_plugin_installation", || {
-                            crate::queries::plugin_installation::delete_plugin_installation_query(
-                                &pool, &plugin_id,
-                            )
-                        })
-                        .await,
-                    );
-                }
-                DbCommand::SeedBuiltinPlugin { seed, reply } => {
-                    let _ = reply.send(
-                        run_with_sqlite_busy_retries("seed_builtin_plugin", || {
-                            crate::queries::plugin_installation::seed_builtin_query(&pool, &seed)
-                        })
-                        .await,
-                    );
-                }
                 DbCommand::CreateNotificationChannel {
                     config,
                     encryption_key,
@@ -2224,42 +1710,6 @@ pub(crate) fn spawn_db_command_worker(pool: SqlitePool) -> mpsc::Sender<DbComman
                                 source_password.clone(),
                             )
                         })
-                        .await,
-                    );
-                }
-                DbCommand::ListEpisodesForTitle { title_id, reply } => {
-                    let _ = reply.send(
-                        show::list_episodes_for_title_query(SqlTarget::Sqlite(&pool), &title_id)
-                            .await,
-                    );
-                }
-                DbCommand::FindEpisodeByTitleAndNumbers {
-                    title_id,
-                    season_number,
-                    episode_number,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        find_episode_by_title_and_numbers_query(
-                            &pool,
-                            &title_id,
-                            &season_number,
-                            &episode_number,
-                        )
-                        .await,
-                    );
-                }
-                DbCommand::FindEpisodeByTitleAndAbsoluteNumber {
-                    title_id,
-                    absolute_number,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        show::find_episode_by_title_and_absolute_number_query(
-                            SqlTarget::Sqlite(&pool),
-                            &title_id,
-                            &absolute_number,
-                        )
                         .await,
                     );
                 }

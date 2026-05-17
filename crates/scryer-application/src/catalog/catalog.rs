@@ -3447,8 +3447,7 @@ impl AppUseCase {
                 .workflow
                 .external_import_monitor_snapshots
                 .list_external_import_monitor_snapshot_chunk_batch(
-                    ExternalImportMonitorSnapshotChunkScopeKind::Facet,
-                    MediaFacet::Movie.as_str(),
+                    MediaFacet::Movie,
                     ExternalImportMonitorSnapshotEntryKind::Movie,
                     after_chunk_index,
                     EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE,
@@ -3727,8 +3726,7 @@ impl AppUseCase {
                 .workflow
                 .external_import_monitor_snapshots
                 .list_external_import_monitor_snapshot_chunk_batch(
-                    ExternalImportMonitorSnapshotChunkScopeKind::Facet,
-                    facet.as_str(),
+                    facet.clone(),
                     ExternalImportMonitorSnapshotEntryKind::Series,
                     after_chunk_index,
                     EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE,
@@ -3800,8 +3798,7 @@ impl AppUseCase {
             .workflow
             .external_import_monitor_snapshots
             .list_external_import_monitor_snapshot_chunk_batch(
-                ExternalImportMonitorSnapshotChunkScopeKind::Facet,
-                facet.as_str(),
+                facet.clone(),
                 chunk_entry_kind,
                 None,
                 1,

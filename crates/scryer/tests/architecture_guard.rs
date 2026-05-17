@@ -874,31 +874,50 @@ fn release_repository_uses_shared_runtime_kernel() {
 #[test]
 fn customization_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
-    let sqlite_customization = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/customization_store.rs"),
+    let rule_sets =
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/rule_set_store.rs"));
+    let scripts = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/post_processing_script_store.rs"),
     );
-    let postgres_customization = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/customization_store.rs"),
-    );
+    let plugins =
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/plugin_store.rs"));
 
-    assert!(
-        sqlite_customization.contains("pub struct CustomizationStore<S>"),
-        "customization should expose one shared repository kernel"
-    );
-    assert!(
-        sqlite_customization.contains(
-            "pub type SqliteCustomizationStore = CustomizationStore<SqliteCustomizationSql>;"
+    for (name, source, trait_impl) in [
+        (
+            "rule sets",
+            &rule_sets,
+            "impl RuleSetRepository for RuleSetStore",
         ),
-        "SQLite customization should be a primitive adapter over the shared kernel"
-    );
-    assert!(
-        postgres_customization.contains(
-            "pub type PostgresCustomizationStore = CustomizationStore<PostgresCustomizationSql>;"
+        (
+            "post-processing scripts",
+            &scripts,
+            "impl PostProcessingScriptRepository for PostProcessingScriptStore",
         ),
-        "PostgreSQL customization should be a primitive adapter over the shared kernel"
-    );
+        (
+            "plugins",
+            &plugins,
+            "impl PluginInstallationRepository for PluginStore",
+        ),
+    ] {
+        assert!(
+            source.contains("datastore: StoreDatastore"),
+            "{name} should own StoreDatastore directly"
+        );
+        assert!(
+            source.contains("SqlRuntime::"),
+            "{name} should use the shared SQL runtime"
+        );
+        assert!(
+            source.contains(trait_impl),
+            "{name} should implement its repository trait directly"
+        );
+    }
 
     for forbidden in [
+        "pub trait CustomizationSql",
+        "pub struct CustomizationStore<S>",
+        "SqliteCustomizationStore",
+        "PostgresCustomizationStore",
         "pub struct SqliteCustomizationStore",
         "pub struct PostgresCustomizationStore",
         "impl RuleSetRepository for SqliteCustomizationStore",
@@ -909,9 +928,10 @@ fn customization_repository_uses_shared_runtime_kernel() {
         "impl PluginInstallationRepository for PostgresCustomizationStore",
     ] {
         assert!(
-            !sqlite_customization.contains(forbidden)
-                && !postgres_customization.contains(forbidden),
-            "customization repository must not reintroduce paired full-store implementation `{forbidden}`"
+            !rule_sets.contains(forbidden)
+                && !scripts.contains(forbidden)
+                && !plugins.contains(forbidden),
+            "customization repositories must not reintroduce monolithic or paired implementation `{forbidden}`"
         );
     }
 }
@@ -962,43 +982,58 @@ fn workflow_repository_uses_shared_runtime_kernel() {
 }
 
 #[test]
-fn catalog_repository_uses_shared_runtime_kernel() {
+fn catalog_repository_has_been_evacuated_to_domain_stores() {
     let root = repo_root();
-    let sqlite_catalog =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/catalog_store.rs"));
-    let postgres_catalog = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/catalog_store.rs"),
+    assert!(
+        !root
+            .join("crates/scryer-infrastructure/src/catalog_store.rs")
+            .exists(),
+        "legacy SQLite catalog file should stay deleted"
+    );
+    assert!(
+        !root
+            .join("crates/scryer-infrastructure/src/postgres/catalog_store.rs")
+            .exists(),
+        "legacy PostgreSQL catalog file should stay deleted"
     );
 
-    assert!(
-        sqlite_catalog.contains("pub struct CatalogStore<S>"),
-        "catalog should expose one shared repository kernel"
-    );
-    assert!(
-        sqlite_catalog.contains("pub type SqliteCatalogStore = CatalogStore<SqliteCatalogSql>;"),
-        "SQLite catalog should be a primitive adapter over the shared kernel"
-    );
-    assert!(
-        postgres_catalog
-            .contains("pub type PostgresCatalogStore = CatalogStore<PostgresCatalogSql>;"),
-        "PostgreSQL catalog should be a primitive adapter over the shared kernel"
-    );
+    let stores = [
+        (
+            "title_store.rs",
+            "pub struct TitleStore",
+            "impl TitleRepository for TitleStore",
+        ),
+        (
+            "show_store.rs",
+            "pub struct ShowStore",
+            "impl ShowRepository for ShowStore",
+        ),
+        (
+            "library_store.rs",
+            "pub struct LibraryStore",
+            "impl LibraryRepository for LibraryStore",
+        ),
+        (
+            "user_store.rs",
+            "pub struct UserStore",
+            "impl UserRepository for UserStore",
+        ),
+    ];
 
-    for forbidden in [
-        "pub struct SqliteCatalogStore",
-        "pub struct PostgresCatalogStore",
-        "impl TitleRepository for SqliteCatalogStore",
-        "impl TitleRepository for PostgresCatalogStore",
-        "impl LibraryRepository for SqliteCatalogStore",
-        "impl LibraryRepository for PostgresCatalogStore",
-        "impl ShowRepository for SqliteCatalogStore",
-        "impl ShowRepository for PostgresCatalogStore",
-        "impl UserRepository for SqliteCatalogStore",
-        "impl UserRepository for PostgresCatalogStore",
-    ] {
+    for (file, struct_name, impl_name) in stores {
+        let source =
+            production_rust_source(&root.join("crates/scryer-infrastructure/src").join(file));
         assert!(
-            !sqlite_catalog.contains(forbidden) && !postgres_catalog.contains(forbidden),
-            "catalog repository must not reintroduce paired full-store implementation `{forbidden}`"
+            source.contains(struct_name),
+            "{file} should own its canonical store type"
+        );
+        assert!(
+            source.contains(impl_name),
+            "{file} should own its application repository implementation"
+        );
+        assert!(
+            source.contains("StoreDatastore"),
+            "{file} should route through the shared datastore runtime"
         );
     }
 }
@@ -1075,31 +1110,28 @@ fn library_state_repository_uses_shared_runtime_kernel() {
 }
 
 #[test]
-fn postgres_catalog_keeps_runtime_parity_for_backfills_and_transactions() {
+fn title_store_keeps_runtime_parity_for_backfills_and_transactions() {
     let root = repo_root();
-    let shared_catalog =
-        production_rust_source(&root.join("crates/scryer-infrastructure/src/catalog_store.rs"));
-    let postgres_catalog = production_rust_source(
-        &root.join("crates/scryer-infrastructure/src/postgres/catalog_store.rs"),
-    );
+    let title_store =
+        production_rust_source(&root.join("crates/scryer-infrastructure/src/title_store.rs"));
 
     assert!(
-        !shared_catalog.contains(
+        !title_store.contains(
             "async fn list_anime_title_ids_missing_title_anidb_external_ids(\n        &self,\n        _limit: usize,\n    ) -> AppResult<Vec<String>> {\n        Ok(Vec::new())\n    }"
         ),
-        "TitleSql must not provide a default no-op for title-level AniDB backfill"
+        "TitleStore must not provide a default no-op for title-level AniDB backfill"
     );
     assert!(
-        postgres_catalog.contains("async fn list_anime_title_ids_missing_title_anidb_external_ids"),
-        "PostgreSQL catalog must implement title-level AniDB backfill parity"
+        title_store.contains("async fn list_anime_title_ids_missing_title_anidb_external_ids"),
+        "TitleStore must implement title-level AniDB backfill parity"
     );
     assert!(
-        postgres_catalog.contains("LOWER(external_id ->> 'source') IN ('anidb', 'anidb_id')"),
-        "PostgreSQL title-level AniDB backfill should match SQLite source normalization"
+        title_store.contains("LOWER(title_external_ids.source) IN ('anidb', 'anidb_id')"),
+        "title-level AniDB backfill should keep explicit source normalization"
     );
     assert!(
-        postgres_catalog.contains("let mut tx = self.pool.begin().await.map_err(repo_err)?;\n        sqlx::query(\n            \"INSERT INTO libraries"),
-        "PostgreSQL library create with roots must run in one transaction"
+        title_store.contains("SqlRuntime::run_in_transaction"),
+        "TitleStore mutations must run through the shared transaction helper"
     );
 }
 

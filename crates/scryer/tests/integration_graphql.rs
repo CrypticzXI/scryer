@@ -22,9 +22,9 @@ use scryer_domain::{
     User, UserAuthorization,
 };
 use scryer_infrastructure::{
-    FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteCatalogStore, SqliteLibraryStateStore,
-    SqliteWorkflowStore,
+    FileSystemLibraryRenamer, SettingDefinitionSeed, SqliteLibraryStateStore, SqliteWorkflowStore,
 };
+use scryer_infrastructure::sqlite::ShowStore;
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::collections::{BTreeMap, HashMap};
@@ -264,7 +264,7 @@ impl MediaFileRepository for FailingMediaFileRepo {
 }
 
 struct FailingShowRepo {
-    inner: SqliteCatalogStore,
+    inner: ShowStore,
     fail_collection_id: String,
     fail_path: String,
 }
@@ -362,6 +362,16 @@ impl ShowRepository for FailingShowRepo {
             .await
     }
 
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        self.inner
+            .set_collections_monitored(collection_ids, monitored)
+            .await
+    }
+
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
         self.inner.delete_collection(collection_id).await
     }
@@ -395,6 +405,16 @@ impl ShowRepository for FailingShowRepo {
 
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode> {
         self.inner.update_episode(episode_id, update).await
+    }
+
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        self.inner
+            .set_episodes_monitored(episode_ids, monitored)
+            .await
     }
 
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
@@ -1124,7 +1144,7 @@ async fn create_series_scan_title(
         folder_path: None,
     };
     let title = ctx
-        .catalog
+        .titles
         .create(title)
         .await
         .expect("create series title");
@@ -1146,7 +1166,7 @@ async fn create_series_scan_title(
         created_at: chrono::Utc::now(),
     };
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(collection)
         .await
         .expect("create season collection");
@@ -1200,7 +1220,7 @@ async fn create_catalog_title(
         folder_path: None,
     };
 
-    ctx.catalog.create(title).await.expect("create title")
+    ctx.titles.create(title).await.expect("create title")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1230,7 +1250,7 @@ async fn create_series_monitoring_fixture(
     .await;
 
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1251,7 +1271,7 @@ async fn create_series_monitoring_fixture(
         .expect("create season collection");
 
     let episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1286,19 +1306,19 @@ async fn series_monitoring_summary(
     episode_id: &str,
 ) -> SeriesMonitoringSummary {
     let title = ctx
-        .catalog
+        .titles
         .get_by_id(title_id)
         .await
         .expect("load title")
         .expect("title");
     let collection = ctx
-        .catalog
+        .shows
         .get_collection_by_id(collection_id)
         .await
         .expect("load collection")
         .expect("collection");
     let episode = ctx
-        .catalog
+        .shows
         .get_episode_by_id(episode_id)
         .await
         .expect("load episode")
@@ -1363,7 +1383,7 @@ async fn create_series_scan_episode(
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_episode(episode)
         .await
         .expect("create episode")
@@ -1389,7 +1409,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
     .await;
 
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1410,7 +1430,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
         .expect("create season collection");
 
     let episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1543,7 +1563,7 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
     std::fs::write(&file_path, b"anime-interstitial").expect("write interstitial file");
 
     let interstitial = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1673,7 +1693,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
     .await;
 
     let season_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1694,7 +1714,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .expect("create season collection");
 
     let episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1747,7 +1767,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .expect("write interstitial file");
 
     let interstitial_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -1845,13 +1865,13 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
         .expect("load updated interstitial media file")
         .expect("interstitial media file");
     let refreshed_season_collection = ctx
-        .catalog
+        .shows
         .get_collection_by_id(&season_collection.id)
         .await
         .expect("load season collection")
         .expect("season collection");
     let refreshed_interstitial_collection = ctx
-        .catalog
+        .shows
         .get_collection_by_id(&interstitial_collection.id)
         .await
         .expect("load interstitial collection")
@@ -1898,7 +1918,7 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
     std::fs::write(&file_path, b"movie-rename-preview").expect("write movie file");
 
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2008,7 +2028,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
     std::fs::write(&source_path, b"movie-apply-sync").expect("write movie file");
 
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2068,7 +2088,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
         .to_string_lossy()
         .to_string();
     let updated_collection = ctx
-        .catalog
+        .shows
         .get_collection_by_id(&collection.id)
         .await
         .expect("load movie collection")
@@ -2108,7 +2128,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
     .await;
 
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2129,7 +2149,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
         .expect("create season collection");
 
     let episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2271,7 +2291,7 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
     std::fs::write(&source_path, b"tracked-movie-source").expect("write movie source");
     let destination_path = movie_dir.join("Tracked Collision Movie (2024) - 1080p.mkv");
 
-    ctx.catalog
+    ctx.shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2303,7 +2323,7 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
         true,
     )
     .await;
-    ctx.catalog
+    ctx.shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: owning_title.id,
@@ -2386,7 +2406,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
     .await;
 
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2508,7 +2528,7 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
     std::fs::write(&destination_path, b"untracked-movie-destination")
         .expect("write untracked destination");
 
-    ctx.catalog
+    ctx.shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2594,7 +2614,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     .await;
 
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2615,7 +2635,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
         .expect("create season collection");
 
     let episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2766,7 +2786,7 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
         .to_string();
 
     let interstitial = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -2824,7 +2844,7 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
 
     ctx.app = ctx.app.with_test_overrides(|builder| {
         builder.with_shows(std::sync::Arc::new(FailingShowRepo {
-            inner: SqliteCatalogStore::new(&ctx.db),
+            inner: ShowStore::sqlite(&ctx.db),
             fail_collection_id: interstitial.id.clone(),
             fail_path: expected_path.clone(),
         }))
@@ -2876,7 +2896,7 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
         .expect("load interstitial media file")
         .expect("interstitial media file");
     let stored_collection = ctx
-        .catalog
+        .shows
         .get_collection_by_id(&interstitial.id)
         .await
         .expect("load interstitial collection")
@@ -4844,7 +4864,7 @@ async fn graphql_traverses_core_graph_relationships() {
         digital_release_date: None,
         folder_path: None,
     };
-    let title = ctx.catalog.create(title).await.expect("create title");
+    let title = ctx.titles.create(title).await.expect("create title");
 
     let collection = Collection {
         id: Id::new().0,
@@ -4863,7 +4883,7 @@ async fn graphql_traverses_core_graph_relationships() {
         created_at: chrono::Utc::now(),
     };
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(collection)
         .await
         .expect("create collection");
@@ -4890,7 +4910,7 @@ async fn graphql_traverses_core_graph_relationships() {
         created_at: chrono::Utc::now(),
     };
     let episode = ctx
-        .catalog
+        .shows
         .create_episode(episode)
         .await
         .expect("create episode");
@@ -6387,7 +6407,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
     .await;
 
     let season_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6408,7 +6428,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         .expect("create season collection");
 
     let specials_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6429,7 +6449,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         .expect("create specials collection");
 
     let season_zero_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6465,7 +6485,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         create_series_scan_episode(&ctx, &title, &season_zero_collection, "0", "4", "S00E04").await;
 
     regular_episode_2 = ctx
-        .catalog
+        .shows
         .update_episode(
             &regular_episode_2.id,
             EpisodeUpdate {
@@ -6478,7 +6498,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         .expect("update episode monitored flag");
 
     let regular_episode_1 = ctx
-        .catalog
+        .shows
         .update_episode(
             &regular_episode_1.id,
             EpisodeUpdate {
@@ -6489,7 +6509,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
         .await
         .expect("update first regular episode air date");
 
-    ctx.catalog
+    ctx.shows
         .update_episode(
             &regular_episode_3.id,
             EpisodeUpdate {
@@ -6565,7 +6585,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
     .await;
 
     let season_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6586,7 +6606,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
         .expect("create season collection");
 
     let countable_episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6612,7 +6632,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
         .expect("create countable episode");
 
     let tba_episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6638,7 +6658,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
         .expect("create tba episode");
 
     let untitled_episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6664,7 +6684,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
         .expect("create untitled episode");
 
     let undated_episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6754,7 +6774,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
     .await;
 
     let season_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6775,7 +6795,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
         .expect("create season collection");
 
     let specials_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6796,7 +6816,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
         .expect("create specials collection");
 
     let season_zero_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6820,7 +6840,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
         .path()
         .join("Matched.Size.Anime.Interstitial.1080p.mkv");
     let _interstitial_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -6962,7 +6982,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
     .await;
 
     let matched_path = media_root.path().join("Matched.Size.Movie.2160p.mkv");
-    ctx.catalog
+    ctx.shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -7533,7 +7553,7 @@ async fn graphql_scan_title_library() {
     assert_eq!(files[0]["scanStatus"], "scan_failed");
 
     let persisted_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -7717,7 +7737,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
         create_series_scan_title(&ctx, media_root.path(), "Stoneguard", vec![]).await;
 
     let season_four = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -7737,7 +7757,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
         .await
         .expect("create season four collection");
     let episode_29 = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -7762,7 +7782,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
         .await
         .expect("create episode 29");
     let episode_30 = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -7853,7 +7873,7 @@ async fn graphql_scan_title_library_matches_numbered_special_episode_on_disk() {
         create_series_scan_title(&ctx, media_root.path(), "Special Scan Show", vec![]).await;
 
     let specials_collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -7873,7 +7893,7 @@ async fn graphql_scan_title_library_matches_numbered_special_episode_on_disk() {
         .await
         .expect("create specials collection");
     let special_episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -7977,7 +7997,7 @@ async fn graphql_scan_title_library_matches_daily_episodes_by_air_date() {
         created_at: chrono::Utc::now(),
     };
     let episode = ctx
-        .catalog
+        .shows
         .create_episode(episode)
         .await
         .expect("create episode");
@@ -8056,7 +8076,7 @@ async fn graphql_scan_title_library_disables_season_folders_for_flat_layout() {
         .expect("scan title library");
 
     let persisted_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -8106,7 +8126,7 @@ async fn graphql_scan_title_library_preserves_existing_layout_when_ambiguous() {
         .expect("scan title library");
 
     let persisted_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -8237,7 +8257,7 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
     let mut hydrated_title = None;
     for _ in 0..20 {
         let titles = ctx
-            .catalog
+            .titles
             .list(Some(MediaFacet::Series), None)
             .await
             .expect("list titles");
@@ -8386,7 +8406,7 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
     let mut linked_files = Vec::new();
     for _ in 0..100 {
         let titles = ctx
-            .catalog
+            .titles
             .list(Some(MediaFacet::Anime), None)
             .await
             .expect("list anime titles");
@@ -8596,7 +8616,7 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() 
     let mut hydrated_title = None;
     for _ in 0..100 {
         let titles = ctx
-            .catalog
+            .titles
             .list(Some(MediaFacet::Anime), None)
             .await
             .expect("list anime titles");
@@ -8661,7 +8681,7 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
         created_at: chrono::Utc::now(),
     };
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(collection)
         .await
         .expect("create collection");
@@ -8725,7 +8745,7 @@ async fn library_anime_scan_relinks_existing_hydrated_titles_from_discovered_fol
     }
 
     let refreshed_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -8783,7 +8803,7 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
         created_at: chrono::Utc::now(),
     };
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(collection)
         .await
         .expect("create collection");
@@ -8847,7 +8867,7 @@ async fn library_series_scan_relinks_existing_hydrated_titles_from_discovered_fo
     }
 
     let refreshed_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -8876,7 +8896,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
     seed_typed_settings_definitions(&ctx).await;
 
     let title = ctx
-        .catalog
+        .titles
         .create(Title {
             id: Id::new().0,
             name: "Pending Series".to_string(),
@@ -8965,7 +8985,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
     assert_eq!(summary.skipped, 0);
 
     let refreshed_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -8976,7 +8996,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
         .await
         .expect("list media files");
     let episodes = ctx
-        .catalog
+        .shows
         .list_episodes_for_title(&title.id)
         .await
         .expect("list episodes");
@@ -9040,7 +9060,7 @@ async fn library_series_scan_creates_unmonitored_titles() {
     assert_eq!(summary.skipped, 0);
 
     let titles = ctx
-        .catalog
+        .titles
         .list(Some(MediaFacet::Series), None)
         .await
         .expect("list titles");
@@ -9128,7 +9148,7 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
     let stale_root = tempfile::tempdir().expect("stale root tempdir");
     let stale_folder = stale_root.path().join("Existing Movie");
     std::fs::create_dir_all(&stale_folder).expect("create stale folder");
-    ctx.catalog
+    ctx.titles
         .set_folder_path(&title.id, stale_folder.to_string_lossy().as_ref())
         .await
         .expect("set stale folder path");
@@ -9183,7 +9203,7 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
     assert_eq!(summary.unmatched, 0);
 
     let refreshed_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load title")
@@ -9195,7 +9215,7 @@ async fn library_movie_scan_refreshes_existing_title_from_disk_without_renaming(
     );
 
     let collections = ctx
-        .catalog
+        .shows
         .list_collections_for_title(&title.id)
         .await
         .expect("list collections");
@@ -9287,7 +9307,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
     let mut hydrated_title = None;
     for _ in 0..20 {
         let titles = ctx
-            .catalog
+            .titles
             .list(Some(MediaFacet::Movie), None)
             .await
             .expect("list titles");
@@ -9303,7 +9323,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
     assert!(!hydrated_title.monitored);
 
     let collections = ctx
-        .catalog
+        .shows
         .list_collections_for_title(&hydrated_title.id)
         .await
         .expect("list collections");
@@ -9401,7 +9421,7 @@ async fn library_series_scan_handles_more_than_one_batch_of_titles() {
     assert_eq!(summary.unmatched, 0);
 
     let titles = ctx
-        .catalog
+        .titles
         .list(Some(MediaFacet::Series), None)
         .await
         .expect("list titles");
@@ -9465,7 +9485,7 @@ async fn library_movie_scan_handles_more_than_one_batch_of_titles() {
     assert_eq!(summary.unmatched, 0);
 
     let titles = ctx
-        .catalog
+        .titles
         .list(Some(MediaFacet::Movie), None)
         .await
         .expect("list titles");
@@ -10780,7 +10800,7 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
     )
     .await;
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -10800,7 +10820,7 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
         .await
         .expect("create collection");
     let episode = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -10969,7 +10989,7 @@ async fn graphql_title_history_filters_by_episode_id() {
     )
     .await;
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -10989,7 +11009,7 @@ async fn graphql_title_history_filters_by_episode_id() {
         .await
         .expect("create collection");
     let episode_one = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -11014,7 +11034,7 @@ async fn graphql_title_history_filters_by_episode_id() {
         .await
         .expect("create first episode");
     let episode_two = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -11124,7 +11144,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
     )
     .await;
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -11144,7 +11164,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
         .await
         .expect("create collection");
     let episode_one = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -11169,7 +11189,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
         .await
         .expect("create first episode");
     let episode_two = ctx
-        .catalog
+        .shows
         .create_episode(Episode {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -11610,7 +11630,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
             .await;
 
             let old_collection = ctx
-                .catalog
+                .shows
                 .create_collection(Collection {
                     id: Id::new().0,
                     title_id: title.id.clone(),
@@ -11631,7 +11651,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
                 .expect("create old collection");
 
             let old_episode = ctx
-                .catalog
+                .shows
                 .create_episode(Episode {
                     id: Id::new().0,
                     title_id: title.id.clone(),
@@ -12104,7 +12124,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
     let custom_library_id = Id::new().0;
 
     scryer_application::LibraryRepository::create(
-        &ctx.catalog,
+        &ctx.libraries,
         Library {
             id: custom_library_id.clone(),
             facet: MediaFacet::Movie,
@@ -12164,7 +12184,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         folder_path: None,
     };
     let title = ctx
-        .catalog
+        .titles
         .create(title)
         .await
         .expect("create scoped title");
@@ -12184,7 +12204,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         .await
         .expect("insert media file");
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -12274,7 +12294,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         "delete should remove the media file row"
     );
     assert!(
-        ctx.catalog
+        ctx.shows
             .list_collections_for_title(&title.id)
             .await
             .expect("list remaining collections")
@@ -12330,7 +12350,7 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
         digital_release_date: None,
         folder_path: None,
     };
-    let title = ctx.catalog.create(title).await.expect("create anime title");
+    let title = ctx.titles.create(title).await.expect("create anime title");
 
     let file_path = media_root
         .path()
@@ -12349,7 +12369,7 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
         .await
         .expect("insert interstitial media file");
     let collection = ctx
-        .catalog
+        .shows
         .create_collection(Collection {
             id: Id::new().0,
             title_id: title.id.clone(),
@@ -12431,7 +12451,7 @@ async fn delete_media_file_clears_matching_interstitial_collection_ordered_path(
     );
 
     let refreshed_collection = ctx
-        .catalog
+        .shows
         .get_collection_by_id(&collection.id)
         .await
         .expect("reload interstitial collection")

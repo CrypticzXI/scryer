@@ -1378,6 +1378,33 @@ impl AppServicesBuilder {
         self
     }
 
+    pub fn with_rule_set_store<T>(mut self, store: Arc<T>) -> Self
+    where
+        T: RuleSetRepository + Send + Sync + 'static,
+    {
+        self.services.customization.rule_sets = store;
+        self.configured.rule_sets = true;
+        self
+    }
+
+    pub fn with_post_processing_script_store<T>(mut self, store: Arc<T>) -> Self
+    where
+        T: PostProcessingScriptRepository + Send + Sync + 'static,
+    {
+        self.services.customization.pp_scripts = store;
+        self.configured.pp_scripts = true;
+        self
+    }
+
+    pub fn with_plugin_installation_store<T>(mut self, store: Arc<T>) -> Self
+    where
+        T: PluginInstallationRepository + Send + Sync + 'static,
+    {
+        self.services.customization.plugin_installations = store;
+        self.configured.plugin_installations = true;
+        self
+    }
+
     pub fn with_notification_store<T>(mut self, store: Arc<T>) -> Self
     where
         T: NotificationChannelRepository

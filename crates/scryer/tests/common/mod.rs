@@ -17,11 +17,14 @@ use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
     MovieFacetHandler, SeriesFacetHandler,
 };
+use scryer_infrastructure::sqlite::{
+    LibraryStore, PluginStore, PostProcessingScriptStore, RuleSetStore, ShowStore, TitleStore,
+    UserStore,
+};
 use scryer_infrastructure::{
     FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient,
-    MultiIndexerSearchClient, NzbgetDownloadClient, SmgEnrollmentConfig, SqliteCatalogStore,
-    SqliteConfigStore, SqliteCustomizationStore, SqliteLibraryStateStore, SqliteReleaseStore,
-    SqliteServices, SqliteSettingsStore,
+    MultiIndexerSearchClient, NzbgetDownloadClient, SmgEnrollmentConfig, SqliteConfigStore,
+    SqliteLibraryStateStore, SqliteReleaseStore, SqliteServices, SqliteSettingsStore,
 };
 use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{ApiSchema, build_schema};
@@ -40,8 +43,11 @@ pub struct TestContext {
     pub schema: ApiSchema,
     pub auth_runtime: AuthRuntimeStateHandle,
     pub app: AppUseCase,
-    pub catalog: SqliteCatalogStore,
-    pub customization: SqliteCustomizationStore,
+    pub titles: TitleStore,
+    pub shows: ShowStore,
+    pub libraries: LibraryStore,
+    pub users: UserStore,
+    pub customization: PluginStore,
     pub library_state: SqliteLibraryStateStore,
     pub db: SqliteServices,
     pub settings_store: SqliteSettingsStore,
@@ -122,10 +128,13 @@ impl TestContext {
         );
 
         // Build repository implementations from the shared DB runtime.
-        let catalog_store = SqliteCatalogStore::new(&db);
-        let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(catalog_store.clone());
-        let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(catalog_store.clone());
-        let users: Arc<dyn scryer_application::UserRepository> = Arc::new(catalog_store.clone());
+        let title_store = TitleStore::sqlite(&db);
+        let show_store = ShowStore::sqlite(&db);
+        let library_store = LibraryStore::sqlite(&db);
+        let user_store = UserStore::sqlite(&db);
+        let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(title_store.clone());
+        let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(show_store.clone());
+        let users: Arc<dyn scryer_application::UserRepository> = Arc::new(user_store.clone());
         let indexer_configs: Arc<dyn scryer_application::IndexerConfigRepository> =
             config_store.clone();
         let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
@@ -136,7 +145,9 @@ impl TestContext {
             settings_store.clone();
 
         let library_state_store = SqliteLibraryStateStore::new(&db);
-        let customization_store = SqliteCustomizationStore::new(&db);
+        let rule_set_store = RuleSetStore::from_sqlite_services(&db);
+        let post_processing_script_store = PostProcessingScriptStore::from_sqlite_services(&db);
+        let plugin_store = PluginStore::from_sqlite_services(&db);
         let workflow_store = Arc::new(scryer_infrastructure::SqliteWorkflowStore::new(&db));
         let services = AppServices::builder(
             titles,
@@ -152,8 +163,10 @@ impl TestContext {
             ":memory:".to_string(),
         )
         .with_library_state_store(Arc::new(library_state_store.clone()))
-        .with_libraries(Arc::new(catalog_store.clone()))
-        .with_customization_store(Arc::new(customization_store.clone()))
+        .with_libraries(Arc::new(library_store.clone()))
+        .with_rule_set_store(Arc::new(rule_set_store))
+        .with_post_processing_script_store(Arc::new(post_processing_script_store))
+        .with_plugin_installation_store(Arc::new(plugin_store.clone()))
         .with_acquisition_state(workflow_store.clone())
         .with_domain_events(workflow_store.clone())
         .with_download_queue_commands(workflow_store.clone())
@@ -218,8 +231,11 @@ impl TestContext {
             schema,
             auth_runtime,
             app,
-            catalog: catalog_store,
-            customization: customization_store,
+            titles: title_store,
+            shows: show_store,
+            libraries: library_store,
+            users: user_store,
+            customization: plugin_store,
             library_state: library_state_store,
             db,
             settings_store: settings_store.as_ref().clone(),

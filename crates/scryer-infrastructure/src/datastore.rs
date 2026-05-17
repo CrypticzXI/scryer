@@ -12,19 +12,20 @@ use scryer_application::{
 };
 
 use crate::postgres::{
-    PostgresCatalogStore, PostgresConfigStore, PostgresCustomizationStore,
-    PostgresLibraryStateStore, PostgresLogicalBackupExporter, PostgresNotificationStore,
-    PostgresReleaseStore, PostgresServices, PostgresSettingsStore, PostgresWorkflowStore,
-    restore_backup_bundle_into_postgres_pool, restore_prepared_backup_directory_into_postgres_pool,
+    PostgresConfigStore, PostgresLibraryStateStore, PostgresLogicalBackupExporter,
+    PostgresNotificationStore, PostgresReleaseStore, PostgresServices, PostgresSettingsStore,
+    PostgresWorkflowStore, restore_backup_bundle_into_postgres_pool,
+    restore_prepared_backup_directory_into_postgres_pool,
 };
 use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
     FileSystemStagedNzbStore, InMemoryIndexerStatsTracker, MetadataGatewayClient, MigrationMode,
-    SmgEnrollmentConfig, SqliteCatalogStore, SqliteConfigStore, SqliteCustomizationStore,
-    SqliteLibraryStateStore, SqliteLogicalBackupExporter, SqliteNotificationStore,
-    SqliteReleaseStore, SqliteServices, SqliteSettingsStore, SqliteTitleImageProcessor,
-    SqliteWorkflowStore, TitleStore,
+    PluginStore, PostProcessingScriptStore, RuleSetStore, ShowStore, SmgEnrollmentConfig,
+    SqliteConfigStore, SqliteLibraryStateStore, SqliteLogicalBackupExporter,
+    SqliteNotificationStore, SqliteReleaseStore, SqliteServices, SqliteSettingsStore,
+    SqliteTitleImageProcessor, SqliteWorkflowStore, TitleStore,
 };
+use crate::{LibraryStore, UserStore};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DatastoreEngine {
@@ -619,51 +620,30 @@ impl SystemInfoProvider for DatastoreSettingsStore {
     }
 }
 
-#[async_trait]
-trait DatastoreCustomizationStoreInner:
-    RuleSetRepository + PostProcessingScriptRepository + PluginInstallationRepository + Send + Sync
-{
-    async fn delete_incompatible_external_plugin_installations(&self) -> AppResult<Vec<String>>;
-}
-
-#[async_trait]
-impl<S> DatastoreCustomizationStoreInner for crate::customization_store::CustomizationStore<S>
-where
-    S: crate::customization_store::CustomizationSql,
-{
-    async fn delete_incompatible_external_plugin_installations(&self) -> AppResult<Vec<String>> {
-        crate::customization_store::CustomizationStore::delete_incompatible_external_plugin_installations(self)
-            .await
-    }
-}
-
 #[derive(Clone)]
 pub struct DatastoreCustomizationStore {
-    inner: Arc<dyn DatastoreCustomizationStoreInner>,
+    rule_sets: Arc<RuleSetStore>,
+    post_processing_scripts: Arc<PostProcessingScriptStore>,
+    plugins: Arc<PluginStore>,
 }
 
 impl DatastoreCustomizationStore {
-    fn from_inner<T>(inner: T) -> Self
-    where
-        T: DatastoreCustomizationStoreInner + 'static,
-    {
+    fn from_stores(
+        rule_sets: Arc<RuleSetStore>,
+        post_processing_scripts: Arc<PostProcessingScriptStore>,
+        plugins: Arc<PluginStore>,
+    ) -> Self {
         Self {
-            inner: Arc::new(inner),
+            rule_sets,
+            post_processing_scripts,
+            plugins,
         }
-    }
-
-    pub fn from_sqlite(inner: SqliteCustomizationStore) -> Self {
-        Self::from_inner(inner)
-    }
-
-    pub fn from_postgres(inner: PostgresCustomizationStore) -> Self {
-        Self::from_inner(inner)
     }
 
     pub async fn delete_incompatible_external_plugin_installations(
         &self,
     ) -> AppResult<Vec<String>> {
-        self.inner
+        self.plugins
             .delete_incompatible_external_plugin_installations()
             .await
     }
@@ -672,27 +652,27 @@ impl DatastoreCustomizationStore {
 #[async_trait]
 impl RuleSetRepository for DatastoreCustomizationStore {
     async fn list_rule_sets(&self) -> AppResult<Vec<scryer_domain::RuleSet>> {
-        self.inner.list_rule_sets().await
+        self.rule_sets.list_rule_sets().await
     }
 
     async fn list_enabled_rule_sets(&self) -> AppResult<Vec<scryer_domain::RuleSet>> {
-        self.inner.list_enabled_rule_sets().await
+        self.rule_sets.list_enabled_rule_sets().await
     }
 
     async fn get_rule_set(&self, id: &str) -> AppResult<Option<scryer_domain::RuleSet>> {
-        self.inner.get_rule_set(id).await
+        self.rule_sets.get_rule_set(id).await
     }
 
     async fn create_rule_set(&self, rule_set: &scryer_domain::RuleSet) -> AppResult<()> {
-        self.inner.create_rule_set(rule_set).await
+        self.rule_sets.create_rule_set(rule_set).await
     }
 
     async fn update_rule_set(&self, rule_set: &scryer_domain::RuleSet) -> AppResult<()> {
-        self.inner.update_rule_set(rule_set).await
+        self.rule_sets.update_rule_set(rule_set).await
     }
 
     async fn delete_rule_set(&self, id: &str) -> AppResult<()> {
-        self.inner.delete_rule_set(id).await
+        self.rule_sets.delete_rule_set(id).await
     }
 
     async fn record_rule_set_history(
@@ -702,7 +682,7 @@ impl RuleSetRepository for DatastoreCustomizationStore {
         rego_source: Option<&str>,
         actor_id: Option<&str>,
     ) -> AppResult<()> {
-        self.inner
+        self.rule_sets
             .record_rule_set_history(rule_set_id, action, rego_source, actor_id)
             .await
     }
@@ -711,18 +691,18 @@ impl RuleSetRepository for DatastoreCustomizationStore {
         &self,
         key: &str,
     ) -> AppResult<Option<scryer_domain::RuleSet>> {
-        self.inner.get_rule_set_by_managed_key(key).await
+        self.rule_sets.get_rule_set_by_managed_key(key).await
     }
 
     async fn delete_rule_set_by_managed_key(&self, key: &str) -> AppResult<()> {
-        self.inner.delete_rule_set_by_managed_key(key).await
+        self.rule_sets.delete_rule_set_by_managed_key(key).await
     }
 
     async fn list_rule_sets_by_managed_key_prefix(
         &self,
         prefix: &str,
     ) -> AppResult<Vec<scryer_domain::RuleSet>> {
-        self.inner
+        self.rule_sets
             .list_rule_sets_by_managed_key_prefix(prefix)
             .await
     }
@@ -731,40 +711,42 @@ impl RuleSetRepository for DatastoreCustomizationStore {
 #[async_trait]
 impl PostProcessingScriptRepository for DatastoreCustomizationStore {
     async fn list_scripts(&self) -> AppResult<Vec<scryer_domain::PostProcessingScript>> {
-        self.inner.list_scripts().await
+        self.post_processing_scripts.list_scripts().await
     }
 
     async fn get_script(&self, id: &str) -> AppResult<Option<scryer_domain::PostProcessingScript>> {
-        self.inner.get_script(id).await
+        self.post_processing_scripts.get_script(id).await
     }
 
     async fn create_script(
         &self,
         script: scryer_domain::PostProcessingScript,
     ) -> AppResult<scryer_domain::PostProcessingScript> {
-        self.inner.create_script(script).await
+        self.post_processing_scripts.create_script(script).await
     }
 
     async fn update_script(
         &self,
         script: scryer_domain::PostProcessingScript,
     ) -> AppResult<scryer_domain::PostProcessingScript> {
-        self.inner.update_script(script).await
+        self.post_processing_scripts.update_script(script).await
     }
 
     async fn delete_script(&self, id: &str) -> AppResult<()> {
-        self.inner.delete_script(id).await
+        self.post_processing_scripts.delete_script(id).await
     }
 
     async fn list_enabled_for_facet(
         &self,
         facet: &str,
     ) -> AppResult<Vec<scryer_domain::PostProcessingScript>> {
-        self.inner.list_enabled_for_facet(facet).await
+        self.post_processing_scripts
+            .list_enabled_for_facet(facet)
+            .await
     }
 
     async fn record_run(&self, run: scryer_domain::PostProcessingScriptRun) -> AppResult<()> {
-        self.inner.record_run(run).await
+        self.post_processing_scripts.record_run(run).await
     }
 
     async fn list_runs_for_script(
@@ -772,7 +754,9 @@ impl PostProcessingScriptRepository for DatastoreCustomizationStore {
         script_id: &str,
         limit: usize,
     ) -> AppResult<Vec<scryer_domain::PostProcessingScriptRun>> {
-        self.inner.list_runs_for_script(script_id, limit).await
+        self.post_processing_scripts
+            .list_runs_for_script(script_id, limit)
+            .await
     }
 
     async fn list_runs_for_title(
@@ -780,21 +764,23 @@ impl PostProcessingScriptRepository for DatastoreCustomizationStore {
         title_id: &str,
         limit: usize,
     ) -> AppResult<Vec<scryer_domain::PostProcessingScriptRun>> {
-        self.inner.list_runs_for_title(title_id, limit).await
+        self.post_processing_scripts
+            .list_runs_for_title(title_id, limit)
+            .await
     }
 }
 
 #[async_trait]
 impl PluginInstallationRepository for DatastoreCustomizationStore {
     async fn list_plugin_installations(&self) -> AppResult<Vec<scryer_domain::PluginInstallation>> {
-        self.inner.list_plugin_installations().await
+        self.plugins.list_plugin_installations().await
     }
 
     async fn get_plugin_installation(
         &self,
         plugin_id: &str,
     ) -> AppResult<Option<scryer_domain::PluginInstallation>> {
-        self.inner.get_plugin_installation(plugin_id).await
+        self.plugins.get_plugin_installation(plugin_id).await
     }
 
     async fn create_plugin_installation(
@@ -802,7 +788,7 @@ impl PluginInstallationRepository for DatastoreCustomizationStore {
         installation: &scryer_domain::PluginInstallation,
         wasm_bytes: Option<&[u8]>,
     ) -> AppResult<scryer_domain::PluginInstallation> {
-        self.inner
+        self.plugins
             .create_plugin_installation(installation, wasm_bytes)
             .await
     }
@@ -812,13 +798,13 @@ impl PluginInstallationRepository for DatastoreCustomizationStore {
         installation: &scryer_domain::PluginInstallation,
         wasm_bytes: Option<&[u8]>,
     ) -> AppResult<scryer_domain::PluginInstallation> {
-        self.inner
+        self.plugins
             .update_plugin_installation(installation, wasm_bytes)
             .await
     }
 
     async fn delete_plugin_installation(&self, plugin_id: &str) -> AppResult<()> {
-        self.inner.delete_plugin_installation(plugin_id).await
+        self.plugins.delete_plugin_installation(plugin_id).await
     }
 
     async fn get_enabled_plugin_wasm_bytes(
@@ -829,14 +815,14 @@ impl PluginInstallationRepository for DatastoreCustomizationStore {
             Option<scryer_domain::PersistedPluginWasmPayload>,
         )>,
     > {
-        self.inner.get_enabled_plugin_wasm_bytes().await
+        self.plugins.get_enabled_plugin_wasm_bytes().await
     }
 
     async fn get_plugin_installation_wasm_payload(
         &self,
         plugin_id: &str,
     ) -> AppResult<Option<scryer_domain::PersistedPluginWasmPayload>> {
-        self.inner
+        self.plugins
             .get_plugin_installation_wasm_payload(plugin_id)
             .await
     }
@@ -852,7 +838,7 @@ impl PluginInstallationRepository for DatastoreCustomizationStore {
         plugin_type: &str,
         provider_type: &str,
     ) -> AppResult<()> {
-        self.inner
+        self.plugins
             .seed_builtin(
                 plugin_id,
                 name,
@@ -870,34 +856,34 @@ impl PluginInstallationRepository for DatastoreCustomizationStore {
         &self,
         source: &scryer_domain::PluginCatalogSource,
     ) -> AppResult<()> {
-        self.inner.upsert_plugin_catalog_source(source).await
+        self.plugins.upsert_plugin_catalog_source(source).await
     }
 
     async fn list_plugin_catalog_sources(
         &self,
     ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {
-        self.inner.list_plugin_catalog_sources().await
+        self.plugins.list_plugin_catalog_sources().await
     }
 
     async fn get_plugin_catalog_source(
         &self,
         source_key: &str,
     ) -> AppResult<Option<scryer_domain::PluginCatalogSource>> {
-        self.inner.get_plugin_catalog_source(source_key).await
+        self.plugins.get_plugin_catalog_source(source_key).await
     }
 
     async fn upsert_plugin_catalog_status(
         &self,
         status: &scryer_domain::PluginCatalogStatusRecord,
     ) -> AppResult<()> {
-        self.inner.upsert_plugin_catalog_status(status).await
+        self.plugins.upsert_plugin_catalog_status(status).await
     }
 
     async fn get_plugin_catalog_status(
         &self,
         status_key: &str,
     ) -> AppResult<Option<scryer_domain::PluginCatalogStatusRecord>> {
-        self.inner.get_plugin_catalog_status(status_key).await
+        self.plugins.get_plugin_catalog_status(status_key).await
     }
 }
 
@@ -912,9 +898,13 @@ enum DatastoreStores {
     Sqlite {
         db: SqliteServices,
         title_store: Arc<TitleStore>,
-        catalog_store: Arc<SqliteCatalogStore>,
+        show_store: Arc<ShowStore>,
+        library_store: Arc<LibraryStore>,
+        user_store: Arc<UserStore>,
         config_store: Arc<SqliteConfigStore>,
-        customization_store: Arc<SqliteCustomizationStore>,
+        rule_set_store: Arc<RuleSetStore>,
+        post_processing_script_store: Arc<PostProcessingScriptStore>,
+        plugin_store: Arc<PluginStore>,
         library_state_store: Arc<SqliteLibraryStateStore>,
         notification_store: Arc<SqliteNotificationStore>,
         release_store: Arc<SqliteReleaseStore>,
@@ -925,9 +915,13 @@ enum DatastoreStores {
     Postgres {
         db: PostgresServices,
         title_store: Arc<TitleStore>,
-        catalog_store: Arc<PostgresCatalogStore>,
+        show_store: Arc<ShowStore>,
+        library_store: Arc<LibraryStore>,
+        user_store: Arc<UserStore>,
         config_store: Arc<PostgresConfigStore>,
-        customization_store: Arc<PostgresCustomizationStore>,
+        rule_set_store: Arc<RuleSetStore>,
+        post_processing_script_store: Arc<PostProcessingScriptStore>,
+        plugin_store: Arc<PluginStore>,
         library_state_store: Arc<PostgresLibraryStateStore>,
         notification_store: Arc<PostgresNotificationStore>,
         release_store: Arc<PostgresReleaseStore>,
@@ -948,13 +942,19 @@ impl DatastoreAssembly {
     async fn connect_sqlite(config: DatastoreConfig) -> Result<Self, AppError> {
         let db = SqliteServices::new_with_mode(config.database_url.clone(), config.migration_mode)
             .await?;
-        let title_store = Arc::new(TitleStore::new(StoreDatastore::Sqlite {
+        let datastore = StoreDatastore::Sqlite {
             pool: db.pool().clone(),
             writer_gate: db.writer_gate(),
-        }));
-        let catalog_store = Arc::new(SqliteCatalogStore::new(&db));
+        };
+        let title_store = Arc::new(TitleStore::new(datastore.clone()));
+        let show_store = Arc::new(ShowStore::new(datastore.clone()));
+        let library_store = Arc::new(LibraryStore::new(datastore.clone()));
+        let user_store = Arc::new(UserStore::new(datastore.clone()));
         let config_store = Arc::new(SqliteConfigStore::new(&db));
-        let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
+        let rule_set_store = Arc::new(RuleSetStore::new(datastore.clone()));
+        let post_processing_script_store =
+            Arc::new(PostProcessingScriptStore::new(datastore.clone()));
+        let plugin_store = Arc::new(PluginStore::new(datastore));
         let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
         let notification_store = Arc::new(SqliteNotificationStore::new(&db));
         let release_store = Arc::new(SqliteReleaseStore::new(&db));
@@ -967,9 +967,13 @@ impl DatastoreAssembly {
         let stores = DatastoreStores::Sqlite {
             db,
             title_store,
-            catalog_store,
+            show_store,
+            library_store,
+            user_store,
             config_store,
-            customization_store,
+            rule_set_store,
+            post_processing_script_store,
+            plugin_store,
             library_state_store,
             notification_store,
             release_store,
@@ -985,12 +989,18 @@ impl DatastoreAssembly {
         let db =
             PostgresServices::new_with_mode(config.database_url.clone(), config.migration_mode)
                 .await?;
-        let title_store = Arc::new(TitleStore::new(StoreDatastore::Postgres {
+        let datastore = StoreDatastore::Postgres {
             pool: db.pool().clone(),
-        }));
-        let catalog_store = Arc::new(PostgresCatalogStore::new(&db));
+        };
+        let title_store = Arc::new(TitleStore::new(datastore.clone()));
+        let show_store = Arc::new(ShowStore::new(datastore.clone()));
+        let library_store = Arc::new(LibraryStore::new(datastore.clone()));
+        let user_store = Arc::new(UserStore::new(datastore.clone()));
         let config_store = Arc::new(PostgresConfigStore::new(&db));
-        let customization_store = Arc::new(PostgresCustomizationStore::new(&db));
+        let rule_set_store = Arc::new(RuleSetStore::new(datastore.clone()));
+        let post_processing_script_store =
+            Arc::new(PostProcessingScriptStore::new(datastore.clone()));
+        let plugin_store = Arc::new(PluginStore::new(datastore));
         let library_state_store = Arc::new(PostgresLibraryStateStore::new(&db));
         let notification_store = Arc::new(PostgresNotificationStore::new(&db));
         let release_store = Arc::new(PostgresReleaseStore::new(&db));
@@ -1001,9 +1011,13 @@ impl DatastoreAssembly {
         let stores = DatastoreStores::Postgres {
             db,
             title_store,
-            catalog_store,
+            show_store,
+            library_store,
+            user_store,
             config_store,
-            customization_store,
+            rule_set_store,
+            post_processing_script_store,
+            plugin_store,
             library_state_store,
             notification_store,
             release_store,
@@ -1046,13 +1060,25 @@ impl DatastoreAssembly {
     pub fn customization_store(&self) -> DatastoreCustomizationStore {
         match &self.stores {
             DatastoreStores::Sqlite {
-                customization_store,
+                rule_set_store,
+                post_processing_script_store,
+                plugin_store,
                 ..
-            } => DatastoreCustomizationStore::from_sqlite((**customization_store).clone()),
+            } => DatastoreCustomizationStore::from_stores(
+                rule_set_store.clone(),
+                post_processing_script_store.clone(),
+                plugin_store.clone(),
+            ),
             DatastoreStores::Postgres {
-                customization_store,
+                rule_set_store,
+                post_processing_script_store,
+                plugin_store,
                 ..
-            } => DatastoreCustomizationStore::from_postgres((**customization_store).clone()),
+            } => DatastoreCustomizationStore::from_stores(
+                rule_set_store.clone(),
+                post_processing_script_store.clone(),
+                plugin_store.clone(),
+            ),
         }
     }
 
@@ -1186,19 +1212,23 @@ impl DatastoreAssembly {
         match &self.stores {
             DatastoreStores::Sqlite {
                 title_store,
-                catalog_store,
+                show_store,
+                library_store,
+                user_store,
                 release_store,
                 library_state_store,
-                customization_store,
+                rule_set_store,
+                post_processing_script_store,
+                plugin_store,
                 workflow_store,
                 notification_store,
                 settings_store,
                 ..
             } => {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
-                let shows: Arc<dyn ShowRepository> = catalog_store.clone();
-                let users: Arc<dyn UserRepository> = catalog_store.clone();
-                let libraries: Arc<dyn LibraryRepository> = catalog_store.clone();
+                let shows: Arc<dyn ShowRepository> = show_store.clone();
+                let users: Arc<dyn UserRepository> = user_store.clone();
+                let libraries: Arc<dyn LibraryRepository> = library_store.clone();
 
                 AppServices::builder(
                     titles,
@@ -1215,7 +1245,9 @@ impl DatastoreAssembly {
                 )
                 .with_libraries(libraries)
                 .with_library_state_store(library_state_store.clone())
-                .with_customization_store(customization_store.clone())
+                .with_rule_set_store(rule_set_store.clone())
+                .with_post_processing_script_store(post_processing_script_store.clone())
+                .with_plugin_installation_store(plugin_store.clone())
                 .with_acquisition_state(workflow_store.clone())
                 .with_domain_events(workflow_store.clone())
                 .with_download_submissions(workflow_store.clone())
@@ -1232,8 +1264,12 @@ impl DatastoreAssembly {
             }
             DatastoreStores::Postgres {
                 title_store,
-                catalog_store,
-                customization_store,
+                show_store,
+                library_store,
+                user_store,
+                rule_set_store,
+                post_processing_script_store,
+                plugin_store,
                 library_state_store,
                 notification_store,
                 release_store,
@@ -1242,9 +1278,9 @@ impl DatastoreAssembly {
                 ..
             } => {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
-                let shows: Arc<dyn ShowRepository> = catalog_store.clone();
-                let users: Arc<dyn UserRepository> = catalog_store.clone();
-                let libraries: Arc<dyn LibraryRepository> = catalog_store.clone();
+                let shows: Arc<dyn ShowRepository> = show_store.clone();
+                let users: Arc<dyn UserRepository> = user_store.clone();
+                let libraries: Arc<dyn LibraryRepository> = library_store.clone();
 
                 AppServices::builder(
                     titles,
@@ -1261,7 +1297,9 @@ impl DatastoreAssembly {
                 )
                 .with_libraries(libraries)
                 .with_library_state_store(library_state_store.clone())
-                .with_customization_store(customization_store.clone())
+                .with_rule_set_store(rule_set_store.clone())
+                .with_post_processing_script_store(post_processing_script_store.clone())
+                .with_plugin_installation_store(plugin_store.clone())
                 .with_acquisition_state(workflow_store.clone())
                 .with_domain_events(workflow_store.clone())
                 .with_download_submissions(workflow_store.clone())
@@ -1845,20 +1883,32 @@ mod tests {
                 TestBackupEngine::Sqlite => {
                     let services = self.sqlite.as_ref().expect("sqlite source");
                     let settings = SqliteSettingsStore::new(services);
-                    let catalog = SqliteCatalogStore::new(services);
+                    let titles = TitleStore::new(StoreDatastore::Sqlite {
+                        pool: services.pool().clone(),
+                        writer_gate: services.writer_gate(),
+                    });
+                    let users = UserStore::new(StoreDatastore::Sqlite {
+                        pool: services.pool().clone(),
+                        writer_gate: services.writer_gate(),
+                    });
                     settings
                         .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
                         .await?;
-                    seed_backup_matrix_data(&settings, &catalog).await
+                    seed_backup_matrix_data(&settings, &titles, &users).await
                 }
                 TestBackupEngine::Postgres => {
                     let services = self.postgres.as_ref().expect("postgres source");
                     let settings = PostgresSettingsStore::new(services);
-                    let catalog = PostgresCatalogStore::new(services);
+                    let titles = TitleStore::new(StoreDatastore::Postgres {
+                        pool: services.pool().clone(),
+                    });
+                    let users = UserStore::new(StoreDatastore::Postgres {
+                        pool: services.pool().clone(),
+                    });
                     settings
                         .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
                         .await?;
-                    seed_backup_matrix_data(&settings, &catalog).await
+                    seed_backup_matrix_data(&settings, &titles, &users).await
                 }
             }
         }
@@ -2002,8 +2052,15 @@ mod tests {
                     )
                     .await?;
                     let settings = SqliteSettingsStore::new(&services);
-                    let catalog = SqliteCatalogStore::new(&services);
-                    verify_backup_matrix_data(&settings, &catalog).await?;
+                    let titles = TitleStore::new(StoreDatastore::Sqlite {
+                        pool: services.pool().clone(),
+                        writer_gate: services.writer_gate(),
+                    });
+                    let users = UserStore::new(StoreDatastore::Sqlite {
+                        pool: services.pool().clone(),
+                        writer_gate: services.writer_gate(),
+                    });
+                    verify_backup_matrix_data(&settings, &titles, &users).await?;
                     services.pool().close().await;
                 }
                 TestBackupEngine::Postgres => {
@@ -2013,8 +2070,13 @@ mod tests {
                     )
                     .await?;
                     let settings = PostgresSettingsStore::new(&services);
-                    let catalog = PostgresCatalogStore::new(&services);
-                    verify_backup_matrix_data(&settings, &catalog).await?;
+                    let titles = TitleStore::new(StoreDatastore::Postgres {
+                        pool: services.pool().clone(),
+                    });
+                    let users = UserStore::new(StoreDatastore::Postgres {
+                        pool: services.pool().clone(),
+                    });
+                    verify_backup_matrix_data(&settings, &titles, &users).await?;
                     services.pool().close().await;
                 }
             }
@@ -2026,10 +2088,11 @@ mod tests {
         }
     }
 
-    async fn seed_backup_matrix_data<S, C>(settings: &S, catalog: &C) -> AppResult<()>
+    async fn seed_backup_matrix_data<S, T, U>(settings: &S, titles: &T, users: &U) -> AppResult<()>
     where
         S: SettingsRepository,
-        C: TitleRepository + UserRepository,
+        T: TitleRepository,
+        U: UserRepository,
     {
         settings
             .upsert_setting_json(
@@ -2053,8 +2116,8 @@ mod tests {
             )
             .await?;
 
-        UserRepository::create(catalog, User::new_admin("backup-matrix-admin")).await?;
-        TitleRepository::create(catalog, backup_matrix_title()).await?;
+        UserRepository::create(users, User::new_admin("backup-matrix-admin")).await?;
+        TitleRepository::create(titles, backup_matrix_title()).await?;
         Ok(())
     }
 
@@ -2070,10 +2133,15 @@ mod tests {
         }
     }
 
-    async fn verify_backup_matrix_data<S, C>(settings: &S, catalog: &C) -> AppResult<()>
+    async fn verify_backup_matrix_data<S, T, U>(
+        settings: &S,
+        titles: &T,
+        users: &U,
+    ) -> AppResult<()>
     where
         S: SettingsRepository,
-        C: TitleRepository + UserRepository,
+        T: TitleRepository,
+        U: UserRepository,
     {
         let value = settings
             .get_setting_json("backup_matrix", "json_payload", None)
@@ -2084,10 +2152,10 @@ mod tests {
         assert_eq!(decoded["plugin_descriptor"]["id"], "matrix.plugin");
         assert_eq!(decoded["encrypted_config"]["enabled"], true);
 
-        let user = UserRepository::get_by_username(catalog, "backup-matrix-admin").await?;
+        let user = UserRepository::get_by_username(users, "backup-matrix-admin").await?;
         assert!(user.is_some(), "restored admin identity should exist");
 
-        let title = TitleRepository::get_by_id(catalog, "backup-matrix-title").await?;
+        let title = TitleRepository::get_by_id(titles, "backup-matrix-title").await?;
         let title = title.expect("restored title should exist");
         assert_eq!(title.external_ids[0].source, "tmdb");
         assert_eq!(title.external_ids[0].value, "424242");

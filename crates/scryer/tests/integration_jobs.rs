@@ -71,7 +71,7 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
         "anime.path" => ("anime_default_library", "Anime", "anime"),
         _ => return,
     };
-    ctx.catalog
+    ctx.libraries
         .update(
             library_id,
             name.to_string(),
@@ -91,7 +91,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
     seed_media_path_settings(&ctx).await;
 
     let title = TitleRepository::create(
-        &ctx.catalog,
+        &ctx.titles,
         Title {
             id: Id::new().0,
             name: "Pending Series".to_string(),
@@ -181,7 +181,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
         "terminal background job should no longer be active",
     );
 
-    let refreshed_title = TitleRepository::get_by_id(&ctx.catalog, &title.id)
+    let refreshed_title = TitleRepository::get_by_id(&ctx.titles, &title.id)
         .await
         .expect("load title")
         .expect("title exists");
@@ -232,7 +232,7 @@ async fn scheduled_background_refresh_creates_one_job_run_per_library() {
     let second_root = tempfile::tempdir().expect("second movie root");
     let now = Utc::now();
     LibraryRepository::create(
-        &ctx.catalog,
+        &ctx.libraries,
         Library {
             id: "movie_kids_library".to_string(),
             facet: MediaFacet::Movie,
@@ -287,7 +287,7 @@ async fn domain_events_omit_titleless_operational_events_for_library_viewer() {
     let ctx = TestContext::new().await;
     let user_id = Id::new().0;
     let viewer = UserRepository::create(
-        &ctx.catalog,
+        &ctx.users,
         User {
             id: user_id.clone(),
             username: "movie-viewer".to_string(),
@@ -299,7 +299,7 @@ async fn domain_events_omit_titleless_operational_events_for_library_viewer() {
     .await
     .expect("create viewer");
     LibraryRepository::set_grants_for_user(
-        &ctx.catalog,
+        &ctx.libraries,
         &user_id,
         vec![LibraryGrant {
             user_id: user_id.clone(),

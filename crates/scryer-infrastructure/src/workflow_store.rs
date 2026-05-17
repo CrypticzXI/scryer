@@ -3,11 +3,10 @@ use scryer_application::{
     AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
     DownloadSubmission, DownloadSubmissionRepository, ExternalImportMonitorSnapshot,
-    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotChunkScopeKind,
-    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotRepository,
-    ImportArtifact, ImportArtifactRepository, ImportRepository, JobKey, JobRunRecord,
-    JobRunRepository, JobRunStatus, JobTriggerSource, SuccessfulGrabCommit, WorkflowOperationInfo,
-    WorkflowOperationRepository,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
+    ExternalImportMonitorSnapshotRepository, ImportArtifact, ImportArtifactRepository,
+    ImportRepository, JobKey, JobRunRecord, JobRunRepository, JobRunStatus, JobTriggerSource,
+    SuccessfulGrabCommit, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DownloadQueueDeleteStatus, ImportRecord, ImportStatus,
@@ -129,22 +128,19 @@ pub trait WorkflowSql: Clone + Send + Sync + 'static {
     ) -> AppResult<()>;
     async fn list_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>>;
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
         limit: i32,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>>;
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
     ) -> AppResult<()>;
     async fn get_external_import_monitor_snapshot(
         &self,
@@ -463,27 +459,24 @@ impl<S: WorkflowSql> ExternalImportMonitorSnapshotRepository for WorkflowStore<S
 
     async fn list_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
         self.sql
-            .list_external_import_monitor_snapshot_chunks(scope_kind, scope_key, entry_kind)
+            .list_external_import_monitor_snapshot_chunks(facet, entry_kind)
             .await
     }
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
         limit: i32,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
         self.sql
             .list_external_import_monitor_snapshot_chunk_batch(
-                scope_kind,
-                scope_key,
+                facet,
                 entry_kind,
                 after_chunk_index,
                 limit,
@@ -493,11 +486,10 @@ impl<S: WorkflowSql> ExternalImportMonitorSnapshotRepository for WorkflowStore<S
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
     ) -> AppResult<()> {
         self.sql
-            .delete_external_import_monitor_snapshot_chunks(scope_kind, scope_key)
+            .delete_external_import_monitor_snapshot_chunks(facet)
             .await
     }
 
@@ -1014,28 +1006,25 @@ impl WorkflowSql for SqliteWorkflowSql {
 
     async fn list_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
         crate::queries::workflow::list_external_import_monitor_snapshot_chunks_query(
-            &self.pool, scope_kind, scope_key, entry_kind,
+            &self.pool, facet, entry_kind,
         )
         .await
     }
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
         limit: i32,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
         crate::queries::workflow::list_external_import_monitor_snapshot_chunk_batch_query(
             &self.pool,
-            scope_kind,
-            scope_key,
+            facet,
             entry_kind,
             after_chunk_index,
             limit,
@@ -1045,11 +1034,10 @@ impl WorkflowSql for SqliteWorkflowSql {
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: scryer_domain::MediaFacet,
     ) -> AppResult<()> {
         crate::queries::workflow::delete_external_import_monitor_snapshot_chunks_query(
-            &self.pool, scope_kind, scope_key,
+            &self.pool, facet,
         )
         .await
     }

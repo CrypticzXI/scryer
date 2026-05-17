@@ -3,9 +3,8 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, DownloadQueueCommandRecord, DownloadSourceIdentity, DownloadSubmission,
     ExternalImportMonitorSnapshot, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotChunkScopeKind, ExternalImportMonitorSnapshotEntryKind,
-    ImportArtifact, JobKey, JobRunRecord, JobRunStatus, JobTriggerSource, SubmissionScope,
-    SuccessfulGrabCommit, WorkflowOperationInfo,
+    ExternalImportMonitorSnapshotEntryKind, ImportArtifact, JobKey, JobRunRecord, JobRunStatus,
+    JobTriggerSource, SubmissionScope, SuccessfulGrabCommit, WorkflowOperationInfo,
 };
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventStream, DomainEventType,
@@ -822,9 +821,8 @@ impl WorkflowSql for PostgresWorkflowSql {
 
         sqlx::query(
             "DELETE FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = $1 AND scope_key = $2",
+             WHERE facet = $1",
         )
-        .bind(ExternalImportMonitorSnapshotChunkScopeKind::Facet.as_str())
         .bind(snapshot.facet.as_str())
         .execute(&self.pool)
         .await
@@ -838,21 +836,16 @@ impl WorkflowSql for PostgresWorkflowSql {
     ) -> AppResult<()> {
         sqlx::query(
             "INSERT INTO external_import_monitor_snapshot_chunks
-             (scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (scope_kind, scope_key, entry_kind, chunk_index) DO UPDATE SET
+             (facet, entry_kind, chunk_index, payload_ndjson, created_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (facet, entry_kind, chunk_index) DO UPDATE SET
                 payload_ndjson = EXCLUDED.payload_ndjson,
-                entry_count = EXCLUDED.entry_count,
-                byte_len = EXCLUDED.byte_len,
                 created_at = EXCLUDED.created_at",
         )
-        .bind(chunk.scope_kind.as_str())
-        .bind(&chunk.scope_key)
+        .bind(chunk.facet.as_str())
         .bind(chunk.entry_kind.as_str())
         .bind(chunk.chunk_index)
         .bind(&chunk.payload_ndjson)
-        .bind(chunk.entry_count)
-        .bind(chunk.byte_len)
         .bind(parse_rfc3339_or_now(&chunk.created_at))
         .execute(&self.pool)
         .await
@@ -862,18 +855,16 @@ impl WorkflowSql for PostgresWorkflowSql {
 
     async fn list_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
         let rows = sqlx::query(
-            "SELECT scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at
+            "SELECT facet, entry_kind, chunk_index, payload_ndjson, created_at
              FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = $1 AND scope_key = $2 AND entry_kind = $3
+             WHERE facet = $1 AND entry_kind = $2
              ORDER BY chunk_index ASC",
         )
-        .bind(scope_kind.as_str())
-        .bind(scope_key)
+        .bind(facet.as_str())
         .bind(entry_kind.as_str())
         .fetch_all(&self.pool)
         .await
@@ -883,24 +874,21 @@ impl WorkflowSql for PostgresWorkflowSql {
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
         limit: i32,
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
         let rows = sqlx::query(
-            "SELECT scope_kind, scope_key, entry_kind, chunk_index, payload_ndjson, entry_count, byte_len, created_at
+            "SELECT facet, entry_kind, chunk_index, payload_ndjson, created_at
              FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = $1
-               AND scope_key = $2
-               AND entry_kind = $3
-               AND ($4::INTEGER IS NULL OR chunk_index > $4)
+             WHERE facet = $1
+               AND entry_kind = $2
+               AND ($3::INTEGER IS NULL OR chunk_index > $3)
              ORDER BY chunk_index ASC
-             LIMIT $5",
+             LIMIT $4",
         )
-        .bind(scope_kind.as_str())
-        .bind(scope_key)
+        .bind(facet.as_str())
         .bind(entry_kind.as_str())
         .bind(after_chunk_index)
         .bind(limit)
@@ -912,15 +900,13 @@ impl WorkflowSql for PostgresWorkflowSql {
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
     ) -> AppResult<()> {
         sqlx::query(
             "DELETE FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = $1 AND scope_key = $2",
+             WHERE facet = $1",
         )
-        .bind(scope_kind.as_str())
-        .bind(scope_key)
+        .bind(facet.as_str())
         .execute(&self.pool)
         .await
         .map_err(repo_err)?;
@@ -954,9 +940,8 @@ impl WorkflowSql for PostgresWorkflowSql {
             .map_err(repo_err)?;
         sqlx::query(
             "DELETE FROM external_import_monitor_snapshot_chunks
-             WHERE scope_kind = $1 AND scope_key = $2",
+             WHERE facet = $1",
         )
-        .bind(ExternalImportMonitorSnapshotChunkScopeKind::Facet.as_str())
         .bind(facet.as_str())
         .execute(&self.pool)
         .await
@@ -1446,17 +1431,13 @@ fn snapshot_from_row(row: &sqlx::postgres::PgRow) -> AppResult<ExternalImportMon
 fn snapshot_chunk_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> AppResult<ExternalImportMonitorSnapshotChunk> {
-    let scope_kind_raw: String = row.try_get("scope_kind").map_err(repo_err)?;
+    let facet_raw: String = row.try_get("facet").map_err(repo_err)?;
     let entry_kind_raw: String = row.try_get("entry_kind").map_err(repo_err)?;
 
     Ok(ExternalImportMonitorSnapshotChunk {
-        scope_kind: ExternalImportMonitorSnapshotChunkScopeKind::parse(&scope_kind_raw)
-            .ok_or_else(|| {
-                AppError::Repository(format!(
-                    "invalid monitor snapshot chunk scope kind: {scope_kind_raw}"
-                ))
-            })?,
-        scope_key: row.try_get("scope_key").map_err(repo_err)?,
+        facet: MediaFacet::parse(&facet_raw).ok_or_else(|| {
+            AppError::Repository(format!("invalid monitor snapshot chunk facet: {facet_raw}"))
+        })?,
         entry_kind: ExternalImportMonitorSnapshotEntryKind::parse(&entry_kind_raw).ok_or_else(
             || {
                 AppError::Repository(format!(
@@ -1466,8 +1447,6 @@ fn snapshot_chunk_from_row(
         )?,
         chunk_index: row.try_get("chunk_index").map_err(repo_err)?,
         payload_ndjson: row.try_get("payload_ndjson").map_err(repo_err)?,
-        entry_count: row.try_get("entry_count").map_err(repo_err)?,
-        byte_len: row.try_get("byte_len").map_err(repo_err)?,
         created_at: row
             .try_get::<DateTime<Utc>, _>("created_at")
             .map_err(repo_err)?

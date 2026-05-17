@@ -14,10 +14,13 @@ use scryer_application::{
     MovieFacetHandler, SeriesFacetHandler,
 };
 use scryer_domain::{Entitlement, ExternalId, MediaFacet, NewTitle, User};
+use scryer_infrastructure::sqlite::{
+    PluginStore, PostProcessingScriptStore, RuleSetStore, ShowStore, TitleStore, UserStore,
+};
 use scryer_infrastructure::{
     FileSystemLibraryScanner, InMemoryIndexerStatsTracker, MultiIndexerSearchClient,
-    SqliteCatalogStore, SqliteConfigStore, SqliteCustomizationStore, SqliteLibraryStateStore,
-    SqliteReleaseStore, SqliteServices, SqliteSettingsStore, SqliteWorkflowStore,
+    SqliteConfigStore, SqliteLibraryStateStore, SqliteReleaseStore, SqliteServices,
+    SqliteSettingsStore, SqliteWorkflowStore,
 };
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -191,10 +194,12 @@ async fn setup() -> (
         },
     );
 
-    let catalog_store = Arc::new(SqliteCatalogStore::new(&db));
-    let titles: Arc<dyn scryer_application::TitleRepository> = catalog_store.clone();
-    let shows: Arc<dyn scryer_application::ShowRepository> = catalog_store.clone();
-    let users: Arc<dyn scryer_application::UserRepository> = catalog_store;
+    let title_store = Arc::new(TitleStore::sqlite(&db));
+    let show_store = Arc::new(ShowStore::sqlite(&db));
+    let user_store = Arc::new(UserStore::sqlite(&db));
+    let titles: Arc<dyn scryer_application::TitleRepository> = title_store;
+    let shows: Arc<dyn scryer_application::ShowRepository> = show_store;
+    let users: Arc<dyn scryer_application::UserRepository> = user_store;
     let indexer_configs_repo: Arc<dyn scryer_application::IndexerConfigRepository> =
         config_store.clone();
     let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
@@ -205,7 +210,10 @@ async fn setup() -> (
         settings_store.clone();
 
     let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
-    let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
+    let rule_set_store = Arc::new(RuleSetStore::from_sqlite_services(&db));
+    let post_processing_script_store =
+        Arc::new(PostProcessingScriptStore::from_sqlite_services(&db));
+    let plugin_store = Arc::new(PluginStore::from_sqlite_services(&db));
     let services = AppServices::builder(
         titles,
         shows,
@@ -220,7 +228,9 @@ async fn setup() -> (
         ":memory:".to_string(),
     )
     .with_library_state_store(library_state_store)
-    .with_customization_store(customization_store)
+    .with_rule_set_store(rule_set_store)
+    .with_post_processing_script_store(post_processing_script_store)
+    .with_plugin_installation_store(plugin_store)
     .with_acquisition_state(workflow_store.clone())
     .with_domain_events(workflow_store.clone())
     .with_download_submissions(workflow_store.clone())

@@ -287,6 +287,23 @@ file = "postgres/migrations/0117_external_import_monitor_snapshot_chunks.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 118
+description = "external import monitor snapshot chunk simplification"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0118_external_import_monitor_snapshot_chunk_simplification.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0118_external_import_monitor_snapshot_chunk_simplification.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"

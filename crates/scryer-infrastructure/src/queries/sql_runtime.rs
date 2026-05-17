@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use scryer_application::{AppError, AppResult};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::{PgArguments, PgPool, PgRow};
@@ -61,7 +61,9 @@ pub(crate) type TxFuture<'a, T> = Pin<Box<dyn Future<Output = AppResult<T>> + Se
 pub(crate) enum SqlArg {
     Text(String),
     OptText(Option<String>),
+    I32(i32),
     I64(i64),
+    OptI32(Option<i32>),
     OptI64(Option<i64>),
     Bool(bool),
     OptBool(Option<bool>),
@@ -69,6 +71,7 @@ pub(crate) enum SqlArg {
     OptTimestamp(Option<DateTime<Utc>>),
     Json(JsonValue),
     OptJson(Option<JsonValue>),
+    OptBytes(Option<Vec<u8>>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -206,13 +209,6 @@ impl SqlRuntime {
         }
     }
 
-    pub(crate) async fn begin(target: SqlTarget<'_>) -> AppResult<SqlTx<'_>> {
-        match target {
-            SqlTarget::Sqlite(pool) => pool.begin().await.map(SqlTx::Sqlite).map_err(repo_err),
-            SqlTarget::Postgres(pool) => pool.begin().await.map(SqlTx::Postgres).map_err(repo_err),
-        }
-    }
-
     pub(crate) async fn run_in_transaction<T, F>(
         datastore: &StoreDatastore,
         op_name: &'static str,
@@ -316,10 +312,24 @@ impl SqlRow {
         }
     }
 
+    pub(crate) fn i32(&self, column: &str) -> AppResult<i32> {
+        match self {
+            SqlRow::Sqlite(row) => i32_from_sqlite_row(row, column),
+            SqlRow::Postgres(row) => row.try_get(column).map_err(repo_err),
+        }
+    }
+
     pub(crate) fn opt_i64(&self, column: &str) -> AppResult<Option<i64>> {
         match self {
             SqlRow::Sqlite(row) => opt_i64_from_sqlite_row(row, column),
             SqlRow::Postgres(row) => opt_i64_from_pg_row(row, column),
+        }
+    }
+
+    pub(crate) fn opt_i32(&self, column: &str) -> AppResult<Option<i32>> {
+        match self {
+            SqlRow::Sqlite(row) => opt_i32_from_sqlite_row(row, column),
+            SqlRow::Postgres(row) => opt_i32_from_pg_row(row, column),
         }
     }
 
@@ -377,6 +387,13 @@ impl SqlRow {
             }
         }
     }
+
+    pub(crate) fn opt_bytes(&self, column: &str) -> AppResult<Option<Vec<u8>>> {
+        match self {
+            SqlRow::Sqlite(row) => row.try_get(column).map_err(repo_err),
+            SqlRow::Postgres(row) => row.try_get(column).map_err(repo_err),
+        }
+    }
 }
 
 type SqliteQuery<'q> = Query<'q, Sqlite, SqliteArguments<'q>>;
@@ -387,20 +404,19 @@ fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, values: &'q [SqlArg]) -> SqliteQu
         query = match value {
             SqlArg::Text(value) => query.bind(value),
             SqlArg::OptText(value) => query.bind(value),
+            SqlArg::I32(value) => query.bind(i64::from(*value)),
             SqlArg::I64(value) => query.bind(*value),
+            SqlArg::OptI32(value) => query.bind(value.map(i64::from)),
             SqlArg::OptI64(value) => query.bind(*value),
             SqlArg::Bool(value) => query.bind(if *value { 1_i64 } else { 0_i64 }),
             SqlArg::OptBool(value) => {
                 query.bind(value.map(|value| if value { 1_i64 } else { 0_i64 }))
             }
-            SqlArg::Timestamp(value) => {
-                query.bind(value.to_rfc3339_opts(SecondsFormat::Secs, true))
-            }
-            SqlArg::OptTimestamp(value) => {
-                query.bind(value.map(|value| value.to_rfc3339_opts(SecondsFormat::Secs, true)))
-            }
+            SqlArg::Timestamp(value) => query.bind(value.to_rfc3339()),
+            SqlArg::OptTimestamp(value) => query.bind(value.map(|value| value.to_rfc3339())),
             SqlArg::Json(value) => query.bind(value.to_string()),
             SqlArg::OptJson(value) => query.bind(value.as_ref().map(JsonValue::to_string)),
+            SqlArg::OptBytes(value) => query.bind(value),
         };
     }
     query
@@ -411,7 +427,9 @@ fn bind_postgres<'q>(mut query: PostgresQuery<'q>, values: &'q [SqlArg]) -> Post
         query = match value {
             SqlArg::Text(value) => query.bind(value),
             SqlArg::OptText(value) => query.bind(value),
+            SqlArg::I32(value) => query.bind(*value),
             SqlArg::I64(value) => query.bind(*value),
+            SqlArg::OptI32(value) => query.bind(*value),
             SqlArg::OptI64(value) => query.bind(*value),
             SqlArg::Bool(value) => query.bind(*value),
             SqlArg::OptBool(value) => query.bind(*value),
@@ -419,6 +437,7 @@ fn bind_postgres<'q>(mut query: PostgresQuery<'q>, values: &'q [SqlArg]) -> Post
             SqlArg::OptTimestamp(value) => query.bind(*value),
             SqlArg::Json(value) => query.bind(Json(value.clone())),
             SqlArg::OptJson(value) => query.bind(value.clone().map(Json)),
+            SqlArg::OptBytes(value) => query.bind(value),
         };
     }
     query
@@ -452,18 +471,26 @@ fn render_sql(template: &str, dialect: PlaceholderDialect, bind_count: usize) ->
 }
 
 fn opt_text_from_sqlite_row(row: &SqliteRow, column: &str) -> AppResult<Option<String>> {
-    let value: Option<String> = row.try_get(column).map_err(repo_err)?;
-    match value {
-        Some(value) if value.trim().is_empty() => Ok(None),
-        other => Ok(other),
+    match row.try_get::<Option<String>, _>(column) {
+        Ok(value) => Ok(value),
+        Err(string_error) => match row.try_get::<Option<i64>, _>(column) {
+            Ok(value) => Ok(value.map(|value| value.to_string())),
+            Err(integer_error) => Err(AppError::Repository(format!(
+                "failed decode {column} as optional text: {string_error}; {integer_error}"
+            ))),
+        },
     }
 }
 
 fn opt_text_from_pg_row(row: &PgRow, column: &str) -> AppResult<Option<String>> {
-    let value: Option<String> = row.try_get(column).map_err(repo_err)?;
-    match value {
-        Some(value) if value.trim().is_empty() => Ok(None),
-        other => Ok(other),
+    match row.try_get::<Option<String>, _>(column) {
+        Ok(value) => Ok(value),
+        Err(string_error) => match row.try_get::<Option<i64>, _>(column) {
+            Ok(value) => Ok(value.map(|value| value.to_string())),
+            Err(integer_error) => Err(AppError::Repository(format!(
+                "failed decode {column} as optional text: {string_error}; {integer_error}"
+            ))),
+        },
     }
 }
 
@@ -472,6 +499,32 @@ fn opt_i64_from_sqlite_row(row: &SqliteRow, column: &str) -> AppResult<Option<i6
 }
 
 fn opt_i64_from_pg_row(row: &PgRow, column: &str) -> AppResult<Option<i64>> {
+    row.try_get(column).map_err(repo_err)
+}
+
+fn i32_from_sqlite_row(row: &SqliteRow, column: &str) -> AppResult<i32> {
+    let value: i64 = row.try_get(column).map_err(repo_err)?;
+    i32::try_from(value).map_err(|_| {
+        AppError::Repository(format!(
+            "value out of range for i32 column {column}: {value}"
+        ))
+    })
+}
+
+fn opt_i32_from_sqlite_row(row: &SqliteRow, column: &str) -> AppResult<Option<i32>> {
+    row.try_get::<Option<i64>, _>(column)
+        .map_err(repo_err)?
+        .map(|value| {
+            i32::try_from(value).map_err(|_| {
+                AppError::Repository(format!(
+                    "value out of range for i32 column {column}: {value}"
+                ))
+            })
+        })
+        .transpose()
+}
+
+fn opt_i32_from_pg_row(row: &PgRow, column: &str) -> AppResult<Option<i32>> {
     row.try_get(column).map_err(repo_err)
 }
 

@@ -114,8 +114,7 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
 
     async fn list_external_import_monitor_snapshot_chunks(
         &self,
-        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        _: &str,
+        _: crate::MediaFacet,
         _: crate::ExternalImportMonitorSnapshotEntryKind,
     ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>> {
         Ok(vec![])
@@ -123,8 +122,7 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        _: &str,
+        _: crate::MediaFacet,
         _: crate::ExternalImportMonitorSnapshotEntryKind,
         _: Option<i32>,
         _: i32,
@@ -134,8 +132,7 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
-        _: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        _: &str,
+        _: crate::MediaFacet,
     ) -> AppResult<()> {
         Ok(())
     }

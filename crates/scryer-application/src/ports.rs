@@ -736,15 +736,13 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
 
     async fn list_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
         entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
     ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>>;
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
         entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
         limit: i32,
@@ -752,8 +750,7 @@ pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
-        scope_kind: crate::ExternalImportMonitorSnapshotChunkScopeKind,
-        scope_key: &str,
+        facet: MediaFacet,
     ) -> AppResult<()>;
 
     async fn get_external_import_monitor_snapshot(
