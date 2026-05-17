@@ -360,20 +360,41 @@ export function LibraryScanToast({
       <div className="min-w-0 space-y-3">
         <div className="space-y-1">
           <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <p className="text-sm font-semibold text-foreground">
-                {titleOverride ?? t("settings.libraryScanToastTitle", {
-                  facet: facetLabel(session.facet, t),
-                })}
-              </p>
-              {statusIcon(session.status)}
-            </div>
-            {showCancel ? (
-              <div className="flex shrink-0 flex-col items-end gap-1">
+            <div className="min-w-0 space-y-0.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="text-sm font-semibold text-foreground">
+                  {titleOverride ?? t("settings.libraryScanToastTitle", {
+                    facet: facetLabel(session.facet, t),
+                  })}
+                </p>
+                {statusIcon(session.status)}
                 {etaCountdown ? (
                   <span className="text-[11px] font-medium tabular-nums text-muted-foreground">
                     {etaCountdown}
                   </span>
+                ) : null}
+              </div>
+              <p className="min-w-0 text-xs text-muted-foreground">
+                {session.foundTitles > 0 || terminal
+                  ? t("settings.libraryScanFoundTitles", {
+                      count: session.foundTitles,
+                    })
+                  : t("settings.libraryScanDiscovering")}
+              </p>
+            </div>
+            {showCancel ? (
+              <div className="flex shrink-0 items-center gap-2">
+                {onRunInBackground ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={onRunInBackground}
+                    disabled={cancelPending}
+                  >
+                    {t("settings.libraryScanRunInBackground")}
+                  </Button>
                 ) : null}
                 <Button
                   type="button"
@@ -386,27 +407,6 @@ export function LibraryScanToast({
                   {t("settings.libraryScanCancel")}
                 </Button>
               </div>
-            ) : null}
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <p className="min-w-0 text-xs text-muted-foreground">
-              {session.foundTitles > 0 || terminal
-                ? t("settings.libraryScanFoundTitles", {
-                    count: session.foundTitles,
-                  })
-                : t("settings.libraryScanDiscovering")}
-            </p>
-            {showCancel && onRunInBackground ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 shrink-0 px-2 text-xs"
-                onClick={onRunInBackground}
-                disabled={cancelPending}
-              >
-                {t("settings.libraryScanRunInBackground")}
-              </Button>
             ) : null}
           </div>
         </div>

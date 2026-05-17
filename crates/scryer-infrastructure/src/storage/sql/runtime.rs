@@ -507,7 +507,10 @@ fn opt_i64_from_pg_row(row: &PgRow, column: &str) -> AppResult<Option<i64>> {
     row.try_get::<Option<i64>, _>(column).or_else(|_| {
         row.try_get::<Option<i32>, _>(column)
             .map(|value| value.map(i64::from))
-            .or_else(|_| row.try_get::<Option<i16>, _>(column).map(|value| value.map(i64::from)))
+            .or_else(|_| {
+                row.try_get::<Option<i16>, _>(column)
+                    .map(|value| value.map(i64::from))
+            })
             .map_err(repo_err)
     })
 }

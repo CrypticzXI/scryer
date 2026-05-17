@@ -335,6 +335,15 @@ export function SetupWizardContainer({
   const [prowlarrApiKey, setProwlarrApiKey] = useState("");
   const [importConnecting, setImportConnecting] = useState(false);
   const [importConnectError, setImportConnectError] = useState<string | null>(null);
+  const [importConnectServiceErrors, setImportConnectServiceErrors] = useState<{
+    sonarr: string | null;
+    radarr: string | null;
+    prowlarr: string | null;
+  }>({
+    sonarr: null,
+    radarr: null,
+    prowlarr: null,
+  });
 
   // ── Import: Preview / Review ────────────────────────────────────────
   const [importPreview, setImportPreview] = useState<ExternalImportPreview | null>(null);
@@ -1133,6 +1142,7 @@ export function SetupWizardContainer({
   const handleImportConnect = useCallback(async () => {
     setImportConnecting(true);
     setImportConnectError(null);
+    setImportConnectServiceErrors({ sonarr: null, radarr: null, prowlarr: null });
     try {
       const sonarr =
         sonarrUrl.trim() && sonarrApiKey.trim()
@@ -1156,23 +1166,59 @@ export function SetupWizardContainer({
 
       const preview: ExternalImportPreview = data.previewExternalImport;
 
-      if (!preview.sonarrConnected && sonarr) {
+      const normalizeConnectError = (
+        providerLabel: string,
+        raw: string | null | undefined,
+        fallback: string,
+      ) => {
+        const message = raw?.trim() || fallback;
+        const stripped = message.replace(/^(repository|validation):\s*/i, "");
+        if (/^invalid api key$/i.test(stripped)) {
+          return `${providerLabel} API key is invalid.`;
+        }
+        return stripped;
+      };
+
+      const sonarrError =
+        !preview.sonarrConnected && sonarr
+          ? normalizeConnectError(
+              "Sonarr",
+              preview.sonarrError,
+              "Could not connect to Sonarr. Check the URL and API key.",
+            )
+          : null;
+      const radarrError =
+        !preview.radarrConnected && radarr
+          ? normalizeConnectError(
+              "Radarr",
+              preview.radarrError,
+              "Could not connect to Radarr. Check the URL and API key.",
+            )
+          : null;
+      const prowlarrError =
+        !preview.prowlarrConnected && prowlarr
+          ? normalizeConnectError(
+              "Prowlarr",
+              preview.prowlarrError,
+              "Could not connect to Prowlarr. Check the URL and API key.",
+            )
+          : null;
+
+      if (sonarrError || radarrError || prowlarrError) {
+        setImportConnectServiceErrors({
+          sonarr: sonarrError,
+          radarr: radarrError,
+          prowlarr: prowlarrError,
+        });
+        const failedProviders = [
+          sonarrError ? "Sonarr" : null,
+          radarrError ? "Radarr" : null,
+          prowlarrError ? "Prowlarr" : null,
+        ].filter((value): value is string => value !== null);
         setImportConnectError(
-          preview.sonarrError ?? "Could not connect to Sonarr. Check the URL and API key.",
-        );
-        setImportConnecting(false);
-        return;
-      }
-      if (!preview.radarrConnected && radarr) {
-        setImportConnectError(
-          preview.radarrError ?? "Could not connect to Radarr. Check the URL and API key.",
-        );
-        setImportConnecting(false);
-        return;
-      }
-      if (!preview.prowlarrConnected && prowlarr) {
-        setImportConnectError(
-          preview.prowlarrError ?? "Could not connect to Prowlarr. Check the URL and API key.",
+          failedProviders.length === 1
+            ? `${failedProviders[0]} connection failed.`
+            : `Some connections failed: ${failedProviders.join(", ")}.`,
         );
         setImportConnecting(false);
         return;
@@ -2000,6 +2046,9 @@ export function SetupWizardContainer({
           onBack={() => goToStep(0)}
           connecting={importConnecting}
           error={importConnectError}
+          sonarrError={importConnectServiceErrors.sonarr}
+          radarrError={importConnectServiceErrors.radarr}
+          prowlarrError={importConnectServiceErrors.prowlarr}
         />
       )}
 

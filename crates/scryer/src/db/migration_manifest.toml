@@ -338,6 +338,23 @@ file = "postgres/migrations/0120_json_text_parity.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 121
+description = "drop external import monitor snapshots"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0121_drop_external_import_monitor_snapshots.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0121_drop_external_import_monitor_snapshots.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 100
 file = "baselines/0100_baseline.sql"

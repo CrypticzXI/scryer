@@ -6,17 +6,17 @@ use scryer_application::{
     AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
     DownloadSubmission, DownloadSubmissionRepository, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind,
-    ExternalImportMonitorSnapshotRepository, ImportArtifact, ImportArtifactRepository,
-    ImportRepository, JobKey, JobRunRecord, JobRunRepository, JobRunStatus, JobTriggerSource,
-    PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
-    WorkflowOperationInfo, WorkflowOperationRepository,
+    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotRepository,
+    ImportArtifact, ImportArtifactRepository, ImportRepository, JobKey, JobRunRecord,
+    JobRunRepository, JobRunStatus, JobTriggerSource, PendingReleaseStatus, SubmissionScope,
+    SuccessfulGrabCommit, WantedStatus, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventStream, DomainEventType, DownloadQueueCommandAction,
     DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus, ImportType, MediaFacet,
     NewDomainEvent, TitleHistoryEventType,
 };
+use serde_json::Value as JsonValue;
 use sqlx::{Row, types::Json};
 
 use crate::queries::sql_runtime::{

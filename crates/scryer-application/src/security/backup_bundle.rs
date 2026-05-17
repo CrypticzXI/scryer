@@ -490,10 +490,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "external_import_monitor_snapshots",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "external_import_monitor_snapshot_chunks",
         classification: BackupTableClassification::Export,
     },

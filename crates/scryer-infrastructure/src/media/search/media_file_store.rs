@@ -202,9 +202,10 @@ impl MediaFileRepository for MediaFileStore {
 
         let dialect = dialect_for_datastore(&self.datastore);
         let placeholders = placeholders(title_ids.len());
+        let total_size_expression = total_size_bytes_sum_expression(dialect, "matched.size_bytes");
         let sql = format!(
             "SELECT matched.title_id,
-                    COALESCE(SUM(matched.size_bytes), 0) AS total_size_bytes
+                    {total_size_expression} AS total_size_bytes
                FROM (
                     SELECT DISTINCT mf.id,
                            mf.title_id,
@@ -572,6 +573,13 @@ fn live_media_file_predicate(dialect: SqlDialect, alias: &str) -> String {
         SqlDialect::Postgres => {
             format!("POSITION('{RECYCLE_BIN_PATH_SEGMENT}' IN {alias}.file_path) = 0")
         }
+    }
+}
+
+fn total_size_bytes_sum_expression(dialect: SqlDialect, expr: &str) -> String {
+    match dialect {
+        SqlDialect::Sqlite => format!("COALESCE(SUM({expr}), 0)"),
+        SqlDialect::Postgres => format!("COALESCE(SUM({expr}), 0)::BIGINT"),
     }
 }
 

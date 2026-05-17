@@ -3357,64 +3357,6 @@ impl AppUseCase {
         Ok(episode)
     }
 
-    async fn apply_movie_monitor_snapshot_entries(
-        &self,
-        entries: &[ExternalImportMonitorMovieEntry],
-        now: &DateTime<Utc>,
-    ) -> AppResult<()> {
-        let titles = self
-            .services
-            .catalog
-            .titles
-            .list(Some(MediaFacet::Movie), None)
-            .await?;
-        let mut titles_by_tmdb = HashMap::<String, Vec<Title>>::new();
-        let mut titles_by_imdb = HashMap::<String, Vec<Title>>::new();
-
-        for title in &titles {
-            push_title_external_id_index(
-                &mut titles_by_tmdb,
-                title_external_id_value(title, "tmdb"),
-                title,
-            );
-            push_title_external_id_index(
-                &mut titles_by_imdb,
-                title_external_id_value(title, "imdb"),
-                title,
-            );
-        }
-
-        let mut touched_title_ids = HashSet::new();
-        for entry in entries {
-            let matched_title = unique_title_match(&titles_by_tmdb, entry.tmdb_id.as_deref())
-                .or_else(|| unique_title_match(&titles_by_imdb, entry.imdb_id.as_deref()));
-            let Some(title) = matched_title else { continue };
-
-            let updated = self
-                .apply_title_monitoring_change(None, &title.id, entry.monitored)
-                .await?;
-            touched_title_ids.insert(updated.id);
-        }
-
-        for title_id in touched_title_ids {
-            let Some(title) = self.services.catalog.titles.get_by_id(&title_id).await? else {
-                continue;
-            };
-
-            if title.monitored {
-                self.sync_wanted_movie_inner(&title, now, true).await;
-            } else {
-                self.services
-                    .workflow
-                    .wanted_items
-                    .delete_wanted_items_for_title(&title.id)
-                    .await?;
-            }
-        }
-
-        Ok(())
-    }
-
     async fn apply_movie_monitor_snapshot_chunks(&self, now: &DateTime<Utc>) -> AppResult<()> {
         let titles = self
             .services
@@ -3639,60 +3581,6 @@ impl AppUseCase {
                 || !episodes_to_disable.is_empty(),
             updated_title.monitored != title.monitored,
         ))
-    }
-
-    async fn apply_series_monitor_snapshot_entries(
-        &self,
-        facet: &MediaFacet,
-        entries: &[ExternalImportMonitorSeriesEntry],
-        now: &DateTime<Utc>,
-    ) -> AppResult<()> {
-        let titles = self
-            .services
-            .catalog
-            .titles
-            .list(Some(facet.clone()), None)
-            .await?;
-        let mut titles_by_tvdb = HashMap::<String, Vec<Title>>::new();
-
-        for title in &titles {
-            push_title_external_id_index(
-                &mut titles_by_tvdb,
-                title_external_id_value(title, "tvdb"),
-                title,
-            );
-        }
-
-        let mut touched_title_ids = HashSet::new();
-        let mut title_ids_needing_activity = HashSet::new();
-        for entry in entries {
-            let Some(title) = unique_title_match(&titles_by_tvdb, entry.tvdb_id.as_deref()) else {
-                continue;
-            };
-
-            let (changed, title_activity_emitted) = self
-                .apply_series_monitor_snapshot_entry(&title, entry)
-                .await?;
-            if changed {
-                touched_title_ids.insert(title.id.clone());
-                if !title_activity_emitted {
-                    title_ids_needing_activity.insert(title.id.clone());
-                }
-            }
-        }
-
-        for title_id in touched_title_ids {
-            let Some(title) = self.services.catalog.titles.get_by_id(&title_id).await? else {
-                continue;
-            };
-
-            if title_ids_needing_activity.contains(&title_id) {
-                self.emit_title_updated_activity(None, &title).await;
-            }
-            self.sync_wanted_series_inner(&title, now, true).await;
-        }
-
-        Ok(())
     }
 
     async fn apply_series_monitor_snapshot_chunks(

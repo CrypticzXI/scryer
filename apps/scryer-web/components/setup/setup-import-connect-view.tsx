@@ -20,6 +20,9 @@ interface SetupImportConnectViewProps {
   onBack: () => void;
   connecting: boolean;
   error: string | null;
+  sonarrError: string | null;
+  radarrError: string | null;
+  prowlarrError: string | null;
 }
 
 function normalizeUrl(raw: string): string {
@@ -58,6 +61,9 @@ export function SetupImportConnectView({
   onBack,
   connecting,
   error,
+  sonarrError,
+  radarrError,
+  prowlarrError,
 }: SetupImportConnectViewProps) {
   const hasSonarr = sonarrUrl.trim().length > 0 && sonarrApiKey.trim().length > 0;
   const hasRadarr = radarrUrl.trim().length > 0 && radarrApiKey.trim().length > 0;
@@ -120,6 +126,7 @@ export function SetupImportConnectView({
               className="font-mono text-xs"
             />
           </div>
+          {sonarrError ? <p className="text-xs text-destructive">{sonarrError}</p> : null}
         </div>
 
         {/* Radarr */}
@@ -166,6 +173,7 @@ export function SetupImportConnectView({
               className="font-mono text-xs"
             />
           </div>
+          {radarrError ? <p className="text-xs text-destructive">{radarrError}</p> : null}
         </div>
 
         {/* Prowlarr */}
@@ -212,6 +220,7 @@ export function SetupImportConnectView({
               className="font-mono text-xs"
             />
           </div>
+          {prowlarrError ? <p className="text-xs text-destructive">{prowlarrError}</p> : null}
         </div>
       </div>
 
