@@ -170,3 +170,54 @@ fn cross_indexer_release_dedup_prefers_higher_priority_source() {
         Some("https://example.test/high")
     );
 }
+
+#[test]
+fn structured_dispatch_queries_collapse_equivalent_episode_variants() {
+    let queries = vec![
+        "Synthetic Atlas 035".to_string(),
+        "Synthetic Atlas S02E11".to_string(),
+        "Synthetic Atlas S02".to_string(),
+        "Synthetic Atlas".to_string(),
+    ];
+
+    let deduped = dedupe_structured_dispatch_queries(queries, Some(2), Some(11), Some(35));
+
+    assert_eq!(deduped, vec!["Synthetic Atlas 035".to_string()]);
+}
+
+#[test]
+fn structured_dispatch_queries_keep_distinct_base_titles() {
+    let queries = vec![
+        "Synthetic Atlas S02E11".to_string(),
+        "Alternate Atlas S02E11".to_string(),
+    ];
+
+    let deduped = dedupe_structured_dispatch_queries(queries.clone(), Some(2), Some(11), None);
+
+    assert_eq!(deduped, queries);
+}
+
+#[test]
+fn structured_dispatch_query_dedupe_does_not_run_for_plain_title_searches() {
+    let queries = vec![
+        "Synthetic Atlas 035".to_string(),
+        "Synthetic Atlas S02E11".to_string(),
+        "Synthetic Atlas".to_string(),
+    ];
+
+    let deduped = dedupe_structured_dispatch_queries(queries.clone(), None, None, None);
+
+    assert_eq!(deduped, queries);
+}
+
+#[test]
+fn structured_dispatch_queries_keep_legitimate_numbered_titles_when_absolute_episode_differs() {
+    let queries = vec![
+        "Synthetic Atlas 2049".to_string(),
+        "Synthetic Atlas S02E11".to_string(),
+    ];
+
+    let deduped = dedupe_structured_dispatch_queries(queries.clone(), Some(2), Some(11), Some(35));
+
+    assert_eq!(deduped, queries);
+}

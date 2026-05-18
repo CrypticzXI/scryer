@@ -15,18 +15,18 @@ use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreData
 const INDEXER_COLUMNS: &str =
     "id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
     rate_limit_burst, disabled_until, is_enabled, enable_interactive_search, enable_auto_search,
-    managed_parent_config_id, managed_child_key, managed_metadata_json, last_health_status,
-    last_error_at, config_json, created_at, updated_at";
+    managed_parent_config_id, managed_child_key, managed_metadata_json, caps_snapshot_json,
+    last_health_status, last_error_at, config_json, created_at, updated_at";
 
 const INDEXER_INSERT_SQL: &str = "INSERT INTO indexers (
     id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
     rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
     enable_auto_search, managed_parent_config_id, managed_child_key,
-    managed_metadata_json, last_health_status, last_error_at, config_json,
-    created_at, updated_at
+    managed_metadata_json, caps_snapshot_json, last_health_status,
+    last_error_at, config_json, created_at, updated_at
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 #[derive(Clone)]
@@ -282,6 +282,10 @@ impl IndexerConfigRepository for IndexerConfigStore {
             assignments.push("managed_metadata_json = {}".to_string());
             args.push(SqlArg::OptText(managed_metadata_json.clone()));
         }
+        if let Some(caps_snapshot_json) = update.caps_snapshot_json.as_ref() {
+            assignments.push("caps_snapshot_json = {}".to_string());
+            args.push(SqlArg::OptText(caps_snapshot_json.clone()));
+        }
         if let Some(config_json) = update.config_json.as_ref() {
             assignments.push("config_json = {}".to_string());
             args.push(SqlArg::Text(maybe_encrypt_value(
@@ -366,6 +370,7 @@ fn indexer_insert_args(
         SqlArg::OptText(config.managed_parent_config_id.clone()),
         SqlArg::OptText(config.managed_child_key.clone()),
         SqlArg::OptText(config.managed_metadata_json.clone()),
+        SqlArg::OptText(config.caps_snapshot_json.clone()),
         SqlArg::OptText(config.last_health_status.clone()),
         SqlArg::OptTimestamp(config.last_error_at),
         SqlArg::OptText(stored_config_json),
@@ -423,6 +428,7 @@ fn row_to_indexer_config(
         managed_parent_config_id: row.opt_text("managed_parent_config_id")?,
         managed_child_key: row.opt_text("managed_child_key")?,
         managed_metadata_json: row.opt_text("managed_metadata_json")?,
+        caps_snapshot_json: row.opt_text("caps_snapshot_json")?,
         last_health_status: row.opt_text("last_health_status")?,
         last_error_at: row.opt_timestamp("last_error_at")?,
         config_json: decrypt_optional_value(
@@ -477,6 +483,7 @@ mod tests {
                 managed_parent_config_id TEXT,
                 managed_child_key TEXT,
                 managed_metadata_json TEXT,
+                caps_snapshot_json TEXT,
                 last_health_status TEXT,
                 last_error_at TEXT,
                 config_json TEXT,

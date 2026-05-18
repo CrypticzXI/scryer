@@ -1367,10 +1367,14 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
         "tmp/scryer-media/series",
         "tmp/nzbdav/config",
         "tmp/nzbdav/mnt",
+        "tmp/altmount/config",
+        "tmp/altmount/metadata",
+        "tmp/altmount/mnt",
+        "tmp/decypharr/config",
+        "tmp/decypharr/cache",
+        "tmp/decypharr/mnt",
         "tmp/nzbget/config",
         "tmp/nzbget-downloads",
-        "tmp/weaver/data",
-        "tmp/weaver-downloads",
     ] {
         fs::create_dir_all(ctx.path(path))?;
     }
@@ -1380,7 +1384,7 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
     );
     let infra_services = env_list(
         "SCRYER_DOCKER_INFRA_SERVICES",
-        &["nzbget", "nzbdav", "weaver"],
+        &["nzbget", "nzbdav", "altmount", "decypharr"],
     );
     let force_infra_restart = std::env::var("SCRYER_DOCKER_FORCE_INFRA_RESTART")
         .map(|value| value == "1")
@@ -1698,7 +1702,7 @@ fn stack_down(ctx: &TaskContext, args: StackDownArgs) -> Result<()> {
     );
     let infra_services = env_list(
         "SCRYER_DOCKER_INFRA_SERVICES",
-        &["nzbget", "nzbdav", "weaver"],
+        &["nzbget", "nzbdav", "altmount", "decypharr"],
     );
     let stop_infra = std::env::var("SCRYER_DOCKER_STOP_INFRA")
         .map(|value| value == "1")

@@ -541,6 +541,74 @@ async fn import_movie_strm_file_is_treated_as_video_artifact() {
     assert_eq!(media_files.len(), 1);
     assert_eq!(media_files[0].scan_status, "scanned");
     assert_eq!(media_files[0].container_format.as_deref(), Some("strm"));
+    assert_eq!(media_files[0].video_height, Some(1080));
+    assert_eq!(media_files[0].video_width, Some(1920));
+    assert_eq!(media_files[0].video_codec, None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_movie_symlink_file_preserves_symlink_and_synthetic_media_traits() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let backing_dir = tempfile::tempdir().expect("backing tempdir");
+    let backing_video = backing_dir
+        .path()
+        .join("Test.Movie.2024.2160p.WEB-DL.H265.DDP5.1.Atmos.mkv");
+    std::fs::write(&backing_video, b"fake video content").expect("write backing video");
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_link = source_dir
+        .path()
+        .join("Test.Movie.2024.2160p.WEB-DL.H265.DDP5.1.Atmos.mkv");
+    std::os::unix::fs::symlink(&backing_video, &source_link).expect("create source symlink");
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_movie_title(
+        &ctx,
+        "title-movie-symlink-1",
+        "Test Movie",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+
+    let completed = scryer_completed(
+        "dl-movie-symlink-1",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "movie",
+    );
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("import_completed_download");
+
+    assert_eq!(result.decision, ImportDecision::Imported);
+    assert_eq!(
+        result.link_type.map(|strategy| strategy.as_str()),
+        Some("symlink")
+    );
+    let dest_path = result.dest_path.expect("dest path");
+    assert!(
+        std::fs::symlink_metadata(&dest_path)
+            .expect("dest metadata")
+            .file_type()
+            .is_symlink()
+    );
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].video_height, Some(2160));
+    assert_eq!(media_files[0].video_width, Some(3840));
+    assert_eq!(media_files[0].video_codec, None);
+    assert_eq!(media_files[0].audio_codec, None);
+    assert_eq!(media_files[0].audio_channels, None);
 }
 
 // ---------------------------------------------------------------------------

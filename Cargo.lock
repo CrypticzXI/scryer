@@ -5774,6 +5774,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "wiremock",
 ]
 
 [[package]]

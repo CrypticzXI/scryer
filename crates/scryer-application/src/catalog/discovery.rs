@@ -106,6 +106,84 @@ pub(crate) fn release_search_key(result: &IndexerSearchResult) -> String {
     result.title.clone()
 }
 
+fn looks_like_structured_query_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let upper = trimmed.to_ascii_uppercase();
+    if upper == "OVA" || upper == "SPECIAL" {
+        return true;
+    }
+
+    if let Some(rest) = upper.strip_prefix('S') {
+        if rest.chars().all(|ch| ch.is_ascii_digit()) {
+            return true;
+        }
+        if let Some((season_part, episode_part)) = rest.split_once('E') {
+            return !season_part.is_empty()
+                && !episode_part.is_empty()
+                && season_part.chars().all(|ch| ch.is_ascii_digit())
+                && episode_part.chars().all(|ch| ch.is_ascii_digit());
+        }
+    }
+
+    false
+}
+
+fn normalize_structured_dispatch_query(query: &str, absolute_episode: Option<u32>) -> String {
+    let mut tokens: Vec<&str> = query.split_whitespace().collect();
+    while let Some(last) = tokens.last().copied() {
+        let trimmed = last.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+        if trimmed.is_empty() {
+            tokens.pop();
+            continue;
+        }
+
+        let removable_numeric = absolute_episode.is_some_and(|value| {
+            trimmed.chars().all(|ch| ch.is_ascii_digit())
+                && trimmed.parse::<u32>().ok() == Some(value)
+        });
+        let removable_structured = removable_numeric || looks_like_structured_query_token(trimmed);
+        if removable_structured {
+            tokens.pop();
+            continue;
+        }
+        break;
+    }
+
+    tokens.join(" ").trim().to_string()
+}
+
+fn dedupe_structured_dispatch_queries(
+    queries: Vec<String>,
+    season: Option<u32>,
+    episode: Option<u32>,
+    absolute_episode: Option<u32>,
+) -> Vec<String> {
+    if season.is_none() && episode.is_none() && absolute_episode.is_none() {
+        return queries;
+    }
+
+    let mut deduped = Vec::with_capacity(queries.len());
+    let mut seen = std::collections::HashSet::new();
+
+    for query in queries {
+        let normalized = normalize_structured_dispatch_query(&query, absolute_episode);
+        let key_source = if normalized.is_empty() {
+            query.trim()
+        } else {
+            normalized.as_str()
+        };
+        if seen.insert(key_source.to_ascii_lowercase()) {
+            deduped.push(query);
+        }
+    }
+
+    deduped
+}
+
 pub(crate) fn dedupe_cross_indexer_release_results(
     results: Vec<IndexerSearchResult>,
     indexer_priority_by_name: &HashMap<String, i64>,
@@ -608,6 +686,7 @@ impl AppUseCase {
         let indexer_routing = self
             .resolve_indexer_routing(library_id, scope_id.as_deref())
             .await;
+        let newznab_categories = None;
 
         // If routing exists and every indexer is disabled, skip the search entirely.
         if let Some(ref plan) = indexer_routing {
@@ -625,11 +704,18 @@ impl AppUseCase {
         // Auto mode normally conserves API calls by using the first query, but
         // episode acquisition needs season/title fallbacks so packs and ranges
         // can be considered for a single requested episode.
-        let effective_queries: Vec<String> = match mode {
-            SearchMode::Auto if search_subject_kind == ReleaseSearchSubjectKind::Episode => queries,
-            SearchMode::Auto => queries.into_iter().take(1).collect(),
-            SearchMode::Interactive => queries,
-        };
+        let effective_queries = dedupe_structured_dispatch_queries(
+            match mode {
+                SearchMode::Auto if search_subject_kind == ReleaseSearchSubjectKind::Episode => {
+                    queries
+                }
+                SearchMode::Auto => queries.into_iter().take(1).collect(),
+                SearchMode::Interactive => queries,
+            },
+            season,
+            episode,
+            absolute_episode,
+        );
 
         let mut set = JoinSet::new();
         let mut ids = HashMap::new();
@@ -652,6 +738,7 @@ impl AppUseCase {
             let category = category.clone();
             let facet = facet.clone();
             let indexer_routing = indexer_routing.clone();
+            let newznab_categories = newznab_categories.clone();
             let tagged_aliases = tagged_aliases.to_vec();
 
             set.spawn(async move {
@@ -661,7 +748,7 @@ impl AppUseCase {
                         ids,
                         category.clone(),
                         facet,
-                        None,
+                        newznab_categories,
                         indexer_routing,
                         mode,
                         season,

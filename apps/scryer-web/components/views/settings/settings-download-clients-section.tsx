@@ -227,6 +227,12 @@ export type SettingsDownloadClientsSectionProps = {
   startCreateDownloadClient: () => void;
 };
 
+const SAB_ARTIFACT_MODE_OPTIONS = [
+  { value: "plain", labelKey: "settings.downloadClientArtifactModePlain" },
+  { value: "nzbdav_strm", labelKey: "settings.downloadClientArtifactModeNzbdavStrm" },
+  { value: "nzbdav_symlink", labelKey: "settings.downloadClientArtifactModeNzbdavSymlink" },
+] as const;
+
 const DOWNLOAD_CLIENT_TYPE_LOGO_OPTIONS: DownloadClientTypeLogoOption[] = [
   {
     value: "nzbget",
@@ -331,12 +337,17 @@ export function SettingsDownloadClientsSection({
     (configuredClientLabel || "Download client");
   const hasApiKeyField =
     normalizedClientType === "sabnzbd" || normalizedClientType === "weaver";
+  const showArtifactMode = normalizedClientType === "sabnzbd";
   const showCredentialFields =
     normalizedClientType === "nzbget" ||
     normalizedClientType === "qbittorrent" ||
     normalizedClientType === "sabnzbd";
   const weaverApiKeyUrl =
     normalizedClientType === "weaver" ? buildWeaverApiKeyUrl(downloadClientDraft) : "";
+  const selectedArtifactModeLabel =
+    SAB_ARTIFACT_MODE_OPTIONS.find(
+      (option) => option.value === downloadClientDraft.downloadArtifactMode,
+    )?.labelKey ?? "settings.downloadClientArtifactModePlain";
 
   const clientById = React.useMemo(
     () => Object.fromEntries(settingsDownloadClients.map((c) => [c.id, c])),
@@ -791,6 +802,49 @@ export function SettingsDownloadClientsSection({
                     </p>
                   ) : null}
                 </>
+              ) : null}
+              {showArtifactMode ? (
+                <div className="md:col-span-3 rounded-xl border border-border bg-card/40 p-3">
+                  <div className="grid gap-3 md:grid-cols-[240px_1fr] md:items-start">
+                    <div>
+                      <Label
+                        className="mb-2 block"
+                        htmlFor="settings-download-client-artifact-mode"
+                      >
+                        {t("settings.downloadClientArtifactMode")}
+                      </Label>
+                      <Select
+                        value={downloadClientDraft.downloadArtifactMode}
+                        onValueChange={(value) =>
+                          setDownloadClientDraft((prev: DownloadClientDraft) => ({
+                            ...prev,
+                            downloadArtifactMode:
+                              value as DownloadClientDraft["downloadArtifactMode"],
+                          }))
+                        }
+                      >
+                        <SelectTrigger
+                          id="settings-download-client-artifact-mode"
+                          className="w-full"
+                        >
+                          <SelectValue aria-label={t(selectedArtifactModeLabel)}>
+                            {t(selectedArtifactModeLabel)}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {SAB_ARTIFACT_MODE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {t(option.labelKey)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.downloadClientArtifactModeHelp")}
+                    </p>
+                  </div>
+                </div>
               ) : null}
               {normalizedClientType === "sabnzbd" || normalizedClientType === "qbittorrent" ? (
                 <p className="md:col-span-3 text-xs text-muted-foreground">

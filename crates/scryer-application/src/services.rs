@@ -1,4 +1,5 @@
 use super::*;
+use crate::ports::IndexerCapsSnapshotRefresher;
 
 /// In-process guard table for download-submission dedupe and scope ownership.
 ///
@@ -922,6 +923,7 @@ pub struct AppLibraryServices {
 #[derive(Clone)]
 pub struct AppIntegrationServices {
     pub(crate) indexer_configs: Arc<dyn IndexerConfigRepository>,
+    pub(crate) indexer_caps_refresher: RuntimeFeature<Arc<dyn IndexerCapsSnapshotRefresher>>,
     pub(crate) indexer_client: Arc<dyn IndexerClient>,
     pub(crate) download_client: Arc<dyn DownloadClient>,
     pub(crate) download_client_configs: Arc<dyn DownloadClientConfigRepository>,
@@ -1128,6 +1130,7 @@ impl AppServices {
             },
             integrations: AppIntegrationServices {
                 indexer_configs,
+                indexer_caps_refresher: RuntimeFeature::Disabled,
                 indexer_client,
                 download_client,
                 download_client_configs,
@@ -1585,6 +1588,11 @@ impl AppServicesBuilder {
         with_indexer_stats,
         integrations.indexer_stats,
         Arc<dyn IndexerStatsTracker>
+    );
+    app_services_builder_runtime_feature_setter!(
+        with_indexer_caps_refresher,
+        integrations.indexer_caps_refresher,
+        Arc<dyn IndexerCapsSnapshotRefresher>
     );
     app_services_builder_runtime_feature_setter!(
         with_plugin_provider,

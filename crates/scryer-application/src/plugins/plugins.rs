@@ -1560,6 +1560,7 @@ impl AppUseCase {
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
+                    caps_snapshot_json: None,
                     last_health_status: None,
                     last_error_at: None,
                     config_json: Some(

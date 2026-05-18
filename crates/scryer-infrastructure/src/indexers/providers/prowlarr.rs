@@ -14,8 +14,9 @@ use scryer_application::{
     RuntimePluginLoad, SearchMode,
 };
 use scryer_domain::{
-    ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, IndexerConfig,
-    TaggedAlias,
+    ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
+    IndexerCapsSearchNode as DomainCapsSearchNode, IndexerCapsSnapshot as DomainCapsSnapshot,
+    IndexerConfig, TaggedAlias,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
@@ -254,16 +255,6 @@ pub(crate) struct ProwlarrCapsSearchNode {
     pub supported_params: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_engine: Option<String>,
-}
-
-impl ProwlarrCapsSearchNode {
-    pub(crate) fn supports_param(&self, param: &str) -> bool {
-        self.available
-            && self
-                .supported_params
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(param))
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -592,24 +583,32 @@ impl IndexerManagementClient for ProwlarrManagementClient {
         let mut children = Vec::new();
         for indexer in indexers {
             let child_key = indexer.id.to_string();
-            let caps_snapshot = match self.fetch_child_caps_snapshot(&config, indexer.id).await {
-                Ok(snapshot) => {
-                    debug!(
-                        child_key,
-                        movie_params = ?snapshot.movie_search.supported_params,
-                        tv_params = ?snapshot.tv_search.supported_params,
-                        "fetched managed child caps snapshot"
-                    );
-                    Some(snapshot)
+            let caps_snapshot = if indexer.enable {
+                match self.fetch_child_caps_snapshot(&config, indexer.id).await {
+                    Ok(snapshot) => {
+                        debug!(
+                            child_key,
+                            movie_params = ?snapshot.movie_search.supported_params,
+                            tv_params = ?snapshot.tv_search.supported_params,
+                            "fetched managed child caps snapshot"
+                        );
+                        Some(snapshot)
+                    }
+                    Err(error) => {
+                        warn!(
+                            child_key,
+                            error = ?error,
+                            "failed to fetch managed child caps snapshot; child will fall back to query-only search"
+                        );
+                        None
+                    }
                 }
-                Err(error) => {
-                    warn!(
-                        child_key,
-                        error = ?error,
-                        "failed to fetch managed child caps snapshot; child will fall back to query-only search"
-                    );
-                    None
-                }
+            } else {
+                debug!(
+                    child_key,
+                    "skipping managed child caps fetch because the upstream Prowlarr indexer is disabled"
+                );
+                None
             };
             if let Some(child) =
                 build_managed_child_plan(&config, indexer, &app_profiles_by_id, caps_snapshot)
@@ -908,7 +907,9 @@ fn build_managed_child_plan(
         "base_url": format!("{}/{}", config.base_url.trim_end_matches('/'), indexer.id),
         "api_key": config.api_key,
         "api_path": "/api",
+        "imdb_id_format": "canonical",
     });
+    let caps_snapshot_json = serialize_caps_snapshot(caps_snapshot.as_ref());
     let managed_metadata_json = serde_json::to_string(&ManagedChildMetadata {
         indexer_id: indexer.id,
         protocol: indexer.protocol.clone(),
@@ -930,6 +931,7 @@ fn build_managed_child_plan(
         enable_interactive_search,
         enable_auto_search: enable_rss || enable_automatic_search,
         managed_metadata_json,
+        caps_snapshot_json,
         routing_scopes,
     })
 }
@@ -1124,6 +1126,35 @@ fn parse_caps_node(
     })
 }
 
+fn serialize_caps_snapshot(snapshot: Option<&ProwlarrCapsSnapshot>) -> Option<String> {
+    let snapshot = snapshot?;
+    serde_json::to_string(&DomainCapsSnapshot {
+        server_title: snapshot.server_title.clone(),
+        limits_default: snapshot.limits_default,
+        limits_max: snapshot.limits_max,
+        search: caps_node_to_domain(&snapshot.search),
+        tv_search: caps_node_to_domain(&snapshot.tv_search),
+        movie_search: caps_node_to_domain(&snapshot.movie_search),
+        music_search: caps_node_to_domain(&snapshot.music_search),
+        audio_search: caps_node_to_domain(&snapshot.audio_search),
+        book_search: caps_node_to_domain(&snapshot.book_search),
+        categories: Default::default(),
+    })
+    .ok()
+}
+
+fn caps_node_to_domain(node: &ProwlarrCapsSearchNode) -> Option<DomainCapsSearchNode> {
+    if !node.available && node.supported_params.is_empty() && node.search_engine.is_none() {
+        return None;
+    }
+
+    Some(DomainCapsSearchNode {
+        available: node.available,
+        supported_params: node.supported_params.clone(),
+        search_engine: node.search_engine.clone(),
+    })
+}
+
 fn attr_value(
     element: &BytesStart<'_>,
     key: &[u8],
@@ -1182,6 +1213,7 @@ mod tests {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(
@@ -1514,6 +1546,52 @@ mod tests {
             caps.movie_search.supported_params,
             vec!["q", "imdbid", "genre"]
         );
+    }
+
+    #[tokio::test]
+    async fn plan_sync_skips_caps_fetch_for_upstream_disabled_children() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "2.0.0"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(INDEXER_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 7,
+                "name": "DOGnzb",
+                "enable": false,
+                "appProfileId": 1,
+                "protocol": "usenet",
+                "priority": 3,
+                "downloadClientId": 0,
+                "capabilities": { "categories": [] }
+            }])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(APP_PROFILE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 1,
+                "enableRss": true,
+                "enableAutomaticSearch": true,
+                "enableInteractiveSearch": true
+            }])))
+            .mount(&server)
+            .await;
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let plan = client.plan_sync("parent").await.expect("sync plan");
+        let child = plan.children.first().expect("child plan");
+        let metadata: ManagedChildMetadata =
+            serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();
+
+        assert_eq!(metadata.indexer_id, 7);
+        assert!(metadata.caps_snapshot.is_none());
     }
 
     #[tokio::test]

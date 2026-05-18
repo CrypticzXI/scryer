@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain_events::new_download_queue_domain_event;
+use crate::download_client_path_mappings::parse_download_client_artifact_mode;
 use crate::event_views::{
     apply_download_queue_projection_event, sort_download_queue_items, sorted_download_queue_items,
 };
@@ -35,6 +36,7 @@ struct PreparedManagedIndexerChild {
     enable_interactive_search: bool,
     enable_auto_search: bool,
     managed_metadata_json: Option<String>,
+    caps_snapshot_json: Option<String>,
     routing_by_scope: HashMap<String, Vec<String>>,
 }
 
@@ -1256,6 +1258,46 @@ impl AppUseCase {
             .unwrap_or_default()
     }
 
+    async fn fetch_caps_snapshot_json_for_config(
+        &self,
+        config: &IndexerConfig,
+    ) -> AppResult<Option<String>> {
+        let Some(refresher) = self
+            .services
+            .integrations
+            .indexer_caps_refresher
+            .available()
+        else {
+            return Ok(None);
+        };
+        let Some(snapshot) = refresher.fetch_for_config(config).await? else {
+            return Ok(None);
+        };
+        serde_json::to_string(&snapshot)
+            .map(Some)
+            .map_err(|error| AppError::Repository(error.to_string()))
+    }
+
+    pub(crate) async fn refresh_caps_snapshot_json_best_effort(
+        &self,
+        config: &IndexerConfig,
+        fallback: Option<&str>,
+    ) -> Option<String> {
+        match self.fetch_caps_snapshot_json_for_config(config).await {
+            Ok(Some(snapshot_json)) => Some(snapshot_json),
+            Ok(None) => fallback.map(ToOwned::to_owned),
+            Err(error) => {
+                tracing::warn!(
+                    config_id = %config.id,
+                    provider_type = %config.provider_type,
+                    error = %error,
+                    "failed to refresh indexer caps snapshot; keeping the last known snapshot"
+                );
+                fallback.map(ToOwned::to_owned)
+            }
+        }
+    }
+
     fn normalize_download_client_type(&self, client_type: impl AsRef<str>) -> AppResult<String> {
         let normalized = client_type.as_ref().trim().to_lowercase();
         if normalized.is_empty() {
@@ -1313,6 +1355,58 @@ impl AppUseCase {
             .indexer_configs
             .list(provider_filter.map(|provider| provider.trim().to_lowercase()))
             .await
+    }
+
+    pub async fn refresh_enabled_direct_nab_caps_snapshots(
+        &self,
+        actor: &User,
+    ) -> AppResult<(u32, Vec<String>)> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let configs = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await?;
+        let mut refreshed = 0_u32;
+        let mut failures = Vec::new();
+
+        for config in configs {
+            if !config.is_enabled || config.managed_parent_config_id.is_some() {
+                continue;
+            }
+
+            match self.fetch_caps_snapshot_json_for_config(&config).await {
+                Ok(Some(snapshot_json)) => {
+                    if config.caps_snapshot_json.as_deref() != Some(snapshot_json.as_str()) {
+                        self.services
+                            .integrations
+                            .indexer_configs
+                            .update(IndexerConfigUpdate {
+                                id: config.id.clone(),
+                                caps_snapshot_json: Some(Some(snapshot_json)),
+                                ..Default::default()
+                            })
+                            .await?;
+                    }
+                    refreshed += 1;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        config_id = %config.id,
+                        provider_type = %config.provider_type,
+                        error = %error,
+                        "failed to refresh direct indexer caps snapshot"
+                    );
+                    failures.push(format!("{}: {}", config.name, error));
+                }
+            }
+        }
+
+        Ok((refreshed, failures))
     }
 
     pub async fn sync_enabled_prowlarr_indexers(
@@ -1386,7 +1480,7 @@ impl AppUseCase {
         self.test_indexer_connection(actor, &provider_type, Some(&normalized_config_json), None)
             .await?;
 
-        let config = IndexerConfig {
+        let mut config = IndexerConfig {
             id: Id::new().0,
             name,
             provider_type,
@@ -1409,12 +1503,16 @@ impl AppUseCase {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(normalized_config_json),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
+        config.caps_snapshot_json = self
+            .refresh_caps_snapshot_json_best_effort(&config, None)
+            .await;
 
         let created = self
             .services
@@ -1527,6 +1625,64 @@ impl AppUseCase {
                 .await?;
         }
 
+        let preview_config = IndexerConfig {
+            id: existing.id.clone(),
+            name: normalized_name
+                .clone()
+                .unwrap_or_else(|| existing.name.clone()),
+            provider_type: normalized_provider
+                .clone()
+                .unwrap_or_else(|| existing.provider_type.clone()),
+            base_url: normalized_base_url
+                .clone()
+                .unwrap_or_else(|| existing.base_url.clone()),
+            api_key_encrypted: existing.api_key_encrypted.clone(),
+            rate_limit_seconds: update.rate_limit_seconds.or(existing.rate_limit_seconds),
+            rate_limit_burst: update.rate_limit_burst.or(existing.rate_limit_burst),
+            disabled_until: existing.disabled_until,
+            is_enabled: update.is_enabled.unwrap_or(existing.is_enabled),
+            enable_interactive_search: if management_capabilities.supports_managed_children_sync {
+                false
+            } else {
+                update
+                    .enable_interactive_search
+                    .unwrap_or(existing.enable_interactive_search)
+            },
+            enable_auto_search: if management_capabilities.supports_managed_children_sync {
+                false
+            } else {
+                update
+                    .enable_auto_search
+                    .unwrap_or(existing.enable_auto_search)
+            },
+            managed_parent_config_id: update
+                .managed_parent_config_id
+                .clone()
+                .unwrap_or_else(|| existing.managed_parent_config_id.clone()),
+            managed_child_key: update
+                .managed_child_key
+                .clone()
+                .unwrap_or_else(|| existing.managed_child_key.clone()),
+            managed_metadata_json: update
+                .managed_metadata_json
+                .clone()
+                .unwrap_or_else(|| existing.managed_metadata_json.clone()),
+            caps_snapshot_json: existing.caps_snapshot_json.clone(),
+            last_health_status: existing.last_health_status.clone(),
+            last_error_at: existing.last_error_at,
+            config_json: normalized_config_json
+                .clone()
+                .or_else(|| existing.config_json.clone()),
+            created_at: existing.created_at,
+            updated_at: existing.updated_at,
+        };
+        let refreshed_caps_snapshot_json = self
+            .refresh_caps_snapshot_json_best_effort(
+                &preview_config,
+                existing.caps_snapshot_json.as_deref(),
+            )
+            .await;
+
         let updated = self
             .services
             .integrations
@@ -1553,6 +1709,7 @@ impl AppUseCase {
                 managed_parent_config_id: update.managed_parent_config_id,
                 managed_child_key: update.managed_child_key,
                 managed_metadata_json: update.managed_metadata_json,
+                caps_snapshot_json: Some(refreshed_caps_snapshot_json),
                 config_json: normalized_config_json,
             })
             .await?;
@@ -1735,6 +1892,7 @@ impl AppUseCase {
                         managed_parent_config_id: Some(Some(parent.id.clone())),
                         managed_child_key: Some(Some(desired.child_key.clone())),
                         managed_metadata_json: Some(managed_metadata_json),
+                        caps_snapshot_json: Some(desired.caps_snapshot_json.clone()),
                         config_json: Some(desired.config_json.clone()),
                     })
                     .await?;
@@ -1764,6 +1922,7 @@ impl AppUseCase {
                         managed_parent_config_id: Some(parent.id.clone()),
                         managed_child_key: Some(desired.child_key.clone()),
                         managed_metadata_json: desired.managed_metadata_json.clone(),
+                        caps_snapshot_json: desired.caps_snapshot_json.clone(),
                         last_health_status: None,
                         last_error_at: None,
                         config_json: Some(desired.config_json.clone()),
@@ -1886,6 +2045,10 @@ impl AppUseCase {
                 enable_interactive_search: child.enable_interactive_search,
                 enable_auto_search: child.enable_auto_search,
                 managed_metadata_json,
+                caps_snapshot_json: child
+                    .caps_snapshot_json
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
                 routing_by_scope,
             });
         }
@@ -3416,6 +3579,7 @@ impl AppUseCase {
         let client_type = self.normalize_download_client_type(input.client_type)?;
         let config_json = self.normalize_download_client_config_json(input.config_json)?;
         crate::parse_download_client_remote_path_mappings(&config_json)?;
+        parse_download_client_artifact_mode(&config_json)?;
 
         let existing = self
             .services
@@ -3495,6 +3659,7 @@ impl AppUseCase {
             Some(value) => {
                 let normalized = self.normalize_download_client_config_json(value)?;
                 crate::parse_download_client_remote_path_mappings(&normalized)?;
+                parse_download_client_artifact_mode(&normalized)?;
                 Some(normalized)
             }
             None => None,

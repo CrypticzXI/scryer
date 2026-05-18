@@ -1,14 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::indexers::providers::prowlarr::{ProwlarrCapsSearchNode, ProwlarrCapsSnapshot};
 use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, IndexerClient, IndexerConfigRepository, IndexerPluginProvider,
     IndexerRoutingPlan, IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker,
     ReleaseCandidateProvenance, ReleaseSearchSubjectKind, SearchMode,
 };
-use scryer_domain::{IndexerConfig, IndexerProviderCapabilities};
+use scryer_domain::{
+    IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
+};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -46,7 +47,7 @@ struct ManagedIndexerMetadata {
     enable_rss: Option<bool>,
     enable_automatic_search: Option<bool>,
     #[serde(default)]
-    caps_snapshot: Option<ProwlarrCapsSnapshot>,
+    caps_snapshot: Option<IndexerCapsSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -534,27 +535,23 @@ impl MultiIndexerSearchClient {
         static_caps: &IndexerProviderCapabilities,
         facet: &str,
     ) -> ResolvedSearchCapabilities {
-        let Some(raw) = config.managed_metadata_json.as_deref() else {
+        let snapshot = stored_caps_snapshot(config);
+        if snapshot.is_none() && config.managed_parent_config_id.is_none() {
             return ResolvedSearchCapabilities {
                 caps: static_caps.clone(),
                 id_dispatch_mode: IdDispatchMode::LegacyAggregate,
                 query_only_reason: None,
             };
-        };
-        let Ok(metadata) = serde_json::from_str::<ManagedIndexerMetadata>(raw) else {
+        }
+        let Some(snapshot) = snapshot.as_ref() else {
             return ResolvedSearchCapabilities {
-                caps: static_caps.clone(),
-                id_dispatch_mode: IdDispatchMode::LegacyAggregate,
-                query_only_reason: None,
-            };
-        };
-        let Some(snapshot) = metadata.caps_snapshot.as_ref() else {
-            let mut caps = static_caps.clone();
-            caps.supported_ids.clear();
-            caps.search_inputs.clear();
-            caps.supported_external_ids.clear();
-            return ResolvedSearchCapabilities {
-                caps,
+                caps: IndexerProviderCapabilities {
+                    supported_ids: HashMap::new(),
+                    search_inputs: static_caps.search_inputs.clone(),
+                    supported_external_ids: Vec::new(),
+                    query_param: static_caps.query_param.clone(),
+                    ..static_caps.clone()
+                },
                 id_dispatch_mode: IdDispatchMode::QueryOnly,
                 query_only_reason: Some("caps snapshot unavailable"),
             };
@@ -565,14 +562,10 @@ impl MultiIndexerSearchClient {
         caps.query_param = caps_snapshot_has_query(snapshot, facet).then_some("q".to_string());
         caps.search_inputs = caps_search_inputs(snapshot, facet);
         caps.supported_external_ids = supported_external_ids_from_caps_snapshot(snapshot);
-        caps.season_param = snapshot
-            .tv_search
-            .supports_param("season")
+        caps.season_param = node_supports_param(snapshot.tv_search.as_ref(), "season")
             .then_some("season".to_string());
-        caps.episode_param = snapshot
-            .tv_search
-            .supports_param("ep")
-            .then_some("ep".to_string());
+        caps.episode_param =
+            node_supports_param(snapshot.tv_search.as_ref(), "ep").then_some("ep".to_string());
 
         let id_dispatch_mode = if caps.has_facet(facet) {
             IdDispatchMode::Aggregate
@@ -587,6 +580,25 @@ impl MultiIndexerSearchClient {
             id_dispatch_mode,
             query_only_reason,
         }
+    }
+
+    fn is_managed_child(config: &IndexerConfig) -> bool {
+        config.managed_parent_config_id.is_some()
+    }
+
+    fn default_newznab_categories_for_facet(facet: &str) -> Option<Vec<String>> {
+        let categories = match facet {
+            "movie" => &["2000"][..],
+            "series" => &["5000"][..],
+            "anime" => &["5070"][..],
+            _ => &[][..],
+        };
+        (!categories.is_empty()).then(|| {
+            categories
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect()
+        })
     }
 
     fn split_rss_category_requests(categories: Option<Vec<String>>) -> Vec<Option<Vec<String>>> {
@@ -723,7 +735,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         ids: HashMap<String, String>,
         category: Option<String>,
         facet: Option<String>,
-        newznab_categories: Option<Vec<String>>,
+        _newznab_categories: Option<Vec<String>>,
         indexer_routing: Option<IndexerRoutingPlan>,
         mode: SearchMode,
         season: Option<u32>,
@@ -859,17 +871,28 @@ impl IndexerClient for MultiIndexerSearchClient {
                 continue;
             }
 
-            // Use per-indexer categories from routing if available, otherwise fall
-            // back to the caller-provided newznab_categories.
+            // Use per-indexer categories from routing if available. Managed
+            // Managed Prowlarr children may fall back to per-facet defaults when
+            // no routed categories exist yet; direct *nab indexers stay broad.
             let per_indexer_categories = routing_entry
                 .map(|entry| {
                     if entry.categories.is_empty() {
-                        newznab_categories.clone()
+                        if Self::is_managed_child(config) {
+                            Self::default_newznab_categories_for_facet(&facet)
+                        } else {
+                            None
+                        }
                     } else {
                         Some(entry.categories.clone())
                     }
                 })
-                .unwrap_or_else(|| newznab_categories.clone());
+                .unwrap_or_else(|| {
+                    if Self::is_managed_child(config) {
+                        Self::default_newznab_categories_for_facet(&facet)
+                    } else {
+                        None
+                    }
+                });
             let rss_category_requests = if is_rss_request {
                 Self::split_rss_category_requests(per_indexer_categories.clone())
             } else {
@@ -1497,17 +1520,31 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     strategies
 }
 
+fn stored_caps_snapshot(config: &IndexerConfig) -> Option<IndexerCapsSnapshot> {
+    if let Some(raw) = config.caps_snapshot_json.as_deref()
+        && let Ok(snapshot) = serde_json::from_str::<IndexerCapsSnapshot>(raw)
+    {
+        return Some(snapshot);
+    }
+
+    config
+        .managed_metadata_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<ManagedIndexerMetadata>(raw).ok())
+        .and_then(|metadata| metadata.caps_snapshot)
+}
+
 fn supported_ids_from_caps_snapshot(
-    snapshot: &ProwlarrCapsSnapshot,
+    snapshot: &IndexerCapsSnapshot,
 ) -> HashMap<String, Vec<String>> {
     let mut supported_ids = HashMap::new();
 
-    let movie_ids = actionable_ids_for_node(&snapshot.movie_search, "movie");
+    let movie_ids = actionable_ids_for_node(snapshot.movie_search.as_ref(), "movie");
     if !movie_ids.is_empty() {
         supported_ids.insert("movie".to_string(), movie_ids);
     }
 
-    let tv_ids = actionable_ids_for_node(&snapshot.tv_search, "tv");
+    let tv_ids = actionable_ids_for_node(snapshot.tv_search.as_ref(), "tv");
     if !tv_ids.is_empty() {
         supported_ids.insert("series".to_string(), tv_ids.clone());
         supported_ids.insert("anime".to_string(), tv_ids);
@@ -1516,15 +1553,18 @@ fn supported_ids_from_caps_snapshot(
     supported_ids
 }
 
-fn supported_external_ids_from_caps_snapshot(snapshot: &ProwlarrCapsSnapshot) -> Vec<String> {
-    let mut ids = actionable_ids_for_node(&snapshot.movie_search, "movie");
-    ids.extend(actionable_ids_for_node(&snapshot.tv_search, "tv"));
+fn supported_external_ids_from_caps_snapshot(snapshot: &IndexerCapsSnapshot) -> Vec<String> {
+    let mut ids = actionable_ids_for_node(snapshot.movie_search.as_ref(), "movie");
+    ids.extend(actionable_ids_for_node(snapshot.tv_search.as_ref(), "tv"));
     ids.sort();
     ids.dedup();
     ids
 }
 
-fn actionable_ids_for_node(node: &ProwlarrCapsSearchNode, search_kind: &str) -> Vec<String> {
+fn actionable_ids_for_node(node: Option<&IndexerCapsSearchNode>, search_kind: &str) -> Vec<String> {
+    let Some(node) = node else {
+        return Vec::new();
+    };
     if !node.available {
         return Vec::new();
     }
@@ -1563,17 +1603,27 @@ fn actionable_ids_for_params(params: &[String], search_kind: &str) -> Vec<String
     ids
 }
 
-fn caps_snapshot_has_query(snapshot: &ProwlarrCapsSnapshot, facet: &str) -> bool {
-    snapshot.search.supports_param("q")
+fn node_supports_param(node: Option<&IndexerCapsSearchNode>, param: &str) -> bool {
+    node.is_some_and(|node| {
+        node.available
+            && node
+                .supported_params
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(param))
+    })
+}
+
+fn caps_snapshot_has_query(snapshot: &IndexerCapsSnapshot, facet: &str) -> bool {
+    node_supports_param(snapshot.search.as_ref(), "q")
         || match facet {
-            "movie" => snapshot.movie_search.supports_param("q"),
-            "series" | "anime" => snapshot.tv_search.supports_param("q"),
+            "movie" => node_supports_param(snapshot.movie_search.as_ref(), "q"),
+            "series" | "anime" => node_supports_param(snapshot.tv_search.as_ref(), "q"),
             _ => false,
         }
 }
 
 fn caps_search_inputs(
-    snapshot: &ProwlarrCapsSnapshot,
+    snapshot: &IndexerCapsSnapshot,
     facet: &str,
 ) -> Vec<scryer_domain::IndexerSearchInputCapability> {
     let mut inputs = Vec::new();
@@ -1587,10 +1637,10 @@ fn caps_search_inputs(
         inputs.push(scryer_domain::IndexerSearchInputCapability::AggregateIdQuery);
     }
 
-    if snapshot.tv_search.supports_param("season") {
+    if node_supports_param(snapshot.tv_search.as_ref(), "season") {
         inputs.push(scryer_domain::IndexerSearchInputCapability::Season);
     }
-    if snapshot.tv_search.supports_param("ep") {
+    if node_supports_param(snapshot.tv_search.as_ref(), "ep") {
         inputs.push(scryer_domain::IndexerSearchInputCapability::Episode);
     }
 
@@ -1945,6 +1995,7 @@ mod tests {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: None,
@@ -1961,7 +2012,7 @@ mod tests {
         .to_string()
     }
 
-    fn managed_metadata_with_caps(snapshot: Option<ProwlarrCapsSnapshot>) -> String {
+    fn managed_metadata_with_caps(snapshot: Option<IndexerCapsSnapshot>) -> String {
         serde_json::json!({
             "enable_rss": true,
             "enable_automatic_search": true,
@@ -2182,7 +2233,7 @@ mod tests {
         }
     }
 
-    fn prowlarr_caps_snapshot(movie_params: &[&str], tv_params: &[&str]) -> ProwlarrCapsSnapshot {
+    fn prowlarr_caps_snapshot(movie_params: &[&str], tv_params: &[&str]) -> IndexerCapsSnapshot {
         prowlarr_caps_snapshot_with_availability(true, movie_params, true, tv_params)
     }
 
@@ -2191,24 +2242,24 @@ mod tests {
         movie_params: &[&str],
         tv_available: bool,
         tv_params: &[&str],
-    ) -> ProwlarrCapsSnapshot {
-        ProwlarrCapsSnapshot {
-            search: crate::indexers::providers::prowlarr::ProwlarrCapsSearchNode {
+    ) -> IndexerCapsSnapshot {
+        IndexerCapsSnapshot {
+            search: Some(IndexerCapsSearchNode {
                 available: true,
                 supported_params: vec!["q".to_string()],
                 search_engine: None,
-            },
-            movie_search: crate::indexers::providers::prowlarr::ProwlarrCapsSearchNode {
+            }),
+            movie_search: Some(IndexerCapsSearchNode {
                 available: movie_available,
                 supported_params: movie_params.iter().map(|value| value.to_string()).collect(),
                 search_engine: None,
-            },
-            tv_search: crate::indexers::providers::prowlarr::ProwlarrCapsSearchNode {
+            }),
+            tv_search: Some(IndexerCapsSearchNode {
                 available: tv_available,
                 supported_params: tv_params.iter().map(|value| value.to_string()).collect(),
                 search_engine: None,
-            },
-            ..ProwlarrCapsSnapshot::default()
+            }),
+            ..IndexerCapsSnapshot::default()
         }
     }
 
@@ -2333,7 +2384,7 @@ mod tests {
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: calls.clone(),
-            responder: StdArc::new(|_| response_with_titles(&["12.Years.a.Slave.2013"])),
+            responder: StdArc::new(|_| response_with_titles(&["12.Lanterns.of.Winter.2013"])),
         });
         let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
@@ -2348,10 +2399,10 @@ mod tests {
 
         let response = multi
             .search(
-                "12 Years a Slave".to_string(),
+                "12 Lanterns of Winter".to_string(),
                 HashMap::from([
-                    ("imdb_id".to_string(), "tt2024544".to_string()),
-                    ("tmdb_id".to_string(), "76203".to_string()),
+                    ("imdb_id".to_string(), "tt12004567".to_string()),
+                    ("tmdb_id".to_string(), "120045".to_string()),
                 ]),
                 None,
                 Some("movie".to_string()),
@@ -2371,23 +2422,19 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(
             recorded[0].ids,
-            HashMap::from([("imdb_id".to_string(), "tt2024544".to_string())])
+            HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())])
         );
     }
 
     #[tokio::test]
-    async fn managed_prowlarr_caps_snapshot_can_aggregate_supported_ids() {
+    async fn direct_newznab_without_caps_snapshot_uses_legacy_static_ids() {
         let mut config = mock_indexer_config();
         config.provider_type = "newznab".into();
-        config.managed_parent_config_id = Some("parent".into());
-        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
-            prowlarr_caps_snapshot(&["q", "tmdbid", "imdbid"], &["q", "season", "ep", "tvdbid"]),
-        )));
 
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: calls.clone(),
-            responder: StdArc::new(|_| response_with_titles(&["Dune.Part.Two.2024"])),
+            responder: StdArc::new(|_| response_with_titles(&["12.Lanterns.of.Winter.2013"])),
         });
         let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
@@ -2402,10 +2449,67 @@ mod tests {
 
         let response = multi
             .search(
-                "Dune Part Two".to_string(),
+                "12 Lanterns of Winter".to_string(),
                 HashMap::from([
-                    ("imdb_id".to_string(), "tt15239678".to_string()),
-                    ("tmdb_id".to_string(), "693134".to_string()),
+                    ("imdb_id".to_string(), "tt12004567".to_string()),
+                    ("tmdb_id".to_string(), "120045".to_string()),
+                ]),
+                None,
+                Some("movie".to_string()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(response.results.len(), 1);
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].ids,
+            HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())])
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_newznab_caps_snapshot_can_widen_ids_when_live_caps_allow_it() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.caps_snapshot_json = Some(
+            serde_json::to_string(&prowlarr_caps_snapshot(
+                &["q", "tmdbid", "imdbid"],
+                &["q", "season", "ep", "tvdbid"],
+            ))
+            .expect("serialize direct caps snapshot"),
+        );
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Solar.Divide.Part.Two.2024"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let response = multi
+            .search(
+                "Solar Divide Part Two".to_string(),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt22006789".to_string()),
+                    ("tmdb_id".to_string(), "220067".to_string()),
                 ]),
                 None,
                 Some("movie".to_string()),
@@ -2426,8 +2530,65 @@ mod tests {
         assert_eq!(
             recorded[0].ids,
             HashMap::from([
-                ("imdb_id".to_string(), "tt15239678".to_string()),
-                ("tmdb_id".to_string(), "693134".to_string()),
+                ("imdb_id".to_string(), "tt22006789".to_string()),
+                ("tmdb_id".to_string(), "220067".to_string()),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_prowlarr_caps_snapshot_can_aggregate_supported_ids() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q", "tmdbid", "imdbid"], &["q", "season", "ep", "tvdbid"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Solar.Divide.Part.Two.2024"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let response = multi
+            .search(
+                "Solar Divide Part Two".to_string(),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt22006789".to_string()),
+                    ("tmdb_id".to_string(), "220067".to_string()),
+                ]),
+                None,
+                Some("movie".to_string()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(response.results.len(), 1);
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].ids,
+            HashMap::from([
+                ("imdb_id".to_string(), "tt22006789".to_string()),
+                ("tmdb_id".to_string(), "220067".to_string()),
             ])
         );
     }
@@ -2442,7 +2603,7 @@ mod tests {
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: calls.clone(),
-            responder: StdArc::new(|_| response_with_titles(&["12.Years.a.Slave.2013"])),
+            responder: StdArc::new(|_| response_with_titles(&["12.Lanterns.of.Winter.2013"])),
         });
         let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
@@ -2457,10 +2618,10 @@ mod tests {
 
         let _response = multi
             .search(
-                "12 Years a Slave".to_string(),
+                "12 Lanterns of Winter".to_string(),
                 HashMap::from([
-                    ("imdb_id".to_string(), "tt2024544".to_string()),
-                    ("tmdb_id".to_string(), "76203".to_string()),
+                    ("imdb_id".to_string(), "tt12004567".to_string()),
+                    ("tmdb_id".to_string(), "120045".to_string()),
                 ]),
                 None,
                 Some("movie".to_string()),
@@ -2478,7 +2639,7 @@ mod tests {
         let recorded = calls.lock().expect("calls").clone();
         assert_eq!(recorded.len(), 1);
         assert!(recorded[0].ids.is_empty());
-        assert_eq!(recorded[0].query, "12 Years a Slave");
+        assert_eq!(recorded[0].query, "12 Lanterns of Winter");
         assert_eq!(recorded[0].facet, None);
         assert!(recorded[0].categories.is_empty());
         assert_eq!(recorded[0].season, None);
@@ -2503,7 +2664,7 @@ mod tests {
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: calls.clone(),
-            responder: StdArc::new(|_| response_with_titles(&["12.Years.a.Slave.2013"])),
+            responder: StdArc::new(|_| response_with_titles(&["12.Lanterns.of.Winter.2013"])),
         });
         let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
@@ -2518,10 +2679,10 @@ mod tests {
 
         let _response = multi
             .search(
-                "12 Years a Slave".to_string(),
+                "12 Lanterns of Winter".to_string(),
                 HashMap::from([
-                    ("imdb_id".to_string(), "tt2024544".to_string()),
-                    ("tmdb_id".to_string(), "76203".to_string()),
+                    ("imdb_id".to_string(), "tt12004567".to_string()),
+                    ("tmdb_id".to_string(), "120045".to_string()),
                 ]),
                 None,
                 Some("movie".to_string()),
@@ -2539,8 +2700,98 @@ mod tests {
         let recorded = calls.lock().expect("calls").clone();
         assert_eq!(recorded.len(), 1);
         assert!(recorded[0].ids.is_empty());
-        assert_eq!(recorded[0].query, "12 Years a Slave");
+        assert_eq!(recorded[0].query, "12 Lanterns of Winter");
         assert_eq!(recorded[0].facet, None);
+        assert!(recorded[0].categories.is_empty());
+    }
+
+    #[tokio::test]
+    async fn managed_prowlarr_children_fall_back_to_default_categories_when_routing_is_empty() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q", "imdbid"], &["q", "season", "ep", "tvdbid"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Category.Fallback.2024"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "Category Fallback".to_string(),
+                HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())]),
+                None,
+                Some("movie".to_string()),
+                Some(vec!["2000".to_string()]),
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].categories, vec!["2000".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn direct_newznab_searches_stay_uncategorized_when_routing_is_empty() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Category.Fallback.2024"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "Category Fallback".to_string(),
+                HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())]),
+                None,
+                Some("movie".to_string()),
+                Some(vec!["2000".to_string()]),
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
         assert!(recorded[0].categories.is_empty());
     }
 
@@ -2770,6 +3021,39 @@ mod tests {
         assert!(calls[1].ids.is_empty());
         assert_eq!(calls[1].query, "Lattice Zero");
         assert_eq!(response.results[0].title, "Lattice.Zero.1999.1080p.BluRay");
+    }
+
+    #[tokio::test]
+    async fn movie_query_backed_id_search_keeps_synthetic_numeric_title_match() {
+        let (client, calls) = scripted_search_client(movie_caps(), |_call| {
+            response_with_titles(&["12.Lanterns.of.Winter.2013.1080p.BluRay.x264-GROUP"])
+        });
+
+        let response = client
+            .search(
+                "12 Lanterns of Winter".into(),
+                HashMap::from([("imdb_id".to_string(), "tt12004567".to_string())]),
+                Some("movie".into()),
+                Some("movie".into()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        let calls = calls.lock().expect("call log mutex");
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].ids.contains_key("imdb_id"));
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].title,
+            "12.Lanterns.of.Winter.2013.1080p.BluRay.x264-GROUP"
+        );
     }
 
     #[tokio::test]

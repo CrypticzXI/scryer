@@ -1,6 +1,6 @@
 use super::*;
 use async_trait::async_trait;
-use scryer_domain::{ImportType, PersistedPluginWasmPayload};
+use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
 use std::collections::BTreeMap;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -351,6 +351,14 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn touch_last_error(&self, provider_type: &str) -> AppResult<()>;
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait IndexerCapsSnapshotRefresher: Send + Sync {
+    async fn fetch_for_config(
+        &self,
+        config: &IndexerConfig,
+    ) -> AppResult<Option<IndexerCapsSnapshot>>;
 }
 
 #[async_trait]

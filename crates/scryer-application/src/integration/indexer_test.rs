@@ -83,6 +83,7 @@ impl AppUseCase {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(normalized_config_json),
@@ -136,6 +137,10 @@ impl AppUseCase {
             )
             .await
             .map_err(|e| AppError::Repository(format!("indexer connection test failed: {e}")))?;
+
+        let _ = self
+            .refresh_caps_snapshot_json_best_effort(&temp_config, None)
+            .await;
 
         Ok(())
     }
@@ -210,6 +215,7 @@ impl AppUseCase {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(normalized_config_json),
@@ -506,6 +512,9 @@ mod tests {
             }
             if let Some(managed_metadata_json) = update.managed_metadata_json {
                 config.managed_metadata_json = managed_metadata_json;
+            }
+            if let Some(caps_snapshot_json) = update.caps_snapshot_json {
+                config.caps_snapshot_json = caps_snapshot_json;
             }
             if let Some(config_json) = update.config_json {
                 config.config_json = Some(config_json);
@@ -1038,6 +1047,7 @@ mod tests {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(
@@ -1081,6 +1091,7 @@ mod tests {
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
+                    caps_snapshot_json: None,
                     config_json: Some(
                         r#"{"base_url":"https://api.nzbgeek.info/","api_key":"bad-key"}"#
                             .to_string(),
@@ -1123,6 +1134,7 @@ mod tests {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(
@@ -1166,6 +1178,7 @@ mod tests {
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
+                    caps_snapshot_json: None,
                     config_json: None,
                 },
             )
@@ -1194,6 +1207,7 @@ mod tests {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(
@@ -1290,6 +1304,7 @@ mod tests {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
@@ -1321,6 +1336,7 @@ mod tests {
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
+                    caps_snapshot_json: None,
                     config_json: None,
                 },
             )
@@ -1565,6 +1581,7 @@ mod tests {
                 enable_interactive_search: false,
                 enable_auto_search: true,
                 managed_metadata_json: Some("{\"source\":\"new\"}".to_string()),
+                caps_snapshot_json: None,
                 routing_scopes: vec![crate::ManagedIndexerRoutingScope {
                     scope_id: "anime".to_string(),
                     categories: vec!["5070".to_string()],
@@ -1717,6 +1734,7 @@ mod tests {
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 last_health_status: None,
                 last_error_at: None,
                 config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
@@ -1741,6 +1759,7 @@ mod tests {
                 managed_parent_config_id: Some("parent".to_string()),
                 managed_child_key: Some("child".to_string()),
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 last_health_status: None,
                 last_error_at: None,
                 config_json: Some(r#"{"feed_url":"https://child.example/rss"}"#.to_string()),
@@ -1797,6 +1816,7 @@ mod tests {
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 last_health_status: None,
                 last_error_at: None,
                 config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
@@ -1821,6 +1841,7 @@ mod tests {
                 managed_parent_config_id: Some("parent".to_string()),
                 managed_child_key: Some("keep".to_string()),
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 last_health_status: None,
                 last_error_at: None,
                 config_json: Some(r#"{"feed_url":"https://child.example/rss"}"#.to_string()),
@@ -1840,6 +1861,7 @@ mod tests {
                 enable_interactive_search: true,
                 enable_auto_search: false,
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 routing_scopes: vec![],
             }],
         };
@@ -1890,6 +1912,7 @@ mod tests {
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 last_health_status: None,
                 last_error_at: None,
                 config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
@@ -1946,6 +1969,7 @@ mod tests {
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 last_health_status: None,
                 last_error_at: None,
                 config_json: Some(
@@ -1972,6 +1996,7 @@ mod tests {
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 last_health_status: None,
                 last_error_at: None,
                 config_json: Some(
@@ -2025,6 +2050,7 @@ mod tests {
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some("{}".to_string()),
@@ -2057,6 +2083,7 @@ mod tests {
                 })
                 .to_string(),
             ),
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(r#"{"feed_url":"https://old.example/rss"}"#.to_string()),
@@ -2078,6 +2105,7 @@ mod tests {
             managed_parent_config_id: Some(parent.id.clone()),
             managed_child_key: Some("delete".to_string()),
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(r#"{"feed_url":"https://delete.example/rss"}"#.to_string()),
@@ -2099,6 +2127,7 @@ mod tests {
                     enable_interactive_search: true,
                     enable_auto_search: false,
                     managed_metadata_json: Some("{\"source\":\"keep\"}".to_string()),
+                    caps_snapshot_json: None,
                     routing_scopes: vec![
                         crate::ManagedIndexerRoutingScope {
                             scope_id: "movie".to_string(),
@@ -2119,6 +2148,7 @@ mod tests {
                     enable_interactive_search: false,
                     enable_auto_search: true,
                     managed_metadata_json: Some("{\"source\":\"new\"}".to_string()),
+                    caps_snapshot_json: None,
                     routing_scopes: vec![crate::ManagedIndexerRoutingScope {
                         scope_id: "anime".to_string(),
                         categories: vec!["5070".to_string(), "5070".to_string()],
@@ -2267,6 +2297,7 @@ mod tests {
                 managed_parent_config_id: Some("parent".to_string()),
                 managed_child_key: Some("child".to_string()),
                 managed_metadata_json: None,
+                caps_snapshot_json: None,
                 last_health_status: None,
                 last_error_at: None,
                 config_json: Some(r#"{"feed_url":"https://managed.example/rss"}"#.to_string()),

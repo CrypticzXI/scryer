@@ -4,7 +4,8 @@ use async_compression::Level;
 use async_compression::tokio::{bufread::ZstdDecoder, write::GzipEncoder};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reqwest::multipart;
+use flate2::{Compression as FlateCompression, write::GzEncoder as SyncGzipEncoder};
+use reqwest::{StatusCode, Url, multipart};
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadClientStatus,
     DownloadGrabResult, NullStagedNzbStore, StagedNzbRef, StagedNzbStore,
@@ -32,10 +33,13 @@ pub struct SabnzbdDownloadClient {
     api_key: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    supports_gzip_nzb_upload: Option<bool>,
     outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
 }
+
+pub const SABNZBD_GZIP_UPLOAD_SUPPORT_KEY: &str = "scryer_sab_supports_gzip_nzb_upload";
 
 #[derive(Debug, Deserialize)]
 struct SabnzbdConfigEnvelope {
@@ -103,6 +107,18 @@ struct SabnzbdFullStatus {
     complete_dir: String,
 }
 
+#[derive(Clone)]
+enum SabApiAuth {
+    ApiKey(String),
+    Credentials { username: String, password: String },
+}
+
+#[derive(Clone)]
+enum SabAddfilePayload {
+    File { path: PathBuf, len: u64 },
+    Bytes(Vec<u8>),
+}
+
 impl SabnzbdDownloadClient {
     pub fn new(base_url: String, api_key: String) -> Self {
         Self::with_auth_and_staged_nzb_store(
@@ -155,12 +171,33 @@ impl SabnzbdDownloadClient {
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
     ) -> Self {
+        Self::with_auth_and_staged_nzb_store_with_gzip_support(
+            base_url,
+            api_key,
+            username,
+            password,
+            None,
+            staged_nzb_store,
+            staged_nzb_pipeline_limit,
+        )
+    }
+
+    pub fn with_auth_and_staged_nzb_store_with_gzip_support(
+        base_url: String,
+        api_key: Option<String>,
+        username: Option<String>,
+        password: Option<String>,
+        supports_gzip_nzb_upload: Option<bool>,
+        staged_nzb_store: Arc<dyn StagedNzbStore>,
+        staged_nzb_pipeline_limit: Arc<Semaphore>,
+    ) -> Self {
         let http_client = default_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: normalize_optional_auth_value(api_key),
             username: normalize_optional_auth_value(username),
             password: normalize_optional_auth_value(password),
+            supports_gzip_nzb_upload,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             staged_nzb_store,
             staged_nzb_pipeline_limit,
@@ -173,6 +210,14 @@ impl SabnzbdDownloadClient {
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join(format!("{}.sab.gz.part", staged_nzb.id))
+    }
+
+    fn sab_nzb_path(staged_nzb: &StagedNzbRef) -> PathBuf {
+        staged_nzb
+            .compressed_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(format!("{}.sab.nzb.part", staged_nzb.id))
     }
 
     async fn build_transient_gzip_artifact(
@@ -223,8 +268,121 @@ impl SabnzbdDownloadClient {
         Ok((gzip_path, gzip_len))
     }
 
+    async fn build_transient_nzb_artifact(
+        &self,
+        staged_nzb: &StagedNzbRef,
+    ) -> AppResult<(PathBuf, u64)> {
+        let nzb_path = Self::sab_nzb_path(staged_nzb);
+        let input = File::open(&staged_nzb.compressed_path)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to open staged nzb {}: {error}",
+                    staged_nzb.compressed_path.display()
+                ))
+            })?;
+        let mut output = File::create(&nzb_path).await.map_err(|error| {
+            AppError::Repository(format!(
+                "failed to create sabnzbd nzb file {}: {error}",
+                nzb_path.display()
+            ))
+        })?;
+
+        let mut decoder = ZstdDecoder::new(BufReader::new(input));
+        tokio::io::copy(&mut decoder, &mut output)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("sabnzbd nzb decompression failed: {error}"))
+            })?;
+        output
+            .flush()
+            .await
+            .map_err(|error| AppError::Repository(format!("sabnzbd nzb flush failed: {error}")))?;
+
+        let nzb_len = tokio::fs::metadata(&nzb_path)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to stat sabnzbd nzb file {}: {error}",
+                    nzb_path.display()
+                ))
+            })?
+            .len();
+
+        Ok((nzb_path, nzb_len))
+    }
+
+    fn build_gzip_probe_payload(&self) -> AppResult<Vec<u8>> {
+        let mut encoder = SyncGzipEncoder::new(Vec::new(), FlateCompression::default());
+        std::io::Write::write_all(&mut encoder, br#"<probe />"#).map_err(|error| {
+            AppError::Repository(format!("sabnzbd gzip probe write failed: {error}"))
+        })?;
+        encoder.finish().map_err(|error| {
+            AppError::Repository(format!("sabnzbd gzip probe finalize failed: {error}"))
+        })
+    }
+
+    pub async fn detect_gzip_nzb_upload_support(&self) -> AppResult<bool> {
+        let probe_payload = self.build_gzip_probe_payload()?;
+        let (status, body) = self
+            .post_addfile_request(
+                &self.api_url(),
+                "__scryer_gzip_probe__",
+                &sabnzbd_queue_priority(None).to_string(),
+                SabAddfilePayload::Bytes(probe_payload),
+                "__scryer_gzip_probe__.nzb.gz",
+                "application/gzip",
+                None,
+                None,
+            )
+            .await?;
+
+        if Self::should_retry_addfile_with_plain_nzb(&body) {
+            return Ok(false);
+        }
+
+        let json: Value = serde_json::from_str(&body).map_err(|err| {
+            AppError::Repository(format!(
+                "sabnzbd gzip capability probe returned non-json response: {err}"
+            ))
+        })?;
+
+        if sab_api_status_is_false(&json) {
+            let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
+            if Self::should_retry_addfile_with_plain_nzb(error_msg) {
+                return Ok(false);
+            }
+            if is_sab_auth_error_message(error_msg) {
+                return Err(map_sabnzbd_api_error(
+                    "sabnzbd gzip capability probe",
+                    Some(status),
+                    error_msg,
+                ));
+            }
+            return Ok(true);
+        }
+
+        if !status.is_success() {
+            return Err(map_sabnzbd_response_error(
+                "sabnzbd gzip capability probe",
+                status,
+                body.as_str(),
+            ));
+        }
+
+        let nzo_id = sab_addfile_nzo_id(&json).ok_or_else(|| {
+            AppError::Repository(
+                "sabnzbd gzip capability probe succeeded without returning an nzo_id for cleanup"
+                    .to_string(),
+            )
+        })?;
+        self.delete_probe_submission(nzo_id).await?;
+
+        Ok(true)
+    }
+
     fn api_url(&self) -> String {
-        format!("{}/api", self.base_url)
+        build_sab_api_url(&self.base_url)
     }
 
     async fn api_get(&self, params: &[(&str, &str)]) -> AppResult<Value> {
@@ -247,21 +405,44 @@ impl SabnzbdDownloadClient {
         policy: RequestPolicy,
     ) -> AppResult<Value> {
         let url = self.api_url();
-        let mut query = self.auth_query_params()?;
-        query.push(("output".to_string(), "json".to_string()));
-        query.extend(
+        let mut form_or_query = vec![("output".to_string(), "json".to_string())];
+        form_or_query.extend(
             params
                 .iter()
                 .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
         );
 
-        let response = self
-            .outbound_http
-            .send(policy, || {
-                self.outbound_http.client().get(&url).query(&query)
-            })
-            .await
-            .map_err(|error| map_sabnzbd_outbound_error("sabnzbd api call", error))?;
+        let response = match self.api_auth()? {
+            SabApiAuth::ApiKey(api_key) => {
+                form_or_query.push(("apikey".to_string(), api_key));
+                self.outbound_http
+                    .send(policy, || {
+                        self.outbound_http.client().get(&url).query(&form_or_query)
+                    })
+                    .await
+            }
+            SabApiAuth::Credentials { username, password } => {
+                form_or_query.push(("ma_username".to_string(), username));
+                form_or_query.push(("ma_password".to_string(), password));
+                let encoded_form = url::form_urlencoded::Serializer::new(String::new())
+                    .extend_pairs(
+                        form_or_query
+                            .iter()
+                            .map(|(key, value)| (key.as_str(), value.as_str())),
+                    )
+                    .finish();
+                self.outbound_http
+                    .send(policy, || {
+                        self.outbound_http
+                            .client()
+                            .post(&url)
+                            .header("Content-Type", "application/x-www-form-urlencoded")
+                            .body(encoded_form.clone())
+                    })
+                    .await
+            }
+        }
+        .map_err(|error| map_sabnzbd_outbound_error("sabnzbd api call", error))?;
 
         let status = response.status();
         let body = response
@@ -270,24 +451,24 @@ impl SabnzbdDownloadClient {
             .map_err(|err| AppError::Repository(format!("sabnzbd response read failed: {err}")))?;
 
         if !status.is_success() {
-            let preview = body.chars().take(600).collect::<String>();
-            return Err(AppError::Repository(format!(
-                "sabnzbd api returned status {status}: {preview}"
-            )));
+            return Err(map_sabnzbd_response_error(
+                "sabnzbd api",
+                status,
+                body.as_str(),
+            ));
         }
 
         let json: Value = serde_json::from_str(&body).map_err(|err| {
             AppError::Repository(format!("sabnzbd returned non-json response: {err}"))
         })?;
 
-        if let Some(false) = json.get("status").and_then(Value::as_bool) {
-            let error_msg = json
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown error");
-            return Err(AppError::Repository(format!(
-                "sabnzbd api error: {error_msg}"
-            )));
+        if sab_api_status_is_false(&json) {
+            let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
+            return Err(map_sabnzbd_api_error(
+                "sabnzbd api",
+                Some(status),
+                error_msg,
+            ));
         }
 
         Ok(json)
@@ -306,8 +487,8 @@ impl SabnzbdDownloadClient {
 
         Ok(json
             .get("history")
-            .and_then(|history| history.get("slots"))
-            .and_then(Value::as_array)
+            .and_then(slots_from_api_section)
+            .or_else(|| json.get("slots").and_then(Value::as_array))
             .cloned()
             .unwrap_or_default())
     }
@@ -332,20 +513,155 @@ impl SabnzbdDownloadClient {
             })
     }
 
-    fn auth_query_params(&self) -> AppResult<Vec<(String, String)>> {
+    fn api_auth(&self) -> AppResult<SabApiAuth> {
         if let Some(api_key) = self.api_key.as_ref() {
-            return Ok(vec![("apikey".to_string(), api_key.clone())]);
+            return Ok(SabApiAuth::ApiKey(api_key.clone()));
         }
 
         match (self.username.as_ref(), self.password.as_ref()) {
-            (Some(username), Some(password)) => Ok(vec![
-                ("ma_username".to_string(), username.clone()),
-                ("ma_password".to_string(), password.clone()),
-            ]),
+            (Some(username), Some(password)) => Ok(SabApiAuth::Credentials {
+                username: username.clone(),
+                password: password.clone(),
+            }),
             _ => Err(AppError::Validation(
                 "sabnzbd requires an API key or username/password".to_string(),
             )),
         }
+    }
+
+    async fn post_addfile_request(
+        &self,
+        url: &str,
+        nzb_name: &str,
+        queue_priority: &str,
+        upload_payload: SabAddfilePayload,
+        upload_filename: &str,
+        upload_mime: &str,
+        cat: Option<&str>,
+        password: Option<&str>,
+    ) -> AppResult<(reqwest::StatusCode, String)> {
+        let auth_api_key = self.api_key.clone();
+        let auth_username = self.username.clone();
+        let auth_password = self.password.clone();
+        let upload_payload = upload_payload.clone();
+        let upload_filename = upload_filename.to_string();
+        let url = url.to_string();
+        let nzb_name = nzb_name.to_string();
+        let queue_priority = queue_priority.to_string();
+        let upload_mime = upload_mime.to_string();
+        let cat = cat.map(str::to_string);
+        let password = password.map(str::to_string);
+
+        let response = self
+            .outbound_http
+            .send_async(self.mutation_policy("sabnzbd_addfile"), move || {
+                let url = url.clone();
+                let nzb_name = nzb_name.clone();
+                let queue_priority = queue_priority.clone();
+                let upload_payload = upload_payload.clone();
+                let upload_filename = upload_filename.clone();
+                let upload_mime = upload_mime.clone();
+                let cat = cat.clone();
+                let password = password.clone();
+                let auth_api_key = auth_api_key.clone();
+                let auth_username = auth_username.clone();
+                let auth_password = auth_password.clone();
+                async move {
+                    let nzb_part = match upload_payload {
+                        SabAddfilePayload::File { path, len } => {
+                            let upload_file = File::open(&path).await.map_err(|error| {
+                                AppError::Repository(format!(
+                                    "failed to reopen sabnzbd upload file {}: {error}",
+                                    path.display()
+                                ))
+                            })?;
+                            multipart::Part::stream_with_length(
+                                reqwest::Body::wrap_stream(ReaderStream::new(upload_file)),
+                                len,
+                            )
+                        }
+                        SabAddfilePayload::Bytes(bytes) => multipart::Part::bytes(bytes),
+                    }
+                    .file_name(upload_filename)
+                    .mime_str(&upload_mime)
+                    .map_err(|err| {
+                        AppError::Repository(format!("sabnzbd multipart build failed: {err}"))
+                    })?;
+
+                    let mut form = multipart::Form::new()
+                        .text("output", "json")
+                        .text("mode", "addfile")
+                        .text("nzbname", nzb_name)
+                        .text("priority", queue_priority)
+                        .part("nzbfile", nzb_part);
+                    form = if let Some(api_key) = auth_api_key {
+                        form.text("apikey", api_key)
+                    } else if let (Some(username), Some(password)) = (auth_username, auth_password)
+                    {
+                        form.text("ma_username", username)
+                            .text("ma_password", password)
+                    } else {
+                        return Err(AppError::Validation(
+                            "sabnzbd requires an API key or username/password".to_string(),
+                        ));
+                    };
+
+                    if let Some(cat) = cat {
+                        form = form.text("cat", cat);
+                    }
+                    if let Some(password) = password {
+                        form = form.text("password", password);
+                    }
+
+                    Ok::<_, AppError>(self.outbound_http.client().post(&url).multipart(form))
+                }
+            })
+            .await
+            .map_err(|error| match error {
+                scryer_outbound_http::OutboundRequestError::Build(error) => error,
+                scryer_outbound_http::OutboundRequestError::Http(error) => {
+                    map_sabnzbd_outbound_error("sabnzbd addfile call", error)
+                }
+            })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|err| {
+            AppError::Repository(format!("sabnzbd addfile response read failed: {err}"))
+        })?;
+
+        Ok((status, body))
+    }
+
+    fn should_retry_addfile_with_plain_nzb(body: &str) -> bool {
+        let normalized = body.to_ascii_lowercase();
+        let mentions_gzip_magic = normalized.contains("0x1f")
+            || normalized.contains("\\u001f")
+            || normalized.contains("'\\u001f'");
+        let looks_like_parser_failure = normalized.contains("invalid character")
+            || normalized.contains("unexpected character")
+            || normalized.contains("parse error")
+            || normalized.contains("parsing xml")
+            || normalized.contains("xml")
+            || normalized.contains("doctype");
+
+        mentions_gzip_magic && looks_like_parser_failure
+    }
+
+    async fn delete_probe_submission(&self, nzo_id: &str) -> AppResult<()> {
+        let queue_cleanup = self.delete_queue_item(nzo_id, false).await;
+        if queue_cleanup.is_ok() {
+            return Ok(());
+        }
+        let queue_error = queue_cleanup
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "unknown queue cleanup failure".to_string());
+
+        self.delete_queue_item(nzo_id, true).await.map_err(|error| {
+            AppError::Repository(format!(
+                "sabnzbd gzip capability probe cleanup failed for {nzo_id}: queue={queue_error}; history={error}"
+            ))
+        })
     }
 
     fn derive_sorting_mode(config: &SabnzbdConfig) -> Option<String> {
@@ -412,7 +728,6 @@ impl SabnzbdDownloadClient {
     }
 
     pub async fn test_connection(&self) -> AppResult<String> {
-        // First check connectivity with unauthenticated version call
         let url = self.api_url();
         let response = self
             .outbound_http
@@ -426,21 +741,42 @@ impl SabnzbdDownloadClient {
             .map_err(|error| map_sabnzbd_outbound_error("sabnzbd test call", error))?;
 
         let status = response.status();
-        if !status.is_success() {
-            return Err(AppError::Repository(format!(
-                "sabnzbd test call returned status {status}"
-            )));
-        }
-
         let body = response.text().await.map_err(|err| {
             AppError::Repository(format!("sabnzbd test response read failed: {err}"))
         })?;
-
-        let json: Value = serde_json::from_str(&body).map_err(|err| {
-            AppError::Repository(format!(
-                "sabnzbd test call returned non-json response: {err}"
-            ))
-        })?;
+        let json = if status.is_success() {
+            let json: Value = serde_json::from_str(&body).map_err(|err| {
+                AppError::Repository(format!(
+                    "sabnzbd test call returned non-json response: {err}"
+                ))
+            })?;
+            if sab_api_status_is_false(&json) {
+                let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
+                if is_sab_auth_error_message(error_msg) {
+                    self.api_get(&[("mode", "version")])
+                        .await
+                        .map_err(map_sabnzbd_auth_validation_error)?
+                } else {
+                    return Err(map_sabnzbd_api_error(
+                        "sabnzbd test call",
+                        Some(status),
+                        error_msg,
+                    ));
+                }
+            } else {
+                json
+            }
+        } else if is_sab_auth_error_message(&extract_sab_error_detail(&body)) {
+            self.api_get(&[("mode", "version")])
+                .await
+                .map_err(map_sabnzbd_auth_validation_error)?
+        } else {
+            return Err(map_sabnzbd_response_error(
+                "sabnzbd test call",
+                status,
+                body.as_str(),
+            ));
+        };
 
         let version = json
             .get("version")
@@ -457,12 +793,10 @@ impl SabnzbdDownloadClient {
             ));
         }
 
-        // Validate the API key by making an authenticated request
+        // Validate the configured auth mode by making an authenticated request.
         self.api_get(&[("mode", "queue"), ("limit", "0")])
             .await
-            .map_err(|err| {
-                AppError::Repository(format!("sabnzbd authentication validation failed: {err}"))
-            })?;
+            .map_err(map_sabnzbd_auth_validation_error)?;
 
         if warnings.is_empty() {
             Ok(version)
@@ -494,14 +828,9 @@ impl DownloadClient for SabnzbdDownloadClient {
         )
         .await?;
         let mut transient_gzip_path: Option<PathBuf> = None;
+        let mut transient_nzb_path: Option<PathBuf> = None;
 
         let result: AppResult<DownloadGrabResult> = async {
-            let (gzip_path, gzip_len) = self
-                .build_transient_gzip_artifact(&staged.staged_nzb)
-                .await?;
-            transient_gzip_path = Some(gzip_path.clone());
-            self.staged_nzb_store.mark_artifact_active(&gzip_path)?;
-
             let url = self.api_url();
             let cat = request
                 .category
@@ -518,111 +847,120 @@ impl DownloadClient for SabnzbdDownloadClient {
             let nzb_name_owned = nzb_name.to_string();
             let queue_priority =
                 sabnzbd_queue_priority(request.queue_priority.as_deref()).to_string();
-            let gzip_path_for_request = gzip_path.clone();
-            let nzb_filename_for_request = if nzb_name.to_ascii_lowercase().ends_with(".nzb") {
-                format!("{nzb_name}.gz")
+            let use_gzip_first = self.supports_gzip_nzb_upload.unwrap_or(true);
+            let fallback_allowed = self.supports_gzip_nzb_upload.is_none();
+
+            let (mut status, mut body) = if use_gzip_first {
+                let (gzip_path, gzip_len) = self
+                    .build_transient_gzip_artifact(&staged.staged_nzb)
+                    .await?;
+                transient_gzip_path = Some(gzip_path.clone());
+                self.staged_nzb_store.mark_artifact_active(&gzip_path)?;
+                let nzb_filename_for_request = if nzb_name.to_ascii_lowercase().ends_with(".nzb") {
+                    format!("{nzb_name}.gz")
+                } else {
+                    format!("{nzb_name}.nzb.gz")
+                };
+
+                self.post_addfile_request(
+                    &url,
+                    &nzb_name_owned,
+                    &queue_priority,
+                    SabAddfilePayload::File {
+                        path: gzip_path,
+                        len: gzip_len,
+                    },
+                    &nzb_filename_for_request,
+                    "application/gzip",
+                    cat.as_deref(),
+                    password.as_deref(),
+                )
+                .await?
             } else {
-                format!("{nzb_name}.nzb.gz")
+                let (nzb_path, nzb_len) = self
+                    .build_transient_nzb_artifact(&staged.staged_nzb)
+                    .await?;
+                self.staged_nzb_store.mark_artifact_active(&nzb_path)?;
+                transient_nzb_path = Some(nzb_path.clone());
+
+                let plain_nzb_filename = if nzb_name.to_ascii_lowercase().ends_with(".nzb") {
+                    nzb_name.to_string()
+                } else {
+                    format!("{nzb_name}.nzb")
+                };
+
+                self.post_addfile_request(
+                    &url,
+                    &nzb_name_owned,
+                    &queue_priority,
+                    SabAddfilePayload::File {
+                        path: nzb_path,
+                        len: nzb_len,
+                    },
+                    &plain_nzb_filename,
+                    "application/x-nzb",
+                    cat.as_deref(),
+                    password.as_deref(),
+                )
+                .await?
             };
-            let response = self
-                .outbound_http
-                .send_async(self.mutation_policy("sabnzbd_addfile"), || {
-                    let url = url.clone();
-                    let nzb_name_owned = nzb_name_owned.clone();
-                    let queue_priority = queue_priority.clone();
-                    let gzip_path_for_request = gzip_path_for_request.clone();
-                    let nzb_filename_for_request = nzb_filename_for_request.clone();
-                    let cat = cat.clone();
-                    let password = password.clone();
-                    let auth_api_key = self.api_key.clone();
-                    let auth_username = self.username.clone();
-                    let auth_password = self.password.clone();
-                    async move {
-                        let gzip_file =
-                            File::open(&gzip_path_for_request).await.map_err(|error| {
-                                AppError::Repository(format!(
-                                    "failed to reopen sabnzbd gzip file {}: {error}",
-                                    gzip_path_for_request.display()
-                                ))
-                            })?;
-                        let nzb_part = multipart::Part::stream_with_length(
-                            reqwest::Body::wrap_stream(ReaderStream::new(gzip_file)),
-                            gzip_len,
-                        )
-                        .file_name(nzb_filename_for_request)
-                        .mime_str("application/gzip")
-                        .map_err(|err| {
-                            AppError::Repository(format!("sabnzbd multipart build failed: {err}"))
-                        })?;
 
-                        let mut form = multipart::Form::new()
-                            .text("output", "json")
-                            .text("mode", "addfile")
-                            .text("nzbname", nzb_name_owned)
-                            .text("priority", queue_priority)
-                            .part("nzbfile", nzb_part);
-                        form = if let Some(api_key) = auth_api_key {
-                            form.text("apikey", api_key)
-                        } else if let (Some(username), Some(password)) =
-                            (auth_username, auth_password)
-                        {
-                            form.text("ma_username", username)
-                                .text("ma_password", password)
-                        } else {
-                            return Err(AppError::Validation(
-                                "sabnzbd requires an API key or username/password".to_string(),
-                            ));
-                        };
+            if fallback_allowed && Self::should_retry_addfile_with_plain_nzb(&body) {
+                debug!(
+                    nzb_name = nzb_name_owned.as_str(),
+                    "sabnzbd addfile gzip upload rejected; retrying with plain nzb for legacy config"
+                );
+                let (nzb_path, nzb_len) = self
+                    .build_transient_nzb_artifact(&staged.staged_nzb)
+                    .await?;
+                self.staged_nzb_store.mark_artifact_active(&nzb_path)?;
+                transient_nzb_path = Some(nzb_path.clone());
 
-                        if let Some(cat) = cat {
-                            form = form.text("cat", cat);
-                        }
-                        if let Some(password) = password {
-                            form = form.text("password", password);
-                        }
+                let plain_nzb_filename = if nzb_name.to_ascii_lowercase().ends_with(".nzb") {
+                    nzb_name.to_string()
+                } else {
+                    format!("{nzb_name}.nzb")
+                };
 
-                        Ok::<_, AppError>(self.outbound_http.client().post(&url).multipart(form))
-                    }
-                })
-                .await
-                .map_err(|error| match error {
-                    scryer_outbound_http::OutboundRequestError::Build(error) => error,
-                    scryer_outbound_http::OutboundRequestError::Http(error) => {
-                        map_sabnzbd_outbound_error("sabnzbd addfile call", error)
-                    }
-                })?;
-
-            let status = response.status();
-            let body = response.text().await.map_err(|err| {
-                AppError::Repository(format!("sabnzbd addfile response read failed: {err}"))
-            })?;
+                (status, body) = self
+                    .post_addfile_request(
+                        &url,
+                        &nzb_name_owned,
+                        &queue_priority,
+                        SabAddfilePayload::File {
+                            path: nzb_path,
+                            len: nzb_len,
+                        },
+                        &plain_nzb_filename,
+                        "application/x-nzb",
+                        cat.as_deref(),
+                        password.as_deref(),
+                    )
+                    .await?;
+            }
 
             if !status.is_success() {
-                let preview = body.chars().take(600).collect::<String>();
-                return Err(AppError::Repository(format!(
-                    "sabnzbd addfile returned status {status}: {preview}"
-                )));
+                return Err(map_sabnzbd_response_error(
+                    "sabnzbd addfile",
+                    status,
+                    body.as_str(),
+                ));
             }
 
             let json: Value = serde_json::from_str(&body).map_err(|err| {
                 AppError::Repository(format!("sabnzbd addfile returned non-json response: {err}"))
             })?;
 
-            if let Some(false) = json.get("status").and_then(Value::as_bool) {
-                let error_msg = json
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error");
-                return Err(AppError::Repository(format!(
-                    "sabnzbd addfile error: {error_msg}"
-                )));
+            if sab_api_status_is_false(&json) {
+                let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
+                return Err(map_sabnzbd_api_error(
+                    "sabnzbd addfile",
+                    Some(status),
+                    error_msg,
+                ));
             }
 
-            let nzo_id = json
-                .get("nzo_ids")
-                .and_then(Value::as_array)
-                .and_then(|ids| ids.first())
-                .and_then(Value::as_str)
+            let nzo_id = sab_addfile_nzo_id(&json)
                 .map(str::to_string)
                 .ok_or_else(|| {
                     AppError::Repository("sabnzbd addfile did not return an nzo_id".into())
@@ -661,6 +999,24 @@ impl DownloadClient for SabnzbdDownloadClient {
                 );
             }
         }
+        if let Some(nzb_path) = transient_nzb_path {
+            if let Err(error) = self.staged_nzb_store.mark_artifact_inactive(&nzb_path) {
+                warn!(
+                    path = %nzb_path.display(),
+                    error = %error,
+                    "failed to mark transient sabnzbd nzb artifact inactive"
+                );
+            }
+            if let Err(error) = tokio::fs::remove_file(&nzb_path).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                warn!(
+                    path = %nzb_path.display(),
+                    error = %error,
+                    "failed to delete transient sabnzbd nzb artifact"
+                );
+            }
+        }
 
         if staged.self_staged
             && let Err(error) = self
@@ -687,8 +1043,8 @@ impl DownloadClient for SabnzbdDownloadClient {
 
         let slots = json
             .get("queue")
-            .and_then(|q| q.get("slots"))
-            .and_then(Value::as_array);
+            .and_then(slots_from_api_section)
+            .or_else(|| json.get("slots").and_then(Value::as_array));
 
         let slots = match slots {
             Some(s) => s,
@@ -1100,6 +1456,115 @@ fn map_sabnzbd_outbound_error(operation: &str, error: OutboundHttpError) -> AppE
             AppError::Repository(format!("{operation} failed: {source}"))
         }
     }
+}
+
+fn map_sabnzbd_auth_validation_error(error: AppError) -> AppError {
+    match error {
+        AppError::Repository(message) => AppError::Repository(format!(
+            "sabnzbd authentication validation failed: {message}"
+        )),
+        AppError::Validation(message) => AppError::Repository(format!(
+            "sabnzbd authentication validation failed: {message}"
+        )),
+        other => AppError::Repository(format!("sabnzbd authentication validation failed: {other}")),
+    }
+}
+
+fn map_sabnzbd_response_error(operation: &str, status: StatusCode, body: &str) -> AppError {
+    let detail = extract_sab_error_detail(body);
+    if status == StatusCode::UNAUTHORIZED
+        || status == StatusCode::FORBIDDEN
+        || is_sab_auth_error_message(&detail)
+    {
+        return AppError::Repository(format!("sabnzbd authentication failed: {detail}"));
+    }
+
+    AppError::Repository(format!("{operation} returned status {status}: {detail}"))
+}
+
+fn map_sabnzbd_api_error(operation: &str, status: Option<StatusCode>, detail: &str) -> AppError {
+    if status
+        .is_some_and(|value| value == StatusCode::UNAUTHORIZED || value == StatusCode::FORBIDDEN)
+        || is_sab_auth_error_message(detail)
+    {
+        return AppError::Repository(format!("sabnzbd authentication failed: {detail}"));
+    }
+
+    AppError::Repository(format!("{operation} error: {detail}"))
+}
+
+fn build_sab_api_url(base_url: &str) -> String {
+    let fallback = || format!("{}/api", base_url.trim_end_matches('/'));
+    let Ok(mut url) = Url::parse(base_url) else {
+        return fallback();
+    };
+
+    let mut path_segments = url
+        .path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if path_segments.last().copied() != Some("api") {
+        path_segments.push("api");
+    }
+    let normalized_path = if path_segments.is_empty() {
+        "/api".to_string()
+    } else {
+        format!("/{}", path_segments.join("/"))
+    };
+    url.set_path(&normalized_path);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string().trim_end_matches('/').to_string()
+}
+
+fn slots_from_api_section(section: &Value) -> Option<&Vec<Value>> {
+    match section {
+        Value::Array(slots) => Some(slots),
+        Value::Object(_) => section.get("slots").and_then(Value::as_array),
+        _ => None,
+    }
+}
+
+fn sab_api_status_is_false(json: &Value) -> bool {
+    match json.get("status") {
+        Some(Value::Bool(false)) => true,
+        Some(Value::String(value)) => value.eq_ignore_ascii_case("false"),
+        _ => false,
+    }
+}
+
+fn sab_api_error_message(json: &Value) -> Option<&str> {
+    json.get("error")
+        .and_then(Value::as_str)
+        .or_else(|| json.get("message").and_then(Value::as_str))
+}
+
+fn sab_addfile_nzo_id(json: &Value) -> Option<&str> {
+    json.get("nzo_ids")
+        .and_then(Value::as_array)
+        .and_then(|ids| ids.first())
+        .and_then(Value::as_str)
+}
+
+fn extract_sab_error_detail(body: &str) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|json| sab_api_error_message(&json).map(str::to_string))
+        .filter(|detail| !detail.trim().is_empty())
+        .unwrap_or_else(|| body.chars().take(600).collect())
+}
+
+fn is_sab_auth_error_message(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("authentication")
+        || normalized.contains("unauthorized")
+        || normalized.contains("forbidden")
+        || normalized.contains("api key required")
+        || normalized.contains("apikey required")
+        || normalized.contains("login failed")
+        || normalized.contains("invalid api key")
+        || normalized.contains("invalid credentials")
 }
 
 fn sabnzbd_queue_priority(raw_priority: Option<&str>) -> i32 {

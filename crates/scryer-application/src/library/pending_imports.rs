@@ -265,6 +265,38 @@ fn library_scan_summary_has_pending_import_success(summary: &LibraryScanSummary)
     summary.imported > 0 || summary.matched > 0
 }
 
+async fn pending_import_already_bound_to_title(
+    app: &AppUseCase,
+    title_id: &str,
+    item: &LibraryScanUnmatchedItem,
+    scan_path: &str,
+) -> AppResult<bool> {
+    let normalized_scan_path = scan_path.trim();
+    if normalized_scan_path.is_empty() {
+        return Ok(false);
+    }
+
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(title_id)
+        .await?;
+
+    Ok(match item.facet {
+        MediaFacet::Movie => {
+            let folder_prefix = format!("{normalized_scan_path}/");
+            media_files.iter().any(|media_file| {
+                media_file.file_path == normalized_scan_path
+                    || media_file.file_path.starts_with(folder_prefix.as_str())
+            })
+        }
+        MediaFacet::Series | MediaFacet::Anime => media_files
+            .iter()
+            .any(|media_file| media_file.file_path == normalized_scan_path),
+    })
+}
+
 struct PendingImportResolutionGuard {
     pending_import_id: String,
     locks: Arc<std::sync::Mutex<HashSet<String>>>,
@@ -687,6 +719,17 @@ impl AppUseCase {
                     Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => {
                         summary
                     }
+                    Ok(summary)
+                        if pending_import_already_bound_to_title(
+                            self,
+                            &title.id,
+                            &item,
+                            &scan_path_string,
+                        )
+                        .await? =>
+                    {
+                        summary
+                    }
                     Ok(_) => {
                         self.rollback_created_pending_import_title(actor, &title, created)
                             .await;
@@ -711,6 +754,17 @@ impl AppUseCase {
 
                 match self.scan_title_library(actor, &title.id).await {
                     Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => {
+                        summary
+                    }
+                    Ok(summary)
+                        if pending_import_already_bound_to_title(
+                            self,
+                            &title.id,
+                            &item,
+                            &scan_path_string,
+                        )
+                        .await? =>
+                    {
                         summary
                     }
                     Ok(_) => {
@@ -754,6 +808,17 @@ impl AppUseCase {
 
             match self.scan_title_library(actor, &title.id).await {
                 Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => summary,
+                Ok(summary)
+                    if pending_import_already_bound_to_title(
+                        self,
+                        &title.id,
+                        &item,
+                        &scan_path_string,
+                    )
+                    .await? =>
+                {
+                    summary
+                }
                 Ok(_) => {
                     self.rollback_pending_import_title_binding(
                         actor,

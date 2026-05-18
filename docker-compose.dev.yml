@@ -25,22 +25,78 @@ services:
       - "3001:3000"
     volumes:
       - ./tmp/nzbdav/config:/config
-      - ./tmp/nzbdav/mnt:/mnt/nzbdav
+      - ./tmp/nzbdav/mnt:/mnt/nzbdav:rshared
     networks:
       default:
         aliases:
           - scryer-sabnzbd
 
-  weaver:
-    image: ghcr.io/scryer-media/weaver:latest
-    container_name: scryer-weaver
+  altmount:
+    image: ghcr.io/javi11/altmount:latest
+    container_name: scryer-altmount
+    hostname: scryer-altmount
     environment:
-      RUST_LOG: info
+      PUID: 1000
+      PGID: 1000
+      TZ: Etc/UTC
+      PORT: 8080
+      JWT_SECRET: ${SCRYER_ALTMOUNT_JWT_SECRET:-scryer-dev-altmount-secret}
+      COOKIE_DOMAIN: ${SCRYER_ALTMOUNT_COOKIE_DOMAIN:-localhost}
     ports:
-      - "9090:9090"
+      - "3002:8080"
     volumes:
-      - ./tmp/weaver/data:/data
-      - ./tmp/weaver-downloads:/weaver-downloads
+      - ./tmp/altmount/config:/config
+      - ./tmp/altmount/metadata:/metadata
+      - ./tmp/altmount/mnt:/mnt/altmount
+    networks:
+      default:
+        aliases:
+          - scryer-altmount
+    # Uncomment on Linux hosts if you want AltMount to manage an internal FUSE mount.
+    # devices:
+    #   - /dev/fuse:/dev/fuse:rwm
+    # cap_add:
+    #   - SYS_ADMIN
+    # security_opt:
+    #   - apparmor:unconfined
+
+  decypharr:
+    image: ghcr.io/sirrobot01/decypharr:latest
+    container_name: scryer-decypharr
+    hostname: scryer-decypharr
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: Etc/UTC
+      UMASK: "002"
+    ports:
+      - "3003:8282"
+    volumes:
+      - ./tmp/decypharr/config:/config
+      - ./tmp/decypharr/cache:/cache
+      - ./tmp/decypharr/mnt:/mnt/decypharr
+    networks:
+      default:
+        aliases:
+          - scryer-decypharr
+    # Uncomment on Linux hosts if you want Decypharr to manage an internal FUSE mount.
+    # devices:
+    #   - /dev/fuse:/dev/fuse:rwm
+    # cap_add:
+    #   - SYS_ADMIN
+    # security_opt:
+    #   - apparmor:unconfined
+
+  # weaver:
+  #   image: ghcr.io/scryer-media/weaver:latest
+  #   container_name: scryer-weaver
+  #   environment:
+  #     RUST_LOG: info
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./tmp/weaver/data:/data
+  #     - ./tmp/weaver-downloads:/weaver-downloads
 
   scryer:
     build:
@@ -55,7 +111,9 @@ services:
     depends_on:
       - nzbget
       - nzbdav
-      - weaver
+      - altmount
+      - decypharr
+      # - weaver
     env_file:
       - crates/scryer/.env
     environment:
@@ -82,9 +140,11 @@ services:
       - scryer-cargo-registry:/usr/local/cargo/registry
       - scryer-cargo-git:/usr/local/cargo/git
       - scryer-config:/config
-      - ./tmp/nzbdav/mnt:/mnt/nzbdav
+      - ./tmp/nzbdav/mnt:/mnt/nzbdav:rshared
+      - ./tmp/altmount/mnt:/mnt/altmount
+      - ./tmp/decypharr/mnt:/mnt/decypharr
       - ./tmp/nzbget-downloads:/nzbget-downloads
-      - ./tmp/weaver-downloads:/weaver-downloads
+      # - ./tmp/weaver-downloads:/weaver-downloads
     ports:
       - "8080:8080"
 

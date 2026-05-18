@@ -901,6 +901,9 @@ async fn bootstrap_application(
         .with_staged_nzb_store(staged_nzb_store)
         .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
         .with_indexer_stats(indexer_stats)
+        .with_indexer_caps_refresher(Arc::new(
+            scryer_infrastructure::indexer_caps::DirectNabCapsSnapshotRefresher::new(),
+        ))
         .with_plugin_provider(plugin_provider)
         .with_download_client_plugin_provider(download_client_plugin_provider.clone())
         .with_subtitle_provider_configs(subtitle_provider_configs)

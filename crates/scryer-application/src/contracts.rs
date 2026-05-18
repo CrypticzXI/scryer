@@ -199,6 +199,7 @@ pub struct IndexerConfigUpdate {
     pub managed_parent_config_id: Option<Option<String>>,
     pub managed_child_key: Option<Option<String>>,
     pub managed_metadata_json: Option<Option<String>>,
+    pub caps_snapshot_json: Option<Option<String>>,
     pub config_json: Option<String>,
 }
 
@@ -215,6 +216,7 @@ impl IndexerConfigUpdate {
             || self.managed_parent_config_id.is_some()
             || self.managed_child_key.is_some()
             || self.managed_metadata_json.is_some()
+            || self.caps_snapshot_json.is_some()
             || self.config_json.is_some()
     }
 }
@@ -295,6 +297,7 @@ pub struct ManagedIndexerChildPlan {
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
     pub managed_metadata_json: Option<String>,
+    pub caps_snapshot_json: Option<String>,
     pub routing_scopes: Vec<ManagedIndexerRoutingScope>,
 }
 

@@ -48,7 +48,7 @@ import type {
   RuleSetDraft,
   RuleValidationResult,
 } from "@/lib/types/rule-sets";
-import ruleInputContract from "../../../../../crates/scryer-rules/rule-input-contract.json";
+import ruleInputContract from "@/lib/contracts/rule-input-contract.json";
 
 type SettingsRulesSectionProps = {
   isEditorOpen: boolean;

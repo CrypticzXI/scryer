@@ -170,6 +170,71 @@ pub(crate) fn build_stream_pointer_media_file_analysis() -> crate::MediaFileAnal
     }
 }
 
+fn build_synthetic_media_file_analysis(
+    parsed: &crate::ParsedReleaseMetadata,
+    container_format: Option<String>,
+) -> crate::MediaFileAnalysis {
+    let (video_width, video_height) = infer_video_dimensions(parsed.quality.as_deref());
+
+    crate::MediaFileAnalysis {
+        video_codec: None,
+        video_width,
+        video_height,
+        video_bitrate_kbps: None,
+        video_bit_depth: None,
+        video_hdr_format: None,
+        video_frame_rate: None,
+        video_profile: None,
+        audio_codec: None,
+        audio_profile: None,
+        audio_channels: None,
+        audio_bitrate_kbps: None,
+        audio_languages: Vec::new(),
+        audio_streams: Vec::new(),
+        subtitle_languages: Vec::new(),
+        subtitle_codecs: Vec::new(),
+        subtitle_streams: Vec::new(),
+        has_multiaudio: false,
+        duration_seconds: None,
+        num_chapters: None,
+        container_format,
+    }
+}
+
+fn build_stream_pointer_media_file_analysis_from_parsed(
+    parsed: &crate::ParsedReleaseMetadata,
+) -> crate::MediaFileAnalysis {
+    build_synthetic_media_file_analysis(parsed, Some("strm".to_string()))
+}
+
+fn infer_video_dimensions(quality: Option<&str>) -> (Option<i32>, Option<i32>) {
+    match quality
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("2160p") => (Some(3840), Some(2160)),
+        Some("1080p") => (Some(1920), Some(1080)),
+        Some("720p") => (Some(1280), Some(720)),
+        Some("480p") => (Some(854), Some(480)),
+        _ => (None, None),
+    }
+}
+
+fn inferred_container_format_for_path(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| ext.to_ascii_lowercase())
+}
+
+fn path_is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
 /// Probe a file at the given path and validate it against the quality profile and user rules.
 /// The file does NOT need to be at its final destination — this can probe a file in-place
 /// at its download location before any move/copy.
@@ -194,7 +259,7 @@ pub(crate) async fn probe_and_validate(
         .is_some_and(|ext| ext.eq_ignore_ascii_case("strm"))
     {
         return ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
-            analysis: Some(build_stream_pointer_media_file_analysis()),
+            analysis: Some(build_stream_pointer_media_file_analysis_from_parsed(parsed)),
             scan_error: None,
         }));
     }
@@ -203,8 +268,14 @@ pub(crate) async fn probe_and_validate(
         Ok(analysis) => analysis,
         Err(error) => {
             warn!(error = %error, path = %path.display(), "media analysis failed");
+            let synthetic_analysis = path_is_symlink(path).then(|| {
+                build_synthetic_media_file_analysis(
+                    parsed,
+                    inferred_container_format_for_path(path),
+                )
+            });
             return ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
-                analysis: None,
+                analysis: synthetic_analysis,
                 scan_error: Some(error.to_string()),
             }));
         }

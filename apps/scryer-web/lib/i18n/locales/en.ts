@@ -427,6 +427,12 @@ const en: LocaleDictionary = {
   "settings.downloadClientRemotePathMappings": "Remote Path Mappings",
   "settings.downloadClientRemotePathMappingsHelp":
     "Each rule is saved as REMOTE => LOCAL.",
+  "settings.downloadClientArtifactMode": "Completed Download Artifact Mode",
+  "settings.downloadClientArtifactModeHelp":
+    "Choose how Scryer should interpret completed SAB-compatible downloads. Use NZBDAV .strm for mounted .strm artifacts, or NZBDAV Plex symlink when completed-symlinks is mounted locally through rclone --links.",
+  "settings.downloadClientArtifactModePlain": "Plain Filesystem Download",
+  "settings.downloadClientArtifactModeNzbdavStrm": "NZBDAV .strm",
+  "settings.downloadClientArtifactModeNzbdavSymlink": "NZBDAV Plex Symlink",
   "settings.downloadClientRemotePathMappingsRemoteLabel": "Remote Path",
   "settings.downloadClientRemotePathMappingsRemoteHelp":
     "Path reported by the download client.",

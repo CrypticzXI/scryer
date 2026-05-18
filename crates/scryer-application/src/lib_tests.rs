@@ -2056,6 +2056,129 @@ impl IndexerClient for FixedReleaseIndexerClient {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedSearchCall {
+    facet: Option<String>,
+    newznab_categories: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedStructuredQueryCall {
+    query: String,
+    season: Option<u32>,
+    episode: Option<u32>,
+    absolute_episode: Option<u32>,
+}
+
+#[derive(Clone)]
+struct RecordingCategoriesIndexerClient {
+    release_title: String,
+    calls: Arc<Mutex<Vec<RecordedSearchCall>>>,
+}
+
+impl RecordingCategoriesIndexerClient {
+    fn new(release_title: impl Into<String>) -> Self {
+        Self {
+            release_title: release_title.into(),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecordingStructuredQueryIndexerClient {
+    calls: Arc<Mutex<Vec<RecordedStructuredQueryCall>>>,
+}
+
+#[async_trait]
+impl IndexerClient for RecordingCategoriesIndexerClient {
+    async fn search(
+        &self,
+        _query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        facet: Option<String>,
+        newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        _season: Option<u32>,
+        _episode: Option<u32>,
+        _absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        self.calls.lock().await.push(RecordedSearchCall {
+            facet,
+            newznab_categories,
+        });
+
+        Ok(IndexerSearchResponse {
+            results: vec![IndexerSearchResult {
+                source: "nzbgeek".into(),
+                title: self.release_title.clone(),
+                link: Some("https://example.invalid/info".to_string()),
+                download_url: Some("https://example.invalid/download.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                size_bytes: None,
+                published_at: Some("1970-01-01T00:00:00Z".into()),
+                thumbs_up: None,
+                thumbs_down: None,
+                indexer_languages: None,
+                indexer_subtitles: None,
+                indexer_grabs: None,
+                password_hint: None,
+                parsed_release_metadata: Some(crate::parse_release_metadata(&self.release_title)),
+                quality_profile_decision: None,
+                extra: Default::default(),
+                guid: Some("guid-recording-release".to_string()),
+                info_url: Some("https://example.invalid/info".to_string()),
+                provenance: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+                candidate_token: None,
+                queue_scope: None,
+            }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
+#[async_trait]
+impl IndexerClient for RecordingStructuredQueryIndexerClient {
+    async fn search(
+        &self,
+        query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        _facet: Option<String>,
+        _newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        self.calls.lock().await.push(RecordedStructuredQueryCall {
+            query,
+            season,
+            episode,
+            absolute_episode,
+        });
+
+        Ok(IndexerSearchResponse {
+            results: vec![],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
 #[derive(Clone)]
 struct MultiReleaseIndexerClient {
     release_titles: Vec<String>,
@@ -2921,6 +3044,7 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
             managed_parent_config_id,
             managed_child_key,
             managed_metadata_json,
+            caps_snapshot_json,
             config_json,
         } = update;
         let mut entries = self.store.lock().await;
@@ -2961,6 +3085,9 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         }
         if let Some(managed_metadata_json) = managed_metadata_json {
             item.managed_metadata_json = managed_metadata_json;
+        }
+        if let Some(caps_snapshot_json) = caps_snapshot_json {
+            item.caps_snapshot_json = caps_snapshot_json;
         }
         if let Some(config_json) = config_json {
             item.config_json = Some(config_json);
@@ -6172,6 +6299,7 @@ async fn ensure_indexer_routing_entries_for_existing_indexers_backfills_missing_
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(
@@ -11031,6 +11159,242 @@ async fn search_titles_supports_facet_filter() {
         .expect("list titles");
 
     assert!(tvs.iter().all(|item| item.facet == MediaFacet::Series));
+}
+
+#[tokio::test]
+async fn search_indexers_for_title_keeps_direct_nab_searches_uncategorized_when_routing_is_empty() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let recording_client = Arc::new(RecordingCategoriesIndexerClient::new(
+        "Generic.Release.2026.1080p.WEB-DL",
+    ));
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
+
+    let movie = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Default Category Movie".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2026),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie title");
+    let series = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Default Category Series".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+    let anime = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Default Category Anime".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+
+    app.search_indexers_for_title(&user, movie.id.clone())
+        .await
+        .expect("movie search should succeed");
+    app.search_indexers_for_title(&user, series.id.clone())
+        .await
+        .expect("series search should succeed");
+    app.search_indexers_for_title(&user, anime.id.clone())
+        .await
+        .expect("anime search should succeed");
+
+    let calls = recording_client.calls.lock().await.clone();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0].newznab_categories, None);
+    assert_eq!(calls[1].newznab_categories, None);
+    assert_eq!(calls[2].newznab_categories, None);
+}
+
+#[tokio::test]
+async fn search_indexers_for_episode_dedupes_equivalent_structured_series_queries() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let recording_client = Arc::new(RecordingStructuredQueryIndexerClient::default());
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Synthetic Signal".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "2".to_string(),
+            label: Some("Season 2".to_string()),
+            ordered_path: None,
+            narrative_order: Some("2".to_string()),
+            first_episode_number: Some("11".to_string()),
+            last_episode_number: Some("11".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+
+    app.services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("11".to_string()),
+            season_number: Some("2".to_string()),
+            episode_label: Some("S02E11".to_string()),
+            title: Some("Episode 11".to_string()),
+            air_date: Some("2026-01-01".to_string()),
+            duration_seconds: Some(1_500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: Some("tvdb-series-211".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create series episode");
+
+    app.search_indexers_for_episode(&user, title.id.clone(), "2".to_string(), "11".to_string())
+        .await
+        .expect("series episode search should succeed");
+
+    let calls = recording_client.calls.lock().await.clone();
+    assert_eq!(
+        calls,
+        vec![RecordedStructuredQueryCall {
+            query: "Synthetic Signal S02E11".to_string(),
+            season: Some(2),
+            episode: Some(11),
+            absolute_episode: None,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn search_indexers_for_episode_dedupes_equivalent_structured_anime_queries() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let recording_client = Arc::new(RecordingStructuredQueryIndexerClient::default());
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Synthetic Atlas".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "2".to_string(),
+            label: Some("Season 2".to_string()),
+            ordered_path: None,
+            narrative_order: Some("2".to_string()),
+            first_episode_number: Some("11".to_string()),
+            last_episode_number: Some("11".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create anime season");
+
+    app.services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("11".to_string()),
+            season_number: Some("2".to_string()),
+            episode_label: Some("S02E11".to_string()),
+            title: Some("Episode 11".to_string()),
+            air_date: Some("2026-01-01".to_string()),
+            duration_seconds: Some(1_500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("35".to_string()),
+            overview: None,
+            tvdb_id: Some("tvdb-anime-211".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create anime episode");
+
+    app.search_indexers_for_episode(&user, title.id.clone(), "2".to_string(), "11".to_string())
+        .await
+        .expect("anime episode search should succeed");
+
+    let calls = recording_client.calls.lock().await.clone();
+    assert_eq!(
+        calls,
+        vec![RecordedStructuredQueryCall {
+            query: "Synthetic Atlas 035".to_string(),
+            season: Some(2),
+            episode: Some(11),
+            absolute_episode: Some(35),
+        }]
+    );
 }
 
 #[tokio::test]

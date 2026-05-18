@@ -627,6 +627,7 @@ pub struct IndexerConfig {
     pub managed_parent_config_id: Option<String>,
     pub managed_child_key: Option<String>,
     pub managed_metadata_json: Option<String>,
+    pub caps_snapshot_json: Option<String>,
     pub last_health_status: Option<String>,
     pub last_error_at: Option<DateTime<Utc>>,
     pub config_json: Option<String>,
@@ -1217,6 +1218,7 @@ impl ImportSkipReason {
 pub enum ImportStrategy {
     HardLink,
     Copy,
+    Symlink,
 }
 
 impl ImportStrategy {
@@ -1224,6 +1226,7 @@ impl ImportStrategy {
         match self {
             Self::HardLink => "hardlink",
             Self::Copy => "copy",
+            Self::Symlink => "symlink",
         }
     }
 }
@@ -2598,6 +2601,40 @@ pub struct IndexerCategoryModel {
     pub provider_category_metadata: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<IndexerCategoryDescriptor>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerCapsSearchNode {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_params: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_engine: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerCapsSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits_default: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits_max: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tv_search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movie_search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music_search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub book_search: Option<IndexerCapsSearchNode>,
+    #[serde(default)]
+    pub categories: IndexerCategoryModel,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

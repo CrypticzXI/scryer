@@ -4483,6 +4483,30 @@ pub async fn start_background_acquisition_poller(
         });
     }
 
+    // Refresh managed Prowlarr children as soon as the app is up so startup
+    // picks up upstream indexer/config changes without waiting for the first
+    // 5-minute interval.
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            if let Err(error) = app
+                .run_scheduled_job_now(JobKey::ProwlarrSync, JobTriggerSource::ScheduledStartup)
+                .await
+            {
+                warn!(error = %error, "initial Prowlarr sync failed");
+            }
+        });
+    }
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let actor = scryer_domain::User::new_admin("system-indexer-caps");
+            if let Err(error) = app.refresh_enabled_direct_nab_caps_snapshots(&actor).await {
+                warn!(error = %error, "initial direct indexer caps refresh failed");
+            }
+        });
+    }
+
     app.set_job_next_run_at(
         JobKey::WantedSync,
         Utc::now() + chrono::Duration::seconds(settings.sync_interval_seconds.max(1) as i64),
@@ -4538,6 +4562,8 @@ pub async fn start_background_acquisition_poller(
     let mut staged_nzb_prune_interval = tokio::time::interval(std::time::Duration::from_hours(1));
     let mut housekeeping_interval = tokio::time::interval(std::time::Duration::from_hours(24));
     let mut prowlarr_sync_interval = tokio::time::interval(std::time::Duration::from_mins(5));
+    let mut direct_indexer_caps_interval =
+        tokio::time::interval(std::time::Duration::from_hours(24));
     let mut rss_sync_interval = tokio::time::interval(std::time::Duration::from_mins(15));
     let mut pending_release_interval = tokio::time::interval(std::time::Duration::from_mins(1));
 
@@ -4550,6 +4576,7 @@ pub async fn start_background_acquisition_poller(
     staged_nzb_prune_interval.tick().await;
     housekeeping_interval.tick().await;
     prowlarr_sync_interval.tick().await;
+    direct_indexer_caps_interval.tick().await;
     rss_sync_interval.tick().await;
     pending_release_interval.tick().await;
 
@@ -4700,6 +4727,16 @@ pub async fn start_background_acquisition_poller(
                     if let Err(e) = app.run_scheduled_job_now(JobKey::ProwlarrSync, JobTriggerSource::ScheduledInterval).await {
                         warn!(error = %e, "periodic Prowlarr sync failed");
                         metrics::counter!("scryer_task_errors_total", "task" => "prowlarr_sync").increment(1);
+                    }
+                }).await;
+            }
+            _ = direct_indexer_caps_interval.tick() => {
+                let app = app.clone();
+                run_task("direct_indexer_caps", async move {
+                    let actor = scryer_domain::User::new_admin("system-indexer-caps");
+                    if let Err(error) = app.refresh_enabled_direct_nab_caps_snapshots(&actor).await {
+                        warn!(error = %error, "periodic direct indexer caps refresh failed");
+                        metrics::counter!("scryer_task_errors_total", "task" => "direct_indexer_caps").increment(1);
                     }
                 }).await;
             }

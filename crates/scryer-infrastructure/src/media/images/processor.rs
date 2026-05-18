@@ -65,9 +65,9 @@ impl HttpTitleImageProcessor {
     async fn fetch_source(
         &self,
         source_url: &str,
-    ) -> AppResult<(Vec<u8>, Option<String>, Option<String>)> {
-        let source_url = validate_title_image_source_url(source_url)?;
-        let scope = title_image_scope(source_url);
+    ) -> AppResult<(String, Vec<u8>, Option<String>, Option<String>)> {
+        let source_url = normalize_title_image_source_url(source_url)?;
+        let scope = title_image_scope(&source_url);
         let response = self
             .outbound_http
             .send(
@@ -77,7 +77,7 @@ impl HttpTitleImageProcessor {
                         std::time::Duration::from_millis(500),
                         std::time::Duration::from_secs(10),
                     ),
-                || self.outbound_http.client().get(source_url),
+                || self.outbound_http.client().get(source_url.as_str()),
             )
             .await
             .map_err(|error| match error {
@@ -147,7 +147,7 @@ impl HttpTitleImageProcessor {
             )));
         }
 
-        Ok((bytes.to_vec(), etag, last_modified))
+        Ok((source_url, bytes.to_vec(), etag, last_modified))
     }
 
     fn process_bytes(
@@ -231,9 +231,23 @@ impl HttpTitleImageProcessor {
     }
 }
 
-fn validate_title_image_source_url(source_url: &str) -> AppResult<&str> {
-    let parsed = url::Url::parse(source_url)
-        .map_err(|error| AppError::Validation(format!("invalid title image URL: {error}")))?;
+fn normalize_title_image_source_url(source_url: &str) -> AppResult<String> {
+    let trimmed = source_url.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(
+            "title image URL must not be empty".into(),
+        ));
+    }
+
+    let mut parsed = match reqwest::Url::parse(trimmed) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            let relative = trimmed.trim_start_matches('/');
+            reqwest::Url::parse(&format!("https://artworks.thetvdb.com/{relative}")).map_err(
+                |error| AppError::Validation(format!("invalid title image URL: {error}")),
+            )?
+        }
+    };
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(AppError::Validation(
             "title image URL must use http or https".into(),
@@ -249,7 +263,16 @@ fn validate_title_image_source_url(source_url: &str) -> AppResult<&str> {
             "title image URL must not include credentials".into(),
         ));
     }
-    Ok(source_url)
+
+    let normalized_path = parsed
+        .path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    parsed.set_path(&format!("/{normalized_path}"));
+
+    Ok(parsed.to_string())
 }
 
 fn title_image_scope(source_url: &str) -> String {
@@ -275,9 +298,8 @@ impl TitleImageProcessor for HttpTitleImageProcessor {
         kind: TitleImageKind,
         source_url: &str,
     ) -> AppResult<TitleImageReplacement> {
-        let (bytes, etag, last_modified) = self.fetch_source(source_url).await?;
+        let (source_url, bytes, etag, last_modified) = self.fetch_source(source_url).await?;
         let this = self.clone();
-        let source_url = source_url.to_string();
         tokio::task::spawn_blocking(move || {
             scryer_application::nice_thread();
             this.process_bytes(kind, &source_url, &bytes, etag, last_modified)
@@ -679,6 +701,28 @@ mod tests {
         assert_eq!(widths.get("w500"), Some(&(120, 180)));
         assert_eq!(widths.get("w250"), Some(&(120, 180)));
         assert_eq!(widths.get("w70"), Some(&(70, 105)));
+    }
+
+    #[test]
+    fn normalize_title_image_source_url_expands_relative_tvdb_paths() {
+        assert_eq!(
+            normalize_title_image_source_url(
+                "/banners/movies/147325/backgrounds//5vyMUvxy6W0xU9Unnh5M7WXkh4l.jpg"
+            )
+            .expect("relative TVDB path should normalize"),
+            "https://artworks.thetvdb.com/banners/movies/147325/backgrounds/5vyMUvxy6W0xU9Unnh5M7WXkh4l.jpg"
+        );
+    }
+
+    #[test]
+    fn normalize_title_image_source_url_collapses_duplicate_path_separators() {
+        assert_eq!(
+            normalize_title_image_source_url(
+                "https://artworks.thetvdb.com/banners/posters//example.jpg"
+            )
+            .expect("absolute TVDB URL should normalize"),
+            "https://artworks.thetvdb.com/banners/posters/example.jpg"
+        );
     }
 
     #[test]

@@ -15,6 +15,9 @@ use std::path::Path;
 use crate::domain_events::{
     new_global_domain_event, new_title_domain_event, title_context_snapshot,
 };
+use crate::download_client_path_mappings::{
+    DownloadClientArtifactMode, parse_download_client_artifact_mode,
+};
 use crate::import_workflow::import_completed_download;
 use crate::tracked_downloads::TrackedDownload;
 use crate::{AppResult, AppUseCase, DownloadSourceIdentity, User};
@@ -25,7 +28,9 @@ use crate::{
 const PATH_WAITING_MESSAGE: &str =
     "Completed download path is not available yet. Retrying for up to 10 minutes.";
 const PATH_BLOCKED_MESSAGE: &str = "Completed download path is still unavailable. Check remote path mappings, volume mounts, or download paths, then retry manually.";
+const PATH_BLOCKED_NZBDAV_SYMLINK_MESSAGE: &str = "Completed download path is still unavailable. Check remote path mappings, confirm the NZBDAV completed-symlinks mount is visible to Scryer, and make sure the rclone mount was started with --links before retrying manually.";
 const PATH_URL_UNSUPPORTED_MESSAGE: &str = "Completed download path is a URL, not a local filesystem path. Mount it locally or use remote path mappings before retrying.";
+const COMPLETED_DOWNLOAD_ARTIFACT_MODE_KEY: &str = "*scryer_download_artifact_mode";
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
@@ -482,6 +487,29 @@ async fn remap_completed_download_for_client(app: &AppUseCase, completed: &mut C
         }
     };
 
+    match parse_download_client_artifact_mode(&config.config_json) {
+        Ok(mode) => {
+            if mode != DownloadClientArtifactMode::Plain {
+                upsert_parameter(
+                    &mut completed.parameters,
+                    COMPLETED_DOWNLOAD_ARTIFACT_MODE_KEY,
+                    match mode {
+                        DownloadClientArtifactMode::Plain => "plain".to_string(),
+                        DownloadClientArtifactMode::NzbdavStrm => "nzbdav_strm".to_string(),
+                        DownloadClientArtifactMode::NzbdavSymlink => "nzbdav_symlink".to_string(),
+                    },
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                error = %error,
+                "find_completed_download: failed to parse artifact mode"
+            );
+        }
+    }
+
     match parse_download_client_remote_path_mappings(&config.config_json) {
         Ok(mappings) => apply_remote_path_mappings_to_completed_download(completed, &mappings),
         Err(error) => {
@@ -707,8 +735,24 @@ fn evaluate_completed_download_path(
     }
 
     td.status = TrackedDownloadStatus::Warning;
-    td.status_messages = vec![PATH_BLOCKED_MESSAGE.to_string()];
+    td.status_messages = vec![missing_completed_download_path_message(completed)];
     CompletedDownloadPathState::Blocked
+}
+
+fn missing_completed_download_path_message(completed: &CompletedDownload) -> String {
+    let artifact_mode = completed
+        .parameters
+        .iter()
+        .find_map(|(key, value)| {
+            (key == COMPLETED_DOWNLOAD_ARTIFACT_MODE_KEY).then_some(value.as_str())
+        })
+        .unwrap_or_default();
+
+    if artifact_mode == "nzbdav_symlink" || completed.dest_dir.contains("/completed-symlinks/") {
+        PATH_BLOCKED_NZBDAV_SYMLINK_MESSAGE.to_string()
+    } else {
+        PATH_BLOCKED_MESSAGE.to_string()
+    }
 }
 
 fn completed_download_path_is_unsupported_url(dest_dir: &str) -> bool {
@@ -720,6 +764,7 @@ fn clear_path_warnings(td: &mut TrackedDownload) {
     td.status_messages.retain(|message| {
         message != PATH_WAITING_MESSAGE
             && message != PATH_BLOCKED_MESSAGE
+            && message != PATH_BLOCKED_NZBDAV_SYMLINK_MESSAGE
             && message != PATH_URL_UNSUPPORTED_MESSAGE
     });
     if td.status_messages.is_empty() && td.status == TrackedDownloadStatus::Warning {

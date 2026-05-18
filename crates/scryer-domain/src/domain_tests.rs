@@ -394,6 +394,7 @@ fn import_error_code_round_trips() {
 fn import_strategy_as_str() {
     assert_eq!(ImportStrategy::HardLink.as_str(), "hardlink");
     assert_eq!(ImportStrategy::Copy.as_str(), "copy");
+    assert_eq!(ImportStrategy::Symlink.as_str(), "symlink");
 }
 
 // ── NewTitle ──────────────────────────────────────────────────────────────
