@@ -361,7 +361,7 @@ async fn main() {
     }
 
     if let Err(error) =
-        finalize_pending_restore_if_present(&data_dir, &pre_restore_datastore_config)
+        finalize_pending_restore_if_present(&data_dir, &pre_restore_datastore_config).await
     {
         tracing::error!(error = %error, "failed to finalize pending restore");
         std::process::exit(1);
@@ -2139,7 +2139,7 @@ mod tests {
         let services = SqliteServices::new(db_path.to_string_lossy())
             .await
             .unwrap();
-        let customization = DatastoreCustomizationStore::from_sqlite_services(&services);
+        let customization = DatastoreCustomizationStore::new(services.datastore());
         let now = Utc::now();
 
         customization
@@ -2203,7 +2203,7 @@ mod tests {
         let services = SqliteServices::new(db_path.to_string_lossy())
             .await
             .unwrap();
-        let customization = DatastoreCustomizationStore::from_sqlite_services(&services);
+        let customization = DatastoreCustomizationStore::new(services.datastore());
         let now = Utc::now();
         let compressed = vec![
             0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x00, 0x01, 0x00, 0x00, 0x99, 0xe9, 0xd8, 0x51,
@@ -2433,7 +2433,10 @@ mod tests {
         )
         .await
         .expect("sqlite services");
-        let store = Arc::new(SettingsStore::from_sqlite_services(&services));
+        let store = Arc::new(SettingsStore::new(
+            services.datastore(),
+            services.encryption_key_state(),
+        ));
         seed_service_setting_definitions(store.clone())
             .await
             .expect("seed setting definitions");

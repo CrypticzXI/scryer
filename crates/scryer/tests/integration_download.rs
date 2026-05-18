@@ -349,7 +349,10 @@ fn request_with_staged_nzb(
 fn download_client_config_repo(
     ctx: &TestContext,
 ) -> Arc<dyn scryer_application::DownloadClientConfigRepository> {
-    Arc::new(DownloadClientConfigStore::from_sqlite_services(&ctx.db))
+    Arc::new(DownloadClientConfigStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    ))
 }
 
 async fn insert_download_client_config(ctx: &TestContext, config: DownloadClientConfig) {

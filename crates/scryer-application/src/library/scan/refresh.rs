@@ -1,5 +1,6 @@
 use super::*;
 use crate::library_scan_helpers::require_directory_library_path;
+use crate::stored_paths::path_to_stored_string;
 
 async fn title_ready_for_background_refresh(app: &AppUseCase, title: &Title) -> AppResult<bool> {
     let metadata_language = app.metadata_language().await;
@@ -27,13 +28,12 @@ async fn title_ready_for_background_refresh(app: &AppUseCase, title: &Title) -> 
 
 fn movie_refresh_entry_to_library_file(entry: &MovieTopLevelEntry) -> LibraryFile {
     LibraryFile {
-        path: entry.path.to_string_lossy().to_string(),
+        path: path_to_stored_string(&entry.path),
         display_name: entry
             .path
             .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_string(),
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         nfo_path: matching_movie_nfo_path(&entry.path),
         size_bytes: None,
         source_signature_scheme: None,
@@ -42,11 +42,11 @@ fn movie_refresh_entry_to_library_file(entry: &MovieTopLevelEntry) -> LibraryFil
 }
 
 fn movie_refresh_entry_contains_path(entry: &MovieTopLevelEntry, path: &str) -> bool {
+    let entry_path = path_to_stored_string(&entry.path);
     if entry.is_dir {
-        path.starts_with(format!("{}/", entry.path.to_string_lossy()).as_str())
-            || path == entry.path.to_string_lossy().as_ref() as &str
+        path.starts_with(format!("{entry_path}/").as_str()) || path == entry_path
     } else {
-        path == entry.path.to_string_lossy().as_ref() as &str
+        path == entry_path
     }
 }
 
@@ -68,7 +68,9 @@ pub(super) async fn maybe_probe_existing_series_title_for_background_refresh(
                 .services
                 .library
                 .library_scanner
-                .scan_directory_for_progress_with_metrics(folder_path.to_string_lossy().as_ref())
+                .scan_directory_for_progress_with_metrics(
+                    path_to_stored_string(folder_path).as_str(),
+                )
                 .await?;
             let discovered_paths = file_scan
                 .files
@@ -135,7 +137,9 @@ async fn maybe_probe_existing_movie_title_for_background_refresh(
                 app.services
                     .library
                     .library_scanner
-                    .scan_directory_for_progress_with_metrics(entry.path.to_string_lossy().as_ref())
+                    .scan_directory_for_progress_with_metrics(
+                        path_to_stored_string(&entry.path).as_str(),
+                    )
                     .await?
                     .files
             } else {
@@ -238,7 +242,7 @@ pub(super) async fn background_refresh_series(
     let mut unknown_folders = Vec::new();
     for folder in folders {
         summary.scanned += 1;
-        let folder_key = folder.to_string_lossy().to_string();
+        let folder_key = path_to_stored_string(&folder);
         if let Some(&index) = existing_titles_by_folder_path.get(&folder_key) {
             let title = &mut existing_titles[index];
             maybe_probe_existing_series_title_for_background_refresh(
@@ -394,7 +398,7 @@ pub(super) async fn background_refresh_movies(
     let metadata_language = app.metadata_language().await;
     for entry in entries {
         summary.scanned += 1;
-        let entry_key = entry.path.to_string_lossy().to_string();
+        let entry_key = path_to_stored_string(&entry.path);
         if let Some(&index) = existing_titles_by_probe_path.get(&entry_key) {
             let title = &existing_titles[index];
             let collections = collections_by_title

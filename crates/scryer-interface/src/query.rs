@@ -253,36 +253,52 @@ async fn title_payloads_from_titles(
     app: &scryer_application::AppUseCase,
     actor: &scryer_domain::User,
     titles: Vec<scryer_domain::Title>,
+    selection: TitlePayloadSelection,
 ) -> GqlResult<Vec<TitlePayload>> {
     if titles.is_empty() {
         return Ok(Vec::new());
     }
 
     let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
-    let libraries = app
-        .list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
-        .await
-        .map_err(to_gql_error)?;
+    let libraries = if selection.include_library_context {
+        app.list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
     let library_map: std::collections::HashMap<&str, (&String, &String)> = libraries
         .iter()
         .map(|library| (library.id.as_str(), (&library.name, &library.slug)))
         .collect();
-    let summaries = app
-        .list_primary_collection_summaries(actor, &title_ids)
-        .await
-        .map_err(to_gql_error)?;
-    let media_size_summaries = app
-        .list_title_media_size_summaries(actor, &title_ids)
-        .await
-        .map_err(to_gql_error)?;
-    let quality_summaries = app
-        .list_title_quality_summaries(actor, &title_ids)
-        .await
-        .map_err(to_gql_error)?;
-    let episode_progress_summaries = app
-        .list_title_episode_progress_summaries(actor, &title_ids)
-        .await
-        .map_err(to_gql_error)?;
+    let summaries = if selection.include_quality_tier {
+        app.list_primary_collection_summaries(actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
+    let media_size_summaries = if selection.include_size_bytes {
+        app.list_title_media_size_summaries(actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
+    let quality_summaries = if selection.include_current_quality_tier {
+        app.list_title_quality_summaries(actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
+    let episode_progress_summaries = if selection.include_episode_progress {
+        app.list_title_episode_progress_summaries(actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
     let summary_map: std::collections::HashMap<&str, _> =
         summaries.iter().map(|s| (s.title_id.as_str(), s)).collect();
     let media_size_map: std::collections::HashMap<&str, i64> = media_size_summaries
@@ -325,8 +341,31 @@ async fn title_payloads_from_titles(
         .collect())
 }
 
-fn title_external_ids_requested(ctx: &Context<'_>) -> bool {
-    ctx.look_ahead().field("externalIds").exists()
+#[derive(Clone, Copy)]
+struct TitlePayloadSelection {
+    include_external_ids: bool,
+    include_library_context: bool,
+    include_quality_tier: bool,
+    include_current_quality_tier: bool,
+    include_size_bytes: bool,
+    include_episode_progress: bool,
+}
+
+impl TitlePayloadSelection {
+    fn from_ctx(ctx: &Context<'_>) -> Self {
+        let lookahead = ctx.look_ahead();
+        Self {
+            include_external_ids: lookahead.field("externalIds").exists(),
+            include_library_context: lookahead.field("libraryName").exists()
+                || lookahead.field("librarySlug").exists(),
+            include_quality_tier: lookahead.field("qualityTier").exists(),
+            include_current_quality_tier: lookahead.field("currentQualityTier").exists(),
+            include_size_bytes: lookahead.field("sizeBytes").exists(),
+            include_episode_progress: lookahead.field("episodesOwned").exists()
+                || lookahead.field("episodesMonitored").exists()
+                || lookahead.field("episodesTotal").exists(),
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -347,8 +386,9 @@ impl QueryRoot {
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let selection = TitlePayloadSelection::from_ctx(ctx);
         let parsed_facet = facet.map(MediaFacetValue::into_domain);
-        let titles = if title_external_ids_requested(ctx) {
+        let titles = if selection.include_external_ids {
             app.list_titles(&actor, parsed_facet, library_ids, query)
                 .await
         } else {
@@ -357,7 +397,7 @@ impl QueryRoot {
         }
         .map_err(to_gql_error)?;
 
-        title_payloads_from_titles(&app, &actor, titles).await
+        title_payloads_from_titles(&app, &actor, titles, selection).await
     }
 
     async fn libraries(
@@ -403,18 +443,20 @@ impl QueryRoot {
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let selection = TitlePayloadSelection::from_ctx(ctx);
         let titles = app
             .list_titles_by_external_ids(&actor, &source, &values)
             .await
             .map_err(to_gql_error)?;
 
-        title_payloads_from_titles(&app, &actor, titles).await
+        title_payloads_from_titles(&app, &actor, titles, selection).await
     }
 
     async fn title(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let title = if title_external_ids_requested(ctx) {
+        let selection = TitlePayloadSelection::from_ctx(ctx);
+        let title = if selection.include_external_ids {
             app.get_title(&actor, &id).await
         } else {
             app.get_title_without_external_ids(&actor, &id).await
@@ -423,7 +465,7 @@ impl QueryRoot {
         let Some(title) = title else {
             return Ok(None);
         };
-        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title]).await?;
+        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
         Ok(payloads.pop())
     }
 
@@ -437,6 +479,7 @@ impl QueryRoot {
     ) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let selection = TitlePayloadSelection::from_ctx(ctx);
         let Some(title) = app
             .get_title_by_slug(&actor, facet.into_domain(), library_id, library_slug, &slug)
             .await
@@ -444,7 +487,7 @@ impl QueryRoot {
         else {
             return Ok(None);
         };
-        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title]).await?;
+        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
         Ok(payloads.pop())
     }
 

@@ -56,7 +56,3 @@ libc = "0.2"
 [dev-dependencies]
 criterion.workspace = true
 wiremock = { workspace = true }
-
-[[bench]]
-name = "subtitles_bench"
-harness = false

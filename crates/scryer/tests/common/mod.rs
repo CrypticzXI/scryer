@@ -581,9 +581,13 @@ impl TestContext {
                 .expect("failed to create staged nzb store"),
         );
         let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
-        let release_store = Arc::new(ReleaseStore::from_sqlite_services(&db));
-        let settings_store = Arc::new(SettingsStore::from_sqlite_services(&db));
-        let quality_profile_store = Arc::new(QualityProfileStore::from_sqlite_services(&db));
+        let datastore = db.datastore();
+        let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+        let settings_store = Arc::new(SettingsStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
 
         // Real clients pointed at wiremock URLs
         let nzbget = NzbgetDownloadClient::with_staged_nzb_store(
@@ -595,9 +599,14 @@ impl TestContext {
             staged_nzb_pipeline_limit.clone(),
         );
 
-        let indexer_config_store = Arc::new(IndexerConfigStore::from_sqlite_services(&db));
-        let download_client_config_store =
-            Arc::new(DownloadClientConfigStore::from_sqlite_services(&db));
+        let indexer_config_store = Arc::new(IndexerConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
 
         // Build indexer client backed by built-in WASM plugins (using DynamicPluginProvider
         // so reload_plugins works in integration tests)
@@ -627,10 +636,10 @@ impl TestContext {
         );
 
         // Build repository implementations from the shared DB runtime.
-        let title_store = TitleStore::sqlite(&db);
-        let show_store = ShowStore::sqlite(&db);
-        let library_store = LibraryStore::sqlite(&db);
-        let user_store = UserStore::sqlite(&db);
+        let title_store = TitleStore::new(datastore.clone());
+        let show_store = ShowStore::new(datastore.clone());
+        let library_store = LibraryStore::new(datastore.clone());
+        let user_store = UserStore::new(datastore.clone());
         let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(title_store.clone());
         let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(show_store.clone());
         let users: Arc<dyn scryer_application::UserRepository> = Arc::new(user_store.clone());
@@ -643,12 +652,12 @@ impl TestContext {
         let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
             quality_profile_store.clone();
 
-        let library_probe_store = LibraryProbeStore::from_sqlite_services(&db);
-        let wanted_store = WantedStore::from_sqlite_services(&db);
-        let pending_release_store = PendingReleaseStore::from_sqlite_services(&db);
-        let blocklist_store = scryer_infrastructure::BlocklistStore::from_sqlite_services(&db);
-        let housekeeping_store = HousekeepingStore::from_sqlite_services(&db);
-        let subtitle_download_store = SubtitleDownloadStore::from_sqlite_services(&db);
+        let library_probe_store = LibraryProbeStore::new(datastore.clone());
+        let wanted_store = WantedStore::new(datastore.clone());
+        let pending_release_store = PendingReleaseStore::new(datastore.clone());
+        let blocklist_store = scryer_infrastructure::BlocklistStore::new(datastore.clone());
+        let housekeeping_store = HousekeepingStore::new(datastore.clone());
+        let subtitle_download_store = SubtitleDownloadStore::new(datastore.clone());
         let library_state_store = TestLibraryStateStore {
             wanted: wanted_store.clone(),
             pending_releases: pending_release_store.clone(),
@@ -656,22 +665,21 @@ impl TestContext {
             housekeeping: housekeeping_store.clone(),
             subtitle_downloads: subtitle_download_store.clone(),
         };
-        let library_scan_unmatched_store = LibraryScanUnmatchedStore::from_sqlite_services(&db);
-        let media_file_store = MediaFileStore::from_sqlite_services(&db);
-        let title_image_store = TitleImageStore::from_sqlite_services(&db);
-        let rule_set_store = RuleSetStore::from_sqlite_services(&db);
-        let post_processing_script_store = PostProcessingScriptStore::from_sqlite_services(&db);
-        let plugin_store = PluginStore::from_sqlite_services(&db);
-        let domain_event_store = Arc::new(DomainEventStore::from_sqlite_services(&db));
-        let acquisition_store = Arc::new(AcquisitionStore::from_sqlite_services(&db));
-        let download_submission_store =
-            Arc::new(DownloadSubmissionStore::from_sqlite_services(&db));
-        let import_store = Arc::new(ImportStore::from_sqlite_services(&db));
+        let library_scan_unmatched_store = LibraryScanUnmatchedStore::new(datastore.clone());
+        let media_file_store = MediaFileStore::new(datastore.clone());
+        let title_image_store = TitleImageStore::new(datastore.clone());
+        let rule_set_store = RuleSetStore::new(datastore.clone());
+        let post_processing_script_store = PostProcessingScriptStore::new(datastore.clone());
+        let plugin_store = PluginStore::new(datastore.clone());
+        let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
+        let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+        let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
+        let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
-            Arc::new(ExternalImportMonitorStore::from_sqlite_services(&db));
+            Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
         let download_queue_command_store =
-            Arc::new(DownloadQueueCommandStore::from_sqlite_services(&db));
-        let workflow_operation_store = Arc::new(WorkflowOperationStore::from_sqlite_services(&db));
+            Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
+        let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
         let services = AppServices::builder(
             titles,
             shows,

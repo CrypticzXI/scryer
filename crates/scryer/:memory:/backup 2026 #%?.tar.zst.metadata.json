@@ -1,1 +1,0 @@
-{"filename":"backup 2026 #%?.tar.zst","size_bytes":42,"created_at":"2026-05-17T19:27:58.232704+00:00","format_version":"scryer-backup-bundle-v2","source_scryer_version":"0.15.0","source_engine":"sqlite","source_migration_key":"0115","encrypted":false,"row_counts":{"settings_definitions":1},"trigger":"manual","status":"ready","error_message":null}

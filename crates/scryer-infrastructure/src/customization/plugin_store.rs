@@ -13,7 +13,6 @@ use sqlx::Row;
 use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err,
 };
-use crate::sqlite_services::SqliteServices;
 use crate::storage::sql::json::opt_json_text;
 
 #[derive(Clone)]
@@ -34,15 +33,8 @@ struct BuiltinPluginSeed<'a> {
 }
 
 impl PluginStore {
-    pub(crate) fn new(datastore: StoreDatastore) -> Self {
+    pub fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
-    }
-
-    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-        Self::new(StoreDatastore::Sqlite {
-            pool: db.pool().clone(),
-            writer_gate: db.writer_gate(),
-        })
     }
 
     pub async fn delete_incompatible_external_plugin_installations(

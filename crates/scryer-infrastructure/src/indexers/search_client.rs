@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::indexers::providers::prowlarr::{ProwlarrCapsSearchNode, ProwlarrCapsSnapshot};
 use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, IndexerClient, IndexerConfigRepository, IndexerPluginProvider,
     IndexerRoutingPlan, IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker,
     ReleaseCandidateProvenance, ReleaseSearchSubjectKind, SearchMode,
 };
-use scryer_domain::IndexerConfig;
+use scryer_domain::{IndexerConfig, IndexerProviderCapabilities};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -22,6 +23,7 @@ struct SearchStrategy {
     season: Option<u32>,
     episode: Option<u32>,
     absolute_episode: Option<u32>,
+    generic_query_only: bool,
     label: String,
 }
 
@@ -40,9 +42,25 @@ enum TitleGuardMode {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct ManagedIndexerAutoModeMetadata {
+struct ManagedIndexerMetadata {
     enable_rss: Option<bool>,
     enable_automatic_search: Option<bool>,
+    #[serde(default)]
+    caps_snapshot: Option<ProwlarrCapsSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdDispatchMode {
+    LegacyAggregate,
+    Aggregate,
+    QueryOnly,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedSearchCapabilities {
+    caps: IndexerProviderCapabilities,
+    id_dispatch_mode: IdDispatchMode,
+    query_only_reason: Option<&'static str>,
 }
 
 struct FilterStrategyContext<'a> {
@@ -500,7 +518,7 @@ impl MultiIndexerSearchClient {
         let Some(raw) = config.managed_metadata_json.as_deref() else {
             return true;
         };
-        let Ok(metadata) = serde_json::from_str::<ManagedIndexerAutoModeMetadata>(raw) else {
+        let Ok(metadata) = serde_json::from_str::<ManagedIndexerMetadata>(raw) else {
             return true;
         };
 
@@ -508,6 +526,66 @@ impl MultiIndexerSearchClient {
             metadata.enable_rss.unwrap_or(true)
         } else {
             metadata.enable_automatic_search.unwrap_or(true)
+        }
+    }
+
+    fn resolve_search_capabilities(
+        config: &IndexerConfig,
+        static_caps: &IndexerProviderCapabilities,
+        facet: &str,
+    ) -> ResolvedSearchCapabilities {
+        let Some(raw) = config.managed_metadata_json.as_deref() else {
+            return ResolvedSearchCapabilities {
+                caps: static_caps.clone(),
+                id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                query_only_reason: None,
+            };
+        };
+        let Ok(metadata) = serde_json::from_str::<ManagedIndexerMetadata>(raw) else {
+            return ResolvedSearchCapabilities {
+                caps: static_caps.clone(),
+                id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                query_only_reason: None,
+            };
+        };
+        let Some(snapshot) = metadata.caps_snapshot.as_ref() else {
+            let mut caps = static_caps.clone();
+            caps.supported_ids.clear();
+            caps.search_inputs.clear();
+            caps.supported_external_ids.clear();
+            return ResolvedSearchCapabilities {
+                caps,
+                id_dispatch_mode: IdDispatchMode::QueryOnly,
+                query_only_reason: Some("caps snapshot unavailable"),
+            };
+        };
+
+        let mut caps = static_caps.clone();
+        caps.supported_ids = supported_ids_from_caps_snapshot(snapshot);
+        caps.query_param = caps_snapshot_has_query(snapshot, facet).then_some("q".to_string());
+        caps.search_inputs = caps_search_inputs(snapshot, facet);
+        caps.supported_external_ids = supported_external_ids_from_caps_snapshot(snapshot);
+        caps.season_param = snapshot
+            .tv_search
+            .supports_param("season")
+            .then_some("season".to_string());
+        caps.episode_param = snapshot
+            .tv_search
+            .supports_param("ep")
+            .then_some("ep".to_string());
+
+        let id_dispatch_mode = if caps.has_facet(facet) {
+            IdDispatchMode::Aggregate
+        } else {
+            IdDispatchMode::QueryOnly
+        };
+        let query_only_reason = (id_dispatch_mode == IdDispatchMode::QueryOnly)
+            .then_some("no actionable IDs in caps snapshot");
+
+        ResolvedSearchCapabilities {
+            caps,
+            id_dispatch_mode,
+            query_only_reason,
         }
     }
 
@@ -571,14 +649,38 @@ impl MultiIndexerSearchClient {
                     client.search(
                         strategy.request_query,
                         strategy.ids,
-                        category,
-                        Some(facet),
-                        per_indexer_categories,
+                        if strategy.generic_query_only {
+                            None
+                        } else {
+                            category
+                        },
+                        if strategy.generic_query_only {
+                            None
+                        } else {
+                            Some(facet)
+                        },
+                        if strategy.generic_query_only {
+                            None
+                        } else {
+                            per_indexer_categories
+                        },
                         None,
                         mode,
-                        strategy.season,
-                        strategy.episode,
-                        strategy.absolute_episode,
+                        if strategy.generic_query_only {
+                            None
+                        } else {
+                            strategy.season
+                        },
+                        if strategy.generic_query_only {
+                            None
+                        } else {
+                            strategy.episode
+                        },
+                        if strategy.generic_query_only {
+                            None
+                        } else {
+                            strategy.absolute_episode
+                        },
                         tagged_aliases,
                     ),
                 )
@@ -784,9 +886,11 @@ impl IndexerClient for MultiIndexerSearchClient {
                 continue;
             }
 
-            let caps = self
+            let static_caps = self
                 .plugin_provider
                 .capabilities_for_provider(&config.provider_type);
+            let resolved_caps = Self::resolve_search_capabilities(config, &static_caps, &facet);
+            let caps = resolved_caps.caps.clone();
 
             // RSS-only check: skip non-RSS indexers for RSS sync requests
             if is_rss_request && !caps.rss {
@@ -804,7 +908,9 @@ impl IndexerClient for MultiIndexerSearchClient {
             //   AnimeTosho for "Lattice Zero" is pointless when there's no anidb_id.
             let has_facet_entry = caps.has_facet(&facet);
             let has_declared_facets = !caps.supported_ids.is_empty();
-            let skip_no_facet = !has_facet_entry && has_declared_facets;
+            let skip_no_facet = !has_facet_entry
+                && has_declared_facets
+                && !matches!(resolved_caps.id_dispatch_mode, IdDispatchMode::QueryOnly);
             let skip_no_matching_id = has_facet_entry && caps.deduplicates_aliases && {
                 filter_ids_for_types(&available_ids, caps.id_types_for_facet(&facet)).is_empty()
             };
@@ -814,6 +920,36 @@ impl IndexerClient for MultiIndexerSearchClient {
                     facet, "skipping indexer: no supported IDs for facet and no freetext"
                 );
                 continue;
+            }
+
+            if matches!(resolved_caps.id_dispatch_mode, IdDispatchMode::QueryOnly)
+                && let Some(reason) = resolved_caps.query_only_reason
+            {
+                info!(
+                    indexer = config.name.as_str(),
+                    reason, "managed child running in query-only fallback mode"
+                );
+            }
+
+            let filtered_ids =
+                filter_ids_for_types(&available_ids, caps.id_types_for_facet(&facet));
+            if matches!(
+                resolved_caps.id_dispatch_mode,
+                IdDispatchMode::Aggregate | IdDispatchMode::QueryOnly
+            ) {
+                let dropped_ids = available_ids
+                    .keys()
+                    .filter(|id_type| !filtered_ids.contains_key(*id_type))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !dropped_ids.is_empty() {
+                    debug!(
+                        indexer = config.name.as_str(),
+                        facet,
+                        dropped_ids = ?dropped_ids,
+                        "dropping IDs not advertised by effective managed caps"
+                    );
+                }
             }
 
             let client = match Self::client_from_config(config, &self.plugin_provider) {
@@ -933,6 +1069,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 episode,
                 absolute_episode,
                 caps: &caps,
+                id_dispatch_mode: resolved_caps.id_dispatch_mode,
                 is_alias_query: false,
             });
 
@@ -947,6 +1084,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     episode,
                     absolute_episode,
                     caps: &caps,
+                    id_dispatch_mode: resolved_caps.id_dispatch_mode,
                     is_alias_query: true,
                 });
 
@@ -1247,6 +1385,7 @@ struct StrategyParams<'a> {
     episode: Option<u32>,
     absolute_episode: Option<u32>,
     caps: &'a scryer_domain::IndexerProviderCapabilities,
+    id_dispatch_mode: IdDispatchMode,
     is_alias_query: bool,
 }
 
@@ -1261,6 +1400,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     let episode = p.episode;
     let absolute_episode = p.absolute_episode;
     let caps = p.caps;
+    let id_dispatch_mode = p.id_dispatch_mode;
     let is_alias_query = p.is_alias_query;
     // Alias queries skip indexers that deduplicate aliases internally
     if is_alias_query && caps.deduplicates_aliases {
@@ -1271,15 +1411,20 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
 
     let filtered_ids = filter_ids_for_types(ids, caps.id_types_for_facet(facet));
     if !filtered_ids.is_empty() && !is_alias_query {
-        if facet == "anime" {
+        let selected_ids = match id_dispatch_mode {
+            IdDispatchMode::LegacyAggregate | IdDispatchMode::Aggregate => filtered_ids.clone(),
+            IdDispatchMode::QueryOnly => HashMap::new(),
+        };
+        if facet == "anime" && !selected_ids.is_empty() {
             if let Some(absolute_episode) = absolute_episode {
                 strategies.push(SearchStrategy {
                     query: query.to_string(),
                     request_query: String::new(),
-                    ids: filtered_ids.clone(),
+                    ids: selected_ids.clone(),
                     season: None,
                     episode: None,
                     absolute_episode: Some(absolute_episode),
+                    generic_query_only: false,
                     label: "ids_abs".into(),
                 });
             }
@@ -1288,10 +1433,11 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
                 strategies.push(SearchStrategy {
                     query: query.to_string(),
                     request_query: String::new(),
-                    ids: filtered_ids.clone(),
+                    ids: selected_ids.clone(),
                     season,
                     episode,
                     absolute_episode: None,
+                    generic_query_only: false,
                     label: "ids_sxex".into(),
                 });
             }
@@ -1301,10 +1447,11 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
             strategies.push(SearchStrategy {
                 query: query.to_string(),
                 request_query: String::new(),
-                ids: filtered_ids,
+                ids: selected_ids,
                 season,
                 episode,
                 absolute_episode,
+                generic_query_only: false,
                 label: "ids".into(),
             });
         }
@@ -1315,6 +1462,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     // For alias queries, indexers with deduplicates_aliases skip freetext (handled at top).
     let has_facet_entry = caps.has_facet(facet);
     let skip_no_facet = !has_facet_entry && !caps.supported_ids.is_empty();
+    let generic_query_only = id_dispatch_mode == IdDispatchMode::QueryOnly;
     if caps.query_param.is_some() && !query.is_empty() && !skip_no_facet {
         strategies.push(SearchStrategy {
             query: query.to_string(),
@@ -1323,6 +1471,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
             season,
             episode,
             absolute_episode: None,
+            generic_query_only,
             label: if is_alias_query {
                 "freetext_alias".into()
             } else {
@@ -1332,19 +1481,120 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
     }
 
     // If no strategies were generated, fall back to a single combined call
-    if strategies.is_empty() {
+    if strategies.is_empty() && !query.is_empty() && caps.query_param.is_some() {
         strategies.push(SearchStrategy {
             query: query.to_string(),
             request_query: query.to_string(),
-            ids: ids.clone(),
+            ids: HashMap::new(),
             season,
             episode,
-            absolute_episode,
+            absolute_episode: None,
+            generic_query_only,
             label: "fallback".into(),
         });
     }
 
     strategies
+}
+
+fn supported_ids_from_caps_snapshot(
+    snapshot: &ProwlarrCapsSnapshot,
+) -> HashMap<String, Vec<String>> {
+    let mut supported_ids = HashMap::new();
+
+    let movie_ids = actionable_ids_for_node(&snapshot.movie_search, "movie");
+    if !movie_ids.is_empty() {
+        supported_ids.insert("movie".to_string(), movie_ids);
+    }
+
+    let tv_ids = actionable_ids_for_node(&snapshot.tv_search, "tv");
+    if !tv_ids.is_empty() {
+        supported_ids.insert("series".to_string(), tv_ids.clone());
+        supported_ids.insert("anime".to_string(), tv_ids);
+    }
+
+    supported_ids
+}
+
+fn supported_external_ids_from_caps_snapshot(snapshot: &ProwlarrCapsSnapshot) -> Vec<String> {
+    let mut ids = actionable_ids_for_node(&snapshot.movie_search, "movie");
+    ids.extend(actionable_ids_for_node(&snapshot.tv_search, "tv"));
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn actionable_ids_for_node(node: &ProwlarrCapsSearchNode, search_kind: &str) -> Vec<String> {
+    if !node.available {
+        return Vec::new();
+    }
+
+    actionable_ids_for_params(&node.supported_params, search_kind)
+}
+
+fn actionable_ids_for_params(params: &[String], search_kind: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    if params.iter().any(|param| param == "imdbid") {
+        ids.push("imdb_id".to_string());
+    }
+    if params.iter().any(|param| param == "tvdbid") {
+        ids.push("tvdb_id".to_string());
+    }
+    if params.iter().any(|param| param == "tmdbid") {
+        ids.push("tmdb_id".to_string());
+    }
+
+    if search_kind == "movie" {
+        ids.sort_by_key(|value| match value.as_str() {
+            "tmdb_id" => 0,
+            "imdb_id" => 1,
+            _ => 2,
+        });
+    } else {
+        ids.sort_by_key(|value| match value.as_str() {
+            "tvdb_id" => 0,
+            "imdb_id" => 1,
+            "tmdb_id" => 2,
+            _ => 3,
+        });
+    }
+
+    ids.dedup();
+    ids
+}
+
+fn caps_snapshot_has_query(snapshot: &ProwlarrCapsSnapshot, facet: &str) -> bool {
+    snapshot.search.supports_param("q")
+        || match facet {
+            "movie" => snapshot.movie_search.supports_param("q"),
+            "series" | "anime" => snapshot.tv_search.supports_param("q"),
+            _ => false,
+        }
+}
+
+fn caps_search_inputs(
+    snapshot: &ProwlarrCapsSnapshot,
+    facet: &str,
+) -> Vec<scryer_domain::IndexerSearchInputCapability> {
+    let mut inputs = Vec::new();
+    if caps_snapshot_has_query(snapshot, facet) {
+        inputs.push(scryer_domain::IndexerSearchInputCapability::TitleQuery);
+    }
+
+    let facet_ids = supported_ids_from_caps_snapshot(snapshot);
+    if facet_ids.get(facet).is_some_and(|ids| !ids.is_empty()) {
+        inputs.push(scryer_domain::IndexerSearchInputCapability::IdQuery);
+        inputs.push(scryer_domain::IndexerSearchInputCapability::AggregateIdQuery);
+    }
+
+    if snapshot.tv_search.supports_param("season") {
+        inputs.push(scryer_domain::IndexerSearchInputCapability::Season);
+    }
+    if snapshot.tv_search.supports_param("ep") {
+        inputs.push(scryer_domain::IndexerSearchInputCapability::Episode);
+    }
+
+    inputs
 }
 
 fn filter_ids_for_types(
@@ -1711,6 +1961,15 @@ mod tests {
         .to_string()
     }
 
+    fn managed_metadata_with_caps(snapshot: Option<ProwlarrCapsSnapshot>) -> String {
+        serde_json::json!({
+            "enable_rss": true,
+            "enable_automatic_search": true,
+            "caps_snapshot": snapshot,
+        })
+        .to_string()
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedCall {
         query: String,
@@ -1923,6 +2182,36 @@ mod tests {
         }
     }
 
+    fn prowlarr_caps_snapshot(movie_params: &[&str], tv_params: &[&str]) -> ProwlarrCapsSnapshot {
+        prowlarr_caps_snapshot_with_availability(true, movie_params, true, tv_params)
+    }
+
+    fn prowlarr_caps_snapshot_with_availability(
+        movie_available: bool,
+        movie_params: &[&str],
+        tv_available: bool,
+        tv_params: &[&str],
+    ) -> ProwlarrCapsSnapshot {
+        ProwlarrCapsSnapshot {
+            search: crate::indexers::providers::prowlarr::ProwlarrCapsSearchNode {
+                available: true,
+                supported_params: vec!["q".to_string()],
+                search_engine: None,
+            },
+            movie_search: crate::indexers::providers::prowlarr::ProwlarrCapsSearchNode {
+                available: movie_available,
+                supported_params: movie_params.iter().map(|value| value.to_string()).collect(),
+                search_engine: None,
+            },
+            tv_search: crate::indexers::providers::prowlarr::ProwlarrCapsSearchNode {
+                available: tv_available,
+                supported_params: tv_params.iter().map(|value| value.to_string()).collect(),
+                search_engine: None,
+            },
+            ..ProwlarrCapsSnapshot::default()
+        }
+    }
+
     #[tokio::test]
     async fn rss_sync_search_skips_providers_without_rss_capability() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2030,6 +2319,229 @@ mod tests {
 
         assert!(response.results.is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn managed_prowlarr_movie_caps_drop_tmdb_when_proxy_does_not_advertise_it() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q", "imdbid", "genre"], &["q", "season", "ep", "tvdbid"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["12.Years.a.Slave.2013"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let response = multi
+            .search(
+                "12 Years a Slave".to_string(),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt2024544".to_string()),
+                    ("tmdb_id".to_string(), "76203".to_string()),
+                ]),
+                None,
+                Some("movie".to_string()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(response.results.len(), 1);
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].ids,
+            HashMap::from([("imdb_id".to_string(), "tt2024544".to_string())])
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_prowlarr_caps_snapshot_can_aggregate_supported_ids() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q", "tmdbid", "imdbid"], &["q", "season", "ep", "tvdbid"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Dune.Part.Two.2024"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let response = multi
+            .search(
+                "Dune Part Two".to_string(),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt15239678".to_string()),
+                    ("tmdb_id".to_string(), "693134".to_string()),
+                ]),
+                None,
+                Some("movie".to_string()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(response.results.len(), 1);
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].ids,
+            HashMap::from([
+                ("imdb_id".to_string(), "tt15239678".to_string()),
+                ("tmdb_id".to_string(), "693134".to_string()),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_prowlarr_without_caps_snapshot_falls_back_to_query_only() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(None));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["12.Years.a.Slave.2013"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "12 Years a Slave".to_string(),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt2024544".to_string()),
+                    ("tmdb_id".to_string(), "76203".to_string()),
+                ]),
+                None,
+                Some("movie".to_string()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].ids.is_empty());
+        assert_eq!(recorded[0].query, "12 Years a Slave");
+        assert_eq!(recorded[0].facet, None);
+        assert!(recorded[0].categories.is_empty());
+        assert_eq!(recorded[0].season, None);
+        assert_eq!(recorded[0].episode, None);
+        assert_eq!(recorded[0].absolute_episode, None);
+    }
+
+    #[tokio::test]
+    async fn managed_prowlarr_caps_with_unavailable_movie_search_fall_back_to_generic_query() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot_with_availability(
+                false,
+                &["q", "imdbid", "tmdbid"],
+                true,
+                &["q", "season", "ep", "tvdbid"],
+            ),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["12.Years.a.Slave.2013"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "12 Years a Slave".to_string(),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt2024544".to_string()),
+                    ("tmdb_id".to_string(), "76203".to_string()),
+                ]),
+                None,
+                Some("movie".to_string()),
+                Some(vec!["2000".to_string()]),
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].ids.is_empty());
+        assert_eq!(recorded[0].query, "12 Years a Slave");
+        assert_eq!(recorded[0].facet, None);
+        assert!(recorded[0].categories.is_empty());
     }
 
     #[tokio::test]
@@ -2643,6 +3155,7 @@ mod tests {
             episode: Some(5),
             absolute_episode: Some(33),
             caps: &caps,
+            id_dispatch_mode: IdDispatchMode::LegacyAggregate,
             is_alias_query: false,
         });
 
@@ -2721,6 +3234,7 @@ mod tests {
             episode: Some(5),
             absolute_episode: Some(33),
             caps: &caps,
+            id_dispatch_mode: IdDispatchMode::LegacyAggregate,
             is_alias_query: true,
         });
 

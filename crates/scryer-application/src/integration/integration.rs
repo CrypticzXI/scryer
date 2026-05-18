@@ -38,6 +38,31 @@ struct PreparedManagedIndexerChild {
     routing_by_scope: HashMap<String, Vec<String>>,
 }
 
+fn merge_managed_caps_snapshot(existing: Option<&str>, desired: Option<&str>) -> Option<String> {
+    let desired = desired?.trim();
+    if desired.is_empty() {
+        return None;
+    }
+
+    let mut desired_value = serde_json::from_str::<serde_json::Value>(desired).ok()?;
+    let desired_object = desired_value.as_object_mut()?;
+    if desired_object
+        .get("caps_snapshot")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Some(desired.to_string());
+    }
+
+    let existing_snapshot = existing
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+        .and_then(|object| object.get("caps_snapshot").cloned())
+        .filter(|value| !value.is_null())?;
+
+    desired_object.insert("caps_snapshot".to_string(), existing_snapshot);
+    serde_json::to_string(&desired_value).ok()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrackedDownloadBackgroundWorkKind {
     Import,
@@ -1688,6 +1713,11 @@ impl AppUseCase {
 
         for desired in desired_children {
             if let Some(existing) = existing_by_key.remove(&desired.child_key) {
+                let managed_metadata_json = merge_managed_caps_snapshot(
+                    existing.managed_metadata_json.as_deref(),
+                    desired.managed_metadata_json.as_deref(),
+                )
+                .or_else(|| desired.managed_metadata_json.clone());
                 let updated = self
                     .services
                     .integrations
@@ -1704,7 +1734,7 @@ impl AppUseCase {
                         enable_auto_search: Some(desired.enable_auto_search),
                         managed_parent_config_id: Some(Some(parent.id.clone())),
                         managed_child_key: Some(Some(desired.child_key.clone())),
-                        managed_metadata_json: Some(desired.managed_metadata_json.clone()),
+                        managed_metadata_json: Some(managed_metadata_json),
                         config_json: Some(desired.config_json.clone()),
                     })
                     .await?;

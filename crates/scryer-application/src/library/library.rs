@@ -809,29 +809,17 @@ impl AppUseCase {
         let actor = actor.clone();
         let session_id = session.session_id.clone();
         let facet = library.facet.clone();
-        let scanned_library_id = library.id.clone();
         tokio::spawn(async move {
-            let cancel_token = app.library_scan_cancellation_token(&session_id).await;
             let result = app
-                .execute_started_library_scan_session(
+                .run_started_library_scan_session(
                     &actor,
-                    &facet,
-                    &scanned_library_id,
-                    &library_paths,
+                    facet.clone(),
                     &session_id,
                     LibraryScanMode::Full,
-                    cancel_token.clone(),
                 )
                 .await;
             match result {
-                Ok(summary) if library_scan_cancel_requested(cancel_token.as_ref()) => {
-                    app.cancel_started_library_scan_session(&session_id, &summary)
-                        .await;
-                }
-                Ok(summary) => {
-                    app.finalize_started_library_scan_session(&session_id, &summary)
-                        .await;
-                }
+                Ok(_) => {}
                 Err(error) => {
                     warn!(error = %error, session_id = %session_id, "library scan task failed");
                     LibraryScanCoordinator::new(app.clone(), session_id.clone())

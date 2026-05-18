@@ -11,7 +11,6 @@ use crate::config_store::{
 };
 use crate::encryption::EncryptionKey;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
-use crate::sqlite_services::SqliteServices;
 
 const INDEXER_COLUMNS: &str =
     "id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
@@ -37,7 +36,7 @@ pub struct IndexerConfigStore {
 }
 
 impl IndexerConfigStore {
-    pub(crate) fn new(
+    pub fn new(
         datastore: StoreDatastore,
         encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
     ) -> Self {
@@ -45,25 +44,6 @@ impl IndexerConfigStore {
             datastore,
             encryption_key,
         }
-    }
-
-    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-        Self::new(
-            StoreDatastore::Sqlite {
-                pool: db.pool().clone(),
-                writer_gate: db.writer_gate(),
-            },
-            db.encryption_key_state(),
-        )
-    }
-
-    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-        Self::new(
-            StoreDatastore::Postgres {
-                pool: db.pool().clone(),
-            },
-            db.encryption_key_state(),
-        )
     }
 
     pub async fn migrate_legacy_indexer_config_sources(&self) -> AppResult<u64> {

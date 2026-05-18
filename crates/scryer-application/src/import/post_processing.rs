@@ -1,3 +1,4 @@
+use crate::stored_paths::path_to_stored_string;
 use crate::{AppError, AppUseCase};
 use chrono::Utc;
 use scryer_domain::{
@@ -326,7 +327,7 @@ async fn execute_script(
                 title_id: Some(ctx.title_id.clone()),
                 title_name: Some(ctx.title_name.clone()),
                 facet: Some(facet_str.to_string()),
-                file_path: Some(ctx.dest_path.to_string_lossy().to_string()),
+                file_path: Some(path_to_stored_string(&ctx.dest_path)),
                 status: ScriptRunStatus::Failed,
                 exit_code: None,
                 stdout_tail: None,
@@ -378,7 +379,7 @@ async fn execute_script(
                     title_id: Some(ctx.title_id.clone()),
                     title_name: Some(ctx.title_name.clone()),
                     facet: Some(facet_str.to_string()),
-                    file_path: Some(ctx.dest_path.to_string_lossy().to_string()),
+                    file_path: Some(path_to_stored_string(&ctx.dest_path)),
                     status: if status.success() {
                         ScriptRunStatus::Success
                     } else {
@@ -403,7 +404,7 @@ async fn execute_script(
                     title_id: Some(ctx.title_id.clone()),
                     title_name: Some(ctx.title_name.clone()),
                     facet: Some(facet_str.to_string()),
-                    file_path: Some(ctx.dest_path.to_string_lossy().to_string()),
+                    file_path: Some(path_to_stored_string(&ctx.dest_path)),
                     status: ScriptRunStatus::Failed,
                     exit_code: None,
                     stdout_tail: None,
@@ -434,7 +435,7 @@ async fn execute_script(
                     title_id: Some(ctx.title_id.clone()),
                     title_name: Some(ctx.title_name.clone()),
                     facet: Some(facet_str.to_string()),
-                    file_path: Some(ctx.dest_path.to_string_lossy().to_string()),
+                    file_path: Some(path_to_stored_string(&ctx.dest_path)),
                     status: ScriptRunStatus::Timeout,
                     exit_code: None,
                     stdout_tail: Some(last_bytes_utf8(&stdout_bytes, 4096)),
@@ -459,7 +460,7 @@ async fn execute_script(
                     title_id: Some(ctx.title_id.clone()),
                     title_name: Some(ctx.title_name.clone()),
                     facet: Some(facet_str.to_string()),
-                    file_path: Some(ctx.dest_path.to_string_lossy().to_string()),
+                    file_path: Some(path_to_stored_string(&ctx.dest_path)),
                     status: if status.success() {
                         ScriptRunStatus::Success
                     } else {
@@ -484,7 +485,7 @@ async fn execute_script(
                     title_id: Some(ctx.title_id.clone()),
                     title_name: Some(ctx.title_name.clone()),
                     facet: Some(facet_str.to_string()),
-                    file_path: Some(ctx.dest_path.to_string_lossy().to_string()),
+                    file_path: Some(path_to_stored_string(&ctx.dest_path)),
                     status: ScriptRunStatus::Failed,
                     exit_code: None,
                     stdout_tail: None,
@@ -512,7 +513,7 @@ async fn execute_script(
                     title_id: Some(ctx.title_id.clone()),
                     title_name: Some(ctx.title_name.clone()),
                     facet: Some(facet_str.to_string()),
-                    file_path: Some(ctx.dest_path.to_string_lossy().to_string()),
+                    file_path: Some(path_to_stored_string(&ctx.dest_path)),
                     status: ScriptRunStatus::Timeout,
                     exit_code: None,
                     stdout_tail: None,

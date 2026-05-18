@@ -7,7 +7,6 @@ use scryer_domain::MediaFacet;
 
 use crate::queries::common::parse_utc_datetime;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};
-use crate::sqlite_services::SqliteServices;
 use crate::storage::sql::json::{canonical_json_arg, json_text_or};
 
 const UNMATCHED_COLUMNS: &str = "id, library_id, facet, title_id, scan_session_id, scan_root,
@@ -20,21 +19,8 @@ pub struct LibraryScanUnmatchedStore {
 }
 
 impl LibraryScanUnmatchedStore {
-    pub(crate) fn new(datastore: StoreDatastore) -> Self {
+    pub fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
-    }
-
-    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-        Self::new(StoreDatastore::Sqlite {
-            pool: db.pool().clone(),
-            writer_gate: db.writer_gate(),
-        })
-    }
-
-    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-        Self::new(StoreDatastore::Postgres {
-            pool: db.pool().clone(),
-        })
     }
 }
 

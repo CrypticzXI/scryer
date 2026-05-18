@@ -17,6 +17,7 @@ use crate::domain_events::{
 };
 use crate::facet_handler::{RenameFacetSettings, rename_facet_settings};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity,
     ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
@@ -810,7 +811,7 @@ impl AppUseCase {
                 continue;
             }
 
-            let destination_exists_on_disk = Path::new(&proposed_path).exists();
+            let destination_exists_on_disk = stored_path_to_path_buf(&proposed_path).exists();
 
             let tracked_media_file = if let Some(existing) = media_file_cache.get(&proposed_path) {
                 existing.clone()
@@ -1172,7 +1173,7 @@ fn prepare_rename_plan_source(
         )));
     }
 
-    let current_file = PathBuf::from(&current_path);
+    let current_file = stored_path_to_path_buf(&current_path);
     let source_metadata = std::fs::metadata(&current_file).ok();
     let source_size_bytes = source_metadata.as_ref().map(|meta| meta.len());
     let source_mtime_unix_ms = source_metadata
@@ -1344,7 +1345,7 @@ fn finalize_rename_plan_item(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let proposed_path_str = parent.join(&rendered).to_string_lossy().to_string();
+    let proposed_path_str = path_to_stored_string(parent.join(&rendered));
 
     if proposed_path_str == source.current_path {
         return source.build_item(

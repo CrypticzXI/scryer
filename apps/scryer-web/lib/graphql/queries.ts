@@ -735,6 +735,37 @@ export const TITLE_LIST_FIELDS = `
     metadataFetchedAt
     createdAt`;
 
+export const TITLE_COMMAND_PALETTE_FIELDS = `
+    id
+    name
+    facet
+    libraryId
+    librarySlug
+    slug
+    sortTitle
+    year
+    posterUrl
+    posterSourceUrl
+    metadataFetchedAt
+    createdAt`;
+
+export const TITLE_CATALOG_SEARCH_FIELDS = `
+    id
+    name
+    facet
+    libraryId
+    librarySlug
+    monitored
+    slug
+    posterUrl
+    posterSourceUrl
+    metadataFetchedAt
+    createdAt
+    externalIds {
+      source
+      value
+    }`;
+
 export const TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS = `${TITLE_LIST_FIELDS}
     externalIds {
       source
@@ -804,7 +835,13 @@ ${TITLE_LIST_FIELDS}
 
 export const catalogSearchTitlesQuery = `query CatalogSearchTitles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
   titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
-${TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS}
+${TITLE_CATALOG_SEARCH_FIELDS}
+  }
+}`;
+
+export const commandPaletteTitlesQuery = `query CommandPaletteTitles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
+  titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
+${TITLE_COMMAND_PALETTE_FIELDS}
   }
 }`;
 

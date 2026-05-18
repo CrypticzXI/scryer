@@ -5,7 +5,6 @@ use scryer_domain::{Id, MediaFacet, RuleSet};
 use sqlx::Row;
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};
-use crate::sqlite_services::SqliteServices;
 use crate::storage::sql::json::{canonical_json_arg, json_text_or};
 
 #[derive(Clone)]
@@ -14,15 +13,8 @@ pub struct RuleSetStore {
 }
 
 impl RuleSetStore {
-    pub(crate) fn new(datastore: StoreDatastore) -> Self {
+    pub fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
-    }
-
-    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-        Self::new(StoreDatastore::Sqlite {
-            pool: db.pool().clone(),
-            writer_gate: db.writer_gate(),
-        })
     }
 }
 

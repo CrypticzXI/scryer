@@ -1,3 +1,4 @@
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity, ImportArtifact,
     ParsedEpisodeMetadata, ParsedReleaseMetadata, WantedCompleteTransition, WantedItemsQuery,
@@ -1367,7 +1368,7 @@ async fn import_movie_download(
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
                 source_title: Some(completed.name.clone()),
-                source_path: source_video.to_string_lossy().to_string(),
+                source_path: path_to_stored_string(&source_video),
                 dest_path: None,
                 quality: parsed.quality.clone(),
                 episode_ids: Vec::new(),
@@ -1406,7 +1407,7 @@ async fn import_movie_download(
             .services
             .catalog
             .titles
-            .set_folder_path(&title.id, &full_folder_path.to_string_lossy())
+            .set_folder_path(&title.id, &path_to_stored_string(&full_folder_path))
             .await;
     }
 
@@ -1450,8 +1451,8 @@ async fn import_movie_download(
             source_system: Some(completed.client_type.clone()),
             source_ref: Some(completed.download_client_item_id.clone()),
             source_title: Some(completed.name.clone()),
-            source_path: source_video.to_string_lossy().to_string(),
-            dest_path: Some(dest_path.to_string_lossy().to_string()),
+            source_path: path_to_stored_string(&source_video),
+            dest_path: Some(path_to_stored_string(&dest_path)),
             quality: prepared.parsed.quality.clone(),
             episode_ids: Vec::new(),
             file_size_bytes: Some(source_size),
@@ -1529,8 +1530,8 @@ async fn import_movie_download(
                             source_system: Some(completed.client_type.clone()),
                             source_ref: Some(completed.download_client_item_id.clone()),
                             source_title: Some(completed.name.clone()),
-                            source_path: source_video.to_string_lossy().to_string(),
-                            dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            source_path: path_to_stored_string(&source_video),
+                            dest_path: Some(path_to_stored_string(&dest_path)),
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
@@ -1577,8 +1578,8 @@ async fn import_movie_download(
                             source_system: Some(completed.client_type.clone()),
                             source_ref: Some(completed.download_client_item_id.clone()),
                             source_title: Some(completed.name.clone()),
-                            source_path: source_video.to_string_lossy().to_string(),
-                            dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            source_path: path_to_stored_string(&source_video),
+                            dest_path: Some(path_to_stored_string(&dest_path)),
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
@@ -1642,7 +1643,7 @@ async fn import_movie_download(
 
     let media_file_input = crate::InsertMediaFileInput {
         title_id: title.id.clone(),
-        file_path: dest_path.to_string_lossy().to_string(),
+        file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
         quality_label: prepared.parsed.quality.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
@@ -1652,7 +1653,7 @@ async fn import_movie_download(
         video_codec_parsed: prepared.parsed.video_codec.clone(),
         audio_codec_parsed: prepared.parsed.audio.clone(),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
-        original_file_path: Some(source_video.to_string_lossy().to_string()),
+        original_file_path: Some(path_to_stored_string(source_video.clone())),
         acquisition_score: Some(acq_score),
         ..Default::default()
     };
@@ -1717,7 +1718,7 @@ async fn import_movie_download(
         collection_type: CollectionType::Movie,
         collection_index: "1".to_string(),
         label: prepared.parsed.quality.clone(),
-        ordered_path: Some(dest_path.to_string_lossy().to_string()),
+        ordered_path: Some(path_to_stored_string(&dest_path)),
         narrative_order: None,
         first_episode_number: None,
         last_episode_number: None,
@@ -1774,8 +1775,8 @@ async fn import_movie_download(
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
         source_title: Some(completed.name.clone()),
-        source_path: source_video.to_string_lossy().to_string(),
-        dest_path: Some(dest_path.to_string_lossy().to_string()),
+        source_path: path_to_stored_string(&source_video),
+        dest_path: Some(path_to_stored_string(&dest_path)),
         quality: prepared.parsed.quality.clone(),
         episode_ids: Vec::new(),
         file_size_bytes: Some(file_result.size_bytes as i64),
@@ -1794,16 +1795,14 @@ async fn import_movie_download(
             title,
             DomainEventPayload::ImportCompleted(ImportCompletedEventData {
                 title: title_context_snapshot(title),
-                media_updates: vec![created_media_update(
-                    dest_path.to_string_lossy().to_string(),
-                )],
+                media_updates: vec![created_media_update(path_to_stored_string(&dest_path))],
                 imported_count: 1,
                 import_id: Some(import_id.to_string()),
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
                 source_title: Some(completed.name.clone()),
-                source_path: Some(source_video.to_string_lossy().to_string()),
-                dest_path: Some(dest_path.to_string_lossy().to_string()),
+                source_path: Some(path_to_stored_string(&source_video)),
+                dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: prepared.parsed.quality.clone(),
                 episode_ids: Vec::new(),
             }),
@@ -1977,8 +1976,8 @@ async fn import_interstitial_movie_download(
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
                 source_title: Some(completed.name.clone()),
-                source_path: source_video.to_string_lossy().to_string(),
-                dest_path: Some(dest_path.to_string_lossy().to_string()),
+                source_path: path_to_stored_string(&source_video),
+                dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: parsed.quality.clone(),
                 episode_ids: Vec::new(),
                 file_size_bytes: Some(source_size),
@@ -2066,8 +2065,8 @@ async fn import_interstitial_movie_download(
                             source_system: Some(completed.client_type.clone()),
                             source_ref: Some(completed.download_client_item_id.clone()),
                             source_title: Some(completed.name.clone()),
-                            source_path: source_video.to_string_lossy().to_string(),
-                            dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            source_path: path_to_stored_string(&source_video),
+                            dest_path: Some(path_to_stored_string(&dest_path)),
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
@@ -2107,8 +2106,8 @@ async fn import_interstitial_movie_download(
                             source_system: Some(completed.client_type.clone()),
                             source_ref: Some(completed.download_client_item_id.clone()),
                             source_title: Some(completed.name.clone()),
-                            source_path: source_video.to_string_lossy().to_string(),
-                            dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            source_path: path_to_stored_string(&source_video),
+                            dest_path: Some(path_to_stored_string(&dest_path)),
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
@@ -2156,8 +2155,8 @@ async fn import_interstitial_movie_download(
                     source_system: Some(completed.client_type.clone()),
                     source_ref: Some(completed.download_client_item_id.clone()),
                     source_title: Some(completed.name.clone()),
-                    source_path: source_video.to_string_lossy().to_string(),
-                    dest_path: Some(dest_path.to_string_lossy().to_string()),
+                    source_path: path_to_stored_string(&source_video),
+                    dest_path: Some(path_to_stored_string(&dest_path)),
                     quality: prepared.parsed.quality.clone(),
                     episode_ids: Vec::new(),
                     file_size_bytes: Some(source_size),
@@ -2208,7 +2207,7 @@ async fn import_interstitial_movie_download(
         .media_files
         .insert_media_file(&crate::InsertMediaFileInput {
             title_id: title.id.clone(),
-            file_path: dest_path.to_string_lossy().to_string(),
+            file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
             quality_label: prepared.parsed.quality.clone(),
             scene_name: Some(prepared.parsed.raw_title.clone()),
@@ -2218,7 +2217,7 @@ async fn import_interstitial_movie_download(
             video_codec_parsed: prepared.parsed.video_codec.clone(),
             audio_codec_parsed: prepared.parsed.audio.clone(),
             audio_channels_parsed: prepared.parsed.audio_channels.clone(),
-            original_file_path: Some(source_video.to_string_lossy().to_string()),
+            original_file_path: Some(path_to_stored_string(&source_video)),
             acquisition_score: Some(acq_score),
             ..Default::default()
         })
@@ -2271,7 +2270,7 @@ async fn import_interstitial_movie_download(
         .update_collection(
             collection_id,
             CollectionUpdate {
-                ordered_path: Some(dest_path.to_string_lossy().to_string()),
+                ordered_path: Some(path_to_stored_string(&dest_path)),
                 ..Default::default()
             },
         )
@@ -2339,8 +2338,8 @@ async fn import_interstitial_movie_download(
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
         source_title: Some(completed.name.clone()),
-        source_path: source_video.to_string_lossy().to_string(),
-        dest_path: Some(dest_path.to_string_lossy().to_string()),
+        source_path: path_to_stored_string(&source_video),
+        dest_path: Some(path_to_stored_string(&dest_path)),
         quality: prepared.parsed.quality.clone(),
         episode_ids: Vec::new(),
         file_size_bytes: Some(file_result.size_bytes as i64),
@@ -2358,16 +2357,14 @@ async fn import_interstitial_movie_download(
         title,
         DomainEventPayload::ImportCompleted(ImportCompletedEventData {
             title: title_context_snapshot(title),
-            media_updates: vec![created_media_update(
-                dest_path.to_string_lossy().to_string(),
-            )],
+            media_updates: vec![created_media_update(path_to_stored_string(&dest_path))],
             imported_count: 1,
             import_id: Some(import_id.to_string()),
             source_system: Some(completed.client_type.clone()),
             source_ref: Some(completed.download_client_item_id.clone()),
             source_title: Some(completed.name.clone()),
-            source_path: Some(source_video.to_string_lossy().to_string()),
-            dest_path: Some(dest_path.to_string_lossy().to_string()),
+            source_path: Some(path_to_stored_string(&source_video)),
+            dest_path: Some(path_to_stored_string(&dest_path)),
             quality: prepared.parsed.quality.clone(),
             episode_ids: Vec::new(),
         }),
@@ -2450,7 +2447,7 @@ async fn import_series_download(
             .services
             .catalog
             .titles
-            .set_folder_path(&title.id, &full_folder_path.to_string_lossy())
+            .set_folder_path(&title.id, &path_to_stored_string(&full_folder_path))
             .await;
     }
 
@@ -3184,7 +3181,7 @@ async fn execute_resolved_episode_import(
                     mark_wanted_completed(app, &title.id, Some(episode_id), None).await;
                 }
                 return Ok(EpisodeImportOutcome::Imported {
-                    dest_path: dest_path.to_string_lossy().to_string(),
+                    dest_path: path_to_stored_string(&dest_path),
                     episode_ids: target_episode_ids,
                     imported_media_file_id: None,
                     reason_code: Some("upgrade".to_string()),
@@ -3213,7 +3210,7 @@ async fn execute_resolved_episode_import(
 
     let has_existing = existing_files
         .iter()
-        .any(|file| file.file_path == dest_path.to_string_lossy().as_ref() as &str);
+        .any(|file| file.file_path == path_to_stored_string(&dest_path));
     let acq_score = crate::post_download_gate::compute_acquisition_score(
         app,
         &effective_parsed,
@@ -3227,7 +3224,7 @@ async fn execute_resolved_episode_import(
 
     let media_file_input = crate::InsertMediaFileInput {
         title_id: title.id.clone(),
-        file_path: dest_path.to_string_lossy().to_string(),
+        file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
         quality_label: effective_quality_label.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
@@ -3237,7 +3234,7 @@ async fn execute_resolved_episode_import(
         video_codec_parsed: prepared.parsed.video_codec.clone(),
         audio_codec_parsed: prepared.parsed.audio.clone(),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
-        original_file_path: Some(source_video.to_string_lossy().to_string()),
+        original_file_path: Some(path_to_stored_string(source_video)),
         acquisition_score: Some(acq_score),
         ..Default::default()
     };
@@ -3290,7 +3287,7 @@ async fn execute_resolved_episode_import(
     }
 
     Ok(EpisodeImportOutcome::Imported {
-        dest_path: dest_path.to_string_lossy().to_string(),
+        dest_path: path_to_stored_string(&dest_path),
         episode_ids: target_episode_ids,
         imported_media_file_id: Some(media_file_id),
         reason_code: None,
@@ -3893,7 +3890,7 @@ async fn persist_file_import_artifact(
     let relative_path = source_path
         .strip_prefix(&completed.dest_dir)
         .ok()
-        .map(|path| path.to_string_lossy().to_string())
+        .map(path_to_stored_string)
         .filter(|path| !path.is_empty());
     let normalized_file_name = source_path
         .file_name()
@@ -3994,8 +3991,8 @@ const SAMPLE_SIZE_THRESHOLD: u64 = 50 * 1024 * 1024; // 50 MB
 pub(crate) fn is_sample_file(path: &Path) -> bool {
     let filename = path
         .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
         .to_ascii_lowercase();
 
     if filename.contains("sample") {
@@ -4019,33 +4016,33 @@ pub(crate) fn pick_largest_file(files: &[PathBuf]) -> AppResult<PathBuf> {
 fn parsed_release_from_file_stem(path: &Path) -> ParsedReleaseMetadata {
     let fallback = path
         .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let stem = path
         .file_stem()
-        .and_then(|value| value.to_str())
+        .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or(fallback);
-    normalize_release_title_signal(parse_release_metadata(stem))
+    normalize_release_title_signal(parse_release_metadata(stem.as_str()))
 }
 
 fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
     let fallback = path
         .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let stem = path
         .file_stem()
-        .and_then(|value| value.to_str())
+        .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or(fallback);
-    parse_usable_release_title(stem)
+    parse_usable_release_title(stem.as_str())
 }
 
 fn parsed_release_from_folder_name(path: &Path) -> Option<ParsedReleaseMetadata> {
     path.file_name()
-        .and_then(|value| value.to_str())
-        .map(str::trim)
+        .map(|value| value.to_string_lossy().into_owned())
+        .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .map(parse_release_metadata)
+        .map(|value| parse_release_metadata(value.as_str()))
         .map(normalize_release_title_signal)
 }
 
@@ -4441,7 +4438,7 @@ pub async fn preview_manual_import(
         }
 
         previews.push(ManualImportFilePreview {
-            file_path: path.to_string_lossy().to_string(),
+            file_path: path_to_stored_string(path),
             file_name,
             size_bytes: size,
             quality: parsed.quality.clone(),
@@ -4766,7 +4763,7 @@ pub async fn execute_manual_import(
     let mut results = Vec::new();
 
     for mapping in &files {
-        let source = Path::new(&mapping.file_path);
+        let source = stored_path_to_path_buf(&mapping.file_path);
 
         // Validate file exists
         if !source.exists() || !source.is_file() {
@@ -4817,9 +4814,9 @@ pub async fn execute_manual_import(
         // Parse release metadata for quality/codec tokens
         let parsed = completed
             .map(|completed| {
-                build_augmented_episode_import_metadata(source, completed, files.len() > 1)
+                build_augmented_episode_import_metadata(&source, completed, files.len() > 1)
             })
-            .unwrap_or_else(|| parsed_release_from_file_stem(source));
+            .unwrap_or_else(|| parsed_release_from_file_stem(&source));
 
         let season_num: u32 = episode
             .season_number
@@ -4842,7 +4839,7 @@ pub async fn execute_manual_import(
             &media_root,
             &rename_template,
             &title_folder,
-            source,
+            &source,
             &parsed,
             std::slice::from_ref(&episode),
             &coverage_episodes,
@@ -5094,7 +5091,7 @@ pub async fn execute_queued_manual_import(
 
 #[cfg(test)]
 mod tests {
-    use super::sanitized_title_folder_component;
+    use super::{is_sample_file, sanitized_title_folder_component};
 
     #[test]
     fn title_folder_component_falls_back_when_sanitized_empty() {
@@ -5107,6 +5104,17 @@ mod tests {
             sanitized_title_folder_component("Movie Title (2024)"),
             "Movie Title (2024)"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sample_file_detection_uses_lossy_non_utf8_stem() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::Path;
+
+        let path = Path::new(OsStr::from_bytes(b"/tmp/\xFFsample-clip.mkv"));
+        assert!(is_sample_file(path));
     }
 }
 

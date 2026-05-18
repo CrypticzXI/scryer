@@ -458,10 +458,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "download_jobs",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "download_queue_commands",
         classification: BackupTableClassification::Export,
     },
@@ -518,10 +514,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "integration_tokens",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "libraries",
         classification: BackupTableClassification::Export,
     },
@@ -574,10 +566,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "push_subscriptions",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "quality_profile_audio_codec_allowlist",
         classification: BackupTableClassification::Export,
     },
@@ -610,10 +598,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "quarantine_items",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "release_decisions",
         classification: BackupTableClassification::Export,
     },
@@ -622,19 +606,11 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "releases",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "rule_set_history",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
         table: "rule_sets",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "scheduler_jobs",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -654,10 +630,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "title_aliases",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "title_external_ids",
         classification: BackupTableClassification::Export,
     },
@@ -671,10 +643,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "titles",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
-        table: "upgrades",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {

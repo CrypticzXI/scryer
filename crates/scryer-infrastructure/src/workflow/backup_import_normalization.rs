@@ -423,7 +423,7 @@ mod tests {
         let mut object = JsonMap::from_iter([("created_at".to_string(), JsonValue::Null)]);
 
         normalize_import_object_for_target(
-            "scheduler_jobs",
+            "workflow_operations",
             &mut object,
             now,
             &[ImportColumnRule {
@@ -449,7 +449,7 @@ mod tests {
         let mut object = JsonMap::new();
 
         let error = normalize_import_object_for_target(
-            "integration_tokens",
+            "settings_values",
             &mut object,
             now,
             &[ImportColumnRule {

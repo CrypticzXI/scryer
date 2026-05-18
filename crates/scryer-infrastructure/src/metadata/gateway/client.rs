@@ -309,7 +309,10 @@ impl MetadataGatewayClient {
         Self::new_with_enrollment_store(
             endpoint,
             accept_invalid_certs,
-            Arc::new(crate::SettingsStore::from_sqlite_services(&db)),
+            Arc::new(crate::SettingsStore::new(
+                db.datastore(),
+                db.encryption_key_state(),
+            )),
             enrollment_config,
         )
     }
@@ -1687,6 +1690,8 @@ mod tests {
     fn search_tvdb_batch_query_uses_dedicated_field() {
         assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("searchTvdbBatch"));
         assert!(!graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("searchTvdb(query:"));
+        assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("auto_match_safe"));
+        assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("auto_match_signals"));
     }
 
     #[test]
@@ -1852,6 +1857,10 @@ struct SearchTvdbItem {
     tvdb_id: i64,
     name: String,
     year: Option<i32>,
+    #[serde(default)]
+    auto_match_safe: bool,
+    #[serde(default)]
+    auto_match_signals: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -2177,6 +2186,8 @@ impl MetadataGateway for MetadataGatewayClient {
                 tvdb_id: item.tvdb_id.to_string(),
                 name: item.name,
                 year: item.year,
+                auto_match_safe: item.auto_match_safe,
+                auto_match_signals: item.auto_match_signals,
             })
             .collect())
     }
@@ -2235,6 +2246,8 @@ impl MetadataGateway for MetadataGatewayClient {
                         tvdb_id: entry.tvdb_id.to_string(),
                         name: entry.name,
                         year: entry.year,
+                        auto_match_safe: entry.auto_match_safe,
+                        auto_match_signals: entry.auto_match_signals,
                     })
                     .collect::<Vec<_>>();
                 results.insert(query_spec, items);

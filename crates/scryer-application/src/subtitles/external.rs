@@ -6,6 +6,7 @@ use scryer_domain::{ExternalSubtitleSourceKind, SUBTITLE_EXTENSIONS, SubtitleDow
 use tokio::fs;
 
 use super::external_probe::{ExternalSubtitleProbeCacheEntry, resolve_external_subtitle};
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{AppError, AppResult, AppUseCase};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,10 +65,10 @@ pub(crate) async fn reconcile_external_subtitles_for_media_file(
             continue;
         }
 
-        let subtitle_path = Path::new(&candidate.file_path);
+        let subtitle_path = stored_path_to_path_buf(&candidate.file_path);
         match resolve_external_subtitle(
             media_file_id,
-            subtitle_path,
+            subtitle_path.as_path(),
             &candidate.extension,
             candidate.language.as_deref(),
             candidate.forced,
@@ -109,7 +110,7 @@ pub(crate) async fn reconcile_external_subtitles_for_media_file(
     let mut changed = false;
     let mut existing_discovered_by_path = BTreeMap::new();
     for record in &existing {
-        let exists = fs::try_exists(Path::new(&record.file_path))
+        let exists = fs::try_exists(stored_path_to_path_buf(&record.file_path))
             .await
             .map_err(|error| AppError::Repository(error.to_string()))?;
         if !exists {
@@ -276,7 +277,10 @@ async fn discover_external_subtitles_for_video(
     let Some(parent) = video_path.parent() else {
         return Ok(Vec::new());
     };
-    let Some(video_stem) = video_path.file_stem().and_then(|stem| stem.to_str()) else {
+    let Some(video_stem) = video_path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+    else {
         return Ok(Vec::new());
     };
 
@@ -294,7 +298,7 @@ async fn discover_external_subtitles_for_video(
         if !path_has_subtitle_extension(&path) {
             continue;
         }
-        if let Some(subtitle) = parse_discovered_external_subtitle(video_stem, &path) {
+        if let Some(subtitle) = parse_discovered_external_subtitle(&video_stem, &path) {
             discovered.push(subtitle);
         }
     }
@@ -314,8 +318,11 @@ fn parse_discovered_external_subtitle(
     video_stem: &str,
     subtitle_path: &Path,
 ) -> Option<ExternalSubtitleCandidate> {
-    let subtitle_stem = subtitle_path.file_stem()?.to_str()?;
-    let extension = subtitle_path.extension()?.to_str()?.to_ascii_lowercase();
+    let subtitle_stem = subtitle_path.file_stem()?.to_string_lossy();
+    let extension = subtitle_path
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
     let suffix = if subtitle_stem == video_stem {
         ""
     } else {
@@ -324,7 +331,7 @@ fn parse_discovered_external_subtitle(
 
     let (language, forced, hearing_impaired) = parse_sidecar_suffix_tokens(suffix);
     Some(ExternalSubtitleCandidate {
-        file_path: subtitle_path.to_string_lossy().to_string(),
+        file_path: path_to_stored_string(subtitle_path),
         extension,
         language,
         forced,
@@ -374,8 +381,9 @@ mod tests {
 
     use super::{
         DiscoveredExternalSubtitle, discover_external_subtitles_for_video,
-        parse_sidecar_suffix_tokens, reconcile_external_subtitles_for_media_file,
-        should_preserve_existing_discovered_record, should_preserve_existing_probe_cache_entry,
+        parse_discovered_external_subtitle, parse_sidecar_suffix_tokens,
+        reconcile_external_subtitles_for_media_file, should_preserve_existing_discovered_record,
+        should_preserve_existing_probe_cache_entry,
     };
     use crate::{
         AppResult, AppServices, AppUseCase, FacetRegistry, IndexerConfig, IndexerConfigRepository,
@@ -743,6 +751,28 @@ mod tests {
         assert_eq!(discovered[0].file_path, english.to_string_lossy());
         assert_eq!(discovered[1].language.as_deref(), Some("jpn"));
         assert!(discovered[1].forced);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parses_same_stem_sidecars_for_non_utf8_video_names() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let video_stem = OsStr::from_bytes(b"Example\xFF.Show")
+            .to_string_lossy()
+            .into_owned();
+        let english_path = Path::new(OsStr::from_bytes(b"/tmp/Example\xFF.Show.eng.srt"));
+        let unrelated = Path::new(OsStr::from_bytes(b"/tmp/Other\xFF.Show.eng.srt"));
+
+        let english = parse_discovered_external_subtitle(&video_stem, english_path)
+            .expect("matching subtitle sidecar");
+        assert_eq!(english.language.as_deref(), Some("eng"));
+        assert_eq!(
+            english.file_path,
+            crate::stored_paths::path_to_stored_string(english_path)
+        );
+        assert!(parse_discovered_external_subtitle(&video_stem, unrelated).is_none());
     }
 
     #[tokio::test]

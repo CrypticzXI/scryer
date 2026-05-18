@@ -25,7 +25,7 @@ const SQLITE_BUSY_RETRY_DELAYS: [Duration; 5] = [
 const SQLITE_BUSY_RETRY_HARD_CAP: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]
-pub(crate) enum StoreDatastore {
+pub enum StoreDatastore {
     Sqlite {
         pool: SqlitePool,
         writer_gate: Arc<Mutex<()>>,
@@ -93,6 +93,26 @@ pub(crate) enum SqlTx<'db> {
 pub(crate) struct SqlRuntime;
 
 impl SqlRuntime {
+    pub(crate) async fn run_serialized_sqlite<T, Op, Fut>(
+        datastore: &StoreDatastore,
+        op_name: &'static str,
+        mut op: Op,
+    ) -> AppResult<T>
+    where
+        T: Send,
+        Op: FnMut(SqlitePool) -> Fut + Send,
+        Fut: Future<Output = AppResult<T>> + Send,
+    {
+        let StoreDatastore::Sqlite { pool, writer_gate } = datastore else {
+            return Err(AppError::Repository(format!(
+                "operation `{op_name}` requires sqlite datastore"
+            )));
+        };
+
+        let _guard = writer_gate.lock().await;
+        run_with_sqlite_busy_retries(op_name, || op(pool.clone())).await
+    }
+
     pub(crate) async fn execute(
         exec: SqlExec<'_, '_>,
         template: &str,

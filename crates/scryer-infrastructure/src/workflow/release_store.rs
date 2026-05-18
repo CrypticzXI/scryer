@@ -7,7 +7,6 @@ use scryer_application::{
 use scryer_domain::Id;
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
-use crate::sqlite_services::SqliteServices;
 
 const FAILED_SIGNATURE_LIMIT_MAX: i64 = 20_000;
 const TITLE_FAILED_SIGNATURE_LIMIT_MAX: i64 = 1_000;
@@ -71,21 +70,8 @@ pub struct ReleaseStore {
 }
 
 impl ReleaseStore {
-    pub(crate) fn new(datastore: StoreDatastore) -> Self {
+    pub fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
-    }
-
-    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-        Self::new(StoreDatastore::Sqlite {
-            pool: db.pool().clone(),
-            writer_gate: db.writer_gate(),
-        })
-    }
-
-    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-        Self::new(StoreDatastore::Postgres {
-            pool: db.pool().clone(),
-        })
     }
 }
 

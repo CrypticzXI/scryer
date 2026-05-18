@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use scryer_application::filesystem_walk::{FilesystemWalker, WalkedDirectory};
 use scryer_application::{
     AppError, AppResult, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatchReceiver,
-    LibraryScanner, source_signature_from_std_metadata,
+    LibraryScanner, source_signature_from_std_metadata, stored_paths::path_to_stored_string,
 };
 use scryer_domain::VIDEO_EXTENSIONS;
 use std::time::{Duration, Instant};
@@ -45,7 +45,7 @@ impl FileSystemLibraryScanner {
     }
 
     async fn validate_root(root: &str) -> AppResult<PathBuf> {
-        let root_path = PathBuf::from(root);
+        let root_path = scryer_application::stored_paths::stored_path_to_path_buf(root);
         let metadata = fs::metadata(&root_path)
             .await
             .map_err(|err| AppError::Validation(format!("library path error: {err}")))?;
@@ -253,9 +253,9 @@ fn scan_walked_directory_blocking(
         let nfo_path = if discover_movie_nfo {
             let same_stem_name = format!("{display_name}.nfo").to_ascii_lowercase();
             if filenames_lower.contains(&same_stem_name) {
-                Some(path.with_extension("nfo").to_string_lossy().to_string())
+                Some(path_to_stored_string(path.with_extension("nfo")))
             } else if primary_movie_candidate.as_ref() == Some(&path) {
-                Some(movie_nfo_path.to_string_lossy().to_string())
+                Some(path_to_stored_string(&movie_nfo_path))
             } else {
                 None
             }
@@ -264,7 +264,7 @@ fn scan_walked_directory_blocking(
         };
 
         batch.push(LibraryFile {
-            path: path.to_string_lossy().to_string(),
+            path: path_to_stored_string(&path),
             display_name,
             nfo_path,
             size_bytes: None,
@@ -360,7 +360,7 @@ fn collect_directory_files_with_source_snapshot(
             };
 
         files.push(LibraryFile {
-            path: path.to_string_lossy().to_string(),
+            path: path_to_stored_string(&path),
             display_name,
             nfo_path: None,
             size_bytes,

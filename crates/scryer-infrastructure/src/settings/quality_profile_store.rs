@@ -24,21 +24,8 @@ pub struct QualityProfileStore {
 }
 
 impl QualityProfileStore {
-    pub(crate) fn new(datastore: StoreDatastore) -> Self {
+    pub fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
-    }
-
-    pub fn from_sqlite_services(db: &crate::SqliteServices) -> Self {
-        Self::new(StoreDatastore::Sqlite {
-            pool: db.pool().clone(),
-            writer_gate: db.writer_gate(),
-        })
-    }
-
-    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-        Self::new(StoreDatastore::Postgres {
-            pool: db.pool().clone(),
-        })
     }
 }
 

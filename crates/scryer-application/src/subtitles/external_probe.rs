@@ -6,6 +6,7 @@ use tokio::{fs, io::AsyncReadExt};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 use whatlang::{Lang, detect};
 
+use crate::stored_paths::path_to_stored_string;
 use crate::{AppError, AppResult};
 
 #[cfg(unix)]
@@ -306,7 +307,7 @@ async fn resolve_external_subtitle_with_detector(
     let updated_at = Utc::now().to_rfc3339();
     let cache_entry = ExternalSubtitleProbeCacheEntry {
         media_file_id: media_file_id.to_string(),
-        file_path: subtitle_path.to_string_lossy().to_string(),
+        file_path: path_to_stored_string(subtitle_path),
         size_bytes: fingerprint.size_bytes,
         modified_at: fingerprint.modified_at,
         language: language.clone(),

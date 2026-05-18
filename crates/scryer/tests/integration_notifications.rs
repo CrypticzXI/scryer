@@ -42,7 +42,10 @@ use wiremock::{Mock, ResponseTemplate};
 /// return "not configured".
 fn app_with_notifications(ctx: &TestContext) -> scryer_application::AppUseCase {
     ctx.app.with_test_overrides(|builder| {
-        builder.with_notification_store(Arc::new(NotificationStore::from_sqlite_services(&ctx.db)))
+        builder.with_notification_store(Arc::new(NotificationStore::new(
+            ctx.db.datastore(),
+            ctx.db.encryption_key_state(),
+        )))
     })
 }
 

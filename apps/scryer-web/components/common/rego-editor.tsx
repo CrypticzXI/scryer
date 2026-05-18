@@ -6,6 +6,8 @@ import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { useTheme } from "next-themes";
+import "@fontsource-variable/jetbrains-mono";
+import { CODE_FONT } from "@/lib/fonts";
 import { isDarkTheme } from "@/lib/theme";
 
 type RegoEditorProps = {
@@ -16,8 +18,6 @@ type RegoEditorProps = {
   minLines?: number;
   maxLines?: number;
 };
-
-const CODE_FONT = "'Fira Code', 'Fira Mono', 'JetBrains Mono', 'Source Code Pro', 'Cascadia Code', 'Consolas', monospace";
 
 const lightTheme = EditorView.theme({
   "&": { backgroundColor: "var(--background)", color: "var(--foreground)" },

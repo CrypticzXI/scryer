@@ -13,6 +13,24 @@ services:
       - ./tmp/nzbget/config:/config
       - ./tmp/nzbget-downloads:/nzbget-downloads
 
+  nzbdav:
+    image: nzbdav/nzbdav:latest
+    container_name: scryer-nzbdav
+    hostname: scryer-nzbdav
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: Etc/UTC
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./tmp/nzbdav/config:/config
+      - ./tmp/nzbdav/mnt:/mnt/nzbdav
+    networks:
+      default:
+        aliases:
+          - scryer-sabnzbd
+
   weaver:
     image: ghcr.io/scryer-media/weaver:latest
     container_name: scryer-weaver
@@ -36,6 +54,7 @@ services:
     working_dir: /workspace
     depends_on:
       - nzbget
+      - nzbdav
       - weaver
     env_file:
       - crates/scryer/.env
@@ -63,11 +82,7 @@ services:
       - scryer-cargo-registry:/usr/local/cargo/registry
       - scryer-cargo-git:/usr/local/cargo/git
       - scryer-config:/config
-      #- ./tmp/scryer-media/movies:/data/movies
-      #- ./tmp/scryer-media/series:/data/series
-      - /Volumes/Media/Anime:/data/anime
-      - /Volumes/Media/TV:/data/series
-      - /Volumes/Media/Movies:/data/movies
+      - ./tmp/nzbdav/mnt:/mnt/nzbdav
       - ./tmp/nzbget-downloads:/nzbget-downloads
       - ./tmp/weaver-downloads:/weaver-downloads
     ports:

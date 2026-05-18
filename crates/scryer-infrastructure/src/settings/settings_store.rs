@@ -22,7 +22,7 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    pub(crate) fn new(
+    pub fn new(
         datastore: StoreDatastore,
         encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
     ) -> Self {
@@ -30,25 +30,6 @@ impl SettingsStore {
             datastore,
             encryption_key,
         }
-    }
-
-    pub fn from_sqlite_services(db: &crate::SqliteServices) -> Self {
-        Self::new(
-            StoreDatastore::Sqlite {
-                pool: db.pool().clone(),
-                writer_gate: db.writer_gate(),
-            },
-            db.encryption_key_state(),
-        )
-    }
-
-    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-        Self::new(
-            StoreDatastore::Postgres {
-                pool: db.pool().clone(),
-            },
-            db.encryption_key_state(),
-        )
     }
 
     fn encryption_key(&self) -> AppResult<Option<EncryptionKey>> {

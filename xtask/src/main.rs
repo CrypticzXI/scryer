@@ -1365,6 +1365,8 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
         "tmp/scryer-data",
         "tmp/scryer-media/movies",
         "tmp/scryer-media/series",
+        "tmp/nzbdav/config",
+        "tmp/nzbdav/mnt",
         "tmp/nzbget/config",
         "tmp/nzbget-downloads",
         "tmp/weaver/data",
@@ -1376,7 +1378,10 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
         "SCRYER_DOCKER_RESTART_SERVICES",
         &["scryer", "nodejs", "proxy"],
     );
-    let infra_services = env_list("SCRYER_DOCKER_INFRA_SERVICES", &["nzbget", "weaver"]);
+    let infra_services = env_list(
+        "SCRYER_DOCKER_INFRA_SERVICES",
+        &["nzbget", "nzbdav", "weaver"],
+    );
     let force_infra_restart = std::env::var("SCRYER_DOCKER_FORCE_INFRA_RESTART")
         .map(|value| value == "1")
         .unwrap_or(false);
@@ -1421,6 +1426,7 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
     if restart_services.iter().any(|service| service == "scryer") || proxy_requested {
         wait_for_scryer()?;
     }
+    ensure_nzbdav_dev_account()?;
     if restart_services.iter().any(|service| service == "nodejs") || proxy_requested {
         wait_for_nodejs()?;
     }
@@ -1555,6 +1561,74 @@ fn wait_for_scryer() -> Result<()> {
     bail!("Timed out waiting for scryer to become ready");
 }
 
+fn ensure_nzbdav_dev_account() -> Result<()> {
+    println!("Ensuring nzbdav dev account exists...");
+    let timeout = std::env::var("SCRYER_DOCKER_NZBDAV_READY_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(120);
+    let poll = std::env::var("SCRYER_DOCKER_READY_POLL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(2);
+    let attempts = std::cmp::max(1, timeout / poll);
+    for _ in 0..attempts {
+        match docker_inspect_state("scryer-nzbdav")?.as_deref() {
+            Some("running") => {
+                let headers =
+                    run_capture(Command::new("curl").args(["-sI", "http://localhost:3001/login"]));
+                match headers {
+                    Ok(headers) => {
+                        if headers
+                            .lines()
+                            .any(|line| line.trim().eq_ignore_ascii_case("location: /onboarding"))
+                        {
+                            create_nzbdav_dev_account()?;
+                        }
+                        return Ok(());
+                    }
+                    Err(_) => {}
+                }
+            }
+            Some("exited" | "dead") => {
+                warn("nzbdav exited before it became ready");
+                log_container_failure("scryer-nzbdav")?;
+                bail!("nzbdav exited before it became ready");
+            }
+            _ => {}
+        }
+        thread::sleep(std::time::Duration::from_secs(poll));
+    }
+    warn("Timed out waiting for nzbdav to become ready");
+    log_container_failure("scryer-nzbdav")?;
+    bail!("Timed out waiting for nzbdav to become ready");
+}
+
+fn create_nzbdav_dev_account() -> Result<()> {
+    let username =
+        std::env::var("SCRYER_NZBDAV_DEV_USERNAME").unwrap_or_else(|_| "scryer".to_string());
+    let password =
+        std::env::var("SCRYER_NZBDAV_DEV_PASSWORD").unwrap_or_else(|_| "scryer".to_string());
+    let mut command = Command::new("curl");
+    command.args([
+        "-sf",
+        "-o",
+        "/dev/null",
+        "-X",
+        "POST",
+        "--data-urlencode",
+        &format!("username={username}"),
+        "--data-urlencode",
+        &format!("password={password}"),
+        "http://localhost:3001/onboarding",
+    ]);
+    run_checked(&mut command)?;
+    ok(format!(
+        "Created nzbdav dev account ({username}/{password})"
+    ));
+    Ok(())
+}
+
 fn wait_for_nodejs() -> Result<()> {
     println!("Waiting for nodejs to be ready...");
     let timeout = std::env::var("SCRYER_DOCKER_NODEJS_READY_TIMEOUT_SECONDS")
@@ -1622,7 +1696,10 @@ fn stack_down(ctx: &TaskContext, args: StackDownArgs) -> Result<()> {
         "SCRYER_DOCKER_RESTART_SERVICES",
         &["scryer", "nodejs", "proxy"],
     );
-    let infra_services = env_list("SCRYER_DOCKER_INFRA_SERVICES", &["nzbget"]);
+    let infra_services = env_list(
+        "SCRYER_DOCKER_INFRA_SERVICES",
+        &["nzbget", "nzbdav", "weaver"],
+    );
     let stop_infra = std::env::var("SCRYER_DOCKER_STOP_INFRA")
         .map(|value| value == "1")
         .unwrap_or(false);

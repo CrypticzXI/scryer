@@ -1810,6 +1810,14 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
         return;
     }
 
+    if !has_enabled_download_clients(app).await {
+        warn!(
+            count = due_items.len(),
+            "background acquisition: no enabled download clients configured, skipping indexer search"
+        );
+        return;
+    }
+
     info!(count = due_items.len(), "processing due wanted items");
 
     // Track URLs already submitted this cycle to avoid sending the same NZB
@@ -1908,6 +1916,16 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
             })
             .await;
     }
+}
+
+pub(crate) async fn has_enabled_download_clients(app: &AppUseCase) -> bool {
+    app.services
+        .integrations
+        .download_client_configs
+        .list(None)
+        .await
+        .map(|configs| configs.into_iter().any(|config| config.is_enabled))
+        .unwrap_or(false)
 }
 
 async fn prune_standby_candidates(app: &AppUseCase) {

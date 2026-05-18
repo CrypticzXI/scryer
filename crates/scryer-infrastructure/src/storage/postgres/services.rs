@@ -64,7 +64,13 @@ impl PostgresServices {
         &self.pool
     }
 
-    pub(crate) fn encryption_key_state(&self) -> Arc<RwLock<Option<EncryptionKey>>> {
+    pub fn datastore(&self) -> crate::queries::sql_runtime::StoreDatastore {
+        crate::queries::sql_runtime::StoreDatastore::Postgres {
+            pool: self.pool.clone(),
+        }
+    }
+
+    pub fn encryption_key_state(&self) -> Arc<RwLock<Option<EncryptionKey>>> {
         self.encryption_key.clone()
     }
 
@@ -99,25 +105,22 @@ mod tests {
     use sqlx::Row;
     use tokio::task::JoinSet;
 
-    use crate::queries::sql_runtime::StoreDatastore;
     use crate::{LibraryStore, SettingDefinitionSeed, TitleStore, UserStore};
 
     fn title_store(services: &PostgresServices) -> TitleStore {
-        TitleStore::new(StoreDatastore::Postgres {
-            pool: services.pool().clone(),
-        })
+        TitleStore::new(services.datastore())
     }
 
     fn library_store(services: &PostgresServices) -> LibraryStore {
-        LibraryStore::new(StoreDatastore::Postgres {
-            pool: services.pool().clone(),
-        })
+        LibraryStore::new(services.datastore())
+    }
+
+    fn settings_store(services: &PostgresServices) -> crate::SettingsStore {
+        crate::SettingsStore::new(services.datastore(), services.encryption_key_state())
     }
 
     fn user_store(services: &PostgresServices) -> UserStore {
-        UserStore::new(StoreDatastore::Postgres {
-            pool: services.pool().clone(),
-        })
+        UserStore::new(services.datastore())
     }
 
     #[tokio::test]
@@ -148,8 +151,8 @@ mod tests {
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
             let catalog = title_store(&services);
-            let images = crate::TitleImageStore::from_postgres_services(&services);
-            let settings = crate::SettingsStore::from_postgres_services(&services);
+            let images = crate::TitleImageStore::new(services.datastore());
+            let settings = settings_store(&services);
             let info = settings.datastore_info().await?;
             assert_eq!(info.engine, "postgres");
             let current_migration_key = info.current_migration_key.as_deref().ok_or_else(|| {
@@ -345,7 +348,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let settings = crate::SettingsStore::from_postgres_services(&services);
+            let settings = settings_store(&services);
 
             settings
                 .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
@@ -452,7 +455,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let settings = crate::SettingsStore::from_postgres_services(&services);
+            let settings = settings_store(&services);
 
             settings
                 .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
@@ -700,7 +703,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let quality_profiles = crate::QualityProfileStore::from_postgres_services(&services);
+            let quality_profiles = crate::QualityProfileStore::new(services.datastore());
             let profiles = vec![default_quality_profile_for_search()];
 
             quality_profiles
@@ -828,7 +831,7 @@ mod tests {
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
             let catalog = title_store(&services);
-            let media_files = crate::MediaFileStore::from_postgres_services(&services);
+            let media_files = crate::MediaFileStore::new(services.datastore());
 
             let title = sample_title("pg-media-file-store");
             TitleRepository::create(&catalog, title.clone()).await?;
@@ -952,7 +955,7 @@ mod tests {
             let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
-            let store = crate::LibraryScanUnmatchedStore::from_postgres_services(&services);
+            let store = crate::LibraryScanUnmatchedStore::new(services.datastore());
             let now = chrono::Utc::now().to_rfc3339();
             let item = LibraryScanUnmatchedItem {
                 id: Id::new().0,
@@ -1270,7 +1273,7 @@ mod tests {
             .iter()
             .map(|(table, _)| table.clone())
             .collect();
-        let expected_columns = postgres_0115_baseline_columns();
+        let expected_columns = postgres_0122_baseline_columns();
 
         let mut missing_columns = Vec::new();
         for (table, columns) in &expected_columns {
@@ -1283,7 +1286,7 @@ mod tests {
 
         assert!(
             missing_columns.is_empty(),
-            "expected PostgreSQL blank install to include every 0115 baseline column; missing {missing_columns:?}"
+            "expected PostgreSQL blank install to include every 0122 baseline column; missing {missing_columns:?}"
         );
 
         let unexpected_columns: Vec<String> = actual_columns
@@ -1298,7 +1301,7 @@ mod tests {
 
         assert!(
             unexpected_columns.is_empty(),
-            "PostgreSQL blank install exposes columns outside the 0115 baseline: {unexpected_columns:?}"
+            "PostgreSQL blank install exposes columns outside the 0122 baseline: {unexpected_columns:?}"
         );
 
         for removed_table in [
@@ -1317,9 +1320,9 @@ mod tests {
         Ok(())
     }
 
-    fn postgres_0115_baseline_columns() -> BTreeMap<String, BTreeSet<String>> {
+    fn postgres_0122_baseline_columns() -> BTreeMap<String, BTreeSet<String>> {
         parse_create_table_columns(include_str!(
-            "../../../../scryer/src/db/postgres/baselines/0115_baseline.sql"
+            "../../../../scryer/src/db/postgres/baselines/0122_baseline.sql"
         ))
     }
 

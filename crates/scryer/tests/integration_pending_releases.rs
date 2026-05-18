@@ -145,7 +145,7 @@ async fn seed_pending_release(
         published_at: None,
         info_hash: None,
     };
-    ctx.db
+    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
         .insert_pending_release(&pr)
         .await
         .expect("seed pending release");
@@ -339,7 +339,7 @@ async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     )
     .await;
 
-    ctx.db
+    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
         .delete_standby_pending_releases_for_wanted_item(&wi.id)
         .await
         .expect("delete standby");
@@ -443,8 +443,8 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         "grabbed_at": grabbed_at.clone(),
     })
     .to_string();
-    let acquisition_store = AcquisitionStore::from_sqlite_services(&ctx.db);
-    let download_submission_store = DownloadSubmissionStore::from_sqlite_services(&ctx.db);
+    let acquisition_store = AcquisitionStore::new(ctx.db.datastore());
+    let download_submission_store = DownloadSubmissionStore::new(ctx.db.datastore());
 
     acquisition_store
         .commit_successful_grab(&SuccessfulGrabCommit {
@@ -543,7 +543,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
     )
     .await;
     let grabbed_at = Utc::now().to_rfc3339();
-    let workflow_store = AcquisitionStore::from_sqlite_services(&ctx.db);
+    let workflow_store = AcquisitionStore::new(ctx.db.datastore());
 
     workflow_store
         .commit_successful_grab(&SuccessfulGrabCommit {
@@ -602,7 +602,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
 async fn download_submission_roundtrips_episode_scope() {
     let ctx = TestContext::new().await;
     seed_title(&ctx, "title-episode-scope").await;
-    let workflow_store = DownloadSubmissionStore::from_sqlite_services(&ctx.db);
+    let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
 
     workflow_store
         .record_submission(DownloadSubmission {
@@ -669,7 +669,7 @@ async fn download_submission_roundtrips_episode_scope() {
 async fn download_submission_legacy_rows_without_episode_id_still_load() {
     let ctx = TestContext::new().await;
     seed_title(&ctx, "title-legacy-scope").await;
-    let workflow_store = DownloadSubmissionStore::from_sqlite_services(&ctx.db);
+    let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
 
     query(
         "INSERT INTO download_submissions

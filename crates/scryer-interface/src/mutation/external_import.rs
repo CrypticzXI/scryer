@@ -439,6 +439,9 @@ impl ExternalImportMutations {
 
                     if let Ok(indexers) = client.list_indexers().await {
                         for idx in indexers {
+                            if external_import::should_skip_imported_indexer(&idx) {
+                                continue;
+                            }
                             if let Some(detected) =
                                 external_import::detect_prowlarr_proxy_indexer(&idx)
                             {
@@ -1021,18 +1024,6 @@ impl ExternalImportMutations {
                         .errors
                         .push(format!("failed to create indexer '{}': {err}", idx.name));
                 }
-            }
-        }
-
-        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
-            if let Err(err) = app
-                .clear_external_import_monitor_snapshot_chunks(&actor, facet.clone())
-                .await
-            {
-                result.errors.push(format!(
-                    "failed to clear pending {} monitoring snapshot: {err}",
-                    facet.as_str()
-                ));
             }
         }
 

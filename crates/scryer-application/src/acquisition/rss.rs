@@ -274,6 +274,14 @@ impl AppUseCase {
             return Ok(RssSyncReport::default());
         }
 
+        if !super::acquisition_workflow::has_enabled_download_clients(self).await {
+            warn!("RSS sync: no enabled download clients configured, skipping indexer search");
+            metrics::counter!("scryer_rss_sync_total").increment(1);
+            metrics::histogram!("scryer_rss_sync_duration_seconds")
+                .record(sync_start.elapsed().as_secs_f64());
+            return Ok(RssSyncReport::default());
+        }
+
         // Collect Newznab categories from indexer routing config across all facets.
         // These tell Newznab plugins which categories to fetch in RSS mode.
         let rss_categories = {

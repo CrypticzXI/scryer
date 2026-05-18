@@ -7,6 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::normalize::normalize_imdb_id;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::subtitles::provider::{
     SubtitleFile, SubtitleMatch, SubtitleMediaKind, SubtitleProvider, SubtitleQuery,
 };
@@ -477,7 +478,7 @@ impl AppUseCase {
         let results = search_all_subtitle_providers(
             self,
             &providers,
-            Path::new(&media_file.file_path),
+            &stored_path_to_path_buf(&media_file.file_path),
             &query,
             0,
         )
@@ -539,12 +540,12 @@ impl AppUseCase {
         let provider =
             runtime_subtitle_provider_for_download(self, &settings, &provider_name).await?;
 
-        let file_path = Path::new(&media_file.file_path);
+        let file_path = stored_path_to_path_buf(&media_file.file_path);
         let episode_context = media_file_episode_context(self, &media_file).await;
         let (dest_path, _) = crate::subtitles::download::download_and_save_with_selection(
             &provider,
             &provider_file_id,
-            file_path,
+            file_path.as_path(),
             &language,
             forced,
             hearing_impaired,
@@ -564,7 +565,7 @@ impl AppUseCase {
             language,
             provider: Some(provider_name),
             provider_file_id: Some(provider_file_id),
-            file_path: dest_path.to_string_lossy().to_string(),
+            file_path: path_to_stored_string(&dest_path),
             score,
             hearing_impaired,
             forced,
@@ -585,7 +586,7 @@ impl AppUseCase {
             self,
             read_subtitle_sync_settings(&settings),
             subtitle_media_kind(&title),
-            file_path,
+            file_path.as_path(),
             &dest_path,
             Some(&record.id),
             score,
@@ -1270,7 +1271,7 @@ async fn run_subtitle_search_for_file(
     let missing = compute_missing_subtitles_from_streams(&wanted_languages, &existing, &embedded);
 
     let episode_context = media_file_episode_context(app, &mf).await;
-    let file_path = Path::new(&mf.file_path);
+    let file_path = stored_path_to_path_buf(&mf.file_path);
 
     for lang_pref in &missing {
         let query = build_subtitle_query(
@@ -1283,7 +1284,11 @@ async fn run_subtitle_search_for_file(
             include_machine,
         );
         let results = match search_all_subtitle_providers(
-            app, &providers, file_path, &query, min_score,
+            app,
+            &providers,
+            file_path.as_path(),
+            &query,
+            min_score,
         )
         .await
         {
@@ -1337,7 +1342,7 @@ async fn run_subtitle_search_for_file(
         match crate::subtitles::download::download_and_save_with_selection(
             &download_provider,
             &best.provider_file_id,
-            file_path,
+            file_path.as_path(),
             &best.language,
             best.forced,
             best.hearing_impaired,
@@ -1358,7 +1363,7 @@ async fn run_subtitle_search_for_file(
                     language: best.language.clone(),
                     provider: Some(best.provider.clone()),
                     provider_file_id: Some(best.provider_file_id.clone()),
-                    file_path: dest_path.to_string_lossy().to_string(),
+                    file_path: path_to_stored_string(&dest_path),
                     score: Some(best.score),
                     hearing_impaired: best.hearing_impaired,
                     forced: best.forced,
@@ -1387,7 +1392,7 @@ async fn run_subtitle_search_for_file(
                     app,
                     sync_settings,
                     query.media_kind,
-                    file_path,
+                    file_path.as_path(),
                     &dest_path,
                     record_inserted.then_some(record_id.as_str()),
                     Some(best.score),
@@ -1488,7 +1493,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 min_score_movie
             };
 
-            let file_path = Path::new(&mf.file_path);
+            let file_path = stored_path_to_path_buf(&mf.file_path);
             let episode_context = media_file_episode_context(app, mf).await;
 
             for lang_pref in &missing {
@@ -1504,7 +1509,11 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 );
 
                 let results = match search_all_subtitle_providers(
-                    app, &providers, file_path, &query, min_score,
+                    app,
+                    &providers,
+                    file_path.as_path(),
+                    &query,
+                    min_score,
                 )
                 .await
                 {
@@ -1577,7 +1586,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 match crate::subtitles::download::download_and_save_with_selection(
                     &download_provider,
                     &best.provider_file_id,
-                    file_path,
+                    file_path.as_path(),
                     &best.language,
                     best.forced,
                     best.hearing_impaired,
@@ -1599,7 +1608,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                             language: best.language.clone(),
                             provider: Some(best.provider.clone()),
                             provider_file_id: Some(best.provider_file_id.clone()),
-                            file_path: dest_path.to_string_lossy().to_string(),
+                            file_path: path_to_stored_string(&dest_path),
                             score: Some(best.score),
                             hearing_impaired: best.hearing_impaired,
                             forced: best.forced,
@@ -1629,7 +1638,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                             app,
                             sync_settings,
                             query.media_kind,
-                            file_path,
+                            file_path.as_path(),
                             &dest_path,
                             record_inserted.then_some(record.id.as_str()),
                             Some(best.score),

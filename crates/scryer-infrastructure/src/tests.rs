@@ -150,7 +150,7 @@ async fn sqlite_can_initialize() {
 #[tokio::test]
 async fn seed_builtin_refreshes_existing_builtin_metadata_without_resetting_enabled_state() {
     let (services, db) = temp_services("scryer_plugin_builtin_refresh").await;
-    let customization = PluginStore::from_sqlite_services(&services);
+    let customization = PluginStore::new(services.datastore());
 
     customization
         .seed_builtin(
@@ -209,7 +209,7 @@ async fn seed_builtin_refreshes_existing_builtin_metadata_without_resetting_enab
 #[tokio::test]
 async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
     let (services, db) = temp_services("scryer_plugin_builtin_revert").await;
-    let customization = PluginStore::from_sqlite_services(&services);
+    let customization = PluginStore::new(services.datastore());
     let now = Utc::now();
     let installation = scryer_domain::PluginInstallation {
         id: scryer_domain::Id::new().0,
@@ -290,7 +290,7 @@ async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
 #[tokio::test]
 async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
     let (services, db) = temp_services("scryer_plugin_cleanup_legacy").await;
-    let customization = PluginStore::from_sqlite_services(&services);
+    let customization = PluginStore::new(services.datastore());
     let now = Utc::now();
 
     let legacy_external = scryer_domain::PluginInstallation {
@@ -367,7 +367,7 @@ async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
 #[tokio::test]
 async fn legacy_external_rows_are_hidden_and_do_not_block_reinstall() {
     let (services, db) = temp_services("scryer_plugin_reinstall_legacy").await;
-    let customization = PluginStore::from_sqlite_services(&services);
+    let customization = PluginStore::new(services.datastore());
     let now = Utc::now();
 
     let legacy_external = scryer_domain::PluginInstallation {
@@ -479,7 +479,7 @@ async fn legacy_external_rows_are_hidden_and_do_not_block_reinstall() {
 #[tokio::test]
 async fn plugin_catalog_source_rows_survive_cleanup() {
     let (services, db) = temp_services("scryer_plugin_catalog_source_shape").await;
-    let customization = PluginStore::from_sqlite_services(&services);
+    let customization = PluginStore::new(services.datastore());
     let source = scryer_domain::PluginCatalogSource {
         source_key: "__central_catalog_v2".to_string(),
         source_kind: "central".to_string(),
@@ -536,7 +536,7 @@ async fn plugin_catalog_source_rows_survive_cleanup() {
 #[tokio::test]
 async fn enabled_plugin_payloads_preserve_zstd_encoding() {
     let (services, db) = temp_services("scryer_plugin_payload_encoding").await;
-    let customization = PluginStore::from_sqlite_services(&services);
+    let customization = PluginStore::new(services.datastore());
     let now = Utc::now();
     let wasm_bytes = b"hello compressed plugin";
     let compressed = zstd::encode_all(&wasm_bytes[..], 1).expect("compress plugin bytes");
@@ -611,7 +611,7 @@ async fn list_imports_for_identities_handles_multiple_pairs() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = ImportStore::from_sqlite_services(&services);
+    let workflow = ImportStore::new(services.datastore());
 
     workflow
         .queue_import_request(
@@ -775,7 +775,7 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = DownloadSubmissionStore::from_sqlite_services(&services);
+    let workflow = DownloadSubmissionStore::new(services.datastore());
 
     for idx in 0..805 {
         workflow
@@ -823,7 +823,7 @@ async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = DownloadSubmissionStore::from_sqlite_services(&services);
+    let workflow = DownloadSubmissionStore::new(services.datastore());
 
     workflow
         .record_submission(DownloadSubmission {
@@ -870,7 +870,7 @@ async fn record_download_submission_persists_episode_set_scope() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = DownloadSubmissionStore::from_sqlite_services(&services);
+    let workflow = DownloadSubmissionStore::new(services.datastore());
 
     workflow
         .record_submission(DownloadSubmission {
@@ -917,7 +917,7 @@ async fn serialized_writer_handles_settings_batch_and_encrypted_upserts() {
         .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([7; 32]))
         .await
         .expect("encryption key should set");
-    let settings = SettingsStore::from_sqlite_services(&services);
+    let settings = SettingsStore::new(services.datastore(), services.encryption_key_state());
 
     settings
         .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
@@ -985,7 +985,7 @@ async fn settings_with_defaults_store_reads_scoped_overrides() {
         .set_encryption_key(encryption_key.clone())
         .await
         .expect("encryption key should set");
-    let settings = SettingsStore::from_sqlite_services(&services);
+    let settings = SettingsStore::new(services.datastore(), services.encryption_key_state());
 
     settings
         .batch_ensure_setting_definitions(vec![
@@ -1098,7 +1098,7 @@ async fn settings_with_defaults_store_reads_scoped_overrides() {
 #[tokio::test]
 async fn explicit_setting_query_skips_definition_defaults_for_missing_scopes() {
     let (services, db) = temp_services("scryer_settings_explicit").await;
-    let settings = SettingsStore::from_sqlite_services(&services);
+    let settings = SettingsStore::new(services.datastore(), services.encryption_key_state());
 
     settings
         .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
@@ -1151,7 +1151,7 @@ async fn explicit_setting_query_skips_definition_defaults_for_missing_scopes() {
 #[tokio::test]
 async fn sqlite_library_scoped_download_client_routing_round_trips_explicit_json() {
     let (services, db) = temp_services("scryer_library_download_client_routing").await;
-    let settings = SettingsStore::from_sqlite_services(&services);
+    let settings = SettingsStore::new(services.datastore(), services.encryption_key_state());
 
     settings
         .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
@@ -1221,7 +1221,7 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
         .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([9; 32]))
         .await
         .expect("encryption key should set");
-    let store = NotificationStore::from_sqlite_services(&services);
+    let store = NotificationStore::new(services.datastore(), services.encryption_key_state());
     let now = Utc::now();
 
     let channel = NotificationChannelConfig {
@@ -1347,7 +1347,8 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
 #[tokio::test]
 async fn serialized_writer_handles_download_client_reorder() {
     let (services, db) = temp_services("scryer_download_client_writer").await;
-    let store = DownloadClientConfigStore::from_sqlite_services(&services);
+    let store =
+        DownloadClientConfigStore::new(services.datastore(), services.encryption_key_state());
     let now = Utc::now();
 
     let client_a = DownloadClientConfig {
@@ -1400,7 +1401,7 @@ async fn serialized_writer_handles_download_client_reorder() {
 #[tokio::test]
 async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
     let (services, db) = temp_services("scryer_release_writer").await;
-    let release_store = ReleaseStore::from_sqlite_services(&services);
+    let release_store = ReleaseStore::new(services.datastore());
 
     ReleaseAttemptRepository::record_release_attempt(
         &release_store,
@@ -1447,7 +1448,7 @@ async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
 #[tokio::test]
 async fn release_attempt_queries_dedupe_failed_signatures_by_normalized_source_title() {
     let (services, db) = temp_services("scryer_release_dedupe").await;
-    let release_store = ReleaseStore::from_sqlite_services(&services);
+    let release_store = ReleaseStore::new(services.datastore());
     let catalog = title_store(&services);
 
     catalog
@@ -1536,39 +1537,39 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
 }
 
 fn title_store(services: &SqliteServices) -> TitleStore {
-    TitleStore::sqlite(services)
+    TitleStore::new(services.datastore())
 }
 
 fn show_store(services: &SqliteServices) -> ShowStore {
-    ShowStore::sqlite(services)
+    ShowStore::new(services.datastore())
 }
 
 fn user_store(services: &SqliteServices) -> UserStore {
-    UserStore::sqlite(services)
+    UserStore::new(services.datastore())
 }
 
 fn wanted_store(services: &SqliteServices) -> WantedStore {
-    WantedStore::from_sqlite_services(services)
+    WantedStore::new(services.datastore())
 }
 
 fn housekeeping_store(services: &SqliteServices) -> HousekeepingStore {
-    HousekeepingStore::from_sqlite_services(services)
+    HousekeepingStore::new(services.datastore())
 }
 
 fn subtitle_download_store(services: &SqliteServices) -> SubtitleDownloadStore {
-    SubtitleDownloadStore::from_sqlite_services(services)
+    SubtitleDownloadStore::new(services.datastore())
 }
 
 fn media_file_store(services: &SqliteServices) -> MediaFileStore {
-    MediaFileStore::from_sqlite_services(services)
+    MediaFileStore::new(services.datastore())
 }
 
 fn library_scan_unmatched_store(services: &SqliteServices) -> LibraryScanUnmatchedStore {
-    LibraryScanUnmatchedStore::from_sqlite_services(services)
+    LibraryScanUnmatchedStore::new(services.datastore())
 }
 
 fn title_image_store(services: &SqliteServices) -> TitleImageStore {
-    TitleImageStore::from_sqlite_services(services)
+    TitleImageStore::new(services.datastore())
 }
 
 async fn temp_services(prefix: &str) -> (SqliteServices, std::path::PathBuf) {
@@ -2149,7 +2150,8 @@ async fn review_regression_download_submission_episode_links_cascade_with_parent
 #[tokio::test]
 async fn review_regression_subtitle_provider_update_sets_and_clears_disabled_until() {
     let (services, db) = single_connection_services("scryer_subtitle_disabled_until").await;
-    let store = SubtitleProviderConfigStore::from_sqlite_services(&services);
+    let store =
+        SubtitleProviderConfigStore::new(services.datastore(), services.encryption_key_state());
     let now = Utc::now();
     let config = SubtitleProviderConfig {
         id: "subtitle-provider-1".to_string(),
@@ -3475,7 +3477,7 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
         .expect("db should initialize");
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
-    let domain_events = DomainEventStore::from_sqlite_services(&services);
+    let domain_events = DomainEventStore::new(services.datastore());
 
     let title = make_test_title("title-image-event", Some("https://tvdb.example/poster.jpg"));
     TitleRepository::create(&catalog, title.clone())
@@ -5830,7 +5832,7 @@ async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow_store = DownloadSubmissionStore::from_sqlite_services(&services);
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
 
     workflow_store
         .update_tracked_state(
@@ -5992,7 +5994,7 @@ async fn queued_delete_stale_recovery_only_recovers_stale_rows() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow_store = DownloadQueueCommandStore::from_sqlite_services(&services);
+    let workflow_store = DownloadQueueCommandStore::new(services.datastore());
 
     let stale = workflow_store
         .queue_delete_command(None, "nzbget", "job-stale", false, Some("admin"))

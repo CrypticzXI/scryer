@@ -7,6 +7,8 @@ query SearchTvdbBatch($requests: [TvdbSearchBatchRequestInput!]!, $language: Str
       tvdb_id
       name
       year
+      auto_match_safe
+      auto_match_signals
     }
   }
 }

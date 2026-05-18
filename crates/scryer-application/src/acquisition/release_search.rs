@@ -5,7 +5,8 @@ use super::acquisition::{
 use super::*;
 use crate::acquisition_policy::evaluate_upgrade;
 use crate::acquisition_search_queries::{
-    anidb_id_from_external_ids, build_search_queries, imdb_id_from_title, tvdb_id_from_external_ids,
+    anidb_id_from_external_ids, build_search_queries, imdb_id_from_title,
+    tmdb_id_from_external_ids, tvdb_id_from_external_ids,
 };
 use crate::delay_profile::DelayProfile;
 use crate::quality::release_parser::ParseDisposition;
@@ -26,6 +27,7 @@ pub(crate) struct ResolvedReleaseSearchSubject {
     pub(crate) title_evidence: CanonicalTitleEvidence,
     pub(crate) queries: Vec<String>,
     pub(crate) imdb_id: Option<String>,
+    pub(crate) tmdb_id: Option<String>,
     pub(crate) tvdb_id: Option<String>,
     pub(crate) anidb_id: Option<String>,
     pub(crate) category: String,
@@ -628,6 +630,7 @@ impl AppUseCase {
             title_evidence: canonical_title_evidence(title),
             queries: vec![query],
             imdb_id,
+            tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
             tvdb_id,
             anidb_id,
             category,
@@ -739,6 +742,7 @@ impl AppUseCase {
             title_evidence: canonical_title_evidence_for_episode(title, episode_record.as_ref()),
             queries,
             imdb_id,
+            tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
             tvdb_id,
             anidb_id,
             category,
@@ -808,6 +812,7 @@ impl AppUseCase {
             title_evidence: canonical_title_evidence(title),
             queries,
             imdb_id,
+            tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
             tvdb_id,
             anidb_id,
             category,
@@ -879,6 +884,7 @@ impl AppUseCase {
                 title_evidence: canonical_title_evidence(&search_title),
                 queries,
                 imdb_id,
+                tmdb_id: tmdb_id_from_external_ids(&search_title.external_ids),
                 tvdb_id,
                 anidb_id,
                 category: self.release_search_category_for_facet(&search_title.facet),
@@ -915,6 +921,7 @@ impl AppUseCase {
             title_evidence: canonical_title_evidence_for_episode(title, episode),
             queries: query_result.queries,
             imdb_id: query_result.imdb_id,
+            tmdb_id: query_result.tmdb_id,
             tvdb_id: query_result.tvdb_id,
             anidb_id: query_result.anidb_id,
             category: query_result.category,

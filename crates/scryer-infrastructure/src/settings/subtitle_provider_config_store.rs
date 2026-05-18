@@ -12,7 +12,6 @@ use crate::config_store::{
 };
 use crate::encryption::EncryptionKey;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};
-use crate::sqlite_services::SqliteServices;
 
 const SUBTITLE_PROVIDER_COLUMNS: &str = "id, name, provider_type, config_json, is_enabled,
     enabled_facets, last_health_status, last_error, last_error_at, disabled_until,
@@ -32,7 +31,7 @@ pub struct SubtitleProviderConfigStore {
 }
 
 impl SubtitleProviderConfigStore {
-    pub(crate) fn new(
+    pub fn new(
         datastore: StoreDatastore,
         encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
     ) -> Self {
@@ -40,25 +39,6 @@ impl SubtitleProviderConfigStore {
             datastore,
             encryption_key,
         }
-    }
-
-    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-        Self::new(
-            StoreDatastore::Sqlite {
-                pool: db.pool().clone(),
-                writer_gate: db.writer_gate(),
-            },
-            db.encryption_key_state(),
-        )
-    }
-
-    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-        Self::new(
-            StoreDatastore::Postgres {
-                pool: db.pool().clone(),
-            },
-            db.encryption_key_state(),
-        )
     }
 
     fn encryption_key(&self) -> AppResult<Option<EncryptionKey>> {

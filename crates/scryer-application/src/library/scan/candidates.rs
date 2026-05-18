@@ -1,11 +1,12 @@
 use super::*;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 async fn ensure_title_folder_path_if_missing(
     app: &AppUseCase,
     title: &mut Title,
     folder_path: &Path,
 ) {
-    let folder_path = folder_path.to_string_lossy().trim().to_string();
+    let folder_path = path_to_stored_string(folder_path).trim().to_string();
     if folder_path.is_empty()
         || title
             .folder_path
@@ -44,20 +45,22 @@ fn scanned_movie_entry_folder_path(scan_root: &Path, representative_path: &str) 
         return None;
     }
 
-    let item_path = PathBuf::from(representative_path);
+    let item_path = stored_path_to_path_buf(representative_path);
     if let Ok(relative) = item_path.strip_prefix(scan_root)
         && let Some(first_component) = relative.components().next()
     {
         let entry_path = scan_root.join(first_component.as_os_str());
-        let entry_path = entry_path.to_string_lossy().trim().to_string();
+        let entry_path = path_to_stored_string(&entry_path).trim().to_string();
         if entry_path.is_empty() || entry_path == representative_path {
             return None;
         }
         return Some(entry_path);
     }
 
-    let parent = item_path.parent()?.to_string_lossy().trim().to_string();
-    if parent.is_empty() || parent == scan_root.to_string_lossy() {
+    let parent = path_to_stored_string(item_path.parent()?)
+        .trim()
+        .to_string();
+    if parent.is_empty() || parent == path_to_stored_string(scan_root) {
         None
     } else {
         Some(parent)
@@ -420,7 +423,7 @@ pub(super) async fn scan_episodic_title_directory_for_progress_metrics(
     folder_path: &Path,
 ) -> AppResult<LibraryDirectoryScanResult> {
     library_scanner
-        .scan_directory_for_progress_with_metrics(folder_path.to_string_lossy().as_ref())
+        .scan_directory_for_progress_with_metrics(path_to_stored_string(folder_path).as_str())
         .await
 }
 

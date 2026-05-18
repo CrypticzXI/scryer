@@ -1,18 +1,14 @@
 use std::sync::{Arc, RwLock};
 
-use scryer_application::{
-    AppError, AppResult, BlocklistRepository, NewBlocklistEntry, PendingRelease,
-    PendingReleaseRepository, PendingReleaseStatus, ReleaseDecision, WantedItem,
-    WantedItemRepository, WantedItemsQuery,
-};
-use scryer_domain::BlocklistEntry;
+use scryer_application::{AppError, AppResult};
 use sqlx::ConnectOptions;
 
 use crate::encryption::EncryptionKey;
-use crate::storage::sql::runtime::{repo_err, run_with_sqlite_busy_retries};
+use crate::storage::sql::runtime::{
+    SqlRuntime, StoreDatastore, repo_err, run_with_sqlite_busy_retries,
+};
 use crate::storage::sqlite::writer::{SqliteWriterGate, new_writer_gate};
 use crate::types::MigrationMode;
-use crate::{BlocklistStore, PendingReleaseStore, WantedStore};
 
 const DEFAULT_SQLITE_MAX_CONNECTIONS: u32 = 16;
 const MAX_SQLITE_CONNECTIONS_CAP: u32 = 64;
@@ -38,6 +34,13 @@ impl SqliteServices {
     /// Public pool accessor for cross-crate query access.
     pub fn pool(&self) -> &sqlx::SqlitePool {
         &self.pool
+    }
+
+    pub fn datastore(&self) -> StoreDatastore {
+        StoreDatastore::Sqlite {
+            pool: self.pool.clone(),
+            writer_gate: self.writer_gate.clone(),
+        }
     }
 
     pub async fn new(path: impl AsRef<str>) -> Result<Self, AppError> {
@@ -131,10 +134,11 @@ impl SqliteServices {
         })
     }
 
-    pub(crate) fn encryption_key_state(&self) -> Arc<RwLock<Option<EncryptionKey>>> {
+    pub fn encryption_key_state(&self) -> Arc<RwLock<Option<EncryptionKey>>> {
         self.encryption_key.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn writer_gate(&self) -> SqliteWriterGate {
         self.writer_gate.clone()
     }
@@ -150,14 +154,10 @@ impl SqliteServices {
     }
 
     pub async fn vacuum_into(&self, dest_path: &str) -> AppResult<()> {
-        let _guard = self.writer_gate.lock().await;
-        let pool = self.pool.clone();
         let dest_path = dest_path.to_string();
 
-        run_with_sqlite_busy_retries("vacuum_into", || {
-            let pool = pool.clone();
+        SqlRuntime::run_serialized_sqlite(&self.datastore(), "vacuum_into", move |pool| {
             let dest_path = dest_path.clone();
-
             async move {
                 sqlx::query("VACUUM INTO ?")
                     .bind(dest_path)
@@ -168,192 +168,5 @@ impl SqliteServices {
             }
         })
         .await
-    }
-
-    pub async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String> {
-        let store = WantedStore::from_sqlite_services(self);
-        WantedItemRepository::insert_release_decision(&store, decision).await
-    }
-
-    pub async fn get_wanted_item_by_id(&self, id: &str) -> AppResult<Option<WantedItem>> {
-        let store = WantedStore::from_sqlite_services(self);
-        WantedItemRepository::get_wanted_item_by_id(&store, id).await
-    }
-
-    pub async fn list_wanted_items(&self, query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
-        let store = WantedStore::from_sqlite_services(self);
-        WantedItemRepository::list_wanted_items(&store, query).await
-    }
-
-    pub async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64> {
-        let store = WantedStore::from_sqlite_services(self);
-        WantedItemRepository::count_wanted_items(&store, query).await
-    }
-
-    pub async fn list_release_decisions_for_title(
-        &self,
-        title_id: &str,
-        limit: i64,
-    ) -> AppResult<Vec<ReleaseDecision>> {
-        let store = WantedStore::from_sqlite_services(self);
-        WantedItemRepository::list_release_decisions_for_title(&store, title_id, limit).await
-    }
-
-    pub async fn list_release_decisions_for_wanted_item(
-        &self,
-        wanted_item_id: &str,
-        limit: i64,
-    ) -> AppResult<Vec<ReleaseDecision>> {
-        let store = WantedStore::from_sqlite_services(self);
-        WantedItemRepository::list_release_decisions_for_wanted_item(&store, wanted_item_id, limit)
-            .await
-    }
-
-    pub async fn insert_pending_release(&self, release: &PendingRelease) -> AppResult<String> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::insert_pending_release(&store, release).await
-    }
-
-    pub async fn list_expired_pending_releases(&self, now: &str) -> AppResult<Vec<PendingRelease>> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::list_expired_pending_releases(&store, now).await
-    }
-
-    pub async fn list_waiting_pending_releases(&self) -> AppResult<Vec<PendingRelease>> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::list_waiting_pending_releases(&store).await
-    }
-
-    pub async fn get_pending_release(&self, id: &str) -> AppResult<Option<PendingRelease>> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::get_pending_release(&store, id).await
-    }
-
-    pub async fn list_pending_releases_for_wanted_item(
-        &self,
-        wanted_item_id: &str,
-    ) -> AppResult<Vec<PendingRelease>> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::list_pending_releases_for_wanted_item(&store, wanted_item_id)
-            .await
-    }
-
-    pub async fn update_pending_release_status(
-        &self,
-        id: &str,
-        status: PendingReleaseStatus,
-        grabbed_at: Option<&str>,
-    ) -> AppResult<()> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::update_pending_release_status(&store, id, status, grabbed_at)
-            .await
-    }
-
-    pub async fn list_standby_pending_releases_for_wanted_item(
-        &self,
-        wanted_item_id: &str,
-    ) -> AppResult<Vec<PendingRelease>> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::list_standby_pending_releases_for_wanted_item(
-            &store,
-            wanted_item_id,
-        )
-        .await
-    }
-
-    pub async fn delete_standby_pending_releases_for_wanted_item(
-        &self,
-        wanted_item_id: &str,
-    ) -> AppResult<()> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::delete_standby_pending_releases_for_wanted_item(
-            &store,
-            wanted_item_id,
-        )
-        .await
-    }
-
-    pub async fn list_all_standby_pending_releases(&self) -> AppResult<Vec<PendingRelease>> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::list_all_standby_pending_releases(&store).await
-    }
-
-    pub async fn compare_and_set_pending_release_status(
-        &self,
-        id: &str,
-        current_status: PendingReleaseStatus,
-        next_status: PendingReleaseStatus,
-        grabbed_at: Option<&str>,
-    ) -> AppResult<bool> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::compare_and_set_pending_release_status(
-            &store,
-            id,
-            current_status,
-            next_status,
-            grabbed_at,
-        )
-        .await
-    }
-
-    pub async fn supersede_pending_releases_for_wanted_item(
-        &self,
-        wanted_item_id: &str,
-        except_id: &str,
-    ) -> AppResult<()> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::supersede_pending_releases_for_wanted_item(
-            &store,
-            wanted_item_id,
-            except_id,
-        )
-        .await
-    }
-
-    pub async fn delete_pending_releases_for_title(&self, title_id: &str) -> AppResult<()> {
-        let store = PendingReleaseStore::from_sqlite_services(self);
-        PendingReleaseRepository::delete_pending_releases_for_title(&store, title_id).await
-    }
-
-    #[expect(clippy::too_many_arguments)]
-    pub async fn insert_blocklist_entry(
-        &self,
-        title_id: String,
-        source_title: Option<String>,
-        source_hint: Option<String>,
-        quality: Option<String>,
-        download_id: Option<String>,
-        reason: Option<String>,
-        data_json: Option<String>,
-    ) -> AppResult<String> {
-        let data = match data_json {
-            Some(payload) => serde_json::from_str::<
-                std::collections::HashMap<String, serde_json::Value>,
-            >(&payload)
-            .map_err(|error| {
-                AppError::Repository(format!("invalid blocklist data_json: {error}"))
-            })?,
-            None => std::collections::HashMap::new(),
-        };
-        let entry = NewBlocklistEntry {
-            title_id,
-            source_title,
-            source_hint,
-            quality,
-            download_id,
-            reason,
-            data,
-        };
-        let store = BlocklistStore::from_sqlite_services(self);
-        BlocklistRepository::add(&store, &entry).await
-    }
-
-    pub async fn list_blocklist_for_title(
-        &self,
-        title_id: &str,
-        limit: usize,
-    ) -> AppResult<Vec<BlocklistEntry>> {
-        let store = BlocklistStore::from_sqlite_services(self);
-        BlocklistRepository::list_for_title(&store, title_id, limit).await
     }
 }

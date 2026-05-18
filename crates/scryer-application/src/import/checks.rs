@@ -63,8 +63,8 @@ pub fn check_not_sample(ctx: &ImportCheckContext<'_>) -> ImportVerdict {
     let filename = ctx
         .source_path
         .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
         .to_ascii_lowercase();
 
     if filename.contains("sample") {
@@ -78,8 +78,8 @@ pub fn check_not_sample(ctx: &ImportCheckContext<'_>) -> ImportVerdict {
     if let Some(parent) = ctx.source_path.parent() {
         let dir_name = parent
             .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
             .to_ascii_lowercase();
         if dir_name == "sample" || dir_name == "samples" {
             return ImportVerdict::Reject {
@@ -107,11 +107,13 @@ pub fn check_not_unpacking(ctx: &ImportCheckContext<'_>) -> ImportVerdict {
     }
 
     // Check for sibling marker files (e.g. foo.mkv.!qB alongside foo.mkv)
-    if let Some(file_name) = ctx.source_path.file_name().and_then(|n| n.to_str())
+    if let Some(file_name) = ctx.source_path.file_name()
         && let Some(parent) = ctx.source_path.parent()
     {
         for marker in &[".!qB", ".part", "._unpack"] {
-            let marker_path = parent.join(format!("{file_name}{marker}"));
+            let mut marker_name = file_name.to_os_string();
+            marker_name.push(marker);
+            let marker_path = parent.join(marker_name);
             if marker_path.exists() {
                 return ImportVerdict::Reject {
                     reason: format!("sibling marker file exists: {}", marker_path.display()),
@@ -168,7 +170,9 @@ pub fn check_disk_space(ctx: &ImportCheckContext<'_>) -> ImportVerdict {
     #[cfg(unix)]
     {
         use std::ffi::CString;
-        if let Ok(c_path) = CString::new(stat_path.to_string_lossy().as_bytes()) {
+        use std::os::unix::ffi::OsStrExt;
+
+        if let Ok(c_path) = CString::new(stat_path.as_os_str().as_bytes()) {
             let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
             let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
             if ret == 0 {
@@ -268,6 +272,19 @@ mod tests {
     fn sample_detected_in_filename() {
         let parsed = parse_release_metadata("sample-movie");
         let src = PathBuf::from("/tmp/sample-movie.mkv");
+        let dst = PathBuf::from("/data/movie.mkv");
+        let ctx = dummy_ctx(&src, &dst, 1_000_000, &parsed, &[]);
+        assert!(!check_not_sample(&ctx).is_accept());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sample_detected_in_non_utf8_filename() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let parsed = parse_release_metadata("sample-movie");
+        let src = PathBuf::from(OsStr::from_bytes(b"/tmp/\xFFsample-movie.mkv"));
         let dst = PathBuf::from("/data/movie.mkv");
         let ctx = dummy_ctx(&src, &dst, 1_000_000, &parsed, &[]);
         assert!(!check_not_sample(&ctx).is_accept());

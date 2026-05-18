@@ -1,8 +1,11 @@
 use std::collections::{BTreeSet, HashMap};
+use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
 use reqwest::StatusCode;
 use scryer_application::{
     AppError, AppResult, ExternalPluginWasm, IndexerClient, IndexerManagementClient,
@@ -21,6 +24,7 @@ use scryer_outbound_http::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
+use tracing::{debug, warn};
 
 pub const PROWLARR_PROVIDER_TYPE: &str = "prowlarr";
 
@@ -243,6 +247,47 @@ struct ProwlarrAppProfile {
     enable_interactive_search: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ProwlarrCapsSearchNode {
+    pub available: bool,
+    #[serde(default)]
+    pub supported_params: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_engine: Option<String>,
+}
+
+impl ProwlarrCapsSearchNode {
+    pub(crate) fn supports_param(&self, param: &str) -> bool {
+        self.available
+            && self
+                .supported_params
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(param))
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ProwlarrCapsSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits_default: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits_max: Option<i64>,
+    #[serde(default)]
+    pub search: ProwlarrCapsSearchNode,
+    #[serde(default)]
+    pub tv_search: ProwlarrCapsSearchNode,
+    #[serde(default)]
+    pub movie_search: ProwlarrCapsSearchNode,
+    #[serde(default)]
+    pub music_search: ProwlarrCapsSearchNode,
+    #[serde(default)]
+    pub audio_search: ProwlarrCapsSearchNode,
+    #[serde(default)]
+    pub book_search: ProwlarrCapsSearchNode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ManagedChildMetadata {
     indexer_id: i64,
@@ -252,6 +297,8 @@ struct ManagedChildMetadata {
     download_client_id: i64,
     enable_rss: bool,
     enable_automatic_search: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    caps_snapshot: Option<ProwlarrCapsSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -395,6 +442,65 @@ impl ProwlarrManagementClient {
         Err(map_http_error(path, status, &body, retry_after_seconds))
     }
 
+    async fn fetch_child_caps_snapshot(
+        &self,
+        config: &ProwlarrConfig,
+        indexer_id: i64,
+    ) -> Result<ProwlarrCapsSnapshot, ProwlarrRequestError> {
+        let base_url = format!("{}/{}", config.base_url.trim_end_matches('/'), indexer_id);
+        let url = format!(
+            "{}{}?t=caps&apikey={}",
+            base_url.trim_end_matches('/'),
+            "/api",
+            config.api_key
+        );
+        let request_path = format!("/{indexer_id}/api?t=caps");
+        let response = self
+            .outbound_http
+            .send(self.request_policy(&request_path), || {
+                self.outbound_http
+                    .client()
+                    .get(&url)
+                    .header("Accept", "application/xml, text/xml, application/rss+xml")
+                    .header("User-Agent", USER_AGENT)
+            })
+            .await
+            .map_err(|error| match error {
+                OutboundHttpError::RateLimited(rate_limited) => ProwlarrRequestError::RateLimited(
+                    match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                        Some(delay) => {
+                            format!(
+                                "Prowlarr rate limited the child caps request (retry after {}s)",
+                                delay.as_secs()
+                            )
+                        }
+                        None => "Prowlarr rate limited the child caps request".to_string(),
+                    },
+                    rate_limited.retry_after.map(|delay| delay.as_secs() as i64),
+                ),
+                OutboundHttpError::Transport { source, .. } => {
+                    ProwlarrRequestError::Unreachable(format!("request failed: {source}"))
+                }
+            })?;
+
+        let status = response.status();
+        let retry_after_seconds = retry_after_seconds(response.headers());
+        let body = response.bytes().await.map_err(|error| {
+            ProwlarrRequestError::Unreachable(format!("Prowlarr response read failed: {error}"))
+        })?;
+
+        if status.is_success() {
+            return parse_caps_snapshot(&body);
+        }
+
+        Err(map_http_error(
+            &request_path,
+            status,
+            &body,
+            retry_after_seconds,
+        ))
+    }
+
     fn request_policy(&self, path: &str) -> RequestPolicy {
         let base_url = self
             .config
@@ -483,10 +589,34 @@ impl IndexerManagementClient for ProwlarrManagementClient {
             .map(|profile| (profile.id, profile))
             .collect::<HashMap<_, _>>();
 
-        let children = indexers
-            .into_iter()
-            .filter_map(|indexer| build_managed_child_plan(&config, indexer, &app_profiles_by_id))
-            .collect();
+        let mut children = Vec::new();
+        for indexer in indexers {
+            let child_key = indexer.id.to_string();
+            let caps_snapshot = match self.fetch_child_caps_snapshot(&config, indexer.id).await {
+                Ok(snapshot) => {
+                    debug!(
+                        child_key,
+                        movie_params = ?snapshot.movie_search.supported_params,
+                        tv_params = ?snapshot.tv_search.supported_params,
+                        "fetched managed child caps snapshot"
+                    );
+                    Some(snapshot)
+                }
+                Err(error) => {
+                    warn!(
+                        child_key,
+                        error = ?error,
+                        "failed to fetch managed child caps snapshot; child will fall back to query-only search"
+                    );
+                    None
+                }
+            };
+            if let Some(child) =
+                build_managed_child_plan(&config, indexer, &app_profiles_by_id, caps_snapshot)
+            {
+                children.push(child);
+            }
+        }
 
         Ok(IndexerSyncPlan { children })
     }
@@ -738,6 +868,7 @@ fn build_managed_child_plan(
     config: &ProwlarrConfig,
     indexer: ProwlarrIndexerResource,
     app_profiles_by_id: &HashMap<i64, ProwlarrAppProfile>,
+    caps_snapshot: Option<ProwlarrCapsSnapshot>,
 ) -> Option<ManagedIndexerChildPlan> {
     let provider_type = provider_type_for_protocol(&indexer.protocol)?;
     let app_profile = app_profiles_by_id.get(&indexer.app_profile_id);
@@ -774,9 +905,9 @@ fn build_managed_child_plan(
     .collect::<Vec<_>>();
 
     let config_json = serde_json::json!({
-        "base_url": config.base_url,
+        "base_url": format!("{}/{}", config.base_url.trim_end_matches('/'), indexer.id),
         "api_key": config.api_key,
-        "api_path": format!("/api/v1/indexer/{}/newznab", indexer.id),
+        "api_path": "/api",
     });
     let managed_metadata_json = serde_json::to_string(&ManagedChildMetadata {
         indexer_id: indexer.id,
@@ -786,6 +917,7 @@ fn build_managed_child_plan(
         download_client_id: indexer.download_client_id,
         enable_rss,
         enable_automatic_search,
+        caps_snapshot,
     })
     .ok();
 
@@ -921,13 +1053,117 @@ fn default_true() -> bool {
     true
 }
 
+fn parse_caps_snapshot(body: &[u8]) -> Result<ProwlarrCapsSnapshot, ProwlarrRequestError> {
+    let mut reader = Reader::from_reader(Cursor::new(body));
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut snapshot = ProwlarrCapsSnapshot::default();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(element)) | Ok(Event::Empty(element)) => {
+                match element.name().as_ref() {
+                    b"server" => {
+                        snapshot.server_title = attr_value(&element, b"title")?;
+                    }
+                    b"limits" => {
+                        snapshot.limits_default = attr_i64(&element, b"default")?;
+                        snapshot.limits_max = attr_i64(&element, b"max")?;
+                    }
+                    b"search" => {
+                        snapshot.search = parse_caps_node(&element)?;
+                    }
+                    b"tv-search" => {
+                        snapshot.tv_search = parse_caps_node(&element)?;
+                    }
+                    b"movie-search" => {
+                        snapshot.movie_search = parse_caps_node(&element)?;
+                    }
+                    b"music-search" => {
+                        snapshot.music_search = parse_caps_node(&element)?;
+                    }
+                    b"audio-search" => {
+                        snapshot.audio_search = parse_caps_node(&element)?;
+                    }
+                    b"book-search" => {
+                        snapshot.book_search = parse_caps_node(&element)?;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(ProwlarrRequestError::Unsupported(format!(
+                    "Prowlarr returned invalid caps XML: {error}"
+                )));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(snapshot)
+}
+
+fn parse_caps_node(
+    element: &BytesStart<'_>,
+) -> Result<ProwlarrCapsSearchNode, ProwlarrRequestError> {
+    Ok(ProwlarrCapsSearchNode {
+        available: attr_value(element, b"available")?
+            .is_some_and(|value| value.eq_ignore_ascii_case("yes")),
+        supported_params: attr_value(element, b"supportedParams")?
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase())
+            .collect(),
+        search_engine: attr_value(element, b"searchEngine")?
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    })
+}
+
+fn attr_value(
+    element: &BytesStart<'_>,
+    key: &[u8],
+) -> Result<Option<String>, ProwlarrRequestError> {
+    for attribute in element.attributes().with_checks(false) {
+        let attribute = attribute.map_err(|error| {
+            ProwlarrRequestError::Unsupported(format!(
+                "Prowlarr returned invalid caps XML attributes: {error}"
+            ))
+        })?;
+        if attribute.key.as_ref() == key {
+            let value = std::str::from_utf8(attribute.value.as_ref()).map_err(|error| {
+                ProwlarrRequestError::Unsupported(format!(
+                    "Prowlarr returned non-UTF8 caps attribute values: {error}"
+                ))
+            })?;
+            return Ok(Some(value.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn attr_i64(element: &BytesStart<'_>, key: &[u8]) -> Result<Option<i64>, ProwlarrRequestError> {
+    attr_value(element, key)?.map_or(Ok(None), |value| {
+        value.trim().parse::<i64>().map(Some).map_err(|error| {
+            ProwlarrRequestError::Unsupported(format!(
+                "Prowlarr returned invalid numeric caps values: {error}"
+            ))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
     use scryer_domain::IndexerConfig;
     use serde_json::json;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_indexer_config(base_url: &str) -> IndexerConfig {
@@ -992,6 +1228,17 @@ mod tests {
             base_url: "https://prowlarr.example".to_string(),
             api_key: "secret".to_string(),
         };
+        let caps_snapshot = ProwlarrCapsSnapshot {
+            server_title: Some("Prowlarr".to_string()),
+            limits_default: Some(100),
+            limits_max: Some(100),
+            movie_search: ProwlarrCapsSearchNode {
+                available: true,
+                supported_params: vec!["q".to_string(), "imdbid".to_string()],
+                search_engine: None,
+            },
+            ..ProwlarrCapsSnapshot::default()
+        };
         let indexer = ProwlarrIndexerResource {
             id: 7,
             name: "Indexer Seven".to_string(),
@@ -1018,15 +1265,17 @@ mod tests {
             },
         )]);
 
-        let child = build_managed_child_plan(&config, indexer, &app_profiles).expect("child plan");
+        let child =
+            build_managed_child_plan(&config, indexer, &app_profiles, Some(caps_snapshot.clone()))
+                .expect("child plan");
         let config_json: Value = serde_json::from_str(&child.config_json).unwrap();
         let metadata: ManagedChildMetadata =
             serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();
 
         assert_eq!(child.provider_type, "torznab");
-        assert_eq!(config_json["base_url"], "https://prowlarr.example");
+        assert_eq!(config_json["base_url"], "https://prowlarr.example/7");
         assert_eq!(config_json["api_key"], "secret");
-        assert_eq!(config_json["api_path"], "/api/v1/indexer/7/newznab");
+        assert_eq!(config_json["api_path"], "/api");
         assert!(child.is_enabled);
         assert!(child.enable_interactive_search);
         assert!(child.enable_auto_search);
@@ -1038,6 +1287,7 @@ mod tests {
         assert_eq!(metadata.download_client_id, 3);
         assert!(metadata.enable_rss);
         assert!(!metadata.enable_automatic_search);
+        assert_eq!(metadata.caps_snapshot, Some(caps_snapshot));
     }
 
     #[test]
@@ -1066,7 +1316,8 @@ mod tests {
             },
         )]);
 
-        let child = build_managed_child_plan(&config, indexer, &app_profiles).expect("child plan");
+        let child =
+            build_managed_child_plan(&config, indexer, &app_profiles, None).expect("child plan");
         let metadata: ManagedChildMetadata =
             serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();
 
@@ -1075,6 +1326,40 @@ mod tests {
         assert!(!child.enable_auto_search);
         assert!(!metadata.enable_rss);
         assert!(!metadata.enable_automatic_search);
+        assert!(metadata.caps_snapshot.is_none());
+    }
+
+    #[test]
+    fn parse_caps_snapshot_preserves_search_nodes_and_limits() {
+        let body = br#"<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+  <server title="Prowlarr" />
+  <limits default="100" max="100" />
+  <searching>
+    <search available="yes" supportedParams="q" />
+    <tv-search available="yes" supportedParams="q,season,ep,tvdbid,rid,tvmazeid" />
+    <movie-search available="yes" supportedParams="q,imdbid,genre" />
+    <music-search available="yes" supportedParams="q" />
+    <audio-search available="yes" supportedParams="q" />
+    <book-search available="no" supportedParams="q" />
+  </searching>
+</caps>"#;
+
+        let snapshot = parse_caps_snapshot(body).expect("caps snapshot");
+
+        assert_eq!(snapshot.server_title.as_deref(), Some("Prowlarr"));
+        assert_eq!(snapshot.limits_default, Some(100));
+        assert_eq!(snapshot.limits_max, Some(100));
+        assert_eq!(snapshot.search.supported_params, vec!["q"]);
+        assert_eq!(
+            snapshot.tv_search.supported_params,
+            vec!["q", "season", "ep", "tvdbid", "rid", "tvmazeid"]
+        );
+        assert_eq!(
+            snapshot.movie_search.supported_params,
+            vec!["q", "imdbid", "genre"]
+        );
+        assert!(!snapshot.book_search.available);
     }
 
     #[tokio::test]
@@ -1153,6 +1438,82 @@ mod tests {
         let plan = client.plan_sync("parent").await.expect("sync plan");
 
         assert!(plan.children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn plan_sync_fetches_and_persists_child_caps_snapshot() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "2.0.0"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(INDEXER_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 7,
+                "name": "NZBGeek",
+                "enable": true,
+                "appProfileId": 1,
+                "protocol": "usenet",
+                "priority": 3,
+                "downloadClientId": 0,
+                "capabilities": { "categories": [] }
+            }])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(APP_PROFILE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 1,
+                "enableRss": true,
+                "enableAutomaticSearch": true,
+                "enableInteractiveSearch": true
+            }])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/7/api"))
+            .and(query_param("t", "caps"))
+            .and(query_param("apikey", "secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+  <server title="Prowlarr" />
+  <limits default="100" max="100" />
+  <searching>
+    <search available="yes" supportedParams="q" />
+    <tv-search available="yes" supportedParams="q,season,ep,tvdbid,rid,tvmazeid" />
+    <movie-search available="yes" supportedParams="q,imdbid,genre" />
+    <music-search available="yes" supportedParams="q" />
+    <audio-search available="yes" supportedParams="q" />
+    <book-search available="no" supportedParams="q" />
+  </searching>
+</caps>"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let plan = client.plan_sync("parent").await.expect("sync plan");
+        let child = plan.children.first().expect("child plan");
+        let metadata: ManagedChildMetadata =
+            serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();
+
+        assert_eq!(metadata.indexer_id, 7);
+        let caps = metadata.caps_snapshot.expect("caps snapshot");
+        assert_eq!(caps.search.supported_params, vec!["q"]);
+        assert_eq!(
+            caps.tv_search.supported_params,
+            vec!["q", "season", "ep", "tvdbid", "rid", "tvmazeid"]
+        );
+        assert_eq!(
+            caps.movie_search.supported_params,
+            vec!["q", "imdbid", "genre"]
+        );
     }
 
     #[tokio::test]

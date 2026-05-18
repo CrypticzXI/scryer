@@ -12,6 +12,16 @@ struct AviTrack {
     index_bytes: u64,
 }
 
+fn chunk_id_matches(chunk_id: riff::ChunkId, expected: &[u8; 4]) -> bool {
+    chunk_id.value == *expected
+}
+
+fn format_chunk_id(chunk_id: riff::ChunkId) -> String {
+    std::str::from_utf8(&chunk_id.value)
+        .map(|value| format!("'{value}'"))
+        .unwrap_or_else(|_| format!("bytes {:02X?}", chunk_id.value))
+}
+
 /// Parse an AVI (RIFF) container and extract stream metadata.
 pub(crate) fn parse_avi(path: &Path) -> Result<RawContainer, MediaInfoError> {
     let mut file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
@@ -27,10 +37,10 @@ pub(crate) fn parse_avi(path: &Path) -> Result<RawContainer, MediaInfoError> {
         .read_type(&mut file)
         .map_err(|e| MediaInfoError::Parse(format!("failed to read RIFF type: {e}")))?;
 
-    if riff_type.as_str() != "AVI " {
+    if !chunk_id_matches(riff_type, b"AVI ") {
         return Err(MediaInfoError::Parse(format!(
-            "RIFF type is '{}', expected 'AVI '",
-            riff_type.as_str()
+            "RIFF type is {}, expected 'AVI '",
+            format_chunk_id(riff_type)
         )));
     }
 
@@ -50,10 +60,10 @@ pub(crate) fn parse_avi(path: &Path) -> Result<RawContainer, MediaInfoError> {
                 .read_type(&mut file)
                 .map_err(|e| MediaInfoError::Parse(format!("error reading LIST type: {e}")))?;
 
-            if list_type.as_str() == "hdrl" {
+            if chunk_id_matches(list_type, b"hdrl") {
                 parse_hdrl(&child, &mut file, &mut duration_seconds, &mut tracks)?;
             }
-        } else if child.id().as_str() == "idx1" {
+        } else if chunk_id_matches(child.id(), b"idx1") {
             idx1_offset = Some(offset);
         }
     }
@@ -105,10 +115,7 @@ fn parse_hdrl<T: Read + Seek>(
     for offset in child_offsets {
         let child = riff::Chunk::read(stream, offset)
             .map_err(|e| MediaInfoError::Parse(format!("error in hdrl: {e}")))?;
-
-        let id_str = child.id().as_str().to_owned();
-
-        if id_str == "avih" {
+        if chunk_id_matches(child.id(), b"avih") {
             let data = child
                 .read_contents(stream)
                 .map_err(|e| MediaInfoError::Parse(format!("error reading avih: {e}")))?;
@@ -120,7 +127,7 @@ fn parse_hdrl<T: Read + Seek>(
             let list_type = child.read_type(stream).map_err(|e| {
                 MediaInfoError::Parse(format!("error reading LIST type in hdrl: {e}"))
             })?;
-            if list_type.as_str() == "strl" {
+            if chunk_id_matches(list_type, b"strl") {
                 if let Some(track) = parse_strl(&child, stream)? {
                     tracks.push(AviTrack {
                         raw: track,
@@ -160,16 +167,13 @@ fn parse_strl<T: Read + Seek>(
     for offset in child_offsets {
         let child = riff::Chunk::read(stream, offset)
             .map_err(|e| MediaInfoError::Parse(format!("error in strl: {e}")))?;
-
-        let id_str = child.id().as_str().to_owned();
-
-        if id_str == "strh" {
+        if chunk_id_matches(child.id(), b"strh") {
             strh_data = Some(
                 child
                     .read_contents(stream)
                     .map_err(|e| MediaInfoError::Parse(format!("error reading strh: {e}")))?,
             );
-        } else if id_str == "strf" {
+        } else if chunk_id_matches(child.id(), b"strf") {
             strf_data = Some(
                 child
                     .read_contents(stream)
@@ -325,7 +329,7 @@ fn parse_stream_duration<T: Read + Seek>(
     for offset in child_offsets {
         let child = riff::Chunk::read(stream, offset)
             .map_err(|e| MediaInfoError::Parse(format!("error in strl: {e}")))?;
-        if child.id().as_str() != "strh" {
+        if !chunk_id_matches(child.id(), b"strh") {
             continue;
         }
         let data = child
@@ -354,7 +358,7 @@ fn parse_declared_payload_bytes<T: Read + Seek>(
     for offset in child_offsets {
         let child = riff::Chunk::read(stream, offset)
             .map_err(|e| MediaInfoError::Parse(format!("error in strl: {e}")))?;
-        if child.id().as_str() != "strh" {
+        if !chunk_id_matches(child.id(), b"strh") {
             continue;
         }
         let data = child
@@ -578,4 +582,82 @@ fn read_i32_le(data: &[u8], offset: usize) -> i32 {
 /// Read a little-endian u16 from a byte slice at the given offset.
 fn read_u16_le(data: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_avi;
+    use crate::MediaInfoError;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempAviFile {
+        path: PathBuf,
+    }
+
+    impl TempAviFile {
+        fn new(name: &str, bytes: &[u8]) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "scryer-mediainfo-{name}-{}-{unique}.avi",
+                std::process::id()
+            ));
+            fs::write(&path, bytes).expect("write temp AVI fixture");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempAviFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    #[test]
+    fn parse_avi_rejects_non_utf8_riff_type_without_panicking() {
+        let fixture = TempAviFile::new(
+            "invalid-riff-type",
+            &[
+                b"RIFF".as_slice(),
+                &4_u32.to_le_bytes(),
+                &[0xFF, 0xFE, 0xFD, 0xFC],
+            ]
+            .concat(),
+        );
+
+        let error = parse_avi(fixture.path()).expect_err("invalid RIFF type should be rejected");
+        let MediaInfoError::Parse(message) = error else {
+            panic!("expected parse error for invalid RIFF type");
+        };
+        assert!(message.contains("expected 'AVI '"));
+        assert!(message.contains("FF"));
+    }
+
+    #[test]
+    fn parse_avi_ignores_non_utf8_top_level_chunk_ids_without_panicking() {
+        let fixture = TempAviFile::new(
+            "invalid-top-level-chunk-id",
+            &[
+                b"RIFF".as_slice(),
+                &12_u32.to_le_bytes(),
+                b"AVI ".as_slice(),
+                &[0xFF, 0xFE, 0xFD, 0xFC],
+                &0_u32.to_le_bytes(),
+            ]
+            .concat(),
+        );
+
+        let container = parse_avi(fixture.path()).expect("malformed chunk ids should not crash");
+        assert_eq!(container.format_name, "avi");
+        assert_eq!(container.duration_seconds, None);
+        assert!(container.tracks.is_empty());
+    }
 }

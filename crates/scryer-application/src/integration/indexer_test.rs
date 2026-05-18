@@ -2045,7 +2045,18 @@ mod tests {
             enable_auto_search: false,
             managed_parent_config_id: Some(parent.id.clone()),
             managed_child_key: Some("keep".to_string()),
-            managed_metadata_json: Some("{\"old\":true}".to_string()),
+            managed_metadata_json: Some(
+                serde_json::json!({
+                    "old": true,
+                    "caps_snapshot": {
+                        "search": {
+                            "available": true,
+                            "supported_params": ["q"]
+                        }
+                    }
+                })
+                .to_string(),
+            ),
             last_health_status: None,
             last_error_at: None,
             config_json: Some(r#"{"feed_url":"https://old.example/rss"}"#.to_string()),
@@ -2180,9 +2191,17 @@ mod tests {
         assert_eq!(keep.name, "Managed Keep");
         assert_eq!(keep.base_url, "https://keep.example");
         assert_eq!(keep.managed_child_key.as_deref(), Some("keep"));
+        let keep_metadata: serde_json::Value = serde_json::from_str(
+            keep.managed_metadata_json
+                .as_deref()
+                .expect("managed keep metadata"),
+        )
+        .unwrap();
+        assert_eq!(keep_metadata["source"], "keep");
+        assert_eq!(keep_metadata["caps_snapshot"]["search"]["available"], true);
         assert_eq!(
-            keep.managed_metadata_json.as_deref(),
-            Some("{\"source\":\"keep\"}")
+            keep_metadata["caps_snapshot"]["search"]["supported_params"],
+            serde_json::json!(["q"])
         );
         assert!(
             configs

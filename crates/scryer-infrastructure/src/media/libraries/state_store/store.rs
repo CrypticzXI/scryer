@@ -12,10 +12,9 @@ use scryer_domain::{
     SubtitleBlocklistEntry, SubtitleDownload,
 };
 
-use crate::SqliteServices;
 use crate::queries::common::parse_utc_datetime;
+use crate::queries::sql_runtime::repo_err;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
-use crate::queries::sql_runtime::{repo_err, run_with_sqlite_busy_retries};
 
 const LIBRARY_PROBE_COLUMNS: &str = "title_id, path, probe_signature_scheme, probe_signature_value, last_probed_at, last_changed_at";
 
@@ -77,21 +76,8 @@ pub struct HousekeepingStore {
 macro_rules! impl_store_new {
     ($store:ident) => {
         impl $store {
-            pub(crate) fn new(datastore: StoreDatastore) -> Self {
+            pub fn new(datastore: StoreDatastore) -> Self {
                 Self { datastore }
-            }
-
-            pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-                Self::new(StoreDatastore::Sqlite {
-                    pool: db.pool().clone(),
-                    writer_gate: db.writer_gate(),
-                })
-            }
-
-            pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-                Self::new(StoreDatastore::Postgres {
-                    pool: db.pool().clone(),
-                })
             }
         }
     };
@@ -1255,19 +1241,22 @@ impl HousekeepingRepository for HousekeepingStore {
 
     async fn run_database_maintenance(&self) -> AppResult<()> {
         match &self.datastore {
-            StoreDatastore::Sqlite { pool, writer_gate } => {
-                let _writer = writer_gate.lock().await;
-                run_with_sqlite_busy_retries("sqlite_database_maintenance", || async {
-                    sqlx::query("PRAGMA optimize")
-                        .execute(pool)
-                        .await
-                        .map_err(repo_err)?;
-                    sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-                        .execute(pool)
-                        .await
-                        .map_err(repo_err)?;
-                    Ok(())
-                })
+            StoreDatastore::Sqlite { .. } => {
+                SqlRuntime::run_serialized_sqlite(
+                    &self.datastore,
+                    "sqlite_database_maintenance",
+                    |pool| async move {
+                        sqlx::query("PRAGMA optimize")
+                            .execute(&pool)
+                            .await
+                            .map_err(repo_err)?;
+                        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                            .execute(&pool)
+                            .await
+                            .map_err(repo_err)?;
+                        Ok(())
+                    },
+                )
                 .await
             }
             StoreDatastore::Postgres { pool } => sqlx::query("VACUUM (ANALYZE)")

@@ -12,7 +12,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import "@fontsource-variable/jetbrains-mono";
 import { serviceLogsQuery, serviceLogLinesSubscription } from "@/lib/graphql/queries";
+import { CODE_FONT } from "@/lib/fonts";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 
@@ -171,7 +173,11 @@ function materializeLogLineEntry(entry: RawLogLineEntry): LogLineEntry {
 function HighlightedLine({ entry }: { entry: LogLineEntry }) {
   const parsed = entry.parsed;
   if (!parsed) {
-    return <span className="text-foreground/80">{entry.raw}</span>;
+    return (
+      <span className="text-foreground/80" style={{ fontFamily: CODE_FONT }}>
+        {entry.raw}
+      </span>
+    );
   }
 
   const lvl = parsed.level.toLowerCase();
@@ -205,7 +211,7 @@ function HighlightedLine({ entry }: { entry: LogLineEntry }) {
   }
 
   return (
-    <span>
+    <span style={{ fontFamily: CODE_FONT }}>
       <span className="text-muted-foreground/60">{parsed.timestamp}</span>
       {" "}
       <span className={levelColor}>{parsed.level.padStart(5)}</span>
@@ -505,8 +511,9 @@ function LogViewer() {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
+        data-code-font
         className={`overflow-y-auto rounded-lg border border-border bg-card text-xs leading-5 ${isMobile ? "h-[55vh] min-h-[280px]" : "h-[calc(100vh-320px)] min-h-[400px]"}`}
-        style={{ fontFamily: "'Fira Code', 'Fira Mono', 'JetBrains Mono', 'Source Code Pro', 'Cascadia Code', 'Consolas', monospace" }}
+        style={{ fontFamily: CODE_FONT }}
       >
         {snapshot.lines.length === 0 ? (
           <p className="p-4 text-muted-foreground">No logs available yet.</p>
@@ -523,7 +530,10 @@ function LogViewer() {
                 >
                   {index + 1}
                 </span>
-                <div className="min-w-0 flex-1 whitespace-pre-wrap break-all">
+                <div
+                  className="min-w-0 flex-1 whitespace-pre-wrap break-all"
+                  style={{ fontFamily: CODE_FONT }}
+                >
                   <HighlightedLine entry={line} />
                 </div>
               </div>

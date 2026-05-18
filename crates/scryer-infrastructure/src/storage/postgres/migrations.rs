@@ -89,10 +89,13 @@ pub(crate) async fn run_migrations(pool: &PgPool, mode: MigrationMode) -> AppRes
     let payload_bytes = crate::migrations::embedded_payload_bytes()?;
     match install_kind {
         MigrationInstallKind::FreshInstall => {
+            let target_version = catalog.max_version();
             let baseline = catalog
-                .latest_baseline_at_or_below(100, EngineScope::Postgres)
+                .latest_baseline_at_or_below(target_version, EngineScope::Postgres)
                 .ok_or_else(|| {
-                    AppError::Repository("missing PostgreSQL baseline through 0100".to_string())
+                    AppError::Repository(format!(
+                        "missing PostgreSQL baseline through {target_version:04}"
+                    ))
                 })?;
             apply_postgres_baseline(pool, &catalog, &payload_bytes, baseline).await?;
             apply_version_range(
@@ -100,8 +103,8 @@ pub(crate) async fn run_migrations(pool: &PgPool, mode: MigrationMode) -> AppRes
                 &catalog,
                 &payload_bytes,
                 MigrationInstallKind::FreshInstall,
-                101,
-                catalog.max_version(),
+                baseline.through_version + 1,
+                target_version,
             )
             .await?;
         }

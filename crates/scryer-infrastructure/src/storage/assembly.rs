@@ -308,6 +308,14 @@ pub struct DatastoreCustomizationStore {
 }
 
 impl DatastoreCustomizationStore {
+    pub fn new(datastore: StoreDatastore) -> Self {
+        Self::from_stores(
+            Arc::new(RuleSetStore::new(datastore.clone())),
+            Arc::new(PostProcessingScriptStore::new(datastore.clone())),
+            Arc::new(PluginStore::new(datastore)),
+        )
+    }
+
     fn from_stores(
         rule_sets: Arc<RuleSetStore>,
         post_processing_scripts: Arc<PostProcessingScriptStore>,
@@ -318,14 +326,6 @@ impl DatastoreCustomizationStore {
             post_processing_scripts,
             plugins,
         }
-    }
-
-    pub fn from_sqlite_services(services: &SqliteServices) -> Self {
-        Self::from_stores(
-            Arc::new(RuleSetStore::from_sqlite_services(services)),
-            Arc::new(PostProcessingScriptStore::from_sqlite_services(services)),
-            Arc::new(PluginStore::from_sqlite_services(services)),
-        )
     }
 
     pub async fn delete_incompatible_external_plugin_installations(
@@ -664,10 +664,7 @@ impl DatastoreAssembly {
     async fn connect_sqlite(config: DatastoreConfig) -> Result<Self, AppError> {
         let db = SqliteServices::new_with_mode(config.database_url.clone(), config.migration_mode)
             .await?;
-        let datastore = StoreDatastore::Sqlite {
-            pool: db.pool().clone(),
-            writer_gate: db.writer_gate(),
-        };
+        let datastore = db.datastore();
         let title_store = Arc::new(TitleStore::new(datastore.clone()));
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
@@ -702,7 +699,7 @@ impl DatastoreAssembly {
         let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
         let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
         let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
-        let release_store = Arc::new(ReleaseStore::from_sqlite_services(&db));
+        let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
         let settings_store = Arc::new(SettingsStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -763,9 +760,7 @@ impl DatastoreAssembly {
         let db =
             PostgresServices::new_with_mode(config.database_url.clone(), config.migration_mode)
                 .await?;
-        let datastore = StoreDatastore::Postgres {
-            pool: db.pool().clone(),
-        };
+        let datastore = db.datastore();
         let title_store = Arc::new(TitleStore::new(datastore.clone()));
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
@@ -800,7 +795,7 @@ impl DatastoreAssembly {
         let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
         let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
         let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
-        let release_store = Arc::new(ReleaseStore::from_postgres_services(&db));
+        let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
         let settings_store = Arc::new(SettingsStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -1788,15 +1783,11 @@ mod tests {
             match self.engine {
                 TestBackupEngine::Sqlite => {
                     let services = self.sqlite.as_ref().expect("sqlite source");
-                    let settings = SettingsStore::from_sqlite_services(services);
-                    let titles = TitleStore::new(StoreDatastore::Sqlite {
-                        pool: services.pool().clone(),
-                        writer_gate: services.writer_gate(),
-                    });
-                    let users = UserStore::new(StoreDatastore::Sqlite {
-                        pool: services.pool().clone(),
-                        writer_gate: services.writer_gate(),
-                    });
+                    let datastore = services.datastore();
+                    let settings =
+                        SettingsStore::new(datastore.clone(), services.encryption_key_state());
+                    let titles = TitleStore::new(datastore.clone());
+                    let users = UserStore::new(datastore);
                     settings
                         .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
                         .await?;
@@ -1804,13 +1795,11 @@ mod tests {
                 }
                 TestBackupEngine::Postgres => {
                     let services = self.postgres.as_ref().expect("postgres source");
-                    let settings = SettingsStore::from_postgres_services(services);
-                    let titles = TitleStore::new(StoreDatastore::Postgres {
-                        pool: services.pool().clone(),
-                    });
-                    let users = UserStore::new(StoreDatastore::Postgres {
-                        pool: services.pool().clone(),
-                    });
+                    let datastore = services.datastore();
+                    let settings =
+                        SettingsStore::new(datastore.clone(), services.encryption_key_state());
+                    let titles = TitleStore::new(datastore.clone());
+                    let users = UserStore::new(datastore);
                     settings
                         .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
                         .await?;
@@ -1857,18 +1846,18 @@ mod tests {
         async fn current_migration_key(&self) -> AppResult<Option<String>> {
             match self.engine {
                 TestBackupEngine::Sqlite => {
-                    let settings = SettingsStore::from_sqlite_services(
-                        self.sqlite.as_ref().expect("sqlite source"),
-                    );
+                    let services = self.sqlite.as_ref().expect("sqlite source");
+                    let settings =
+                        SettingsStore::new(services.datastore(), services.encryption_key_state());
                     settings
                         .datastore_info()
                         .await
                         .map(|info| info.current_migration_key)
                 }
                 TestBackupEngine::Postgres => {
-                    let settings = SettingsStore::from_postgres_services(
-                        self.postgres.as_ref().expect("postgres source"),
-                    );
+                    let services = self.postgres.as_ref().expect("postgres source");
+                    let settings =
+                        SettingsStore::new(services.datastore(), services.encryption_key_state());
                     settings
                         .datastore_info()
                         .await
@@ -1958,15 +1947,11 @@ mod tests {
                         MigrationMode::Apply,
                     )
                     .await?;
-                    let settings = SettingsStore::from_sqlite_services(&services);
-                    let titles = TitleStore::new(StoreDatastore::Sqlite {
-                        pool: services.pool().clone(),
-                        writer_gate: services.writer_gate(),
-                    });
-                    let users = UserStore::new(StoreDatastore::Sqlite {
-                        pool: services.pool().clone(),
-                        writer_gate: services.writer_gate(),
-                    });
+                    let datastore = services.datastore();
+                    let settings =
+                        SettingsStore::new(datastore.clone(), services.encryption_key_state());
+                    let titles = TitleStore::new(datastore.clone());
+                    let users = UserStore::new(datastore);
                     verify_backup_matrix_data(&settings, &titles, &users).await?;
                     services.pool().close().await;
                 }
@@ -1976,13 +1961,11 @@ mod tests {
                         MigrationMode::Apply,
                     )
                     .await?;
-                    let settings = SettingsStore::from_postgres_services(&services);
-                    let titles = TitleStore::new(StoreDatastore::Postgres {
-                        pool: services.pool().clone(),
-                    });
-                    let users = UserStore::new(StoreDatastore::Postgres {
-                        pool: services.pool().clone(),
-                    });
+                    let datastore = services.datastore();
+                    let settings =
+                        SettingsStore::new(datastore.clone(), services.encryption_key_state());
+                    let titles = TitleStore::new(datastore.clone());
+                    let users = UserStore::new(datastore);
                     verify_backup_matrix_data(&settings, &titles, &users).await?;
                     services.pool().close().await;
                 }

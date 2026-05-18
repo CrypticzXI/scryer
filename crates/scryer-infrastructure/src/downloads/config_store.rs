@@ -10,7 +10,6 @@ use scryer_domain::{DownloadClientConfig, DownloadClientStatus};
 use crate::config_store::{current_encryption_key, decrypt_value, maybe_encrypt_value};
 use crate::encryption::EncryptionKey;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
-use crate::sqlite_services::SqliteServices;
 
 const DOWNLOAD_CLIENT_COLUMNS: &str = "id, name, client_type, config_json, is_enabled, status,
     client_priority, last_error, last_seen_at, created_at, updated_at";
@@ -29,7 +28,7 @@ pub struct DownloadClientConfigStore {
 }
 
 impl DownloadClientConfigStore {
-    pub(crate) fn new(
+    pub fn new(
         datastore: StoreDatastore,
         encryption_key: Arc<RwLock<Option<EncryptionKey>>>,
     ) -> Self {
@@ -37,25 +36,6 @@ impl DownloadClientConfigStore {
             datastore,
             encryption_key,
         }
-    }
-
-    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-        Self::new(
-            StoreDatastore::Sqlite {
-                pool: db.pool().clone(),
-                writer_gate: db.writer_gate(),
-            },
-            db.encryption_key_state(),
-        )
-    }
-
-    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-        Self::new(
-            StoreDatastore::Postgres {
-                pool: db.pool().clone(),
-            },
-            db.encryption_key_state(),
-        )
     }
 
     fn encryption_key(&self) -> AppResult<Option<EncryptionKey>> {

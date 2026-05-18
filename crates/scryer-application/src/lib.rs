@@ -36,6 +36,7 @@ mod rules;
 mod security;
 mod services;
 mod settings;
+pub mod stored_paths;
 pub mod subtitles;
 pub mod testing;
 mod types;

@@ -22,7 +22,6 @@ use sqlx::{Row, types::Json};
 use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err,
 };
-use crate::sqlite_services::SqliteServices;
 use crate::types::WorkflowOperationRecord;
 
 const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
@@ -83,21 +82,8 @@ struct NewWorkflowOperation {
 macro_rules! impl_store_new {
     ($store:ident) => {
         impl $store {
-            pub(crate) fn new(datastore: StoreDatastore) -> Self {
+            pub fn new(datastore: StoreDatastore) -> Self {
                 Self { datastore }
-            }
-
-            pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-                Self::new(StoreDatastore::Sqlite {
-                    pool: db.pool().clone(),
-                    writer_gate: db.writer_gate(),
-                })
-            }
-
-            pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-                Self::new(StoreDatastore::Postgres {
-                    pool: db.pool().clone(),
-                })
             }
         }
     };

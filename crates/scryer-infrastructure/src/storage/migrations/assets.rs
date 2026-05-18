@@ -580,26 +580,9 @@ fn validate_contiguous_versions(migrations: &[CompiledMigration]) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::Sha256;
-
-    const BASELINE_0100_SHA256: &str =
-        "61042ad74ec32e3d1f16fc49b548d1fd1e29dbcf64680f4ece78dc86141c577d";
 
     fn source_db_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scryer/src/db")
-    }
-
-    #[test]
-    fn baseline_0100_snapshot_is_immutable() {
-        let digest = Sha256::digest(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../scryer/src/db/baselines/0100_baseline.sql"
-        )));
-        assert_eq!(
-            checksum_hex(&digest),
-            BASELINE_0100_SHA256,
-            "baseline 0100 is immutable; add a new baseline instead of editing this file"
-        );
     }
 
     #[test]
@@ -613,16 +596,16 @@ mod tests {
         assert!(
             bundle
                 .catalog
-                .latest_baseline_at_or_below(100, EngineScope::Sqlite)
-                .is_some_and(|baseline| baseline.file == "baselines/0100_baseline.sql"),
-            "SQLite baseline must remain manifest-owned"
+                .latest_baseline_at_or_below(122, EngineScope::Sqlite)
+                .is_some_and(|baseline| baseline.file == "baselines/0122_baseline.sql"),
+            "SQLite should register the latest manifest-owned baseline"
         );
         assert!(
             bundle
                 .catalog
-                .latest_baseline_at_or_below(100, EngineScope::Postgres)
-                .is_some_and(|baseline| baseline.file == "postgres/baselines/0100_baseline.sql"),
-            "PostgreSQL baseline must be manifest-owned"
+                .latest_baseline_at_or_below(122, EngineScope::Postgres)
+                .is_some_and(|baseline| baseline.file == "postgres/baselines/0122_baseline.sql"),
+            "PostgreSQL should register the latest manifest-owned baseline"
         );
     }
 
@@ -663,16 +646,6 @@ mod tests {
                 "expected PostgreSQL parity secondary-index migration to include {index_name}"
             );
         }
-    }
-
-    #[test]
-    fn postgres_baseline_0100_keeps_library_scan_unmatched_title_binding() {
-        let sql = fs::read_to_string(source_db_root().join("postgres/baselines/0100_baseline.sql"))
-            .expect("read PostgreSQL baseline 0100");
-        assert!(
-            sql.contains("title_id TEXT"),
-            "PostgreSQL baseline 0100 must include library_scan_unmatched_items.title_id"
-        );
     }
 
     #[test]

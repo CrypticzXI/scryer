@@ -342,7 +342,7 @@ async fn try_migrate_from_db(
 
 #[deprecated(since = "0.10.0", note = "legacy DB key migration — remove at 1.0.0")]
 async fn read_legacy_db_key(db: &crate::SqliteServices) -> Result<Option<EncryptionKey>, String> {
-    let settings_store = crate::SettingsStore::from_sqlite_services(db);
+    let settings_store = crate::SettingsStore::new(db.datastore(), db.encryption_key_state());
     let record = settings_store
         .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, ENCRYPTION_KEY_SETTING, None)
         .await
@@ -365,7 +365,7 @@ async fn read_legacy_db_key(db: &crate::SqliteServices) -> Result<Option<Encrypt
 
 #[deprecated(since = "0.10.0", note = "legacy DB key migration — remove at 1.0.0")]
 async fn clear_legacy_db_key(db: &crate::SqliteServices) -> Result<(), String> {
-    crate::SettingsStore::from_sqlite_services(db)
+    crate::SettingsStore::new(db.datastore(), db.encryption_key_state())
         .upsert_setting_value(
             SETTINGS_SCOPE_SYSTEM,
             ENCRYPTION_KEY_SETTING,

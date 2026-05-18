@@ -79,29 +79,11 @@ CREATE TABLE download_import_artifacts (
     result TEXT NOT NULL,
     reason_code TEXT,
     imported_media_file_id TEXT,
-    created_at TEXT NOT NULL,
+    created_at TEXT NOT NULL, source_client_id TEXT,
     FOREIGN KEY (import_id) REFERENCES imports(id) ON DELETE SET NULL,
     FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE SET NULL,
     FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE SET NULL,
     FOREIGN KEY (imported_media_file_id) REFERENCES media_files(id) ON DELETE SET NULL
-);
-CREATE TABLE download_jobs(
-    id TEXT PRIMARY KEY,
-    workflow_operation_id TEXT NOT NULL,
-    download_client_id TEXT NOT NULL,
-    release_id TEXT,
-    source_hint TEXT,
-    payload_json TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    attempts INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT,
-    started_at TEXT,
-    completed_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY (workflow_operation_id) REFERENCES workflow_operations(id) ON DELETE CASCADE,
-    FOREIGN KEY (download_client_id) REFERENCES download_clients(id) ON DELETE RESTRICT,
-    FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE SET NULL
 );
 CREATE TABLE download_queue_commands (
     id TEXT PRIMARY KEY,
@@ -149,11 +131,6 @@ CREATE TABLE "download_submissions" (
     request_signature TEXT,
     episode_id TEXT,
     UNIQUE(download_client_id, download_client_type, download_client_item_id)
-);
-CREATE TABLE entitlements(
-    code TEXT PRIMARY KEY,
-    description TEXT NOT NULL,
-    category TEXT NOT NULL
 );
 CREATE TABLE episode_external_ids(
     id TEXT PRIMARY KEY NOT NULL,
@@ -204,11 +181,15 @@ CREATE TABLE event_subscriber_offsets(
     sequence INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE TABLE external_import_monitor_snapshots (
-    facet TEXT PRIMARY KEY
+CREATE TABLE external_import_monitor_snapshot_chunks (
+    facet TEXT NOT NULL
         CHECK (facet IN ('movie', 'series', 'anime')),
-    payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    entry_kind TEXT NOT NULL
+        CHECK (entry_kind IN ('movie', 'series')),
+    chunk_index INTEGER NOT NULL,
+    payload_ndjson TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (facet, entry_kind, chunk_index)
 );
 CREATE TABLE external_subtitle_probe_cache (
     media_file_id TEXT NOT NULL REFERENCES media_files(id) ON DELETE CASCADE,
@@ -256,7 +237,7 @@ CREATE TABLE imports(
     finished_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
-, rename_plan_json TEXT);
+, rename_plan_json TEXT, source_client_id TEXT);
 CREATE TABLE indexer_api_quotas (
     indexer_id TEXT PRIMARY KEY NOT NULL,
     api_current INTEGER,
@@ -283,19 +264,6 @@ CREATE TABLE indexers(
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 , enable_interactive_search INTEGER NOT NULL DEFAULT 1, enable_auto_search INTEGER NOT NULL DEFAULT 1, config_json TEXT, managed_parent_config_id TEXT, managed_child_key TEXT, managed_metadata_json TEXT);
-CREATE TABLE integration_tokens(
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    token_name TEXT,
-    token_hash TEXT NOT NULL UNIQUE,
-    scopes_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    created_by_user_id TEXT,
-    expires_at TEXT,
-    revoked_at TEXT,
-    last_used_at TEXT,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
 CREATE TABLE libraries (
     id TEXT PRIMARY KEY,
     facet TEXT NOT NULL,
@@ -353,15 +321,6 @@ CREATE TABLE media_files(
     scan_error TEXT,
     created_at TEXT NOT NULL, video_codec TEXT, video_width INTEGER, video_height INTEGER, video_bitrate_kbps INTEGER, video_bit_depth INTEGER, video_hdr_format TEXT, audio_codec TEXT, audio_channels INTEGER, duration_seconds INTEGER, container_format TEXT, analysis_json TEXT, video_frame_rate TEXT, video_profile TEXT, audio_bitrate_kbps INTEGER, scene_name TEXT, release_group TEXT, source_type TEXT, resolution TEXT, video_codec_parsed TEXT, audio_codec_parsed TEXT, acquisition_score INTEGER, scoring_log TEXT, indexer_source TEXT, grabbed_release_title TEXT, grabbed_at TEXT, edition TEXT, original_file_path TEXT, release_hash TEXT, num_chapters INTEGER, source_signature_scheme TEXT, source_signature_value TEXT, audio_profile TEXT, audio_channels_parsed TEXT,
     FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE
-);
-CREATE TABLE mediarr_schema_migrations (
-    id INTEGER PRIMARY KEY,
-    migration_key TEXT NOT NULL UNIQUE,
-    migration_checksum TEXT NOT NULL,
-    applied_at TEXT NOT NULL,
-    success INTEGER NOT NULL,
-    error_message TEXT,
-    runtime_version TEXT NOT NULL
 );
 CREATE TABLE notification_channels(
     id TEXT PRIMARY KEY,
@@ -476,15 +435,6 @@ CREATE TABLE post_processing_scripts (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE TABLE push_subscriptions (
-    id TEXT PRIMARY KEY NOT NULL,
-    user_id TEXT,
-    endpoint TEXT NOT NULL UNIQUE,
-    p256dh TEXT NOT NULL,
-    auth TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    last_used_at TEXT
-);
 CREATE TABLE quality_profile_audio_codec_allowlist(
     profile_id TEXT NOT NULL,
     codec TEXT NOT NULL,
@@ -550,21 +500,6 @@ CREATE TABLE quality_profiles(
     allow_upgrades INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 , prefer_dual_audio INTEGER NOT NULL DEFAULT 0, required_audio_languages TEXT NOT NULL DEFAULT '[]', scoring_config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE quarantine_items(
-    id TEXT PRIMARY KEY,
-    media_file_id TEXT,
-    file_path TEXT NOT NULL,
-    reason_code TEXT NOT NULL,
-    reason_json TEXT,
-    quarantined_by TEXT,
-    quarantined_at TEXT NOT NULL,
-    release_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY (media_file_id) REFERENCES media_files(id) ON DELETE SET NULL,
-    FOREIGN KEY (quarantined_by) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE SET NULL
-);
 CREATE TABLE release_decisions (
     id                  TEXT PRIMARY KEY,
     wanted_item_id      TEXT NOT NULL REFERENCES wanted_items(id) ON DELETE CASCADE,
@@ -591,30 +526,6 @@ CREATE TABLE release_download_attempts(
     updated_at TEXT NOT NULL, source_password TEXT,
     FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE SET NULL
 );
-CREATE TABLE releases(
-    id TEXT PRIMARY KEY,
-    title_id TEXT,
-    collection_id TEXT,
-    episode_id TEXT,
-    indexer_id TEXT,
-    external_id TEXT,
-    title TEXT NOT NULL,
-    release_scope TEXT,
-    download_hint TEXT,
-    link TEXT,
-    size_bytes INTEGER,
-    published_at TEXT,
-    language_raw TEXT,
-    quality_label TEXT,
-    raw_payload_json TEXT,
-    parsed_payload_json TEXT,
-    last_seen_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE SET NULL,
-    FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE SET NULL,
-    FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE SET NULL,
-    FOREIGN KEY (indexer_id) REFERENCES indexers(id) ON DELETE SET NULL
-);
 CREATE TABLE rule_set_history (
     id TEXT PRIMARY KEY NOT NULL,
     rule_set_id TEXT NOT NULL,
@@ -634,18 +545,6 @@ CREATE TABLE rule_sets (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , is_managed INTEGER NOT NULL DEFAULT 0, managed_key TEXT);
-CREATE TABLE scheduler_jobs(
-    id TEXT PRIMARY KEY,
-    job_name TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    schedule_cron TEXT,
-    next_run_at TEXT,
-    status TEXT NOT NULL DEFAULT 'enabled',
-    last_run_at TEXT,
-    last_result TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
 CREATE TABLE settings_definitions(
     id TEXT PRIMARY KEY,
     category TEXT NOT NULL,
@@ -714,15 +613,6 @@ CREATE TABLE subtitle_provider_configs (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 , enabled_facets TEXT NOT NULL DEFAULT '[]');
-CREATE TABLE title_aliases(
-    id TEXT PRIMARY KEY NOT NULL,
-    title_id TEXT NOT NULL,
-    alias_type TEXT NOT NULL,
-    alias_value TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT,
-    FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE
-);
 CREATE TABLE title_external_ids(
     id TEXT PRIMARY KEY NOT NULL,
     title_id TEXT NOT NULL,
@@ -795,38 +685,12 @@ CREATE TABLE titles(
     updated_at TEXT,
     deleted_at TEXT
 , year INTEGER, overview TEXT, poster_url TEXT, sort_title TEXT, slug TEXT, imdb_id TEXT, runtime_minutes INTEGER, genres TEXT NOT NULL DEFAULT '[]', content_status TEXT, language TEXT, first_aired TEXT, network TEXT, studio TEXT, country TEXT, aliases TEXT NOT NULL DEFAULT '[]', metadata_language TEXT, metadata_fetched_at TEXT, min_availability TEXT, digital_release_date TEXT, banner_url TEXT, background_url TEXT, folder_path TEXT, tagged_aliases_json TEXT DEFAULT '[]', poster_local_path TEXT, banner_local_path TEXT, background_local_path TEXT, metadata_hydration_next_attempt_at TEXT, metadata_hydration_attempt_count INTEGER NOT NULL DEFAULT 0, library_id TEXT);
-CREATE TABLE upgrades(
-    id TEXT PRIMARY KEY,
-    component TEXT NOT NULL,
-    from_version TEXT,
-    to_version TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    workflow_operation_id TEXT,
-    actor_user_id TEXT,
-    started_at TEXT,
-    finished_at TEXT,
-    error_message TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY (workflow_operation_id) REFERENCES workflow_operations(id) ON DELETE SET NULL,
-    FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
-);
 CREATE TABLE user_app_permission_masks (
     user_id TEXT NOT NULL,
     permission_mask INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE user_entitlements(
-    user_id TEXT NOT NULL,
-    entitlement_code TEXT NOT NULL,
-    granted_by_user_id TEXT,
-    granted_at TEXT NOT NULL,
-    expires_at TEXT,
-    PRIMARY KEY (user_id, entitlement_code),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (entitlement_code) REFERENCES entitlements(code) ON DELETE CASCADE
 );
 CREATE TABLE user_library_permission_masks (
     user_id TEXT NOT NULL,
@@ -837,12 +701,11 @@ CREATE TABLE user_library_permission_masks (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (library_id) REFERENCES libraries(id) ON DELETE CASCADE
 );
-CREATE TABLE users(
+CREATE TABLE "users" (
     id TEXT PRIMARY KEY NOT NULL,
     username TEXT NOT NULL UNIQUE,
     display_name TEXT,
     status TEXT NOT NULL DEFAULT 'active',
-    entitlements TEXT NOT NULL,
     password_hash TEXT,
     passkey_public_key TEXT,
     locale TEXT,
@@ -882,12 +745,16 @@ CREATE TABLE workflow_operations(
     started_at TEXT,
     completed_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL, job_key TEXT, trigger_source TEXT, summary_json TEXT, summary_text TEXT, error_text TEXT,
+    updated_at TEXT NOT NULL,
+    job_key TEXT,
+    trigger_source TEXT,
+    summary_json TEXT,
+    summary_text TEXT,
+    error_text TEXT,
     FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE SET NULL,
     FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE SET NULL,
     FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE SET NULL,
-    FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE SET NULL,
     FOREIGN KEY (media_file_id) REFERENCES media_files(id) ON DELETE SET NULL
 );
 CREATE INDEX idx_blocklist_source_title
@@ -920,11 +787,7 @@ CREATE INDEX idx_download_import_artifacts_episode
 CREATE INDEX idx_download_import_artifacts_retention
     ON download_import_artifacts (created_at, import_id);
 CREATE INDEX idx_download_import_artifacts_source
-    ON download_import_artifacts (source_system, source_ref, created_at);
-CREATE INDEX idx_download_jobs_client
-    ON download_jobs (download_client_id, status);
-CREATE INDEX idx_download_jobs_workflow
-    ON download_jobs (workflow_operation_id);
+    ON download_import_artifacts (COALESCE(source_client_id, ''), source_system, source_ref, created_at);
 CREATE UNIQUE INDEX idx_download_queue_commands_active_unique
 ON download_queue_commands(action, COALESCE(client_id, ''), client_type, download_client_item_id, is_history)
 WHERE status IN ('queued', 'running');
@@ -965,15 +828,13 @@ CREATE INDEX idx_history_title_time
 CREATE INDEX idx_history_type_time
     ON history_events (event_type, occurred_at DESC);
 CREATE UNIQUE INDEX idx_imports_source_ref
-    ON imports (source_system, source_ref, import_type);
+    ON imports (COALESCE(source_client_id, ''), source_system, source_ref, import_type);
 CREATE INDEX idx_imports_status_updated_at
     ON imports (status, updated_at);
 CREATE UNIQUE INDEX idx_indexers_managed_child_identity
 ON indexers(managed_parent_config_id, managed_child_key)
 WHERE managed_parent_config_id IS NOT NULL AND managed_child_key IS NOT NULL;
 CREATE INDEX idx_indexers_managed_parent ON indexers(managed_parent_config_id);
-CREATE INDEX idx_integration_tokens_user
-    ON integration_tokens (user_id);
 CREATE UNIQUE INDEX idx_libraries_facet_slug
     ON libraries(facet, slug);
 CREATE INDEX idx_library_probe_signatures_last_probed
@@ -1000,8 +861,6 @@ CREATE INDEX idx_media_files_title
     ON media_files (title_id);
 CREATE INDEX idx_media_files_title_path
     ON media_files (title_id, file_path);
-CREATE INDEX idx_mediarr_schema_migrations_success
-    ON mediarr_schema_migrations (success, migration_key);
 CREATE UNIQUE INDEX idx_notification_channels_name_type
     ON notification_channels (name, channel_type);
 CREATE UNIQUE INDEX idx_notification_subscriptions_channel_scope
@@ -1014,7 +873,6 @@ CREATE INDEX idx_plugin_catalog_sources_kind
     ON plugin_catalog_sources(source_kind);
 CREATE INDEX idx_pp_script_runs_script_id ON post_processing_script_runs(script_id, started_at DESC);
 CREATE INDEX idx_pp_script_runs_title_id ON post_processing_script_runs(title_id, started_at DESC);
-CREATE INDEX idx_push_subscriptions_user_id ON push_subscriptions(user_id);
 CREATE INDEX idx_quality_profile_audio_codec_allowlist_profile
     ON quality_profile_audio_codec_allowlist (profile_id);
 CREATE INDEX idx_quality_profile_audio_codec_blocklist_profile
@@ -1031,8 +889,6 @@ CREATE INDEX idx_quality_profile_video_codec_blocklist_profile
     ON quality_profile_video_codec_blocklist (profile_id);
 CREATE INDEX idx_quality_profiles_scope
     ON quality_profiles (scope, scope_id);
-CREATE UNIQUE INDEX idx_quarantine_items_file
-    ON quarantine_items (file_path);
 CREATE INDEX idx_release_decisions_created_at
     ON release_decisions (created_at DESC);
 CREATE INDEX idx_release_decisions_wanted
@@ -1043,21 +899,9 @@ CREATE INDEX idx_release_download_attempts_source_hint
     ON release_download_attempts (source_hint);
 CREATE INDEX idx_release_download_attempts_source_title
     ON release_download_attempts (source_title);
-CREATE INDEX idx_releases_collection
-    ON releases (collection_id);
-CREATE INDEX idx_releases_indexer_id
-    ON releases (indexer_id);
-CREATE INDEX idx_releases_title
-    ON releases (title_id);
-CREATE INDEX idx_releases_title_scope
-    ON releases (title_id, release_scope);
 CREATE INDEX idx_rule_set_history_created_at
     ON rule_set_history (created_at DESC);
 CREATE UNIQUE INDEX idx_rule_sets_managed_key ON rule_sets(managed_key) WHERE managed_key IS NOT NULL;
-CREATE INDEX idx_scheduler_jobs_name
-    ON scheduler_jobs (job_name);
-CREATE INDEX idx_scheduler_jobs_status_next_run
-    ON scheduler_jobs (status, next_run_at);
 CREATE UNIQUE INDEX idx_setting_values_scope_name
     ON settings_values(setting_definition_id, scope, COALESCE(scope_id, ''));
 CREATE INDEX idx_settings_values_definition
@@ -1073,8 +917,6 @@ CREATE INDEX idx_subtitle_provider_configs_enabled
     ON subtitle_provider_configs(is_enabled);
 CREATE INDEX idx_subtitle_provider_configs_provider_type
     ON subtitle_provider_configs(provider_type);
-CREATE UNIQUE INDEX idx_title_aliases_title_alias
-    ON title_aliases(title_id, alias_type, alias_value);
 CREATE UNIQUE INDEX idx_title_external_ids_library_lookup
     ON title_external_ids(library_id, source, external_id);
 CREATE INDEX idx_title_external_ids_title_id
@@ -1099,10 +941,6 @@ CREATE INDEX idx_titles_library_name
     ON titles(library_id, LOWER(name), id);
 CREATE INDEX idx_titles_metadata_hydration_due
     ON titles(metadata_hydration_next_attempt_at, metadata_fetched_at);
-CREATE INDEX idx_upgrades_status
-    ON upgrades (status);
-CREATE INDEX idx_user_entitlements_user
-    ON user_entitlements (user_id);
 CREATE UNIQUE INDEX idx_wanted_items_collection_id ON wanted_items(collection_id) WHERE collection_id IS NOT NULL;
 CREATE UNIQUE INDEX idx_wanted_items_movie_unique
     ON wanted_items(title_id)
@@ -1117,29 +955,17 @@ CREATE INDEX idx_workflow_operations_job_key_status
     ON workflow_operations (job_key, status, started_at DESC);
 CREATE INDEX idx_workflow_operations_status_started
     ON workflow_operations (status, started_at);
-INSERT INTO "entitlements" ("code", "description", "category") VALUES ('manage_config', 'Manage instance configuration', 'system');
-INSERT INTO "entitlements" ("code", "description", "category") VALUES ('manage_title', 'Create and edit catalog entities', 'media');
-INSERT INTO "entitlements" ("code", "description", "category") VALUES ('manage_users', 'Manage users and security settings', 'system');
-INSERT INTO "entitlements" ("code", "description", "category") VALUES ('view_catalog', 'Read access to title and media catalog', 'media');
-INSERT INTO "libraries" ("id", "facet", "name", "slug", "is_default", "created_at", "updated_at") VALUES ('anime_default_library', 'anime', 'Anime', 'anime', 1, '2026-05-14T14:33:43Z', '2026-05-14T14:33:43Z');
-INSERT INTO "libraries" ("id", "facet", "name", "slug", "is_default", "created_at", "updated_at") VALUES ('movie_default_library', 'movie', 'Movies', 'movies', 1, '2026-05-14T14:33:43Z', '2026-05-14T14:33:43Z');
-INSERT INTO "libraries" ("id", "facet", "name", "slug", "is_default", "created_at", "updated_at") VALUES ('series_default_library', 'series', 'Series', 'series', 1, '2026-05-14T14:33:43Z', '2026-05-14T14:33:43Z');
-INSERT INTO "library_roots" ("id", "library_id", "path", "normalized_path", "is_default", "created_at", "updated_at") VALUES ('3ec18ec05ab716bf9dde7e6e17c266a0', 'anime_default_library', '/data/anime', '/data/anime', 1, '2026-05-14T14:33:43Z', '2026-05-14T14:33:43Z');
-INSERT INTO "library_roots" ("id", "library_id", "path", "normalized_path", "is_default", "created_at", "updated_at") VALUES ('3f89711540c1c8b9b363fb981f8cab04', 'movie_default_library', '/data/movies', '/data/movies', 1, '2026-05-14T14:33:43Z', '2026-05-14T14:33:43Z');
-INSERT INTO "library_roots" ("id", "library_id", "path", "normalized_path", "is_default", "created_at", "updated_at") VALUES ('5885cadb3e291be323992db584cb1283', 'series_default_library', '/data/series', '/data/series', 1, '2026-05-14T14:33:43Z', '2026-05-14T14:33:43Z');
-INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('1080p', '1080P', 0, '2026-05-14T14:33:43Z');
-INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('1080p', '720P', 1, '2026-05-14T14:33:43Z');
-INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('4k', '1080P', 1, '2026-05-14T14:33:43Z');
-INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('4k', '2160P', 0, '2026-05-14T14:33:43Z');
-INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('4k', '720P', 2, '2026-05-14T14:33:43Z');
-INSERT INTO "quality_profiles" ("id", "name", "scope", "scope_id", "archival_quality", "allow_unknown_quality", "atmos_preferred", "dolby_vision_allowed", "detected_hdr_allowed", "prefer_remux", "allow_bd_disk", "allow_upgrades", "created_at", "prefer_dual_audio", "required_audio_languages", "scoring_config") VALUES ('1080p', '1080P', 'system', NULL, '1080P', 0, 1, 1, 1, 1, 0, 1, '2026-05-14T14:33:43Z', 0, '[]', '{}');
-INSERT INTO "quality_profiles" ("id", "name", "scope", "scope_id", "archival_quality", "allow_unknown_quality", "atmos_preferred", "dolby_vision_allowed", "detected_hdr_allowed", "prefer_remux", "allow_bd_disk", "allow_upgrades", "created_at", "prefer_dual_audio", "required_audio_languages", "scoring_config") VALUES ('4k', '4K', 'system', NULL, '2160P', 0, 1, 1, 1, 1, 0, 1, '2026-05-14T14:33:43Z', 0, '[]', '{}');
-INSERT INTO "user_app_permission_masks" ("user_id", "permission_mask", "updated_at") VALUES ('00000000000000000000000000000001', 15, '2026-05-14T14:33:43Z');
-INSERT INTO "user_entitlements" ("user_id", "entitlement_code", "granted_by_user_id", "granted_at", "expires_at") VALUES ('00000000000000000000000000000001', 'manage_config', NULL, '2026-05-14T14:33:43Z', NULL);
-INSERT INTO "user_entitlements" ("user_id", "entitlement_code", "granted_by_user_id", "granted_at", "expires_at") VALUES ('00000000000000000000000000000001', 'manage_title', NULL, '2026-05-14T14:33:43Z', NULL);
-INSERT INTO "user_entitlements" ("user_id", "entitlement_code", "granted_by_user_id", "granted_at", "expires_at") VALUES ('00000000000000000000000000000001', 'manage_users', NULL, '2026-05-14T14:33:43Z', NULL);
-INSERT INTO "user_entitlements" ("user_id", "entitlement_code", "granted_by_user_id", "granted_at", "expires_at") VALUES ('00000000000000000000000000000001', 'view_catalog', NULL, '2026-05-14T14:33:43Z', NULL);
-INSERT INTO "user_library_permission_masks" ("user_id", "library_id", "permission_mask", "updated_at") VALUES ('00000000000000000000000000000001', 'anime_default_library', 15, '2026-05-14T14:33:43Z');
-INSERT INTO "user_library_permission_masks" ("user_id", "library_id", "permission_mask", "updated_at") VALUES ('00000000000000000000000000000001', 'movie_default_library', 15, '2026-05-14T14:33:43Z');
-INSERT INTO "user_library_permission_masks" ("user_id", "library_id", "permission_mask", "updated_at") VALUES ('00000000000000000000000000000001', 'series_default_library', 15, '2026-05-14T14:33:43Z');
-INSERT INTO "users" ("id", "username", "display_name", "status", "entitlements", "password_hash", "passkey_public_key", "locale", "created_at", "updated_at", "last_login_at") VALUES ('00000000000000000000000000000001', 'admin', NULL, 'active', '["view_catalog","manage_title","manage_users","manage_config"]', NULL, NULL, NULL, '', '2026-05-14T14:33:43Z', NULL);
+INSERT INTO "libraries" ("id", "facet", "name", "slug", "is_default", "created_at", "updated_at") VALUES ('anime_default_library', 'anime', 'Anime', 'anime', 1, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z');
+INSERT INTO "libraries" ("id", "facet", "name", "slug", "is_default", "created_at", "updated_at") VALUES ('movie_default_library', 'movie', 'Movies', 'movies', 1, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z');
+INSERT INTO "libraries" ("id", "facet", "name", "slug", "is_default", "created_at", "updated_at") VALUES ('series_default_library', 'series', 'Series', 'series', 1, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z');
+INSERT INTO "library_roots" ("id", "library_id", "path", "normalized_path", "is_default", "created_at", "updated_at") VALUES ('canonical_root_for_anime_default_library', 'anime_default_library', '/data/anime', '/data/anime', 1, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z');
+INSERT INTO "library_roots" ("id", "library_id", "path", "normalized_path", "is_default", "created_at", "updated_at") VALUES ('canonical_root_for_movie_default_library', 'movie_default_library', '/data/movies', '/data/movies', 1, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z');
+INSERT INTO "library_roots" ("id", "library_id", "path", "normalized_path", "is_default", "created_at", "updated_at") VALUES ('canonical_root_for_series_default_library', 'series_default_library', '/data/series', '/data/series', 1, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z');
+INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('1080p', '1080P', 0, '1970-01-01T00:00:00Z');
+INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('1080p', '720P', 1, '1970-01-01T00:00:00Z');
+INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('4k', '1080P', 1, '1970-01-01T00:00:00Z');
+INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('4k', '2160P', 0, '1970-01-01T00:00:00Z');
+INSERT INTO "quality_profile_quality_tiers" ("profile_id", "quality_tier", "sort_order", "created_at") VALUES ('4k', '720P', 2, '1970-01-01T00:00:00Z');
+INSERT INTO "quality_profiles" ("id", "name", "scope", "scope_id", "archival_quality", "allow_unknown_quality", "atmos_preferred", "dolby_vision_allowed", "detected_hdr_allowed", "prefer_remux", "allow_bd_disk", "allow_upgrades", "created_at", "prefer_dual_audio", "required_audio_languages", "scoring_config") VALUES ('1080p', '1080P', 'system', NULL, '1080P', 0, 1, 1, 1, 1, 0, 1, '1970-01-01T00:00:00Z', 0, '[]', '{}');
+INSERT INTO "quality_profiles" ("id", "name", "scope", "scope_id", "archival_quality", "allow_unknown_quality", "atmos_preferred", "dolby_vision_allowed", "detected_hdr_allowed", "prefer_remux", "allow_bd_disk", "allow_upgrades", "created_at", "prefer_dual_audio", "required_audio_languages", "scoring_config") VALUES ('4k', '4K', 'system', NULL, '2160P', 0, 1, 1, 1, 1, 0, 1, '1970-01-01T00:00:00Z', 0, '[]', '{}');
+INSERT INTO "users" ("id", "username", "display_name", "status", "password_hash", "passkey_public_key", "locale", "created_at", "updated_at", "last_login_at") VALUES ('00000000000000000000000000000001', 'admin', NULL, 'active', NULL, NULL, NULL, '', '1970-01-01T00:00:00Z', NULL);

@@ -41,15 +41,15 @@ fn production_rust_source(path: &Path) -> String {
     }
 }
 
-fn postgres_0115_baseline_columns(root: &Path) -> BTreeMap<String, BTreeSet<String>> {
-    let baseline = root.join("crates/scryer/src/db/postgres/baselines/0115_baseline.sql");
+fn postgres_0122_baseline_columns(root: &Path) -> BTreeMap<String, BTreeSet<String>> {
+    let baseline = root.join("crates/scryer/src/db/postgres/baselines/0122_baseline.sql");
     let sql = fs::read_to_string(&baseline)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", baseline.display()));
     parse_create_table_columns(&sql)
 }
 
-fn postgres_0115_baseline_foreign_keys(root: &Path) -> BTreeMap<String, BTreeSet<String>> {
-    let baseline = root.join("crates/scryer/src/db/postgres/baselines/0115_baseline.sql");
+fn postgres_0122_baseline_foreign_keys(root: &Path) -> BTreeMap<String, BTreeSet<String>> {
+    let baseline = root.join("crates/scryer/src/db/postgres/baselines/0122_baseline.sql");
     let sql = fs::read_to_string(&baseline)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", baseline.display()));
     parse_create_table_foreign_keys(&sql)
@@ -485,9 +485,9 @@ fn postgres_runtime_paths_do_not_ship_unsupported_markers() {
 }
 
 #[test]
-fn postgres_runtime_sql_references_match_0115_baseline_columns() {
+fn postgres_runtime_sql_references_match_0122_baseline_columns() {
     let root = repo_root();
-    let schema = postgres_0115_baseline_columns(&root);
+    let schema = postgres_0122_baseline_columns(&root);
     let all_columns = schema
         .values()
         .flat_map(|columns| columns.iter().map(String::as_str))
@@ -599,7 +599,7 @@ fn postgres_runtime_sql_references_match_0115_baseline_columns() {
             let Some(valid_columns) = schema.get(&table) else {
                 if !ignored_tables.contains(table.as_str()) {
                     failures.push(format!(
-                        "{}:{line} inserts into table `{table}` that is not in the 0115 baseline",
+                        "{}:{line} inserts into table `{table}` that is not in the 0122 baseline",
                         path.display()
                     ));
                 }
@@ -619,7 +619,7 @@ fn postgres_runtime_sql_references_match_0115_baseline_columns() {
             let Some(valid_columns) = schema.get(&table) else {
                 if !ignored_tables.contains(table.as_str()) {
                     failures.push(format!(
-                        "{}:{line} updates table `{table}` that is not in the 0115 baseline",
+                        "{}:{line} updates table `{table}` that is not in the 0122 baseline",
                         path.display()
                     ));
                 }
@@ -649,7 +649,7 @@ fn postgres_runtime_sql_references_match_0115_baseline_columns() {
 
     assert!(
         failures.is_empty(),
-        "PostgreSQL runtime SQL drifted from the 0115 baseline:\n{}",
+        "PostgreSQL runtime SQL drifted from the 0122 baseline:\n{}",
         failures.join("\n")
     );
 }
@@ -745,7 +745,7 @@ fn settings_repository_uses_shared_runtime_kernel() {
 #[test]
 fn backup_catalog_exports_foreign_key_parents() {
     let root = repo_root();
-    let foreign_keys = postgres_0115_baseline_foreign_keys(&root);
+    let foreign_keys = postgres_0122_baseline_foreign_keys(&root);
     let classifications = BACKUP_TABLE_CATALOG
         .iter()
         .map(|entry| (entry.table, entry.classification))
@@ -767,6 +767,90 @@ fn backup_catalog_exports_foreign_key_parents() {
             );
         }
     }
+}
+
+#[test]
+fn dead_tables_and_service_constructor_scars_stay_gone() {
+    let root = repo_root();
+    let dead_tables = BTreeSet::from([
+        "download_jobs",
+        "integration_tokens",
+        "push_subscriptions",
+        "quarantine_items",
+        "releases",
+        "scheduler_jobs",
+        "title_aliases",
+        "upgrades",
+    ]);
+    let sqlite_services = production_rust_source(
+        &root.join("crates/scryer-infrastructure/src/storage/sqlite/services.rs"),
+    );
+
+    for forbidden in [
+        "WantedStore",
+        "PendingReleaseStore",
+        "BlocklistStore",
+        "HousekeepingStore",
+        "SubtitleDownloadStore",
+    ] {
+        assert!(
+            !sqlite_services.contains(forbidden),
+            "SqliteServices should stay engine-focused and must not grow repo facade `{forbidden}`"
+        );
+    }
+
+    for entry in BACKUP_TABLE_CATALOG {
+        assert!(
+            !dead_tables.contains(entry.table),
+            "backup catalog must not track dropped table `{}`",
+            entry.table
+        );
+    }
+
+    let mut failures = Vec::new();
+    for path in rust_files_under(&root.join("crates/scryer-infrastructure/src")) {
+        let source = production_rust_source(&path);
+
+        if source.contains("from_sqlite_services(") || source.contains("from_postgres_services(") {
+            failures.push(format!(
+                "{} reintroduced legacy service-based store constructor sugar",
+                path.display()
+            ));
+        }
+
+        for (line, operation, table) in extract_sql_table_references(&source) {
+            if dead_tables.contains(table.as_str()) {
+                failures.push(format!(
+                    "{}:{line} has stale runtime SQL {operation} reference to dropped table `{table}`",
+                    path.display()
+                ));
+            }
+        }
+
+        for (line, table, _) in extract_insert_column_lists(&source) {
+            if dead_tables.contains(table.as_str()) {
+                failures.push(format!(
+                    "{}:{line} inserts into dropped table `{table}`",
+                    path.display()
+                ));
+            }
+        }
+
+        for (line, table, _) in extract_update_columns(&source) {
+            if dead_tables.contains(table.as_str()) {
+                failures.push(format!(
+                    "{}:{line} updates dropped table `{table}`",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "stale schema or constructor scars remain:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]

@@ -100,15 +100,8 @@ pub struct TitleStore {
 }
 
 impl TitleStore {
-    pub(crate) fn new(datastore: StoreDatastore) -> Self {
+    pub fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
-    }
-
-    pub fn sqlite(db: &crate::SqliteServices) -> Self {
-        Self::new(StoreDatastore::Sqlite {
-            pool: db.pool().clone(),
-            writer_gate: db.writer_gate(),
-        })
     }
 
     async fn find_existing_title_after_unique_conflict(

@@ -1,5 +1,6 @@
 use super::*;
 use crate::library_scan_unmatched::build_title_bound_unmatched_scan_item;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 fn hydration_source_for_scan_mode(
     mode: LibraryScanMode,
@@ -67,10 +68,10 @@ async fn discover_movie_title_files(
         let Some(ordered_path) = collection.ordered_path else {
             continue;
         };
-        let ordered_path_buf = PathBuf::from(&ordered_path);
+        let ordered_path_buf = stored_path_to_path_buf(&ordered_path);
         if let Some(parent) = ordered_path_buf.parent()
             && parent != media_root_path.as_path()
-            && seen_candidate_paths.insert(parent.to_string_lossy().to_string())
+            && seen_candidate_paths.insert(path_to_stored_string(parent))
         {
             candidate_paths.push(parent.to_path_buf());
         }
@@ -101,12 +102,12 @@ async fn discover_movie_title_files(
 
         discovered_files.push(LibraryFile {
             path: ordered_path.clone(),
-            display_name: Path::new(&ordered_path)
+            display_name: ordered_path_buf
                 .file_stem()
                 .and_then(|value| value.to_str())
                 .unwrap_or_default()
                 .to_string(),
-            nfo_path: matching_movie_nfo_path(Path::new(&ordered_path)),
+            nfo_path: matching_movie_nfo_path(&ordered_path_buf),
             size_bytes: None,
             source_signature_scheme: None,
             source_signature_value: None,
@@ -122,10 +123,10 @@ async fn discover_movie_title_files(
         .as_deref()
         .map(str::trim)
         .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
+        .map(stored_path_to_path_buf)
         .unwrap_or_else(|| PathBuf::from(&media_root).join(&title.name));
     if default_candidate_path != media_root_path
-        && seen_candidate_paths.insert(default_candidate_path.to_string_lossy().to_string())
+        && seen_candidate_paths.insert(path_to_stored_string(&default_candidate_path))
     {
         candidate_paths.push(default_candidate_path);
     }
@@ -137,7 +138,7 @@ async fn discover_movie_title_files(
                     .services
                     .library
                     .library_scanner
-                    .scan_library(candidate_path.to_string_lossy().as_ref())
+                    .scan_library(path_to_stored_string(&candidate_path).as_str())
                     .await?;
                 for file in files {
                     if seen_paths.insert(file.path.clone()) {
@@ -150,7 +151,7 @@ async fn discover_movie_title_files(
             }
             Ok(metadata) if metadata.is_file() => {
                 return Ok(vec![LibraryFile {
-                    path: candidate_path.to_string_lossy().to_string(),
+                    path: path_to_stored_string(&candidate_path),
                     display_name: candidate_path
                         .file_stem()
                         .and_then(|value| value.to_str())
@@ -225,8 +226,8 @@ async fn cleanup_missing_movie_title_records(
     };
 
     for media_file in media_files {
-        let file_path = Path::new(&media_file.file_path);
-        if !tracked_movie_path_confirmed_missing(file_path).await {
+        let file_path = stored_path_to_path_buf(&media_file.file_path);
+        if !tracked_movie_path_confirmed_missing(file_path.as_path()).await {
             continue;
         }
         if let Err(error) = app
@@ -797,9 +798,9 @@ impl AppUseCase {
             .as_deref()
             .map(str::trim)
             .filter(|path| !path.is_empty())
-            .map(PathBuf::from)
+            .map(stored_path_to_path_buf)
             .unwrap_or_else(|| PathBuf::from(&media_root).join(&title.name));
-        let title_dir_str = title_dir.to_string_lossy().to_string();
+        let title_dir_str = path_to_stored_string(&title_dir);
         debug!(
             title_id = %title.id,
             title_name = %title.name,
@@ -926,7 +927,7 @@ impl AppUseCase {
                 remaining_existing_paths.remove(&file.path);
                 summary.scanned += 1;
 
-                let source_path = Path::new(&file.path);
+                let source_path = stored_path_to_path_buf(&file.path);
                 let parsed = crate::parse_release_metadata_for_target(
                     source_path
                         .file_stem()
@@ -1014,7 +1015,7 @@ impl AppUseCase {
                     snapshot
                 } else {
                     let stat_started = Instant::now();
-                    let metadata = match tokio::fs::metadata(source_path).await {
+                    let metadata = match tokio::fs::metadata(&source_path).await {
                         Ok(metadata) => metadata,
                         Err(error) => {
                             stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
@@ -1045,7 +1046,7 @@ impl AppUseCase {
 
                 summary.matched += 1;
                 let layout_observation =
-                    classify_title_scan_layout(&title_dir, source_path, &target_episodes);
+                    classify_title_scan_layout(&title_dir, &source_path, &target_episodes);
                 layout_summary.observe(layout_observation);
 
                 let record = if let Some(existing) = existing_records_by_path.get(&file.path) {
@@ -1168,7 +1169,8 @@ impl AppUseCase {
                             .await
                             .map_err(|error| AppError::Repository(error.to_string()))?;
                         let analysis_started = Instant::now();
-                        let outcome = analyzer.analyze_file(PathBuf::from(&file_path)).await?;
+                        let outcome =
+                            analyzer.analyze_file(stored_path_to_path_buf(&file_path)).await?;
                         tracing::debug!(file_path = %file_path, "title scan analysis task: complete");
                         Ok::<(PlannedTitleScanFile, MediaAnalysisOutcome, Duration), AppError>((
                             plan,
@@ -1268,7 +1270,7 @@ impl AppUseCase {
                 if !stale_path.starts_with(title_dir_str.as_str()) {
                     continue;
                 }
-                if Path::new(&record.file_path).exists() {
+                if stored_path_to_path_buf(&record.file_path).exists() {
                     continue;
                 }
                 let db_started = Instant::now();

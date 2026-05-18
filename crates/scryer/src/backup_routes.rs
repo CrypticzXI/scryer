@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use axum::Json;
@@ -369,41 +370,30 @@ pub(crate) async fn download_backup_handler(
     response
 }
 
-pub(crate) fn finalize_pending_restore_if_present(
+pub(crate) async fn finalize_pending_restore_if_present(
     data_dir: &Path,
     datastore_config: &DatastoreConfig,
 ) -> std::io::Result<bool> {
     finalize_pending_restore_if_present_with_postgres_restore(
         data_dir,
         datastore_config,
-        |prepared_bundle_dir, datastore_config| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| {
-                    AppError::Repository(format!(
-                        "failed to start restore runtime while finalizing pending restore: {error}"
-                    ))
-                })?;
-            runtime.block_on(async {
-                restore_prepared_backup_directory_to_datastore(
-                    datastore_config.clone(),
-                    prepared_bundle_dir,
-                )
+        |prepared_bundle_dir, datastore_config| async move {
+            restore_prepared_backup_directory_to_datastore(datastore_config, &prepared_bundle_dir)
                 .await?;
-                Ok(())
-            })
+            Ok(())
         },
     )
+    .await
 }
 
-fn finalize_pending_restore_if_present_with_postgres_restore<F>(
+async fn finalize_pending_restore_if_present_with_postgres_restore<F, Fut>(
     data_dir: &Path,
     datastore_config: &DatastoreConfig,
     restore_postgres_bundle: F,
 ) -> std::io::Result<bool>
 where
-    F: FnOnce(&Path, &DatastoreConfig) -> Result<(), AppError>,
+    F: FnOnce(PathBuf, DatastoreConfig) -> Fut,
+    Fut: Future<Output = Result<(), AppError>>,
 {
     let pending_dir = pending_restore_dir(data_dir);
     let pending_ready = pending_restore_ready_path(data_dir);
@@ -436,7 +426,8 @@ where
                     "pending restore bundle is missing",
                 ));
             }
-            restore_postgres_bundle(&prepared_bundle_dir, datastore_config)
+            restore_postgres_bundle(prepared_bundle_dir, datastore_config.clone())
+                .await
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             stage_file_for_promotion(&pending_secrets, &target_secrets)?;
             promote_staged_file(&target_secrets)
@@ -512,8 +503,8 @@ mod tests {
         assert_eq!(ticket, "abc.def");
     }
 
-    #[test]
-    fn finalize_pending_restore_ignores_incomplete_restore_without_marker() {
+    #[tokio::test]
+    async fn finalize_pending_restore_ignores_incomplete_restore_without_marker() {
         let temp = tempfile::tempdir().expect("tempdir");
         let data_dir = temp.path();
         let pending_dir = pending_restore_dir(data_dir);
@@ -531,6 +522,7 @@ mod tests {
                 scryer_infrastructure::MigrationMode::Apply,
             ),
         )
+        .await
         .expect("finalize");
 
         assert!(!restored);
@@ -538,8 +530,8 @@ mod tests {
         assert!(!pending_dir.exists());
     }
 
-    #[test]
-    fn finalize_pending_restore_requires_marker_and_preserves_restored_secrets() {
+    #[tokio::test]
+    async fn finalize_pending_restore_requires_marker_and_preserves_restored_secrets() {
         let temp = tempfile::tempdir().expect("tempdir");
         let data_dir = temp.path();
         let pending_dir = pending_restore_dir(data_dir);
@@ -565,6 +557,7 @@ mod tests {
                 scryer_infrastructure::MigrationMode::Apply,
             ),
         )
+        .await
         .expect("finalize");
 
         assert!(restored);
@@ -576,8 +569,8 @@ mod tests {
         assert!(!pending_dir.exists());
     }
 
-    #[test]
-    fn finalize_pending_restore_promotes_postgres_secrets_without_sqlite_files() {
+    #[tokio::test]
+    async fn finalize_pending_restore_promotes_postgres_secrets_without_sqlite_files() {
         let temp = tempfile::tempdir().expect("tempdir");
         let data_dir = temp.path();
         let pending_dir = pending_restore_dir(data_dir);
@@ -603,7 +596,7 @@ mod tests {
                 data_dir,
                 scryer_infrastructure::MigrationMode::Apply,
             ),
-            |prepared_bundle_dir, _| {
+            |prepared_bundle_dir, _| async move {
                 assert_eq!(
                     prepared_bundle_dir,
                     pending_restore_prepared_bundle_dir(data_dir)
@@ -611,6 +604,7 @@ mod tests {
                 Ok(())
             },
         )
+        .await
         .expect("finalize");
 
         assert!(restored);
@@ -621,8 +615,8 @@ mod tests {
         assert!(!pending_dir.exists());
     }
 
-    #[test]
-    fn finalize_pending_restore_preserves_postgres_pending_state_on_restore_error() {
+    #[tokio::test]
+    async fn finalize_pending_restore_preserves_postgres_pending_state_on_restore_error() {
         let temp = tempfile::tempdir().expect("tempdir");
         let data_dir = temp.path();
         let pending_dir = pending_restore_dir(data_dir);
@@ -648,8 +642,9 @@ mod tests {
                 data_dir,
                 scryer_infrastructure::MigrationMode::Apply,
             ),
-            |_, _| Err(AppError::Repository("restore failed".into())),
+            |_, _| async move { Err(AppError::Repository("restore failed".into())) },
         )
+        .await
         .expect_err("restore should fail");
 
         assert!(error.to_string().contains("restore failed"));
@@ -660,8 +655,8 @@ mod tests {
         assert!(pending_dir.exists());
     }
 
-    #[test]
-    fn finalize_pending_restore_recovers_interrupted_sqlite_promotion() {
+    #[tokio::test]
+    async fn finalize_pending_restore_recovers_interrupted_sqlite_promotion() {
         let temp = tempfile::tempdir().expect("tempdir");
         let data_dir = temp.path();
         let pending_dir = pending_restore_dir(data_dir);
@@ -689,6 +684,7 @@ mod tests {
                 scryer_infrastructure::MigrationMode::Apply,
             ),
         )
+        .await
         .expect("finalize");
 
         assert!(restored);

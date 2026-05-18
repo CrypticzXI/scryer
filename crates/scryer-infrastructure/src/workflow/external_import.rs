@@ -690,6 +690,20 @@ pub fn detect_prowlarr_proxy_indexer(indexer: &ArrIndexer) -> Option<DetectedPro
     })
 }
 
+pub fn should_skip_imported_indexer(indexer: &ArrIndexer) -> bool {
+    let implementation = indexer.implementation.trim().to_ascii_lowercase();
+    if implementation != "newznab" && implementation != "torznab" {
+        return false;
+    }
+
+    let Some(base_url) = field_str(&indexer.fields, "baseUrl") else {
+        return false;
+    };
+
+    let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    normalized.contains("animetosho.org") || normalized.contains("feed.animetosho.org")
+}
+
 fn prowlarr_parent_base_url(base_url: &str) -> Option<String> {
     let mut url = url::Url::parse(base_url.trim()).ok()?;
     url.set_query(None);
@@ -802,7 +816,7 @@ mod tests {
 
     use super::{
         ArrIndexer, ExternalArrApiBucket, detect_prowlarr_proxy_indexer, map_download_client_type,
-        map_indexer_provider_type,
+        map_indexer_provider_type, should_skip_imported_indexer,
     };
 
     #[test]
@@ -876,6 +890,32 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn should_skip_imported_indexer_skips_animetosho() {
+        assert!(should_skip_imported_indexer(&ArrIndexer {
+            id: 1,
+            name: "AnimeTosho".into(),
+            implementation: "Torznab".into(),
+            fields: HashMap::from([(
+                "baseUrl".into(),
+                Value::String("https://feed.animetosho.org".into()),
+            )]),
+        }));
+    }
+
+    #[test]
+    fn should_skip_imported_indexer_keeps_other_indexers() {
+        assert!(!should_skip_imported_indexer(&ArrIndexer {
+            id: 1,
+            name: "NZBGeek".into(),
+            implementation: "Newznab".into(),
+            fields: HashMap::from([(
+                "baseUrl".into(),
+                Value::String("https://api.nzbgeek.info".into()),
+            )]),
+        }));
     }
 
     #[test]

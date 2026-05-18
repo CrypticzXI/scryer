@@ -6,13 +6,13 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, BackupInfo, BackupService, BackupStatus, BackupTrigger, CollectionUpdate,
-    CutoffUnmetQualitySummary, DeleteExecutionConfirmation, DownloadSubmissionRepository,
-    EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput, LibraryRootDraft,
-    MediaFileAnalysis, MediaFileRepository, PendingRelease, ReleaseDecision, ScopedExternalId,
-    ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
-    TitleQualitySummary, TitleRepository, WantedItem, WantedItemRepository,
-    start_background_download_delete_poller,
+    AppError, AppResult, BackupInfo, BackupService, BackupStatus, BackupTrigger,
+    BlocklistRepository, CollectionUpdate, CutoffUnmetQualitySummary, DeleteExecutionConfirmation,
+    DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
+    LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease,
+    PendingReleaseRepository, ReleaseDecision, ScopedExternalId, ShowRepository,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
+    TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{
     Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds,
@@ -2796,7 +2796,7 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
 
     ctx.app = ctx.app.with_test_overrides(|builder| {
         builder.with_shows(std::sync::Arc::new(FailingShowRepo {
-            inner: ShowStore::sqlite(&ctx.db),
+            inner: ShowStore::new(ctx.db.datastore()),
             fail_collection_id: interstitial.id.clone(),
             fail_path: expected_path.clone(),
         }))
@@ -3772,7 +3772,7 @@ async fn prepare_backup_download_returns_signed_url_for_ready_backup() {
             format_version: "scryer-backup-bundle-v2".to_string(),
             source_scryer_version: "0.15.0".to_string(),
             source_engine: "sqlite".to_string(),
-            source_migration_key: Some("0115".to_string()),
+            source_migration_key: Some("0122".to_string()),
             encrypted: false,
             row_counts: BTreeMap::from([("settings_definitions".to_string(), 1)]),
             trigger: BackupTrigger::Manual,
@@ -3834,7 +3834,7 @@ async fn prepare_backup_download_percent_encodes_reserved_filename_characters() 
             format_version: "scryer-backup-bundle-v2".to_string(),
             source_scryer_version: "0.15.0".to_string(),
             source_engine: "sqlite".to_string(),
-            source_migration_key: Some("0115".to_string()),
+            source_migration_key: Some("0122".to_string()),
             encrypted: false,
             row_counts: BTreeMap::from([("settings_definitions".to_string(), 1)]),
             trigger: BackupTrigger::Manual,
@@ -3943,7 +3943,7 @@ async fn prepare_backup_download_rejects_missing_file_and_non_ready_backup() {
             format_version: "scryer-backup-bundle-v2".to_string(),
             source_scryer_version: "0.15.0".to_string(),
             source_engine: "sqlite".to_string(),
-            source_migration_key: Some("0115".to_string()),
+            source_migration_key: Some("0122".to_string()),
             encrypted: false,
             row_counts: BTreeMap::new(),
             trigger: BackupTrigger::Manual,
@@ -3984,7 +3984,7 @@ async fn prepare_backup_download_rejects_missing_file_and_non_ready_backup() {
             format_version: "scryer-backup-bundle-v2".to_string(),
             source_scryer_version: "0.15.0".to_string(),
             source_engine: "sqlite".to_string(),
-            source_migration_key: Some("0115".to_string()),
+            source_migration_key: Some("0122".to_string()),
             encrypted: false,
             row_counts: BTreeMap::new(),
             trigger: BackupTrigger::Manual,
@@ -4933,7 +4933,7 @@ async fn graphql_traverses_core_graph_relationships() {
         explanation_json: None,
         created_at: "2026-03-20T00:05:00Z".to_string(),
     };
-    ctx.db
+    scryer_infrastructure::WantedStore::new(ctx.db.datastore())
         .insert_release_decision(&decision)
         .await
         .expect("seed release decision");
@@ -4958,7 +4958,7 @@ async fn graphql_traverses_core_graph_relationships() {
         published_at: None,
         info_hash: None,
     };
-    ctx.db
+    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
         .insert_pending_release(&pending_release)
         .await
         .expect("seed pending release");
@@ -9504,7 +9504,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         })
         .await
         .expect("seed wanted item");
-    ctx.db
+    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
         .insert_pending_release(&PendingRelease {
             id: Id::new().0,
             wanted_item_id: "wanted-delete".to_string(),
@@ -9527,7 +9527,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         })
         .await
         .expect("seed pending release");
-    let workflow_store = DownloadSubmissionStore::from_sqlite_services(&ctx.db);
+    let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
     workflow_store
         .record_submission(scryer_application::DownloadSubmission {
             title_id: id.clone(),
@@ -9554,7 +9554,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
     assert_eq!(body["data"]["deleteTitle"], true);
 
     assert!(
-        ctx.db
+        scryer_infrastructure::WantedStore::new(ctx.db.datastore())
             .list_wanted_items(scryer_application::WantedItemsQuery {
                 title_id: Some(id.clone()),
                 limit: 10,
@@ -9565,7 +9565,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             .is_empty()
     );
     assert!(
-        ctx.db
+        scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
             .list_waiting_pending_releases()
             .await
             .expect("pending releases")
@@ -9912,20 +9912,20 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title()
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Friends", "series").await;
 
-    ctx.db
-        .insert_blocklist_entry(
-            title_id.clone(),
-            Some("friends.s05.720p.bluray.dd5.1.x264-ntb".to_string()),
-            Some("weaver://job-1".to_string()),
-            None,
-            Some("job-1".to_string()),
-            Some("download client failure: corrupt archive".to_string()),
-            None,
-        )
+    scryer_infrastructure::BlocklistStore::new(ctx.db.datastore())
+        .add(&scryer_application::NewBlocklistEntry {
+            title_id: title_id.clone(),
+            source_title: Some("friends.s05.720p.bluray.dd5.1.x264-ntb".to_string()),
+            source_hint: Some("weaver://job-1".to_string()),
+            quality: None,
+            download_id: Some("job-1".to_string()),
+            reason: Some("download client failure: corrupt archive".to_string()),
+            data: HashMap::new(),
+        })
         .await
         .expect("seed blocklist entry");
 
-    let release_store = scryer_infrastructure::ReleaseStore::from_sqlite_services(&ctx.db);
+    let release_store = scryer_infrastructure::ReleaseStore::new(ctx.db.datastore());
     scryer_application::ReleaseAttemptRepository::record_release_attempt(
         &release_store,
         Some(title_id.clone()),

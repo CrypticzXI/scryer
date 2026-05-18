@@ -355,32 +355,29 @@ file = "postgres/migrations/0121_drop_external_import_monitor_snapshots.sql"
 engine = "postgres"
 scope = "all"
 
-[[baseline]]
-through_version = 100
-file = "baselines/0100_baseline.sql"
-engine = "sqlite"
+[[migration]]
+version = 122
+description = "drop dead tables and command-era scars"
+checksum_algo = "blake3"
 
-[[baseline]]
-through_version = 100
-file = "postgres/baselines/0100_baseline.sql"
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0122_drop_dead_tables_and_command_scars.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0122_drop_dead_tables_and_command_scars.sql"
 engine = "postgres"
+scope = "all"
 
 [[baseline]]
-through_version = 114
-file = "baselines/0114_baseline.sql"
+through_version = 122
+file = "baselines/0122_baseline.sql"
 engine = "sqlite"
 
 [[baseline]]
-through_version = 114
-file = "postgres/baselines/0114_baseline.sql"
-engine = "postgres"
-
-[[baseline]]
-through_version = 115
-file = "baselines/0115_baseline.sql"
-engine = "sqlite"
-
-[[baseline]]
-through_version = 115
-file = "postgres/baselines/0115_baseline.sql"
+through_version = 122
+file = "postgres/baselines/0122_baseline.sql"
 engine = "postgres"

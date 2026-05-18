@@ -62,17 +62,27 @@ async fn setup() -> (
     let db = SqliteServices::new(":memory:")
         .await
         .expect("in-memory SQLite");
-    let indexer_config_store = Arc::new(IndexerConfigStore::from_sqlite_services(&db));
-    let download_client_config_store =
-        Arc::new(DownloadClientConfigStore::from_sqlite_services(&db));
-    let release_store = Arc::new(ReleaseStore::from_sqlite_services(&db));
-    let settings_store = Arc::new(SettingsStore::from_sqlite_services(&db));
-    let quality_profile_store = Arc::new(QualityProfileStore::from_sqlite_services(&db));
-    let domain_event_store = Arc::new(DomainEventStore::from_sqlite_services(&db));
-    let acquisition_store = Arc::new(AcquisitionStore::from_sqlite_services(&db));
-    let download_submission_store = Arc::new(DownloadSubmissionStore::from_sqlite_services(&db));
-    let import_store = Arc::new(ImportStore::from_sqlite_services(&db));
-    let workflow_operation_store = Arc::new(WorkflowOperationStore::from_sqlite_services(&db));
+    let datastore = db.datastore();
+    let encryption_key_state = db.encryption_key_state();
+    let indexer_config_store = Arc::new(IndexerConfigStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
+    let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
+    let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+    let settings_store = Arc::new(SettingsStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
+    let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
+    let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
+    let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+    let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
+    let import_store = Arc::new(ImportStore::new(datastore.clone()));
+    let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
 
     // Load the remaining bundled indexer plugins.
     let plugin_provider: Arc<dyn IndexerPluginProvider> =
@@ -204,9 +214,9 @@ async fn setup() -> (
         },
     );
 
-    let title_store = Arc::new(TitleStore::sqlite(&db));
-    let show_store = Arc::new(ShowStore::sqlite(&db));
-    let user_store = Arc::new(UserStore::sqlite(&db));
+    let title_store = Arc::new(TitleStore::new(datastore.clone()));
+    let show_store = Arc::new(ShowStore::new(datastore.clone()));
+    let user_store = Arc::new(UserStore::new(datastore.clone()));
     let titles: Arc<dyn scryer_application::TitleRepository> = title_store;
     let shows: Arc<dyn scryer_application::ShowRepository> = show_store;
     let users: Arc<dyn scryer_application::UserRepository> = user_store;
@@ -219,22 +229,20 @@ async fn setup() -> (
     let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
         quality_profile_store.clone();
 
-    let library_probe_store = Arc::new(LibraryProbeStore::from_sqlite_services(&db));
-    let wanted_store = Arc::new(WantedStore::from_sqlite_services(&db));
-    let pending_release_store = Arc::new(PendingReleaseStore::from_sqlite_services(&db));
-    let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::from_sqlite_services(
-        &db,
+    let library_probe_store = Arc::new(LibraryProbeStore::new(datastore.clone()));
+    let wanted_store = Arc::new(WantedStore::new(datastore.clone()));
+    let pending_release_store = Arc::new(PendingReleaseStore::new(datastore.clone()));
+    let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::new(
+        datastore.clone(),
     ));
-    let housekeeping_store = Arc::new(HousekeepingStore::from_sqlite_services(&db));
-    let subtitle_download_store = Arc::new(SubtitleDownloadStore::from_sqlite_services(&db));
-    let library_scan_unmatched_store =
-        Arc::new(LibraryScanUnmatchedStore::from_sqlite_services(&db));
-    let media_file_store = Arc::new(MediaFileStore::from_sqlite_services(&db));
-    let title_image_store = Arc::new(TitleImageStore::from_sqlite_services(&db));
-    let rule_set_store = Arc::new(RuleSetStore::from_sqlite_services(&db));
-    let post_processing_script_store =
-        Arc::new(PostProcessingScriptStore::from_sqlite_services(&db));
-    let plugin_store = Arc::new(PluginStore::from_sqlite_services(&db));
+    let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
+    let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
+    let library_scan_unmatched_store = Arc::new(LibraryScanUnmatchedStore::new(datastore.clone()));
+    let media_file_store = Arc::new(MediaFileStore::new(datastore.clone()));
+    let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
+    let rule_set_store = Arc::new(RuleSetStore::new(datastore.clone()));
+    let post_processing_script_store = Arc::new(PostProcessingScriptStore::new(datastore.clone()));
+    let plugin_store = Arc::new(PluginStore::new(datastore.clone()));
     let services = AppServices::builder(
         titles,
         shows,

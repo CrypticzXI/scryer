@@ -1,3 +1,5 @@
+use crate::types::*;
+use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
     ActivityEvent, BackupInfo, DeletePreview, DiskSpaceInfo, DownloadClientRoutingSettingsEntry,
     FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport, IgnorePendingImportResult,
@@ -20,9 +22,6 @@ use scryer_domain::{
 use scryer_rules;
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
-
-use crate::types::*;
 
 fn support_tier_label(value: PluginSupportTier) -> String {
     match value {
@@ -66,12 +65,13 @@ fn import_facet_from_payload(payload: &Value) -> Option<MediaFacetValue> {
 }
 
 fn path_basename(path: &str) -> Option<String> {
-    let trimmed = path.trim().trim_end_matches(std::path::MAIN_SEPARATOR);
+    let path = stored_path_to_path_buf(path.trim());
+    let display = path.to_string_lossy();
+    let trimmed = display.trim().trim_end_matches(std::path::MAIN_SEPARATOR);
     if trimmed.is_empty() {
         return None;
     }
-    Path::new(trimmed)
-        .file_name()
+    path.file_name()
         .and_then(|value| value.to_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1241,8 +1241,8 @@ pub(crate) fn from_collection(collection: Collection) -> CollectionPayload {
 }
 
 pub(crate) fn file_size_bytes_for_path(ordered_path: Option<&str>) -> Option<i64> {
-    let path = ordered_path?;
-    fs::metadata(path).ok().and_then(|metadata| {
+    let path = stored_path_to_path_buf(ordered_path?);
+    fs::metadata(&path).ok().and_then(|metadata| {
         if metadata.is_file() {
             Some(metadata.len() as i64)
         } else {

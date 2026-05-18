@@ -24,7 +24,7 @@ use scryer_infrastructure::{FsFileImporter, ImportStore};
 /// Build an AppUseCase with a real SQLite import repository and filesystem
 /// file importer so that tests can exercise the full import pipeline.
 fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseCase {
-    let workflow_store = Arc::new(ImportStore::from_sqlite_services(&ctx.db));
+    let workflow_store = Arc::new(ImportStore::new(ctx.db.datastore()));
     ctx.app.with_test_overrides(|builder| {
         builder
             .with_imports(workflow_store)
@@ -373,7 +373,7 @@ async fn import_deduplicates_completed_imports() {
     let ctx = TestContext::new().await;
     let app = app_with_real_imports(&ctx);
     let user = ctx.app.find_or_create_default_user().await.unwrap();
-    let workflow_store = ImportStore::from_sqlite_services(&ctx.db);
+    let workflow_store = ImportStore::new(ctx.db.datastore());
 
     // Seed a completed import record for (nzbget, "dl-dedup").
     let import_id = workflow_store
@@ -740,7 +740,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         scryer_application::WantedStatus::Wanted
     );
 
-    let failures = scryer_infrastructure::ReleaseStore::from_sqlite_services(&ctx.db)
+    let failures = scryer_infrastructure::ReleaseStore::new(ctx.db.datastore())
         .list_failed_release_signatures_for_title(&title.id, 10)
         .await
         .expect("failed signatures");

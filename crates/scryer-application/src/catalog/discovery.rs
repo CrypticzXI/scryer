@@ -577,6 +577,7 @@ impl AppUseCase {
         let ReleaseSearchRequest {
             queries,
             imdb_id,
+            tmdb_id,
             tvdb_id,
             anidb_id,
             category,
@@ -634,6 +635,9 @@ impl AppUseCase {
         let mut ids = HashMap::new();
         if let Some(imdb_id) = imdb_id.clone() {
             ids.insert("imdb_id".to_string(), imdb_id);
+        }
+        if let Some(tmdb_id) = tmdb_id.clone() {
+            ids.insert("tmdb_id".to_string(), tmdb_id);
         }
         if let Some(tvdb_id) = tvdb_id.clone() {
             ids.insert("tvdb_id".to_string(), tvdb_id);
@@ -745,6 +749,7 @@ impl AppUseCase {
             .search_and_score_releases(ReleaseSearchRequest {
                 queries: subject.queries.clone(),
                 imdb_id: subject.imdb_id.clone(),
+                tmdb_id: subject.tmdb_id.clone(),
                 tvdb_id: subject.tvdb_id.clone(),
                 anidb_id: subject.anidb_id.clone(),
                 category: Some(subject.category.clone()),
@@ -1079,6 +1084,7 @@ pub(crate) struct QualityProfileLookup<'a> {
 pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) queries: Vec<String>,
     pub(crate) imdb_id: Option<String>,
+    pub(crate) tmdb_id: Option<String>,
     pub(crate) tvdb_id: Option<String>,
     pub(crate) anidb_id: Option<String>,
     pub(crate) category: Option<String>,

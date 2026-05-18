@@ -11,7 +11,6 @@ use serde_json::Value as JsonValue;
 
 use crate::queries::common::parse_utc_datetime;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};
-use crate::sqlite_services::SqliteServices;
 use crate::storage::sql::json::{canonical_json_text, json_text_or};
 
 const RECYCLE_BIN_PATH_SEGMENT: &str = "/.scryer-recycle/";
@@ -28,21 +27,8 @@ enum SqlDialect {
 }
 
 impl MediaFileStore {
-    pub(crate) fn new(datastore: StoreDatastore) -> Self {
+    pub fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
-    }
-
-    pub fn from_sqlite_services(db: &SqliteServices) -> Self {
-        Self::new(StoreDatastore::Sqlite {
-            pool: db.pool().clone(),
-            writer_gate: db.writer_gate(),
-        })
-    }
-
-    pub fn from_postgres_services(db: &crate::postgres::PostgresServices) -> Self {
-        Self::new(StoreDatastore::Postgres {
-            pool: db.pool().clone(),
-        })
     }
 }
 
@@ -896,7 +882,7 @@ mod tests {
     }
 
     fn title_store(services: &SqliteServices) -> TitleStore {
-        TitleStore::sqlite(services)
+        TitleStore::new(services.datastore())
     }
 
     fn show_store(services: &SqliteServices) -> ShowStore {
@@ -907,7 +893,7 @@ mod tests {
     }
 
     fn media_file_store(services: &SqliteServices) -> MediaFileStore {
-        MediaFileStore::from_sqlite_services(services)
+        MediaFileStore::new(services.datastore())
     }
 
     #[tokio::test]

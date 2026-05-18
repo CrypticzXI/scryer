@@ -6457,11 +6457,68 @@ fn bootstrap_with_acquisition_tracking_and_indexer(
     wanted_items: Arc<TrackingWantedItemRepo>,
     indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User) {
-    let (app, user) = bootstrap_with_cleanup_tracking_and_indexer(
-        download_client,
-        download_submissions.clone(),
-        pending_releases.clone(),
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    download_client_configs
+        .store
+        .try_lock()
+        .expect("download client config store should not be contended during bootstrap")
+        .push(DownloadClientConfig {
+            id: "background-search-default-client".to_string(),
+            name: "Background Search Default Client".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 10_000,
+            is_enabled: true,
+            status: scryer_domain::DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
         indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_download_submissions(download_submissions.clone())
+    .with_pending_releases(pending_releases.clone())
+    .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
     );
     let app = app.with_test_overrides(|services| {
         services
@@ -6472,7 +6529,7 @@ fn bootstrap_with_acquisition_tracking_and_indexer(
             }))
             .with_wanted_items(wanted_items)
     });
-    (app, user)
+    (app, test_admin_user())
 }
 
 fn bootstrap_with_scan_unmatched_tracking(
@@ -6501,6 +6558,23 @@ fn bootstrap_with_library_delete_repositories(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    download_client_configs
+        .store
+        .try_lock()
+        .expect("download client config store should not be contended during bootstrap")
+        .push(DownloadClientConfig {
+            id: "default-download-client".to_string(),
+            name: "Default Download Client".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+            status: scryer_domain::DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
@@ -7118,6 +7192,8 @@ async fn movie_full_scan_title_create_failure_from_search_persists_unmatched_ite
                 tvdb_id: "123456".to_string(),
                 name: "Matched Movie".to_string(),
                 year: Some(2020),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
             }],
         }),
     );
@@ -16100,6 +16176,94 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
 }
 
 #[tokio::test]
+async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let default_client = app
+        .list_download_client_configs(&user, None)
+        .await
+        .expect("list download client configs")
+        .into_iter()
+        .next()
+        .expect("default download client");
+    app.update_download_client_config(
+        &user,
+        crate::DownloadClientConfigUpdate {
+            id: default_client.id.clone(),
+            is_enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("disable default download client");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "No Downloader Search Gate".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+
+    wanted_items
+        .upsert_wanted_item(&WantedItem {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            episode_number: None,
+            media_type: "movie".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some(Utc::now().to_rfc3339()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        })
+        .await
+        .expect("seed due movie wanted item");
+
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+
+    assert!(indexer_client.searches.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -16175,6 +16339,63 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
     assert_eq!(searches[0].query, title.name);
     assert_eq!(searches[0].season, None);
     assert_eq!(searches[0].episode, None);
+}
+
+#[tokio::test]
+async fn rss_sync_skips_indexer_search_when_no_download_clients_are_enabled() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items,
+        indexer_client.clone(),
+    );
+
+    let default_client = app
+        .list_download_client_configs(&user, None)
+        .await
+        .expect("list download client configs")
+        .into_iter()
+        .next()
+        .expect("default download client");
+    app.update_download_client_config(
+        &user,
+        crate::DownloadClientConfigUpdate {
+            id: default_client.id.clone(),
+            is_enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("disable default download client");
+
+    app.add_title(
+        &user,
+        NewTitle {
+            name: "RSS Skip Without Downloader".into(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            min_availability: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create monitored movie");
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert!(indexer_client.searches.lock().await.is_empty());
+    assert_eq!(report.releases_fetched, 0);
+    assert_eq!(report.releases_matched, 0);
+    assert_eq!(report.releases_grabbed, 0);
+    assert_eq!(report.releases_held, 0);
 }
 
 #[tokio::test]

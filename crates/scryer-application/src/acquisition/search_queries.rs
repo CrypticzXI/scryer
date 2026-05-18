@@ -4,6 +4,7 @@ use scryer_domain::{Episode, EpisodeType, ExternalId, Title};
 pub(crate) struct SearchQueryResult {
     pub(crate) queries: Vec<String>,
     pub(crate) imdb_id: Option<String>,
+    pub(crate) tmdb_id: Option<String>,
     pub(crate) tvdb_id: Option<String>,
     pub(crate) anidb_id: Option<String>,
     pub(crate) category: String,
@@ -18,6 +19,7 @@ pub(crate) fn build_search_queries(
     facet_registry: &FacetRegistry,
 ) -> SearchQueryResult {
     let imdb_id = imdb_id_from_title(title);
+    let tmdb_id = tmdb_id_from_external_ids(&title.external_ids);
     let tvdb_id = tvdb_id_from_external_ids(&title.external_ids);
     let anidb_id = anidb_id_from_external_ids(&title.external_ids);
 
@@ -45,6 +47,7 @@ pub(crate) fn build_search_queries(
             SearchQueryResult {
                 queries,
                 imdb_id,
+                tmdb_id,
                 tvdb_id,
                 anidb_id,
                 category,
@@ -128,6 +131,7 @@ pub(crate) fn build_search_queries(
             SearchQueryResult {
                 queries,
                 imdb_id,
+                tmdb_id,
                 tvdb_id,
                 anidb_id,
                 category,
@@ -153,6 +157,7 @@ pub(crate) fn build_search_queries(
             SearchQueryResult {
                 queries,
                 imdb_id,
+                tmdb_id,
                 tvdb_id,
                 anidb_id,
                 category: "movies".to_string(),
@@ -163,6 +168,7 @@ pub(crate) fn build_search_queries(
         _ => SearchQueryResult {
             queries: vec![],
             imdb_id: None,
+            tmdb_id: None,
             tvdb_id: None,
             anidb_id: None,
             category,
@@ -170,6 +176,14 @@ pub(crate) fn build_search_queries(
             episode: None,
         },
     }
+}
+
+pub(crate) fn tmdb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {
+    external_ids
+        .iter()
+        .find(|id| id.source.eq_ignore_ascii_case("tmdb"))
+        .map(|id| id.value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn tvdb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {
