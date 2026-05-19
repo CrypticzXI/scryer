@@ -274,7 +274,10 @@ export function DownloadClientRemotePathMappingsField({
     browseRowIndex == null ? "/" : (rows[browseRowIndex]?.localPath.trim() || "/");
 
   return (
-    <div className="space-y-3">
+    <div
+      id={`download-client-remote-path-mappings-${fieldKey}`}
+      className="space-y-3"
+    >
       <div className="space-y-1">
         <Label className="block">{label}</Label>
         {helpText ? (
@@ -295,6 +298,7 @@ export function DownloadClientRemotePathMappingsField({
               <span className="font-mono">{EXAMPLE_MAPPING}</span>
             </p>
             <Button
+              id={`${fieldKey}-add-mapping`}
               type="button"
               variant="outline"
               size="sm"
@@ -416,6 +420,7 @@ export function DownloadClientRemotePathMappingsField({
 
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <Button
+              id={`${fieldKey}-add-mapping`}
               type="button"
               variant="outline"
               size="sm"

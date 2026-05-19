@@ -1000,6 +1000,30 @@ async fn bootstrap_application(
             restart: restore_restart_controller.handle(),
         }),
     );
+    if auth_mode.used_legacy_dev_auto_login {
+        tracing::warn!(
+            "SCRYER_DEV_AUTO_LOGIN is deprecated; use SCRYER_AUTH_ENABLED=false instead"
+        );
+    }
+    if auth_runtime.snapshot().effective_form_login_enabled {
+        tracing::info!("running with authentication enabled");
+        bootstrap_admin_password(&app_use_case).await;
+    } else {
+        app_use_case
+            .find_or_create_default_user()
+            .await
+            .map_err(|error| {
+                format!("failed to ensure default admin for disabled-auth mode: {error}")
+            })?;
+        let addr: SocketAddr = bind.parse().expect("invalid bind address");
+        if !addr.ip().is_loopback() && !addr.ip().is_unspecified() {
+            tracing::warn!(
+                bind = %bind,
+                "authentication is disabled on a non-loopback bind address; all requests will act as admin"
+            );
+        }
+        tracing::warn!("running with authentication disabled; all requests act as admin");
+    }
     // Always run the download queue poller — it queries ALL enabled download
     // clients (NZBGet, SABnzbd, Weaver, plugins) and triggers imports for
     // completed downloads from any of them.
@@ -1068,31 +1092,6 @@ async fn bootstrap_application(
         shutdown_token.child_token(),
     ));
     app_use_case.wake_title_image_loops();
-
-    if auth_mode.used_legacy_dev_auto_login {
-        tracing::warn!(
-            "SCRYER_DEV_AUTO_LOGIN is deprecated; use SCRYER_AUTH_ENABLED=false instead"
-        );
-    }
-    if auth_runtime.snapshot().effective_form_login_enabled {
-        tracing::info!("running with authentication enabled");
-        bootstrap_admin_password(&app_use_case).await;
-    } else {
-        app_use_case
-            .find_or_create_default_user()
-            .await
-            .map_err(|error| {
-                format!("failed to ensure default admin for disabled-auth mode: {error}")
-            })?;
-        let addr: SocketAddr = bind.parse().expect("invalid bind address");
-        if !addr.ip().is_loopback() && !addr.ip().is_unspecified() {
-            tracing::warn!(
-                bind = %bind,
-                "authentication is disabled on a non-loopback bind address; all requests will act as admin"
-            );
-        }
-        tracing::warn!("running with authentication disabled; all requests act as admin");
-    }
 
     let rate_limiter = ScryerRateLimiter::from_env();
     let auth_state = AuthState {

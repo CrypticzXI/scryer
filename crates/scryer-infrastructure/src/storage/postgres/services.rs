@@ -176,6 +176,27 @@ mod tests {
             );
             assert_postgres_runtime_schema_columns(services.pool()).await?;
             assert_schema_parity_owned_tables_match_sqlite(services.pool()).await?;
+            let default_library_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM libraries WHERE is_default = TRUE")
+                    .fetch_one(services.pool())
+                    .await
+                    .map_err(|error| AppError::Repository(error.to_string()))?;
+            assert_eq!(
+                default_library_count, 3,
+                "expected PostgreSQL blank install to seed canonical default libraries"
+            );
+            let default_root_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM library_roots
+                 WHERE is_default = TRUE
+                   AND library_id IN ('movie_default_library', 'series_default_library', 'anime_default_library')",
+            )
+            .fetch_one(services.pool())
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+            assert_eq!(
+                default_root_count, 3,
+                "expected PostgreSQL blank install to seed canonical default library roots"
+            );
 
             let title = sample_title("pg-blank-install-movie");
             TitleRepository::create(&catalog, title.clone()).await?;

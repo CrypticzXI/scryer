@@ -798,13 +798,17 @@ export function SettingsDownloadClientsSection({
                 </p>
               ) : null}
               <details
+                id="settings-download-client-filesystem-path-mapping"
                 className="md:col-span-3 rounded-xl border border-border bg-card p-3"
                 open={isFilesystemPathMappingOpen}
                 onToggle={(event) =>
                   setIsFilesystemPathMappingOpen(event.currentTarget.open)
                 }
               >
-                <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+                <summary
+                  id="settings-download-client-filesystem-path-mapping-toggle"
+                  className="cursor-pointer select-none text-sm font-medium text-card-foreground"
+                >
                   {t("settings.downloadClientFilesystemPathMapping")}
                 </summary>
                 <div className="mt-3 space-y-3">

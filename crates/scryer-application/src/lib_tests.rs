@@ -1202,18 +1202,28 @@ struct MockLibraryRepo {
     grants: Arc<Mutex<HashMap<String, Vec<LibraryGrant>>>>,
 }
 
-impl Default for MockLibraryRepo {
-    fn default() -> Self {
+impl MockLibraryRepo {
+    fn with_libraries(libraries: Vec<Library>) -> Self {
         Self {
-            libraries: Arc::new(Mutex::new(
-                [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
-                    .into_iter()
-                    .map(mock_default_library)
-                    .collect(),
-            )),
+            libraries: Arc::new(Mutex::new(libraries)),
             app_permissions: Arc::new(Mutex::new(HashMap::new())),
             grants: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn empty() -> Self {
+        Self::with_libraries(Vec::new())
+    }
+}
+
+impl Default for MockLibraryRepo {
+    fn default() -> Self {
+        Self::with_libraries(
+            [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+                .into_iter()
+                .map(mock_default_library)
+                .collect(),
+        )
     }
 }
 
@@ -5749,6 +5759,20 @@ fn bootstrap_with_settings_repo_and_profiles(
     quality_profiles: Arc<dyn QualityProfileRepository>,
     indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User) {
+    bootstrap_with_settings_repo_and_profiles_and_libraries(
+        settings,
+        quality_profiles,
+        indexer_client,
+        Arc::new(MockLibraryRepo::default()),
+    )
+}
+
+fn bootstrap_with_settings_repo_and_profiles_and_libraries(
+    settings: Arc<dyn SettingsRepository>,
+    quality_profiles: Arc<dyn QualityProfileRepository>,
+    indexer_client: Arc<dyn IndexerClient>,
+    libraries: Arc<dyn LibraryRepository>,
+) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
@@ -5775,7 +5799,7 @@ fn bootstrap_with_settings_repo_and_profiles(
     )
     .with_plugin_provider(plugin_provider)
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
-    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .with_libraries(libraries)
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -8592,6 +8616,140 @@ async fn reconcile_default_library_roots_keeps_non_bootstrap_canonical_roots() {
         .expect("read mirror"),
         Some("/canonical/movies".to_string())
     );
+}
+
+#[tokio::test]
+async fn reconcile_default_library_roots_repairs_missing_default_libraries() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_settings_repo_and_profiles_and_libraries(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+        Arc::new(MockLibraryRepo::empty()),
+    );
+
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile missing defaults");
+
+    let libraries = app
+        .services
+        .catalog
+        .libraries
+        .list(None)
+        .await
+        .expect("list repaired libraries");
+    assert_eq!(libraries.len(), 3);
+
+    let library_paths = app.get_library_paths(&user).await.expect("library paths");
+    assert_eq!(library_paths.movie_path, "/data/movies");
+    assert_eq!(library_paths.series_path, "/data/series");
+    assert_eq!(library_paths.anime_path, "/data/anime");
+
+    for (facet, expected_path) in [
+        (MediaFacet::Movie, "/data/movies"),
+        (MediaFacet::Series, "/data/series"),
+        (MediaFacet::Anime, "/data/anime"),
+    ] {
+        let library = app
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await
+            .expect("lookup repaired library")
+            .expect("default library should be recreated");
+        assert_eq!(
+            crate::settings::runtime::root_folder_entries_from_library_roots(&library.roots),
+            vec![RootFolderEntry {
+                path: expected_path.to_string(),
+                is_default: true,
+            }]
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_library_paths_repairs_missing_default_libraries_before_save() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_settings_repo_and_profiles_and_libraries(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+        Arc::new(MockLibraryRepo::empty()),
+    );
+
+    let updated = app
+        .update_library_paths(
+            &user,
+            UpdateLibraryPaths {
+                movie_path: "/wizard-movies".to_string(),
+                series_path: "/wizard-series".to_string(),
+                anime_path: Some("/wizard-anime".to_string()),
+            },
+        )
+        .await
+        .expect("update repaired library paths");
+
+    assert_eq!(updated.movie_path, "/wizard-movies");
+    assert_eq!(updated.series_path, "/wizard-series");
+    assert_eq!(updated.anime_path, "/wizard-anime");
+
+    for (facet, expected_path) in [
+        (MediaFacet::Movie, "/wizard-movies"),
+        (MediaFacet::Series, "/wizard-series"),
+        (MediaFacet::Anime, "/wizard-anime"),
+    ] {
+        let root_folders = app
+            .root_folders_for_facet(&facet)
+            .await
+            .expect("repaired root folders");
+        assert_eq!(
+            root_folders,
+            vec![RootFolderEntry {
+                path: expected_path.to_string(),
+                is_default: true,
+            }]
+        );
+    }
+}
+
+#[tokio::test]
+async fn find_or_create_default_user_dedupes_duplicate_default_library_grants() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let duplicate_movie_library = mock_default_library(MediaFacet::Movie);
+    let libraries = vec![
+        duplicate_movie_library.clone(),
+        duplicate_movie_library,
+        mock_default_library(MediaFacet::Series),
+        mock_default_library(MediaFacet::Anime),
+    ];
+    let (app, user) = bootstrap_with_settings_repo_and_profiles_and_libraries(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+        Arc::new(MockLibraryRepo::with_libraries(libraries)),
+    );
+
+    let admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create default admin");
+    assert_eq!(admin.id, user.id);
+
+    let grants = app
+        .services
+        .catalog
+        .libraries
+        .permission_masks_for_user(&user.id)
+        .await
+        .expect("load grants");
+    let unique_library_ids = grants
+        .iter()
+        .map(|grant| grant.library_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(grants.len(), 3);
+    assert_eq!(unique_library_ids.len(), 3);
 }
 
 #[tokio::test]

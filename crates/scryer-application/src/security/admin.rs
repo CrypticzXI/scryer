@@ -15,6 +15,7 @@ impl AppUseCase {
             .libraries
             .set_app_permission_mask_for_user(&user.id, admin_authorization.app)
             .await?;
+        let mut seen_library_ids = std::collections::HashSet::new();
         let grants = self
             .services
             .catalog
@@ -22,10 +23,15 @@ impl AppUseCase {
             .list(None)
             .await?
             .into_iter()
-            .map(|library| scryer_domain::LibraryGrant {
-                user_id: user.id.clone(),
-                library_id: library.id,
-                permissions: admin_authorization.default_library,
+            .filter_map(|library| {
+                if !seen_library_ids.insert(library.id.clone()) {
+                    return None;
+                }
+                Some(scryer_domain::LibraryGrant {
+                    user_id: user.id.clone(),
+                    library_id: library.id,
+                    permissions: admin_authorization.default_library,
+                })
             })
             .collect();
         self.services

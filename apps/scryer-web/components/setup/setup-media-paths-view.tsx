@@ -136,7 +136,11 @@ export function SetupMediaPathsView({
             </Button>
           </div>
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && (
+          <p data-ui="setup-media-paths-error" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
       </div>
       <div className="flex items-center justify-between pt-2">
         <Button variant="ghost" onClick={onBack}>{t("setup.back")}</Button>

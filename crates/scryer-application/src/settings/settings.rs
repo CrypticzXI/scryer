@@ -611,6 +611,14 @@ fn default_library_path(facet: &MediaFacet) -> &'static str {
     }
 }
 
+fn default_library_name(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => "Movies",
+        MediaFacet::Series => "Series",
+        MediaFacet::Anime => "Anime",
+    }
+}
+
 fn rename_template_global_key(facet: &MediaFacet) -> &'static str {
     match facet {
         MediaFacet::Movie => RENAME_TEMPLATE_MOVIE_GLOBAL_KEY,
@@ -1035,6 +1043,78 @@ impl AppUseCase {
         ])
     }
 
+    async fn ensure_default_facet_libraries(&self) -> AppResult<()> {
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            self.ensure_default_facet_library(&facet).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_default_facet_library(&self, facet: &MediaFacet) -> AppResult<()> {
+        let bootstrap_roots =
+            root_folder_entries_to_library_root_drafts(&[default_root_folder_entry(facet)])?;
+        let library = match self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
+        {
+            Some(library) => library,
+            None => {
+                self.validate_library_root_conflicts(None, &bootstrap_roots)
+                    .await?;
+                let now = chrono::Utc::now();
+                let library = scryer_domain::Library {
+                    id: scryer_domain::default_library_id_for_facet(facet),
+                    facet: facet.clone(),
+                    name: default_library_name(facet).to_string(),
+                    slug: scryer_domain::default_library_slug_for_facet(facet).to_string(),
+                    is_default: true,
+                    roots: Vec::new(),
+                    created_at: now,
+                    updated_at: now,
+                };
+                let created = self
+                    .services
+                    .catalog
+                    .libraries
+                    .create(library, bootstrap_roots.clone())
+                    .await?;
+                info!(
+                    facet = facet.as_str(),
+                    library_id = created.id.as_str(),
+                    "recreated missing default library during settings repair"
+                );
+                created
+            }
+        };
+
+        if !library.roots.is_empty() {
+            return Ok(());
+        }
+
+        self.validate_library_root_conflicts(Some(&library.id), &bootstrap_roots)
+            .await?;
+        self.services
+            .catalog
+            .libraries
+            .update(
+                &library.id,
+                library.name.clone(),
+                library.slug.clone(),
+                bootstrap_roots,
+            )
+            .await?;
+        info!(
+            facet = facet.as_str(),
+            library_id = library.id.as_str(),
+            "restored bootstrap root for default library during settings repair"
+        );
+        Ok(())
+    }
+
     async fn update_default_library_roots_from_entries(
         &self,
         facet: &MediaFacet,
@@ -1126,20 +1206,16 @@ impl AppUseCase {
     }
 
     pub async fn reconcile_default_library_roots(&self) -> AppResult<()> {
+        self.ensure_default_facet_libraries().await?;
+
         for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
-            let Some(library) = self
+            let library = self
                 .services
                 .catalog
                 .libraries
                 .default_for_facet(facet.clone())
                 .await?
-            else {
-                warn!(
-                    facet = facet.as_str(),
-                    "skipping root reconciliation because the default library is missing"
-                );
-                continue;
-            };
+                .ok_or_else(|| AppError::NotFound(format!("default {} library", facet.as_str())))?;
 
             let canonical_roots = root_folder_entries_from_library_roots(&library.roots);
             let legacy_roots = self.read_legacy_root_folders_for_facet(&facet).await?;
@@ -3470,6 +3546,7 @@ impl AppUseCase {
     ) -> AppResult<LibraryPathsSettings> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        self.ensure_default_facet_libraries().await?;
         let previous_roots = [
             (
                 MediaFacet::Movie,
