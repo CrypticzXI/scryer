@@ -56,7 +56,7 @@ pub(crate) fn build_rule_input(
             raw_title: parsed.raw_title.clone(),
             quality: parsed.quality.clone(),
             source: parsed.source.clone(),
-            video_codec: parsed.video_codec.clone(),
+            video_codec: parsed.video_codec.as_ref().map(ToString::to_string),
             audio: parsed.audio.clone(),
             audio_codecs: parsed.audio_codecs.clone(),
             audio_channels: parsed.audio_channels.clone(),
@@ -107,8 +107,18 @@ pub(crate) fn build_rule_input(
             allow_unknown_quality: profile.criteria.allow_unknown_quality,
             source_allowlist: profile.criteria.source_allowlist.clone(),
             source_blocklist: profile.criteria.source_blocklist.clone(),
-            video_codec_allowlist: profile.criteria.video_codec_allowlist.clone(),
-            video_codec_blocklist: profile.criteria.video_codec_blocklist.clone(),
+            video_codec_allowlist: profile
+                .criteria
+                .video_codec_allowlist
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            video_codec_blocklist: profile
+                .criteria
+                .video_codec_blocklist
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             audio_codec_allowlist: profile.criteria.audio_codec_allowlist.clone(),
             audio_codec_blocklist: profile.criteria.audio_codec_blocklist.clone(),
             atmos_preferred: profile.criteria.atmos_preferred,

@@ -3,6 +3,7 @@ use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
 use crate::quality_profile::ScoringSource;
 use crate::quality_profile::evaluate_against_profile_for_category;
 use scryer_domain::TaggedAlias;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::task::JoinSet;
@@ -182,6 +183,68 @@ fn dedupe_structured_dispatch_queries(
     }
 
     deduped
+}
+
+fn should_collapse_structured_nab_queries(
+    configs: &[IndexerConfig],
+    routing: Option<&IndexerRoutingPlan>,
+    mode: SearchMode,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if configs.is_empty() {
+        return false;
+    }
+
+    let mut saw_nab_transport = false;
+
+    for config in configs {
+        if !config.is_enabled {
+            continue;
+        }
+        if config.disabled_until.is_some_and(|until| until > now) {
+            continue;
+        }
+
+        let mode_ok = match mode {
+            SearchMode::Interactive => config.enable_interactive_search,
+            SearchMode::Auto => auto_mode_enabled_for_structured_collapse(config),
+        };
+        if !mode_ok {
+            continue;
+        }
+
+        let routing_entry = routing.and_then(|plan| plan.entries.get(&config.id));
+        if routing_entry.is_some_and(|entry| !entry.enabled) {
+            continue;
+        }
+
+        match config.nab_transport_kind() {
+            Some(_) => saw_nab_transport = true,
+            None => return false,
+        }
+    }
+
+    saw_nab_transport
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ManagedIndexerAutoModeMetadata {
+    enable_automatic_search: Option<bool>,
+}
+
+fn auto_mode_enabled_for_structured_collapse(config: &IndexerConfig) -> bool {
+    if !config.enable_auto_search {
+        return false;
+    }
+
+    let Some(raw) = config.managed_metadata_json.as_deref() else {
+        return true;
+    };
+    let Ok(metadata) = serde_json::from_str::<ManagedIndexerAutoModeMetadata>(raw) else {
+        return true;
+    };
+
+    metadata.enable_automatic_search.unwrap_or(true)
 }
 
 pub(crate) fn dedupe_cross_indexer_release_results(
@@ -701,21 +764,40 @@ impl AppUseCase {
             }
         }
 
+        let configured_indexers = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "failed to load indexer configs for transport-aware query collapse");
+                vec![]
+            });
+        let collapse_structured_queries = search_subject_kind == ReleaseSearchSubjectKind::Episode
+            && should_collapse_structured_nab_queries(
+                &configured_indexers,
+                indexer_routing.as_ref(),
+                mode,
+                chrono::Utc::now(),
+            );
+
         // Auto mode normally conserves API calls by using the first query, but
         // episode acquisition needs season/title fallbacks so packs and ranges
-        // can be considered for a single requested episode.
-        let effective_queries = dedupe_structured_dispatch_queries(
-            match mode {
-                SearchMode::Auto if search_subject_kind == ReleaseSearchSubjectKind::Episode => {
-                    queries
-                }
-                SearchMode::Auto => queries.into_iter().take(1).collect(),
-                SearchMode::Interactive => queries,
-            },
-            season,
-            episode,
-            absolute_episode,
-        );
+        // can be considered for a single requested episode. Equivalent
+        // structured variants are only collapsed when the eligible search set
+        // is *nab-only, because non-*nab indexers may still need the full
+        // variant fanout.
+        let effective_queries = match mode {
+            SearchMode::Auto if search_subject_kind == ReleaseSearchSubjectKind::Episode => queries,
+            SearchMode::Auto => queries.into_iter().take(1).collect(),
+            SearchMode::Interactive => queries,
+        };
+        let effective_queries = if collapse_structured_queries {
+            dedupe_structured_dispatch_queries(effective_queries, season, episode, absolute_episode)
+        } else {
+            effective_queries
+        };
 
         let mut set = JoinSet::new();
         let mut ids = HashMap::new();

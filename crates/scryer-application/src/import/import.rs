@@ -3426,7 +3426,11 @@ pub(crate) fn build_rename_tokens(
     );
     tokens.insert(
         "video_codec".to_string(),
-        parsed.video_codec.clone().unwrap_or_default(),
+        parsed
+            .video_codec
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
     );
     tokens.insert(
         "audio".to_string(),

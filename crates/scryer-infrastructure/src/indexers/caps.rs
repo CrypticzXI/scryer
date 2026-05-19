@@ -18,18 +18,12 @@ use serde_json::Value;
 
 const DIRECT_NAB_CAPS_USER_AGENT: &str = "scryer-indexer-caps/0.1";
 
-pub(crate) fn is_direct_nab_provider(provider_type: &str) -> bool {
-    matches!(
-        provider_type.trim().to_ascii_lowercase().as_str(),
-        "newznab" | "nzbgeek" | "torznab"
-    )
-}
-
 #[derive(Debug, Clone)]
 struct DirectNabConfig {
     base_url: String,
     api_key: Option<String>,
     api_path: String,
+    additional_params: Option<String>,
 }
 
 impl DirectNabConfig {
@@ -44,14 +38,17 @@ impl DirectNabConfig {
             })?
             .unwrap_or(Value::Null);
 
-        let base_url = value
+        let raw_base_url = value
             .get("base_url")
             .and_then(Value::as_str)
             .or_else(|| (!config.base_url.trim().is_empty()).then_some(config.base_url.as_str()))
             .unwrap_or_default()
-            .trim()
-            .trim_end_matches('/')
-            .to_string();
+            .trim();
+        let normalized_connection = normalize_direct_nab_connection_url(raw_base_url);
+        let base_url = normalized_connection
+            .as_ref()
+            .map(|parts| parts.base_url.clone())
+            .unwrap_or_else(|| raw_base_url.trim_end_matches('/').to_string());
         if base_url.is_empty() {
             return Err(AppError::Validation(
                 "indexer caps refresh requires a base_url".into(),
@@ -64,18 +61,30 @@ impl DirectNabConfig {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        let api_path = value
-            .get("api_path")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("/api")
-            .to_string();
+        let api_path = normalized_connection
+            .as_ref()
+            .and_then(|parts| parts.api_path.clone())
+            .or_else(|| {
+                value
+                    .get("api_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or("/api".to_string());
+        let additional_params = merge_additional_params(
+            normalized_connection
+                .as_ref()
+                .and_then(|parts| parts.additional_params.as_deref()),
+            value.get("additional_params").and_then(Value::as_str),
+        );
 
         Ok(Self {
             base_url,
             api_key,
             api_path,
+            additional_params,
         })
     }
 
@@ -97,9 +106,158 @@ impl DirectNabConfig {
             if let Some(api_key) = self.api_key.as_deref() {
                 pairs.append_pair("apikey", api_key);
             }
+            if let Some(additional_params) = self.additional_params.as_deref() {
+                for (key, value) in url::form_urlencoded::parse(
+                    additional_params
+                        .trim()
+                        .trim_start_matches(['?', '&'])
+                        .as_bytes(),
+                ) {
+                    let key = key.trim();
+                    if key.is_empty() || is_direct_nab_control_query_key(key) {
+                        continue;
+                    }
+                    pairs.append_pair(key, value.trim());
+                }
+            }
         }
         Ok(url.to_string())
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NormalizedDirectNabConnection {
+    base_url: String,
+    api_path: Option<String>,
+    additional_params: Option<String>,
+}
+
+fn normalize_direct_nab_connection_url(raw: &str) -> Option<NormalizedDirectNabConnection> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let Ok(url) = reqwest::Url::parse(trimmed) else {
+        return Some(NormalizedDirectNabConnection {
+            base_url: trimmed.trim_end_matches('/').to_string(),
+            api_path: None,
+            additional_params: None,
+        });
+    };
+
+    let mut normalized = url.clone();
+    normalized.set_query(None);
+    normalized.set_fragment(None);
+    normalized.set_path("");
+
+    let origin = normalized.to_string().trim_end_matches('/').to_string();
+    if origin.is_empty() {
+        return None;
+    }
+
+    let api_path = {
+        let trimmed = url.path().trim().trim_matches('/');
+        (!trimmed.is_empty()).then(|| format!("/{}", trimmed))
+    };
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in url.query_pairs() {
+        let key = key.trim();
+        if key.is_empty() || is_direct_nab_control_query_key(key) {
+            continue;
+        }
+        serializer.append_pair(key, value.trim());
+    }
+    let serialized_params = serializer.finish();
+    let additional_params = (!serialized_params.is_empty()).then_some(serialized_params);
+
+    Some(NormalizedDirectNabConnection {
+        base_url: origin,
+        api_path,
+        additional_params,
+    })
+}
+
+fn normalize_additional_params(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_start_matches(['?', '&']).trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let pairs = url::form_urlencoded::parse(trimmed.as_bytes()).collect::<Vec<_>>();
+    if pairs.is_empty() {
+        return None;
+    }
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in pairs {
+        serializer.append_pair(&key, &value);
+    }
+
+    let normalized = serializer.finish();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn merge_additional_params(extracted: Option<&str>, existing: Option<&str>) -> Option<String> {
+    if extracted.is_none() {
+        return existing.and_then(normalize_additional_params);
+    }
+    if existing.is_none() {
+        return extracted.and_then(normalize_additional_params);
+    }
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    let mut any = false;
+
+    for raw in [extracted, existing].into_iter().flatten() {
+        let trimmed = raw.trim().trim_start_matches(['?', '&']).trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        for (key, value) in url::form_urlencoded::parse(trimmed.as_bytes()) {
+            let key = key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            serializer.append_pair(key, value.trim());
+            any = true;
+        }
+    }
+
+    any.then(|| serializer.finish())
+}
+
+fn is_direct_nab_control_query_key(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_lowercase().as_str(),
+        "apikey"
+            | "api_key"
+            | "key"
+            | "token"
+            | "t"
+            | "q"
+            | "cat"
+            | "o"
+            | "extended"
+            | "limit"
+            | "offset"
+            | "imdbid"
+            | "tvdbid"
+            | "tmdbid"
+            | "season"
+            | "ep"
+            | "rid"
+            | "tvmazeid"
+            | "traktid"
+            | "doubanid"
+            | "imdbtitle"
+            | "imdbyear"
+            | "genre"
+            | "year"
+            | "group"
+    )
 }
 
 #[derive(Clone)]
@@ -130,7 +288,7 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
         &self,
         config: &IndexerConfig,
     ) -> AppResult<Option<IndexerCapsSnapshot>> {
-        if !is_direct_nab_provider(&config.provider_type) {
+        if !config.is_direct_nab() {
             return Ok(None);
         }
 
@@ -408,5 +566,91 @@ mod tests {
 
         assert!(!movie.available);
         assert_eq!(movie.supported_params, vec!["q", "tmdbid", "imdbid"]);
+    }
+
+    #[test]
+    fn direct_nab_config_canonicalizes_query_bearing_connection_urls_for_caps() {
+        let config = IndexerConfig {
+            id: "cfg-1".to_string(),
+            name: "NZBGeek".to_string(),
+            provider_type: "nzbgeek".to_string(),
+            base_url: "https://api.nzbgeek.info/api?t=search&q=legacy".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(
+                serde_json::json!({
+                    "base_url": "https://api.nzbgeek.info/api?t=search&q=legacy&attrs=poster&apikey=test-key",
+                    "api_key": "test-key",
+                    "api_path": "/api",
+                    "additional_params": "lang=en",
+                })
+                .to_string(),
+            ),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let direct = DirectNabConfig::from_indexer_config(&config).expect("direct config");
+        assert_eq!(direct.base_url, "https://api.nzbgeek.info");
+        assert_eq!(direct.api_path, "/api");
+        assert_eq!(
+            direct.additional_params.as_deref(),
+            Some("attrs=poster&lang=en")
+        );
+        assert_eq!(
+            direct.caps_url().expect("caps url"),
+            "https://api.nzbgeek.info/api?t=caps&apikey=test-key&attrs=poster&lang=en"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_nab_caps_refresher_ignores_prowlarr_proxy_configs() {
+        let config = IndexerConfig {
+            id: "proxy-1".to_string(),
+            name: "Prowlarr Proxy".to_string(),
+            provider_type: "newznab".to_string(),
+            base_url: "http://localhost:9696/1".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: Some("parent".to_string()),
+            managed_child_key: Some("child".to_string()),
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(
+                serde_json::json!({
+                    "base_url": "http://localhost:9696/1",
+                    "api_key": "test-key",
+                    "api_path": "/api",
+                })
+                .to_string(),
+            ),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let refresher = DirectNabCapsSnapshotRefresher::new();
+        let snapshot = refresher
+            .fetch_for_config(&config)
+            .await
+            .expect("proxy configs should be ignored");
+        assert!(snapshot.is_none());
     }
 }

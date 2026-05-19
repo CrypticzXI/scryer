@@ -1125,8 +1125,9 @@ async fn prepare_movie_library_scan_entry(
             display_name: entry
                 .path
                 .file_stem()
-                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default()
+                .trim()
                 .to_string(),
             nfo_path: None,
             size_bytes: None,
@@ -1236,7 +1237,7 @@ async fn detect_primary_movie_entry_file(
 
     let mut non_sample_videos = Vec::new();
     for path in immediate_files {
-        if is_sample_video_candidate(Path::new(&path)) {
+        if is_sample_video_candidate(&stored_path_to_path_buf(&path)) {
             continue;
         }
         non_sample_videos.push(path);
@@ -1248,7 +1249,7 @@ async fn detect_primary_movie_entry_file(
 fn is_sample_video_candidate(path: &Path) -> bool {
     let stem = path
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default()
         .to_ascii_lowercase();
     stem.contains("sample")
@@ -1259,12 +1260,12 @@ async fn build_prepared_movie_library_scan_candidate(
     discovered_files: Vec<LibraryFile>,
     library_path: String,
 ) -> AppResult<PreparedMovieLibraryScanCandidate> {
-    let parsed_release = parse_release_metadata(
-        stored_path_to_path_buf(&file.path)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or(file.display_name.as_str()),
-    );
+    let parsed_release_name = stored_path_to_path_buf(&file.path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or_else(|| file.display_name.clone());
+    let parsed_release = parse_release_metadata(&parsed_release_name);
 
     let nfo_meta = read_valid_movie_nfo_metadata(file.nfo_path.as_deref()).await;
     let (query_variants, extracted_year_hint) = extract_library_queries(&file.path, &library_path);
@@ -1318,8 +1319,7 @@ async fn prepare_series_library_scan_candidate(
 ) -> AppResult<PreparedSeriesLibraryScanCandidate> {
     let folder_name = folder
         .file_name()
-        .and_then(|name| name.to_str())
-        .map(std::string::ToString::to_string);
+        .map(|name| name.to_string_lossy().into_owned());
 
     let Some(folder_name_value) = folder_name.clone() else {
         return Ok(PreparedSeriesLibraryScanCandidate {
@@ -2042,6 +2042,23 @@ mod tests {
             vec!["CIRCUIT BREAKERS CRASH THE GRID 2".to_string()]
         );
         assert_eq!(year, Some(2018));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_library_queries_uses_lossy_non_utf8_stem() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(OsStr::from_bytes(
+            b"/library/Glass.Harbor.\xFF.2021.2160p.WEB-DL.mkv",
+        ));
+        let stored_path = path_to_stored_string(path);
+        let (queries, year) = extract_library_queries(&stored_path, "/library");
+
+        assert!(!queries.is_empty());
+        assert!(queries.iter().any(|query| query.contains("GLASS HARBOR")));
+        assert_eq!(year, Some(2021));
     }
 
     #[test]
@@ -2787,6 +2804,17 @@ mod tests {
         )));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sample_video_candidate_detects_non_utf8_name_signal() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        assert!(is_sample_video_candidate(Path::new(OsStr::from_bytes(
+            b"/library/Movie/sample-\xFFfeaturette.mkv"
+        ))));
+    }
+
     #[tokio::test]
     async fn detect_primary_movie_entry_file_keeps_small_non_sample_video() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2815,6 +2843,48 @@ mod tests {
         assert_eq!(
             primary.as_deref(),
             Some(movie_path.to_string_lossy().as_ref())
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detect_primary_movie_entry_file_ignores_encoded_non_utf8_sample_video() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let movie_dir = Path::new("/library/Short Film (2024)");
+        let sample_path = Path::new(OsStr::from_bytes(
+            b"/library/Short Film (2024)/sample-\xFFfeaturette.mkv",
+        ));
+        let movie_path = Path::new(OsStr::from_bytes(
+            b"/library/Short Film (2024)/Short.Film.\xFF2024.mkv",
+        ));
+        let discovered_files = vec![
+            LibraryFile {
+                path: path_to_stored_string(sample_path),
+                display_name: "sample-\u{FFFD}featurette".to_string(),
+                nfo_path: None,
+                size_bytes: None,
+                source_signature_scheme: None,
+                source_signature_value: None,
+            },
+            LibraryFile {
+                path: path_to_stored_string(movie_path),
+                display_name: "Short.Film.\u{FFFD}2024".to_string(),
+                nfo_path: None,
+                size_bytes: None,
+                source_signature_scheme: None,
+                source_signature_value: None,
+            },
+        ];
+
+        let primary = detect_primary_movie_entry_file(movie_dir, &discovered_files)
+            .await
+            .expect("primary");
+
+        assert_eq!(
+            primary.as_deref(),
+            Some(path_to_stored_string(movie_path).as_str())
         );
     }
 

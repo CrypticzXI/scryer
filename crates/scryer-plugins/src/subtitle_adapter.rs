@@ -467,7 +467,10 @@ fn map_candidate_to_match(
         }
         if video_codec_matches(
             query.video_codec.as_deref(),
-            parsed_release.video_codec.as_deref(),
+            parsed_release
+                .video_codec
+                .as_ref()
+                .map(scryer_application::VideoCodec::as_str),
         ) {
             matches.insert("video_codec".to_string());
         }

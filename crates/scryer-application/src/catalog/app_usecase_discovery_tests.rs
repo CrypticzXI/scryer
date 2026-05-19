@@ -221,3 +221,94 @@ fn structured_dispatch_queries_keep_legitimate_numbered_titles_when_absolute_epi
 
     assert_eq!(deduped, queries);
 }
+
+fn synthetic_indexer_config(
+    id: &str,
+    provider_type: &str,
+    is_enabled: bool,
+    enable_interactive_search: bool,
+    enable_auto_search: bool,
+    managed_parent_config_id: Option<&str>,
+) -> scryer_domain::IndexerConfig {
+    scryer_domain::IndexerConfig {
+        id: id.to_string(),
+        name: format!("Synthetic {id}"),
+        provider_type: provider_type.to_string(),
+        base_url: "https://example.invalid".to_string(),
+        api_key_encrypted: None,
+        rate_limit_seconds: None,
+        rate_limit_burst: None,
+        disabled_until: None,
+        is_enabled,
+        enable_interactive_search,
+        enable_auto_search,
+        managed_parent_config_id: managed_parent_config_id.map(str::to_string),
+        managed_child_key: None,
+        managed_metadata_json: None,
+        caps_snapshot_json: None,
+        last_health_status: None,
+        last_error_at: None,
+        config_json: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    }
+}
+
+#[test]
+fn structured_query_collapse_runs_for_nab_only_search_sets() {
+    let configs = vec![
+        synthetic_indexer_config("direct", "nzbgeek", true, true, true, None),
+        synthetic_indexer_config("proxy", "newznab", true, true, true, Some("parent")),
+        synthetic_indexer_config("parent", "prowlarr", true, false, false, None),
+    ];
+
+    assert!(should_collapse_structured_nab_queries(
+        &configs,
+        None,
+        SearchMode::Interactive,
+        chrono::Utc::now(),
+    ));
+}
+
+#[test]
+fn structured_query_collapse_skips_when_no_configs_are_eligible() {
+    assert!(!should_collapse_structured_nab_queries(
+        &[],
+        None,
+        SearchMode::Interactive,
+        chrono::Utc::now(),
+    ));
+}
+
+#[test]
+fn structured_query_collapse_skips_when_auto_mode_is_disabled_in_managed_metadata() {
+    let mut proxy = synthetic_indexer_config("proxy", "newznab", true, true, true, Some("parent"));
+    proxy.managed_metadata_json = Some(
+        serde_json::json!({
+            "enable_automatic_search": false
+        })
+        .to_string(),
+    );
+
+    assert!(!should_collapse_structured_nab_queries(
+        &[proxy],
+        None,
+        SearchMode::Auto,
+        chrono::Utc::now(),
+    ));
+}
+
+#[test]
+fn structured_query_collapse_skips_when_non_nab_indexers_are_eligible() {
+    let configs = vec![
+        synthetic_indexer_config("direct", "nzbgeek", true, true, true, None),
+        synthetic_indexer_config("other", "animetosho", true, true, true, None),
+    ];
+
+    assert!(!should_collapse_structured_nab_queries(
+        &configs,
+        None,
+        SearchMode::Interactive,
+        chrono::Utc::now(),
+    ));
+}

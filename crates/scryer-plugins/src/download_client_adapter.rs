@@ -20,8 +20,8 @@ use crate::types::{
     PluginDownloadClientAddRequest, PluginDownloadClientAddResponse,
     PluginDownloadClientControlRequest, PluginDownloadClientMarkImportedRequest,
     PluginDownloadClientStatus, PluginDownloadIsolation, PluginDownloadItem, PluginDownloadRelease,
-    PluginDownloadRouting, PluginDownloadSource, PluginDownloadTitle, PluginTorrentItem,
-    PluginTorrentOptions, PluginTorrentQueuePlacement, decode_plugin_result,
+    PluginDownloadRouting, PluginDownloadSource, PluginDownloadTitle, PluginTorrentOptions,
+    PluginTorrentQueuePlacement, decode_plugin_result,
 };
 
 pub struct WasmDownloadClient {
@@ -790,6 +790,7 @@ impl DownloadClient for WasmDownloadClient {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use scryer_plugin_sdk::PluginTorrentItem;
 
     fn sample_request() -> DownloadClientAddRequest {
         DownloadClientAddRequest {

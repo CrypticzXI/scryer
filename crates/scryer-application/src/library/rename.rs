@@ -1225,7 +1225,7 @@ fn resolved_analysis_labels_for_media_file(
 ) -> crate::media::release_labels::ResolvedAnalysisReleaseLabels {
     resolve_release_labels_from_analysis(
         media_file.video_height,
-        media_file.video_codec.as_deref(),
+        media_file.video_codec.as_ref(),
         media_file.audio_codec.as_deref(),
         media_file.audio_profile.as_deref(),
         media_file.audio_channels,
@@ -1255,8 +1255,20 @@ fn resolve_rename_common_metadata(
         .unwrap_or_default();
     let video_codec = analyzed
         .video_codec
-        .or_else(|| media_file.and_then(|file| non_empty_owned(file.video_codec_parsed.clone())))
-        .or_else(|| parsed_current.video_codec.clone())
+        .map(|codec| codec.to_string())
+        .or_else(|| {
+            media_file.and_then(|file| {
+                file.video_codec_parsed
+                    .clone()
+                    .map(|codec| codec.to_string())
+            })
+        })
+        .or_else(|| {
+            parsed_current
+                .video_codec
+                .clone()
+                .map(|codec| codec.to_string())
+        })
         .unwrap_or_default();
     let audio_codec = analyzed
         .audio_codec

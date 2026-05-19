@@ -478,7 +478,8 @@ mod tests {
             quality_label: None,
             scan_status: "scanned".into(),
             created_at: String::new(),
-            video_codec: analyzed.then(|| "h264".into()),
+            video_codec: analyzed
+                .then(|| crate::release_parser::VideoCodec::parse("h264").expect("parse codec")),
             video_width: analyzed.then_some(1920),
             video_height: analyzed.then_some(1080),
             video_bitrate_kbps: None,

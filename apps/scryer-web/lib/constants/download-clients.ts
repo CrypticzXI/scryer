@@ -1,6 +1,11 @@
 import type { DownloadClientDraft } from "@/lib/types/download-clients";
 
-export const BUILT_IN_DOWNLOAD_CLIENT_TYPES = ["nzbget", "sabnzbd", "weaver"] as const;
+export const BUILT_IN_DOWNLOAD_CLIENT_TYPES = [
+  "nzbget",
+  "sabnzbd",
+  "weaver",
+  "qbittorrent",
+] as const;
 
 export const DEFAULT_DOWNLOAD_CLIENT_TYPE = "nzbget";
 
@@ -11,6 +16,7 @@ export const BUILT_IN_DOWNLOAD_CLIENT_TYPE_LABELS: Record<
   nzbget: "NZBGet",
   sabnzbd: "SABnzbd",
   weaver: "Weaver",
+  qbittorrent: "qBittorrent",
 };
 
 export const WEAVER_API_KEY_SETUP_PATH =
@@ -34,6 +40,5 @@ export const DEFAULT_DOWNLOAD_CLIENT_DRAFT: DownloadClientDraft = {
   username: "",
   password: "",
   remotePathMappings: "",
-  downloadArtifactMode: "plain",
   isEnabled: true,
 };

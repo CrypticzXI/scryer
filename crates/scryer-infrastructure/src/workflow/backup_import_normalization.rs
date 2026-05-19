@@ -449,7 +449,7 @@ mod tests {
         let mut object = JsonMap::new();
 
         let error = normalize_import_object_for_target(
-            "settings_values",
+            "custom_table",
             &mut object,
             now,
             &[ImportColumnRule {

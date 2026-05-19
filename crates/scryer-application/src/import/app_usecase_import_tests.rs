@@ -565,7 +565,7 @@ fn build_rename_tokens_includes_quality() {
 
 fn test_media_analysis(video_height: Option<i32>) -> crate::MediaFileAnalysis {
     crate::MediaFileAnalysis {
-        video_codec: Some("h264".to_string()),
+        video_codec: Some(crate::release_parser::VideoCodec::H264),
         video_width: Some(1920),
         video_height,
         video_bitrate_kbps: None,

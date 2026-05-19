@@ -6,9 +6,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const STORED_PATH_PREFIX: &str = "scryer-path-v1:";
-#[cfg(any(unix, not(any(unix, windows))))]
 const STORED_PATH_UNIX_PREFIX: &str = "scryer-path-v1:u:";
-#[cfg(windows)]
 const STORED_PATH_WINDOWS_PREFIX: &str = "scryer-path-v1:w:";
 
 pub fn path_to_stored_string(path: impl AsRef<Path>) -> String {
@@ -62,19 +60,44 @@ fn encode_path(path: &Path) -> String {
 }
 
 fn decode_path(stored: &str) -> Option<PathBuf> {
-    #[cfg(unix)]
     if let Some(encoded) = stored.strip_prefix(STORED_PATH_UNIX_PREFIX) {
-        return decode_percent_bytes(encoded)
-            .map(|bytes| PathBuf::from(std::ffi::OsString::from_vec(bytes)));
+        return decode_unix_path(encoded);
     }
 
-    #[cfg(windows)]
     if let Some(encoded) = stored.strip_prefix(STORED_PATH_WINDOWS_PREFIX) {
-        return decode_windows_units(encoded)
-            .map(|units| PathBuf::from(std::ffi::OsString::from_wide(&units)));
+        return decode_windows_path(encoded);
     }
 
     None
+}
+
+fn decode_unix_path(encoded: &str) -> Option<PathBuf> {
+    let bytes = decode_percent_bytes(encoded)?;
+
+    #[cfg(unix)]
+    {
+        Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+    }
+
+    #[cfg(not(unix))]
+    {
+        Some(PathBuf::from(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+}
+
+fn decode_windows_path(encoded: &str) -> Option<PathBuf> {
+    let units = decode_windows_units(encoded)?;
+
+    #[cfg(windows)]
+    {
+        Some(PathBuf::from(std::ffi::OsString::from_wide(&units)))
+    }
+
+    #[cfg(not(windows))]
+    {
+        let lossy = String::from_utf16_lossy(&units).replace('\\', "/");
+        Some(PathBuf::from(lossy))
+    }
 }
 
 fn encode_percent_bytes(bytes: &[u8], prefix: &str) -> String {
@@ -113,7 +136,6 @@ fn decode_percent_bytes(encoded: &str) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
-#[cfg(windows)]
 fn decode_windows_units(encoded: &str) -> Option<Vec<u16>> {
     let bytes = encoded.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -195,6 +217,25 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn windows_paths_decode_lossily_on_unix() {
+        let stored = "scryer-path-v1:w:C:\\Media\\%uD800.mkv";
+        let decoded = stored_path_to_path_buf(stored);
+
+        assert_eq!(decoded, PathBuf::from("C:/Media/\u{FFFD}.mkv"));
+        assert_eq!(
+            decoded
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+            Some("\u{FFFD}.mkv".to_string())
+        );
+        assert_eq!(
+            stored_path_to_display_string(stored),
+            "C:/Media/\u{FFFD}.mkv"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn non_utf8_windows_paths_round_trip() {
@@ -212,5 +253,22 @@ mod tests {
 
         assert!(stored.starts_with(STORED_PATH_WINDOWS_PREFIX));
         assert_eq!(stored_path_to_path_buf(&stored), path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unix_paths_decode_lossily_on_windows() {
+        let stored = "scryer-path-v1:u:/library/%FFmovie.mkv";
+        let decoded = stored_path_to_path_buf(stored);
+        let display = stored_path_to_display_string(stored);
+
+        assert_eq!(
+            decoded
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+            Some("\u{FFFD}movie.mkv".to_string())
+        );
+        assert!(display.contains("\u{FFFD}movie.mkv"));
+        assert!(!display.starts_with(STORED_PATH_PREFIX));
     }
 }

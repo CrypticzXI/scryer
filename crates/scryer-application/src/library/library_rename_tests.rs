@@ -332,7 +332,7 @@ fn test_media_file(path: &str) -> TitleMediaFile {
         quality_label: Some("720p".to_string()),
         scan_status: "scanned".to_string(),
         created_at: "2026-04-11T00:00:00Z".to_string(),
-        video_codec: Some("hevc".to_string()),
+        video_codec: Some(crate::release_parser::VideoCodec::H265),
         video_width: Some(3840),
         video_height: Some(2160),
         video_bitrate_kbps: Some(15_000),
@@ -363,7 +363,7 @@ fn test_media_file(path: &str) -> TitleMediaFile {
         release_group: Some("FraMeSToR".to_string()),
         source_type: Some("BluRay".to_string()),
         resolution: Some("2160p".to_string()),
-        video_codec_parsed: Some("H.264".to_string()),
+        video_codec_parsed: Some(crate::release_parser::VideoCodec::H264),
         audio_codec_parsed: Some("AAC".to_string()),
         audio_channels_parsed: Some("2.0".to_string()),
         acquisition_score: None,
@@ -405,7 +405,7 @@ fn resolve_rename_common_metadata_uses_persisted_parsed_backup_when_analysis_mis
     media_file.audio_streams.clear();
     media_file.source_type = Some("WEB-DL".to_string());
     media_file.release_group = Some("NTb".to_string());
-    media_file.video_codec_parsed = Some("H.265".to_string());
+    media_file.video_codec_parsed = Some(crate::release_parser::VideoCodec::H265);
     media_file.audio_codec_parsed = Some("TrueHD Atmos".to_string());
     media_file.audio_channels_parsed = Some("7.1".to_string());
     media_file.quality_label = Some("1080p".to_string());

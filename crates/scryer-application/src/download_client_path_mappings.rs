@@ -5,16 +5,7 @@ use std::path::{Path, PathBuf};
 
 const REMOTE_PATH_MAPPINGS_KEY: &str = "remote_path_mappings";
 const LEGACY_REMOTE_PATH_MAPPINGS_KEY: &str = "remotePathMappings";
-const ARTIFACT_MODE_KEY: &str = "artifact_mode";
-const LEGACY_ARTIFACT_MODE_KEY: &str = "artifactMode";
 const REMOTE_PATH_MAPPING_APPLIED_KEY: &str = "*scryer_remote_path_mapping_applied";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DownloadClientArtifactMode {
-    Plain,
-    NzbdavStrm,
-    NzbdavSymlink,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RemotePathStyle {
@@ -102,24 +93,6 @@ pub fn parse_download_client_remote_path_mappings(
 
 pub fn has_download_client_remote_path_mappings(config_json: &str) -> AppResult<bool> {
     Ok(!parse_download_client_remote_path_mappings(config_json)?.is_empty())
-}
-
-pub fn parse_download_client_artifact_mode(
-    config_json: &str,
-) -> AppResult<DownloadClientArtifactMode> {
-    let config = parse_download_client_config_json(config_json)?;
-    let Some(raw_value) = read_artifact_mode_value(&config)? else {
-        return Ok(DownloadClientArtifactMode::Plain);
-    };
-
-    match raw_value.trim().to_ascii_lowercase().as_str() {
-        "" | "plain" => Ok(DownloadClientArtifactMode::Plain),
-        "nzbdav_strm" => Ok(DownloadClientArtifactMode::NzbdavStrm),
-        "nzbdav_symlink" => Ok(DownloadClientArtifactMode::NzbdavSymlink),
-        value => Err(AppError::Validation(format!(
-            "artifact_mode must be one of plain, nzbdav_strm, nzbdav_symlink (got {value})"
-        ))),
-    }
 }
 
 pub fn remap_remote_path(
@@ -223,24 +196,6 @@ fn read_remote_path_mappings_value(config: &serde_json::Value) -> AppResult<Opti
         .as_str()
         .map(Some)
         .ok_or_else(|| AppError::Validation("remote_path_mappings must be a string".to_string()))
-}
-
-fn read_artifact_mode_value(config: &serde_json::Value) -> AppResult<Option<&str>> {
-    let Some(value) = config
-        .get(ARTIFACT_MODE_KEY)
-        .or_else(|| config.get(LEGACY_ARTIFACT_MODE_KEY))
-    else {
-        return Ok(None);
-    };
-
-    if value.is_null() {
-        return Ok(None);
-    }
-
-    value
-        .as_str()
-        .map(Some)
-        .ok_or_else(|| AppError::Validation("artifact_mode must be a string".to_string()))
 }
 
 fn parse_remote_root(remote_raw: &str, line_number: usize) -> AppResult<&str> {
@@ -472,33 +427,6 @@ mod tests {
             parse_download_client_remote_path_mappings(r#"{"host":"example","port":"8080"}"#)
                 .expect("parse mappings");
         assert!(mappings.is_empty());
-    }
-
-    #[test]
-    fn parse_download_client_artifact_mode_defaults_to_plain() {
-        let mode = parse_download_client_artifact_mode(r#"{"host":"example","port":"8080"}"#)
-            .expect("parse artifact mode");
-        assert_eq!(mode, DownloadClientArtifactMode::Plain);
-    }
-
-    #[test]
-    fn parse_download_client_artifact_mode_accepts_nzbdav_modes() {
-        let strm_mode = parse_download_client_artifact_mode(r#"{"artifact_mode":"nzbdav_strm"}"#)
-            .expect("parse strm mode");
-        let symlink_mode =
-            parse_download_client_artifact_mode(r#"{"artifactMode":"nzbdav_symlink"}"#)
-                .expect("parse symlink mode");
-
-        assert_eq!(strm_mode, DownloadClientArtifactMode::NzbdavStrm);
-        assert_eq!(symlink_mode, DownloadClientArtifactMode::NzbdavSymlink);
-    }
-
-    #[test]
-    fn parse_download_client_artifact_mode_rejects_unknown_values() {
-        let error = parse_download_client_artifact_mode(r#"{"artifact_mode":"mystery"}"#)
-            .expect_err("expected validation error");
-
-        assert!(error.to_string().contains("artifact_mode must be one of"));
     }
 
     #[test]

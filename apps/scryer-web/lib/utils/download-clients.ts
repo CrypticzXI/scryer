@@ -236,9 +236,6 @@ export function buildDownloadClientConfigJson(draft: DownloadClientDraft) {
   if (normalizedClientType === "sabnzbd" || normalizedClientType === "weaver") {
     payload.api_key = draft.apiKey.trim();
   }
-  if (normalizedClientType === "sabnzbd") {
-    payload.artifact_mode = draft.downloadArtifactMode;
-  }
 
   const cleaned = cleanPayloadObject(payload);
   return JSON.stringify(cleaned);
@@ -266,9 +263,6 @@ export function buildDownloadClientDraftFromRecord(record: DownloadClientRecord)
     username: readConfigStringValue(config, ["username"]),
     password: "",
     remotePathMappings: readConfigStringValue(config, ["remote_path_mappings", "remotePathMappings"]),
-    downloadArtifactMode: (
-      readConfigStringValue(config, ["artifact_mode", "artifactMode"]) || "plain"
-    ) as DownloadClientDraft["downloadArtifactMode"],
     useSsl: readConfigBooleanValue(config, ["use_ssl", "useSsl"], baseUrlParts.useSsl),
   };
 }

@@ -52,13 +52,13 @@ pub(crate) fn extract_library_queries(
     library_root: &str,
 ) -> (Vec<String>, Option<u32>) {
     let path = stored_path_to_path_buf(path);
-    let root = library_root.trim_end_matches('/');
+    let root = stored_path_to_path_buf(library_root);
 
     let stem = path
         .file_stem()
-        .and_then(|s| s.to_str())
+        .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let parsed = normalize_release_title_signal(parse_release_metadata(stem));
+    let parsed = normalize_release_title_signal(parse_release_metadata(stem.as_str()));
     let parsed_has_usable_title_signal = has_usable_release_title_signal(&parsed);
     let parsed_queries = if parsed_has_usable_title_signal {
         if parsed.normalized_title_variants.is_empty() {
@@ -77,13 +77,15 @@ pub(crate) fn extract_library_queries(
     let mut raw_folder_query = None;
 
     if let Some(parent) = path.parent() {
-        let parent_str = parent.to_string_lossy();
-        if parent_str.trim_end_matches('/') != root
-            && let Some(folder_name) = parent.file_name().and_then(|n| n.to_str())
+        if parent != root.as_path()
+            && let Some(folder_name) = parent
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .filter(|name| !name.trim().is_empty())
         {
-            let clean = normalize_folder_name(folder_name);
+            let clean = normalize_folder_name(&folder_name);
             let (clean_title, clean_year) = strip_year_suffix(&clean);
-            if let Some(parsed_folder) = parse_usable_release_title(folder_name) {
+            if let Some(parsed_folder) = parse_usable_release_title(&folder_name) {
                 let looks_human_named = !folder_name.contains('.') && !folder_name.contains('_');
                 let has_release_decoration = parsed_folder
                     .release_group

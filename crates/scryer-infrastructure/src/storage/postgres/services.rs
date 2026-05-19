@@ -869,7 +869,9 @@ mod tests {
                 .update_media_file_analysis(
                     &file_id,
                     MediaFileAnalysis {
-                        video_codec: Some("hevc".to_string()),
+                        video_codec: Some(
+                            scryer_application::VideoCodec::parse("hevc").expect("parse codec"),
+                        ),
                         video_width: Some(3840),
                         video_height: Some(2160),
                         video_bitrate_kbps: None,

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, QualityProfile, QualityProfileCriteria, QualityProfileRepository,
-    ScoringConfig,
+    ScoringConfig, VideoCodec,
 };
 use serde_json::{Value as JsonValue, json};
 use sqlx::{Row, types::Json};
@@ -176,7 +176,13 @@ async fn decode_quality_profile(
                 "codec ASC",
                 &id,
             )
-            .await?,
+            .await?
+            .into_iter()
+            .map(|value| {
+                VideoCodec::parse(value.as_str())
+                    .ok_or_else(|| repo_err(format!("invalid stored video codec {value:?}")))
+            })
+            .collect::<AppResult<Vec<_>>>()?,
             video_codec_blocklist: list_quality_profile_values(
                 datastore,
                 "quality_profile_video_codec_blocklist",
@@ -184,7 +190,13 @@ async fn decode_quality_profile(
                 "codec ASC",
                 &id,
             )
-            .await?,
+            .await?
+            .into_iter()
+            .map(|value| {
+                VideoCodec::parse(value.as_str())
+                    .ok_or_else(|| repo_err(format!("invalid stored video codec {value:?}")))
+            })
+            .collect::<AppResult<Vec<_>>>()?,
             audio_codec_allowlist: list_quality_profile_values(
                 datastore,
                 "quality_profile_audio_codec_allowlist",
@@ -239,8 +251,20 @@ async fn upsert_quality_profile_tx(
     let quality_tiers = normalize_profile_string_values(criteria.quality_tiers);
     let source_allowlist = normalize_profile_string_values(criteria.source_allowlist);
     let source_blocklist = normalize_profile_string_values(criteria.source_blocklist);
-    let video_codec_allowlist = normalize_profile_string_values(criteria.video_codec_allowlist);
-    let video_codec_blocklist = normalize_profile_string_values(criteria.video_codec_blocklist);
+    let video_codec_allowlist = normalize_profile_video_codecs(
+        criteria
+            .video_codec_allowlist
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    );
+    let video_codec_blocklist = normalize_profile_video_codecs(
+        criteria
+            .video_codec_blocklist
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    );
     let audio_codec_allowlist = normalize_profile_string_values(criteria.audio_codec_allowlist);
     let audio_codec_blocklist = normalize_profile_string_values(criteria.audio_codec_blocklist);
     let required_audio_languages = serde_json::to_value(&criteria.required_audio_languages)
@@ -466,6 +490,18 @@ fn normalize_profile_string_values(values: Vec<String>) -> Vec<String> {
         }
         if seen.insert(value.clone()) {
             normalized.push(value);
+        }
+    }
+    normalized
+}
+
+fn normalize_profile_video_codecs(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::with_capacity(values.len());
+    for value in values {
+        let key = value.trim().to_string();
+        if seen.insert(key.clone()) {
+            normalized.push(key);
         }
     }
     normalized

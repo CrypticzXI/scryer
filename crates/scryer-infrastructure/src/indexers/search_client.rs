@@ -9,6 +9,7 @@ use scryer_application::{
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
+    NabTransportKind,
 };
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -62,6 +63,8 @@ struct ResolvedSearchCapabilities {
     caps: IndexerProviderCapabilities,
     id_dispatch_mode: IdDispatchMode,
     query_only_reason: Option<&'static str>,
+    transport_kind: Option<NabTransportKind>,
+    caps_source: &'static str,
 }
 
 struct FilterStrategyContext<'a> {
@@ -535,25 +538,53 @@ impl MultiIndexerSearchClient {
         static_caps: &IndexerProviderCapabilities,
         facet: &str,
     ) -> ResolvedSearchCapabilities {
-        let snapshot = stored_caps_snapshot(config);
-        if snapshot.is_none() && config.managed_parent_config_id.is_none() {
+        let transport_kind = config.nab_transport_kind();
+        if transport_kind.is_none() {
             return ResolvedSearchCapabilities {
                 caps: static_caps.clone(),
                 id_dispatch_mode: IdDispatchMode::LegacyAggregate,
                 query_only_reason: None,
+                transport_kind: None,
+                caps_source: "static",
             };
         }
+
+        let snapshot = stored_caps_snapshot(config);
+        match transport_kind {
+            Some(NabTransportKind::DirectNab) if snapshot.is_none() => {
+                return ResolvedSearchCapabilities {
+                    caps: static_caps.clone(),
+                    id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                    query_only_reason: None,
+                    transport_kind,
+                    caps_source: "legacy_static",
+                };
+            }
+            Some(NabTransportKind::ProwlarrNabProxy) if snapshot.is_none() => {
+                return ResolvedSearchCapabilities {
+                    caps: IndexerProviderCapabilities {
+                        supported_ids: HashMap::new(),
+                        search_inputs: static_caps.search_inputs.clone(),
+                        supported_external_ids: Vec::new(),
+                        query_param: static_caps.query_param.clone(),
+                        ..static_caps.clone()
+                    },
+                    id_dispatch_mode: IdDispatchMode::QueryOnly,
+                    query_only_reason: Some("caps snapshot unavailable"),
+                    transport_kind,
+                    caps_source: "query_only_fallback",
+                };
+            }
+            _ => {}
+        }
+
         let Some(snapshot) = snapshot.as_ref() else {
             return ResolvedSearchCapabilities {
-                caps: IndexerProviderCapabilities {
-                    supported_ids: HashMap::new(),
-                    search_inputs: static_caps.search_inputs.clone(),
-                    supported_external_ids: Vec::new(),
-                    query_param: static_caps.query_param.clone(),
-                    ..static_caps.clone()
-                },
-                id_dispatch_mode: IdDispatchMode::QueryOnly,
-                query_only_reason: Some("caps snapshot unavailable"),
+                caps: static_caps.clone(),
+                id_dispatch_mode: IdDispatchMode::LegacyAggregate,
+                query_only_reason: None,
+                transport_kind,
+                caps_source: "static",
             };
         };
 
@@ -579,11 +610,13 @@ impl MultiIndexerSearchClient {
             caps,
             id_dispatch_mode,
             query_only_reason,
+            transport_kind,
+            caps_source: "snapshot",
         }
     }
 
-    fn is_managed_child(config: &IndexerConfig) -> bool {
-        config.managed_parent_config_id.is_some()
+    fn is_prowlarr_nab_proxy(config: &IndexerConfig) -> bool {
+        config.is_prowlarr_nab_proxy()
     }
 
     fn default_newznab_categories_for_facet(facet: &str) -> Option<Vec<String>> {
@@ -735,7 +768,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         ids: HashMap<String, String>,
         category: Option<String>,
         facet: Option<String>,
-        _newznab_categories: Option<Vec<String>>,
+        newznab_categories: Option<Vec<String>>,
         indexer_routing: Option<IndexerRoutingPlan>,
         mode: SearchMode,
         season: Option<u32>,
@@ -871,26 +904,26 @@ impl IndexerClient for MultiIndexerSearchClient {
                 continue;
             }
 
-            // Use per-indexer categories from routing if available. Managed
-            // Managed Prowlarr children may fall back to per-facet defaults when
-            // no routed categories exist yet; direct *nab indexers stay broad.
+            // Use per-indexer categories from routing if available. Prowlarr
+            // proxy children may fall back to per-facet defaults when no
+            // routed categories exist yet; direct *nab indexers stay broad.
             let per_indexer_categories = routing_entry
                 .map(|entry| {
                     if entry.categories.is_empty() {
-                        if Self::is_managed_child(config) {
+                        if Self::is_prowlarr_nab_proxy(config) {
                             Self::default_newznab_categories_for_facet(&facet)
                         } else {
-                            None
+                            newznab_categories.clone()
                         }
                     } else {
                         Some(entry.categories.clone())
                     }
                 })
                 .unwrap_or_else(|| {
-                    if Self::is_managed_child(config) {
+                    if Self::is_prowlarr_nab_proxy(config) {
                         Self::default_newznab_categories_for_facet(&facet)
                     } else {
-                        None
+                        newznab_categories.clone()
                     }
                 });
             let rss_category_requests = if is_rss_request {
@@ -914,6 +947,15 @@ impl IndexerClient for MultiIndexerSearchClient {
                 .capabilities_for_provider(&config.provider_type);
             let resolved_caps = Self::resolve_search_capabilities(config, &static_caps, &facet);
             let caps = resolved_caps.caps.clone();
+            debug!(
+                indexer = config.name.as_str(),
+                transport = resolved_caps
+                    .transport_kind
+                    .map(|kind| kind.as_str())
+                    .unwrap_or("other"),
+                caps_source = resolved_caps.caps_source,
+                "resolved effective indexer search capabilities"
+            );
 
             // RSS-only check: skip non-RSS indexers for RSS sync requests
             if is_rss_request && !caps.rss {
@@ -950,7 +992,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             {
                 info!(
                     indexer = config.name.as_str(),
-                    reason, "managed child running in query-only fallback mode"
+                    reason, "ProwlarrNabProxy running in query-only fallback mode"
                 );
             }
 
@@ -970,7 +1012,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         indexer = config.name.as_str(),
                         facet,
                         dropped_ids = ?dropped_ids,
-                        "dropping IDs not advertised by effective managed caps"
+                        "dropping IDs not advertised by effective caps"
                     );
                 }
             }
@@ -1112,6 +1154,18 @@ impl IndexerClient for MultiIndexerSearchClient {
                 });
 
                 strategies.extend(alias_strategies);
+            }
+            if is_rss_request && strategies.is_empty() {
+                strategies.push(SearchStrategy {
+                    query: String::new(),
+                    request_query: String::new(),
+                    ids: HashMap::new(),
+                    season: None,
+                    episode: None,
+                    absolute_episode: None,
+                    generic_query_only: false,
+                    label: "rss".into(),
+                });
             }
             let (primary_strategies, fallback_strategies) =
                 split_strategy_tiers(&facet, strategies);
@@ -2736,7 +2790,7 @@ mod tests {
                 HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())]),
                 None,
                 Some("movie".to_string()),
-                Some(vec!["2000".to_string()]),
+                None,
                 None,
                 SearchMode::Interactive,
                 None,
@@ -2779,7 +2833,7 @@ mod tests {
                 HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())]),
                 None,
                 Some("movie".to_string()),
-                Some(vec!["2000".to_string()]),
+                None,
                 None,
                 SearchMode::Interactive,
                 None,
@@ -2792,6 +2846,58 @@ mod tests {
 
         let recorded = calls.lock().expect("calls").clone();
         assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].categories.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_nab_managed_configs_do_not_inherit_prowlarr_proxy_behavior() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "mock".into();
+        config.managed_parent_config_id = Some("parent".into());
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|_| response_with_titles(&["Proxy.Safe.Result.2024"])),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: movie_caps(),
+            }),
+        );
+
+        let _response = multi
+            .search(
+                "Proxy Safe Result".to_string(),
+                HashMap::from([
+                    ("imdb_id".to_string(), "tt12345678".to_string()),
+                    ("tmdb_id".to_string(), "123456".to_string()),
+                ]),
+                None,
+                Some("movie".to_string()),
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("search should succeed");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].ids,
+            HashMap::from([("imdb_id".to_string(), "tt12345678".to_string())])
+        );
+        assert_eq!(recorded[0].facet.as_deref(), Some("movie"));
         assert!(recorded[0].categories.is_empty());
     }
 

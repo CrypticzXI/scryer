@@ -60,6 +60,7 @@ pub struct TestContext {
     pub media_files: MediaFileStore,
     pub db: SqliteServices,
     pub settings_store: Arc<SettingsStore>,
+    pub app_data_dir: tempfile::TempDir,
     pub staged_nzb_store: Arc<FileSystemStagedNzbStore>,
     pub staged_nzb_dir: tempfile::TempDir,
 }
@@ -574,6 +575,10 @@ impl TestContext {
         let db = SqliteServices::new(":memory:")
             .await
             .expect("failed to create in-memory SQLite");
+        let app_data_dir = tempfile::Builder::new()
+            .prefix("scryer-test-data-")
+            .tempdir_in("/tmp")
+            .expect("failed to create app data tempdir");
         let staged_nzb_dir = tempfile::TempDir::new().expect("failed to create staged nzb tempdir");
         let staged_nzb_store = Arc::new(
             FileSystemStagedNzbStore::new(staged_nzb_dir.path())
@@ -691,7 +696,7 @@ impl TestContext {
             release_attempts,
             settings,
             quality_profiles,
-            ":memory:".to_string(),
+            app_data_dir.path().display().to_string(),
         )
         .with_media_files(Arc::new(media_file_store.clone()))
         .with_wanted_items(Arc::new(wanted_store))
@@ -782,6 +787,7 @@ impl TestContext {
             media_files: media_file_store,
             db,
             settings_store,
+            app_data_dir,
             staged_nzb_store,
             staged_nzb_dir,
         }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::SubmissionScope;
 use crate::library_scan::LibraryScanSummary;
 use crate::quality_profile::QualityProfileDecision;
-use crate::release_parser::ParsedReleaseMetadata;
+use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryRootDraft {
@@ -299,7 +299,7 @@ pub struct TitleMediaFile {
     pub scan_status: String,
     pub created_at: String,
     // Media analysis fields (populated after media scan; None until scan_status='scanned')
-    pub video_codec: Option<String>,
+    pub video_codec: Option<VideoCodec>,
     pub video_width: Option<i32>,
     pub video_height: Option<i32>,
     pub video_bitrate_kbps: Option<i32>,
@@ -325,7 +325,7 @@ pub struct TitleMediaFile {
     pub release_group: Option<String>,
     pub source_type: Option<String>,
     pub resolution: Option<String>,
-    pub video_codec_parsed: Option<String>,
+    pub video_codec_parsed: Option<VideoCodec>,
     pub audio_codec_parsed: Option<String>,
     pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,

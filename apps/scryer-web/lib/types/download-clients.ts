@@ -25,7 +25,6 @@ export type DownloadClientDraft = {
   username: string;
   password: string;
   remotePathMappings: string;
-  downloadArtifactMode: "plain" | "nzbdav_strm" | "nzbdav_symlink";
   isEnabled: boolean;
 };
 

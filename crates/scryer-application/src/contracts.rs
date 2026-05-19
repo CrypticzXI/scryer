@@ -526,7 +526,7 @@ pub struct SubtitleStreamDetail {
 /// Mirrors `scryer_mediainfo::MediaAnalysis` without depending on that crate.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MediaFileAnalysis {
-    pub video_codec: Option<String>,
+    pub video_codec: Option<crate::release_parser::VideoCodec>,
     pub video_width: Option<i32>,
     pub video_height: Option<i32>,
     pub video_bitrate_kbps: Option<i32>,
@@ -568,7 +568,7 @@ pub struct InsertMediaFileInput {
     pub release_group: Option<String>,
     pub source_type: Option<String>,
     pub resolution: Option<String>,
-    pub video_codec_parsed: Option<String>,
+    pub video_codec_parsed: Option<crate::release_parser::VideoCodec>,
     pub audio_codec_parsed: Option<String>,
     pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,

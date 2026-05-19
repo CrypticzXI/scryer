@@ -94,7 +94,10 @@ pub(crate) fn build_media_file_analysis(
     );
 
     crate::MediaFileAnalysis {
-        video_codec: analysis.video_codec.clone(),
+        video_codec: analysis
+            .video_codec
+            .as_deref()
+            .and_then(crate::release_parser::VideoCodec::parse),
         video_width: analysis.video_width,
         video_height: analysis.video_height,
         video_bitrate_kbps: analysis.video_bitrate_kbps,
@@ -510,7 +513,7 @@ pub(crate) fn rescore_from_mediainfo(
     let mut changes = Vec::new();
     let resolved = resolve_release_labels_from_analysis(
         analysis.video_height,
-        analysis.video_codec.as_deref(),
+        analysis.video_codec.as_ref(),
         analysis.audio_codec.as_deref(),
         analysis.audio_profile.as_deref(),
         analysis.audio_channels,
@@ -531,14 +534,20 @@ pub(crate) fn rescore_from_mediainfo(
 
     // Override video codec (map mediainfo names → release parser names)
     if let Some(ref normalized) = resolved.video_codec
-        && merged.video_codec.as_deref() != Some(normalized.as_str())
+        && let Some(parsed_codec) = crate::release_parser::VideoCodec::parse(normalized.as_str())
+        && merged.video_codec.as_ref() != Some(&parsed_codec)
     {
         changes.push(format!(
             "video_codec: {} → {}",
-            merged.video_codec.as_deref().unwrap_or("?"),
+            merged
+                .video_codec
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref()
+                .unwrap_or("?"),
             normalized
         ));
-        merged.video_codec = Some(normalized.clone());
+        merged.video_codec = Some(parsed_codec);
     }
 
     if analysis.video_bit_depth.unwrap_or_default() >= 10 && !merged.is_10bit {

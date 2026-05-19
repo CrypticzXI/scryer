@@ -5687,6 +5687,63 @@ fn bootstrap_with_search_settings_and_indexer(
     )
 }
 
+fn bootstrap_with_search_settings_indexer_and_configs(
+    settings: Arc<StoredSettingsRepo>,
+    indexer_client: Arc<dyn IndexerClient>,
+    configs: Vec<IndexerConfig>,
+) -> (AppUseCase, User) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo {
+        store: Arc::new(Mutex::new(configs)),
+    });
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
+    let download_client = Arc::new(StubDownloadClient::default());
+    let plugin_provider = Arc::new(MockIndexerPluginProvider {
+        client: Arc::clone(&indexer_client),
+    });
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        String::new(),
+    )
+    .with_plugin_provider(plugin_provider)
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, test_admin_user())
+}
+
 fn bootstrap_with_settings_repo_and_profiles(
     settings: Arc<dyn SettingsRepository>,
     quality_profiles: Arc<dyn QualityProfileRepository>,
@@ -5740,6 +5797,31 @@ fn bootstrap_with_settings_repo_and_profiles(
     );
 
     (app, test_admin_user())
+}
+
+fn synthetic_direct_nab_indexer_config(id: &str, provider_type: &str) -> IndexerConfig {
+    IndexerConfig {
+        id: id.to_string(),
+        name: format!("Synthetic {provider_type}"),
+        provider_type: provider_type.to_string(),
+        base_url: "https://example.invalid".to_string(),
+        api_key_encrypted: None,
+        rate_limit_seconds: None,
+        rate_limit_burst: None,
+        disabled_until: None,
+        is_enabled: true,
+        enable_interactive_search: true,
+        enable_auto_search: true,
+        managed_parent_config_id: None,
+        managed_child_key: None,
+        managed_metadata_json: None,
+        caps_snapshot_json: None,
+        last_health_status: None,
+        last_error_at: None,
+        config_json: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
 }
 
 #[tokio::test]
@@ -11229,8 +11311,11 @@ async fn search_indexers_for_title_keeps_direct_nab_searches_uncategorized_when_
 async fn search_indexers_for_episode_dedupes_equivalent_structured_series_queries() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let recording_client = Arc::new(RecordingStructuredQueryIndexerClient::default());
-    let (app, user) =
-        bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        recording_client.clone(),
+        vec![synthetic_direct_nab_indexer_config("idx-series", "nzbgeek")],
+    );
 
     let title = app
         .add_title(
@@ -11315,8 +11400,11 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_series_querie
 async fn search_indexers_for_episode_dedupes_equivalent_structured_anime_queries() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let recording_client = Arc::new(RecordingStructuredQueryIndexerClient::default());
-    let (app, user) =
-        bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        recording_client.clone(),
+        vec![synthetic_direct_nab_indexer_config("idx-anime", "nzbgeek")],
+    );
 
     let title = app
         .add_title(

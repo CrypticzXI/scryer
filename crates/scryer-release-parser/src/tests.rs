@@ -3,7 +3,7 @@ use chrono::NaiveDate;
 use crate::enrichment::{enrich_candidate, project_final_metadata};
 use crate::{
     ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ParseFamily,
-    ParsedEpisodeReleaseType, ReleaseParseContext, analyze_release_against_targets,
+    ParsedEpisodeReleaseType, ReleaseParseContext, VideoCodec, analyze_release_against_targets,
     analyze_release_for_target,
 };
 
@@ -799,7 +799,7 @@ fn enrichment_extracts_affixed_language_before_video_anchor() {
     let projected = project_final_metadata(candidate.projected.clone(), &enrichment);
 
     assert_eq!(projected.languages_audio, vec!["heb".to_string()]);
-    assert_eq!(projected.video_codec.as_deref(), Some("XVID"));
+    assert_eq!(projected.video_codec.as_ref(), Some(&VideoCodec::Xvid));
 }
 
 #[test]
@@ -1087,7 +1087,10 @@ fn unicode_case_and_out_of_corpus_metadata_parse_without_fixture_bias() {
 
     assert_eq!(candidate.projected.normalized_title, "ÉCLAIR POKÉMON");
     assert_eq!(candidate.projected.quality.as_deref(), Some("576p"));
-    assert_eq!(candidate.projected.video_codec.as_deref(), Some("VVC"));
+    assert_eq!(
+        candidate.projected.video_codec.as_ref(),
+        Some(&VideoCodec::Vvc)
+    );
     assert_eq!(candidate.projected.audio.as_deref(), Some("OPUS"));
     assert_eq!(candidate.projected.audio_channels.as_deref(), Some("2.0"));
 }
@@ -1161,7 +1164,10 @@ fn short_service_alias_can_remain_a_title_word() {
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(candidate.projected.normalized_title, "MAX HEADROOM");
-    assert_eq!(candidate.projected.video_codec.as_deref(), Some("MPEG2"));
+    assert_eq!(
+        candidate.projected.video_codec.as_ref(),
+        Some(&VideoCodec::Mpeg2)
+    );
     assert_eq!(candidate.projected.audio.as_deref(), Some("MP3"));
 }
 
@@ -1329,7 +1335,10 @@ fn enrichment_fills_split_video_codec_and_audio_channels() {
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.video_codec.as_deref(), Some("H.264"));
+    assert_eq!(
+        candidate.projected.video_codec.as_ref(),
+        Some(&VideoCodec::H264)
+    );
     assert_eq!(candidate.projected.audio_channels.as_deref(), Some("2.0"));
 }
 
@@ -1347,8 +1356,8 @@ fn parser_canonicalizes_h264_family_video_codec_tokens() {
         let candidate = analysis.best_candidate().expect("best candidate");
 
         assert_eq!(
-            candidate.projected.video_codec.as_deref(),
-            Some("H.264"),
+            candidate.projected.video_codec.as_ref(),
+            Some(&VideoCodec::H264),
             "{raw}"
         );
     }
@@ -1368,8 +1377,8 @@ fn parser_canonicalizes_h265_family_video_codec_tokens() {
         let candidate = analysis.best_candidate().expect("best candidate");
 
         assert_eq!(
-            candidate.projected.video_codec.as_deref(),
-            Some("H.265"),
+            candidate.projected.video_codec.as_ref(),
+            Some(&VideoCodec::H265),
             "{raw}"
         );
     }
@@ -1623,7 +1632,10 @@ fn anime_absolute_release_keeps_release_group_and_metadata_boundaries() {
     );
     assert_eq!(candidate.projected.source.as_deref(), Some("BluRay"));
     assert_eq!(candidate.projected.quality.as_deref(), Some("1080p"));
-    assert_eq!(candidate.projected.video_codec.as_deref(), Some("H.265"));
+    assert_eq!(
+        candidate.projected.video_codec.as_ref(),
+        Some(&VideoCodec::H265)
+    );
     assert!(
         candidate
             .projected

@@ -66,7 +66,8 @@ const FALLBACK_PROVIDER_OPTIONS = [
 ];
 
 const INDEXER_PROVIDER_LOGOS: Record<string, string> = {
-  nzbgeek: "media-sites/nzbgeek.svg",
+  nzbgeek: "/media-sites/nzbgeek.svg",
+  prowlarr: "/media-sites/prowlarr.avif",
 };
 
 function getProviderLogoSrc(value: string) {

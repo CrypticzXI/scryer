@@ -4,7 +4,7 @@ use scryer_domain::{Collection, Episode, MediaFacet, Title};
 pub use scryer_release_parser::{
     ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ParseDisposition,
     ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
-    ReleaseParseAnalysis, ReleaseParseContext, TargetedReleaseParseAnalysis,
+    ReleaseParseAnalysis, ReleaseParseContext, TargetedReleaseParseAnalysis, VideoCodec,
     analyze_release_against_targets, analyze_release_for_target, best_parse_for_target,
 };
 

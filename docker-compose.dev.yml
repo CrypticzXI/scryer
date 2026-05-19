@@ -25,7 +25,7 @@ services:
       - "3001:3000"
     volumes:
       - ./tmp/nzbdav/config:/config
-      - ./tmp/nzbdav/mnt:/mnt/nzbdav:rshared
+      - ./tmp/nzbdav/mnt:/mnt/nzbdav
     networks:
       default:
         aliases:
@@ -140,7 +140,7 @@ services:
       - scryer-cargo-registry:/usr/local/cargo/registry
       - scryer-cargo-git:/usr/local/cargo/git
       - scryer-config:/config
-      - ./tmp/nzbdav/mnt:/mnt/nzbdav:rshared
+      - ./tmp/nzbdav/mnt:/mnt/nzbdav
       - ./tmp/altmount/mnt:/mnt/altmount
       - ./tmp/decypharr/mnt:/mnt/decypharr
       - ./tmp/nzbget-downloads:/nzbget-downloads

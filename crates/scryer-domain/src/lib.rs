@@ -635,6 +635,50 @@ pub struct IndexerConfig {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NabTransportKind {
+    DirectNab,
+    ProwlarrNabProxy,
+}
+
+impl NabTransportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectNab => "direct_nab",
+            Self::ProwlarrNabProxy => "prowlarr_nab_proxy",
+        }
+    }
+}
+
+pub fn is_nab_provider_type(provider_type: &str) -> bool {
+    matches!(
+        provider_type.trim().to_ascii_lowercase().as_str(),
+        "newznab" | "nzbgeek" | "torznab"
+    )
+}
+
+impl IndexerConfig {
+    pub fn nab_transport_kind(&self) -> Option<NabTransportKind> {
+        if !is_nab_provider_type(&self.provider_type) {
+            return None;
+        }
+
+        Some(if self.managed_parent_config_id.is_some() {
+            NabTransportKind::ProwlarrNabProxy
+        } else {
+            NabTransportKind::DirectNab
+        })
+    }
+
+    pub fn is_direct_nab(&self) -> bool {
+        self.nab_transport_kind() == Some(NabTransportKind::DirectNab)
+    }
+
+    pub fn is_prowlarr_nab_proxy(&self) -> bool {
+        self.nab_transport_kind() == Some(NabTransportKind::ProwlarrNabProxy)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NewIndexerConfig {
     pub name: String,

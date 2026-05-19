@@ -1,6 +1,5 @@
 use super::*;
 use crate::domain_events::new_download_queue_domain_event;
-use crate::download_client_path_mappings::parse_download_client_artifact_mode;
 use crate::event_views::{
     apply_download_queue_projection_event, sort_download_queue_items, sorted_download_queue_items,
 };
@@ -1374,7 +1373,7 @@ impl AppUseCase {
         let mut failures = Vec::new();
 
         for config in configs {
-            if !config.is_enabled || config.managed_parent_config_id.is_some() {
+            if !config.is_enabled || !config.is_direct_nab() {
                 continue;
             }
 
@@ -3579,7 +3578,6 @@ impl AppUseCase {
         let client_type = self.normalize_download_client_type(input.client_type)?;
         let config_json = self.normalize_download_client_config_json(input.config_json)?;
         crate::parse_download_client_remote_path_mappings(&config_json)?;
-        parse_download_client_artifact_mode(&config_json)?;
 
         let existing = self
             .services
@@ -3659,7 +3657,6 @@ impl AppUseCase {
             Some(value) => {
                 let normalized = self.normalize_download_client_config_json(value)?;
                 crate::parse_download_client_remote_path_mappings(&normalized)?;
-                parse_download_client_artifact_mode(&normalized)?;
                 Some(normalized)
             }
             None => None,

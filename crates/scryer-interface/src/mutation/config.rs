@@ -538,6 +538,20 @@ impl ConfigMutations {
     }
 }
 
+fn validate_test_flight_url(raw: &str) -> GqlResult<()> {
+    let url = url::Url::parse(raw).map_err(|error| Error::new(format!("invalid URL: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(Error::new("URL must use http or https"));
+    }
+    if url.host_str().is_none() {
+        return Err(Error::new("URL must include a host"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::new("URL must not include embedded credentials"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,18 +654,4 @@ mod tests {
             Some(&Value::Bool(true))
         );
     }
-}
-
-fn validate_test_flight_url(raw: &str) -> GqlResult<()> {
-    let url = url::Url::parse(raw).map_err(|error| Error::new(format!("invalid URL: {error}")))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(Error::new("URL must use http or https"));
-    }
-    if url.host_str().is_none() {
-        return Err(Error::new("URL must include a host"));
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(Error::new("URL must not include embedded credentials"));
-    }
-    Ok(())
 }

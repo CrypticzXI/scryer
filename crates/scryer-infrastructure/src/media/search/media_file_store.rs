@@ -90,7 +90,7 @@ impl MediaFileRepository for MediaFileStore {
                 SqlArg::OptText(input.release_group.clone()),
                 SqlArg::OptText(input.source_type.clone()),
                 SqlArg::OptText(input.resolution.clone()),
-                SqlArg::OptText(input.video_codec_parsed.clone()),
+                SqlArg::OptText(input.video_codec_parsed.as_ref().map(ToString::to_string)),
                 SqlArg::OptText(input.audio_codec_parsed.clone()),
                 SqlArg::OptText(input.audio_channels_parsed.clone()),
                 SqlArg::OptI32(input.acquisition_score),
@@ -419,7 +419,7 @@ impl MediaFileRepository for MediaFileStore {
                 scan_status = 'scanned'
              WHERE id = {}",
             vec![
-                SqlArg::OptText(analysis.video_codec),
+                SqlArg::OptText(analysis.video_codec.as_ref().map(ToString::to_string)),
                 SqlArg::OptI32(analysis.video_width),
                 SqlArg::OptI32(analysis.video_height),
                 SqlArg::OptI32(analysis.video_bitrate_kbps),
@@ -708,7 +708,7 @@ fn row_to_title_media_file(row: &SqlRow) -> AppResult<TitleMediaFile> {
         quality_label: row.opt_text("quality_id")?,
         scan_status: row.text("scan_status")?,
         created_at: timestamp_text(row, "created_at")?,
-        video_codec: row.opt_text("video_codec")?,
+        video_codec: parse_stored_video_codec(row.opt_text("video_codec")?)?,
         video_width: row.opt_i32("video_width")?,
         video_height: row.opt_i32("video_height")?,
         video_bitrate_kbps: row.opt_i32("video_bitrate_kbps")?,
@@ -733,7 +733,7 @@ fn row_to_title_media_file(row: &SqlRow) -> AppResult<TitleMediaFile> {
         release_group: row.opt_text("release_group")?,
         source_type: row.opt_text("source_type")?,
         resolution: row.opt_text("resolution")?,
-        video_codec_parsed: row.opt_text("video_codec_parsed")?,
+        video_codec_parsed: parse_stored_video_codec(row.opt_text("video_codec_parsed")?)?,
         audio_codec_parsed: row.opt_text("audio_codec_parsed")?,
         audio_channels_parsed: row.opt_text("audio_channels_parsed")?,
         acquisition_score: row.opt_i32("acquisition_score")?,
@@ -745,6 +745,16 @@ fn row_to_title_media_file(row: &SqlRow) -> AppResult<TitleMediaFile> {
         original_file_path: row.opt_text("original_file_path")?,
         release_hash: row.opt_text("release_hash")?,
     })
+}
+
+fn parse_stored_video_codec(
+    raw: Option<String>,
+) -> AppResult<Option<scryer_application::VideoCodec>> {
+    raw.map(|value| {
+        scryer_application::VideoCodec::parse(value.as_str())
+            .ok_or_else(|| repo_err(format!("invalid stored video codec {value:?}")))
+    })
+    .transpose()
 }
 
 fn row_to_episode_scoped_media_file(row: &SqlRow) -> AppResult<EpisodeScopedMediaFile> {
@@ -1467,7 +1477,9 @@ mod tests {
             .update_media_file_analysis(
                 &file_id,
                 MediaFileAnalysis {
-                    video_codec: Some("hevc".to_string()),
+                    video_codec: Some(
+                        scryer_application::VideoCodec::parse("hevc").expect("parse codec"),
+                    ),
                     video_width: Some(3840),
                     video_height: Some(2160),
                     video_bitrate_kbps: None,

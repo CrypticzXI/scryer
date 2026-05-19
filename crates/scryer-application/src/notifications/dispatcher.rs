@@ -1060,8 +1060,14 @@ fn media_file_payload_from_record(
         subtitle_languages: media_file.subtitle_languages.clone(),
         video_codec: media_file
             .video_codec
-            .clone()
-            .or_else(|| media_file.video_codec_parsed.clone()),
+            .as_ref()
+            .map(ToString::to_string)
+            .or_else(|| {
+                media_file
+                    .video_codec_parsed
+                    .as_ref()
+                    .map(ToString::to_string)
+            }),
         audio_codec: media_file
             .audio_codec
             .clone()

@@ -1581,17 +1581,14 @@ fn ensure_nzbdav_dev_account() -> Result<()> {
             Some("running") => {
                 let headers =
                     run_capture(Command::new("curl").args(["-sI", "http://localhost:3001/login"]));
-                match headers {
-                    Ok(headers) => {
-                        if headers
-                            .lines()
-                            .any(|line| line.trim().eq_ignore_ascii_case("location: /onboarding"))
-                        {
-                            create_nzbdav_dev_account()?;
-                        }
-                        return Ok(());
+                if let Ok(headers) = headers {
+                    if headers
+                        .lines()
+                        .any(|line| line.trim().eq_ignore_ascii_case("location: /onboarding"))
+                    {
+                        create_nzbdav_dev_account()?;
                     }
-                    Err(_) => {}
+                    return Ok(());
                 }
             }
             Some("exited" | "dead") => {

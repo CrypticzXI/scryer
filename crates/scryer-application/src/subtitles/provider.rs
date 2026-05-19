@@ -747,7 +747,10 @@ impl SubtitleProvider for OpenSubtitlesProvider {
                 }
                 if video_codec_matches(
                     query.video_codec.as_deref(),
-                    parsed_release.video_codec.as_deref(),
+                    parsed_release
+                        .video_codec
+                        .as_ref()
+                        .map(crate::release_parser::VideoCodec::as_str),
                 ) {
                     matches.insert(MatchFlag::VideoCodec);
                 }

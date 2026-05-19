@@ -25,6 +25,7 @@ fn test_config(provider_type: &str) -> IndexerConfig {
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
+        caps_snapshot_json: None,
         last_health_status: None,
         last_error_at: None,
         config_json: None,
@@ -417,6 +418,65 @@ async fn newznab_builtin_full_search_accepts_unprefixed_additional_params() {
     assert_eq!(
         request_query_value(&request, "zap").as_deref(),
         Some("1"),
+        "request was {request}"
+    );
+}
+
+#[tokio::test]
+async fn nzbgeek_builtin_full_search_canonicalizes_query_bearing_connection_urls() {
+    let (base_url, request_rx) = spawn_newznab_response_server();
+    let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
+        .with_builtin_asset(scryer_plugins::builtins::NZBGEEK);
+
+    let mut config = test_config("nzbgeek");
+    config.config_json = Some(
+        serde_json::json!({
+            "base_url": format!(
+                "{}/api?t=search&q=legacy+query&attrs=poster&apikey=test-key",
+                base_url
+            ),
+            "api_key": "test-key",
+            "api_path": "/api",
+        })
+        .to_string(),
+    );
+
+    let client = provider.client_for_provider(&config).unwrap();
+    let response = client
+        .search(
+            "scryer connection test".to_string(),
+            std::collections::HashMap::new(),
+            None,
+            None,
+            None,
+            None,
+            scryer_application::SearchMode::Interactive,
+            None,
+            None,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.results.len(), 1);
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("mock Newznab server should receive a request");
+    assert!(request.starts_with("GET /api?"), "request was {request}");
+    assert_eq!(
+        request_query_value(&request, "q").as_deref(),
+        Some("scryer connection test"),
+        "request was {request}"
+    );
+    assert_eq!(
+        request_query_value(&request, "attrs").as_deref(),
+        Some("poster"),
+        "request was {request}"
+    );
+    assert!(
+        !request.contains("legacy+query") && !request.contains("legacy%20query"),
         "request was {request}"
     );
 }

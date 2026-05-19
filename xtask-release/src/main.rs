@@ -3590,13 +3590,13 @@ mod tests {
     fn release_hygiene_flags_local_absolute_paths() {
         let violations = scan_release_hygiene_content(
             Path::new("crates/scryer-plugin-sdk/src/lib.rs"),
-            "const SDK_ROOT: &str = \"/Users/jeremy/dev/scryer-media/scryer\";",
+            "const SDK_ROOT: &str = \"/Users/example/dev/scryer-media/scryer\";",
         );
 
         assert_eq!(
             violations,
             vec![
-                "crates/scryer-plugin-sdk/src/lib.rs:1: local absolute path reference: const SDK_ROOT: &str = \"/Users/jeremy/dev/scryer-media/scryer\";"
+                "crates/scryer-plugin-sdk/src/lib.rs:1: local absolute path reference: const SDK_ROOT: &str = \"/Users/example/dev/scryer-media/scryer\";"
                     .to_string()
             ]
         );

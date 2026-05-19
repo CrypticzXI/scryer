@@ -4435,6 +4435,26 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
     .await
     .expect("create legacy title_history compatibility table");
 
+    for statement in [
+        "CREATE TABLE IF NOT EXISTS releases (
+            id TEXT PRIMARY KEY,
+            collection_id TEXT
+        )",
+        "CREATE TABLE IF NOT EXISTS workflow_operations (
+            id TEXT PRIMARY KEY,
+            collection_id TEXT
+        )",
+        "CREATE TABLE IF NOT EXISTS download_submissions (
+            id TEXT PRIMARY KEY,
+            collection_id TEXT
+        )",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect("create legacy compatibility table");
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "INSERT INTO titles (id, name, name_normalized, facet, monitored, status, tags, external_ids, created_at)

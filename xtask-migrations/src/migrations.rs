@@ -943,21 +943,21 @@ ALTER TABLE ONLY public.download_jobs
     }
 
     #[test]
-    fn saved_0115_baselines_have_table_column_constraint_and_index_parity() {
+    fn saved_0122_baselines_have_table_column_constraint_and_index_parity() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask-migrations has a repository parent");
         let sqlite = parse_baseline_shape(
             &std::fs::read_to_string(
-                repo_root.join("crates/scryer/src/db/baselines/0115_baseline.sql"),
+                repo_root.join("crates/scryer/src/db/baselines/0122_baseline.sql"),
             )
-            .expect("read SQLite 0115 baseline"),
+            .expect("read SQLite 0122 baseline"),
         );
         let postgres = parse_baseline_shape(
             &std::fs::read_to_string(
-                repo_root.join("crates/scryer/src/db/postgres/baselines/0115_baseline.sql"),
+                repo_root.join("crates/scryer/src/db/postgres/baselines/0122_baseline.sql"),
             )
-            .expect("read PostgreSQL 0115 baseline"),
+            .expect("read PostgreSQL 0122 baseline"),
         );
 
         assert_eq!(

@@ -25,10 +25,12 @@ export const VIDEO_CODEC_CHOICES = [
   { value: "H.265", label: "H.265" },
   { value: "AV1", label: "AV1" },
   { value: "VP9", label: "VP9" },
-  { value: "VP8", label: "VP8" },
+  { value: "VC1", label: "VC1" },
+  { value: "MPEG2", label: "MPEG2" },
+  { value: "MPEG4", label: "MPEG4" },
   { value: "XVID", label: "XVID" },
-  { value: "x264", label: "x264 (encoding)" },
-  { value: "x265", label: "x265 (encoding)" },
+  { value: "DIVX", label: "DIVX" },
+  { value: "VVC", label: "VVC" },
 ] as const;
 
 export const AUDIO_CODEC_CHOICES = [

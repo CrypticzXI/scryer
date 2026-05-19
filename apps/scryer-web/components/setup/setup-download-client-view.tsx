@@ -10,12 +10,6 @@ import { buildWeaverApiKeyUrl } from "@/lib/utils/download-clients";
 import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import * as React from "react";
 
-const SAB_ARTIFACT_MODE_OPTIONS = [
-  { value: "plain", labelKey: "settings.downloadClientArtifactModePlain" },
-  { value: "nzbdav_strm", labelKey: "settings.downloadClientArtifactModeNzbdavStrm" },
-  { value: "nzbdav_symlink", labelKey: "settings.downloadClientArtifactModeNzbdavSymlink" },
-] as const;
-
 const DOWNLOAD_CLIENT_TYPE_ICON_SRC_BY_VALUE: Record<string, string> = {
   nzbget: "/download-clients/nzbget.svg",
   sabnzbd: "/download-clients/sabnzbd.svg",
@@ -86,7 +80,6 @@ export function SetupDownloadClientView({
     draft.remotePathMappings.trim().length > 0,
   );
   const showApiKey = draft.clientType === "sabnzbd" || draft.clientType === "weaver";
-  const showArtifactMode = draft.clientType === "sabnzbd";
   const showCredentials =
     draft.clientType === "nzbget" ||
     draft.clientType === "qbittorrent" ||
@@ -99,11 +92,6 @@ export function SetupDownloadClientView({
   const selectedDownloadClientLabel =
     downloadClientTypeOptions.find((option) => option.value === normalizedClientType)?.label ??
     (draft.clientType.trim() || "Download client");
-  const selectedArtifactModeLabel =
-    SAB_ARTIFACT_MODE_OPTIONS.find(
-      (option) => option.value === draft.downloadArtifactMode,
-    )?.labelKey ?? "settings.downloadClientArtifactModePlain";
-
   React.useEffect(() => {
     if (draft.remotePathMappings.trim().length > 0 || !areRemotePathMappingsValid) {
       setIsFilesystemPathMappingOpen(true);
@@ -260,36 +248,6 @@ export function SetupDownloadClientView({
           <p className="text-xs text-muted-foreground">
             {t("settings.downloadClientDecypharrFilesystemHelp")}
           </p>
-        ) : null}
-        {showArtifactMode ? (
-          <div className="space-y-2 rounded-xl border border-border bg-card p-3">
-            <Label htmlFor="dc-artifact-mode">{t("settings.downloadClientArtifactMode")}</Label>
-            <Select
-              value={draft.downloadArtifactMode}
-              onValueChange={(value) =>
-                onDraftChange({
-                  downloadArtifactMode:
-                    value as DownloadClientDraft["downloadArtifactMode"],
-                })
-              }
-            >
-              <SelectTrigger id="dc-artifact-mode">
-                <SelectValue aria-label={t(selectedArtifactModeLabel)}>
-                  {t(selectedArtifactModeLabel)}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {SAB_ARTIFACT_MODE_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {t(option.labelKey)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              {t("settings.downloadClientArtifactModeHelp")}
-            </p>
-          </div>
         ) : null}
         <details
           className="rounded-xl border border-border bg-card p-3"

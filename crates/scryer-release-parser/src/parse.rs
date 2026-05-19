@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use aho_corasick::{AhoCorasickBuilder, MatchKind};
 use chrono::NaiveDate;
@@ -17,7 +17,7 @@ use crate::model::{
     CandidateZones, MetadataAst, ParseDisposition, ParseFamily, ParseReason, ParsedEpisodeMetadata,
     ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata, ParsedSpecialKind,
     ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate, TitleSegment, TitleSegmentKind,
-    TokenAnnotations, TokenRange, TokenRole,
+    TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
 
 const BEAM_WIDTH: usize = 24;
@@ -307,7 +307,7 @@ impl ParseState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct BeamKey {
     cursor: usize,
     phase: u8,
@@ -317,7 +317,7 @@ struct BeamKey {
     title_signature: TitleTokenIndices,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum IdentityShapeKey {
     Movie,
     Standard {
@@ -1485,7 +1485,7 @@ fn branch_release_group(state: &ParseState, unit: &ParseUnit, tokens: &[Token]) 
 }
 
 fn prune_beam(states: Vec<ParseState>) -> Vec<ParseState> {
-    let mut deduped = HashMap::<BeamKey, ParseState>::new();
+    let mut deduped = BTreeMap::<BeamKey, ParseState>::new();
     for state in states {
         let key = beam_key(&state);
         match deduped.get(&key) {
@@ -2858,7 +2858,11 @@ fn build_candidate(
         year: state.metadata.year,
         quality: state.metadata.quality.clone(),
         source: state.metadata.source.clone(),
-        video_codec: state.metadata.video_codec.clone(),
+        video_codec: state
+            .metadata
+            .video_codec
+            .as_deref()
+            .and_then(VideoCodec::parse),
         video_encoding: None,
         audio: state.metadata.audio_codec.clone(),
         audio_codecs: state

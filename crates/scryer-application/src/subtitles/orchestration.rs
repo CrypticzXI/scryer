@@ -1140,7 +1140,7 @@ fn build_subtitle_query(
     let (imdb_id, series_imdb_id) = title_imdb_ids(title, preferred_release);
     let analysis_labels = resolve_release_labels_from_analysis(
         media_file.video_height,
-        media_file.video_codec.as_deref(),
+        media_file.video_codec.as_ref(),
         media_file.audio_codec.as_deref(),
         media_file.audio_profile.as_deref(),
         media_file.audio_channels,
@@ -1171,8 +1171,13 @@ fn build_subtitle_query(
             .and_then(|release| release.source.clone())
             .or_else(|| media_file.source_type.clone()),
         video_codec: preferred_release
-            .and_then(|release| release.video_codec.clone())
-            .or_else(|| media_file.video_codec_parsed.clone())
+            .and_then(|release| release.video_codec.as_ref().map(ToString::to_string))
+            .or_else(|| {
+                media_file
+                    .video_codec_parsed
+                    .clone()
+                    .map(|codec| codec.to_string())
+            })
             .or(analysis_labels.video_codec),
         audio_codec: preferred_release
             .and_then(release_audio_codec)
@@ -1793,7 +1798,9 @@ mod tests {
             release_group: Some("fallback-group".into()),
             source_type: Some("BluRay".into()),
             resolution: Some("720p".into()),
-            video_codec_parsed: Some("x265".into()),
+            video_codec_parsed: Some(
+                crate::release_parser::VideoCodec::parse("x265").expect("parse codec"),
+            ),
             audio_codec_parsed: Some("DTS".into()),
             audio_channels_parsed: None,
             acquisition_score: None,
@@ -1878,7 +1885,10 @@ mod tests {
         assert_eq!(query.title_candidates, release_title_candidates(&parsed));
         assert_eq!(query.release_group, parsed.release_group);
         assert_eq!(query.source, parsed.source);
-        assert_eq!(query.video_codec, parsed.video_codec);
+        assert_eq!(
+            query.video_codec,
+            parsed.video_codec.as_ref().map(ToString::to_string)
+        );
         assert_eq!(query.audio_codec, release_audio_codec(&parsed));
         assert_eq!(query.resolution, parsed.quality);
         assert_eq!(query.season, Some(2));
@@ -1907,7 +1917,10 @@ mod tests {
         assert_eq!(query.title_candidates, release_title_candidates(&parsed));
         assert_eq!(query.release_group, parsed.release_group);
         assert_eq!(query.source, parsed.source);
-        assert_eq!(query.video_codec, parsed.video_codec);
+        assert_eq!(
+            query.video_codec,
+            parsed.video_codec.as_ref().map(ToString::to_string)
+        );
         assert_eq!(query.audio_codec, release_audio_codec(&parsed));
         assert_eq!(query.resolution, parsed.quality);
         assert_eq!(query.season, Some(1));
@@ -1922,7 +1935,8 @@ mod tests {
         media_file.resolution = None;
         media_file.video_codec_parsed = None;
         media_file.audio_codec_parsed = None;
-        media_file.video_codec = Some("h264".into());
+        media_file.video_codec =
+            Some(crate::release_parser::VideoCodec::parse("h264").expect("parse codec"));
         media_file.video_height = Some(1080);
         media_file.audio_codec = Some("aac".into());
         media_file.audio_profile = Some("LC".into());

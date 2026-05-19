@@ -138,8 +138,16 @@ pub(crate) fn from_quality_profile_criteria(
         allow_unknown_quality: criteria.allow_unknown_quality,
         source_allowlist: criteria.source_allowlist,
         source_blocklist: criteria.source_blocklist,
-        video_codec_allowlist: criteria.video_codec_allowlist,
-        video_codec_blocklist: criteria.video_codec_blocklist,
+        video_codec_allowlist: criteria
+            .video_codec_allowlist
+            .into_iter()
+            .map(|codec| codec.to_string())
+            .collect(),
+        video_codec_blocklist: criteria
+            .video_codec_blocklist
+            .into_iter()
+            .map(|codec| codec.to_string())
+            .collect(),
         audio_codec_allowlist: criteria.audio_codec_allowlist,
         audio_codec_blocklist: criteria.audio_codec_blocklist,
         dolby_vision_allowed: criteria.dolby_vision_allowed,
@@ -501,7 +509,7 @@ pub(crate) fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleas
         year: result.year,
         quality: result.quality,
         source: result.source,
-        video_codec: result.video_codec,
+        video_codec: result.video_codec.map(|codec| codec.to_string()),
         video_encoding: result.video_encoding,
         audio: result.audio,
         audio_channels: result.audio_channels,
@@ -1305,7 +1313,7 @@ pub(crate) fn from_title_media_file(
         quality_label: file.quality_label,
         scan_status: file.scan_status,
         created_at: file.created_at,
-        video_codec: file.video_codec,
+        video_codec: file.video_codec.map(|codec| codec.to_string()),
         video_width: file.video_width,
         video_height: file.video_height,
         video_bitrate_kbps: file.video_bitrate_kbps,
@@ -1350,7 +1358,7 @@ pub(crate) fn from_title_media_file(
         release_group: file.release_group,
         source_type: file.source_type,
         resolution: file.resolution,
-        video_codec_parsed: file.video_codec_parsed,
+        video_codec_parsed: file.video_codec_parsed.map(|codec| codec.to_string()),
         audio_codec_parsed: file.audio_codec_parsed,
         audio_channels_parsed: file.audio_channels_parsed,
         acquisition_score: file.acquisition_score,

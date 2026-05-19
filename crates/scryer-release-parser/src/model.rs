@@ -1,6 +1,7 @@
 use chrono::NaiveDate;
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
+use std::fmt;
 
 use crate::lex::{ReleaseCst, TextSpan, Token};
 
@@ -100,6 +101,107 @@ pub struct ParsedExternalId {
     pub value: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum VideoCodec {
+    H264,
+    H265,
+    Av1,
+    Vp9,
+    Vc1,
+    Mpeg2,
+    Mpeg4,
+    Xvid,
+    Divx,
+    Vvc,
+}
+
+impl VideoCodec {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::H264 => "H.264",
+            Self::H265 => "H.265",
+            Self::Av1 => "AV1",
+            Self::Vp9 => "VP9",
+            Self::Vc1 => "VC1",
+            Self::Mpeg2 => "MPEG2",
+            Self::Mpeg4 => "MPEG4",
+            Self::Xvid => "XVID",
+            Self::Divx => "DIVX",
+            Self::Vvc => "VVC",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let value = raw.trim();
+        match value.to_ascii_uppercase().as_str() {
+            "AVC" | "AVC1" | "H264" | "H.264" | "X264" => Some(Self::H264),
+            "HEVC" | "HEV1" | "H265" | "H.265" | "HVC1" | "X265" => Some(Self::H265),
+            "AV1" | "AV01" => Some(Self::Av1),
+            "VP9" => Some(Self::Vp9),
+            "VC1" | "VC-1" => Some(Self::Vc1),
+            "MPEG2" | "MPEG-2" => Some(Self::Mpeg2),
+            "MPEG4" | "MPEG-4" | "MP4V" => Some(Self::Mpeg4),
+            "XVID" => Some(Self::Xvid),
+            "DIVX" => Some(Self::Divx),
+            "VVC" | "H266" | "H.266" => Some(Self::Vvc),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for VideoCodec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for VideoCodec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for VideoCodec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown video codec label: {raw}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VideoCodec;
+
+    #[test]
+    fn video_codec_serializes_to_canonical_label() {
+        let encoded = serde_json::to_string(&VideoCodec::parse("HEVC").expect("parse codec"))
+            .expect("serialize codec");
+        assert_eq!(encoded, "\"H.265\"");
+    }
+
+    #[test]
+    fn video_codec_deserializes_legacy_alias_to_canonical_variant() {
+        let decoded: VideoCodec = serde_json::from_str("\"AVC1\"").expect("deserialize codec");
+        assert_eq!(decoded, VideoCodec::H264);
+        assert_eq!(decoded.to_string(), "H.264");
+    }
+
+    #[test]
+    fn video_codec_rejects_unknown_label() {
+        assert!(VideoCodec::parse("some-weird-codec").is_none());
+        assert!(serde_json::from_str::<VideoCodec>("\"some-weird-codec\"").is_err());
+    }
+}
+
 /// Overall disposition of a parse attempt.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,7 +228,7 @@ pub struct ParsedReleaseMetadata {
     pub year: Option<i32>,
     pub quality: Option<String>,
     pub source: Option<String>,
-    pub video_codec: Option<String>,
+    pub video_codec: Option<VideoCodec>,
     pub video_encoding: Option<String>,
     pub audio: Option<String>,
     pub audio_codecs: Vec<String>,

@@ -2016,7 +2016,7 @@ mod tests {
             "/usr/local/bin/scryer".into(),
             vec![OsString::from("--data-dir"), OsString::from("/config")],
             vec![(OsString::from("SCRYER_MODE"), OsString::from("restore"))],
-            "/Users/jeremy/dev/scryer-media/scryer".into(),
+            "/opt/scryer".into(),
         );
 
         assert_eq!(
@@ -2031,10 +2031,7 @@ mod tests {
             spec.env,
             vec![(OsString::from("SCRYER_MODE"), OsString::from("restore"))]
         );
-        assert_eq!(
-            spec.current_dir,
-            std::path::PathBuf::from("/Users/jeremy/dev/scryer-media/scryer")
-        );
+        assert_eq!(spec.current_dir, std::path::PathBuf::from("/opt/scryer"));
     }
 
     #[test]

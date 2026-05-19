@@ -119,6 +119,17 @@ enum SabAddfilePayload {
     Bytes(Vec<u8>),
 }
 
+struct SabAddfileRequest<'a> {
+    url: &'a str,
+    nzb_name: &'a str,
+    queue_priority: &'a str,
+    upload_payload: SabAddfilePayload,
+    upload_filename: &'a str,
+    upload_mime: &'a str,
+    cat: Option<&'a str>,
+    password: Option<&'a str>,
+}
+
 impl SabnzbdDownloadClient {
     pub fn new(base_url: String, api_key: String) -> Self {
         Self::with_auth_and_staged_nzb_store(
@@ -324,17 +335,19 @@ impl SabnzbdDownloadClient {
 
     pub async fn detect_gzip_nzb_upload_support(&self) -> AppResult<bool> {
         let probe_payload = self.build_gzip_probe_payload()?;
+        let url = self.api_url();
+        let queue_priority = sabnzbd_queue_priority(None).to_string();
         let (status, body) = self
-            .post_addfile_request(
-                &self.api_url(),
-                "__scryer_gzip_probe__",
-                &sabnzbd_queue_priority(None).to_string(),
-                SabAddfilePayload::Bytes(probe_payload),
-                "__scryer_gzip_probe__.nzb.gz",
-                "application/gzip",
-                None,
-                None,
-            )
+            .post_addfile_request(SabAddfileRequest {
+                url: &url,
+                nzb_name: "__scryer_gzip_probe__",
+                queue_priority: &queue_priority,
+                upload_payload: SabAddfilePayload::Bytes(probe_payload),
+                upload_filename: "__scryer_gzip_probe__.nzb.gz",
+                upload_mime: "application/gzip",
+                cat: None,
+                password: None,
+            })
             .await?;
 
         if Self::should_retry_addfile_with_plain_nzb(&body) {
@@ -531,26 +544,19 @@ impl SabnzbdDownloadClient {
 
     async fn post_addfile_request(
         &self,
-        url: &str,
-        nzb_name: &str,
-        queue_priority: &str,
-        upload_payload: SabAddfilePayload,
-        upload_filename: &str,
-        upload_mime: &str,
-        cat: Option<&str>,
-        password: Option<&str>,
+        request: SabAddfileRequest<'_>,
     ) -> AppResult<(reqwest::StatusCode, String)> {
         let auth_api_key = self.api_key.clone();
         let auth_username = self.username.clone();
         let auth_password = self.password.clone();
-        let upload_payload = upload_payload.clone();
-        let upload_filename = upload_filename.to_string();
-        let url = url.to_string();
-        let nzb_name = nzb_name.to_string();
-        let queue_priority = queue_priority.to_string();
-        let upload_mime = upload_mime.to_string();
-        let cat = cat.map(str::to_string);
-        let password = password.map(str::to_string);
+        let upload_payload = request.upload_payload.clone();
+        let upload_filename = request.upload_filename.to_string();
+        let url = request.url.to_string();
+        let nzb_name = request.nzb_name.to_string();
+        let queue_priority = request.queue_priority.to_string();
+        let upload_mime = request.upload_mime.to_string();
+        let cat = request.cat.map(str::to_string);
+        let password = request.password.map(str::to_string);
 
         let response = self
             .outbound_http
@@ -862,19 +868,19 @@ impl DownloadClient for SabnzbdDownloadClient {
                     format!("{nzb_name}.nzb.gz")
                 };
 
-                self.post_addfile_request(
-                    &url,
-                    &nzb_name_owned,
-                    &queue_priority,
-                    SabAddfilePayload::File {
+                self.post_addfile_request(SabAddfileRequest {
+                    url: &url,
+                    nzb_name: &nzb_name_owned,
+                    queue_priority: &queue_priority,
+                    upload_payload: SabAddfilePayload::File {
                         path: gzip_path,
                         len: gzip_len,
                     },
-                    &nzb_filename_for_request,
-                    "application/gzip",
-                    cat.as_deref(),
-                    password.as_deref(),
-                )
+                    upload_filename: &nzb_filename_for_request,
+                    upload_mime: "application/gzip",
+                    cat: cat.as_deref(),
+                    password: password.as_deref(),
+                })
                 .await?
             } else {
                 let (nzb_path, nzb_len) = self
@@ -889,19 +895,19 @@ impl DownloadClient for SabnzbdDownloadClient {
                     format!("{nzb_name}.nzb")
                 };
 
-                self.post_addfile_request(
-                    &url,
-                    &nzb_name_owned,
-                    &queue_priority,
-                    SabAddfilePayload::File {
+                self.post_addfile_request(SabAddfileRequest {
+                    url: &url,
+                    nzb_name: &nzb_name_owned,
+                    queue_priority: &queue_priority,
+                    upload_payload: SabAddfilePayload::File {
                         path: nzb_path,
                         len: nzb_len,
                     },
-                    &plain_nzb_filename,
-                    "application/x-nzb",
-                    cat.as_deref(),
-                    password.as_deref(),
-                )
+                    upload_filename: &plain_nzb_filename,
+                    upload_mime: "application/x-nzb",
+                    cat: cat.as_deref(),
+                    password: password.as_deref(),
+                })
                 .await?
             };
 
@@ -923,19 +929,19 @@ impl DownloadClient for SabnzbdDownloadClient {
                 };
 
                 (status, body) = self
-                    .post_addfile_request(
-                        &url,
-                        &nzb_name_owned,
-                        &queue_priority,
-                        SabAddfilePayload::File {
+                    .post_addfile_request(SabAddfileRequest {
+                        url: &url,
+                        nzb_name: &nzb_name_owned,
+                        queue_priority: &queue_priority,
+                        upload_payload: SabAddfilePayload::File {
                             path: nzb_path,
                             len: nzb_len,
                         },
-                        &plain_nzb_filename,
-                        "application/x-nzb",
-                        cat.as_deref(),
-                        password.as_deref(),
-                    )
+                        upload_filename: &plain_nzb_filename,
+                        upload_mime: "application/x-nzb",
+                        cat: cat.as_deref(),
+                        password: password.as_deref(),
+                    })
                     .await?;
             }
 
