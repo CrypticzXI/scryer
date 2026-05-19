@@ -1,4 +1,4 @@
-title = "scryer local gitleaks config"
+title = "scryer gitleaks config"
 
 [allowlist]
 description = "allow obvious examples and test placeholders"
