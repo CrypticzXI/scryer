@@ -1,7 +1,6 @@
 name: gha-build-matrix
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - "gha-build-matrix-v*"

@@ -2,7 +2,6 @@ name: scryer
 
 on:
   pull_request:
-  workflow_dispatch:
   push:
     tags:
       - "scryer-v*"
@@ -17,6 +16,7 @@ permissions:
 jobs:
   web:
     name: web
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -59,6 +59,7 @@ jobs:
 
   rust-check:
     name: rust-check
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     needs: [web]
@@ -191,6 +192,7 @@ jobs:
 
   launcher-build:
     name: launcher-${{ matrix.arch }}
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     strategy:
@@ -303,6 +305,7 @@ jobs:
 
   linux-build:
     name: linux-${{ matrix.arch }}-${{ matrix.variant }}
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     needs: [web]
@@ -437,6 +440,7 @@ jobs:
 
   macos-build:
     name: macos-${{ matrix.arch }}-${{ matrix.variant }}
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     needs: [web]
@@ -590,6 +594,7 @@ jobs:
 
   windows-build:
     name: windows-${{ matrix.arch }}-portable
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     needs: [web]
@@ -787,7 +792,7 @@ jobs:
 
   docker-export:
     name: docker-export-${{ matrix.platform_id }}
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-') }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 20
     needs: [rust-check, launcher-build, linux-build]
@@ -892,7 +897,7 @@ jobs:
 
   docker-publish-pr-rc:
     name: docker-publish-pr-rc
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-') && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [rust-check, launcher-build, linux-build]
