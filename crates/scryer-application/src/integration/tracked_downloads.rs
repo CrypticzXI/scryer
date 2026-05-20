@@ -2235,7 +2235,7 @@ mod tests {
         initial.client_type = "weaver".to_string();
         initial.client_name = "weaver".to_string();
         initial.download_client_item_id = "job-facet-reresolve".to_string();
-        initial.title_name = "One.Piece.S01E01.1080p.WEB-DL".to_string();
+        initial.title_name = "Tidal.Quest.S01E01.1080p.WEB-DL".to_string();
         initial.facet = None;
         initial.is_scryer_origin = false;
 
@@ -2251,7 +2251,7 @@ mod tests {
         updated.client_type = "weaver".to_string();
         updated.client_name = "weaver".to_string();
         updated.download_client_item_id = "job-facet-reresolve".to_string();
-        updated.title_name = "One.Piece.S01E01.1080p.WEB-DL".to_string();
+        updated.title_name = "Tidal.Quest.S01E01.1080p.WEB-DL".to_string();
         updated.facet = Some("anime".to_string());
         updated.is_scryer_origin = false;
 
