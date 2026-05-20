@@ -16,15 +16,16 @@ use crate::mappers::{
     from_activity_event, from_backup_info, from_calendar_episode, from_collection,
     from_delete_preview, from_disk_space, from_domain_event, from_download_client_config,
     from_download_client_routing_entry, from_download_queue_item, from_episode,
-    from_health_check_result, from_indexer_config_with_fields, from_indexer_routing_entry,
-    from_job_definition, from_job_run, from_library, from_library_paths_settings,
-    from_library_scan_session, from_library_settings, from_media_rename_plan, from_media_settings,
-    from_pending_import_connection, from_pending_import_counts, from_pending_release,
-    from_provider_type, from_quality_profile_settings, from_release_decision,
-    from_service_settings, from_smg_version_compatibility_notice, from_submission_scope,
-    from_subtitle_provider_config, from_system_health, from_title,
-    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
-    from_title_media_file, from_title_release_blocklist_entry, from_user, from_wanted_item,
+    from_external_import_monitor_warmup_progress, from_health_check_result,
+    from_indexer_config_with_fields, from_indexer_routing_entry, from_job_definition, from_job_run,
+    from_library, from_library_paths_settings, from_library_scan_session, from_library_settings,
+    from_media_rename_plan, from_media_settings, from_pending_import_connection,
+    from_pending_import_counts, from_pending_release, from_provider_type,
+    from_quality_profile_settings, from_release_decision, from_service_settings,
+    from_smg_version_compatibility_notice, from_submission_scope, from_subtitle_provider_config,
+    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    from_title_history_record, from_title_media_file, from_title_release_blocklist_entry,
+    from_user, from_wanted_item,
 };
 use crate::types::*;
 
@@ -116,6 +117,17 @@ fn from_general_settings(settings: scryer_application::GeneralSettings) -> Gener
     GeneralSettingsPayload {
         keep_history_forever: settings.keep_history_forever,
         history_retention_days: settings.history_retention_days,
+    }
+}
+
+fn from_auto_backup_settings(
+    settings: scryer_application::AutoBackupSettings,
+) -> AutoBackupSettingsPayload {
+    AutoBackupSettingsPayload {
+        enabled: settings.enabled,
+        daily_time_local: settings.daily_time_local,
+        auto_backup_key_present: settings.auto_backup_key_present,
+        next_run_at: settings.next_run_at,
     }
 }
 
@@ -241,36 +253,52 @@ async fn title_payloads_from_titles(
     app: &scryer_application::AppUseCase,
     actor: &scryer_domain::User,
     titles: Vec<scryer_domain::Title>,
+    selection: TitlePayloadSelection,
 ) -> GqlResult<Vec<TitlePayload>> {
     if titles.is_empty() {
         return Ok(Vec::new());
     }
 
     let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
-    let libraries = app
-        .list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
-        .await
-        .map_err(to_gql_error)?;
+    let libraries = if selection.include_library_context {
+        app.list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
     let library_map: std::collections::HashMap<&str, (&String, &String)> = libraries
         .iter()
         .map(|library| (library.id.as_str(), (&library.name, &library.slug)))
         .collect();
-    let summaries = app
-        .list_primary_collection_summaries(actor, &title_ids)
-        .await
-        .map_err(to_gql_error)?;
-    let media_size_summaries = app
-        .list_title_media_size_summaries(actor, &title_ids)
-        .await
-        .map_err(to_gql_error)?;
-    let quality_summaries = app
-        .list_title_quality_summaries(actor, &title_ids)
-        .await
-        .map_err(to_gql_error)?;
-    let episode_progress_summaries = app
-        .list_title_episode_progress_summaries(actor, &title_ids)
-        .await
-        .map_err(to_gql_error)?;
+    let summaries = if selection.include_quality_tier {
+        app.list_primary_collection_summaries(actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
+    let media_size_summaries = if selection.include_size_bytes {
+        app.list_title_media_size_summaries(actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
+    let quality_summaries = if selection.include_current_quality_tier {
+        app.list_title_quality_summaries(actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
+    let episode_progress_summaries = if selection.include_episode_progress {
+        app.list_title_episode_progress_summaries(actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+    } else {
+        Vec::new()
+    };
     let summary_map: std::collections::HashMap<&str, _> =
         summaries.iter().map(|s| (s.title_id.as_str(), s)).collect();
     let media_size_map: std::collections::HashMap<&str, i64> = media_size_summaries
@@ -313,6 +341,33 @@ async fn title_payloads_from_titles(
         .collect())
 }
 
+#[derive(Clone, Copy)]
+struct TitlePayloadSelection {
+    include_external_ids: bool,
+    include_library_context: bool,
+    include_quality_tier: bool,
+    include_current_quality_tier: bool,
+    include_size_bytes: bool,
+    include_episode_progress: bool,
+}
+
+impl TitlePayloadSelection {
+    fn from_ctx(ctx: &Context<'_>) -> Self {
+        let lookahead = ctx.look_ahead();
+        Self {
+            include_external_ids: lookahead.field("externalIds").exists(),
+            include_library_context: lookahead.field("libraryName").exists()
+                || lookahead.field("librarySlug").exists(),
+            include_quality_tier: lookahead.field("qualityTier").exists(),
+            include_current_quality_tier: lookahead.field("currentQualityTier").exists(),
+            include_size_bytes: lookahead.field("sizeBytes").exists(),
+            include_episode_progress: lookahead.field("episodesOwned").exists()
+                || lookahead.field("episodesMonitored").exists()
+                || lookahead.field("episodesTotal").exists(),
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct QueryRoot;
 
@@ -331,13 +386,18 @@ impl QueryRoot {
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let selection = TitlePayloadSelection::from_ctx(ctx);
         let parsed_facet = facet.map(MediaFacetValue::into_domain);
-        let titles = app
-            .list_titles(&actor, parsed_facet, library_ids, query)
-            .await
-            .map_err(to_gql_error)?;
+        let titles = if selection.include_external_ids {
+            app.list_titles(&actor, parsed_facet, library_ids, query)
+                .await
+        } else {
+            app.list_titles_without_external_ids(&actor, parsed_facet, library_ids, query)
+                .await
+        }
+        .map_err(to_gql_error)?;
 
-        title_payloads_from_titles(&app, &actor, titles).await
+        title_payloads_from_titles(&app, &actor, titles, selection).await
     }
 
     async fn libraries(
@@ -383,21 +443,29 @@ impl QueryRoot {
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let selection = TitlePayloadSelection::from_ctx(ctx);
         let titles = app
             .list_titles_by_external_ids(&actor, &source, &values)
             .await
             .map_err(to_gql_error)?;
 
-        title_payloads_from_titles(&app, &actor, titles).await
+        title_payloads_from_titles(&app, &actor, titles, selection).await
     }
 
     async fn title(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let Some(title) = app.get_title(&actor, &id).await.map_err(to_gql_error)? else {
+        let selection = TitlePayloadSelection::from_ctx(ctx);
+        let title = if selection.include_external_ids {
+            app.get_title(&actor, &id).await
+        } else {
+            app.get_title_without_external_ids(&actor, &id).await
+        }
+        .map_err(to_gql_error)?;
+        let Some(title) = title else {
             return Ok(None);
         };
-        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title]).await?;
+        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
         Ok(payloads.pop())
     }
 
@@ -411,6 +479,7 @@ impl QueryRoot {
     ) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let selection = TitlePayloadSelection::from_ctx(ctx);
         let Some(title) = app
             .get_title_by_slug(&actor, facet.into_domain(), library_id, library_slug, &slug)
             .await
@@ -418,7 +487,7 @@ impl QueryRoot {
         else {
             return Ok(None);
         };
-        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title]).await?;
+        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
         Ok(payloads.pop())
     }
 
@@ -792,6 +861,20 @@ impl QueryRoot {
             .collect())
     }
 
+    async fn external_import_monitor_warmup_status(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let snapshot = app
+            .get_external_import_monitor_warmup_status(&actor, &session_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_external_import_monitor_warmup_progress(snapshot))
+    }
+
     async fn pending_import_counts(
         &self,
         ctx: &Context<'_>,
@@ -1107,6 +1190,19 @@ impl QueryRoot {
         Ok(from_general_settings(settings))
     }
 
+    async fn auto_backup_settings(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<AutoBackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_auto_backup_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_auto_backup_settings(settings))
+    }
+
     async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1365,7 +1461,16 @@ impl QueryRoot {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let user = app.get_user(&actor, &id).await.map_err(to_gql_error)?;
-        Ok(user.map(from_user))
+        match user {
+            Some(user) => {
+                let user = app
+                    .attach_user_authorization(user)
+                    .await
+                    .map_err(to_gql_error)?;
+                Ok(Some(from_user(user)))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn system_health(&self, ctx: &Context<'_>) -> GqlResult<SystemHealthPayload> {
@@ -1454,6 +1559,7 @@ impl QueryRoot {
     }
 
     async fn backups(&self, ctx: &Context<'_>) -> GqlResult<Vec<BackupInfoPayload>> {
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let backups = app.list_backups(&actor).await.map_err(to_gql_error)?;
@@ -1797,7 +1903,16 @@ impl QueryRoot {
         Ok(provider_types
             .into_iter()
             .map(|(pt, name, fields, default_base_url)| {
-                from_provider_type(pt, name, fields, default_base_url, Vec::new(), Vec::new())
+                from_provider_type(
+                    pt,
+                    name,
+                    fields,
+                    default_base_url,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                )
             })
             .collect())
     }
@@ -1812,7 +1927,16 @@ impl QueryRoot {
         Ok(provider_types
             .into_iter()
             .map(|(pt, name, fields, default_base_url)| {
-                from_provider_type(pt, name, fields, default_base_url, Vec::new(), Vec::new())
+                from_provider_type(
+                    pt,
+                    name,
+                    fields,
+                    default_base_url,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                )
             })
             .collect())
     }
@@ -1846,6 +1970,8 @@ impl QueryRoot {
                     None,
                     available_host_bindings.clone(),
                     recommended_facets,
+                    Vec::new(),
+                    false,
                 )
             })
             .collect())
@@ -2060,7 +2186,22 @@ impl QueryRoot {
                     .notification_provider_name(&pt)
                     .unwrap_or_else(|| pt.clone());
                 let fields = app.notification_provider_config_fields(&pt);
-                from_provider_type(pt, name, fields, None, Vec::new(), Vec::new())
+                let supported_events = app
+                    .notification_provider_supported_events(&pt)
+                    .into_iter()
+                    .map(|event| event.as_str().to_string())
+                    .collect();
+                let supports_test = app.notification_provider_supports_test(&pt);
+                from_provider_type(
+                    pt,
+                    name,
+                    fields,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    supported_events,
+                    supports_test,
+                )
             })
             .collect())
     }

@@ -62,6 +62,14 @@ function toDelayProfileInput(profile: ParsedDelayProfile) {
   };
 }
 
+function cloneDelayProfileDraft(profile: DelayProfileDraft): DelayProfileDraft {
+  return {
+    ...profile,
+    applies_to_facets: [...profile.applies_to_facets],
+    tags: [...profile.tags],
+  };
+}
+
 export function useDelayProfilesManager() {
   const client = useClient();
   const t = useTranslate();
@@ -71,7 +79,7 @@ export function useDelayProfilesManager() {
   const [saving, setSaving] = React.useState(false);
   const [profiles, setProfiles] = React.useState<ParsedDelayProfile[]>([]);
   const [draft, setDraft] = React.useState<DelayProfileDraft>(() =>
-    buildDelayProfileTemplate([]),
+    cloneDelayProfileDraft(buildDelayProfileTemplate([])),
   );
   const [parseError, setParseError] = React.useState("");
 
@@ -110,7 +118,7 @@ export function useDelayProfilesManager() {
       event?.preventDefault();
       if (!draft.name.trim()) {
         showStatus(t("settings.delayProfileNameRequired"));
-        return;
+        return false;
       }
       const isNew = !draft.id;
       const id = isNew
@@ -120,7 +128,7 @@ export function useDelayProfilesManager() {
       const validationError = validateDelayProfileDraft(entry);
       if (validationError) {
         showStatus(validationError);
-        return;
+        return false;
       }
 
       setSaving(true);
@@ -132,7 +140,7 @@ export function useDelayProfilesManager() {
           .toPromise();
         if (result.error) {
           showStatus(t("settings.delayProfileSaveError"));
-          return;
+          return false;
         }
         const saved = result.data?.upsertDelayProfile
           ? fromDelayProfilePayload(result.data.upsertDelayProfile)
@@ -141,10 +149,12 @@ export function useDelayProfilesManager() {
           ? [...profiles, saved]
           : profiles.map((profile) => (profile.id === saved.id ? saved : profile));
         setProfiles(next);
-        setDraft(buildDelayProfileTemplate(next));
+        setDraft(cloneDelayProfileDraft(buildDelayProfileTemplate(next)));
         showStatus(t("settings.delayProfilesSaved"));
+        return true;
       } catch {
         showStatus(t("settings.delayProfileSaveError"));
+        return false;
       } finally {
         setSaving(false);
       }
@@ -161,12 +171,14 @@ export function useDelayProfilesManager() {
           .toPromise();
         if (result.error) {
           showStatus(t("settings.delayProfileSaveError"));
-          return;
+          return false;
         }
         const next = profiles.filter((profile) => profile.id !== profileId);
         setProfiles(next);
+        return true;
       } catch {
         showStatus(t("settings.delayProfileSaveError"));
+        return false;
       } finally {
         setSaving(false);
       }
@@ -177,13 +189,13 @@ export function useDelayProfilesManager() {
   const loadProfileById = React.useCallback(
     (profileId: string) => {
       const found = profiles.find((p) => p.id === profileId);
-      if (found) setDraft({ ...found });
+      if (found) setDraft(cloneDelayProfileDraft(found));
     },
     [profiles],
   );
 
   const resetDraft = React.useCallback(() => {
-    setDraft(buildDelayProfileTemplate(profiles));
+    setDraft(cloneDelayProfileDraft(buildDelayProfileTemplate(profiles)));
   }, [profiles]);
 
   return {

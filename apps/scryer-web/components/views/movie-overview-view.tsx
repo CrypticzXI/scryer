@@ -534,9 +534,10 @@ export function MovieOverviewView({
     );
   }
 
-  const imdbId = title.imdbId ?? title.externalIds.find((e) => e.source === "imdb")?.value;
-  const anidbId = title.externalIds.find((e) => e.source === "anidb")?.value;
-  const tmdbId = title.externalIds.find((e) => e.source === "tmdb")?.value;
+  const externalIds = title.externalIds ?? [];
+  const imdbId = title.imdbId ?? externalIds.find((e) => e.source === "imdb")?.value;
+  const anidbId = externalIds.find((e) => e.source === "anidb")?.value;
+  const tmdbId = externalIds.find((e) => e.source === "tmdb")?.value;
 
   const posterUrl = title.posterUrl;
   const overview = title.overview;
@@ -829,7 +830,7 @@ export function MovieOverviewView({
                     <span className="text-muted-foreground">AniDB</span>
                   </a>
                 ) : null}
-                {title.externalIds
+                {(title.externalIds ?? [])
                   .filter((e) => e.source !== "imdb" && e.source !== "tvdb" && e.source !== "anidb" && e.source !== "tmdb")
                   .map((e) => (
                     <div key={e.source}>

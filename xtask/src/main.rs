@@ -8,11 +8,13 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 #[cfg(unix)]
 use signal_hook::iterator::{Handle as SignalHandle, Signals};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use tempfile::NamedTempFile;
 use xtask_support::{TaskContext, command_available, ok, run_status, step, warn};
@@ -21,10 +23,14 @@ mod profile;
 mod seed;
 
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+const DEFAULT_SERVE_BIND: &str = "127.0.0.1:18080";
+const DEFAULT_SERVE_FRONTEND_PORT: u16 = 3000;
 
 #[cfg(unix)]
 struct SignalForwarder {
     handle: SignalHandle,
+    process_groups: Arc<Mutex<Vec<u32>>>,
+    shutdown_requested: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -40,6 +46,29 @@ impl Drop for SignalForwarder {
 
 #[cfg(not(unix))]
 struct SignalForwarder;
+
+#[cfg(unix)]
+impl SignalForwarder {
+    fn replace_process_groups(&self, process_ids: &[u32]) {
+        if let Ok(mut groups) = self.process_groups.lock() {
+            groups.clear();
+            groups.extend(process_ids.iter().copied());
+        }
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(not(unix))]
+impl SignalForwarder {
+    fn replace_process_groups(&self, _process_ids: &[u32]) {}
+
+    fn shutdown_requested(&self) -> bool {
+        false
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "cargo xtask")]
@@ -185,31 +214,25 @@ struct StackLogsArgs {
 
 #[derive(Args)]
 struct ServeArgs {
-    #[command(subcommand)]
-    command: Option<ServeCommand>,
-    #[command(flatten)]
-    options: ServeRunArgs,
-}
-
-#[derive(Subcommand)]
-enum ServeCommand {
-    Clean(ServeRunArgs),
-}
-
-#[derive(Args, Clone)]
-struct ServeRunArgs {
     #[arg(
         long,
-        default_value = "127.0.0.1:18080",
+        default_value = DEFAULT_SERVE_BIND,
         help = "Bind address for the locally hosted Scryer debug server"
     )]
     bind: String,
     #[arg(
         long,
-        default_value_t = 3000,
+        default_value_t = DEFAULT_SERVE_FRONTEND_PORT,
         help = "Port for the Vite dev server with hot reload"
     )]
     frontend_port: u16,
+    #[arg(
+        long,
+        help = "Run xtask serve against a managed PostgreSQL Docker container instead of the default SQLite datastore"
+    )]
+    postgres: bool,
+    #[arg(long, help = "Reset the selected datastore before starting Scryer")]
+    clean: bool,
 }
 
 #[derive(Args)]
@@ -252,6 +275,28 @@ enum ServeMode {
     CleanDatabase,
 }
 
+#[derive(Clone, Copy)]
+enum ServeDatastoreKind {
+    Sqlite,
+    Postgres,
+}
+
+struct ServeDatastore {
+    kind: ServeDatastoreKind,
+    envs: Vec<(String, String)>,
+    location: String,
+}
+
+struct ServePostgresConfig {
+    image: String,
+    container_name: String,
+    volume_name: String,
+    host_port: u16,
+    database: String,
+    user: String,
+    password: String,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let ctx = TaskContext::new();
@@ -271,12 +316,14 @@ fn main() -> Result<()> {
             StackCommand::Logs(args) => stack_logs(&ctx, args),
             StackCommand::Restart(args) => stack_restart(&ctx, args),
         },
-        Commands::Serve(args) => match args.command {
-            Some(ServeCommand::Clean(options)) => {
-                serve_local_scryer(&ctx, options, ServeMode::CleanDatabase)
-            }
-            None => serve_local_scryer(&ctx, args.options, ServeMode::PreserveDatabase),
-        },
+        Commands::Serve(args) => {
+            let mode = if args.clean {
+                ServeMode::CleanDatabase
+            } else {
+                ServeMode::PreserveDatabase
+            };
+            serve_local_scryer(&ctx, args, mode)
+        }
         Commands::Seed(args) => match args.command {
             SeedCommand::Dev(args) => seed_dev(&ctx, args),
         },
@@ -368,14 +415,24 @@ fn tail_file(path: &Path, lines: usize) -> Result<String> {
     Ok(collected.into_iter().rev().collect::<Vec<_>>().join("\n"))
 }
 
+enum BackendStartupOutcome {
+    Ready,
+    Interrupted,
+}
+
 fn wait_for_local_backend(
     backend: &mut std::process::Child,
     port: u16,
     log_path: &Path,
-) -> Result<()> {
+    signal_forwarder: &SignalForwarder,
+) -> Result<BackendStartupOutcome> {
     let address = format!("127.0.0.1:{port}");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     while std::time::Instant::now() < deadline {
+        if signal_forwarder.shutdown_requested() {
+            return Ok(BackendStartupOutcome::Interrupted);
+        }
+
         if let Some(status) = backend.try_wait()? {
             let tail = tail_file(log_path, 50)?;
             bail!(
@@ -384,8 +441,8 @@ fn wait_for_local_backend(
             );
         }
 
-        if std::net::TcpStream::connect(&address).is_ok() {
-            return Ok(());
+        if backend_ready_looks_ok(port) {
+            return Ok(BackendStartupOutcome::Ready);
         }
 
         thread::sleep(std::time::Duration::from_millis(250));
@@ -393,9 +450,148 @@ fn wait_for_local_backend(
 
     let tail = tail_file(log_path, 50)?;
     bail!(
-        "Timed out waiting for Scryer on http://{address}/. Tail of {}:\n{tail}",
+        "Timed out waiting for Scryer readiness on http://{address}/graphql. Tail of {}:\n{tail}",
         log_path.display()
     )
+}
+
+enum ServeWaitOutcome {
+    FrontendExited(std::process::ExitStatus),
+    Interrupted,
+}
+
+fn wait_for_serve_processes(
+    backend: &mut Child,
+    frontend: &mut Child,
+    backend_log_path: &Path,
+    signal_forwarder: &SignalForwarder,
+) -> Result<ServeWaitOutcome> {
+    loop {
+        if signal_forwarder.shutdown_requested() {
+            return Ok(ServeWaitOutcome::Interrupted);
+        }
+
+        if let Some(status) = backend.try_wait()? {
+            let tail = tail_file(backend_log_path, 50)?;
+            bail!(
+                "Scryer backend exited while xtask serve was running (status: {status}). Tail of {}:\n{tail}",
+                backend_log_path.display()
+            );
+        }
+
+        if let Some(status) = frontend.try_wait()? {
+            return Ok(ServeWaitOutcome::FrontendExited(status));
+        }
+
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn backend_ready_looks_ok(port: u16) -> bool {
+    backend_health_looks_ok(port) && backend_graphql_looks_ready(port)
+}
+
+fn backend_health_looks_ok(port: u16) -> bool {
+    http_request(
+        port,
+        &format!(
+            "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .and_then(|(status_line, body)| {
+        if !status_line.contains(" 200 ") {
+            return None;
+        }
+        serde_json::from_str::<serde_json::Value>(&body).ok()
+    })
+    .and_then(|payload| {
+        payload
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    })
+    .as_deref()
+        == Some("ok")
+}
+
+fn backend_graphql_looks_ready(port: u16) -> bool {
+    let body = r#"{"query":"query { authRuntimeState { effectiveFormLoginEnabled skipLoginForLocalIps } }"}"#;
+    let request = format!(
+        "POST /graphql HTTP/1.1\r\n\
+Host: 127.0.0.1:{port}\r\n\
+Accept: application/json\r\n\
+Content-Type: application/json\r\n\
+Content-Length: {content_length}\r\n\
+Connection: close\r\n\r\n\
+{body}",
+        content_length = body.len(),
+    );
+
+    http_request(port, &request)
+        .and_then(|(status_line, body)| {
+            if !status_line.contains(" 200 ") {
+                return None;
+            }
+            serde_json::from_str::<serde_json::Value>(&body).ok()
+        })
+        .and_then(|payload| {
+            payload
+                .get("data")
+                .and_then(|data| data.get("authRuntimeState"))
+                .cloned()
+        })
+        .is_some()
+}
+
+fn http_request(port: u16, request: &str) -> Option<(String, String)> {
+    let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return None;
+    };
+    let timeout = Some(std::time::Duration::from_millis(500));
+    if stream.set_read_timeout(timeout).is_err() || stream.set_write_timeout(timeout).is_err() {
+        return None;
+    }
+    if write!(stream, "{request}").is_err() {
+        return None;
+    }
+
+    let mut response = String::new();
+    if std::io::Read::read_to_string(&mut stream, &mut response).is_err() {
+        return None;
+    }
+
+    let (headers, body) = response.split_once("\r\n\r\n")?;
+    let mut header_lines = headers.lines();
+    let status_line = header_lines.next()?;
+
+    let body = if headers
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        decode_chunked_http_body(body)?
+    } else {
+        body.to_string()
+    };
+
+    Some((status_line.to_string(), body))
+}
+
+fn decode_chunked_http_body(body: &str) -> Option<String> {
+    let mut decoded = String::new();
+    let mut rest = body;
+
+    loop {
+        let (size_line, after_size_line) = rest.split_once("\r\n")?;
+        let size = usize::from_str_radix(size_line.trim(), 16).ok()?;
+        if size == 0 {
+            return Some(decoded);
+        }
+        if after_size_line.len() < size + 2 {
+            return None;
+        }
+        decoded.push_str(&after_size_line[..size]);
+        rest = &after_size_line[size + 2..];
+    }
 }
 
 fn backend_port(bind: &str) -> Result<u16> {
@@ -472,6 +668,215 @@ fn reset_serve_database(db_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn serve_postgres_config() -> Result<ServePostgresConfig> {
+    let host_port = std::env::var("SCRYER_XTASK_POSTGRES_PORT")
+        .ok()
+        .map(|value| {
+            value.parse::<u16>().with_context(|| {
+                format!("SCRYER_XTASK_POSTGRES_PORT must be a valid port, got {value}")
+            })
+        })
+        .transpose()?
+        .unwrap_or(55432);
+    Ok(ServePostgresConfig {
+        image: std::env::var("SCRYER_XTASK_POSTGRES_IMAGE")
+            .unwrap_or_else(|_| "postgres:18".to_string()),
+        container_name: std::env::var("SCRYER_XTASK_POSTGRES_CONTAINER")
+            .unwrap_or_else(|_| "scryer-xtask-postgres".to_string()),
+        volume_name: std::env::var("SCRYER_XTASK_POSTGRES_VOLUME")
+            .unwrap_or_else(|_| "scryer-xtask-postgres-data".to_string()),
+        host_port,
+        database: std::env::var("SCRYER_XTASK_POSTGRES_DB")
+            .unwrap_or_else(|_| "scryer".to_string()),
+        user: std::env::var("SCRYER_XTASK_POSTGRES_USER").unwrap_or_else(|_| "scryer".to_string()),
+        password: std::env::var("SCRYER_XTASK_POSTGRES_PASSWORD")
+            .unwrap_or_else(|_| "scryer-dev-password".to_string()),
+    })
+}
+
+fn docker_container_exists(ctx: &TaskContext, container_name: &str) -> Result<bool> {
+    let mut inspect = ctx.command("docker");
+    inspect.args(["container", "inspect", container_name]);
+    Ok(inspect.output()?.status.success())
+}
+
+fn docker_volume_exists(ctx: &TaskContext, volume_name: &str) -> Result<bool> {
+    let mut inspect = ctx.command("docker");
+    inspect.args(["volume", "inspect", volume_name]);
+    Ok(inspect.output()?.status.success())
+}
+
+fn reset_serve_postgres(ctx: &TaskContext, config: &ServePostgresConfig) -> Result<()> {
+    step(format!(
+        "Resetting xtask serve PostgreSQL container {} and volume {}",
+        config.container_name, config.volume_name
+    ));
+    if docker_container_exists(ctx, &config.container_name)? {
+        let mut rm = ctx.command("docker");
+        rm.args(["rm", "-f", &config.container_name]);
+        run_checked(&mut rm)?;
+    }
+    if docker_volume_exists(ctx, &config.volume_name)? {
+        let mut rm = ctx.command("docker");
+        rm.args(["volume", "rm", "-f", &config.volume_name]);
+        run_checked(&mut rm)?;
+    }
+    ok("xtask serve PostgreSQL state reset");
+    Ok(())
+}
+
+fn wait_for_serve_postgres(ctx: &TaskContext, config: &ServePostgresConfig) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        if matches!(
+            docker_inspect_state(&config.container_name)?.as_deref(),
+            Some("exited" | "dead")
+        ) {
+            warn(format!(
+                "PostgreSQL container {} exited before becoming ready",
+                config.container_name
+            ));
+            log_container_failure(&config.container_name)?;
+            bail!(
+                "PostgreSQL container {} exited before becoming ready",
+                config.container_name
+            );
+        }
+
+        let pg_url = format!(
+            "postgresql://{}@127.0.0.1/{}?sslmode=disable",
+            config.user, config.database
+        );
+        let mut psql = ctx.command("docker");
+        psql.args([
+            "exec",
+            &config.container_name,
+            "env",
+            &format!("PGPASSWORD={}", config.password),
+            "psql",
+            &pg_url,
+            "-c",
+            "SELECT 1",
+        ]);
+        if run_status(&mut psql)?.success() {
+            return Ok(());
+        }
+
+        thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    warn(format!(
+        "Timed out waiting for PostgreSQL container {} to become ready",
+        config.container_name
+    ));
+    log_container_failure(&config.container_name)?;
+    bail!(
+        "Timed out waiting for PostgreSQL container {} to become ready",
+        config.container_name
+    );
+}
+
+fn ensure_serve_postgres(ctx: &TaskContext, mode: ServeMode) -> Result<ServeDatastore> {
+    require_command("docker")?;
+    let config = serve_postgres_config()?;
+
+    if matches!(mode, ServeMode::CleanDatabase) {
+        reset_serve_postgres(ctx, &config)?;
+    }
+
+    if docker_container_exists(ctx, &config.container_name)? {
+        let state = docker_inspect_state(&config.container_name)?;
+        if !matches!(state.as_deref(), Some("running")) {
+            step(format!(
+                "Starting managed PostgreSQL container {}",
+                config.container_name
+            ));
+            let mut start = ctx.command("docker");
+            start.args(["start", &config.container_name]);
+            run_checked(&mut start)?;
+        } else {
+            ok(format!(
+                "Reusing managed PostgreSQL container {}",
+                config.container_name
+            ));
+        }
+    } else {
+        step(format!(
+            "Creating managed PostgreSQL container {} from {}",
+            config.container_name, config.image
+        ));
+        let mut run = ctx.command("docker");
+        run.args([
+            "run",
+            "-d",
+            "--name",
+            &config.container_name,
+            "-e",
+            &format!("POSTGRES_DB={}", config.database),
+            "-e",
+            &format!("POSTGRES_USER={}", config.user),
+            "-e",
+            &format!("POSTGRES_PASSWORD={}", config.password),
+            "-p",
+            &format!("{}:5432", config.host_port),
+            "-v",
+            &format!("{}:/var/lib/postgresql", config.volume_name),
+            &config.image,
+        ]);
+        run_checked(&mut run)?;
+    }
+
+    step(format!(
+        "Waiting for PostgreSQL on 127.0.0.1:{}",
+        config.host_port
+    ));
+    wait_for_serve_postgres(ctx, &config)?;
+    ok(format!(
+        "Managed PostgreSQL is ready in container {}",
+        config.container_name
+    ));
+
+    Ok(ServeDatastore {
+        kind: ServeDatastoreKind::Postgres,
+        envs: vec![
+            (
+                "SCRYER_DB_URL".to_string(),
+                format!(
+                    "postgres://127.0.0.1:{}/{}?sslmode=disable",
+                    config.host_port, config.database
+                ),
+            ),
+            ("SCRYER_DB_USER".to_string(), config.user.clone()),
+            ("SCRYER_DB_PASSWORD".to_string(), config.password.clone()),
+        ],
+        location: format!(
+            "postgres://127.0.0.1:{}/{}?sslmode=disable (container={}, volume={})",
+            config.host_port, config.database, config.container_name, config.volume_name
+        ),
+    })
+}
+
+fn prepare_serve_datastore(
+    ctx: &TaskContext,
+    args: &ServeArgs,
+    mode: ServeMode,
+) -> Result<ServeDatastore> {
+    if args.postgres {
+        return ensure_serve_postgres(ctx, mode);
+    }
+
+    let db_path = serve_db_path()?;
+    if matches!(mode, ServeMode::CleanDatabase) {
+        reset_serve_database(&db_path)?;
+    }
+    let db_url = format!("sqlite://{}", db_path.display());
+    Ok(ServeDatastore {
+        kind: ServeDatastoreKind::Sqlite,
+        envs: vec![("SCRYER_DB_PATH".to_string(), db_url)],
+        location: db_path.display().to_string(),
+    })
+}
+
 fn serve_encryption_key() -> String {
     let digest = Sha256::digest(b"scryer-xtask-dev-encryption-key");
     base64::engine::general_purpose::STANDARD.encode(digest)
@@ -491,7 +896,7 @@ fn ensure_frontend_dependencies(ctx: &TaskContext, web_dir: &Path) -> Result<()>
     Ok(())
 }
 
-fn serve_local_scryer(ctx: &TaskContext, args: ServeRunArgs, mode: ServeMode) -> Result<()> {
+fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Result<()> {
     require_command("npm")?;
 
     let env_file = ctx.path(".env");
@@ -517,11 +922,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeRunArgs, mode: ServeMode) ->
         std::env::var("SCRYER_VITE_USE_POLLING").unwrap_or_else(|_| "true".to_string());
     let vite_poll_interval =
         std::env::var("SCRYER_VITE_POLL_INTERVAL_MS").unwrap_or_else(|_| "250".to_string());
-    let db_path = serve_db_path()?;
-    if matches!(mode, ServeMode::CleanDatabase) {
-        reset_serve_database(&db_path)?;
-    }
-    let db_url = format!("sqlite://{}", db_path.display());
+    let datastore = prepare_serve_datastore(ctx, &args, mode)?;
     let encryption_key = serve_encryption_key();
     let backend_binary = ctx.path("target/debug/scryer");
     let backend_log = PathBuf::from(
@@ -558,6 +959,12 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeRunArgs, mode: ServeMode) ->
     println!("   Vite dev server: {frontend_url}");
     println!("   Vite file watch: polling={vite_use_polling} interval_ms={vite_poll_interval}");
     println!("   Keychain: disabled for xtask serve");
+    match datastore.kind {
+        ServeDatastoreKind::Sqlite => println!("   Datastore: SQLite ({})", datastore.location),
+        ServeDatastoreKind::Postgres => {
+            println!("   Datastore: PostgreSQL ({})", datastore.location)
+        }
+    }
 
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -565,12 +972,20 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeRunArgs, mode: ServeMode) ->
         .open(&backend_log)?;
     let log_err = log.try_clone()?;
     let mut serve = ctx.command(&backend_binary);
-    configure_backend_process_group(&mut serve);
+    configure_child_process_group(&mut serve);
     for (key, value) in &dotenv_envs {
         serve.env(key, value);
     }
     serve
-        .env("SCRYER_DB_PATH", &db_url)
+        .env_remove("SCRYER_DB_URL")
+        .env_remove("SCRYER_DB_PATH")
+        .env_remove("SCRYER_DB_USER")
+        .env_remove("SCRYER_DB_PASSWORD")
+        .env_remove("SCRYER_DB_PASSWORD_FILE");
+    for (key, value) in &datastore.envs {
+        serve.env(key, value);
+    }
+    serve
         .env("SCRYER_DISABLE_PLATFORM_KEYSTORE", "1")
         .env("SCRYER_ENCRYPTION_KEY", &encryption_key)
         .env("SCRYER_OPEN_BROWSER", "false")
@@ -579,21 +994,31 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeRunArgs, mode: ServeMode) ->
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
     let mut backend = serve.spawn()?;
-    let backend_signal_forwarder = install_backend_signal_forwarder(backend.id())?;
-    if let Err(error) = wait_for_local_backend(&mut backend, backend_port, &backend_log) {
-        terminate_backend(&mut backend);
-        return Err(error);
+    let signal_forwarder = install_signal_forwarder(&[backend.id()])?;
+    match wait_for_local_backend(&mut backend, backend_port, &backend_log, &signal_forwarder) {
+        Ok(BackendStartupOutcome::Ready) => {}
+        Ok(BackendStartupOutcome::Interrupted) => {
+            drop(signal_forwarder);
+            terminate_child_process_group(&mut backend);
+            return Ok(());
+        }
+        Err(error) => {
+            drop(signal_forwarder);
+            terminate_child_process_group(&mut backend);
+            return Err(error);
+        }
     }
 
     println!("==> Scryer backend ready");
     println!("    Backend:  {backend_url}");
     println!("    Frontend: {frontend_url}");
-    println!("    Database: {}", db_path.display());
+    println!("    Datastore: {}", datastore.location);
     println!("    Log:      tail -f {}", backend_log.display());
     println!();
     println!("==> Starting Vite dev server with live updates...");
 
     let mut vite = ctx.command_in("npm", &web_dir);
+    configure_child_process_group(&mut vite);
     vite.env("SCRYER_DEV_PROXY_TARGET", &backend_url)
         .env("SCRYER_VITE_USE_POLLING", &vite_use_polling)
         .env("SCRYER_VITE_POLL_INTERVAL_MS", &vite_poll_interval)
@@ -607,16 +1032,26 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeRunArgs, mode: ServeMode) ->
             "--port",
             &frontend_port.to_string(),
         ]);
-    let result = run_status(&mut vite);
+    let mut vite = vite.spawn()?;
+    signal_forwarder.replace_process_groups(&[backend.id(), vite.id()]);
 
-    drop(backend_signal_forwarder);
-    terminate_backend(&mut backend);
-    result?;
-    Ok(())
+    let result = wait_for_serve_processes(&mut backend, &mut vite, &backend_log, &signal_forwarder);
+
+    drop(signal_forwarder);
+    terminate_child_process_group(&mut vite);
+    terminate_child_process_group(&mut backend);
+
+    match result? {
+        ServeWaitOutcome::Interrupted => Ok(()),
+        ServeWaitOutcome::FrontendExited(status) if status.success() => Ok(()),
+        ServeWaitOutcome::FrontendExited(status) => {
+            bail!("Vite dev server exited with status {status}")
+        }
+    }
 }
 
 #[cfg(unix)]
-fn configure_backend_process_group(command: &mut Command) {
+fn configure_child_process_group(command: &mut Command) {
     unsafe {
         command.pre_exec(|| {
             if libc::setpgid(0, 0) == 0 {
@@ -629,44 +1064,57 @@ fn configure_backend_process_group(command: &mut Command) {
 }
 
 #[cfg(not(unix))]
-fn configure_backend_process_group(_command: &mut Command) {}
+fn configure_child_process_group(_command: &mut Command) {}
 
 #[cfg(unix)]
-fn install_backend_signal_forwarder(process_id: u32) -> Result<SignalForwarder> {
+fn install_signal_forwarder(process_ids: &[u32]) -> Result<SignalForwarder> {
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
     let handle = signals.handle();
+    let process_groups = Arc::new(Mutex::new(process_ids.to_vec()));
+    let process_groups_for_thread = Arc::clone(&process_groups);
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let shutdown_requested_for_thread = Arc::clone(&shutdown_requested);
     let thread = thread::spawn(move || {
         for signal in signals.forever() {
-            let _ = signal_process_group(process_id, signal);
+            shutdown_requested_for_thread.store(true, Ordering::SeqCst);
+            let process_groups = process_groups_for_thread
+                .lock()
+                .map(|groups| groups.clone())
+                .unwrap_or_default();
+            for process_id in process_groups {
+                let _ = signal_process_group(process_id, signal);
+            }
         }
     });
     Ok(SignalForwarder {
         handle,
+        process_groups,
+        shutdown_requested,
         thread: Some(thread),
     })
 }
 
 #[cfg(not(unix))]
-fn install_backend_signal_forwarder(_process_id: u32) -> Result<SignalForwarder> {
+fn install_signal_forwarder(_process_ids: &[u32]) -> Result<SignalForwarder> {
     Ok(SignalForwarder)
 }
 
-fn terminate_backend(backend: &mut Child) {
+fn terminate_child_process_group(child: &mut Child) {
     #[cfg(unix)]
     {
-        let process_id = backend.id();
+        let process_id = child.id();
         let _ = signal_process_group(process_id, SIGINT);
-        if wait_for_child_exit(backend, BACKEND_SHUTDOWN_GRACE_PERIOD) {
+        if wait_for_child_exit(child, BACKEND_SHUTDOWN_GRACE_PERIOD) {
             return;
         }
         let _ = signal_process_group(process_id, libc::SIGKILL);
-        let _ = backend.wait();
+        let _ = child.wait();
     }
 
     #[cfg(not(unix))]
     {
-        let _ = backend.kill();
-        let _ = backend.wait();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -917,10 +1365,16 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
         "tmp/scryer-data",
         "tmp/scryer-media/movies",
         "tmp/scryer-media/series",
+        "tmp/nzbdav/config",
+        "tmp/nzbdav/mnt",
+        "tmp/altmount/config",
+        "tmp/altmount/metadata",
+        "tmp/altmount/mnt",
+        "tmp/decypharr/config",
+        "tmp/decypharr/cache",
+        "tmp/decypharr/mnt",
         "tmp/nzbget/config",
         "tmp/nzbget-downloads",
-        "tmp/weaver/data",
-        "tmp/weaver-downloads",
     ] {
         fs::create_dir_all(ctx.path(path))?;
     }
@@ -928,7 +1382,10 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
         "SCRYER_DOCKER_RESTART_SERVICES",
         &["scryer", "nodejs", "proxy"],
     );
-    let infra_services = env_list("SCRYER_DOCKER_INFRA_SERVICES", &["nzbget", "weaver"]);
+    let infra_services = env_list(
+        "SCRYER_DOCKER_INFRA_SERVICES",
+        &["nzbget", "nzbdav", "altmount", "decypharr"],
+    );
     let force_infra_restart = std::env::var("SCRYER_DOCKER_FORCE_INFRA_RESTART")
         .map(|value| value == "1")
         .unwrap_or(false);
@@ -973,6 +1430,7 @@ fn stack_up(ctx: &TaskContext, args: StackUpArgs) -> Result<()> {
     if restart_services.iter().any(|service| service == "scryer") || proxy_requested {
         wait_for_scryer()?;
     }
+    ensure_nzbdav_dev_account()?;
     if restart_services.iter().any(|service| service == "nodejs") || proxy_requested {
         wait_for_nodejs()?;
     }
@@ -1107,6 +1565,71 @@ fn wait_for_scryer() -> Result<()> {
     bail!("Timed out waiting for scryer to become ready");
 }
 
+fn ensure_nzbdav_dev_account() -> Result<()> {
+    println!("Ensuring nzbdav dev account exists...");
+    let timeout = std::env::var("SCRYER_DOCKER_NZBDAV_READY_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(120);
+    let poll = std::env::var("SCRYER_DOCKER_READY_POLL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(2);
+    let attempts = std::cmp::max(1, timeout / poll);
+    for _ in 0..attempts {
+        match docker_inspect_state("scryer-nzbdav")?.as_deref() {
+            Some("running") => {
+                let headers =
+                    run_capture(Command::new("curl").args(["-sI", "http://localhost:3001/login"]));
+                if let Ok(headers) = headers {
+                    if headers
+                        .lines()
+                        .any(|line| line.trim().eq_ignore_ascii_case("location: /onboarding"))
+                    {
+                        create_nzbdav_dev_account()?;
+                    }
+                    return Ok(());
+                }
+            }
+            Some("exited" | "dead") => {
+                warn("nzbdav exited before it became ready");
+                log_container_failure("scryer-nzbdav")?;
+                bail!("nzbdav exited before it became ready");
+            }
+            _ => {}
+        }
+        thread::sleep(std::time::Duration::from_secs(poll));
+    }
+    warn("Timed out waiting for nzbdav to become ready");
+    log_container_failure("scryer-nzbdav")?;
+    bail!("Timed out waiting for nzbdav to become ready");
+}
+
+fn create_nzbdav_dev_account() -> Result<()> {
+    let username =
+        std::env::var("SCRYER_NZBDAV_DEV_USERNAME").unwrap_or_else(|_| "scryer".to_string());
+    let password =
+        std::env::var("SCRYER_NZBDAV_DEV_PASSWORD").unwrap_or_else(|_| "scryer".to_string());
+    let mut command = Command::new("curl");
+    command.args([
+        "-sf",
+        "-o",
+        "/dev/null",
+        "-X",
+        "POST",
+        "--data-urlencode",
+        &format!("username={username}"),
+        "--data-urlencode",
+        &format!("password={password}"),
+        "http://localhost:3001/onboarding",
+    ]);
+    run_checked(&mut command)?;
+    ok(format!(
+        "Created nzbdav dev account ({username}/{password})"
+    ));
+    Ok(())
+}
+
 fn wait_for_nodejs() -> Result<()> {
     println!("Waiting for nodejs to be ready...");
     let timeout = std::env::var("SCRYER_DOCKER_NODEJS_READY_TIMEOUT_SECONDS")
@@ -1174,7 +1697,10 @@ fn stack_down(ctx: &TaskContext, args: StackDownArgs) -> Result<()> {
         "SCRYER_DOCKER_RESTART_SERVICES",
         &["scryer", "nodejs", "proxy"],
     );
-    let infra_services = env_list("SCRYER_DOCKER_INFRA_SERVICES", &["nzbget"]);
+    let infra_services = env_list(
+        "SCRYER_DOCKER_INFRA_SERVICES",
+        &["nzbget", "nzbdav", "altmount", "decypharr"],
+    );
     let stop_infra = std::env::var("SCRYER_DOCKER_STOP_INFRA")
         .map(|value| value == "1")
         .unwrap_or(false);

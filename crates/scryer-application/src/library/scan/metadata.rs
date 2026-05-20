@@ -12,6 +12,7 @@ use crate::library_discovery::{
 };
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::nfo::{looks_like_movie_nfo, parse_nfo};
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::title_matching::TitleMatchProfile;
 use crate::{
     AppError, AppResult, LibraryFile, LibraryScanUnmatchedSearchAttempt, LibraryScanner,
@@ -107,7 +108,9 @@ pub(crate) struct PreparedMovieLibraryScanCandidate {
     pub(crate) year_hint: Option<u32>,
     pub(crate) query_variants: Vec<String>,
     pub(crate) search_candidates: Vec<String>,
+    #[allow(dead_code)]
     pub(crate) title_match_candidates: Vec<String>,
+    #[allow(dead_code)]
     pub(crate) reduced_title_candidates: Vec<String>,
     pub(crate) metadata_lookup_attempted: bool,
 }
@@ -130,7 +133,9 @@ pub(crate) struct PreparedSeriesLibraryScanCandidate {
     pub(crate) query: String,
     pub(crate) year_hint: Option<u32>,
     pub(crate) search_candidates: Vec<String>,
+    #[allow(dead_code)]
     pub(crate) title_match_candidates: Vec<String>,
+    #[allow(dead_code)]
     pub(crate) reduced_title_candidates: Vec<String>,
     pub(crate) metadata_lookup_attempted: bool,
 }
@@ -140,7 +145,7 @@ impl PreparedSeriesLibraryScanCandidate {
         if let Some(file) = self.source_file.as_ref() {
             Cow::Borrowed(file.path.as_str())
         } else {
-            self.folder_path.to_string_lossy()
+            Cow::Owned(path_to_stored_string(&self.folder_path))
         }
     }
 }
@@ -148,7 +153,7 @@ impl PreparedSeriesLibraryScanCandidate {
 pub(crate) async fn read_valid_movie_nfo_metadata(
     nfo_path: Option<&str>,
 ) -> Option<crate::nfo::NfoMetadata> {
-    let path = Path::new(nfo_path?).to_path_buf();
+    let path = stored_path_to_path_buf(nfo_path?);
     let metadata = tokio::fs::metadata(&path).await.ok()?;
     if !metadata.is_file() || metadata.len() > RADARR_MOVIE_NFO_MAX_BYTES {
         return None;
@@ -867,13 +872,7 @@ pub(crate) fn select_movie_metadata_from_batch_results(
             ))
         })?;
 
-        if let Some(best) = select_best_match(
-            results_for_query.as_ref(),
-            candidate.year_hint,
-            &candidate.title_match_candidates,
-            &candidate.reduced_title_candidates,
-            TitleMatchProfile::Movie,
-        ) {
+        if let Some(best) = select_safe_batch_match(results_for_query.as_ref()) {
             return Ok(Some(best));
         }
     }
@@ -905,18 +904,16 @@ pub(crate) fn select_series_metadata_from_batch_results(
             ))
         })?;
 
-        if let Some(best) = select_best_match(
-            results_for_query.as_ref(),
-            candidate.year_hint,
-            &candidate.title_match_candidates,
-            &candidate.reduced_title_candidates,
-            TitleMatchProfile::Series,
-        ) {
+        if let Some(best) = select_safe_batch_match(results_for_query.as_ref()) {
             return Ok(Some(best));
         }
     }
 
     Ok(None)
+}
+
+fn select_safe_batch_match(results: &[MetadataSearchItem]) -> Option<MetadataSearchItem> {
+    results.first().filter(|item| item.auto_match_safe).cloned()
 }
 
 #[cfg(test)]
@@ -1117,10 +1114,10 @@ async fn prepare_movie_library_scan_entry(
     entry: MovieTopLevelEntry,
     library_path: String,
 ) -> AppResult<PreparedMovieLibraryScanEntry> {
-    let entry_path = entry.path.to_string_lossy().to_string();
+    let entry_path = path_to_stored_string(&entry.path);
     let mut discovered_files = if entry.is_dir {
         library_scanner
-            .scan_library(entry.path.to_string_lossy().as_ref())
+            .scan_library(path_to_stored_string(&entry.path).as_str())
             .await?
     } else {
         vec![LibraryFile {
@@ -1128,8 +1125,9 @@ async fn prepare_movie_library_scan_entry(
             display_name: entry
                 .path
                 .file_stem()
-                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default()
+                .trim()
                 .to_string(),
             nfo_path: None,
             size_bytes: None,
@@ -1161,7 +1159,7 @@ async fn build_movie_entry_representative_file(
             .first()
             .cloned()
             .ok_or_else(|| AppError::Repository("movie entry unexpectedly had no files".into()))?;
-        file.nfo_path = matching_movie_nfo_path_async(Path::new(&file.path)).await;
+        file.nfo_path = matching_movie_nfo_path_async(&stored_path_to_path_buf(&file.path)).await;
         return Ok(file);
     }
 
@@ -1188,7 +1186,7 @@ async fn same_stem_movie_nfo_path(path: &Path) -> Option<String> {
         .map(|metadata| metadata.is_file())
         .unwrap_or(false)
     {
-        return Some(same_stem.to_string_lossy().to_string());
+        return Some(path_to_stored_string(&same_stem));
     }
 
     None
@@ -1199,7 +1197,8 @@ async fn directory_movie_nfo_path(
     file_path: &str,
     primary_candidate: Option<&str>,
 ) -> Option<String> {
-    if let Some(nfo_path) = same_stem_movie_nfo_path(Path::new(file_path)).await {
+    let file_path_buf = stored_path_to_path_buf(file_path);
+    if let Some(nfo_path) = same_stem_movie_nfo_path(&file_path_buf).await {
         return Some(nfo_path);
     }
 
@@ -1210,7 +1209,7 @@ async fn directory_movie_nfo_path(
             .map(|metadata| metadata.is_file())
             .unwrap_or(false)
         {
-            return Some(movie_nfo.to_string_lossy().to_string());
+            return Some(path_to_stored_string(&movie_nfo));
         }
     }
 
@@ -1223,13 +1222,13 @@ async fn detect_primary_movie_entry_file(
 ) -> AppResult<Option<String>> {
     let immediate_files = discovered_files
         .iter()
-        .filter(|file| Path::new(&file.path).parent() == Some(entry_path))
+        .filter(|file| stored_path_to_path_buf(&file.path).parent() == Some(entry_path))
         .map(|file| file.path.clone())
         .collect::<Vec<_>>();
 
     if immediate_files.len() == 1 {
         let path = immediate_files[0].clone();
-        return Ok((!is_sample_video_candidate(Path::new(&path))).then_some(path));
+        return Ok((!is_sample_video_candidate(&stored_path_to_path_buf(&path))).then_some(path));
     }
 
     if immediate_files.is_empty() {
@@ -1238,7 +1237,7 @@ async fn detect_primary_movie_entry_file(
 
     let mut non_sample_videos = Vec::new();
     for path in immediate_files {
-        if is_sample_video_candidate(Path::new(&path)) {
+        if is_sample_video_candidate(&stored_path_to_path_buf(&path)) {
             continue;
         }
         non_sample_videos.push(path);
@@ -1250,7 +1249,7 @@ async fn detect_primary_movie_entry_file(
 fn is_sample_video_candidate(path: &Path) -> bool {
     let stem = path
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default()
         .to_ascii_lowercase();
     stem.contains("sample")
@@ -1261,12 +1260,12 @@ async fn build_prepared_movie_library_scan_candidate(
     discovered_files: Vec<LibraryFile>,
     library_path: String,
 ) -> AppResult<PreparedMovieLibraryScanCandidate> {
-    let parsed_release = parse_release_metadata(
-        Path::new(&file.path)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or(file.display_name.as_str()),
-    );
+    let parsed_release_name = stored_path_to_path_buf(&file.path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or_else(|| file.display_name.clone());
+    let parsed_release = parse_release_metadata(&parsed_release_name);
 
     let nfo_meta = read_valid_movie_nfo_metadata(file.nfo_path.as_deref()).await;
     let (query_variants, extracted_year_hint) = extract_library_queries(&file.path, &library_path);
@@ -1320,8 +1319,7 @@ async fn prepare_series_library_scan_candidate(
 ) -> AppResult<PreparedSeriesLibraryScanCandidate> {
     let folder_name = folder
         .file_name()
-        .and_then(|name| name.to_str())
-        .map(std::string::ToString::to_string);
+        .map(|name| name.to_string_lossy().into_owned());
 
     let Some(folder_name_value) = folder_name.clone() else {
         return Ok(PreparedSeriesLibraryScanCandidate {
@@ -1409,7 +1407,7 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
         };
 
     Ok(PreparedSeriesLibraryScanCandidate {
-        folder_path: PathBuf::from(&file.path),
+        folder_path: stored_path_to_path_buf(&file.path),
         folder_name: Some(file.display_name.clone()),
         source_file: Some(file),
         nfo_meta: None,
@@ -1492,6 +1490,7 @@ pub(crate) async fn preload_series_library_scan_candidates(
     Ok((results, stats))
 }
 
+#[cfg(test)]
 pub(crate) fn select_best_match(
     results: &[MetadataSearchItem],
     year: Option<u32>,
@@ -1955,8 +1954,55 @@ mod tests {
         let (queries, year) =
             extract_library_queries("/library/My Cousin (2020)/movie.mkv", "/library");
 
-        assert_eq!(queries, vec!["MOVIE".to_string(), "My Cousin".to_string()]);
+        assert_eq!(queries, vec!["MY COUSIN".to_string()]);
         assert_eq!(year, Some(2020));
+    }
+
+    #[test]
+    fn extract_library_queries_uses_parent_folder_when_filename_is_obfuscated() {
+        let (queries, year) = extract_library_queries(
+            "/library/Harry.Potter.And.The.Deathly.Hallows.Part1.2010.720p.BluRay.DTS.x264-LEGION-Obfuscated/aUUKqrO833LbSr7VlByumnR24y7ULADpVJ7K0FTnPhPMqpp0KIIaLSLYXJmyjm.mkv",
+            "/library",
+        );
+
+        assert_eq!(
+            queries,
+            vec!["HARRY POTTER AND THE DEATHLY HALLOWS PART 1".to_string()]
+        );
+        assert_eq!(year, Some(2010));
+    }
+
+    #[test]
+    fn extract_library_queries_keeps_raw_parent_folder_title_when_parser_is_lossy() {
+        let (queries, year) = extract_library_queries(
+            "/library/The Lion King 1½ (2004)/The Lion King 1½ (2004) Bluray-1080p.mkv",
+            "/library",
+        );
+
+        assert_eq!(year, Some(2004));
+        assert!(queries.iter().any(|query| query == "The Lion King 1½"));
+    }
+
+    #[test]
+    fn extract_library_queries_keeps_raw_human_folder_title_without_explicit_year_suffix() {
+        let (queries, year) = extract_library_queries(
+            "/library/The Lion King 1½/The Lion King 1½ Bluray-1080p.mkv",
+            "/library",
+        );
+
+        assert_eq!(year, None);
+        assert!(queries.iter().any(|query| query == "The Lion King 1½"));
+    }
+
+    #[test]
+    fn extract_library_queries_keeps_raw_parent_folder_title_when_context_parse_supplies_year() {
+        let (queries, year) = extract_library_queries(
+            "/library/The Lion King 1½ 2004/The Lion King 1½ Bluray-1080p.mkv",
+            "/library",
+        );
+
+        assert_eq!(year, Some(2004));
+        assert!(queries.iter().any(|query| query == "The Lion King 1½"));
     }
 
     #[test]
@@ -1979,7 +2025,7 @@ mod tests {
 
         assert_eq!(
             queries,
-            vec!["GLASS HARBOR TWO".to_string(), "Glass Harbor".to_string()]
+            vec!["GLASS HARBOR TWO".to_string(), "GLASS HARBOR".to_string()]
         );
         assert_eq!(year, Some(2024));
     }
@@ -1998,12 +2044,31 @@ mod tests {
         assert_eq!(year, Some(2018));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn extract_library_queries_uses_lossy_non_utf8_stem() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(OsStr::from_bytes(
+            b"/library/Glass.Harbor.\xFF.2021.2160p.WEB-DL.mkv",
+        ));
+        let stored_path = path_to_stored_string(path);
+        let (queries, year) = extract_library_queries(&stored_path, "/library");
+
+        assert!(!queries.is_empty());
+        assert!(queries.iter().any(|query| query.contains("GLASS HARBOR")));
+        assert_eq!(year, Some(2021));
+    }
+
     #[test]
     fn select_best_match_accepts_single_same_year_prefix_match() {
         let results = vec![MetadataSearchItem {
             tvdb_id: "tvdb-3".to_string(),
             name: "Circuit Breakers".to_string(),
             year: Some(2018),
+            auto_match_safe: false,
+            auto_match_signals: vec![],
         }];
         let raw_candidates = vec!["CIRCUIT BREAKERS CRASH THE GRID 2".to_string()];
         let (candidates, reduced) =
@@ -2019,6 +2084,53 @@ mod tests {
         .expect("single same-year prefix match");
 
         assert_eq!(selected.tvdb_id, "tvdb-3");
+    }
+
+    #[test]
+    fn select_movie_metadata_from_batch_results_uses_smg_auto_match_safe_signal() {
+        let candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
+        let key = BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Glass Harbor", None)
+            .expect("metadata search key");
+        let mut results = HashMap::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "movie-1".into(),
+                name: "Glass Harbor".into(),
+                year: Some(2021),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
+            }]),
+        );
+
+        let selected = select_movie_metadata_from_batch_results(&candidate, &results)
+            .expect("movie batch selection")
+            .expect("safe auto-match");
+
+        assert_eq!(selected.tvdb_id, "movie-1");
+    }
+
+    #[test]
+    fn select_movie_metadata_from_batch_results_rejects_unsafe_top_result() {
+        let candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
+        let key = BatchMetadataSearchKey::new(METADATA_TYPE_MOVIE, "Glass Harbor", None)
+            .expect("metadata search key");
+        let mut results = HashMap::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "movie-1".into(),
+                name: "Glass Harbor".into(),
+                year: Some(2021),
+                auto_match_safe: false,
+                auto_match_signals: vec!["exact_title".into()],
+            }]),
+        );
+
+        let selected = select_movie_metadata_from_batch_results(&candidate, &results)
+            .expect("movie batch selection");
+
+        assert!(selected.is_none());
     }
 
     #[test]
@@ -2159,6 +2271,8 @@ mod tests {
                 tvdb_id: "movie-1".into(),
                 name: "Glass Harbor".into(),
                 year: Some(2021),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
             }],
         );
 
@@ -2201,6 +2315,8 @@ mod tests {
                 tvdb_id: "movie-2".into(),
                 name: "My Cousin".into(),
                 year: Some(2020),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
             }],
         );
 
@@ -2263,6 +2379,8 @@ mod tests {
                 tvdb_id: "series-1".into(),
                 name: "Silver Horizon".into(),
                 year: Some(2018),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
             }],
         );
 
@@ -2329,6 +2447,8 @@ mod tests {
             tvdb_id: "wrong-series".into(),
             name: "Nightfall".into(),
             year: Some(2009),
+            auto_match_safe: false,
+            auto_match_signals: vec![],
         }];
         gateway.set_search_results(
             METADATA_TYPE_SERIES,
@@ -2617,6 +2737,8 @@ mod tests {
                 tvdb_id: "movie-1".into(),
                 name: "Glass Harbor".into(),
                 year: Some(2021),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
             }],
         );
 
@@ -2682,6 +2804,17 @@ mod tests {
         )));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sample_video_candidate_detects_non_utf8_name_signal() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        assert!(is_sample_video_candidate(Path::new(OsStr::from_bytes(
+            b"/library/Movie/sample-\xFFfeaturette.mkv"
+        ))));
+    }
+
     #[tokio::test]
     async fn detect_primary_movie_entry_file_keeps_small_non_sample_video() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2713,6 +2846,48 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detect_primary_movie_entry_file_ignores_encoded_non_utf8_sample_video() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let movie_dir = Path::new("/library/Short Film (2024)");
+        let sample_path = Path::new(OsStr::from_bytes(
+            b"/library/Short Film (2024)/sample-\xFFfeaturette.mkv",
+        ));
+        let movie_path = Path::new(OsStr::from_bytes(
+            b"/library/Short Film (2024)/Short.Film.\xFF2024.mkv",
+        ));
+        let discovered_files = vec![
+            LibraryFile {
+                path: path_to_stored_string(sample_path),
+                display_name: "sample-\u{FFFD}featurette".to_string(),
+                nfo_path: None,
+                size_bytes: None,
+                source_signature_scheme: None,
+                source_signature_value: None,
+            },
+            LibraryFile {
+                path: path_to_stored_string(movie_path),
+                display_name: "Short.Film.\u{FFFD}2024".to_string(),
+                nfo_path: None,
+                size_bytes: None,
+                source_signature_scheme: None,
+                source_signature_value: None,
+            },
+        ];
+
+        let primary = detect_primary_movie_entry_file(movie_dir, &discovered_files)
+            .await
+            .expect("primary");
+
+        assert_eq!(
+            primary.as_deref(),
+            Some(path_to_stored_string(movie_path).as_str())
+        );
+    }
+
     #[test]
     fn select_best_match_prefers_exact_title_and_matching_year() {
         let results = vec![
@@ -2720,11 +2895,15 @@ mod tests {
                 tvdb_id: "wrong".into(),
                 name: "Glass Harbor Drift".into(),
                 year: Some(2020),
+                auto_match_safe: false,
+                auto_match_signals: vec![],
             },
             MetadataSearchItem {
                 tvdb_id: "right".into(),
                 name: "Glass Harbor".into(),
                 year: Some(2021),
+                auto_match_safe: false,
+                auto_match_signals: vec![],
             },
         ];
         let raw_candidates = vec!["Glass Harbor".to_string()];
@@ -2750,6 +2929,8 @@ mod tests {
             tvdb_id: "wrong".into(),
             name: "Nightfall".into(),
             year: Some(2009),
+            auto_match_safe: false,
+            auto_match_signals: vec![],
         }];
         let raw_candidates = vec!["Nightfall!!".to_string()];
         let (candidates, reduced) =
@@ -2773,6 +2954,8 @@ mod tests {
             tvdb_id: "right".into(),
             name: "Nightfall".into(),
             year: None,
+            auto_match_safe: false,
+            auto_match_signals: vec![],
         }];
         let raw_candidates = vec!["Nightfall!!".to_string()];
         let (candidates, reduced) =
@@ -2796,6 +2979,8 @@ mod tests {
             tvdb_id: "wrong".into(),
             name: "Glass Harbor Drift".into(),
             year: Some(2020),
+            auto_match_safe: false,
+            auto_match_signals: vec![],
         }];
         let raw_candidates = vec!["Glass Harbor".to_string()];
         let (candidates, reduced) =
@@ -2819,6 +3004,8 @@ mod tests {
             tvdb_id: "right".into(),
             name: "The DUFF".into(),
             year: Some(2015),
+            auto_match_safe: false,
+            auto_match_signals: vec![],
         }];
         let raw_candidates = vec!["DUFF, The".to_string()];
         let (candidates, reduced) =
@@ -2842,6 +3029,8 @@ mod tests {
             tvdb_id: "right".into(),
             name: "Sasaki and Miyano: Graduation".into(),
             year: Some(2023),
+            auto_match_safe: false,
+            auto_match_signals: vec![],
         }];
         let raw_candidates = vec!["Sasaki and Miyano Graduation Arc".to_string()];
         let (candidates, reduced) =

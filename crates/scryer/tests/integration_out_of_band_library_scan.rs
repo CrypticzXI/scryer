@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 use common::TestContext;
 use scryer_application::{
-    LibraryRootDraft, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
-    MediaFileRepository, PendingImportStatus, ShowRepository, TitleRepository,
+    InsertMediaFileInput, LibraryRootDraft, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, MediaFileRepository, PendingImportStatus, ShowRepository,
+    TitleRepository,
 };
 use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, Title, User};
 use scryer_infrastructure::SettingDefinitionSeed;
@@ -45,6 +46,15 @@ async fn seed_media_path_settings(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "media".into(),
                 scope: "media".into(),
+                key_name: "movie.path".into(),
+                data_type: "string".into(),
+                default_value_json: "\"/data/movies\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "media".into(),
                 key_name: "anime.path".into(),
                 data_type: "string".into(),
                 default_value_json: "\"/data/anime\"".into(),
@@ -55,6 +65,15 @@ async fn seed_media_path_settings(ctx: &TestContext) {
                 category: "media".into(),
                 scope: "media".into(),
                 key_name: "series.root_folders".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "media".into(),
+                key_name: "movie.root_folders".into(),
                 data_type: "json".into(),
                 default_value_json: "[]".into(),
                 is_sensitive: false,
@@ -161,7 +180,7 @@ async fn seed_series_title(
         digital_release_date: None,
         folder_path: folder_path.map(|path| path.to_string_lossy().to_string()),
     };
-    ctx.catalog.create(title.clone()).await.expect("seed title");
+    ctx.titles.create(title.clone()).await.expect("seed title");
     title
 }
 
@@ -182,7 +201,7 @@ async fn seed_collection(ctx: &TestContext, title: &Title, index: u32) -> Collec
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_collection(collection.clone())
         .await
         .expect("create collection");
@@ -220,7 +239,7 @@ async fn seed_episode(
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_episode(episode.clone())
         .await
         .expect("create episode");
@@ -312,7 +331,7 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
         )
         .await
         .expect("bind title-bound pending import");
-    assert_eq!(bind_result.created, false);
+    assert!(!bind_result.created);
 
     let pending_after = ctx
         .app
@@ -329,7 +348,7 @@ async fn known_title_unmatched_file_becomes_title_bound_pending_import_and_can_b
     assert_eq!(pending_after.total, 0);
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list title media files");
@@ -453,7 +472,7 @@ async fn loose_root_series_file_imports_into_existing_title_without_rewriting_fo
     assert_eq!(summary.unmatched, 0);
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list title media files");
@@ -465,12 +484,219 @@ async fn loose_root_series_file_imports_into_existing_title_without_rewriting_fo
     assert_eq!(PathBuf::from(&media_files[0].file_path), loose_file);
 
     let refreshed_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load refreshed title")
         .expect("title should exist");
     assert_eq!(refreshed_title.folder_path, None);
+}
+
+#[tokio::test]
+async fn full_rescan_preserves_existing_match_for_loose_series_file() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("series root");
+    set_media_path(
+        &ctx,
+        "series.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let title = seed_series_title(
+        &ctx,
+        "title-preserved-match",
+        "Known Show",
+        MediaFacet::Series,
+        media_root.path(),
+        None,
+        None,
+    )
+    .await;
+    let season = seed_collection(&ctx, &title, 1).await;
+    let episode = seed_episode(&ctx, &title, &season, 1).await;
+
+    let loose_file = media_root
+        .path()
+        .join("Completely.Different.Name.S01E01.mkv");
+    write_fake_media_file(&loose_file);
+
+    let file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: loose_file.to_string_lossy().to_string(),
+            size_bytes: 16,
+            source_signature_scheme: None,
+            source_signature_value: None,
+            quality_label: Some("720p".to_string()),
+            scene_name: None,
+            release_group: None,
+            source_type: None,
+            resolution: None,
+            video_codec_parsed: None,
+            audio_codec_parsed: None,
+            audio_channels_parsed: None,
+            acquisition_score: None,
+            scoring_log: None,
+            indexer_source: None,
+            grabbed_release_title: None,
+            grabbed_at: None,
+            edition: None,
+            original_file_path: None,
+            release_hash: None,
+        })
+        .await
+        .expect("insert media file");
+    ctx.media_files
+        .link_file_to_episode(&file_id, &episode.id)
+        .await
+        .expect("link file to episode");
+
+    let actor = admin();
+    set_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
+    let summary = ctx
+        .app
+        .scan_library(&actor, MediaFacet::Series)
+        .await
+        .expect("full library scan");
+
+    assert_eq!(summary.unmatched, 0);
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list title media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].id, file_id);
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(episode.id.as_str())
+    );
+
+    let unmatched_count = ctx
+        .library_scan_unmatched
+        .count_library_scan_unmatched_items(
+            Some(MediaFacet::Series),
+            Some(media_root.path().to_string_lossy().as_ref()),
+            None,
+        )
+        .await
+        .expect("count unmatched items");
+    assert_eq!(unmatched_count, 0);
+}
+
+#[tokio::test]
+async fn resolve_pending_import_succeeds_for_stale_movie_row_already_bound_to_title() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("movie root");
+    set_media_path(
+        &ctx,
+        "movie.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let movie_dir = media_root.path().join("Redline (2010)");
+    std::fs::create_dir_all(&movie_dir).expect("create movie dir");
+    let movie_file = movie_dir.join("Totally.Wrong.Name.2010.mkv");
+    write_fake_media_file(&movie_file);
+
+    let title = seed_series_title(
+        &ctx,
+        "title-redline",
+        "Redline",
+        MediaFacet::Movie,
+        media_root.path(),
+        Some(&movie_dir),
+        Some("123456"),
+    )
+    .await;
+
+    ctx.media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: movie_file.to_string_lossy().to_string(),
+            size_bytes: 24,
+            source_signature_scheme: None,
+            source_signature_value: None,
+            quality_label: Some("1080p".to_string()),
+            scene_name: None,
+            release_group: None,
+            source_type: None,
+            resolution: None,
+            video_codec_parsed: None,
+            audio_codec_parsed: None,
+            audio_channels_parsed: None,
+            acquisition_score: None,
+            scoring_log: None,
+            indexer_source: None,
+            grabbed_release_title: None,
+            grabbed_at: None,
+            edition: None,
+            original_file_path: None,
+            release_hash: None,
+        })
+        .await
+        .expect("insert movie media file");
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let pending_item = LibraryScanUnmatchedItem {
+        id: Id::new().0,
+        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        facet: MediaFacet::Movie,
+        status: PendingImportStatus::Pending,
+        title_id: None,
+        scan_session_id: "test-session".to_string(),
+        scan_root: media_root.path().to_string_lossy().to_string(),
+        item_path: movie_file.to_string_lossy().to_string(),
+        display_name: "Totally.Wrong.Name.2010".to_string(),
+        query: "Redline".to_string(),
+        year_hint: Some(2010),
+        reason_code: "stale_duplicate_pending_import".to_string(),
+        error_message: None,
+        search_attempts: Vec::new(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let pending_id = ctx
+        .library_scan_unmatched
+        .upsert_library_scan_unmatched_item(&pending_item)
+        .await
+        .expect("insert pending import");
+
+    let actor = admin();
+    let result = ctx
+        .app
+        .resolve_pending_import(&actor, &pending_id, "123456")
+        .await
+        .expect("resolve stale pending import");
+
+    assert!(!result.created);
+    assert_eq!(result.title.id, title.id);
+
+    let unmatched = ctx
+        .library_scan_unmatched
+        .get_library_scan_unmatched_item(&pending_id)
+        .await
+        .expect("load pending import after resolve");
+    assert!(
+        unmatched.is_none(),
+        "stale pending import row should be cleared"
+    );
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list movie media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].file_path, movie_file.to_string_lossy());
 }
 
 #[tokio::test]
@@ -519,7 +745,7 @@ async fn resolving_missing_loose_file_does_not_clear_existing_title_folder_path(
         updated_at: now,
     };
     let pending_id = ctx
-        .library_state
+        .library_scan_unmatched
         .upsert_library_scan_unmatched_item(&pending_item)
         .await
         .expect("insert unmatched item");
@@ -532,7 +758,7 @@ async fn resolving_missing_loose_file_does_not_clear_existing_title_folder_path(
     assert!(result.is_err(), "missing source file should not resolve");
 
     let refreshed_title = ctx
-        .catalog
+        .titles
         .get_by_id(&title.id)
         .await
         .expect("load refreshed title")

@@ -10,10 +10,11 @@ use crate::acquisition_policy::AcquisitionThresholds;
 use crate::scoring_weights::ScoringPersona;
 use crate::subtitles::{normalize_subtitle_language_code, wanted::SubtitleLanguagePref};
 use crate::{
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY,
-    HISTORY_RETENTION_DAYS_KEY, LibraryRootDraft, REQUIRED_AUDIO_LANGUAGES_KEY,
-    SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
-    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
+    AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL,
+    FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, LibraryRootDraft,
+    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL,
+    SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
 use super::keys::default_indexer_routing_categories_for_scope;
@@ -40,6 +41,38 @@ const SUBTITLES_SYNC_THRESHOLD_SERIES_KEY: &str = "subtitles.sync_threshold_seri
 const SUBTITLES_SYNC_THRESHOLD_MOVIE_KEY: &str = "subtitles.sync_threshold_movie";
 const SUBTITLES_SYNC_MAX_OFFSET_SECONDS_KEY: &str = "subtitles.sync_max_offset_seconds";
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
+
+fn normalize_auto_backup_daily_time_local(value: &str) -> AppResult<String> {
+    let value = value.trim();
+    let (hour, minute) = value
+        .split_once(':')
+        .ok_or_else(|| AppError::Validation("daily time must use HH:MM format".to_string()))?;
+    let hour = hour
+        .parse::<u32>()
+        .map_err(|_| AppError::Validation("daily time hour must be numeric".to_string()))?;
+    let minute = minute
+        .parse::<u32>()
+        .map_err(|_| AppError::Validation("daily time minute must be numeric".to_string()))?;
+    if hour > 23 || minute > 59 {
+        return Err(AppError::Validation(
+            "daily time must be between 00:00 and 23:59".to_string(),
+        ));
+    }
+    Ok(format!("{hour:02}:{minute:02}"))
+}
+
+fn validate_auto_backup_key_update(
+    set_auto_backup_key: Option<&str>,
+    clear_auto_backup_key: bool,
+) -> AppResult<()> {
+    if clear_auto_backup_key && set_auto_backup_key.is_some_and(|value| !value.is_empty()) {
+        return Err(AppError::Validation(
+            "automatic backup key cannot be replaced and cleared in the same request".to_string(),
+        ));
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct SubtitleSettings {
@@ -130,9 +163,25 @@ pub struct GeneralSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoBackupSettings {
+    pub enabled: bool,
+    pub daily_time_local: String,
+    pub auto_backup_key_present: bool,
+    pub next_run_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateGeneralSettings {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAutoBackupSettings {
+    pub enabled: bool,
+    pub daily_time_local: String,
+    pub set_auto_backup_key: Option<String>,
+    pub clear_auto_backup_key: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +379,50 @@ fn download_client_routing_payload(
     Ok(payload)
 }
 
+fn download_client_routing_settings_entry_from_domain(
+    client_id: String,
+    entry: crate::catalog_helpers::DownloadClientRoutingEntry,
+) -> DownloadClientRoutingSettingsEntry {
+    DownloadClientRoutingSettingsEntry {
+        client_id,
+        enabled: entry.enabled,
+        category: entry.category,
+        recent_queue_priority: entry.recent_queue_priority,
+        older_queue_priority: entry.older_queue_priority,
+        remove_completed: entry.remove_completed,
+        remove_failed: entry.remove_failed,
+    }
+}
+
+fn disabled_download_client_routing_settings_entry(
+    client_id: String,
+) -> DownloadClientRoutingSettingsEntry {
+    let mut entry = crate::catalog_helpers::default_download_client_routing_entry();
+    entry.enabled = false;
+    download_client_routing_settings_entry_from_domain(client_id, entry)
+}
+
+fn normalize_download_client_routing_settings_entry(
+    entry: DownloadClientRoutingSettingsEntry,
+) -> AppResult<DownloadClientRoutingSettingsEntry> {
+    let client_id = entry.client_id.trim().to_string();
+    if client_id.is_empty() {
+        return Err(AppError::Validation(
+            "download client routing entry requires client_id".to_string(),
+        ));
+    }
+
+    Ok(DownloadClientRoutingSettingsEntry {
+        client_id,
+        enabled: entry.enabled,
+        category: normalize_optional_string(entry.category),
+        recent_queue_priority: normalize_optional_string(entry.recent_queue_priority),
+        older_queue_priority: normalize_optional_string(entry.older_queue_priority),
+        remove_completed: entry.remove_completed,
+        remove_failed: entry.remove_failed,
+    })
+}
+
 fn indexer_routing_payload(
     entries: Vec<IndexerRoutingSettingsEntry>,
 ) -> AppResult<serde_json::Map<String, serde_json::Value>> {
@@ -515,6 +608,14 @@ fn default_library_path(facet: &MediaFacet) -> &'static str {
         MediaFacet::Movie => DEFAULT_MOVIE_LIBRARY_PATH,
         MediaFacet::Series => DEFAULT_SERIES_LIBRARY_PATH,
         MediaFacet::Anime => DEFAULT_ANIME_LIBRARY_PATH,
+    }
+}
+
+fn default_library_name(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => "Movies",
+        MediaFacet::Series => "Series",
+        MediaFacet::Anime => "Anime",
     }
 }
 
@@ -942,6 +1043,78 @@ impl AppUseCase {
         ])
     }
 
+    async fn ensure_default_facet_libraries(&self) -> AppResult<()> {
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            self.ensure_default_facet_library(&facet).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_default_facet_library(&self, facet: &MediaFacet) -> AppResult<()> {
+        let bootstrap_roots =
+            root_folder_entries_to_library_root_drafts(&[default_root_folder_entry(facet)])?;
+        let library = match self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
+        {
+            Some(library) => library,
+            None => {
+                self.validate_library_root_conflicts(None, &bootstrap_roots)
+                    .await?;
+                let now = chrono::Utc::now();
+                let library = scryer_domain::Library {
+                    id: scryer_domain::default_library_id_for_facet(facet),
+                    facet: facet.clone(),
+                    name: default_library_name(facet).to_string(),
+                    slug: scryer_domain::default_library_slug_for_facet(facet).to_string(),
+                    is_default: true,
+                    roots: Vec::new(),
+                    created_at: now,
+                    updated_at: now,
+                };
+                let created = self
+                    .services
+                    .catalog
+                    .libraries
+                    .create(library, bootstrap_roots.clone())
+                    .await?;
+                info!(
+                    facet = facet.as_str(),
+                    library_id = created.id.as_str(),
+                    "recreated missing default library during settings repair"
+                );
+                created
+            }
+        };
+
+        if !library.roots.is_empty() {
+            return Ok(());
+        }
+
+        self.validate_library_root_conflicts(Some(&library.id), &bootstrap_roots)
+            .await?;
+        self.services
+            .catalog
+            .libraries
+            .update(
+                &library.id,
+                library.name.clone(),
+                library.slug.clone(),
+                bootstrap_roots,
+            )
+            .await?;
+        info!(
+            facet = facet.as_str(),
+            library_id = library.id.as_str(),
+            "restored bootstrap root for default library during settings repair"
+        );
+        Ok(())
+    }
+
     async fn update_default_library_roots_from_entries(
         &self,
         facet: &MediaFacet,
@@ -1033,20 +1206,16 @@ impl AppUseCase {
     }
 
     pub async fn reconcile_default_library_roots(&self) -> AppResult<()> {
+        self.ensure_default_facet_libraries().await?;
+
         for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
-            let Some(library) = self
+            let library = self
                 .services
                 .catalog
                 .libraries
                 .default_for_facet(facet.clone())
                 .await?
-            else {
-                warn!(
-                    facet = facet.as_str(),
-                    "skipping root reconciliation because the default library is missing"
-                );
-                continue;
-            };
+                .ok_or_else(|| AppError::NotFound(format!("default {} library", facet.as_str())))?;
 
             let canonical_roots = root_folder_entries_from_library_roots(&library.roots);
             let legacy_roots = self.read_legacy_root_folders_for_facet(&facet).await?;
@@ -1120,6 +1289,27 @@ impl AppUseCase {
 
         self.read_setting_string_value(LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, Some(scope_id))
             .await
+    }
+
+    async fn load_explicit_download_client_routing_json(
+        &self,
+        scope_id: &str,
+    ) -> AppResult<Option<String>> {
+        if let Some(raw_json) = self
+            .read_setting_string_value_explicit(
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                Some(scope_id),
+            )
+            .await?
+        {
+            return Ok(Some(raw_json));
+        }
+
+        self.read_setting_string_value_explicit(
+            LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+            Some(scope_id),
+        )
+        .await
     }
 
     async fn emit_settings_saved(
@@ -1224,6 +1414,14 @@ impl AppUseCase {
                 SETTINGS_SOURCE_TYPED_GRAPHQL,
                 updated_by_user_id,
             )
+            .await
+    }
+
+    async fn delete_system_setting(&self, key_name: &str) -> AppResult<()> {
+        self.services
+            .config
+            .settings
+            .delete_setting_value(SETTINGS_SCOPE_SYSTEM, key_name, None)
             .await
     }
 
@@ -1496,35 +1694,59 @@ impl AppUseCase {
         library_id: &str,
     ) -> AppResult<Option<Vec<DownloadClientRoutingSettingsEntry>>> {
         let Some(raw_json) = self
-            .read_setting_string_value_explicit(
-                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
-                Some(library_id),
-            )
+            .load_explicit_download_client_routing_json(library_id)
             .await?
         else {
             return Ok(None);
         };
         let Some(entries) = crate::catalog_helpers::parse_download_client_routing_map(&raw_json)
         else {
-            return Ok(Some(Vec::new()));
+            warn!(
+                library_id,
+                "ignoring invalid library-scoped download client routing override in settings"
+            );
+            return Ok(None);
         };
-        let mut routing = entries
+        let entries = entries
             .into_iter()
             .map(|(client_id, config)| {
                 let entry = crate::catalog_helpers::parse_download_client_routing_entry(&config);
-                DownloadClientRoutingSettingsEntry {
-                    client_id,
-                    enabled: entry.enabled,
-                    category: entry.category,
-                    recent_queue_priority: entry.recent_queue_priority,
-                    older_queue_priority: entry.older_queue_priority,
-                    remove_completed: entry.remove_completed,
-                    remove_failed: entry.remove_failed,
-                }
+                download_client_routing_settings_entry_from_domain(client_id, entry)
             })
             .collect::<Vec<_>>();
-        routing.sort_by(|left, right| left.client_id.cmp(&right.client_id));
+        let routing = self
+            .complete_library_download_client_routing_entries(entries)
+            .await?;
         Ok(Some(routing))
+    }
+
+    async fn complete_library_download_client_routing_entries(
+        &self,
+        entries: Vec<DownloadClientRoutingSettingsEntry>,
+    ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
+        let mut completed = Vec::new();
+        let mut seen = HashSet::new();
+
+        for entry in entries {
+            let entry = normalize_download_client_routing_settings_entry(entry)?;
+            if seen.insert(entry.client_id.clone()) {
+                completed.push(entry);
+            }
+        }
+
+        for config in self
+            .services
+            .integrations
+            .download_client_configs
+            .list(None)
+            .await?
+        {
+            if seen.insert(config.id.clone()) {
+                completed.push(disabled_download_client_routing_settings_entry(config.id));
+            }
+        }
+
+        Ok(completed)
     }
 
     async fn load_indexer_routing_override(
@@ -1933,6 +2155,9 @@ impl AppUseCase {
         }
 
         if let Some(entries) = settings.download_client_routing {
+            let entries = self
+                .complete_library_download_client_routing_entries(entries)
+                .await?;
             let payload = download_client_routing_payload(entries)?;
             self.upsert_scoped_system_setting_json(
                 DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
@@ -1941,9 +2166,19 @@ impl AppUseCase {
                 Some(actor.id.clone()),
             )
             .await?;
+            self.delete_scoped_system_setting(
+                LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+                &library.id,
+            )
+            .await?;
         } else {
             self.delete_scoped_system_setting(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, &library.id)
                 .await?;
+            self.delete_scoped_system_setting(
+                LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+                &library.id,
+            )
+            .await?;
         }
 
         let mut changed_keys = vec![
@@ -2433,6 +2668,41 @@ impl AppUseCase {
         })
     }
 
+    pub(crate) async fn load_auto_backup_settings(&self) -> AppResult<AutoBackupSettings> {
+        let enabled = self
+            .read_setting_bool_value(AUTO_BACKUP_ENABLED_KEY, None)
+            .await?
+            .unwrap_or(false);
+        let daily_time_local = normalize_auto_backup_daily_time_local(
+            &self
+                .read_setting_string_value(AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, None)
+                .await?
+                .unwrap_or_else(|| DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL.to_string()),
+        )?;
+        let auto_backup_key_present = self
+            .read_setting_string_value(AUTO_BACKUP_KEY_KEY, None)
+            .await?
+            .is_some_and(|value| !value.is_empty());
+        let next_run_at = if enabled {
+            Some(
+                crate::security::backup::compute_next_auto_backup_run_at(
+                    &daily_time_local,
+                    chrono::Utc::now(),
+                )?
+                .to_rfc3339(),
+            )
+        } else {
+            None
+        };
+
+        Ok(AutoBackupSettings {
+            enabled,
+            daily_time_local,
+            auto_backup_key_present,
+            next_run_at,
+        })
+    }
+
     async fn load_security_settings(&self) -> AppResult<SecuritySettings> {
         let form_login_enabled = self
             .read_setting_bool_value(FORM_LOGIN_ENABLED_KEY, None)
@@ -2498,6 +2768,12 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         self.load_general_settings().await
+    }
+
+    pub async fn get_auto_backup_settings(&self, actor: &User) -> AppResult<AutoBackupSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        self.load_auto_backup_settings().await
     }
 
     pub async fn get_security_settings(&self, actor: &User) -> AppResult<SecuritySettings> {
@@ -3013,10 +3289,6 @@ impl AppUseCase {
         let mut changed_keys = Vec::new();
 
         if let Some(normalized) = root_folder_update {
-            warn!(
-                facet = facet.as_str(),
-                "UpdateMediaSettings.root_folders is deprecated; updating default library roots"
-            );
             changed_keys.extend(
                 self.update_default_library_roots_from_entries(
                     &facet,
@@ -3027,10 +3299,6 @@ impl AppUseCase {
                 .await?,
             );
         } else if let Some(library_path) = normalize_optional_string(input.library_path) {
-            warn!(
-                facet = facet.as_str(),
-                "UpdateMediaSettings.library_path is deprecated; updating default library roots"
-            );
             let root_folders = normalize_root_folders(vec![RootFolderEntry {
                 path: library_path,
                 is_default: true,
@@ -3278,6 +3546,7 @@ impl AppUseCase {
     ) -> AppResult<LibraryPathsSettings> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        self.ensure_default_facet_libraries().await?;
         let previous_roots = [
             (
                 MediaFacet::Movie,
@@ -3475,6 +3744,59 @@ impl AppUseCase {
             keep_history_forever: input.keep_history_forever,
             history_retention_days,
         })
+    }
+
+    pub async fn update_auto_backup_settings(
+        &self,
+        actor: &User,
+        input: UpdateAutoBackupSettings,
+    ) -> AppResult<AutoBackupSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        validate_auto_backup_key_update(
+            input.set_auto_backup_key.as_deref(),
+            input.clear_auto_backup_key,
+        )?;
+        let daily_time_local = normalize_auto_backup_daily_time_local(&input.daily_time_local)?;
+
+        self.upsert_system_setting_json(
+            AUTO_BACKUP_ENABLED_KEY,
+            &input.enabled,
+            Some(actor.id.clone()),
+        )
+        .await?;
+        self.upsert_system_setting_json(
+            AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
+            &daily_time_local,
+            Some(actor.id.clone()),
+        )
+        .await?;
+
+        let mut changed_keys = vec![
+            AUTO_BACKUP_ENABLED_KEY.to_string(),
+            AUTO_BACKUP_DAILY_TIME_LOCAL_KEY.to_string(),
+        ];
+
+        if input.clear_auto_backup_key {
+            self.delete_system_setting(AUTO_BACKUP_KEY_KEY).await?;
+            changed_keys.push(AUTO_BACKUP_KEY_KEY.to_string());
+        } else if let Some(set_auto_backup_key) = input.set_auto_backup_key
+            && !set_auto_backup_key.is_empty()
+        {
+            self.upsert_system_setting_json(
+                AUTO_BACKUP_KEY_KEY,
+                &set_auto_backup_key,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(AUTO_BACKUP_KEY_KEY.to_string());
+        }
+
+        self.emit_settings_saved(actor, "auto_backup_settings", None, changed_keys)
+            .await;
+
+        self.load_auto_backup_settings().await
     }
 
     pub async fn update_security_settings(
@@ -4277,5 +4599,36 @@ impl AppUseCase {
                 AcquisitionThresholds::for_persona(persona)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_auto_backup_daily_time_local_trims_and_zero_pads_values() {
+        let normalized = normalize_auto_backup_daily_time_local(" 3:5 ").expect("normalized time");
+
+        assert_eq!(normalized, "03:05");
+    }
+
+    #[test]
+    fn normalize_auto_backup_daily_time_local_rejects_invalid_values() {
+        assert!(normalize_auto_backup_daily_time_local("24:00").is_err());
+        assert!(normalize_auto_backup_daily_time_local("10:60").is_err());
+        assert!(normalize_auto_backup_daily_time_local("nope").is_err());
+    }
+
+    #[test]
+    fn validate_auto_backup_key_update_rejects_replace_and_clear_together() {
+        let error = validate_auto_backup_key_update(Some("secret"), true)
+            .expect_err("set and clear should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("automatic backup key cannot be replaced and cleared"),
+        );
     }
 }

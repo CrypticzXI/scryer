@@ -15,7 +15,7 @@ use scryer_domain::{
     ConfigurationChangeAction, DomainEventFilter, DomainEventPayload, DomainEventType, ExternalId,
     Id, Library, LibraryGrant, LibraryPermissionMask, MediaFacet, Title, User,
 };
-use scryer_infrastructure::{SettingDefinitionSeed, SqliteWorkflowStore};
+use scryer_infrastructure::{SettingDefinitionSeed, WorkflowOperationStore};
 
 async fn seed_media_path_settings(ctx: &TestContext) {
     ctx.settings_store
@@ -71,7 +71,7 @@ async fn set_media_path(ctx: &TestContext, key_name: &str, value: &str) {
         "anime.path" => ("anime_default_library", "Anime", "anime"),
         _ => return,
     };
-    ctx.catalog
+    ctx.libraries
         .update(
             library_id,
             name.to_string(),
@@ -91,7 +91,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
     seed_media_path_settings(&ctx).await;
 
     let title = TitleRepository::create(
-        &ctx.catalog,
+        &ctx.titles,
         Title {
             id: Id::new().0,
             name: "Pending Series".to_string(),
@@ -181,7 +181,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
         "terminal background job should no longer be active",
     );
 
-    let refreshed_title = TitleRepository::get_by_id(&ctx.catalog, &title.id)
+    let refreshed_title = TitleRepository::get_by_id(&ctx.titles, &title.id)
         .await
         .expect("load title")
         .expect("title exists");
@@ -190,7 +190,7 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
         Some(show_dir.to_string_lossy().as_ref())
     );
     assert!(
-        ctx.library_state
+        ctx.media_files
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files")
@@ -198,8 +198,8 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
         "non-relinked additive refresh should not link files",
     );
 
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
-    let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+    let workflow_store = WorkflowOperationStore::new(ctx.db.datastore());
+    let runs = <WorkflowOperationStore as JobRunRepository>::list_job_runs(
         &workflow_store,
         Some(JobKey::BackgroundLibraryRefreshSeries),
         1,
@@ -232,7 +232,7 @@ async fn scheduled_background_refresh_creates_one_job_run_per_library() {
     let second_root = tempfile::tempdir().expect("second movie root");
     let now = Utc::now();
     LibraryRepository::create(
-        &ctx.catalog,
+        &ctx.libraries,
         Library {
             id: "movie_kids_library".to_string(),
             facet: MediaFacet::Movie,
@@ -259,8 +259,8 @@ async fn scheduled_background_refresh_creates_one_job_run_per_library() {
         .await
         .expect("scheduled refresh should run each library job");
 
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
-    let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+    let workflow_store = WorkflowOperationStore::new(ctx.db.datastore());
+    let runs = <WorkflowOperationStore as JobRunRepository>::list_job_runs(
         &workflow_store,
         Some(JobKey::BackgroundLibraryRefreshMovies),
         5,
@@ -287,19 +287,18 @@ async fn domain_events_omit_titleless_operational_events_for_library_viewer() {
     let ctx = TestContext::new().await;
     let user_id = Id::new().0;
     let viewer = UserRepository::create(
-        &ctx.catalog,
+        &ctx.users,
         User {
             id: user_id.clone(),
             username: "movie-viewer".to_string(),
             password_hash: None,
-            entitlements: vec![],
             authorization: Default::default(),
         },
     )
     .await
     .expect("create viewer");
     LibraryRepository::set_grants_for_user(
-        &ctx.catalog,
+        &ctx.libraries,
         &user_id,
         vec![LibraryGrant {
             user_id: user_id.clone(),
@@ -358,7 +357,7 @@ async fn domain_events_omit_titleless_operational_events_for_library_viewer() {
 async fn manual_job_trigger_failure_is_persisted_and_broadcast() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = WorkflowOperationStore::new(ctx.db.datastore());
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let mut rx = ctx
         .app
@@ -399,7 +398,7 @@ async fn manual_job_trigger_failure_is_persisted_and_broadcast() {
     let stored = timeout(Duration::from_secs(5), async {
         loop {
             if let Some(run) =
-                <SqliteWorkflowStore as JobRunRepository>::get_job_run(&workflow_store, &run.id)
+                <WorkflowOperationStore as JobRunRepository>::get_job_run(&workflow_store, &run.id)
                     .await
                     .expect("load stored run")
                 && run.status == JobRunStatus::Failed
@@ -421,16 +420,35 @@ async fn manual_job_trigger_failure_is_persisted_and_broadcast() {
 }
 
 #[tokio::test]
+async fn automatic_backup_job_cannot_be_triggered_manually() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let error = ctx
+        .app
+        .trigger_job(&admin, JobKey::AutoBackup)
+        .await
+        .expect_err("automatic backup should reject manual triggering");
+
+    assert!(
+        error
+            .to_string()
+            .contains("Automatic Backup can only run on its configured schedule"),
+    );
+}
+
+#[tokio::test]
 async fn health_check_job_persists_issue_details_in_summary_json() {
     let ctx = TestContext::new().await;
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = WorkflowOperationStore::new(ctx.db.datastore());
 
     ctx.app
         .run_scheduled_job_now(JobKey::HealthChecks, JobTriggerSource::ScheduledStartup)
         .await
         .expect("health checks should complete");
 
-    let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+    let runs = <WorkflowOperationStore as JobRunRepository>::list_job_runs(
         &workflow_store,
         Some(JobKey::HealthChecks),
         1,
@@ -465,7 +483,7 @@ async fn health_check_job_persists_issue_details_in_summary_json() {
 async fn scheduled_job_failure_returns_err_and_persists_failed_run() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = WorkflowOperationStore::new(ctx.db.datastore());
 
     let result = ctx
         .app
@@ -481,7 +499,7 @@ async fn scheduled_job_failure_returns_err_and_persists_failed_run() {
 
     let run = timeout(Duration::from_secs(5), async {
         loop {
-            let runs = <SqliteWorkflowStore as JobRunRepository>::list_job_runs(
+            let runs = <WorkflowOperationStore as JobRunRepository>::list_job_runs(
                 &workflow_store,
                 Some(JobKey::BackgroundLibraryRefreshMovies),
                 1,

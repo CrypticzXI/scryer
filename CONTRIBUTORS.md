@@ -49,6 +49,18 @@ The frontend is a **Vite + React 19 + React Router 7** single-page application w
 - **Node.js** 22+ and npm
 - **Docker** and Docker Compose
 
+## Git Hooks
+
+`gitleaks` is required for commits in this repo.
+
+After cloning, run:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The versioned `pre-commit` hook will block commits when `gitleaks` reports staged secrets or when staged diffs contain machine-local usernames or home-directory paths.
+
 ### macOS Privacy & Security
 
 If `cargo build`, `cargo xtask`, or other Rust commands stall around `build-script-build`, macOS is likely blocking newly compiled local binaries from your terminal app.

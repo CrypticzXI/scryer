@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::Json;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use scryer_application::AppUseCase;
 use scryer_domain::{AppPermission, NewIndexerConfig};
-use scryer_infrastructure::SqliteSettingsStore;
+use scryer_infrastructure::SettingsStore;
 use scryer_interface::context::AuthRuntimeStateHandle;
 use serde::{Deserialize, Serialize};
 
@@ -211,7 +212,7 @@ fn permission_for_settings_scope(scope: &str) -> AppPermission {
 }
 
 pub(crate) async fn admin_settings_list(
-    database: SqliteSettingsStore,
+    database: Arc<SettingsStore>,
     app_use_case: AppUseCase,
     auth_runtime: AuthRuntimeStateHandle,
     headers: HeaderMap,
@@ -326,7 +327,7 @@ pub(crate) fn migration_key_preference_key(key: &str) -> (i64, &str) {
     (version, key)
 }
 
-pub(crate) async fn admin_migrations_handler(database: SqliteSettingsStore) -> Response {
+pub(crate) async fn admin_migrations_handler(database: Arc<SettingsStore>) -> Response {
     let applied = match database.list_applied_migrations().await {
         Ok(rows) => rows,
         Err(error) => {

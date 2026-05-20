@@ -87,6 +87,11 @@ const settingsEntries: Array<{
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
+    id: "backups",
+    label: (t) => t("settings.backups"),
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
+  },
+  {
     id: "security",
     label: (t) => t("settings.security"),
     requiredAnyAppPermission: [APP_PERMISSIONS.manageUsers],
@@ -255,10 +260,11 @@ function RootSidebarContent({
     () =>
       topNav.filter(
         (item) =>
+          (!isMobile || item.id !== "calendar") &&
           (item.id !== "system" || canManageSystemSettings) &&
           (item.id !== "activity" || canResolveImports || canManageTitle),
       ),
-    [canManageSystemSettings, canManageTitle, canResolveImports, topNav],
+    [canManageSystemSettings, canManageTitle, canResolveImports, isMobile, topNav],
   );
 
   const hasImportsForView = React.useCallback(
@@ -383,7 +389,7 @@ function RootSidebarContent({
       <Sidebar
         variant="floating"
         collapsible={isMobile ? "offcanvas" : "none"}
-        className="overflow-hidden rounded-xl border border-border md:-ml-4"
+        className="overflow-hidden rounded-xl border border-border md:-ml-4 md:sticky md:self-start md:top-[calc(var(--root-header-height,0px)+1rem)] md:max-h-[calc(100svh-var(--root-header-height,0px)-2rem)]"
       >
         <SidebarContent className="overflow-y-auto rounded-lg bg-background">
           <SidebarGroup>
@@ -480,10 +486,7 @@ function RootSidebarContent({
                               event,
                               item.id,
                               undefined,
-                              (canAccessFacetImport || contentSettingsSection !== "import") &&
-                                (canAccessMediaSettings || !isSettingsSubPage(contentSettingsSection))
-                                ? contentSettingsSection
-                                : "overview",
+                              "overview",
                             );
                           }}
                         >
@@ -694,7 +697,14 @@ function RootSidebarContent({
 
 export const RootSidebar = React.memo(function RootSidebar(props: RootSidebarProps) {
   return (
-    <SidebarProvider className="h-full">
+    <SidebarProvider
+      className="h-full"
+      style={
+        {
+          "--sidebar-width": "clamp(14rem, 18vw, 16rem)",
+        } as React.CSSProperties
+      }
+    >
       <RootSidebarContent {...props} />
     </SidebarProvider>
   );

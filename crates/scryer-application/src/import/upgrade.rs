@@ -4,13 +4,12 @@
 //! the old file is recycled and the new one takes its place. If the new import
 //! fails, the old file is restored from the recycle bin to avoid data loss.
 
-use std::path::PathBuf;
-
 use crate::domain_events::{
     created_media_update, deleted_media_update, modified_media_update, new_title_domain_event,
     title_context_snapshot,
 };
 use crate::recycle_bin::{self, RecycleBinConfig, RecycleManifest};
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::types::TitleMediaFile;
 use crate::{AppError, AppResult, AppUseCase, InsertMediaFileInput};
 use scryer_domain::{DomainEventPayload, MediaFileUpgradedEventData, Title, User};
@@ -50,7 +49,9 @@ pub(crate) async fn execute_upgrade(
     target_episode_ids: &[String],
     recycle_config: &RecycleBinConfig,
 ) -> AppResult<UpgradeResult> {
-    let old_path = PathBuf::from(&existing_file.file_path);
+    let old_path = stored_path_to_path_buf(&existing_file.file_path);
+    let dest_path_string = path_to_stored_string(dest_path);
+    let source_path_string = path_to_stored_string(source_path);
 
     let scoring_log = format!(
         "upgrade {} → {} (delta {}){}",
@@ -118,7 +119,7 @@ pub(crate) async fn execute_upgrade(
     // 6. Insert new record with rich schema
     let media_file_input = InsertMediaFileInput {
         title_id: title.id.clone(),
-        file_path: dest_path.to_string_lossy().to_string(),
+        file_path: dest_path_string.clone(),
         size_bytes: file_result.size_bytes as i64,
         quality_label: stored_quality_label
             .map(str::to_string)
@@ -132,7 +133,7 @@ pub(crate) async fn execute_upgrade(
         video_codec_parsed: prepared.parsed.video_codec.clone(),
         audio_codec_parsed: prepared.parsed.audio.clone(),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
-        original_file_path: Some(source_path.to_string_lossy().to_string()),
+        original_file_path: Some(source_path_string),
         acquisition_score: Some(final_score),
         scoring_log: Some(scoring_log.clone()),
         ..Default::default()
@@ -172,14 +173,12 @@ pub(crate) async fn execute_upgrade(
     }
 
     {
-        let media_updates = if existing_file.file_path == dest_path.to_string_lossy() {
-            vec![modified_media_update(
-                dest_path.to_string_lossy().to_string(),
-            )]
+        let media_updates = if existing_file.file_path == dest_path_string {
+            vec![modified_media_update(dest_path_string.clone())]
         } else {
             vec![
                 deleted_media_update(existing_file.file_path.clone()),
-                created_media_update(dest_path.to_string_lossy().to_string()),
+                created_media_update(dest_path_string.clone()),
             ]
         };
         app.append_domain_event(new_title_domain_event(

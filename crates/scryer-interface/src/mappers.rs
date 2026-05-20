@@ -1,3 +1,5 @@
+use crate::types::*;
+use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
     ActivityEvent, BackupInfo, DeletePreview, DiskSpaceInfo, DownloadClientRoutingSettingsEntry,
     FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport, IgnorePendingImportResult,
@@ -20,9 +22,6 @@ use scryer_domain::{
 use scryer_rules;
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
-
-use crate::types::*;
 
 fn support_tier_label(value: PluginSupportTier) -> String {
     match value {
@@ -66,12 +65,13 @@ fn import_facet_from_payload(payload: &Value) -> Option<MediaFacetValue> {
 }
 
 fn path_basename(path: &str) -> Option<String> {
-    let trimmed = path.trim().trim_end_matches(std::path::MAIN_SEPARATOR);
+    let path = stored_path_to_path_buf(path.trim());
+    let display = path.to_string_lossy();
+    let trimmed = display.trim().trim_end_matches(std::path::MAIN_SEPARATOR);
     if trimmed.is_empty() {
         return None;
     }
-    Path::new(trimmed)
-        .file_name()
+    path.file_name()
         .and_then(|value| value.to_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -138,8 +138,16 @@ pub(crate) fn from_quality_profile_criteria(
         allow_unknown_quality: criteria.allow_unknown_quality,
         source_allowlist: criteria.source_allowlist,
         source_blocklist: criteria.source_blocklist,
-        video_codec_allowlist: criteria.video_codec_allowlist,
-        video_codec_blocklist: criteria.video_codec_blocklist,
+        video_codec_allowlist: criteria
+            .video_codec_allowlist
+            .into_iter()
+            .map(|codec| codec.to_string())
+            .collect(),
+        video_codec_blocklist: criteria
+            .video_codec_blocklist
+            .into_iter()
+            .map(|codec| codec.to_string())
+            .collect(),
         audio_codec_allowlist: criteria.audio_codec_allowlist,
         audio_codec_blocklist: criteria.audio_codec_blocklist,
         dolby_vision_allowed: criteria.dolby_vision_allowed,
@@ -501,7 +509,7 @@ pub(crate) fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleas
         year: result.year,
         quality: result.quality,
         source: result.source,
-        video_codec: result.video_codec,
+        video_codec: result.video_codec.map(|codec| codec.to_string()),
         video_encoding: result.video_encoding,
         audio: result.audio,
         audio_channels: result.audio_channels,
@@ -539,6 +547,9 @@ pub(crate) fn from_indexer_config_with_fields(
     config: IndexerConfig,
     config_fields: &[ConfigFieldDef],
 ) -> IndexerConfigPayload {
+    let is_managed = config.managed_parent_config_id.is_some();
+    let managed_parent_config_id = config.managed_parent_config_id.clone();
+    let supports_managed_children_sync = config.provider_type.eq_ignore_ascii_case("prowlarr");
     let (config_json, stored_secret_keys) =
         redact_indexer_config_json(config.config_json, config_fields);
     let has_api_key = stored_secret_keys.iter().any(|key| key == "api_key")
@@ -552,6 +563,9 @@ pub(crate) fn from_indexer_config_with_fields(
         provider_type: config.provider_type,
         base_url: config.base_url,
         has_api_key,
+        is_managed,
+        managed_parent_config_id,
+        supports_managed_children_sync,
         stored_secret_keys,
         rate_limit_seconds: config.rate_limit_seconds,
         rate_limit_burst: config.rate_limit_burst,
@@ -565,6 +579,17 @@ pub(crate) fn from_indexer_config_with_fields(
         config_json,
         created_at: config.created_at.to_rfc3339(),
         updated_at: config.updated_at.to_rfc3339(),
+    }
+}
+
+pub(crate) fn from_indexer_config_sync_result(
+    result: scryer_application::IndexerConfigSyncResult,
+) -> IndexerConfigSyncPayload {
+    IndexerConfigSyncPayload {
+        parent_config_id: result.parent_config_id,
+        created_ids: result.created_ids,
+        updated_ids: result.updated_ids,
+        deleted_ids: result.deleted_ids,
     }
 }
 
@@ -623,6 +648,10 @@ fn indexer_config_key_is_secret(key: &str) -> bool {
         || normalized.ends_with("token")
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "provider type payload is assembled from discrete application fields"
+)]
 pub(crate) fn from_provider_type(
     provider_type: String,
     name: String,
@@ -630,6 +659,8 @@ pub(crate) fn from_provider_type(
     default_base_url: Option<String>,
     available_host_bindings: Vec<String>,
     recommended_facets: Vec<String>,
+    supported_events: Vec<String>,
+    supports_test: bool,
 ) -> ProviderTypePayload {
     ProviderTypePayload {
         provider_type,
@@ -640,6 +671,8 @@ pub(crate) fn from_provider_type(
             .into_iter()
             .filter_map(|facet| MediaFacetValue::parse(&facet))
             .collect(),
+        supported_events,
+        supports_test,
         config_fields: config_fields
             .into_iter()
             .map(|f| PluginConfigFieldPayload {
@@ -1216,8 +1249,8 @@ pub(crate) fn from_collection(collection: Collection) -> CollectionPayload {
 }
 
 pub(crate) fn file_size_bytes_for_path(ordered_path: Option<&str>) -> Option<i64> {
-    let path = ordered_path?;
-    fs::metadata(path).ok().and_then(|metadata| {
+    let path = stored_path_to_path_buf(ordered_path?);
+    fs::metadata(&path).ok().and_then(|metadata| {
         if metadata.is_file() {
             Some(metadata.len() as i64)
         } else {
@@ -1280,7 +1313,7 @@ pub(crate) fn from_title_media_file(
         quality_label: file.quality_label,
         scan_status: file.scan_status,
         created_at: file.created_at,
-        video_codec: file.video_codec,
+        video_codec: file.video_codec.map(|codec| codec.to_string()),
         video_width: file.video_width,
         video_height: file.video_height,
         video_bitrate_kbps: file.video_bitrate_kbps,
@@ -1325,7 +1358,7 @@ pub(crate) fn from_title_media_file(
         release_group: file.release_group,
         source_type: file.source_type,
         resolution: file.resolution,
-        video_codec_parsed: file.video_codec_parsed,
+        video_codec_parsed: file.video_codec_parsed.map(|codec| codec.to_string()),
         audio_codec_parsed: file.audio_codec_parsed,
         audio_channels_parsed: file.audio_channels_parsed,
         acquisition_score: file.acquisition_score,
@@ -1443,48 +1476,6 @@ pub(crate) fn from_import_record(record: scryer_domain::ImportRecord) -> ImportR
         started_at: record.started_at,
         finished_at: record.finished_at,
         created_at: record.created_at,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::from_import_record;
-    use crate::types::MediaFacetValue;
-    use scryer_domain::{CompletedDownload, ImportRecord, ImportStatus, ImportType};
-
-    #[test]
-    fn from_import_record_uses_release_folder_for_numeric_weaver_job_name() {
-        let payload = CompletedDownload {
-            client_type: "weaver".to_string(),
-            client_id: String::new(),
-            download_client_item_id: "10495".to_string(),
-            name: "10495".to_string(),
-            dest_dir: "/downloads/Example.Show.S01E01.1080p.WEB-DL".to_string(),
-            category: Some("anime".to_string()),
-            size_bytes: None,
-            completed_at: None,
-            parameters: vec![("*scryer_facet".to_string(), "anime".to_string())],
-        };
-        let record = ImportRecord {
-            id: "import-1".to_string(),
-            source_system: "weaver".to_string(),
-            source_ref: "10495".to_string(),
-            import_type: ImportType::SeriesDownload,
-            status: ImportStatus::Completed,
-            payload_json: serde_json::to_string(&payload).expect("serialize completed download"),
-            result_json: None,
-            started_at: None,
-            finished_at: None,
-            created_at: "2026-04-27T20:17:00Z".to_string(),
-            updated_at: "2026-04-27T20:17:00Z".to_string(),
-        };
-
-        let mapped = from_import_record(record);
-        assert_eq!(
-            mapped.source_title.as_deref(),
-            Some("Example.Show.S01E01.1080p.WEB-DL")
-        );
-        assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
     }
 }
 
@@ -1633,6 +1624,8 @@ pub(crate) fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
     SystemHealthPayload {
         service_ready: health.service_ready,
         db_path: health.db_path,
+        datastore_engine: health.datastore_engine,
+        datastore_migration_key: health.datastore_migration_key,
         total_titles: health.total_titles as i32,
         monitored_titles: health.monitored_titles as i32,
         total_users: health.total_users as i32,
@@ -1751,6 +1744,78 @@ pub(crate) fn from_plugin_install_progress(
         step_count: snapshot.step_count,
         message: snapshot.message,
         error: snapshot.error,
+    }
+}
+
+pub(crate) fn from_external_import_monitor_warmup_progress(
+    snapshot: scryer_application::ExternalImportMonitorWarmupProgressSnapshot,
+) -> ExternalImportMonitorWarmupProgressPayload {
+    let map_phase_progress =
+        |progress: scryer_application::ExternalImportMonitorWarmupPhaseProgress| {
+            LibraryScanPhaseProgressPayload {
+                total: progress.total,
+                completed: progress.completed,
+                failed: progress.failed,
+            }
+        };
+
+    ExternalImportMonitorWarmupProgressPayload {
+        session_id: snapshot.session_id,
+        status: match snapshot.status {
+            scryer_application::ExternalImportMonitorWarmupStatus::Queued => {
+                ExternalImportMonitorWarmupStatusValue::Queued
+            }
+            scryer_application::ExternalImportMonitorWarmupStatus::Running => {
+                ExternalImportMonitorWarmupStatusValue::Running
+            }
+            scryer_application::ExternalImportMonitorWarmupStatus::Completed => {
+                ExternalImportMonitorWarmupStatusValue::Completed
+            }
+            scryer_application::ExternalImportMonitorWarmupStatus::Canceled => {
+                ExternalImportMonitorWarmupStatusValue::Canceled
+            }
+            scryer_application::ExternalImportMonitorWarmupStatus::Failed => {
+                ExternalImportMonitorWarmupStatusValue::Failed
+            }
+        },
+        phase: match snapshot.phase {
+            scryer_application::ExternalImportMonitorWarmupPhase::LoadingMovies => {
+                ExternalImportMonitorWarmupPhaseValue::LoadingMovies
+            }
+            scryer_application::ExternalImportMonitorWarmupPhase::LoadingSeries => {
+                ExternalImportMonitorWarmupPhaseValue::LoadingSeries
+            }
+            scryer_application::ExternalImportMonitorWarmupPhase::LoadingEpisodes => {
+                ExternalImportMonitorWarmupPhaseValue::LoadingEpisodes
+            }
+            scryer_application::ExternalImportMonitorWarmupPhase::BuildingSnapshot => {
+                ExternalImportMonitorWarmupPhaseValue::BuildingSnapshot
+            }
+            scryer_application::ExternalImportMonitorWarmupPhase::Ready => {
+                ExternalImportMonitorWarmupPhaseValue::Ready
+            }
+        },
+        started_at: snapshot.started_at,
+        updated_at: snapshot.updated_at,
+        overall_total_known: snapshot.overall_total_known,
+        overall_progress: map_phase_progress(snapshot.overall_progress),
+        movies_total_known: snapshot.movies_total_known,
+        movies_progress: map_phase_progress(snapshot.movies_progress),
+        series_total_known: snapshot.series_total_known,
+        series_progress: map_phase_progress(snapshot.series_progress),
+        episode_fetch_total_known: snapshot.episode_fetch_total_known,
+        episode_fetch_expected_total: snapshot.episode_fetch_expected_total,
+        episode_fetch_expected_monitored_total: snapshot.episode_fetch_expected_monitored_total,
+        episode_fetch_progress: map_phase_progress(snapshot.episode_fetch_progress),
+        snapshot_build_total_known: snapshot.snapshot_build_total_known,
+        snapshot_build_progress: map_phase_progress(snapshot.snapshot_build_progress),
+        matched_movie_count: snapshot.matched_movie_count,
+        matched_series_count: snapshot.matched_series_count,
+        unmatched_movie_count: snapshot.unmatched_movie_count,
+        unmatched_series_count: snapshot.unmatched_series_count,
+        ambiguous_movie_count: snapshot.ambiguous_movie_count,
+        ambiguous_series_count: snapshot.ambiguous_series_count,
+        error_message: snapshot.error_message,
     }
 }
 
@@ -1874,6 +1939,21 @@ pub(crate) fn from_backup_info(info: BackupInfo) -> BackupInfoPayload {
         filename: info.filename,
         size_bytes: info.size_bytes.to_string(),
         created_at: info.created_at,
+        format_version: info.format_version,
+        source_engine: info.source_engine,
+        source_migration_key: info.source_migration_key,
+        encrypted: info.encrypted,
+        row_counts: info
+            .row_counts
+            .into_iter()
+            .map(|(table, row_count)| BackupRowCountPayload {
+                table,
+                row_count: row_count.to_string(),
+            })
+            .collect(),
+        trigger: info.trigger.as_str().to_string(),
+        status: info.status.as_str().to_string(),
+        error_message: info.error_message,
     }
 }
 
@@ -2007,5 +2087,48 @@ pub(crate) fn from_title_history_page(page: TitleHistoryPage) -> TitleHistoryPag
             .map(from_title_history_record)
             .collect(),
         total_count: page.total_count,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_import_record;
+    use crate::types::MediaFacetValue;
+    use scryer_domain::{CompletedDownload, ImportRecord, ImportStatus, ImportType};
+
+    #[test]
+    fn from_import_record_uses_release_folder_for_numeric_weaver_job_name() {
+        let payload = CompletedDownload {
+            client_type: "weaver".to_string(),
+            client_id: String::new(),
+            download_client_item_id: "10495".to_string(),
+            name: "10495".to_string(),
+            dest_dir: "/downloads/Example.Show.S01E01.1080p.WEB-DL".to_string(),
+            category: Some("anime".to_string()),
+            size_bytes: None,
+            completed_at: None,
+            parameters: vec![("*scryer_facet".to_string(), "anime".to_string())],
+        };
+        let record = ImportRecord {
+            id: "import-1".to_string(),
+            source_client_id: None,
+            source_system: "weaver".to_string(),
+            source_ref: "10495".to_string(),
+            import_type: ImportType::SeriesDownload,
+            status: ImportStatus::Completed,
+            payload_json: serde_json::to_string(&payload).expect("serialize completed download"),
+            result_json: None,
+            started_at: None,
+            finished_at: None,
+            created_at: "2026-04-27T20:17:00Z".to_string(),
+            updated_at: "2026-04-27T20:17:00Z".to_string(),
+        };
+
+        let mapped = from_import_record(record);
+        assert_eq!(
+            mapped.source_title.as_deref(),
+            Some("Example.Show.S01E01.1080p.WEB-DL")
+        );
+        assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
     }
 }

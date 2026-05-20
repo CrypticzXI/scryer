@@ -12,13 +12,14 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::context::LogBuffer;
 use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx};
 use crate::mappers::{
-    from_activity_event, from_domain_event, from_download_queue_item, from_job_run,
-    from_library_scan_session, from_plugin_install_progress,
+    from_activity_event, from_domain_event, from_download_queue_item,
+    from_external_import_monitor_warmup_progress, from_job_run, from_library_scan_session,
+    from_plugin_install_progress,
 };
 use crate::types::{
     ActivityEventPayload, DomainEventEnvelopePayload, DownloadActivityFilterValue,
-    DownloadQueueItemPayload, JobRunPayload, LibraryScanProgressPayload,
-    PluginInstallProgressPayload,
+    DownloadQueueItemPayload, ExternalImportMonitorWarmupProgressPayload, JobRunPayload,
+    LibraryScanProgressPayload, PluginInstallProgressPayload,
 };
 
 pub struct SubscriptionRoot;
@@ -762,6 +763,68 @@ impl SubscriptionRoot {
                 match receiver.changed().await {
                     Ok(()) => {
                         let payload = from_plugin_install_progress(receiver.borrow().clone());
+                        Some((payload, (receiver, false)))
+                    }
+                    Err(_) => None,
+                }
+            },
+        );
+
+        guard_subscription_stream(ctx, Box::pin(stream))
+    }
+
+    async fn external_import_monitor_warmup_progress(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+    ) -> BoxStream<'static, ExternalImportMonitorWarmupProgressPayload> {
+        let app = match app_from_ctx(ctx) {
+            Ok(app) => app,
+            Err(e) => {
+                tracing::warn!(
+                    "external_import_monitor_warmup_progress: app_from_ctx failed: {e:?}"
+                );
+                return empty_box_stream();
+            }
+        };
+
+        let actor = match actor_from_ctx(ctx) {
+            Ok(actor) => actor,
+            Err(e) => {
+                tracing::warn!(
+                    "external_import_monitor_warmup_progress: actor_from_ctx failed: {e:?}"
+                );
+                return empty_box_stream();
+            }
+        };
+
+        let receiver = match app
+            .subscribe_external_import_monitor_warmup_progress(&actor, &session_id)
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                tracing::warn!(
+                    session_id = session_id.as_str(),
+                    "external_import_monitor_warmup_progress: subscribe failed: {e}"
+                );
+                return empty_box_stream();
+            }
+        };
+
+        let stream = unfold(
+            (receiver, true),
+            move |(mut receiver, emit_initial)| async move {
+                if emit_initial {
+                    let payload =
+                        from_external_import_monitor_warmup_progress(receiver.borrow().clone());
+                    return Some((payload, (receiver, false)));
+                }
+
+                match receiver.changed().await {
+                    Ok(()) => {
+                        let payload =
+                            from_external_import_monitor_warmup_progress(receiver.borrow().clone());
                         Some((payload, (receiver, false)))
                     }
                     Err(_) => None,

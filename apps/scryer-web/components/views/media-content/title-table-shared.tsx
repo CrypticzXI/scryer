@@ -566,10 +566,25 @@ export function TitleTableEmptyState({
   );
 }
 
+export function TitleTableLoadingState({
+  colSpan,
+}: {
+  colSpan: number;
+}) {
+  return (
+    <TableRow>
+      <TableCell colSpan={colSpan} className="py-10">
+        <TitleCollectionLoadingState />
+      </TableCell>
+    </TableRow>
+  );
+}
+
 type TitleCollectionEmptyStateProps = {
   t: Translate;
   showScanAction?: boolean;
   showConfigureRootsAction?: boolean;
+  configureRootsReason?: "missing" | "invalid";
   configureRootsHref?: string;
   scanLoading?: boolean;
   scanDisabled?: boolean;
@@ -577,10 +592,29 @@ type TitleCollectionEmptyStateProps = {
   onScan?: () => Promise<void> | void;
 };
 
+export function TitleCollectionLoadingState() {
+  return (
+    <div
+      className="mx-auto flex max-w-sm items-center justify-center gap-3 rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <Loader2 className="h-5 w-5 animate-spin text-primary" />
+      <div className="text-left">
+        <p className="text-sm font-medium text-foreground">Loading library...</p>
+        <p className="text-sm text-muted-foreground">
+          Checking your titles and library setup.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function TitleCollectionEmptyState({
   t,
   showScanAction = false,
   showConfigureRootsAction = false,
+  configureRootsReason = "missing",
   configureRootsHref,
   scanLoading = false,
   scanDisabled = false,
@@ -592,10 +626,14 @@ export function TitleCollectionEmptyState({
       {showConfigureRootsAction && configureRootsHref ? (
         <div className="mx-auto max-w-sm rounded-xl border border-border/70 bg-card/60 px-5 py-5 text-center shadow-sm">
           <p className="text-sm font-medium text-foreground">
-            {t("settings.rootFoldersEmpty")}
+            {configureRootsReason === "invalid"
+              ? t("title.invalidRootFoldersTitle")
+              : t("settings.rootFoldersEmpty")}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            {t("title.configureRootFoldersHint")}
+            {configureRootsReason === "invalid"
+              ? t("title.invalidRootFoldersHint")
+              : t("title.configureRootFoldersHint")}
           </p>
           <Button asChild type="button" variant="primary" className="mt-4">
             <Link to={configureRootsHref}>

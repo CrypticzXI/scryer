@@ -37,6 +37,7 @@ import {
   TitleEpisodeProgressBar,
   TitleTableActionButton,
   TitleTableEmptyState,
+  TitleTableLoadingState,
   type TitleTableSortDirection,
   type TitleTableSortKey,
 } from "./title-table-shared";
@@ -58,6 +59,7 @@ type TitleTableProps = {
   isTogglingMonitoredById?: Record<string, boolean>;
   showScanLibraryAction?: boolean;
   showConfigureRootsAction?: boolean;
+  configureRootsReason?: "missing" | "invalid";
   configureRootsHref?: string;
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
@@ -82,6 +84,7 @@ export function TitleTable({
   isTogglingMonitoredById,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
+  configureRootsReason = "missing",
   configureRootsHref,
   onScanLibrary,
   scanLibraryLoading = false,
@@ -567,13 +570,18 @@ export function TitleTable({
               </tbody>
             ) : null}
           </>
-          ) : !titleLoading ? (
+          ) : titleLoading ? (
+            <TableBody>
+              <TitleTableLoadingState colSpan={columnCount} />
+            </TableBody>
+          ) : (
             <TableBody>
               <TitleTableEmptyState
                 colSpan={columnCount}
                 t={t}
                 showScanAction={showScanLibraryAction}
                 showConfigureRootsAction={showConfigureRootsAction}
+                configureRootsReason={configureRootsReason}
                 configureRootsHref={configureRootsHref}
                 onScan={onScanLibrary}
                 scanLoading={scanLibraryLoading}
@@ -581,7 +589,7 @@ export function TitleTable({
                 scanNotice={scanLibraryNotice}
               />
             </TableBody>
-          ) : null}
+          )}
       </table>
     </div>
   );

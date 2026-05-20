@@ -1,4 +1,5 @@
 import { Check, Loader2, X } from "lucide-react";
+import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
 import { Button } from "@/components/ui/button";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -6,6 +7,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types/download-clients";
 import { buildWeaverApiKeyUrl } from "@/lib/utils/download-clients";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
+import * as React from "react";
 
 const DOWNLOAD_CLIENT_TYPE_ICON_SRC_BY_VALUE: Record<string, string> = {
   nzbget: "/download-clients/nzbget.svg",
@@ -43,6 +46,7 @@ interface SetupDownloadClientViewProps {
   t: (key: string) => string;
   draft: DownloadClientDraft;
   downloadClientTypeOptions: DownloadClientTypeOption[];
+  localPathStyle: LocalPathStyle;
   onDraftChange: (updates: Partial<DownloadClientDraft>) => void;
   onTestConnection: () => void;
   onNext: () => void;
@@ -59,6 +63,7 @@ export function SetupDownloadClientView({
   t,
   draft,
   downloadClientTypeOptions,
+  localPathStyle,
   onDraftChange,
   onTestConnection,
   onNext,
@@ -70,15 +75,36 @@ export function SetupDownloadClientView({
   saved,
   error,
 }: SetupDownloadClientViewProps) {
+  const [areRemotePathMappingsValid, setAreRemotePathMappingsValid] = React.useState(true);
+  const [isFilesystemPathMappingOpen, setIsFilesystemPathMappingOpen] = React.useState(() =>
+    draft.remotePathMappings.trim().length > 0,
+  );
   const showApiKey = draft.clientType === "sabnzbd" || draft.clientType === "weaver";
-  const showCredentials = draft.clientType === "nzbget" || draft.clientType === "qbittorrent";
+  const showCredentials =
+    draft.clientType === "nzbget" ||
+    draft.clientType === "qbittorrent" ||
+    draft.clientType === "sabnzbd";
+  const showSabAlternativeAuth = draft.clientType === "sabnzbd";
+  const showDecypharrFilesystemHelp =
+    draft.clientType === "sabnzbd" || draft.clientType === "qbittorrent";
   const weaverApiKeyUrl = draft.clientType === "weaver" ? buildWeaverApiKeyUrl(draft) : "";
   const normalizedClientType = draft.clientType.trim().toLowerCase();
   const selectedDownloadClientLabel =
     downloadClientTypeOptions.find((option) => option.value === normalizedClientType)?.label ??
     (draft.clientType.trim() || "Download client");
-  const canTest = draft.name.trim().length > 0 && draft.host.trim().length > 0;
-  const canProceed = saved;
+  React.useEffect(() => {
+    if (draft.remotePathMappings.trim().length > 0 || !areRemotePathMappingsValid) {
+      setIsFilesystemPathMappingOpen(true);
+    } else {
+      setIsFilesystemPathMappingOpen(false);
+    }
+  }, [areRemotePathMappingsValid, draft.remotePathMappings]);
+
+  const canTest =
+    draft.name.trim().length > 0 &&
+    draft.host.trim().length > 0 &&
+    areRemotePathMappingsValid;
+  const canProceed = saved && areRemotePathMappingsValid;
 
   return (
     <div className="flex flex-col gap-6">
@@ -178,13 +204,21 @@ export function SetupDownloadClientView({
                   <span>finish the Weaver URL above to generate the link.</span>
                 )}
               </p>
+            ) : draft.clientType === "sabnzbd" ? (
+              <div className="space-y-2 text-xs text-muted-foreground">
+                <p>{t("settings.downloadClientSabnzbdAuthHelp")}</p>
+                <p>{t("settings.downloadClientSabnzbdNzbdavHelp")}</p>
+              </div>
             ) : null}
           </div>
         )}
         {showCredentials && (
           <>
             <div className="space-y-2">
-              <Label htmlFor="dc-username">{t("settings.username")}</Label>
+              <Label htmlFor="dc-username">
+                {t("settings.username")}
+                {showSabAlternativeAuth ? " (optional)" : ""}
+              </Label>
               <Input
                 id="dc-username"
                 value={draft.username}
@@ -192,7 +226,10 @@ export function SetupDownloadClientView({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="dc-password">{t("settings.password")}</Label>
+              <Label htmlFor="dc-password">
+                {t("settings.password")}
+                {showSabAlternativeAuth ? " (optional)" : ""}
+              </Label>
               <Input
                 id="dc-password"
                 type="password"
@@ -200,8 +237,44 @@ export function SetupDownloadClientView({
                 onChange={(e) => onDraftChange({ password: e.target.value })}
               />
             </div>
+            {draft.clientType === "qbittorrent" ? (
+              <p className="text-xs text-muted-foreground">
+                {t("settings.downloadClientQbittorrentDecypharrHelp")}
+              </p>
+            ) : null}
           </>
         )}
+        {showDecypharrFilesystemHelp ? (
+          <p className="text-xs text-muted-foreground">
+            {t("settings.downloadClientDecypharrFilesystemHelp")}
+          </p>
+        ) : null}
+        <details
+          className="rounded-xl border border-border bg-card p-3"
+          open={isFilesystemPathMappingOpen}
+          onToggle={(event) =>
+            setIsFilesystemPathMappingOpen(event.currentTarget.open)
+          }
+        >
+          <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+            {t("settings.downloadClientFilesystemPathMapping")}
+          </summary>
+          <div className="mt-3 space-y-3">
+            <p className="text-xs text-muted-foreground">
+              {t("settings.downloadClientFilesystemPathMappingHelp")}
+            </p>
+            <DownloadClientRemotePathMappingsField
+              fieldKey="remote_path_mappings"
+              label={t("settings.downloadClientRemotePathMappings")}
+              value={draft.remotePathMappings}
+              helpText={t("settings.downloadClientRemotePathMappingsHelp")}
+              localPathStyle={localPathStyle}
+              translate={t}
+              onValidityChange={setAreRemotePathMappingsValid}
+              onChange={(_, value) => onDraftChange({ remotePathMappings: value })}
+            />
+          </div>
+        </details>
         <div className="flex items-center gap-3">
           <Button
             variant="outline"

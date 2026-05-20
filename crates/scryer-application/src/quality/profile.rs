@@ -1,5 +1,5 @@
 use crate::release_group_db::apply_release_group_scoring_with_context;
-use crate::release_parser::ParsedReleaseMetadata;
+use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
 use crate::scoring_weights::{
     ScoringOverrides, ScoringPersona, ScoringWeights, audio_weight_for_codec,
 };
@@ -21,8 +21,8 @@ pub struct QualityProfileCriteria {
     pub allow_unknown_quality: bool,
     pub source_allowlist: Vec<String>,
     pub source_blocklist: Vec<String>,
-    pub video_codec_allowlist: Vec<String>,
-    pub video_codec_blocklist: Vec<String>,
+    pub video_codec_allowlist: Vec<VideoCodec>,
+    pub video_codec_blocklist: Vec<VideoCodec>,
     pub audio_codec_allowlist: Vec<String>,
     pub audio_codec_blocklist: Vec<String>,
     pub atmos_preferred: bool,
@@ -203,7 +203,7 @@ pub fn parse_profile_catalog_from_json(
     raw_json: &str,
 ) -> Result<Vec<QualityProfile>, serde_json::Error> {
     let profiles = serde_json::from_str::<Vec<RawQualityProfile>>(raw_json)?;
-    Ok(profiles.into_iter().map(quality_profile_from_raw).collect())
+    profiles.into_iter().map(quality_profile_from_raw).collect()
 }
 
 pub fn default_quality_profile_for_search() -> QualityProfile {
@@ -268,11 +268,11 @@ pub fn default_quality_profile_1080p_for_search() -> QualityProfile {
     }
 }
 
-fn quality_profile_from_raw(raw: RawQualityProfile) -> QualityProfile {
+fn quality_profile_from_raw(raw: RawQualityProfile) -> Result<QualityProfile, serde_json::Error> {
     let criteria = raw.criteria;
     let quality_tiers = normalize_list(criteria.quality_tiers);
     let archival_quality = resolve_archival_quality(criteria.archival_quality, &quality_tiers);
-    QualityProfile {
+    Ok(QualityProfile {
         id: raw.id,
         name: raw.name,
         criteria: QualityProfileCriteria {
@@ -281,8 +281,14 @@ fn quality_profile_from_raw(raw: RawQualityProfile) -> QualityProfile {
             allow_unknown_quality: criteria.allow_unknown_quality,
             source_allowlist: normalize_list(criteria.source_allowlist),
             source_blocklist: normalize_list(criteria.source_blocklist),
-            video_codec_allowlist: normalize_codec_list(criteria.video_codec_allowlist),
-            video_codec_blocklist: normalize_codec_list(criteria.video_codec_blocklist),
+            video_codec_allowlist: normalize_codec_list(
+                criteria.video_codec_allowlist,
+                "criteria.video_codec_allowlist",
+            )?,
+            video_codec_blocklist: normalize_codec_list(
+                criteria.video_codec_blocklist,
+                "criteria.video_codec_blocklist",
+            )?,
             audio_codec_allowlist: normalize_list(criteria.audio_codec_allowlist),
             audio_codec_blocklist: normalize_list(criteria.audio_codec_blocklist),
             atmos_preferred: criteria.atmos_preferred,
@@ -304,7 +310,7 @@ fn quality_profile_from_raw(raw: RawQualityProfile) -> QualityProfile {
             min_score_to_grab: criteria.min_score_to_grab,
             facet_persona_overrides: criteria.facet_persona_overrides,
         },
-    }
+    })
 }
 
 impl Default for QualityProfile {
@@ -372,7 +378,7 @@ impl Default for QualityProfileCriteria {
 impl QualityProfile {
     pub fn parse(raw_json: &str) -> Result<Self, serde_json::Error> {
         let raw: RawQualityProfile = serde_json::from_str(raw_json)?;
-        Ok(quality_profile_from_raw(raw))
+        quality_profile_from_raw(raw)
     }
 }
 
@@ -384,11 +390,24 @@ fn normalize_list(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn normalize_codec_list(values: Vec<String>) -> Vec<String> {
+fn invalid_profile_codec(field: &str, value: &str) -> serde_json::Error {
+    serde_json::Error::io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("invalid value {value:?} for {field}"),
+    ))
+}
+
+fn normalize_codec_list(
+    values: Vec<String>,
+    field: &str,
+) -> Result<Vec<VideoCodec>, serde_json::Error> {
     values
         .into_iter()
-        .filter_map(|value| normalize_codec(Some(value.trim())))
-        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            VideoCodec::parse(trimmed.as_str())
+                .ok_or_else(|| invalid_profile_codec(field, trimmed.as_str()))
+        })
         .collect()
 }
 
@@ -418,10 +437,14 @@ fn normalize_source(raw: Option<&str>) -> Option<String> {
 }
 
 fn normalize_codec(raw: Option<&str>) -> Option<String> {
-    raw.map(|value| match value.to_ascii_uppercase().as_str() {
-        "AVC" | "AVC1" | "H264" | "H.264" | "X264" => "H.264".to_string(),
-        "HEVC" | "HEV1" | "H265" | "H.265" | "HVC1" | "X265" => "H.265".to_string(),
-        value => value.to_string(),
+    raw.map(|value| {
+        let value = value.trim();
+        match value.to_ascii_uppercase().as_str() {
+            "AVC" | "AVC1" | "H264" | "H.264" | "X264" => "H.264".to_string(),
+            "HEVC" | "HEV1" | "H265" | "H.265" | "HVC1" | "X265" => "H.265".to_string(),
+            "AV1" | "AV01" => "AV1".to_string(),
+            _ => value.to_string(),
+        }
     })
 }
 
@@ -620,20 +643,22 @@ pub fn evaluate_against_profile_for_category(
     }
 
     // ── Video codec ──────────────────────────────────────────────────────────
-    if let Some(codec) = normalize_codec(release.video_codec.as_deref()) {
-        if !c.video_codec_blocklist.is_empty() && is_in_list(&codec, &c.video_codec_blocklist) {
+    if let Some(codec) = release.video_codec.as_ref() {
+        if !c.video_codec_blocklist.is_empty() && c.video_codec_blocklist.contains(codec) {
             d.log("video_codec_in_profile_blocklist", BLOCK_SCORE);
         } else if !c.video_codec_allowlist.is_empty() {
-            if let Some(idx) = c.video_codec_allowlist.iter().position(|c| c == &codec) {
+            if let Some(idx) = c.video_codec_allowlist.iter().position(|c| c == codec) {
                 let bonus = (80_i32 - idx as i32 * 20).max(0);
                 d.log(&format!("video_codec_preferred_{idx}"), bonus);
             } else {
                 d.log("video_codec_not_in_profile_allowlist", BLOCK_SCORE);
             }
         } else {
-            let (code, delta) = match codec.as_str() {
-                "H.265" | "AV1" | "VP9" => ("video_codec_quality_high", weights.video_codec_high),
-                "H.264" => ("video_codec_quality_mid", weights.video_codec_mid),
+            let (code, delta) = match codec {
+                VideoCodec::H265 | VideoCodec::Av1 | VideoCodec::Vp9 => {
+                    ("video_codec_quality_high", weights.video_codec_high)
+                }
+                VideoCodec::H264 => ("video_codec_quality_mid", weights.video_codec_mid),
                 _ => ("video_codec_quality_other", 0),
             };
             if delta != 0 {
@@ -982,12 +1007,12 @@ fn expected_bitrate_mbps(quality: Option<&str>, media_category: MediaSizeCategor
 ///
 /// Values match the canonical codec strings emitted by `parse_release_metadata`
 /// (`"H.264"`, `"H.265"`, `"AV1"`, `"VP9"`).
-fn codec_efficiency_factor(codec: Option<&str>) -> f64 {
+fn codec_efficiency_factor(codec: Option<&VideoCodec>) -> f64 {
     match codec {
-        Some("AV1") => 0.50,
-        Some("H.265") => 0.75,
-        Some("VP9") => 0.75,
-        Some("H.264") => 1.10,
+        Some(VideoCodec::Av1) => 0.50,
+        Some(VideoCodec::H265) => 0.75,
+        Some(VideoCodec::Vp9) => 0.75,
+        Some(VideoCodec::H264) => 1.10,
         _ => 1.0,
     }
 }
@@ -1098,7 +1123,7 @@ pub fn apply_size_scoring_for_category(
     let is_anime = media_category == MediaSizeCategory::Anime;
 
     let bitrate = expected_bitrate_mbps(quality.as_deref(), media_category);
-    let codec_factor = codec_efficiency_factor(release.video_codec.as_deref());
+    let codec_factor = codec_efficiency_factor(release.video_codec.as_ref());
     let source_factor = source_size_factor(
         source.as_deref(),
         release.is_remux,

@@ -301,144 +301,146 @@ function PluginTable({
   emptyMessage: string;
 }) {
   const t = useTranslate();
-  const actionsColumnClass = showActions === "installed" ? "w-32 text-right" : "w-24 text-right";
+  const nameColumnClass = "w-[38%]";
+  const typeColumnClass = "w-[15%]";
+  const versionColumnClass = "w-[13%]";
+  const statusColumnClass = "w-[16%]";
+  const actionsColumnClass =
+    showActions === "installed" ? "w-32 text-right" : "w-48 text-right";
   if (plugins.length === 0) {
     return <p className="py-4 text-sm text-muted-foreground">{emptyMessage}</p>;
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>{t("label.name")}</TableHead>
-          <TableHead>{t("label.type")}</TableHead>
-          <TableHead>{t("label.version")}</TableHead>
-          <TableHead>{t("label.status")}</TableHead>
-          {showActions === "installed" && <TableHead>{t("label.enabled")}</TableHead>}
-          <TableHead className={actionsColumnClass}>{t("label.actions")}</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {plugins.map((plugin) => {
-          const progress = pluginProgress[plugin.id];
-          const runningProgress = isRunningPluginProgress(progress) ? progress : undefined;
-          const isBusy = mutatingPluginIds.includes(plugin.id) || plugin.installInProgress;
-          const isUpgrading =
-            (runningProgress?.operationKind === "upgrade")
-            || (plugin.installInProgress && showActions === "installed");
-          const sourceLink = plugin.sourceRepo ?? plugin.sourceUrl;
-          const normalizedSourceLink = normalizePluginLink(sourceLink);
-          const normalizedDocsLink = normalizePluginLink(plugin.docsUrl);
-          const showDocsLink =
-            normalizedDocsLink !== null && normalizedDocsLink !== normalizedSourceLink;
-          const actionError = pluginErrors[plugin.id];
-          const displayVersion =
-            showActions === "installed" && plugin.installedVersion
-              ? plugin.installedVersion
-              : plugin.version;
-          const blockedLabel = blockedReasonLabel(plugin, t);
-          return (
-            <TableRow key={plugin.id}>
-              <TableCell>
-                <div>
-                  <div className="font-medium">{plugin.name}</div>
-                  <div className="max-w-[300px] whitespace-normal break-words text-xs text-muted-foreground">
-                    {plugin.description}
+    <div className="overflow-hidden rounded-xl border border-border/70 bg-card/20">
+      <Table className="table-fixed">
+        <TableHeader>
+          <TableRow>
+            <TableHead className={nameColumnClass}>{t("label.name")}</TableHead>
+            <TableHead className={typeColumnClass}>{t("label.type")}</TableHead>
+            <TableHead className={versionColumnClass}>{t("label.version")}</TableHead>
+            <TableHead className={statusColumnClass}>{t("label.status")}</TableHead>
+            {showActions === "installed" && (
+              <TableHead className="w-20 text-center">{t("label.enabled")}</TableHead>
+            )}
+            <TableHead className={actionsColumnClass}>{t("label.actions")}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {plugins.map((plugin) => {
+            const progress = pluginProgress[plugin.id];
+            const runningProgress = isRunningPluginProgress(progress) ? progress : undefined;
+            const isBusy = mutatingPluginIds.includes(plugin.id) || plugin.installInProgress;
+            const isUpgrading =
+              (runningProgress?.operationKind === "upgrade")
+              || (plugin.installInProgress && showActions === "installed");
+            const sourceLink = plugin.sourceRepo ?? plugin.sourceUrl;
+            const normalizedSourceLink = normalizePluginLink(sourceLink);
+            const normalizedDocsLink = normalizePluginLink(plugin.docsUrl);
+            const showDocsLink =
+              normalizedDocsLink !== null && normalizedDocsLink !== normalizedSourceLink;
+            const actionError = pluginErrors[plugin.id];
+            const displayVersion =
+              showActions === "installed" && plugin.installedVersion
+                ? plugin.installedVersion
+                : plugin.version;
+            const blockedLabel = blockedReasonLabel(plugin, t);
+            return (
+              <TableRow key={plugin.id}>
+                <TableCell className={nameColumnClass}>
+                  <div>
+                    <div className="font-medium">{plugin.name}</div>
+                    <div className="max-w-[300px] whitespace-normal break-words text-xs text-muted-foreground">
+                      {plugin.description}
+                    </div>
+                    {(sourceLink || showDocsLink) && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                        {sourceLink && (
+                          <a
+                            href={sourceLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-primary hover:underline"
+                          >
+                            {t("settings.pluginSource")}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                        {showDocsLink && plugin.docsUrl && (
+                          <a
+                            href={plugin.docsUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-primary hover:underline"
+                          >
+                            {t("settings.pluginDocs")}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  {(sourceLink || showDocsLink) && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                      {sourceLink && (
-                        <a
-                          href={sourceLink}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-primary hover:underline"
-                        >
-                          {t("settings.pluginSource")}
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
-                      {showDocsLink && plugin.docsUrl && (
-                        <a
-                          href={plugin.docsUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-primary hover:underline"
-                        >
-                          {t("settings.pluginDocs")}
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
+                </TableCell>
+                <TableCell className={cn(typeColumnClass, "text-sm")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
+                <TableCell className={cn(versionColumnClass, "text-sm")}>
+                  {t("settings.pluginVersion", { version: displayVersion })}
+                  {plugin.updateAvailable && (
+                    <div className="text-xs text-yellow-400">
+                      {t("settings.pluginUpdateAvailable", { version: plugin.version })}
                     </div>
                   )}
-                </div>
-              </TableCell>
-              <TableCell className="text-sm">{categoryLabel(plugin.pluginType, t)}</TableCell>
-              <TableCell className="text-sm">
-                {t("settings.pluginVersion", { version: displayVersion })}
-                {plugin.updateAvailable && (
-                  <div className="text-xs text-yellow-400">
-                    {t("settings.pluginUpdateAvailable", { version: plugin.version })}
-                  </div>
-                )}
-                {blockedLabel && (
-                  <div className="text-xs text-destructive">
-                    {blockedLabel}
-                  </div>
-                )}
-                {actionError && (
-                  <div className="text-xs text-destructive">
+                  {blockedLabel && (
+                    <div className="text-xs text-destructive">
+                      {blockedLabel}
+                    </div>
+                  )}
+                  {actionError && (
+                    <div className="text-xs text-destructive">
                     {actionError}
                   </div>
                 )}
-              </TableCell>
-              <TableCell>
-                <div className="flex items-center gap-2">
-                  {plugin.builtin && (
-                    <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-xs text-blue-300">
-                      {t("settings.pluginBuiltin")}
-                    </span>
-                  )}
-                  {plugin.official && (
-                    <span className="rounded bg-purple-900/40 px-1.5 py-0.5 text-xs text-purple-300">
-                      {t("settings.pluginOfficial")}
-                    </span>
-                  )}
-                  {plugin.supportTier === "verified_community" && (
-                    <span className="rounded bg-cyan-900/40 px-1.5 py-0.5 text-xs text-cyan-300">
-                      {t("settings.pluginVerifiedCommunity")}
-                    </span>
-                  )}
-                  {plugin.supportTier === "unverified" && (
-                    <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
-                      {t("settings.pluginUnverified")}
-                    </span>
-                  )}
-                  {isDownloadedBuiltinOverride(plugin) && (
-                    <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
-                      {t("settings.pluginOverride")}
-                    </span>
-                  )}
-                </div>
-              </TableCell>
-              {showActions === "installed" && (
-                <TableCell className="text-center">
-                  <RenderBooleanIcon
-                    value={plugin.isEnabled}
-                    label={`${t("label.enabled")}: ${plugin.name}`}
-                  />
                 </TableCell>
-              )}
-              <TableCell className={actionsColumnClass}>
-                <div
-                  className={cn(
-                    "ml-auto flex min-w-0 flex-col items-end gap-2",
-                    showActions === "installed" ? "w-28" : "w-20",
-                  )}
-                >
-                  <div className="flex w-full items-center justify-end gap-1">
-                    {showActions === "installed" ? (
-                      <>
+                <TableCell className={statusColumnClass}>
+                  <div className="flex items-center gap-2">
+                    {plugin.builtin && (
+                      <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-xs text-blue-300">
+                        {t("settings.pluginBuiltin")}
+                      </span>
+                    )}
+                    {plugin.official && (
+                      <span className="rounded bg-purple-900/40 px-1.5 py-0.5 text-xs text-purple-300">
+                        {t("settings.pluginOfficial")}
+                      </span>
+                    )}
+                    {plugin.supportTier === "verified_community" && (
+                      <span className="rounded bg-cyan-900/40 px-1.5 py-0.5 text-xs text-cyan-300">
+                        {t("settings.pluginVerifiedCommunity")}
+                      </span>
+                    )}
+                    {plugin.supportTier === "unverified" && (
+                      <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
+                        {t("settings.pluginUnverified")}
+                      </span>
+                    )}
+                    {isDownloadedBuiltinOverride(plugin) && (
+                      <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-300">
+                        {t("settings.pluginOverride")}
+                      </span>
+                    )}
+                  </div>
+                </TableCell>
+                {showActions === "installed" && (
+                  <TableCell className="w-20 text-center">
+                    <RenderBooleanIcon
+                      value={plugin.isEnabled}
+                      label={`${t("label.enabled")}: ${plugin.name}`}
+                    />
+                  </TableCell>
+                )}
+                <TableCell className={actionsColumnClass}>
+                  {showActions === "installed" ? (
+                    <div className="ml-auto flex min-w-0 flex-col items-end gap-2 w-28">
+                      <div className="flex w-full items-center justify-end gap-1">
                         <PluginActionButton
                           tone={plugin.isEnabled ? "disabled" : "enabled"}
                           disabled={isBusy}
@@ -475,40 +477,57 @@ function PluginTable({
                             <Trash2 className="h-4 w-4" />
                           </PluginActionButton>
                         )}
-                      </>
-                    ) : (
-                      <PluginActionButton
-                        tone="install"
-                        disabled={isBusy || installBlocked || installIsBlocked(plugin)}
-                        onClick={() => onInstallPlugin(plugin)}
-                        label={t("settings.pluginInstall")}
-                      >
-                        {isBusy ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Download className="h-4 w-4" />
-                        )}
-                      </PluginActionButton>
-                    )}
-                  </div>
-                  {runningProgress && (
-                    <div className="w-full space-y-1 overflow-hidden">
-                      <div className="truncate text-right text-xs leading-tight text-primary">
-                        {pluginProgressLabel(runningProgress, t)}
                       </div>
-                      <Progress
-                        value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
-                        className="h-1.5"
-                      />
+                      {runningProgress && (
+                        <div className="w-full space-y-1 overflow-hidden">
+                          <div className="truncate text-right text-xs leading-tight text-primary">
+                            {pluginProgressLabel(runningProgress, t)}
+                          </div>
+                          <Progress
+                            value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
+                            className="h-1.5"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="ml-auto grid w-44 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                      <div className="min-w-0">
+                        {runningProgress ? (
+                          <div className="space-y-1 overflow-hidden">
+                            <div className="truncate text-right text-xs leading-tight text-primary">
+                              {pluginProgressLabel(runningProgress, t)}
+                            </div>
+                            <Progress
+                              value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
+                              className="h-1.5"
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="flex justify-end">
+                        <PluginActionButton
+                          tone="install"
+                          disabled={isBusy || installBlocked || installIsBlocked(plugin)}
+                          onClick={() => onInstallPlugin(plugin)}
+                          label={t("settings.pluginInstall")}
+                        >
+                          {isBusy ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Download className="h-4 w-4" />
+                          )}
+                        </PluginActionButton>
+                      </div>
                     </div>
                   )}
-                </div>
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </div>
   );
 }
 

@@ -1,6 +1,7 @@
 
 import * as React from "react";
-import { ChevronDown, ChevronUp, Edit, Power, PowerOff, Server, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Edit, Plus, Power, PowerOff, Server, Trash2 } from "lucide-react";
+import { DownloadClientRemotePathMappingsField } from "@/components/common/download-client-remote-path-mappings-field";
 import { InfoHelp } from "@/components/common/info-help";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 
 type DownloadClientTypeLogoOption = {
   value: string;
@@ -153,6 +155,55 @@ function DownloadClientActionButton({
   );
 }
 
+function formatRelativeTime(isoDate: string): string {
+  const date = new Date(isoDate);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const isFuture = diffMs < 0;
+  const absMs = Math.abs(diffMs);
+  const minutes = Math.max(1, Math.floor(absMs / 60000));
+  const hours = Math.floor(absMs / 3600000);
+  const days = Math.floor(absMs / 86400000);
+
+  const amount = minutes < 60
+    ? `${minutes}m`
+    : hours < 24
+      ? `${hours}h`
+      : `${days}d`;
+
+  return isFuture ? `in ${amount}` : `${amount} ago`;
+}
+
+function DownloadClientStatusCell({ client }: { client: DownloadClientRecord }) {
+  const t = useTranslate();
+  if (!client.isEnabled) {
+    return <span className="text-muted-foreground">{t("label.disabled")}</span>;
+  }
+
+  if (client.lastError || client.status === "error" || client.status === "failed") {
+    return (
+      <span
+        className="text-red-600 dark:text-red-400"
+        title={client.lastError ?? client.status}
+      >
+        {t("settings.downloadClientLastError")}
+      </span>
+    );
+  }
+
+  if (client.lastSeenAt) {
+    return (
+      <span title={client.lastSeenAt}>
+        {t("settings.downloadClientLastSeen", {
+          time: formatRelativeTime(client.lastSeenAt),
+        })}
+      </span>
+    );
+  }
+
+  return <span className="text-muted-foreground">{t("settings.downloadClientNoActivity")}</span>;
+}
+
 export type SettingsDownloadClientsSectionProps = {
   editingDownloadClientId: string | null;
   downloadClientTypeOptions: DownloadClientTypeOption[];
@@ -170,6 +221,10 @@ export type SettingsDownloadClientsSectionProps = {
   downloadClientOrder: string[];
   moveDownloadClient: (clientId: string, direction: "up" | "down") => Promise<void> | void;
   isSavingOrder: boolean;
+  isEditorOpen: boolean;
+  editorMode: "create" | "edit";
+  localPathStyle: LocalPathStyle;
+  startCreateDownloadClient: () => void;
 };
 
 const DOWNLOAD_CLIENT_TYPE_LOGO_OPTIONS: DownloadClientTypeLogoOption[] = [
@@ -260,6 +315,10 @@ export function SettingsDownloadClientsSection({
   downloadClientOrder,
   moveDownloadClient,
   isSavingOrder,
+  isEditorOpen,
+  editorMode,
+  localPathStyle,
+  startCreateDownloadClient,
 }: SettingsDownloadClientsSectionProps) {
   const t = useTranslate();
   const urlPreview = buildUrlPreview(downloadClientDraft);
@@ -272,6 +331,10 @@ export function SettingsDownloadClientsSection({
     (configuredClientLabel || "Download client");
   const hasApiKeyField =
     normalizedClientType === "sabnzbd" || normalizedClientType === "weaver";
+  const showCredentialFields =
+    normalizedClientType === "nzbget" ||
+    normalizedClientType === "qbittorrent" ||
+    normalizedClientType === "sabnzbd";
   const weaverApiKeyUrl =
     normalizedClientType === "weaver" ? buildWeaverApiKeyUrl(downloadClientDraft) : "";
 
@@ -316,8 +379,49 @@ export function SettingsDownloadClientsSection({
     }
     return ordered;
   }, [downloadClientOrder, clientById, settingsDownloadClients]);
-  const hasOptionalCredentials = normalizedClientType === "nzbget";
+  const hasOptionalCredentials =
+    normalizedClientType === "nzbget" || normalizedClientType === "sabnzbd";
   const optionalCredentialLabel = hasOptionalCredentials ? " (optional)" : "";
+  const isEditing = editorMode === "edit";
+  const [areRemotePathMappingsValid, setAreRemotePathMappingsValid] = React.useState(true);
+  const [isFilesystemPathMappingOpen, setIsFilesystemPathMappingOpen] = React.useState(() =>
+    downloadClientDraft.remotePathMappings.trim().length > 0,
+  );
+  const editorIdentity = `${isEditorOpen ? "open" : "closed"}:${editorMode}:${editingDownloadClientId ?? "new"}`;
+  const previousEditorIdentity = React.useRef(editorIdentity);
+
+  React.useEffect(() => {
+    if (previousEditorIdentity.current === editorIdentity) {
+      return;
+    }
+
+    previousEditorIdentity.current = editorIdentity;
+    setAreRemotePathMappingsValid(true);
+    setIsFilesystemPathMappingOpen(
+      downloadClientDraft.remotePathMappings.trim().length > 0,
+    );
+  }, [downloadClientDraft.remotePathMappings, editorIdentity]);
+
+  React.useEffect(() => {
+    if (downloadClientDraft.remotePathMappings.trim().length > 0 || !areRemotePathMappingsValid) {
+      setIsFilesystemPathMappingOpen(true);
+    } else {
+      setIsFilesystemPathMappingOpen(false);
+    }
+  }, [areRemotePathMappingsValid, downloadClientDraft.remotePathMappings]);
+
+  const handleSubmitDownloadClient = React.useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      if (!areRemotePathMappingsValid) {
+        event.preventDefault();
+        setIsFilesystemPathMappingOpen(true);
+        return;
+      }
+
+      return submitDownloadClient(event);
+    },
+    [areRemotePathMappingsValid, submitDownloadClient],
+  );
 
   return (
     <div className="space-y-4 text-sm">
@@ -338,6 +442,7 @@ export function SettingsDownloadClientsSection({
                   </TableHead>
                   <TableHead>{t("settings.baseUrl")}</TableHead>
                   <TableHead className="text-center">{t("label.enabled")}</TableHead>
+                  <TableHead>{t("settings.downloadClientStatus")}</TableHead>
                   <TableHead className="text-right">{t("label.actions")}</TableHead>
                 </TableRow>
             </TableHeader>
@@ -386,6 +491,9 @@ export function SettingsDownloadClientsSection({
                       label={`${t("label.enabled")}: ${client.name}`}
                     />
                   </TableCell>
+                  <TableCell>
+                    <DownloadClientStatusCell client={client} />
+                  </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
                       <DownloadClientActionButton
@@ -422,7 +530,7 @@ export function SettingsDownloadClientsSection({
               })}
               {orderedClients.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-muted-foreground">
+                  <TableCell colSpan={7} className="text-muted-foreground">
                     {t("settings.noDownloadClientsFound")}
                   </TableCell>
                 </TableRow>
@@ -432,22 +540,32 @@ export function SettingsDownloadClientsSection({
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            {editingDownloadClientId ? t("settings.downloadClientUpdate") : t("settings.downloadClientCreate")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form className="space-y-3" onSubmit={submitDownloadClient}>
+      {isEditorOpen ? (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                {editingDownloadClientId
+                  ? t("settings.downloadClientUpdate")
+                  : t("settings.downloadClientCreate")}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form
+                id="settings-download-client-form"
+                className="space-y-3"
+                onSubmit={handleSubmitDownloadClient}
+              >
             <div className="grid gap-3 md:grid-cols-3">
-              <label>
-                <Label className="mb-2 block">{t("label.type")}</Label>
+              <div>
+                <Label className="mb-2 block" htmlFor="settings-download-client-type">
+                  {t("label.type")}
+                </Label>
                 <Select
                   value={downloadClientDraft.clientType}
                   onValueChange={handleDownloadClientTypeChange}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger id="settings-download-client-type" className="w-full">
                     <SelectValue aria-label={selectedDownloadClientLabel}>
                       <DownloadClientTypeOptionContent
                         typeValue={downloadClientDraft.clientType}
@@ -471,10 +589,13 @@ export function SettingsDownloadClientsSection({
                     ))}
                   </SelectContent>
                 </Select>
-              </label>
-              <label>
-                <Label className="mb-2 block">{t("label.name")}</Label>
+              </div>
+              <div>
+                <Label className="mb-2 block" htmlFor="settings-download-client-name">
+                  {t("label.name")}
+                </Label>
                 <Input
+                  id="settings-download-client-name"
                   value={downloadClientDraft.name}
                   onChange={(event) =>
                     setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -485,11 +606,14 @@ export function SettingsDownloadClientsSection({
                   required
                   placeholder={t("settings.downloadClientNamePlaceholder")}
                 />
-              </label>
+              </div>
               <div className="md:col-span-3 grid grid-cols-1 gap-2 md:grid-cols-[220px_92px_128px_auto] md:items-end md:gap-2">
-                <label>
-                  <Label className="mb-2 block">{t("settings.host")}</Label>
+                <div>
+                  <Label className="mb-2 block" htmlFor="settings-download-client-host">
+                    {t("settings.host")}
+                  </Label>
                   <Input
+                    id="settings-download-client-host"
                     className="w-56 max-w-56"
                     value={downloadClientDraft.host}
                     onChange={(event) =>
@@ -501,10 +625,13 @@ export function SettingsDownloadClientsSection({
                     required
                     placeholder={t("settings.downloadClientHostPlaceholder")}
                   />
-                </label>
-                <label>
-                  <Label className="mb-2 block">{t("settings.port")}</Label>
+                </div>
+                <div>
+                  <Label className="mb-2 block" htmlFor="settings-download-client-port">
+                    {t("settings.port")}
+                  </Label>
                   <Input
+                    id="settings-download-client-port"
                     {...integerInputProps}
                     value={downloadClientDraft.port}
                     onChange={(event) =>
@@ -516,10 +643,16 @@ export function SettingsDownloadClientsSection({
                     className="w-24 max-w-24"
                     placeholder={t("settings.downloadClientPortPlaceholder")}
                   />
-                </label>
-                <label>
-                  <Label className="mb-2 block">{t("settings.downloadClientUrlBase")}</Label>
+                </div>
+                <div>
+                  <Label
+                    className="mb-2 block"
+                    htmlFor="settings-download-client-url-base"
+                  >
+                    {t("settings.downloadClientUrlBase")}
+                  </Label>
                   <Input
+                    id="settings-download-client-url-base"
                     value={downloadClientDraft.urlBase}
                     onChange={(event) =>
                       setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -530,7 +663,7 @@ export function SettingsDownloadClientsSection({
                     className="w-36 max-w-36"
                     placeholder={t("settings.downloadClientUrlBasePlaceholder")}
                   />
-                </label>
+                </div>
                 <label className="mb-2 ml-2 flex items-center gap-1.5 pl-2.5 md:ml-4">
                   <Checkbox
                     checked={downloadClientDraft.useSsl}
@@ -554,10 +687,33 @@ export function SettingsDownloadClientsSection({
                 <Label className="mb-2 block">{t("settings.downloadClientUrlPreview")}</Label>
                 <Input value={urlPreview || "https://..."} readOnly disabled className="text-muted-foreground" />
               </label>
+              <div className="md:col-span-3 rounded-xl border border-border bg-card/60 p-3">
+                <label className="flex items-center gap-3">
+                  <Checkbox
+                    checked={downloadClientDraft.isEnabled}
+                    onCheckedChange={(checked) =>
+                      setDownloadClientDraft((prev: DownloadClientDraft) => ({
+                        ...prev,
+                        isEnabled: checked === true,
+                      }))
+                    }
+                  />
+                  <span className="inline-flex items-center gap-2 text-sm font-medium">
+                    {t("settings.downloadClientEnabledLabel")}
+                    <InfoHelp
+                      ariaLabel={t("settings.downloadClientEnabledLabel")}
+                      text={t("settings.downloadClientEnabledInfo")}
+                    />
+                  </span>
+                </label>
+              </div>
               {hasApiKeyField ? (
-                <label>
-                  <Label className="mb-2 block">{t("settings.apiKey")}</Label>
+                <div>
+                  <Label className="mb-2 block" htmlFor="settings-download-client-api-key">
+                    {t("settings.apiKey")}
+                  </Label>
                   <Input
+                    id="settings-download-client-api-key"
                     value={downloadClientDraft.apiKey}
                     onChange={(event) =>
                       setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -584,17 +740,23 @@ export function SettingsDownloadClientsSection({
                         <span>finish the Weaver URL above to generate the link.</span>
                       )}
                     </p>
+                  ) : normalizedClientType === "sabnzbd" ? (
+                    <div className="mt-2 space-y-2 text-xs text-muted-foreground">
+                      <p>{t("settings.downloadClientSabnzbdAuthHelp")}</p>
+                      <p>{t("settings.downloadClientSabnzbdNzbdavHelp")}</p>
+                    </div>
                   ) : null}
-                </label>
+                </div>
               ) : null}
-              {!hasApiKeyField ? (
+              {showCredentialFields ? (
                 <>
-                  <label>
-                    <Label className="mb-2 block">
+                  <div>
+                    <Label className="mb-2 block" htmlFor="settings-download-client-username">
                       {t("settings.username")}
                       {optionalCredentialLabel}
                     </Label>
                     <Input
+                      id="settings-download-client-username"
                       value={downloadClientDraft.username}
                       onChange={(event) =>
                         setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -604,13 +766,14 @@ export function SettingsDownloadClientsSection({
                       }
                       placeholder={t("form.usernamePlaceholder")}
                     />
-                  </label>
-                  <label>
-                    <Label className="mb-2 block">
+                  </div>
+                  <div>
+                    <Label className="mb-2 block" htmlFor="settings-download-client-password">
                       {t("settings.password")}
                       {optionalCredentialLabel}
                     </Label>
                     <Input
+                      id="settings-download-client-password"
                       value={downloadClientDraft.password}
                       onChange={(event) =>
                         setDownloadClientDraft((prev: DownloadClientDraft) => ({
@@ -621,37 +784,60 @@ export function SettingsDownloadClientsSection({
                       placeholder={t("form.passwordPlaceholder")}
                       type="password"
                     />
-                  </label>
+                  </div>
+                  {normalizedClientType === "qbittorrent" ? (
+                    <p className="md:col-span-3 text-xs text-muted-foreground">
+                      {t("settings.downloadClientQbittorrentDecypharrHelp")}
+                    </p>
+                  ) : null}
                 </>
               ) : null}
-              <details className="md:col-span-3 rounded-xl border border-border bg-card p-3" open>
-                <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
-                  {t("qualityProfile.otherOptions")}
+              {normalizedClientType === "sabnzbd" || normalizedClientType === "qbittorrent" ? (
+                <p className="md:col-span-3 text-xs text-muted-foreground">
+                  {t("settings.downloadClientDecypharrFilesystemHelp")}
+                </p>
+              ) : null}
+              <details
+                id="settings-download-client-filesystem-path-mapping"
+                className="md:col-span-3 rounded-xl border border-border bg-card p-3"
+                open={isFilesystemPathMappingOpen}
+                onToggle={(event) =>
+                  setIsFilesystemPathMappingOpen(event.currentTarget.open)
+                }
+              >
+                <summary
+                  id="settings-download-client-filesystem-path-mapping-toggle"
+                  className="cursor-pointer select-none text-sm font-medium text-card-foreground"
+                >
+                  {t("settings.downloadClientFilesystemPathMapping")}
                 </summary>
                 <div className="mt-3 space-y-3">
-                  <label className="mb-2 flex items-center gap-3">
-                    <Checkbox
-                      checked={downloadClientDraft.isEnabled}
-                      onCheckedChange={(checked) =>
-                        setDownloadClientDraft((prev: DownloadClientDraft) => ({
-                          ...prev,
-                          isEnabled: checked === true,
-                        }))
-                      }
-                    />
-                    <span className="inline-flex items-center gap-2 text-sm">
-                      {t("form.enabled")}
-                      <InfoHelp
-                        ariaLabel={t("form.enabled")}
-                        text={t("settings.downloadClientEnabledInfo")}
-                      />
-                    </span>
-                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.downloadClientFilesystemPathMappingHelp")}
+                  </p>
+                  <DownloadClientRemotePathMappingsField
+                    fieldKey="remote_path_mappings"
+                    label={t("settings.downloadClientRemotePathMappings")}
+                    value={downloadClientDraft.remotePathMappings}
+                    helpText={t("settings.downloadClientRemotePathMappingsHelp")}
+                    localPathStyle={localPathStyle}
+                    onValidityChange={setAreRemotePathMappingsValid}
+                    onChange={(_, value) =>
+                      setDownloadClientDraft((prev: DownloadClientDraft) => ({
+                        ...prev,
+                        remotePathMappings: value,
+                      }))
+                    }
+                  />
                 </div>
               </details>
             </div>
             <div className="flex gap-2">
-                <Button type="submit" disabled={mutatingDownloadClientId === "new"}>
+                <Button
+                  id="settings-download-client-save"
+                  type="submit"
+                  disabled={mutatingDownloadClientId === "new" || !areRemotePathMappingsValid}
+                >
                   {mutatingDownloadClientId === "new"
                     ? t("label.saving")
                     : editingDownloadClientId
@@ -659,22 +845,57 @@ export function SettingsDownloadClientsSection({
                       : t("settings.downloadClientCreate")}
                 </Button>
               <Button
+                id="settings-download-client-test-connection"
                 type="button"
                 variant="secondary"
                 onClick={() => void testDownloadClientConnection()}
-                disabled={isTestingDownloadClientConnection || mutatingDownloadClientId !== null}
+                disabled={
+                  isTestingDownloadClientConnection ||
+                  mutatingDownloadClientId !== null ||
+                  !areRemotePathMappingsValid
+                }
               >
                 {isTestingDownloadClientConnection
                   ? t("status.testingDownloadClient", { client: selectedDownloadClientLabel })
                   : t("label.testConnection")}
               </Button>
-              <Button type="button" variant="secondary" onClick={resetDownloadClientDraft}>
+              <Button type="button" variant="outline" onClick={resetDownloadClientDraft}>
                 {t("label.cancel")}
               </Button>
             </div>
-          </form>
-        </CardContent>
-      </Card>
+              </form>
+            </CardContent>
+          </Card>
+          {isEditing ? (
+            <div className="flex justify-center">
+              <Button
+                id="settings-download-client-create"
+                type="button"
+                size="lg"
+                onClick={startCreateDownloadClient}
+                disabled={mutatingDownloadClientId !== null}
+                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+              >
+                <Plus className="h-5 w-5" />
+                {t("settings.downloadClientCreateNew")}
+              </Button>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="flex justify-center">
+          <Button
+            id="settings-download-client-create"
+            type="button"
+            size="lg"
+            onClick={startCreateDownloadClient}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("settings.downloadClientCreateNew")}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

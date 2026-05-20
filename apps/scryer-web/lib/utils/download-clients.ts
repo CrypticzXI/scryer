@@ -229,6 +229,7 @@ export function buildDownloadClientConfigJson(draft: DownloadClientDraft) {
     url_base: draft.urlBase.trim(),
     username: draft.username.trim(),
     password: draft.password.trim(),
+    remote_path_mappings: draft.remotePathMappings,
     client_type: normalizedClientType,
   };
 
@@ -261,6 +262,7 @@ export function buildDownloadClientDraftFromRecord(record: DownloadClientRecord)
     apiKey: readConfigStringValue(config, ["api_key", "apiKey", "apikey"]),
     username: readConfigStringValue(config, ["username"]),
     password: "",
+    remotePathMappings: readConfigStringValue(config, ["remote_path_mappings", "remotePathMappings"]),
     useSsl: readConfigBooleanValue(config, ["use_ssl", "useSsl"], baseUrlParts.useSsl),
   };
 }

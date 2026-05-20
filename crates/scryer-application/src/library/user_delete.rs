@@ -1,4 +1,5 @@
 use super::*;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use scryer_domain::{
     MediaFacet, RootFolderEntry, Title, is_image_file, is_subtitle_file, is_video_file,
 };
@@ -515,7 +516,7 @@ fn infer_title_folder_path_from_media_files(
         root_folders,
         media_files
             .iter()
-            .map(|media_file| PathBuf::from(&media_file.file_path)),
+            .map(|media_file| stored_path_to_path_buf(&media_file.file_path)),
     )
 }
 
@@ -566,10 +567,7 @@ where
         return None;
     }
 
-    candidates
-        .into_iter()
-        .next()
-        .map(|path| path.to_string_lossy().to_string())
+    candidates.into_iter().next().map(path_to_stored_string)
 }
 
 fn build_delete_manifest_sync(context: UserDeleteContext) -> AppResult<UserDeleteManifest> {
@@ -599,7 +597,7 @@ fn build_title_delete_manifest(context: TitleDeleteContext) -> AppResult<UserDel
         ));
     };
 
-    let normalized_folder = normalize_absolute_path(Path::new(&raw_folder_path))?;
+    let normalized_folder = normalize_absolute_path(&stored_path_to_path_buf(&raw_folder_path))?;
     let normalized_roots = normalize_root_folders(root_folders, facet)?;
 
     if normalized_roots.contains(&normalized_folder) {
@@ -620,7 +618,7 @@ fn build_title_delete_manifest(context: TitleDeleteContext) -> AppResult<UserDel
     }
 
     for tracked in other_titles {
-        let other_path = normalize_absolute_path(Path::new(&tracked.folder_path))?;
+        let other_path = normalize_absolute_path(&stored_path_to_path_buf(&tracked.folder_path))?;
         if other_path == normalized_folder || other_path.starts_with(&normalized_folder) {
             return Err(AppError::Validation(format!(
                 "refusing to delete title folder {} because it includes tracked title folder {} ({})",
@@ -671,11 +669,11 @@ fn build_media_file_delete_manifest(
     context: MediaFileDeleteContext,
 ) -> AppResult<UserDeleteManifest> {
     let mut paths = BTreeSet::new();
-    let file_path = normalize_absolute_path(Path::new(&context.file_path))?;
+    let file_path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
     paths.insert(file_path);
 
     for raw_path in context.subtitle_paths {
-        let subtitle_path = normalize_absolute_path(Path::new(&raw_path))?;
+        let subtitle_path = normalize_absolute_path(&stored_path_to_path_buf(&raw_path))?;
         paths.insert(subtitle_path);
     }
 
@@ -690,7 +688,7 @@ fn build_media_file_delete_manifest(
 
 fn build_subtitle_delete_manifest(context: SubtitleDeleteContext) -> AppResult<UserDeleteManifest> {
     let mut paths = BTreeSet::new();
-    let subtitle_path = normalize_absolute_path(Path::new(&context.file_path))?;
+    let subtitle_path = normalize_absolute_path(&stored_path_to_path_buf(&context.file_path))?;
     paths.insert(subtitle_path);
     let entries = collect_leaf_manifest_entries(paths)?;
     Ok(finalize_manifest(
@@ -708,7 +706,7 @@ fn normalize_root_folders(
     let mut normalized = Vec::with_capacity(root_folders.len());
     for entry in root_folders {
         normalized.push(
-            normalize_absolute_path(Path::new(&entry.path)).map_err(|error| {
+            normalize_absolute_path(&stored_path_to_path_buf(&entry.path)).map_err(|error| {
                 AppError::Validation(format!(
                     "configured {} root folder {} is invalid: {error}",
                     facet.as_str(),
@@ -996,7 +994,7 @@ mod tests {
             &root_folders,
             vec![
                 PathBuf::from("/data/anime/Emberfall/Season 01/Emberfall - S01E01.mkv"),
-                PathBuf::from("/data/anime/Naruto/Season 01/Naruto - S01E01.mkv"),
+                PathBuf::from("/data/anime/Stormleaf/Season 01/Stormleaf - S01E01.mkv"),
             ],
         );
 

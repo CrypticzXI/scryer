@@ -1,0 +1,14 @@
+query SearchTvdbBatch($requests: [TvdbSearchBatchRequestInput!]!, $language: String!) {
+  searchTvdbBatch(requests: $requests, language: $language) {
+    query
+    type
+    year
+    results {
+      tvdb_id
+      name
+      year
+      auto_match_safe
+      auto_match_signals
+    }
+  }
+}

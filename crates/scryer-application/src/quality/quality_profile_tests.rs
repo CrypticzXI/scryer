@@ -101,6 +101,28 @@ fn normalize_codec_h265() {
 #[test]
 fn normalize_codec_passthrough() {
     assert_eq!(normalize_codec(Some("AV1")), Some("AV1".to_string()));
+    assert_eq!(normalize_codec(Some("AV01")), Some("AV1".to_string()));
+    assert_eq!(normalize_codec(Some("VP9")), Some("VP9".to_string()));
+    assert_eq!(
+        crate::release_parser::VideoCodec::parse("AV01").expect("parse codec"),
+        crate::release_parser::VideoCodec::Av1
+    );
+}
+
+#[test]
+fn parse_release_metadata_canonicalizes_video_codec_aliases() {
+    assert_eq!(
+        parse_release_metadata("Movie.2024.2160p.BluRay.Remux.HEVC.DTS-HD")
+            .video_codec
+            .as_ref(),
+        Some(&crate::release_parser::VideoCodec::H265)
+    );
+    assert_eq!(
+        parse_release_metadata("Movie.2024.1080p.BluRay.AVC.AAC")
+            .video_codec
+            .as_ref(),
+        Some(&crate::release_parser::VideoCodec::H264)
+    );
 }
 
 // ── normalize_list ────────────────────────────────────────────────────────
@@ -132,11 +154,17 @@ fn parse_profile_normalizes_video_codec_lists() {
 
     assert_eq!(
         profile.criteria.video_codec_allowlist,
-        vec!["H.264".to_string(), "H.265".to_string()]
+        vec![
+            crate::release_parser::VideoCodec::H264,
+            crate::release_parser::VideoCodec::H265
+        ]
     );
     assert_eq!(
         profile.criteria.video_codec_blocklist,
-        vec!["H.264".to_string(), "H.265".to_string()]
+        vec![
+            crate::release_parser::VideoCodec::H264,
+            crate::release_parser::VideoCodec::H265
+        ]
     );
 }
 
@@ -851,6 +879,78 @@ fn size_plausible_bluray_remux_not_penalized() {
     // Should not be blocked or excessively penalized
     assert!(d.allowed);
     assert!(d.release_score >= 0);
+}
+
+#[test]
+fn size_scoring_treats_hevc_and_h265_identically() {
+    let hevc = parse_release_metadata("Movie.2024.2160p.BluRay.Remux.HEVC.DTS-HD");
+    let h265 = parse_release_metadata("Movie.2024.2160p.BluRay.Remux.H.265.DTS-HD");
+    let w = balanced_weights();
+    let size_56gb = 56 * 1024 * 1024 * 1024_i64;
+
+    let mut hevc_decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(&mut hevc_decision, &hevc, Some(size_56gb), None, None, &w);
+
+    let mut h265_decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(&mut h265_decision, &h265, Some(size_56gb), None, None, &w);
+
+    let hevc_size_code = hevc_decision
+        .scoring_log
+        .iter()
+        .find(|entry| entry.code.starts_with("size_"))
+        .map(|entry| entry.code.as_str());
+    let h265_size_code = h265_decision
+        .scoring_log
+        .iter()
+        .find(|entry| entry.code.starts_with("size_"))
+        .map(|entry| entry.code.as_str());
+
+    assert_eq!(
+        hevc.video_codec.as_ref(),
+        Some(&crate::release_parser::VideoCodec::H265)
+    );
+    assert_eq!(
+        h265.video_codec.as_ref(),
+        Some(&crate::release_parser::VideoCodec::H265)
+    );
+    assert_eq!(hevc_size_code, h265_size_code);
+    assert_eq!(hevc_decision.release_score, h265_decision.release_score);
+}
+
+#[test]
+fn size_scoring_treats_avc_and_h264_identically() {
+    let avc = parse_release_metadata("Movie.2024.1080p.BluRay.AVC.DTS-HD");
+    let h264 = parse_release_metadata("Movie.2024.1080p.BluRay.H.264.DTS-HD");
+    let w = balanced_weights();
+    let size_12gb = 12 * 1024 * 1024 * 1024_i64;
+
+    let mut avc_decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(&mut avc_decision, &avc, Some(size_12gb), None, None, &w);
+
+    let mut h264_decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(&mut h264_decision, &h264, Some(size_12gb), None, None, &w);
+
+    let avc_size_code = avc_decision
+        .scoring_log
+        .iter()
+        .find(|entry| entry.code.starts_with("size_"))
+        .map(|entry| entry.code.as_str());
+    let h264_size_code = h264_decision
+        .scoring_log
+        .iter()
+        .find(|entry| entry.code.starts_with("size_"))
+        .map(|entry| entry.code.as_str());
+
+    assert_eq!(
+        avc.video_codec.as_ref(),
+        Some(&crate::release_parser::VideoCodec::H264)
+    );
+    assert_eq!(
+        h264.video_codec.as_ref(),
+        Some(&crate::release_parser::VideoCodec::H264)
+    );
+    assert_eq!(avc_size_code, h264_size_code);
+    assert_eq!(avc_decision.release_score, h264_decision.release_score);
 }
 
 // ── QualityProfileDecision::log ───────────────────────────────────────────

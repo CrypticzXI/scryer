@@ -1,4 +1,5 @@
 use super::*;
+use crate::ports::IndexerCapsSnapshotRefresher;
 
 /// In-process guard table for download-submission dedupe and scope ownership.
 ///
@@ -87,6 +88,30 @@ impl DownloadFailureGuardTable {
             client_item_id.trim()
         );
         Some(self.acquire_key(key).await)
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct BackupExecutionGuardTable {
+    locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+}
+
+impl BackupExecutionGuardTable {
+    async fn lock_for_key(&self, key: String) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(existing) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+            existing
+        } else {
+            let created = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(key, Arc::downgrade(&created));
+            created
+        }
+    }
+
+    pub async fn try_acquire(&self, key: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = self.lock_for_key(key.to_string()).await;
+        lock.try_lock_owned().ok()
     }
 }
 
@@ -383,6 +408,298 @@ impl PluginInstallOrchestrator {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalImportMonitorWarmupStatus {
+    Queued,
+    Running,
+    Completed,
+    Canceled,
+    Failed,
+}
+
+impl ExternalImportMonitorWarmupStatus {
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Canceled | Self::Failed)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalImportMonitorWarmupPhase {
+    LoadingMovies,
+    LoadingSeries,
+    LoadingEpisodes,
+    BuildingSnapshot,
+    Ready,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExternalImportMonitorWarmupPhaseProgress {
+    pub total: i32,
+    pub completed: i32,
+    pub failed: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalImportMonitorWarmupProgressSnapshot {
+    pub session_id: String,
+    pub status: ExternalImportMonitorWarmupStatus,
+    pub phase: ExternalImportMonitorWarmupPhase,
+    pub started_at: String,
+    pub updated_at: String,
+    pub overall_total_known: bool,
+    pub overall_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub movies_total_known: bool,
+    pub movies_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub series_total_known: bool,
+    pub series_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub episode_fetch_total_known: bool,
+    pub episode_fetch_expected_total: Option<i32>,
+    pub episode_fetch_expected_monitored_total: Option<i32>,
+    pub episode_fetch_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub snapshot_build_total_known: bool,
+    pub snapshot_build_progress: ExternalImportMonitorWarmupPhaseProgress,
+    pub matched_movie_count: i32,
+    pub matched_series_count: i32,
+    pub unmatched_movie_count: i32,
+    pub unmatched_series_count: i32,
+    pub ambiguous_movie_count: i32,
+    pub ambiguous_series_count: i32,
+    pub error_message: Option<String>,
+}
+
+impl ExternalImportMonitorWarmupProgressSnapshot {
+    pub fn new(session_id: String) -> Self {
+        let now = Utc::now().to_rfc3339();
+        Self {
+            session_id,
+            status: ExternalImportMonitorWarmupStatus::Queued,
+            phase: ExternalImportMonitorWarmupPhase::LoadingMovies,
+            started_at: now.clone(),
+            updated_at: now,
+            overall_total_known: false,
+            overall_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            movies_total_known: false,
+            movies_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            series_total_known: false,
+            series_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            episode_fetch_total_known: false,
+            episode_fetch_expected_total: None,
+            episode_fetch_expected_monitored_total: None,
+            episode_fetch_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            snapshot_build_total_known: false,
+            snapshot_build_progress: ExternalImportMonitorWarmupPhaseProgress::default(),
+            matched_movie_count: 0,
+            matched_series_count: 0,
+            unmatched_movie_count: 0,
+            unmatched_series_count: 0,
+            ambiguous_movie_count: 0,
+            ambiguous_series_count: 0,
+            error_message: None,
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.updated_at = Utc::now().to_rfc3339();
+    }
+}
+
+#[derive(Clone)]
+pub struct ExternalImportMonitorWarmupBeginResult {
+    pub snapshot: ExternalImportMonitorWarmupProgressSnapshot,
+    pub created: bool,
+    pub cancel_token: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Clone)]
+struct ExternalImportMonitorWarmupSessionHandle {
+    actor_user_id: String,
+    connection_fingerprint: String,
+    claimed: bool,
+    cancel_token: tokio_util::sync::CancellationToken,
+    tx: tokio::sync::watch::Sender<ExternalImportMonitorWarmupProgressSnapshot>,
+}
+
+#[derive(Default)]
+struct ExternalImportMonitorWarmupOrchestratorState {
+    session_ids_by_actor_fingerprint: HashMap<(String, String), String>,
+    sessions_by_id: HashMap<String, ExternalImportMonitorWarmupSessionHandle>,
+}
+
+#[derive(Clone, Default)]
+pub struct ExternalImportMonitorWarmupOrchestrator {
+    state: Arc<tokio::sync::Mutex<ExternalImportMonitorWarmupOrchestratorState>>,
+}
+
+impl ExternalImportMonitorWarmupOrchestrator {
+    pub async fn begin(
+        &self,
+        actor_user_id: &str,
+        connection_fingerprint: &str,
+        initial_snapshot: ExternalImportMonitorWarmupProgressSnapshot,
+    ) -> ExternalImportMonitorWarmupBeginResult {
+        let actor_key = (
+            actor_user_id.to_string(),
+            connection_fingerprint.to_string(),
+        );
+        let mut state = self.state.lock().await;
+
+        if let Some(existing_session_id) = state
+            .session_ids_by_actor_fingerprint
+            .get(&actor_key)
+            .cloned()
+        {
+            if let Some(existing_handle) = state.sessions_by_id.get(&existing_session_id) {
+                let existing_snapshot = existing_handle.tx.borrow().clone();
+                if matches!(
+                    existing_snapshot.status,
+                    ExternalImportMonitorWarmupStatus::Queued
+                        | ExternalImportMonitorWarmupStatus::Running
+                ) {
+                    return ExternalImportMonitorWarmupBeginResult {
+                        snapshot: existing_snapshot,
+                        created: false,
+                        cancel_token: existing_handle.cancel_token.clone(),
+                    };
+                }
+            }
+
+            state.session_ids_by_actor_fingerprint.remove(&actor_key);
+        }
+
+        for ((session_actor_user_id, session_fingerprint), session_id) in
+            state.session_ids_by_actor_fingerprint.clone()
+        {
+            if session_actor_user_id != actor_user_id
+                || session_fingerprint == connection_fingerprint
+            {
+                continue;
+            }
+
+            if let Some(handle) = state.sessions_by_id.get_mut(&session_id)
+                && !handle.claimed
+            {
+                let mut snapshot = handle.tx.borrow().clone();
+                if !snapshot.status.is_terminal() {
+                    snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
+                    snapshot.error_message = None;
+                    snapshot.touch();
+                    handle.tx.send_replace(snapshot);
+                }
+                handle.cancel_token.cancel();
+            }
+            state
+                .session_ids_by_actor_fingerprint
+                .remove(&(session_actor_user_id, session_fingerprint));
+        }
+
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let (tx, _rx) = tokio::sync::watch::channel(initial_snapshot.clone());
+        state
+            .session_ids_by_actor_fingerprint
+            .insert(actor_key, initial_snapshot.session_id.clone());
+        state.sessions_by_id.insert(
+            initial_snapshot.session_id.clone(),
+            ExternalImportMonitorWarmupSessionHandle {
+                actor_user_id: actor_user_id.to_string(),
+                connection_fingerprint: connection_fingerprint.to_string(),
+                claimed: false,
+                cancel_token: cancel_token.clone(),
+                tx,
+            },
+        );
+
+        ExternalImportMonitorWarmupBeginResult {
+            snapshot: initial_snapshot,
+            created: true,
+            cancel_token,
+        }
+    }
+
+    pub async fn subscribe(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<tokio::sync::watch::Receiver<ExternalImportMonitorWarmupProgressSnapshot>> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id).then(|| handle.tx.subscribe())
+        })
+    }
+
+    pub async fn snapshot(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<ExternalImportMonitorWarmupProgressSnapshot> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id).then(|| handle.tx.borrow().clone())
+        })
+    }
+
+    pub async fn update(
+        &self,
+        session_id: &str,
+        snapshot: ExternalImportMonitorWarmupProgressSnapshot,
+    ) -> bool {
+        let state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get(session_id) else {
+            return false;
+        };
+        handle.tx.send_replace(snapshot);
+        true
+    }
+
+    pub async fn cancel(&self, actor_user_id: &str, session_id: &str) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
+            return false;
+        };
+        if handle.actor_user_id != actor_user_id || handle.claimed {
+            return false;
+        }
+
+        let mut snapshot = handle.tx.borrow().clone();
+        if !snapshot.status.is_terminal() {
+            snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
+            snapshot.error_message = None;
+            snapshot.touch();
+            handle.tx.send_replace(snapshot);
+        }
+        handle.cancel_token.cancel();
+
+        state
+            .session_ids_by_actor_fingerprint
+            .retain(|_, existing_session_id| existing_session_id != session_id);
+        true
+    }
+
+    pub async fn claim(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<ExternalImportMonitorWarmupProgressSnapshot> {
+        let mut state = self.state.lock().await;
+        let handle = state.sessions_by_id.get_mut(session_id)?;
+        if handle.actor_user_id != actor_user_id {
+            return None;
+        }
+        handle.claimed = true;
+        Some(handle.tx.borrow().clone())
+    }
+
+    pub async fn connection_fingerprint(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<String> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id).then(|| handle.connection_fingerprint.clone())
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ProviderCatalogFamily {
     Subtitle,
@@ -444,6 +761,11 @@ pub struct AppRuntimeAcquisitionState {
 }
 
 #[derive(Clone)]
+pub struct AppRuntimeImportState {
+    pub external_import_warmup_orchestrator: ExternalImportMonitorWarmupOrchestrator,
+}
+
+#[derive(Clone)]
 pub struct AppRuntimeLibraryState {
     pub library_scan_tracker: LibraryScanTracker,
     pub library_scan_cancellation_tokens:
@@ -454,6 +776,7 @@ pub struct AppRuntimeLibraryState {
 #[derive(Clone)]
 pub struct AppRuntimeJobState {
     pub job_run_tracker: JobRunTracker,
+    pub backup_execution_guards: BackupExecutionGuardTable,
 }
 
 #[derive(Clone)]
@@ -472,6 +795,7 @@ pub struct AppRuntimeState {
     pub events: AppRuntimeEventState,
     pub catalog: AppRuntimeCatalogState,
     pub acquisition: AppRuntimeAcquisitionState,
+    pub imports: AppRuntimeImportState,
     pub library: AppRuntimeLibraryState,
     pub jobs: AppRuntimeJobState,
     pub health: AppRuntimeHealthState,
@@ -513,6 +837,10 @@ impl Default for AppRuntimeState {
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             },
+            imports: AppRuntimeImportState {
+                external_import_warmup_orchestrator:
+                    ExternalImportMonitorWarmupOrchestrator::default(),
+            },
             library: AppRuntimeLibraryState {
                 library_scan_tracker: LibraryScanTracker::new(),
                 library_scan_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
@@ -522,6 +850,7 @@ impl Default for AppRuntimeState {
             },
             jobs: AppRuntimeJobState {
                 job_run_tracker: JobRunTracker::new(),
+                backup_execution_guards: BackupExecutionGuardTable::default(),
             },
             health: AppRuntimeHealthState {
                 results: Arc::new(tokio::sync::RwLock::new(Vec::new())),
@@ -594,6 +923,7 @@ pub struct AppLibraryServices {
 #[derive(Clone)]
 pub struct AppIntegrationServices {
     pub(crate) indexer_configs: Arc<dyn IndexerConfigRepository>,
+    pub(crate) indexer_caps_refresher: RuntimeFeature<Arc<dyn IndexerCapsSnapshotRefresher>>,
     pub(crate) indexer_client: Arc<dyn IndexerClient>,
     pub(crate) download_client: Arc<dyn DownloadClient>,
     pub(crate) download_client_configs: Arc<dyn DownloadClientConfigRepository>,
@@ -630,7 +960,11 @@ pub struct AppConfigServices {
     pub(crate) settings: Arc<dyn SettingsRepository>,
     pub(crate) quality_profiles: Arc<dyn QualityProfileRepository>,
     pub(crate) system_info: Arc<dyn SystemInfoProvider>,
-    pub(crate) db_path: String,
+    pub(crate) logical_backup_exporter: Arc<dyn LogicalBackupExporter>,
+    pub(crate) backup_dir: PathBuf,
+    pub(crate) smg_registration_secret: Option<String>,
+    pub(crate) smg_ca_cert: Option<String>,
+    pub(crate) smg_gateway_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -732,7 +1066,7 @@ impl AppServices {
         release_attempts: Arc<dyn ReleaseAttemptRepository>,
         settings: Arc<dyn SettingsRepository>,
         quality_profiles: Arc<dyn QualityProfileRepository>,
-        db_path: String,
+        backup_dir: impl Into<PathBuf>,
     ) -> AppServicesBuilder {
         AppServicesBuilder {
             services: Self::with_placeholder_defaults(
@@ -746,7 +1080,7 @@ impl AppServices {
                 release_attempts,
                 settings,
                 quality_profiles,
-                db_path,
+                backup_dir.into(),
             ),
             runtime: AppRuntimeState::default(),
             configured: AppServicesBuildConfiguration::default(),
@@ -768,7 +1102,7 @@ impl AppServices {
         release_attempts: Arc<dyn ReleaseAttemptRepository>,
         settings: Arc<dyn SettingsRepository>,
         quality_profiles: Arc<dyn QualityProfileRepository>,
-        db_path: String,
+        backup_dir: PathBuf,
     ) -> Self {
         Self {
             catalog: AppCatalogServices {
@@ -796,6 +1130,7 @@ impl AppServices {
             },
             integrations: AppIntegrationServices {
                 indexer_configs,
+                indexer_caps_refresher: RuntimeFeature::Disabled,
                 indexer_client,
                 download_client,
                 download_client_configs,
@@ -831,7 +1166,11 @@ impl AppServices {
                 settings,
                 quality_profiles,
                 system_info: Arc::new(NullSystemInfoProvider),
-                db_path,
+                logical_backup_exporter: Arc::new(NullLogicalBackupExporter),
+                backup_dir,
+                smg_registration_secret: None,
+                smg_ca_cert: None,
+                smg_gateway_url: None,
             },
             customization: AppCustomizationServices {
                 rule_sets: Arc::new(NullRuleSetRepository),
@@ -988,42 +1327,6 @@ impl AppServicesBuilder {
         catalog.libraries,
         Arc<dyn LibraryRepository>
     );
-    pub fn with_library_state_store<T>(mut self, store: Arc<T>) -> Self
-    where
-        T: BlocklistRepository
-            + HousekeepingRepository
-            + LibraryProbeRepository
-            + LibraryScanUnmatchedItemRepository
-            + MediaFileRepository
-            + PendingReleaseRepository
-            + SubtitleDownloadRepository
-            + TitleImageRepository
-            + WantedItemRepository
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.services.library.media_files = store.clone();
-        self.services.workflow.wanted_items = store.clone();
-        self.services.workflow.pending_releases = store.clone();
-        self.services.workflow.blocklist_repo = store.clone();
-        self.services.library.library_probe_signatures = store.clone();
-        self.services.library.library_scan_unmatched_items = store.clone();
-        self.services.library.title_images = store.clone();
-        self.services.workflow.housekeeping = store.clone();
-        self.services.workflow.subtitle_downloads = store;
-        self.configured.media_files = true;
-        self.configured.wanted_items = true;
-        self.configured.pending_releases = true;
-        self.configured.blocklist_repo = true;
-        self.configured.library_probe_signatures = true;
-        self.configured.library_scan_unmatched_items = true;
-        self.configured.title_images = true;
-        self.configured.housekeeping = true;
-        self.configured.subtitle_downloads = true;
-        self
-    }
-
     pub fn with_customization_store<T>(mut self, store: Arc<T>) -> Self
     where
         T: PluginInstallationRepository
@@ -1038,6 +1341,33 @@ impl AppServicesBuilder {
         self.services.customization.plugin_installations = store;
         self.configured.rule_sets = true;
         self.configured.pp_scripts = true;
+        self.configured.plugin_installations = true;
+        self
+    }
+
+    pub fn with_rule_set_store<T>(mut self, store: Arc<T>) -> Self
+    where
+        T: RuleSetRepository + Send + Sync + 'static,
+    {
+        self.services.customization.rule_sets = store;
+        self.configured.rule_sets = true;
+        self
+    }
+
+    pub fn with_post_processing_script_store<T>(mut self, store: Arc<T>) -> Self
+    where
+        T: PostProcessingScriptRepository + Send + Sync + 'static,
+    {
+        self.services.customization.pp_scripts = store;
+        self.configured.pp_scripts = true;
+        self
+    }
+
+    pub fn with_plugin_installation_store<T>(mut self, store: Arc<T>) -> Self
+    where
+        T: PluginInstallationRepository + Send + Sync + 'static,
+    {
+        self.services.customization.plugin_installations = store;
         self.configured.plugin_installations = true;
         self
     }
@@ -1190,6 +1520,19 @@ impl AppServicesBuilder {
         system_info,
         Arc<dyn SystemInfoProvider>
     );
+    app_services_builder_setter!(
+        with_logical_backup_exporter,
+        config.logical_backup_exporter,
+        Arc<dyn LogicalBackupExporter>
+    );
+    app_services_builder_setter!(with_backup_dir, config.backup_dir, PathBuf);
+    app_services_builder_setter!(
+        with_smg_registration_secret,
+        config.smg_registration_secret,
+        Option<String>
+    );
+    app_services_builder_setter!(with_smg_ca_cert, config.smg_ca_cert, Option<String>);
+    app_services_builder_setter!(with_smg_gateway_url, config.smg_gateway_url, Option<String>);
     app_services_builder_required_setter!(
         with_job_runs,
         events.job_runs,
@@ -1245,6 +1588,11 @@ impl AppServicesBuilder {
         with_indexer_stats,
         integrations.indexer_stats,
         Arc<dyn IndexerStatsTracker>
+    );
+    app_services_builder_runtime_feature_setter!(
+        with_indexer_caps_refresher,
+        integrations.indexer_caps_refresher,
+        Arc<dyn IndexerCapsSnapshotRefresher>
     );
     app_services_builder_runtime_feature_setter!(
         with_plugin_provider,
@@ -2128,6 +2476,117 @@ mod tests {
     #[test]
     fn build_partial_for_tests_allows_partial_test_assemblies() {
         let _ = test_builder().build_partial_for_tests();
+    }
+
+    #[tokio::test]
+    async fn external_import_warmup_begin_creates_new_session_after_completion() {
+        let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
+        let first = orchestrator
+            .begin(
+                "user-1",
+                "fingerprint-1",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-1".into()),
+            )
+            .await;
+        assert!(first.created);
+        let _subscription = orchestrator
+            .subscribe("user-1", &first.snapshot.session_id)
+            .await
+            .expect("subscribe to first session");
+
+        let mut completed = first.snapshot.clone();
+        completed.status = ExternalImportMonitorWarmupStatus::Completed;
+        assert!(
+            orchestrator
+                .update(&completed.session_id, completed.clone())
+                .await
+        );
+
+        let second = orchestrator
+            .begin(
+                "user-1",
+                "fingerprint-1",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-2".into()),
+            )
+            .await;
+
+        assert!(second.created);
+        assert_ne!(second.snapshot.session_id, first.snapshot.session_id);
+    }
+
+    #[tokio::test]
+    async fn external_import_warmup_update_persists_without_active_subscribers() {
+        let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
+        let begin = orchestrator
+            .begin(
+                "user-1",
+                "fingerprint-1",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-1".into()),
+            )
+            .await;
+        assert!(begin.created);
+
+        let mut running = begin.snapshot.clone();
+        running.status = ExternalImportMonitorWarmupStatus::Running;
+        running.phase = ExternalImportMonitorWarmupPhase::LoadingSeries;
+        running.series_total_known = true;
+        running.series_progress.total = 42;
+        running.series_progress.completed = 17;
+
+        assert!(
+            orchestrator
+                .update(&running.session_id, running.clone())
+                .await
+        );
+
+        let snapshot = orchestrator
+            .snapshot("user-1", &running.session_id)
+            .await
+            .expect("stored snapshot");
+
+        assert_eq!(snapshot.status, ExternalImportMonitorWarmupStatus::Running);
+        assert_eq!(
+            snapshot.phase,
+            ExternalImportMonitorWarmupPhase::LoadingSeries
+        );
+        assert!(snapshot.series_total_known);
+        assert_eq!(snapshot.series_progress.total, 42);
+        assert_eq!(snapshot.series_progress.completed, 17);
+    }
+
+    #[tokio::test]
+    async fn backup_execution_guards_allow_cross_trigger_overlap_but_block_same_trigger() {
+        let guards = BackupExecutionGuardTable::default();
+
+        let manual_guard = guards
+            .try_acquire("manual")
+            .await
+            .expect("manual guard should acquire");
+        let auto_guard = guards
+            .try_acquire("auto")
+            .await
+            .expect("auto guard should acquire while manual is running");
+
+        assert!(
+            guards.try_acquire("manual").await.is_none(),
+            "same-trigger manual backup should be blocked",
+        );
+        assert!(
+            guards.try_acquire("auto").await.is_none(),
+            "same-trigger automatic backup should be blocked",
+        );
+
+        drop(manual_guard);
+        assert!(
+            guards.try_acquire("manual").await.is_some(),
+            "manual guard should be released after completion",
+        );
+
+        drop(auto_guard);
+        assert!(
+            guards.try_acquire("auto").await.is_some(),
+            "automatic guard should be released after completion",
+        );
     }
 
     #[tokio::test]

@@ -158,7 +158,7 @@ fn build_config_entries(
 ) -> Option<std::collections::HashMap<String, String>> {
     match config.config_json.as_deref() {
         Some(json_str) => match parse_config_json_entries(json_str) {
-            Ok(map) => Some(normalize_indexer_config_entries(descriptor, map)),
+            Ok(map) => Some(normalize_indexer_config_entries(descriptor, config, map)),
             Err(error) => {
                 warn!(
                     indexer = indexer_name,
@@ -174,17 +174,33 @@ fn build_config_entries(
 
 fn normalize_indexer_config_entries(
     descriptor: &PluginDescriptor,
+    config: &IndexerConfig,
     mut entries: std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<String, String> {
+    let mut extracted_api_path: Option<String> = None;
+    let mut extracted_additional_params: Option<String> = None;
+    let normalize_as_direct_nab = config.is_direct_nab();
+
     if let Some(connection_url_key) = descriptor
         .config_fields()
         .iter()
         .find(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
         .map(|field| field.key.as_str())
     {
-        let normalized_connection_url = entries
-            .get(connection_url_key)
-            .and_then(|value| normalize_connection_url(value));
+        let normalized_connection_url = if normalize_as_direct_nab {
+            entries
+                .get(connection_url_key)
+                .and_then(|value| normalize_direct_nab_connection_url(value))
+                .map(|parts| {
+                    extracted_api_path = parts.api_path;
+                    extracted_additional_params = parts.additional_params;
+                    parts.base_url
+                })
+        } else {
+            entries
+                .get(connection_url_key)
+                .and_then(|value| normalize_connection_url(value))
+        };
 
         match normalized_connection_url {
             Some(value) => {
@@ -196,9 +212,11 @@ fn normalize_indexer_config_entries(
         }
     }
 
-    let normalized_api_path = entries
-        .get("api_path")
-        .and_then(|value| normalize_api_path(value));
+    let normalized_api_path = extracted_api_path.or_else(|| {
+        entries
+            .get("api_path")
+            .and_then(|value| normalize_api_path(value))
+    });
     match normalized_api_path {
         Some(value) => {
             entries.insert("api_path".to_string(), value);
@@ -208,9 +226,10 @@ fn normalize_indexer_config_entries(
         }
     }
 
-    let normalized_additional_params = entries
-        .get("additional_params")
-        .and_then(|value| normalize_additional_params(value));
+    let normalized_additional_params = merge_additional_params(
+        extracted_additional_params.as_deref(),
+        entries.get("additional_params").map(String::as_str),
+    );
 
     match normalized_additional_params {
         Some(value) => {
@@ -227,6 +246,58 @@ fn normalize_indexer_config_entries(
 fn normalize_connection_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_end_matches('/');
     (!trimmed.is_empty()).then_some(trimmed.to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NormalizedDirectNabConnection {
+    base_url: String,
+    api_path: Option<String>,
+    additional_params: Option<String>,
+}
+
+fn normalize_direct_nab_connection_url(raw: &str) -> Option<NormalizedDirectNabConnection> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let Ok(url) = url::Url::parse(trimmed) else {
+        return normalize_connection_url(raw).map(|base_url| NormalizedDirectNabConnection {
+            base_url,
+            api_path: None,
+            additional_params: None,
+        });
+    };
+
+    let mut normalized = url.clone();
+    normalized.set_query(None);
+    normalized.set_fragment(None);
+    normalized.set_path("");
+
+    let origin = normalized.to_string().trim_end_matches('/').to_string();
+    if origin.is_empty() {
+        return None;
+    }
+
+    let raw_path = url.path().trim();
+    let api_path = normalize_api_path(raw_path);
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in url.query_pairs() {
+        let key = key.trim();
+        if key.is_empty() || is_direct_nab_control_query_key(key) {
+            continue;
+        }
+        serializer.append_pair(key, value.trim());
+    }
+    let serialized_params = serializer.finish();
+    let additional_params = (!serialized_params.is_empty()).then_some(serialized_params);
+
+    Some(NormalizedDirectNabConnection {
+        base_url: origin,
+        api_path,
+        additional_params,
+    })
 }
 
 fn normalize_api_path(raw: &str) -> Option<String> {
@@ -252,6 +323,67 @@ fn normalize_additional_params(raw: &str) -> Option<String> {
 
     let normalized = serializer.finish();
     (!normalized.is_empty()).then_some(normalized)
+}
+
+fn merge_additional_params(extracted: Option<&str>, existing: Option<&str>) -> Option<String> {
+    if extracted.is_none() {
+        return existing.and_then(normalize_additional_params);
+    }
+    if existing.is_none() {
+        return extracted.and_then(normalize_additional_params);
+    }
+
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    let mut any = false;
+
+    for raw in [extracted, existing].into_iter().flatten() {
+        let trimmed = raw.trim().trim_start_matches(['?', '&']).trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        for (key, value) in url::form_urlencoded::parse(trimmed.as_bytes()) {
+            let key = key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            serializer.append_pair(key, value.trim());
+            any = true;
+        }
+    }
+
+    any.then(|| serializer.finish())
+}
+
+fn is_direct_nab_control_query_key(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_lowercase().as_str(),
+        "apikey"
+            | "api_key"
+            | "key"
+            | "token"
+            | "t"
+            | "q"
+            | "cat"
+            | "o"
+            | "extended"
+            | "limit"
+            | "offset"
+            | "imdbid"
+            | "tvdbid"
+            | "tmdbid"
+            | "season"
+            | "ep"
+            | "rid"
+            | "tvmazeid"
+            | "traktid"
+            | "doubanid"
+            | "imdbtitle"
+            | "imdbyear"
+            | "genre"
+            | "year"
+            | "group"
+    )
 }
 
 fn resolve_connection_url(
@@ -748,5 +880,116 @@ mod tests {
             Some("/api/v1/api".to_string())
         );
         assert_eq!(normalize_api_path(" /// "), None);
+    }
+
+    #[test]
+    fn normalizes_direct_nab_connection_urls_with_embedded_query_state() {
+        assert_eq!(
+            normalize_direct_nab_connection_url(
+                " https://api.nzbgeek.info/api?t=search&q=legacy&cat=2000,2040&attrs=poster&apikey=secret "
+            ),
+            Some(NormalizedDirectNabConnection {
+                base_url: "https://api.nzbgeek.info".to_string(),
+                api_path: Some("/api".to_string()),
+                additional_params: Some("attrs=poster".to_string()),
+            })
+        );
+        assert_eq!(
+            normalize_direct_nab_connection_url(" https://api.nzbgeek.info/nzbapi/ "),
+            Some(NormalizedDirectNabConnection {
+                base_url: "https://api.nzbgeek.info".to_string(),
+                api_path: Some("/nzbapi".to_string()),
+                additional_params: None,
+            })
+        );
+    }
+
+    #[test]
+    fn merges_extracted_and_existing_additional_params() {
+        assert_eq!(
+            merge_additional_params(Some("attrs=poster&dl=1"), Some(" ?foo=bar baz&zap=1 "),),
+            Some("attrs=poster&dl=1&foo=bar+baz&zap=1".to_string())
+        );
+    }
+
+    fn descriptor_with_base_url_role(provider_type: &str) -> PluginDescriptor {
+        PluginDescriptor {
+            id: format!("{provider_type}_test"),
+            name: "Test".to_string(),
+            version: "0.0.0".to_string(),
+            sdk_version: "0.0.0".to_string(),
+            sdk_constraint: ">=0.0.0".to_string(),
+            socket_permissions: vec![],
+            provider: crate::types::ProviderDescriptor::Indexer(crate::types::IndexerDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![],
+                source_kind: crate::types::IndexerSourceKind::Usenet,
+                capabilities: crate::types::IndexerCapabilities::default(),
+                scoring_policies: vec![],
+                config_fields: vec![crate::types::ConfigFieldDef {
+                    key: "base_url".to_string(),
+                    label: "Base URL".to_string(),
+                    field_type: crate::types::ConfigFieldType::String,
+                    required: true,
+                    default_value: None,
+                    value_source: Default::default(),
+                    role: Some(ConfigFieldRole::ConnectionUrl),
+                    host_binding: None,
+                    options: vec![],
+                    help_text: None,
+                }],
+                allowed_hosts: vec![],
+                rate_limit_seconds: None,
+            }),
+        }
+    }
+
+    fn sample_indexer_config(
+        provider_type: &str,
+        managed_parent_config_id: Option<&str>,
+    ) -> IndexerConfig {
+        IndexerConfig {
+            id: "cfg".to_string(),
+            name: "Test".to_string(),
+            provider_type: provider_type.to_string(),
+            base_url: String::new(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: managed_parent_config_id.map(ToString::to_string),
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn preserves_managed_prowlarr_child_proxy_path_for_newznab_provider() {
+        let descriptor = descriptor_with_base_url_role("newznab");
+        let config = sample_indexer_config("newznab", Some("parent"));
+        let mut entries = std::collections::HashMap::new();
+        entries.insert(
+            "base_url".to_string(),
+            "http://localhost:9696/1".to_string(),
+        );
+        entries.insert("api_path".to_string(), "/api".to_string());
+
+        let normalized = normalize_indexer_config_entries(&descriptor, &config, entries);
+
+        assert_eq!(
+            normalized.get("base_url").map(String::as_str),
+            Some("http://localhost:9696/1")
+        );
+        assert_eq!(normalized.get("api_path").map(String::as_str), Some("/api"));
+        assert!(!normalized.contains_key("additional_params"));
     }
 }

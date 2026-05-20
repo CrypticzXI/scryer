@@ -51,6 +51,8 @@ pub struct MetadataSearchItem {
     pub tvdb_id: String,
     pub name: String,
     pub year: Option<i32>,
+    pub auto_match_safe: bool,
+    pub auto_match_signals: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

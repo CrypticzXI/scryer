@@ -1,7 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use aho_corasick::{AhoCorasickBuilder, MatchKind};
 use chrono::NaiveDate;
+use fixedbitset::FixedBitSet;
 use smallvec::SmallVec;
 
 use crate::context::{ContextAlias, ContextEpisode, ContextFacetHint, ReleaseParseContext};
@@ -16,7 +17,7 @@ use crate::model::{
     CandidateZones, MetadataAst, ParseDisposition, ParseFamily, ParseReason, ParsedEpisodeMetadata,
     ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata, ParsedSpecialKind,
     ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate, TitleSegment, TitleSegmentKind,
-    TokenAnnotations, TokenRange, TokenRole,
+    TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
 
 const BEAM_WIDTH: usize = 24;
@@ -190,17 +191,19 @@ struct AliasHit {
     score_weight: i32,
 }
 
+type AliasHitList = SmallVec<[AliasHit; MAX_ALIAS_BRANCH_FANOUT]>;
+
 #[derive(Clone, Debug, Default)]
 struct AliasOracle {
     patterns: Vec<AliasPattern>,
-    hits_at: BTreeMap<usize, SmallVec<[AliasHit; 2]>>,
+    hits_at: Vec<AliasHitList>,
     parse_hints: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct TokenByteMap {
-    start_to_token: BTreeMap<usize, usize>,
-    end_to_token: BTreeMap<usize, usize>,
+    start_to_token: Vec<(usize, usize)>,
+    end_to_token: Vec<(usize, usize)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -208,9 +211,9 @@ struct ContextIndex {
     facet_hint: ContextFacetHint,
     aliases: Vec<AliasEntry>,
     episode_titles: Vec<AliasEntry>,
-    years: BTreeSet<i32>,
-    air_dates: BTreeSet<NaiveDate>,
-    absolute_numbers: BTreeSet<u32>,
+    years: Vec<i32>,
+    air_dates: Vec<NaiveDate>,
+    absolute_numbers: Vec<u32>,
     episodes: Vec<EpisodeContextHint>,
 }
 
@@ -250,6 +253,12 @@ struct ParseUnit {
     is_grouped: bool,
 }
 
+type ParseUnitList = SmallVec<[ParseUnit; 6]>;
+type ParseUnitIndex = Vec<ParseUnitList>;
+type TitleTokenIndices = SmallVec<[usize; 16]>;
+type EvidenceList = SmallVec<[String; 4]>;
+type AcceptedAliasHits = SmallVec<[AliasHit; 4]>;
+
 #[derive(Clone, Debug, Default)]
 struct RoleCandidate {
     role: TokenRole,
@@ -257,21 +266,89 @@ struct RoleCandidate {
     strong_anchor: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct ParseState {
     cursor: usize,
     phase: ParsePhase,
     family: ParseFamily,
-    title_token_indices: Vec<usize>,
+    title_token_indices: TitleTokenIndices,
+    title_token_mask: FixedBitSet,
     identity: ReleaseIdentity,
     metadata: MetadataAst,
+    metadata_token_mask: FixedBitSet,
     release_group: Option<String>,
-    consumed_tokens: BTreeSet<usize>,
+    consumed_tokens: FixedBitSet,
     score: i32,
     reasons: Vec<ParseReason>,
-    raw_evidence: Vec<String>,
-    context_evidence: Vec<String>,
-    accepted_alias_hits: Vec<AliasHit>,
+    raw_evidence: EvidenceList,
+    context_evidence: EvidenceList,
+    accepted_alias_hits: AcceptedAliasHits,
+}
+
+impl ParseState {
+    fn seeded(token_count: usize, family: ParseFamily, score: i32) -> Self {
+        Self {
+            cursor: 0,
+            phase: ParsePhase::Prefix,
+            family,
+            title_token_indices: SmallVec::new(),
+            title_token_mask: FixedBitSet::with_capacity(token_count),
+            identity: ReleaseIdentity::Unknown,
+            metadata: MetadataAst::default(),
+            metadata_token_mask: FixedBitSet::with_capacity(token_count),
+            release_group: None,
+            consumed_tokens: FixedBitSet::with_capacity(token_count),
+            score,
+            reasons: Vec::new(),
+            raw_evidence: SmallVec::new(),
+            context_evidence: SmallVec::new(),
+            accepted_alias_hits: SmallVec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct BeamKey {
+    cursor: usize,
+    phase: u8,
+    family: u8,
+    identity: IdentityShapeKey,
+    metadata_mask: u8,
+    title_signature: TitleTokenIndices,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum IdentityShapeKey {
+    Movie,
+    Standard {
+        season: Option<u32>,
+        episode_numbers: SmallVec<[u32; 4]>,
+    },
+    Daily {
+        air_date: NaiveDate,
+        part: Option<u32>,
+    },
+    Absolute {
+        absolute_episode_numbers: SmallVec<[u32; 4]>,
+        version: Option<u32>,
+        season_hint: Option<u32>,
+    },
+    SeasonPack {
+        seasons: SmallVec<[u32; 4]>,
+        is_partial: bool,
+        season_part: Option<u32>,
+    },
+    RangePack {
+        season: Option<u32>,
+        range_start: u32,
+        range_end: u32,
+    },
+    Special {
+        kind: u8,
+        season_hint: Option<u32>,
+        episode_hint: Option<u32>,
+    },
+    Unknown,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -729,7 +806,7 @@ fn score_candidates(
     parser_version: &'static str,
 ) -> Vec<ReleaseParseCandidate> {
     let unit_index = build_parse_unit_index(lexed.tokens.as_slice(), &lexed.cst, annotations);
-    let mut beam = seed_beam(context_index);
+    let mut beam = seed_beam(context_index, lexed.tokens.len());
     let mut completed = Vec::<ParseState>::new();
 
     for _ in 0..(lexed.tokens.len().saturating_mul(3).max(1)) {
@@ -851,8 +928,8 @@ fn build_parse_unit_index(
     tokens: &[Token],
     cst: &ReleaseCst,
     annotations: &[TokenAnnotations],
-) -> BTreeMap<usize, Vec<ParseUnit>> {
-    let mut units_by_start = BTreeMap::<usize, Vec<ParseUnit>>::new();
+) -> ParseUnitIndex {
+    let mut units_by_start = vec![ParseUnitList::new(); tokens.len()];
     for index in 0..tokens.len() {
         push_unit(
             &mut units_by_start,
@@ -943,7 +1020,7 @@ fn build_parse_unit_index(
         }
     }
 
-    for units in units_by_start.values_mut() {
+    for units in &mut units_by_start {
         units.sort_by(|left, right| {
             let left_len = left.end_token.saturating_sub(left.start_token);
             let right_len = right.end_token.saturating_sub(right.start_token);
@@ -961,11 +1038,10 @@ fn build_parse_unit_index(
     units_by_start
 }
 
-fn push_unit(units_by_start: &mut BTreeMap<usize, Vec<ParseUnit>>, unit: ParseUnit) {
-    units_by_start
-        .entry(unit.start_token)
-        .or_default()
-        .push(unit);
+fn push_unit(units_by_start: &mut ParseUnitIndex, unit: ParseUnit) {
+    if let Some(units) = units_by_start.get_mut(unit.start_token) {
+        units.push(unit);
+    }
 }
 
 fn node_span(token_indices: &[usize]) -> Option<(usize, usize)> {
@@ -1038,13 +1114,15 @@ fn build_unit(
     }
 }
 
-fn seed_beam(context: &ContextIndex) -> Vec<ParseState> {
+fn seed_beam(context: &ContextIndex, token_count: usize) -> Vec<ParseState> {
     seeded_families(context)
         .into_iter()
-        .map(|(family, seed_adjustment)| ParseState {
-            family,
-            score: family_seed_score(family) + seed_adjustment,
-            ..Default::default()
+        .map(|(family, seed_adjustment)| {
+            ParseState::seeded(
+                token_count,
+                family,
+                family_seed_score(family) + seed_adjustment,
+            )
         })
         .collect()
 }
@@ -1114,18 +1192,18 @@ fn family_seed_score(family: ParseFamily) -> i32 {
 
 fn expand_state(
     state: &ParseState,
-    units_by_start: &BTreeMap<usize, Vec<ParseUnit>>,
+    units_by_start: &ParseUnitIndex,
     tokens: &[Token],
     annotations: &[TokenAnnotations],
     context: &ContextIndex,
     alias_oracle: &AliasOracle,
 ) -> Vec<ParseState> {
-    let Some(units) = units_by_start.get(&state.cursor) else {
+    let Some(units) = units_by_start.get(state.cursor) else {
         return Vec::new();
     };
     let mut next = Vec::new();
 
-    if let Some(hits) = alias_oracle.hits_at.get(&state.cursor) {
+    if let Some(hits) = alias_oracle.hits_at.get(state.cursor) {
         for hit in hits {
             if alias_hit_allowed(state, hit, annotations) {
                 next.push(branch_alias_hit(state, hit, alias_oracle, tokens));
@@ -1229,6 +1307,7 @@ fn branch_alias_hit(
     next.title_token_indices
         .extend(hit.token_start..hit.token_end);
     for token_index in hit.token_start..hit.token_end {
+        next.title_token_mask.insert(token_index);
         next.consumed_tokens.insert(token_index);
     }
     next.accepted_alias_hits.push(hit.clone());
@@ -1277,6 +1356,37 @@ fn unit_is_foreign_alt_title_group(unit: &ParseUnit, context: &ContextIndex) -> 
             .any(|ch| !ch.is_ascii() && ch.is_alphabetic())
 }
 
+fn parse_identity_for_unit(
+    family: ParseFamily,
+    unit: &ParseUnit,
+    tokens: &[Token],
+    context: &ContextIndex,
+) -> Option<(usize, ReleaseIdentity, usize, i32, &'static str)> {
+    parse_identity_at(family, tokens, unit.start_token, context)
+        .map(|(identity, last_token, family_bonus, evidence)| {
+            (
+                unit.start_token,
+                identity,
+                last_token,
+                family_bonus,
+                evidence,
+            )
+        })
+        .or_else(|| {
+            (family == ParseFamily::DailyEpisode && unit.end_token > unit.start_token + 1).then(
+                || {
+                    ((unit.start_token + 1)..unit.end_token).find_map(|index| {
+                        parse_identity_at(family, tokens, index, context).map(
+                            |(identity, last_token, family_bonus, evidence)| {
+                                (index, identity, last_token, family_bonus, evidence)
+                            },
+                        )
+                    })
+                },
+            )?
+        })
+}
+
 fn branch_identity(
     state: &ParseState,
     unit: &ParseUnit,
@@ -1284,8 +1394,8 @@ fn branch_identity(
     annotations: &[TokenAnnotations],
     context: &ContextIndex,
 ) -> Option<ParseState> {
-    let (identity, last_token, family_bonus, evidence) =
-        parse_identity_at(state.family, tokens, unit.start_token, context)?;
+    let (identity_start, identity, last_token, family_bonus, evidence) =
+        parse_identity_for_unit(state.family, unit, tokens, context)?;
     let mut next = state.clone();
     next.phase = ParsePhase::Metadata;
     next.identity = identity;
@@ -1293,7 +1403,7 @@ fn branch_identity(
     next.cursor = last_token + 1;
     next.raw_evidence.push(evidence.to_string());
     next.reasons.push(reason(evidence, family_bonus, None));
-    for token_index in unit.start_token..=last_token {
+    for token_index in identity_start..=last_token {
         next.consumed_tokens.insert(token_index);
         if let Some(annotation) = annotations.get(token_index) {
             let expected_role = match next.family {
@@ -1336,8 +1446,10 @@ fn branch_title(state: &ParseState, unit: &ParseUnit, context: &ContextIndex) ->
     let mut next = state.clone();
     next.phase = ParsePhase::Title;
     next.cursor = unit.end_token;
-    next.title_token_indices
-        .extend(unit.start_token..unit.end_token);
+    for token_index in unit.start_token..unit.end_token {
+        next.title_token_indices.push(token_index);
+        next.title_token_mask.insert(token_index);
+    }
     let delta = unit_title_delta(unit) + unit_alias_bonus(unit, context);
     next.score += delta;
     next.reasons
@@ -1373,7 +1485,7 @@ fn branch_release_group(state: &ParseState, unit: &ParseUnit, tokens: &[Token]) 
 }
 
 fn prune_beam(states: Vec<ParseState>) -> Vec<ParseState> {
-    let mut deduped = BTreeMap::<String, ParseState>::new();
+    let mut deduped = BTreeMap::<BeamKey, ParseState>::new();
     for state in states {
         let key = beam_key(&state);
         match deduped.get(&key) {
@@ -1394,13 +1506,7 @@ fn prune_beam(states: Vec<ParseState>) -> Vec<ParseState> {
     retained
 }
 
-fn beam_key(state: &ParseState) -> String {
-    let title_signature = state
-        .title_token_indices
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+fn beam_key(state: &ParseState) -> BeamKey {
     let metadata_mask = [
         state.metadata.year.is_some(),
         state.metadata.quality.is_some(),
@@ -1409,48 +1515,85 @@ fn beam_key(state: &ParseState) -> String {
         state.metadata.audio_codec.is_some(),
     ]
     .iter()
-    .map(|value| if *value { '1' } else { '0' })
-    .collect::<String>();
-    format!(
-        "{}|{}|{}|{}|{}|{:?}",
-        state.cursor,
-        state.phase as u8,
-        state.family as u8,
-        identity_shape_key(&state.identity),
+    .enumerate()
+    .fold(
+        0u8,
+        |mask, (index, value)| {
+            if *value { mask | (1u8 << index) } else { mask }
+        },
+    );
+    BeamKey {
+        cursor: state.cursor,
+        phase: state.phase as u8,
+        family: state.family as u8,
+        identity: identity_shape_key(&state.identity),
         metadata_mask,
-        title_signature
-    )
+        title_signature: state.title_token_indices.clone(),
+    }
 }
 
-fn identity_shape_key(identity: &ReleaseIdentity) -> String {
+fn special_kind_key(kind: ParsedSpecialKind) -> u8 {
+    match kind {
+        ParsedSpecialKind::Special => 0,
+        ParsedSpecialKind::Ova => 1,
+        ParsedSpecialKind::Oad => 2,
+        ParsedSpecialKind::Ncop => 3,
+        ParsedSpecialKind::Nced => 4,
+        ParsedSpecialKind::Extra => 5,
+    }
+}
+
+fn identity_shape_key(identity: &ReleaseIdentity) -> IdentityShapeKey {
     match identity {
-        ReleaseIdentity::MovieIdentity => "movie".to_string(),
+        ReleaseIdentity::MovieIdentity => IdentityShapeKey::Movie,
         ReleaseIdentity::StandardEpisodeIdentity {
             season,
             episode_numbers,
-        } => format!("std:{season:?}:{episode_numbers:?}"),
-        ReleaseIdentity::DailyIdentity { air_date, part } => format!("daily:{air_date}:{part:?}"),
+        } => IdentityShapeKey::Standard {
+            season: *season,
+            episode_numbers: episode_numbers.iter().copied().collect(),
+        },
+        ReleaseIdentity::DailyIdentity { air_date, part } => IdentityShapeKey::Daily {
+            air_date: *air_date,
+            part: *part,
+        },
         ReleaseIdentity::AbsoluteIdentity {
             absolute_episode_numbers,
             version,
             season_hint,
-        } => format!("abs:{absolute_episode_numbers:?}:{version:?}:{season_hint:?}"),
+        } => IdentityShapeKey::Absolute {
+            absolute_episode_numbers: absolute_episode_numbers.iter().copied().collect(),
+            version: *version,
+            season_hint: *season_hint,
+        },
         ReleaseIdentity::SeasonPackIdentity {
             seasons,
             is_partial,
             season_part,
-        } => format!("season:{seasons:?}:{is_partial}:{season_part:?}"),
+        } => IdentityShapeKey::SeasonPack {
+            seasons: seasons.iter().copied().collect(),
+            is_partial: *is_partial,
+            season_part: *season_part,
+        },
         ReleaseIdentity::RangePackIdentity {
             season,
             range_start,
             range_end,
-        } => format!("range:{season:?}:{range_start}:{range_end}"),
+        } => IdentityShapeKey::RangePack {
+            season: *season,
+            range_start: *range_start,
+            range_end: *range_end,
+        },
         ReleaseIdentity::SpecialIdentity {
             special_kind,
             season_hint,
             episode_hint,
-        } => format!("special:{special_kind:?}:{season_hint:?}:{episode_hint:?}"),
-        ReleaseIdentity::Unknown => "unknown".to_string(),
+        } => IdentityShapeKey::Special {
+            kind: special_kind_key(*special_kind),
+            season_hint: *season_hint,
+            episode_hint: *episode_hint,
+        },
+        ReleaseIdentity::Unknown => IdentityShapeKey::Unknown,
     }
 }
 
@@ -2502,7 +2645,8 @@ fn consume_unit_metadata(
 
 fn record_metadata_token(state: &mut ParseState, index: usize) {
     state.consumed_tokens.insert(index);
-    if !state.metadata.token_indices.contains(&index) {
+    if !state.metadata_token_mask.contains(index) {
+        state.metadata_token_mask.insert(index);
         state.metadata.token_indices.push(index);
     }
 }
@@ -2689,7 +2833,7 @@ fn build_candidate(
     let unconsumed_tokens = tokens
         .iter()
         .enumerate()
-        .filter(|(index, _)| !state.consumed_tokens.contains(index))
+        .filter(|(index, _)| !state.consumed_tokens.contains(*index))
         .map(|(_, token)| token.span)
         .collect::<Vec<_>>();
     let release_group = infer_release_group_for_candidate(&state, tokens);
@@ -2714,7 +2858,11 @@ fn build_candidate(
         year: state.metadata.year,
         quality: state.metadata.quality.clone(),
         source: state.metadata.source.clone(),
-        video_codec: state.metadata.video_codec.clone(),
+        video_codec: state
+            .metadata
+            .video_codec
+            .as_deref()
+            .and_then(VideoCodec::parse),
         video_encoding: None,
         audio: state.metadata.audio_codec.clone(),
         audio_codecs: state
@@ -2771,8 +2919,8 @@ fn build_candidate(
         release_group,
         unconsumed_tokens,
         reasons: state.reasons,
-        raw_evidence: state.raw_evidence,
-        context_evidence: state.context_evidence,
+        raw_evidence: state.raw_evidence.into_vec(),
+        context_evidence: state.context_evidence.into_vec(),
         raw_score,
         enrichment: None,
         projected,
@@ -2930,7 +3078,7 @@ fn apply_context(
             .iter()
             .rev()
             .filter_map(|token| parse_year(token.normalized.as_str()))
-            .find(|year| context.years.contains(year))
+            .find(|year| contains_sorted(&context.years, year))
     {
         state.metadata.year = Some(year);
         state
@@ -2941,7 +3089,7 @@ fn apply_context(
             .push(reason("context:year_token_hit", 8, Some(year.to_string())));
     }
     if let Some(year) = state.metadata.year
-        && context.years.contains(&year)
+        && contains_sorted(&context.years, &year)
     {
         state.score += 8;
         state
@@ -2952,7 +3100,7 @@ fn apply_context(
             .push(reason("context:year_match", 8, Some(year.to_string())));
     }
     if let ReleaseIdentity::DailyIdentity { air_date, .. } = state.identity
-        && context.air_dates.contains(&air_date)
+        && contains_sorted(&context.air_dates, &air_date)
     {
         state.score += 8;
         state
@@ -2970,7 +3118,7 @@ fn apply_context(
     } = &state.identity
         && absolute_episode_numbers
             .iter()
-            .any(|number| context.absolute_numbers.contains(number))
+            .any(|number| contains_sorted(&context.absolute_numbers, number))
     {
         state.score += 10;
         state
@@ -3225,18 +3373,22 @@ fn contextual_hits_within_title_zone(
     if title_indices.is_empty() {
         return Vec::new();
     }
-    let title_set = title_indices.iter().copied().collect::<BTreeSet<_>>();
-    let accepted = accepted_alias_hits
+    let mut title_indices_sorted = title_indices.to_vec();
+    title_indices_sorted.sort_unstable();
+    title_indices_sorted.dedup();
+
+    let mut ordered_hits = title_indices_sorted
         .iter()
-        .map(|hit| (hit.token_start, hit.token_end, hit.pattern_id))
-        .collect::<BTreeSet<_>>();
-    let mut ordered_hits = title_set
-        .iter()
-        .filter_map(|token_start| alias_oracle.hits_at.get(token_start))
+        .filter_map(|token_start| alias_oracle.hits_at.get(*token_start))
         .flat_map(|hits| hits.iter())
         .filter(|hit| {
-            (hit.token_start..hit.token_end).all(|index| title_set.contains(&index))
-                && !accepted.contains(&(hit.token_start, hit.token_end, hit.pattern_id))
+            (hit.token_start..hit.token_end)
+                .all(|index| title_indices_sorted.binary_search(&index).is_ok())
+                && !accepted_alias_hits.iter().any(|accepted| {
+                    accepted.token_start == hit.token_start
+                        && accepted.token_end == hit.token_end
+                        && accepted.pattern_id == hit.pattern_id
+                })
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -3463,13 +3615,16 @@ fn contextual_absolute_companion(
         .filter_map(|(index, token)| {
             parse_numeric_token(token.normalized.as_str()).map(|value| (index, value))
         })
-        .filter(|(_, value)| context.absolute_numbers.contains(value))
+        .filter(|(_, value)| contains_sorted(&context.absolute_numbers, value))
         .filter(|(index, value)| absolute_companion_allowed(tokens, *index, *value))
         .map(|(_, value)| value)
-        .collect::<BTreeSet<_>>();
+        .collect::<Vec<_>>();
+
+    let mut candidates = candidates;
+    sort_and_dedup(&mut candidates);
 
     if candidates.len() == 1 {
-        candidates.into_iter().collect()
+        candidates
     } else {
         Vec::new()
     }
@@ -3512,12 +3667,7 @@ fn is_episode_label_marker(token: &str) -> bool {
 
 fn finalize_score(state: &ParseState, tokens: &[Token], annotations: &[TokenAnnotations]) -> i32 {
     let mut score = state.score;
-    let title_set = state
-        .title_token_indices
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    if matches!(state.family, ParseFamily::Movie) && title_set.is_empty() {
+    if matches!(state.family, ParseFamily::Movie) && state.title_token_indices.is_empty() {
         score -= 25;
     }
     if matches!(
@@ -3544,8 +3694,8 @@ fn finalize_score(state: &ParseState, tokens: &[Token], annotations: &[TokenAnno
         .enumerate()
         .filter(|(index, annotation)| {
             is_strong_anchor(annotation.primary_role)
-                && !state.consumed_tokens.contains(index)
-                && !title_set.contains(index)
+                && !state.consumed_tokens.contains(*index)
+                && !state.title_token_mask.contains(*index)
         })
         .count();
     score -= (unresolved_strong_anchors.min(6) as i32) * 10;
@@ -3553,8 +3703,8 @@ fn finalize_score(state: &ParseState, tokens: &[Token], annotations: &[TokenAnno
         .iter()
         .enumerate()
         .filter(|(index, token)| {
-            !state.consumed_tokens.contains(index)
-                && !title_set.contains(index)
+            !state.consumed_tokens.contains(*index)
+                && !state.title_token_mask.contains(*index)
                 && !token.raw.trim().is_empty()
         })
         .count() as i32
@@ -3562,10 +3712,19 @@ fn finalize_score(state: &ParseState, tokens: &[Token], annotations: &[TokenAnno
     score
 }
 
+fn contains_sorted<T: Ord>(values: &[T], needle: &T) -> bool {
+    values.binary_search(needle).is_ok()
+}
+
+fn sort_and_dedup<T: Ord>(values: &mut Vec<T>) {
+    values.sort_unstable();
+    values.dedup();
+}
+
 fn build_context_index(context: &ReleaseParseContext) -> ContextIndex {
     let mut index = ContextIndex {
         facet_hint: context.facet_hint,
-        years: context.known_years.iter().copied().collect(),
+        years: context.known_years.to_vec(),
         ..Default::default()
     };
 
@@ -3593,6 +3752,10 @@ fn build_context_index(context: &ReleaseParseContext) -> ContextIndex {
     for episode in &context.episodes {
         push_episode_entries(&mut index, episode);
     }
+
+    sort_and_dedup(&mut index.years);
+    sort_and_dedup(&mut index.air_dates);
+    sort_and_dedup(&mut index.absolute_numbers);
 
     index
 }
@@ -3632,10 +3795,10 @@ fn push_episode_entries(index: &mut ContextIndex, episode: &ContextEpisode) {
         }
     }
     if let Some(air_date) = episode.air_date {
-        index.air_dates.insert(air_date);
+        index.air_dates.push(air_date);
     }
     if let Some(absolute_number) = episode.absolute_number {
-        index.absolute_numbers.insert(absolute_number);
+        index.absolute_numbers.push(absolute_number);
     }
 }
 
@@ -3763,15 +3926,21 @@ fn fallback_title_from_context(
 }
 
 fn context_episode_for_season(context: &ContextIndex, season: u32) -> Option<u32> {
-    let matches = context
-        .episodes
-        .iter()
-        .filter(|episode| episode.season == Some(season))
-        .filter_map(|episode| episode.episode)
-        .collect::<BTreeSet<_>>();
-    (matches.len() == 1)
-        .then(|| matches.iter().next().copied())
-        .flatten()
+    let mut matched = None;
+    for episode in &context.episodes {
+        if episode.season != Some(season) {
+            continue;
+        }
+        let Some(candidate) = episode.episode else {
+            continue;
+        };
+        match matched {
+            Some(existing) if existing != candidate => return None,
+            Some(_) => {}
+            None => matched = Some(candidate),
+        }
+    }
+    matched
 }
 
 fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
@@ -3816,13 +3985,13 @@ fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
         Err(_) => {
             return AliasOracle {
                 patterns,
-                hits_at: BTreeMap::new(),
+                hits_at: vec![AliasHitList::new(); tokens.len()],
                 parse_hints: vec!["alias_oracle_construction_failed".to_string()],
             };
         }
     };
     let (haystack, token_byte_map) = join_tokens_with_map(tokens);
-    let mut hits_at = BTreeMap::<usize, SmallVec<[AliasHit; 2]>>::new();
+    let mut hits_at = vec![AliasHitList::new(); tokens.len()];
 
     for mat in automaton.find_overlapping_iter(&haystack) {
         let Some((token_start, token_end)) =
@@ -3832,16 +4001,18 @@ fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
         };
         let pattern_id = mat.pattern().as_usize();
         let pattern = &patterns[pattern_id];
-        hits_at.entry(token_start).or_default().push(AliasHit {
-            token_start,
-            token_end,
-            pattern_id,
-            evidence: pattern.kind,
-            score_weight: pattern.kind.score_weight(),
-        });
+        if let Some(bucket) = hits_at.get_mut(token_start) {
+            bucket.push(AliasHit {
+                token_start,
+                token_end,
+                pattern_id,
+                evidence: pattern.kind,
+                score_weight: pattern.kind.score_weight(),
+            });
+        }
     }
 
-    for hits in hits_at.values_mut() {
+    for hits in hits_at.iter_mut().filter(|hits| !hits.is_empty()) {
         hits.sort_by(|left, right| {
             left.evidence
                 .precedence()
@@ -3854,7 +4025,7 @@ fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
                 )
                 .then(left.pattern_id.cmp(&right.pattern_id))
         });
-        let mut filtered = SmallVec::<[AliasHit; 2]>::new();
+        let mut filtered = AliasHitList::new();
         for hit in hits.iter() {
             if filtered.iter().any(|accepted| {
                 accepted.token_start <= hit.token_start && accepted.token_end >= hit.token_end
@@ -3879,6 +4050,8 @@ fn build_alias_oracle(tokens: &[Token], context: &ContextIndex) -> AliasOracle {
 fn join_tokens_with_map(tokens: &[Token]) -> (String, TokenByteMap) {
     let mut haystack = String::new();
     let mut token_byte_map = TokenByteMap::default();
+    token_byte_map.start_to_token.reserve(tokens.len());
+    token_byte_map.end_to_token.reserve(tokens.len());
     for (token_index, token) in tokens.iter().enumerate() {
         if !haystack.is_empty() {
             haystack.push(' ');
@@ -3886,8 +4059,8 @@ fn join_tokens_with_map(tokens: &[Token]) -> (String, TokenByteMap) {
         let start = haystack.len();
         haystack.push_str(token.normalized.as_str());
         let end = haystack.len();
-        token_byte_map.start_to_token.insert(start, token_index);
-        token_byte_map.end_to_token.insert(end, token_index);
+        token_byte_map.start_to_token.push((start, token_index));
+        token_byte_map.end_to_token.push((end, token_index));
     }
     (haystack, token_byte_map)
 }
@@ -3897,8 +4070,18 @@ fn byte_range_to_token_range(
     end: usize,
     token_byte_map: &TokenByteMap,
 ) -> Option<(usize, usize)> {
-    let token_start = token_byte_map.start_to_token.get(&start).copied()?;
-    let token_end = token_byte_map.end_to_token.get(&end).copied()? + 1;
+    let token_start = token_byte_map
+        .start_to_token
+        .binary_search_by_key(&start, |(offset, _)| *offset)
+        .ok()
+        .and_then(|index| token_byte_map.start_to_token.get(index))
+        .map(|(_, token_index)| *token_index)?;
+    let token_end = token_byte_map
+        .end_to_token
+        .binary_search_by_key(&end, |(offset, _)| *offset)
+        .ok()
+        .and_then(|index| token_byte_map.end_to_token.get(index))
+        .map(|(_, token_index)| *token_index + 1)?;
     Some((token_start, token_end))
 }
 
@@ -4765,7 +4948,7 @@ fn parse_anime_absolute_at(
                 .iter()
                 .any(|candidate| candidate.normalized == "ANIME")
             || context.facet_hint == ContextFacetHint::Anime;
-        let contextual_match = context.absolute_numbers.contains(&number);
+        let contextual_match = contains_sorted(&context.absolute_numbers, &number);
         if (is_anime_cued || contextual_match)
             && number <= 2000
             && (contextual_match || absolute_companion_allowed(tokens, index, number))
@@ -4945,9 +5128,11 @@ fn parse_versioned_absolute(token: &str) -> Option<(u32, u32)> {
 }
 
 fn parse_daily_token(token: &str) -> Option<NaiveDate> {
-    ["%Y.%m.%d", "%Y-%m-%d", "%d.%b.%Y", "%b.%d.%Y"]
-        .into_iter()
-        .find_map(|format| NaiveDate::parse_from_str(token, format).ok())
+    [
+        "%Y.%m.%d", "%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%d.%b.%Y", "%b.%d.%Y",
+    ]
+    .into_iter()
+    .find_map(|format| NaiveDate::parse_from_str(token, format).ok())
 }
 
 fn is_checksum(token: &str) -> bool {

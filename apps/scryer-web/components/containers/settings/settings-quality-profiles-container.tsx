@@ -27,6 +27,7 @@ export function SettingsQualityProfilesContainer() {
     getQualityProfileCriteria,
     getQualityProfileBoolean,
     loadQualityProfileById,
+    startNewQualityProfileDraft,
     moveProfileListToAllowed,
     moveProfileListToDenied,
     addQualityTier,
@@ -55,6 +56,7 @@ export function SettingsQualityProfilesContainer() {
       getQualityProfileCriteria={getQualityProfileCriteria}
       getQualityProfileBoolean={getQualityProfileBoolean}
       loadQualityProfileById={loadQualityProfileById}
+      startNewQualityProfileDraft={startNewQualityProfileDraft}
       activeQualityProfileTierOptions={activeQualityProfileTierOptions}
       availableQualityTiers={availableQualityTiers}
       updateQualityProfileDraft={updateQualityProfileDraft}

@@ -15,8 +15,15 @@ import {
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import { SCORING_PERSONA_CHOICES } from "@/lib/constants/quality-profiles";
-import { boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
+import { cn } from "@/lib/utils";
+import { DownloadClientRoutingPanel } from "@/components/views/media-content/download-client-routing-panel";
+import {
+  boxedActionButtonBaseClass,
+  boxedActionButtonToneClass,
+} from "@/lib/utils/action-button-styles";
 import type {
+  DownloadClientRecord,
+  DownloadClientRoutingEntry,
   LibraryRecord,
   LibraryScanSummary,
   LibrarySettingsDraft,
@@ -25,6 +32,16 @@ import type {
   RootFolderOption,
   ScoringPersonaId,
 } from "@/lib/types";
+import type { DownloadClientRoutingSettingsByClient } from "@/lib/types/download-clients";
+import {
+  buildDownloadClientRoutingState,
+  disabledDownloadClientRoutingSettings,
+  serializeDownloadClientRoutingEntries,
+} from "@/lib/utils/download-client-routing";
+import {
+  areNzbgetRoutingMapsEqual,
+  areRoutingOrdersEqual,
+} from "@/lib/utils/media-content";
 
 const INHERIT_VALUE = "__inherit__";
 const BOOLEAN_TRUE_VALUE = "true";
@@ -64,7 +81,12 @@ type MediaLibrarySettingsPanelProps = {
   scanNotice?: string | null;
   scanSummary: LibraryScanSummary | null;
   qualityProfiles: ParsedQualityProfile[];
+  downloadClients: DownloadClientRecord[];
+  downloadClientsLoading: boolean;
   loadLibrarySettings: (libraryId: string) => Promise<LibrarySettingsRecord | null>;
+  loadFacetDownloadClientRouting: (
+    scopeId: LibraryRecord["facet"],
+  ) => Promise<DownloadClientRoutingEntry[]>;
   onCreateLibrary: (input: LibraryMutationInput) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
   onUpdateLibrary: (libraryId: string, input: LibraryMutationInput) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
   onDeleteLibrary: (libraryId: string) => Promise<boolean | void> | boolean | void;
@@ -164,7 +186,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   scanNotice,
   scanSummary,
   qualityProfiles,
+  downloadClients,
+  downloadClientsLoading,
   loadLibrarySettings,
+  loadFacetDownloadClientRouting,
   onCreateLibrary,
   onUpdateLibrary,
   onDeleteLibrary,
@@ -187,9 +212,18 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [draftMonitorFillerMovies, setDraftMonitorFillerMovies] = React.useState(INHERIT_VALUE);
   const [draftNfoWriteOnImport, setDraftNfoWriteOnImport] = React.useState(INHERIT_VALUE);
   const [draftPlexmatchWriteOnImport, setDraftPlexmatchWriteOnImport] = React.useState(INHERIT_VALUE);
+  const [draftDownloadClientRoutingMode, setDraftDownloadClientRoutingMode] =
+    React.useState<"inherit" | "custom">("inherit");
+  const [draftDownloadClientRouting, setDraftDownloadClientRouting] =
+    React.useState<DownloadClientRoutingSettingsByClient>({});
+  const [draftDownloadClientRoutingOrder, setDraftDownloadClientRoutingOrder] =
+    React.useState<string[]>([]);
+  const [draftDownloadClientRoutingLoading, setDraftDownloadClientRoutingLoading] =
+    React.useState(false);
   const [savedSettings, setSavedSettings] = React.useState<LibrarySettingsRecord | null>(null);
   const [browserOpen, setBrowserOpen] = React.useState(false);
   const [editingIndex, setEditingIndex] = React.useState<number | null>(null);
+  const lastHydratedRoutingKeyRef = React.useRef<string | null>(null);
 
   const activeLibrary = React.useMemo(
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
@@ -198,6 +232,42 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const currentFacet = activeLibrary?.facet ?? facet;
   const isAnimeFacet = currentFacet === "anime";
   const showPlexmatch = currentFacet === "series" || currentFacet === "anime";
+  const savedDownloadClientRoutingEntries =
+    savedSettings?.downloadClientRoutingOverride ?? null;
+  const savedDownloadClientRoutingState = React.useMemo(
+    () =>
+      buildDownloadClientRoutingState(
+        downloadClients,
+        savedDownloadClientRoutingEntries ?? [],
+        disabledDownloadClientRoutingSettings(),
+      ),
+    [downloadClients, savedDownloadClientRoutingEntries],
+  );
+
+  const hydrateSavedSettings = React.useCallback(
+    (settings: LibrarySettingsRecord | null) => {
+      setSavedSettings(settings);
+      setDraftRequiredAudioLanguages(settings?.requiredAudioLanguagesOverride ?? []);
+      setDraftQualityProfileId(settings?.qualityProfileIdOverride ?? INHERIT_VALUE);
+      setDraftScoringPersona(settings?.scoringPersonaOverride ?? INHERIT_VALUE);
+      setDraftFillerPolicy(settings?.fillerPolicyOverride ?? INHERIT_VALUE);
+      setDraftRecapPolicy(settings?.recapPolicyOverride ?? INHERIT_VALUE);
+      setDraftMonitorSpecials(booleanOverrideSelectValue(settings?.monitorSpecialsOverride));
+      setDraftInterSeasonMovies(
+        booleanOverrideSelectValue(settings?.interSeasonMoviesOverride),
+      );
+      setDraftMonitorFillerMovies(
+        booleanOverrideSelectValue(settings?.monitorFillerMoviesOverride),
+      );
+      setDraftNfoWriteOnImport(
+        booleanOverrideSelectValue(settings?.nfoWriteOnImportOverride),
+      );
+      setDraftPlexmatchWriteOnImport(
+        booleanOverrideSelectValue(settings?.plexmatchWriteOnImportOverride),
+      );
+    },
+    [],
+  );
 
   React.useEffect(() => {
     if (mode === "new") {
@@ -235,6 +305,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftMonitorFillerMovies(INHERIT_VALUE);
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+      setDraftDownloadClientRoutingMode("inherit");
+      setDraftDownloadClientRouting({});
+      setDraftDownloadClientRoutingOrder([]);
+      setDraftDownloadClientRoutingLoading(false);
       return;
     }
     setDraftName(activeLibrary?.name ?? "");
@@ -256,25 +330,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         if (cancelled) {
           return;
         }
-        setSavedSettings(settings);
-        setDraftRequiredAudioLanguages(settings?.requiredAudioLanguagesOverride ?? []);
-        setDraftQualityProfileId(settings?.qualityProfileIdOverride ?? INHERIT_VALUE);
-        setDraftScoringPersona(settings?.scoringPersonaOverride ?? INHERIT_VALUE);
-        setDraftFillerPolicy(settings?.fillerPolicyOverride ?? INHERIT_VALUE);
-        setDraftRecapPolicy(settings?.recapPolicyOverride ?? INHERIT_VALUE);
-        setDraftMonitorSpecials(booleanOverrideSelectValue(settings?.monitorSpecialsOverride));
-        setDraftInterSeasonMovies(
-          booleanOverrideSelectValue(settings?.interSeasonMoviesOverride),
-        );
-        setDraftMonitorFillerMovies(
-          booleanOverrideSelectValue(settings?.monitorFillerMoviesOverride),
-        );
-        setDraftNfoWriteOnImport(
-          booleanOverrideSelectValue(settings?.nfoWriteOnImportOverride),
-        );
-        setDraftPlexmatchWriteOnImport(
-          booleanOverrideSelectValue(settings?.plexmatchWriteOnImportOverride),
-        );
+        hydrateSavedSettings(settings);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -290,7 +346,39 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     return () => {
       cancelled = true;
     };
-  }, [activeLibrary, loadLibrarySettings, mode, t]);
+  }, [activeLibrary, hydrateSavedSettings, loadLibrarySettings, mode, t]);
+
+  React.useEffect(() => {
+    const routingHydrationKey =
+      mode === "new"
+        ? `new:${currentFacet}:${downloadClients.map((client) => client.id).join(",")}`
+        : `library:${activeLibrary?.id ?? "none"}:${savedDownloadClientRoutingEntries ? "custom" : "inherit"}:${(savedDownloadClientRoutingEntries ?? []).map((entry) => entry.clientId).join(",")}:${downloadClients.map((client) => client.id).join(",")}`;
+
+    if (lastHydratedRoutingKeyRef.current === routingHydrationKey) {
+      return;
+    }
+    lastHydratedRoutingKeyRef.current = routingHydrationKey;
+
+    if (mode === "new") {
+      setDraftDownloadClientRoutingMode("inherit");
+      setDraftDownloadClientRouting({});
+      setDraftDownloadClientRoutingOrder([]);
+      return;
+    }
+
+    setDraftDownloadClientRoutingMode(
+      savedDownloadClientRoutingEntries ? "custom" : "inherit",
+    );
+    setDraftDownloadClientRouting(savedDownloadClientRoutingState.routing);
+    setDraftDownloadClientRoutingOrder(savedDownloadClientRoutingState.order);
+  }, [
+    activeLibrary?.id,
+    currentFacet,
+    downloadClients,
+    mode,
+    savedDownloadClientRoutingEntries,
+    savedDownloadClientRoutingState,
+  ]);
 
   const normalizedDraftRoots = React.useMemo(
     () => normalizeRoots(draftRoots),
@@ -344,7 +432,25 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const hasRootFolderConflicts = conflictingLibraryNamesByRootPath.size > 0;
   const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
+  const downloadClientRoutingBusy =
+    downloadClientsLoading || draftDownloadClientRoutingLoading;
   const savedRoots = React.useMemo(() => rootsFromLibrary(activeLibrary), [activeLibrary]);
+  const draftDownloadClientRoutingEntries = React.useMemo(
+    () =>
+      draftDownloadClientRoutingMode === "custom"
+        ? serializeDownloadClientRoutingEntries(
+            downloadClients,
+            draftDownloadClientRouting,
+            draftDownloadClientRoutingOrder,
+          )
+        : null,
+    [
+      downloadClients,
+      draftDownloadClientRouting,
+      draftDownloadClientRoutingMode,
+      draftDownloadClientRoutingOrder,
+    ],
+  );
   const settingsDraft = React.useMemo<LibrarySettingsDraft>(
     () => ({
       requiredAudioLanguages:
@@ -370,9 +476,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         ? booleanOverrideFromSelectValue(draftPlexmatchWriteOnImport)
         : null,
       indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
-      downloadClientRouting: savedSettings?.downloadClientRoutingOverride ?? null,
+      downloadClientRouting: draftDownloadClientRoutingEntries,
     }),
     [
+      draftDownloadClientRoutingEntries,
       draftFillerPolicy,
       draftInterSeasonMovies,
       draftMonitorFillerMovies,
@@ -398,12 +505,23 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         settingsDraft.fillerPolicy !== savedSettings.fillerPolicyOverride ||
         settingsDraft.recapPolicy !== savedSettings.recapPolicyOverride ||
         settingsDraft.monitorSpecials !== savedSettings.monitorSpecialsOverride ||
-        settingsDraft.interSeasonMovies !== savedSettings.interSeasonMoviesOverride ||
+      settingsDraft.interSeasonMovies !== savedSettings.interSeasonMoviesOverride ||
         settingsDraft.monitorFillerMovies !==
           savedSettings.monitorFillerMoviesOverride ||
         settingsDraft.nfoWriteOnImport !== savedSettings.nfoWriteOnImportOverride ||
         settingsDraft.plexmatchWriteOnImport !==
-          savedSettings.plexmatchWriteOnImportOverride));
+          savedSettings.plexmatchWriteOnImportOverride ||
+        (draftDownloadClientRoutingMode === "custom") !==
+          Boolean(savedDownloadClientRoutingEntries) ||
+        (draftDownloadClientRoutingMode === "custom" &&
+          (!areNzbgetRoutingMapsEqual(
+            draftDownloadClientRouting,
+            savedDownloadClientRoutingState.routing,
+          ) ||
+            !areRoutingOrdersEqual(
+              draftDownloadClientRoutingOrder,
+              savedDownloadClientRoutingState.order,
+            )))));
   const hasDraftChanges =
     mode === "new" ||
     draftName.trim() !== (activeLibrary?.name ?? "") ||
@@ -428,6 +546,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftMonitorFillerMovies(INHERIT_VALUE);
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+      setDraftDownloadClientRoutingMode("inherit");
+      setDraftDownloadClientRouting({});
+      setDraftDownloadClientRoutingOrder([]);
+      setDraftDownloadClientRoutingLoading(false);
       return;
     }
     setMode("existing");
@@ -502,9 +624,106 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setDraftMonitorFillerMovies(INHERIT_VALUE);
     setDraftNfoWriteOnImport(INHERIT_VALUE);
     setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+    setDraftDownloadClientRoutingMode("inherit");
+    setDraftDownloadClientRouting({});
+    setDraftDownloadClientRoutingOrder([]);
+    setDraftDownloadClientRoutingLoading(false);
   };
 
+  const handleDownloadClientRoutingModeChange = React.useCallback(
+    async (nextMode: "inherit" | "custom") => {
+      if (nextMode === "inherit") {
+        setDraftDownloadClientRoutingMode("inherit");
+        return;
+      }
+
+      if (draftDownloadClientRoutingMode === "custom") {
+        setDraftDownloadClientRoutingMode("custom");
+        return;
+      }
+
+      if (savedDownloadClientRoutingEntries) {
+        setDraftDownloadClientRoutingMode("custom");
+        return;
+      }
+
+      setSettingsError(null);
+      setDraftDownloadClientRoutingLoading(true);
+      try {
+        const entries = await loadFacetDownloadClientRouting(currentFacet);
+        const nextState = buildDownloadClientRoutingState(downloadClients, entries);
+        setDraftDownloadClientRoutingMode("custom");
+        setDraftDownloadClientRouting(nextState.routing);
+        setDraftDownloadClientRoutingOrder(nextState.order);
+      } catch (error) {
+        setSettingsError(
+          error instanceof Error ? error.message : t("status.failedToLoad"),
+        );
+      } finally {
+        setDraftDownloadClientRoutingLoading(false);
+      }
+    },
+    [
+      currentFacet,
+      downloadClients,
+      draftDownloadClientRoutingMode,
+      loadFacetDownloadClientRouting,
+      savedDownloadClientRoutingEntries,
+      t,
+    ],
+  );
+
+  const updateDownloadClientRoutingDraft = React.useCallback(
+    (
+      clientId: string,
+      nextValue: Partial<{
+        enabled: boolean;
+        category: string;
+        recentQueuePriority: string;
+        olderQueuePriority: string;
+        removeCompleted: boolean;
+        removeFailed: boolean;
+      }>,
+    ) => {
+      setDraftDownloadClientRouting((current) => ({
+        ...current,
+        [clientId]: {
+          ...(current[clientId] ?? disabledDownloadClientRoutingSettings()),
+          ...nextValue,
+        },
+      }));
+      setDraftDownloadClientRoutingOrder((current) =>
+        current.includes(clientId) ? current : [...current, clientId],
+      );
+    },
+    [],
+  );
+
+  const moveDownloadClientRoutingDraft = React.useCallback(
+    (clientId: string, direction: "up" | "down") => {
+      setDraftDownloadClientRoutingOrder((current) => {
+        const index = current.indexOf(clientId);
+        if (index < 0) {
+          return current;
+        }
+
+        const nextIndex = direction === "up" ? index - 1 : index + 1;
+        if (nextIndex < 0 || nextIndex >= current.length) {
+          return current;
+        }
+
+        const next = [...current];
+        [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+        return next;
+      });
+    },
+    [],
+  );
+
   const handleSaveLibrary = async () => {
+    if (downloadClientRoutingBusy) {
+      return null;
+    }
     const name = draftName.trim();
     if (!name) {
       return null;
@@ -514,19 +733,37 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     if (mode === "new") {
       const created = await onCreateLibrary({ name, roots, settings: settingsDraft });
       if (created?.id) {
+        try {
+          const refreshedSettings = await loadLibrarySettings(created.id);
+          hydrateSavedSettings(refreshedSettings);
+          setSettingsError(null);
+        } catch (error) {
+          setSettingsError(
+            error instanceof Error ? error.message : t("settings.librarySettingsLoadFailed"),
+          );
+        }
         setMode("existing");
         setActiveLibraryId(created.id);
       }
       return created ?? null;
     }
     if (activeLibrary) {
-      return (
+      const updatedLibrary =
         (await onUpdateLibrary(activeLibrary.id, {
           name,
           roots,
           settings: settingsDraft,
-        })) ?? activeLibrary
-      );
+        })) ?? activeLibrary;
+      try {
+        const refreshedSettings = await loadLibrarySettings(updatedLibrary.id);
+        hydrateSavedSettings(refreshedSettings);
+        setSettingsError(null);
+      } catch (error) {
+        setSettingsError(
+          error instanceof Error ? error.message : t("settings.librarySettingsLoadFailed"),
+        );
+      }
+      return updatedLibrary;
     }
     return null;
   };
@@ -681,23 +918,31 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                           )}
                           <Button
                             type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 shrink-0"
+                            variant="secondary"
+                            size="icon-sm"
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.edit,
+                            )}
                             onClick={() => openEdit(index)}
                             disabled={actionBusy}
                             aria-label={t("label.edit")}
+                            title={t("label.edit")}
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
                           <Button
                             type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                            variant="secondary"
+                            size="icon-sm"
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.delete,
+                            )}
                             onClick={() => handleRemovePath(index)}
                             disabled={actionBusy}
                             aria-label={t("label.delete")}
+                            title={t("label.delete")}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -808,6 +1053,47 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     </p>
                   ) : null}
                 </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <Label>{t("settings.downloadClientRouting")}</Label>
+                  <Select
+                    value={draftDownloadClientRoutingMode}
+                    onValueChange={(value) => {
+                      void handleDownloadClientRoutingModeChange(
+                        value as "inherit" | "custom",
+                      );
+                    }}
+                    disabled={settingsBusy || downloadClientRoutingBusy}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="inherit">
+                        {t("settings.libraryInheritFacet")}
+                      </SelectItem>
+                      <SelectItem value="custom">
+                        {t("settings.libraryCustomRouting")}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {draftDownloadClientRoutingMode === "custom" ? (
+                  <DownloadClientRoutingPanel
+                    scopeLabel={activeLibrary?.name ?? settingsTitle}
+                    downloadClients={downloadClients}
+                    activeScopeRouting={draftDownloadClientRouting}
+                    activeScopeRoutingOrder={draftDownloadClientRoutingOrder}
+                    downloadClientRoutingLoading={downloadClientRoutingBusy}
+                    downloadClientRoutingSaving={saving}
+                    updateDownloadClientRoutingForScope={
+                      updateDownloadClientRoutingDraft
+                    }
+                    moveDownloadClientInScope={moveDownloadClientRoutingDraft}
+                  />
+                ) : null}
               </div>
 
               <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
@@ -1060,6 +1346,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   onClick={handleSaveAndScanLibrary}
                   disabled={
                     settingsBusy ||
+                    downloadClientRoutingBusy ||
                     !draftName.trim() ||
                     !hasDraftChanges ||
                     hasRootFolderConflicts
@@ -1074,6 +1361,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   onClick={handleSaveLibrary}
                   disabled={
                     settingsBusy ||
+                    downloadClientRoutingBusy ||
                     !draftName.trim() ||
                     !hasDraftChanges ||
                     hasRootFolderConflicts

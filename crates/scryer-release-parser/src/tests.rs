@@ -3,7 +3,7 @@ use chrono::NaiveDate;
 use crate::enrichment::{enrich_candidate, project_final_metadata};
 use crate::{
     ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ParseFamily,
-    ParsedEpisodeReleaseType, ReleaseParseContext, analyze_release_against_targets,
+    ParsedEpisodeReleaseType, ReleaseParseContext, VideoCodec, analyze_release_against_targets,
     analyze_release_for_target,
 };
 
@@ -152,10 +152,10 @@ fn context_does_not_invent_absent_titles() {
         name: "Different Alias".to_string(),
     }];
 
-    let analysis = analyze_release_for_target("Outlander.S08E05.1080p.WEB-DL", &target);
+    let analysis = analyze_release_for_target("Farwander.S08E05.1080p.WEB-DL", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "OUTLANDER");
+    assert_eq!(candidate.projected.normalized_title, "FARWANDER");
     assert!(
         !candidate
             .projected
@@ -318,6 +318,21 @@ fn series_context_supports_split_day_month_year_daily_release() {
 
     let analysis = analyze_release_for_target(
         "Kiskanmak.29.Blm.21.04.2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
+        &target,
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.family, ParseFamily::DailyEpisode);
+    assert_eq!(candidate.projected.year, Some(2026));
+}
+
+#[test]
+fn series_context_supports_hyphenated_day_month_year_daily_release() {
+    let mut target = context(ContextFacetHint::Series, "Kiskanmak");
+    target.known_years.push(2026);
+
+    let analysis = analyze_release_for_target(
+        "Kiskanmak.29.Blm.21-04-2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -784,7 +799,7 @@ fn enrichment_extracts_affixed_language_before_video_anchor() {
     let projected = project_final_metadata(candidate.projected.clone(), &enrichment);
 
     assert_eq!(projected.languages_audio, vec!["heb".to_string()]);
-    assert_eq!(projected.video_codec.as_deref(), Some("XVID"));
+    assert_eq!(projected.video_codec.as_ref(), Some(&VideoCodec::Xvid));
 }
 
 #[test]
@@ -1063,16 +1078,19 @@ fn service_tokens_project_to_canonical_service_names() {
 
 #[test]
 fn unicode_case_and_out_of_corpus_metadata_parse_without_fixture_bias() {
-    let mut target = context(ContextFacetHint::Movie, "Éclair Pokémon");
+    let mut target = context(ContextFacetHint::Movie, "Éclair Monstra");
     target.known_years.push(2024);
 
     let analysis =
-        analyze_release_for_target("éclair.pokémon.2024.576p.WEB-DL.VVC.OPUS.2.0-GRP", &target);
+        analyze_release_for_target("éclair.monstra.2024.576p.WEB-DL.VVC.OPUS.2.0-GRP", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "ÉCLAIR POKÉMON");
+    assert_eq!(candidate.projected.normalized_title, "ÉCLAIR MONSTRA");
     assert_eq!(candidate.projected.quality.as_deref(), Some("576p"));
-    assert_eq!(candidate.projected.video_codec.as_deref(), Some("VVC"));
+    assert_eq!(
+        candidate.projected.video_codec.as_ref(),
+        Some(&VideoCodec::Vvc)
+    );
     assert_eq!(candidate.projected.audio.as_deref(), Some("OPUS"));
     assert_eq!(candidate.projected.audio_channels.as_deref(), Some("2.0"));
 }
@@ -1146,7 +1164,10 @@ fn short_service_alias_can_remain_a_title_word() {
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(candidate.projected.normalized_title, "MAX HEADROOM");
-    assert_eq!(candidate.projected.video_codec.as_deref(), Some("MPEG2"));
+    assert_eq!(
+        candidate.projected.video_codec.as_ref(),
+        Some(&VideoCodec::Mpeg2)
+    );
     assert_eq!(candidate.projected.audio.as_deref(), Some("MP3"));
 }
 
@@ -1201,7 +1222,7 @@ fn suffix_group_ignores_parenthetical_alt_title_and_language_markers() {
 #[test]
 fn suffix_group_does_not_capture_hyphenated_words_in_trailing_title() {
     let analysis = analyze_release_for_target(
-        "Emberfall.S17E11.720p.DSNP.WEB-DL.AAC2.0.H.264-PiroRips.mkv (Emberfall - Thousand-Year Blood War)",
+        "Emberfall.S17E11.720p.DSNP.WEB-DL.AAC2.0.H.264-PiroRips.mkv (Emberfall - Iron Eclipse)",
         &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1314,7 +1335,10 @@ fn enrichment_fills_split_video_codec_and_audio_channels() {
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.video_codec.as_deref(), Some("H.264"));
+    assert_eq!(
+        candidate.projected.video_codec.as_ref(),
+        Some(&VideoCodec::H264)
+    );
     assert_eq!(candidate.projected.audio_channels.as_deref(), Some("2.0"));
 }
 
@@ -1332,8 +1356,8 @@ fn parser_canonicalizes_h264_family_video_codec_tokens() {
         let candidate = analysis.best_candidate().expect("best candidate");
 
         assert_eq!(
-            candidate.projected.video_codec.as_deref(),
-            Some("H.264"),
+            candidate.projected.video_codec.as_ref(),
+            Some(&VideoCodec::H264),
             "{raw}"
         );
     }
@@ -1353,8 +1377,8 @@ fn parser_canonicalizes_h265_family_video_codec_tokens() {
         let candidate = analysis.best_candidate().expect("best candidate");
 
         assert_eq!(
-            candidate.projected.video_codec.as_deref(),
-            Some("H.265"),
+            candidate.projected.video_codec.as_ref(),
+            Some(&VideoCodec::H265),
             "{raw}"
         );
     }
@@ -1435,7 +1459,7 @@ fn labeled_episode_range_stays_multi_episode() {
 
 #[test]
 fn labeled_single_episode_does_not_become_range_pack() {
-    let mut target = context(ContextFacetHint::Anime, "Doraemon");
+    let mut target = context(ContextFacetHint::Anime, "Clockwork Cat");
     target.known_years.push(2005);
     target.episodes = vec![ContextEpisode {
         absolute_number: Some(911),
@@ -1443,7 +1467,7 @@ fn labeled_single_episode_does_not_become_range_pack() {
     }];
 
     let analysis = analyze_release_for_target(
-        "[Ommex] Doraemon (2005) Episode 911 [ENG SUB][1080p x265 AAC]",
+        "[Ommex] Clockwork Cat (2005) Episode 911 [ENG SUB][1080p x265 AAC]",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1466,23 +1490,20 @@ fn labeled_single_episode_does_not_become_range_pack() {
     );
 }
 
-fn nightfall_context() -> ReleaseParseContext {
-    let mut target = context(
-        ContextFacetHint::Anime,
-        "Nightfall!! Heavy Metal, Dark Fantasy",
-    );
+fn midnight_alloy_context() -> ReleaseParseContext {
+    let mut target = context(ContextFacetHint::Anime, "Midnight Alloy Dark Signal");
     target.aliases = vec![
         ContextAlias {
-            name: "Nightfall!! Heavy Metal Dark".to_string(),
+            name: "Midnight Alloy Dark".to_string(),
         },
         ContextAlias {
-            name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
+            name: "Midnight Alloy Dark Signal".to_string(),
         },
         ContextAlias {
-            name: "Nightfall!! Kage no Requiem".to_string(),
+            name: "Midnight Alloy Kage Requiem".to_string(),
         },
         ContextAlias {
-            name: "Nightfall!!".to_string(),
+            name: "Midnight Alloy".to_string(),
         },
     ];
     target.known_years.push(2022);
@@ -1490,10 +1511,10 @@ fn nightfall_context() -> ReleaseParseContext {
 }
 
 #[test]
-fn nightfall_part_one_and_two_release_projects_full_season_pack() {
+fn midnight_alloy_part_one_and_two_release_projects_full_season_pack() {
     let analysis = analyze_release_for_target(
-        "[Anime Time] NIGHTFALL!! Heavy Metal Dark (Season 1) [Part 1 + Part 2] [Dual Audio] [1080p][HEVC 10bit x265][AAC][Multi Sub] [Batch]",
-        &nightfall_context(),
+        "[Studio Nova] MIDNIGHT ALLOY Dark Signal (Season 1) [Part 1 + Part 2] [Dual Audio] [1080p][HEVC 10bit x265][AAC][Multi Sub] [Batch]",
+        &midnight_alloy_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -1506,10 +1527,10 @@ fn nightfall_part_one_and_two_release_projects_full_season_pack() {
 }
 
 #[test]
-fn nightfall_standalone_part_two_release_projects_partial_season_pack() {
+fn midnight_alloy_standalone_part_two_release_projects_partial_season_pack() {
     let analysis = analyze_release_for_target(
-        "[EMBER] NIGHTFALL‼ Heavy Metal, Dark Fantasy (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Nightfall!! Kage no Requiem) (Batch)",
-        &nightfall_context(),
+        "[EMBER] MIDNIGHT ALLOY‼ Dark Signal (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Midnight Alloy Kage Requiem) (Batch)",
+        &midnight_alloy_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -1522,10 +1543,10 @@ fn nightfall_standalone_part_two_release_projects_partial_season_pack() {
 }
 
 #[test]
-fn nightfall_tilde_absolute_range_projects_absolute_episode_numbers() {
+fn midnight_alloy_tilde_absolute_range_projects_absolute_episode_numbers() {
     let analysis = analyze_release_for_target(
-        "[Erai-raws] Nightfall!! Kage no Requiem (2022) - 01 ~ 13 [1080p][Multiple Subtitle]",
-        &nightfall_context(),
+        "[Erai-raws] Midnight Alloy Kage no Requiem (2022) - 01 ~ 13 [1080p][Multiple Subtitle]",
+        &midnight_alloy_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -1540,10 +1561,10 @@ fn nightfall_tilde_absolute_range_projects_absolute_episode_numbers() {
 }
 
 #[test]
-fn nightfall_labeled_absolute_range_projects_absolute_episode_numbers() {
+fn midnight_alloy_labeled_absolute_range_projects_absolute_episode_numbers() {
     let analysis = analyze_release_for_target(
-        "NIGHTFALL!! -Heavy Metal, Dark Fantasy- Episodes 14-24 | Nightfall!! Kage no Requiem [Dual][1080p] - E.N.D (English Dub | Japanese Dub)",
-        &nightfall_context(),
+        "MIDNIGHT ALLOY -Dark Signal- Episodes 14-24 | Midnight Alloy Kage no Requiem [Dual][1080p] - E.N.D (English Dub | Japanese Dub)",
+        &midnight_alloy_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -1557,10 +1578,10 @@ fn nightfall_labeled_absolute_range_projects_absolute_episode_numbers() {
 }
 
 #[test]
-fn nightfall_season_scoped_labeled_range_projects_episode_numbers() {
+fn midnight_alloy_season_scoped_labeled_range_projects_episode_numbers() {
     let analysis = analyze_release_for_target(
-        "[Anime Chap] NIGHTFALL‼ Heavy Metal, Dark Fantasy 2022 - Season 1 (ONA) [WEB 1080p] {OP & ED Lyrics} Improved Subs (Episode 1 - 13) {Batch}",
-        &nightfall_context(),
+        "[Anime Chap] MIDNIGHT ALLOY‼ Dark Signal 2022 - Season 1 (ONA) [WEB 1080p] {OP & ED Lyrics} Improved Subs (Episode 1 - 13) {Batch}",
+        &midnight_alloy_context(),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     assert_eq!(candidate.family, ParseFamily::EpisodeRangePack);
@@ -1569,4 +1590,81 @@ fn nightfall_season_scoped_labeled_range_projects_episode_numbers() {
     assert_eq!(episode.season, Some(1));
     assert_eq!(episode.episode_numbers, (1..=13).collect::<Vec<_>>());
     assert!(episode.absolute_episode_numbers.is_empty());
+}
+
+fn starfall_iron_eclipse_context() -> ReleaseParseContext {
+    let mut target = context(ContextFacetHint::Anime, "Starfall Iron Eclipse");
+    target.aliases = vec![
+        ContextAlias {
+            name: "Starfall".to_string(),
+        },
+        ContextAlias {
+            name: "Starfall - Iron Eclipse".to_string(),
+        },
+        ContextAlias {
+            name: "Starfall: Iron Eclipse".to_string(),
+        },
+    ];
+    target.known_years.push(2022);
+    target.episodes = vec![ContextEpisode {
+        absolute_number: Some(14),
+        title: Some("The Last 9 Signals".to_string()),
+        ..Default::default()
+    }];
+    target
+}
+
+#[test]
+fn anime_absolute_release_keeps_release_group_and_metadata_boundaries() {
+    let analysis = analyze_release_for_target(
+        "[Studio Nova] Starfall - Iron Eclipse - 014 - The Last 9 Signals [BD][1080p][HEVC 10bit x265][AAC] [Dual Audio][ENG Subs]",
+        &starfall_iron_eclipse_context(),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::AnimeAbsolute);
+    assert_eq!(episode.absolute_episode, Some(14));
+    assert_eq!(episode.absolute_episode_numbers, vec![14]);
+    assert_eq!(
+        candidate.projected.release_group.as_deref(),
+        Some("Studio Nova")
+    );
+    assert_eq!(candidate.projected.source.as_deref(), Some("BluRay"));
+    assert_eq!(candidate.projected.quality.as_deref(), Some("1080p"));
+    assert_eq!(
+        candidate.projected.video_codec.as_ref(),
+        Some(&VideoCodec::H265)
+    );
+    assert!(
+        candidate
+            .projected
+            .audio_codecs
+            .iter()
+            .any(|codec| codec == "AAC")
+    );
+}
+
+#[test]
+fn target_bank_prefers_specific_title_when_alias_and_episode_title_align() {
+    let mut classic_starfall = context(ContextFacetHint::Anime, "Starfall");
+    classic_starfall.aliases = vec![ContextAlias {
+        name: "Starfall".to_string(),
+    }];
+
+    let analysis = analyze_release_against_targets(
+        "[Studio Nova] Starfall - 014 - The Last 9 Signals [BD][1080p][HEVC 10bit x265][AAC]",
+        &[classic_starfall, starfall_iron_eclipse_context()],
+    );
+    let candidate = analysis
+        .best_target()
+        .and_then(|target| target.analysis.best_candidate())
+        .expect("best candidate");
+
+    assert_eq!(analysis.best_target_index, Some(1));
+    assert!(analysis.ambiguity_margin() >= 0);
+    assert_eq!(
+        candidate.projected.normalized_title,
+        "STARFALL IRON ECLIPSE"
+    );
 }

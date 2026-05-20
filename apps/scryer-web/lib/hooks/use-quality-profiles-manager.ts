@@ -117,6 +117,7 @@ export type UseQualityProfilesManagerResult = {
     fallback: boolean,
   ) => boolean;
   loadQualityProfileById: (profileId: string) => void;
+  startNewQualityProfileDraft: () => void;
   moveProfileListToAllowed: (
     allowedField: QualityProfileListField,
     deniedField: QualityProfileListField,
@@ -129,7 +130,7 @@ export type UseQualityProfilesManagerResult = {
   ) => void;
   addQualityTier: (qualityTier: string) => void;
   removeQualityTier: (qualityTier: string) => void;
-  updateQualityProfilesGlobal: (event?: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
+  updateQualityProfilesGlobal: (event?: React.FormEvent<HTMLFormElement>) => Promise<boolean> | boolean;
   saveGlobalQualityProfile: (value: string) => Promise<void> | void;
   saveGlobalScoringPersona: (persona: ScoringPersonaId) => Promise<void> | void;
   globalQualityProfileId: string;
@@ -428,6 +429,18 @@ export function useQualityProfilesManager(
     [qualityProfileCatalogEntries],
   );
 
+  const startNewQualityProfileDraft = React.useCallback(() => {
+    const existingIds = qualityProfileCatalogEntries
+      .map((entry) => entry.id.trim())
+      .filter((entryId) => entryId.length > 0);
+    const nextProfileId = createUniqueProfileId("quality-profile", existingIds);
+    const nextDraft = buildQualityProfileTemplate(nextProfileId, "");
+    setSelectedQualityProfileId(nextProfileId);
+    setQualityProfileDraft(nextDraft);
+    setQualityProfileDraftOriginalName("");
+    setQualityProfileParseError("");
+  }, [qualityProfileCatalogEntries]);
+
   const setQualityProfileDraftAndCatalog = React.useCallback(
     (
       patch: Partial<QualityProfileDraft> | ((current: QualityProfileDraft) => QualityProfileDraft),
@@ -460,6 +473,17 @@ export function useQualityProfilesManager(
 
     const originalName = qualityProfileDraftOriginalName.trim();
     const hasNameChange = Boolean(originalName) && originalName !== nextName;
+    const normalizedNextName = nextName.toLocaleLowerCase();
+    const hasDuplicateName = sourceEntries.some(
+      (entry) =>
+        entry.id !== nextIdFromDraft &&
+        entry.name.trim().toLocaleLowerCase() === normalizedNextName,
+    );
+    if (hasDuplicateName) {
+      setQualityProfileParseError(t("settings.qualityProfileNameDuplicate"));
+      setGlobalStatus(t("settings.qualityProfileNameDuplicate"));
+      return null;
+    }
     const existingIds = sourceEntries.map((entry) => entry.id.trim()).filter((entryId) => entryId.length > 0);
     const shouldCreateNewProfile =
       hasNameChange || !sourceEntries.some((entry) => entry.id === nextIdFromDraft);
@@ -562,13 +586,13 @@ export function useQualityProfilesManager(
   const updateQualityProfilesGlobal = React.useCallback(
     async (event?: React.FormEvent<HTMLFormElement>) => {
       if (qualityProfilesSaving) {
-        return;
+        return false;
       }
 
       event?.preventDefault();
 
       const committed = commitQualityProfileDraftToCatalog();
-      if (committed === null) return;
+      if (committed === null) return false;
       const parsedEntries = committed.catalogEntries;
       const parsedProfiles = parsedEntries.map(({ id, name }) => ({ id, name }));
 
@@ -600,8 +624,10 @@ export function useQualityProfilesManager(
           committed.draftEntry.id,
         );
         setGlobalStatus(t("settings.qualitySettingsSaved"));
+        return true;
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+        return false;
       } finally {
         setQualityProfilesSaving(false);
       }
@@ -859,6 +885,7 @@ export function useQualityProfilesManager(
     getQualityProfileCriteria,
     getQualityProfileBoolean,
     loadQualityProfileById,
+    startNewQualityProfileDraft,
     moveProfileListToAllowed,
     moveProfileListToDenied,
     addQualityTier,

@@ -729,7 +729,7 @@ export function SeriesOverviewView({
               ) : null}
 
               <div className="mt-auto flex flex-wrap items-center gap-3 pt-3">
-                {(() => { const e = title.externalIds.find((e) => e.source === "imdb"); return e ? (
+                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "imdb"); return e ? (
                   <a
                     href={e.value.startsWith("tt") ? `https://www.imdb.com/title/${e.value}` : `https://www.imdb.com/find?q=${encodeURIComponent(e.value)}&s=tt`}
                     target="_blank"
@@ -741,7 +741,7 @@ export function SeriesOverviewView({
                     <span className="text-muted-foreground">IMDb</span>
                   </a>
                 ) : null; })()}
-                {(() => { const e = title.externalIds.find((e) => e.source === "tvdb"); return e && title.slug ? (
+                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "tvdb"); return e && title.slug ? (
                   <a
                     href={`https://thetvdb.com/series/${title.slug}`}
                     target="_blank"
@@ -753,7 +753,7 @@ export function SeriesOverviewView({
                     <span className="text-muted-foreground">TVDB</span>
                   </a>
                 ) : null; })()}
-                {(() => { const e = title.externalIds.find((e) => e.source === "tmdb"); return e ? (
+                {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "tmdb"); return e ? (
                   <a
                     href={`https://www.themoviedb.org/tv/${e.value}`}
                     target="_blank"
@@ -767,7 +767,7 @@ export function SeriesOverviewView({
                 ) : null; })()}
                 {title.facet === "anime" ? (
                   <>
-                    {(() => { const e = title.externalIds.find((e) => e.source === "mal"); return e ? (
+                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "mal"); return e ? (
                       <a
                         href={`https://myanimelist.net/anime/${e.value}`}
                         target="_blank"
@@ -779,7 +779,7 @@ export function SeriesOverviewView({
                         <span className="text-muted-foreground">MAL</span>
                       </a>
                     ) : null; })()}
-                    {(() => { const e = title.externalIds.find((e) => e.source === "anilist"); return e ? (
+                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "anilist"); return e ? (
                       <a
                         href={`https://anilist.co/anime/${e.value}`}
                         target="_blank"
@@ -791,7 +791,7 @@ export function SeriesOverviewView({
                         <span className="text-muted-foreground">AniList</span>
                       </a>
                     ) : null; })()}
-                    {(() => { const e = title.externalIds.find((e) => e.source === "anidb"); return e ? (
+                    {(() => { const externalIds = title.externalIds ?? []; const e = externalIds.find((e) => e.source === "anidb"); return e ? (
                       <a
                         href={`https://anidb.net/anime/${e.value}`}
                         target="_blank"

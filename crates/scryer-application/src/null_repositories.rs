@@ -33,7 +33,8 @@ use crate::{
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
     TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository,
+    WorkflowOperationInfo, WorkflowOperationRepository, ports::DatastoreInfo,
+    ports::LogicalBackupExporter,
 };
 
 #[derive(Default)]
@@ -43,8 +44,7 @@ pub struct NullImportRepository;
 impl ImportRepository for NullImportRepository {
     async fn queue_import_request(
         &self,
-        _source_system: String,
-        _source_ref: String,
+        _source_identity: DownloadSourceIdentity,
         _import_type: String,
         _payload_json: String,
     ) -> AppResult<String> {
@@ -53,17 +53,6 @@ impl ImportRepository for NullImportRepository {
         ))
     }
     async fn get_import_by_id(&self, _: &str) -> AppResult<Option<ImportRecord>> {
-        Ok(None)
-    }
-    async fn get_import_by_source_ref(&self, _: &str, _: &str) -> AppResult<Option<ImportRecord>> {
-        Ok(None)
-    }
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        _: &str,
-        _: &str,
-        _: ImportType,
-    ) -> AppResult<Option<ImportRecord>> {
         Ok(None)
     }
     async fn update_import_status(
@@ -90,13 +79,13 @@ impl ImportRepository for NullImportRepository {
     async fn list_pending_imports_for_type(&self, _: ImportType) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        _: &[(String, String)],
+        _: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
-    async fn is_already_imported(&self, _: &str, _: &str) -> AppResult<bool> {
+    async fn is_already_imported(&self, _: &DownloadSourceIdentity) -> AppResult<bool> {
         Ok(false)
     }
     async fn list_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
@@ -109,23 +98,26 @@ pub struct NullExternalImportMonitorSnapshotRepository;
 
 #[async_trait]
 impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapshotRepository {
-    async fn upsert_external_import_monitor_snapshot(
+    async fn append_external_import_monitor_snapshot_chunk(
         &self,
-        _: &crate::ExternalImportMonitorSnapshot,
+        _: &crate::ExternalImportMonitorSnapshotChunk,
     ) -> AppResult<()> {
         Ok(())
     }
 
-    async fn get_external_import_monitor_snapshot(
+    async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        _: &crate::MediaFacet,
-    ) -> AppResult<Option<crate::ExternalImportMonitorSnapshot>> {
-        Ok(None)
+        _: crate::MediaFacet,
+        _: crate::ExternalImportMonitorSnapshotEntryKind,
+        _: Option<i32>,
+        _: i32,
+    ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>> {
+        Ok(vec![])
     }
 
-    async fn delete_external_import_monitor_snapshot(
+    async fn delete_external_import_monitor_snapshot_chunks(
         &self,
-        _: &crate::MediaFacet,
+        _: crate::MediaFacet,
     ) -> AppResult<()> {
         Ok(())
     }
@@ -670,11 +662,33 @@ pub struct NullSystemInfoProvider;
 
 #[async_trait]
 impl SystemInfoProvider for NullSystemInfoProvider {
+    async fn datastore_info(&self) -> AppResult<DatastoreInfo> {
+        Ok(DatastoreInfo {
+            engine: "unknown".to_string(),
+            current_migration_key: None,
+        })
+    }
+
     async fn current_migration_version(&self) -> AppResult<Option<String>> {
         Ok(None)
     }
-    async fn vacuum_into(&self, _dest_path: &str) -> AppResult<()> {
-        Ok(())
+    async fn current_encryption_key_base64(&self) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[derive(Default)]
+pub struct NullLogicalBackupExporter;
+
+#[async_trait]
+impl LogicalBackupExporter for NullLogicalBackupExporter {
+    async fn export_backup_bundle(
+        &self,
+        _request: crate::BackupBundleExportRequest,
+    ) -> AppResult<crate::BackupExportOutcome> {
+        Err(AppError::Repository(
+            "logical backup exporter is not configured".to_string(),
+        ))
     }
 }
 
@@ -958,10 +972,17 @@ impl ImportArtifactRepository for NullImportArtifactRepository {
     async fn insert_artifact(&self, _: ImportArtifact) -> AppResult<()> {
         Ok(())
     }
-    async fn list_by_source_ref(&self, _: &str, _: &str) -> AppResult<Vec<ImportArtifact>> {
+    async fn list_by_source_identity(
+        &self,
+        _: &DownloadSourceIdentity,
+    ) -> AppResult<Vec<ImportArtifact>> {
         Ok(vec![])
     }
-    async fn count_by_result(&self, _: &str, _: &str, _: &str) -> AppResult<u64> {
+    async fn count_by_result_for_source_identity(
+        &self,
+        _: &DownloadSourceIdentity,
+        _: &str,
+    ) -> AppResult<u64> {
         Ok(0)
     }
 }
@@ -1415,8 +1436,7 @@ pub mod test_nulls {
     };
     use async_trait::async_trait;
     use scryer_domain::{
-        CalendarEpisode, Collection, DownloadClientConfig, Entitlement, Episode, MediaFacet, Title,
-        User,
+        CalendarEpisode, Collection, DownloadClientConfig, Episode, MediaFacet, Title, User,
     };
 
     #[derive(Default)]
@@ -1597,6 +1617,9 @@ pub mod test_nulls {
         async fn set_collection_episodes_monitored(&self, _: &str, _: bool) -> AppResult<()> {
             Ok(())
         }
+        async fn set_collections_monitored(&self, _: &[String], _: bool) -> AppResult<()> {
+            Ok(())
+        }
         async fn delete_collection(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -1620,6 +1643,9 @@ pub mod test_nulls {
         }
         async fn update_episode(&self, _: &str, _: EpisodeUpdate) -> AppResult<Episode> {
             Err(AppError::Repository("not configured".into()))
+        }
+        async fn set_episodes_monitored(&self, _: &[String], _: bool) -> AppResult<()> {
+            Ok(())
         }
         async fn delete_episode(&self, _: &str) -> AppResult<()> {
             Ok(())
@@ -1681,9 +1707,6 @@ pub mod test_nulls {
         }
         async fn get_by_id(&self, _: &str) -> AppResult<Option<User>> {
             Ok(None)
-        }
-        async fn update_entitlements(&self, _: &str, _: Vec<Entitlement>) -> AppResult<User> {
-            Err(AppError::Repository("not configured".into()))
         }
         async fn update_password_hash(&self, _: &str, _: String) -> AppResult<User> {
             Err(AppError::Repository("not configured".into()))

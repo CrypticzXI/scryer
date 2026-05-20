@@ -67,6 +67,55 @@ type MetadataSearchResult = {
   sortTitle: string | null;
 };
 
+const GENERIC_PENDING_IMPORT_QUERY_SEEDS = new Set([
+  "download",
+  "file",
+  "movie",
+  "unknown",
+  "video",
+]);
+
+function basenameFromPath(path: string | null | undefined): string {
+  if (!path) {
+    return "";
+  }
+
+  const segments = path.split(/[\\/]/).filter(Boolean);
+  return segments.at(-1)?.trim() ?? "";
+}
+
+function folderSearchSeedFromPath(path: string | null | undefined): string {
+  return basenameFromPath(path)
+    .replace(/[._]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isObfuscatedPendingImportSeed(value: string): boolean {
+  return value
+    .split(/[^A-Za-z0-9]+/)
+    .filter((token) => token.length >= 8)
+    .some((token) => {
+      const hasAlpha = /[A-Za-z]/.test(token);
+      const hasDigit = /\d/.test(token);
+      const isHexLike = /^[A-Fa-f0-9]+$/.test(token);
+      return (hasAlpha && hasDigit) || isHexLike;
+    });
+}
+
+function isUsablePendingImportSearchSeed(value: string | null | undefined): boolean {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return false;
+  }
+
+  if (GENERIC_PENDING_IMPORT_QUERY_SEEDS.has(trimmed.toLowerCase())) {
+    return false;
+  }
+
+  return !isObfuscatedPendingImportSeed(trimmed);
+}
+
 function summarizePendingImport(item: PendingImportItem): string {
   const parts = [item.reason];
 
@@ -564,7 +613,9 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    const seedQuery = item.query.trim() || item.displayName.trim();
+    const seedQuery = isUsablePendingImportSearchSeed(item.query)
+      ? item.query.trim()
+      : folderSearchSeedFromPath(item.folderPath) || item.displayName.trim();
     setSearchQuery(seedQuery);
   }, [client, setGlobalStatus]);
 

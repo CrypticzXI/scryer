@@ -115,6 +115,7 @@ type SettingsQualityProfilesSectionProps = {
     fallback: boolean,
   ) => boolean;
   loadQualityProfileById: (profileId: string) => void;
+  startNewQualityProfileDraft: () => void;
   activeQualityProfileTierOptions: string[];
   availableQualityTiers: Array<{ value: string; label: string }>;
   updateQualityProfileDraft: (
@@ -164,7 +165,7 @@ type SettingsQualityProfilesSectionProps = {
   mediaSettingsLoading: boolean;
   initialLoadComplete: boolean;
   qualityProfilesSaving: boolean;
-  updateQualityProfilesGlobal: (event?: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
+  updateQualityProfilesGlobal: (event?: React.FormEvent<HTMLFormElement>) => Promise<boolean> | boolean;
   categoryQualityProfileSaving: Record<ViewCategoryId, boolean>;
   saveCategoryQualityProfile: (scopeId: ViewCategoryId, value: string) => Promise<void> | void;
   saveGlobalQualityProfile: (value: string) => Promise<void> | void;
@@ -176,6 +177,26 @@ type SettingsQualityProfilesSectionProps = {
   archivalQualityOptions: Array<{ value: string; label: string }>;
   deleteQualityProfile: (profileId: string) => Promise<void>;
 };
+
+type PendingQualityProfileEditorAction =
+  | { type: "create" }
+  | { type: "edit"; profileId: string }
+  | { type: "close" }
+  | null;
+
+function cloneQualityProfileDraft(draft: QualityProfileDraft): QualityProfileDraft {
+  return {
+    ...draft,
+    source_allowlist: [...draft.source_allowlist],
+    source_blocklist: [...draft.source_blocklist],
+    video_codec_allowlist: [...draft.video_codec_allowlist],
+    video_codec_blocklist: [...draft.video_codec_blocklist],
+    audio_codec_allowlist: [...draft.audio_codec_allowlist],
+    audio_codec_blocklist: [...draft.audio_codec_blocklist],
+    quality_tiers: [...draft.quality_tiers],
+    scoring_overrides: { ...draft.scoring_overrides },
+  };
+}
 
 function QualityProfileActionButton({
   label,
@@ -415,6 +436,7 @@ export function SettingsQualityProfilesSection({
   getQualityProfileCriteria,
   getQualityProfileBoolean,
   loadQualityProfileById,
+  startNewQualityProfileDraft,
   activeQualityProfileTierOptions,
   availableQualityTiers,
   updateQualityProfileDraft,
@@ -470,6 +492,14 @@ export function SettingsQualityProfilesSection({
     anime: categoryPersonaSelections.anime.overridePersona ?? "__default__",
   });
   const [pendingDeleteProfile, setPendingDeleteProfile] = React.useState<{ id: string; name: string } | null>(null);
+  const [pendingEditorAction, setPendingEditorAction] =
+    React.useState<PendingQualityProfileEditorAction>(null);
+  const [isEditorOpen, setIsEditorOpen] = React.useState(false);
+  const [editorMode, setEditorMode] = React.useState<"create" | "edit">("create");
+  const [qualityProfileDraftBaseline, setQualityProfileDraftBaseline] = React.useState(() =>
+    cloneQualityProfileDraft(qualityProfileDraft),
+  );
+  const [awaitingBaselineSync, setAwaitingBaselineSync] = React.useState(false);
 
   React.useEffect(() => {
     setGlobalQualityProfileDraft(globalQualityProfileId);
@@ -490,6 +520,17 @@ export function SettingsQualityProfilesSection({
       anime: categoryPersonaSelections.anime.overridePersona ?? "__default__",
     });
   }, [categoryPersonaSelections]);
+
+  React.useEffect(() => {
+    if (!awaitingBaselineSync) {
+      return;
+    }
+    setQualityProfileDraftBaseline(cloneQualityProfileDraft(qualityProfileDraft));
+    setAwaitingBaselineSync(false);
+  }, [awaitingBaselineSync, qualityProfileDraft]);
+
+  const isProfileDraftDirty =
+    JSON.stringify(qualityProfileDraft) !== JSON.stringify(qualityProfileDraftBaseline);
 
   const handleCategoryProfileOverrideChange = React.useCallback(
     (scopeId: ViewCategoryId, rawValue: string) => {
@@ -563,6 +604,71 @@ export function SettingsQualityProfilesSection({
     (_scopeId: ViewCategoryId) => {},
     [],
   );
+
+  const handleStartCreateProfile = React.useCallback(() => {
+    if (isEditorOpen && isProfileDraftDirty) {
+      setPendingEditorAction({ type: "create" });
+      return;
+    }
+    startNewQualityProfileDraft();
+    setEditorMode("create");
+    setIsEditorOpen(true);
+    setAwaitingBaselineSync(true);
+  }, [isEditorOpen, isProfileDraftDirty, startNewQualityProfileDraft]);
+
+  const handleEditProfile = React.useCallback(
+    (profileId: string) => {
+      if (isEditorOpen && isProfileDraftDirty) {
+        setPendingEditorAction({ type: "edit", profileId });
+        return;
+      }
+      loadQualityProfileById(profileId);
+      setEditorMode("edit");
+      setIsEditorOpen(true);
+      setAwaitingBaselineSync(true);
+    },
+    [isEditorOpen, isProfileDraftDirty, loadQualityProfileById],
+  );
+
+  const handleSaveQualityProfile = React.useCallback(async () => {
+    const saved = await updateQualityProfilesGlobal();
+    if (saved) {
+      setQualityProfileDraftBaseline(cloneQualityProfileDraft(qualityProfileDraft));
+      if (editorMode === "create") {
+        setIsEditorOpen(false);
+        setEditorMode("create");
+      }
+    }
+  }, [editorMode, qualityProfileDraft, updateQualityProfilesGlobal]);
+
+  const handleCloseProfileEditor = React.useCallback(() => {
+    if (!isEditorOpen) return;
+    if (isProfileDraftDirty) {
+      setPendingEditorAction({ type: "close" });
+      return;
+    }
+    setIsEditorOpen(false);
+    setEditorMode("create");
+  }, [isEditorOpen, isProfileDraftDirty]);
+
+  const confirmPendingEditorAction = React.useCallback(() => {
+    if (!pendingEditorAction) return;
+    if (pendingEditorAction.type === "create") {
+      startNewQualityProfileDraft();
+      setEditorMode("create");
+      setIsEditorOpen(true);
+      setAwaitingBaselineSync(true);
+    } else if (pendingEditorAction.type === "edit") {
+      loadQualityProfileById(pendingEditorAction.profileId);
+      setEditorMode("edit");
+      setIsEditorOpen(true);
+      setAwaitingBaselineSync(true);
+    } else {
+      setIsEditorOpen(false);
+      setEditorMode("create");
+    }
+    setPendingEditorAction(null);
+  }, [loadQualityProfileById, pendingEditorAction, startNewQualityProfileDraft]);
 
   return (
     <>
@@ -663,7 +769,7 @@ export function SettingsQualityProfilesSection({
                       <div className="flex items-center gap-1">
                         <QualityProfileActionButton
                           tone="edit"
-                          onClick={() => loadQualityProfileById(profile.id)}
+                          onClick={() => handleEditProfile(profile.id)}
                           label={t("label.edit")}
                         >
                           <Edit className="h-4 w-4" />
@@ -710,9 +816,15 @@ export function SettingsQualityProfilesSection({
         </div>
       </div>
 
+      {isEditorOpen ? (
+        <>
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">{t("qualityProfile.editProfile")}</CardTitle>
+          <CardTitle className="text-lg">
+            {editorMode === "create"
+              ? t("qualityProfile.createNewProfile")
+              : t("qualityProfile.editProfile")}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3">
@@ -1103,13 +1215,23 @@ export function SettingsQualityProfilesSection({
           </div>
 
           <div className="flex justify-end">
-            <Button
-              type="button"
-              onClick={() => void updateQualityProfilesGlobal()}
-              disabled={mediaSettingsLoading || qualityProfilesSaving}
-            >
-              {qualityProfilesSaving ? t("label.saving") : t("label.save")}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleCloseProfileEditor}
+                disabled={mediaSettingsLoading || qualityProfilesSaving}
+              >
+                {t("label.cancel")}
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void handleSaveQualityProfile()}
+                disabled={mediaSettingsLoading || qualityProfilesSaving}
+              >
+                {qualityProfilesSaving ? t("label.saving") : t("label.save")}
+              </Button>
+            </div>
           </div>
 
           {qualityProfileParseError ? (
@@ -1119,6 +1241,35 @@ export function SettingsQualityProfilesSection({
           ) : null}
         </CardContent>
       </Card>
+      {editorMode === "edit" ? (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={handleStartCreateProfile}
+            disabled={mediaSettingsLoading || qualityProfilesSaving}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("qualityProfile.createNewProfile")}
+          </Button>
+        </div>
+      ) : null}
+        </>
+      ) : (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={handleStartCreateProfile}
+            disabled={mediaSettingsLoading || qualityProfilesSaving}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("qualityProfile.createNewProfile")}
+          </Button>
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -1248,6 +1399,22 @@ export function SettingsQualityProfilesSection({
         </CardContent>
       </Card>
     </form>
+    <ConfirmDialog
+      open={pendingEditorAction !== null}
+      title={t("qualityProfile.confirmDiscardTitle")}
+      description={t("qualityProfile.confirmDiscardDescription")}
+      confirmLabel={
+        pendingEditorAction?.type === "create"
+          ? t("qualityProfile.createNewProfile")
+          : pendingEditorAction?.type === "edit"
+            ? t("label.edit")
+            : t("label.discard")
+      }
+      cancelLabel={t("label.cancel")}
+      isBusy={qualityProfilesSaving}
+      onConfirm={confirmPendingEditorAction}
+      onCancel={() => setPendingEditorAction(null)}
+    />
     <ConfirmDialog
       open={pendingDeleteProfile !== null}
       title={t("qualityProfile.confirmDeleteTitle")}

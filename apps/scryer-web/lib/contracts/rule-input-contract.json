@@ -1,0 +1,582 @@
+{
+  "sections": [
+    {
+      "titleKey": "settings.refSectionRelease",
+      "path": "input.release",
+      "fields": [
+        {
+          "field": "raw_title",
+          "type": "string",
+          "descKey": "settings.refReleaseRawTitle"
+        },
+        {
+          "field": "quality",
+          "type": "string?",
+          "descKey": "settings.refReleaseQuality"
+        },
+        {
+          "field": "source",
+          "type": "string?",
+          "descKey": "settings.refReleaseSource"
+        },
+        {
+          "field": "video_codec",
+          "type": "string?",
+          "descKey": "settings.refReleaseVideoCodec"
+        },
+        {
+          "field": "audio",
+          "type": "string?",
+          "descKey": "settings.refReleaseAudio"
+        },
+        {
+          "field": "audio_codecs",
+          "type": "string[]",
+          "descKey": "settings.refReleaseAudioCodecs"
+        },
+        {
+          "field": "audio_channels",
+          "type": "string?",
+          "descKey": "settings.refReleaseAudioChannels"
+        },
+        {
+          "field": "languages_audio",
+          "type": "string[]",
+          "descKey": "settings.refReleaseLangsAudio"
+        },
+        {
+          "field": "languages_subtitles",
+          "type": "string[]",
+          "descKey": "settings.refReleaseLangsSub"
+        },
+        {
+          "field": "is_dual_audio",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsDualAudio"
+        },
+        {
+          "field": "is_atmos",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsAtmos"
+        },
+        {
+          "field": "is_dolby_vision",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsDV"
+        },
+        {
+          "field": "detected_hdr",
+          "type": "bool",
+          "descKey": "settings.refReleaseDetectedHdr"
+        },
+        {
+          "field": "is_remux",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsRemux"
+        },
+        {
+          "field": "is_bd_disk",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsBdDisk"
+        },
+        {
+          "field": "is_proper_upload",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsProper"
+        },
+        {
+          "field": "is_repack",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsRepack"
+        },
+        {
+          "field": "is_ai_enhanced",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsAiEnhanced"
+        },
+        {
+          "field": "is_hardcoded_subs",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsHardcodedSubs"
+        },
+        {
+          "field": "is_password_protected",
+          "type": "bool?",
+          "descKey": "settings.refReleaseIsPasswordProtected"
+        },
+        {
+          "field": "is_hdr10plus",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsHdr10Plus"
+        },
+        {
+          "field": "is_hlg",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsHlg"
+        },
+        {
+          "field": "is_10bit",
+          "type": "bool",
+          "descKey": "settings.refReleaseIs10Bit"
+        },
+        {
+          "field": "is_uncensored",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsUncensored"
+        },
+        {
+          "field": "is_dubs_only",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsDubsOnly"
+        },
+        {
+          "field": "has_release_group",
+          "type": "bool",
+          "descKey": "settings.refReleaseHasReleaseGroup"
+        },
+        {
+          "field": "is_obfuscated",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsObfuscated"
+        },
+        {
+          "field": "is_retagged",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsRetagged"
+        },
+        {
+          "field": "streaming_service",
+          "type": "string?",
+          "descKey": "settings.refReleaseStreamingService"
+        },
+        {
+          "field": "edition",
+          "type": "string?",
+          "descKey": "settings.refReleaseEdition"
+        },
+        {
+          "field": "anime_version",
+          "type": "number?",
+          "descKey": "settings.refReleaseAnimeVersion"
+        },
+        {
+          "field": "episode_release_type",
+          "type": "string?",
+          "descKey": "settings.refReleaseEpisodeReleaseType"
+        },
+        {
+          "field": "is_season_pack",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsSeasonPack"
+        },
+        {
+          "field": "is_multi_episode",
+          "type": "bool",
+          "descKey": "settings.refReleaseIsMultiEpisode"
+        },
+        {
+          "field": "release_group",
+          "type": "string?",
+          "descKey": "settings.refReleaseGroup"
+        },
+        {
+          "field": "year",
+          "type": "number?",
+          "descKey": "settings.refReleaseYear"
+        },
+        {
+          "field": "parse_confidence",
+          "type": "float",
+          "descKey": "settings.refReleaseParseConf"
+        },
+        {
+          "field": "size_bytes",
+          "type": "number?",
+          "descKey": "settings.refReleaseSizeBytes"
+        },
+        {
+          "field": "age_days",
+          "type": "number?",
+          "descKey": "settings.refReleaseAgeDays"
+        },
+        {
+          "field": "thumbs_up",
+          "type": "number?",
+          "descKey": "settings.refReleaseThumbsUp"
+        },
+        {
+          "field": "thumbs_down",
+          "type": "number?",
+          "descKey": "settings.refReleaseThumbsDown"
+        },
+        {
+          "field": "extra",
+          "type": "object",
+          "descKey": "settings.refReleaseExtra"
+        }
+      ]
+    },
+    {
+      "titleKey": "settings.refSectionProfile",
+      "path": "input.profile",
+      "fields": [
+        { "field": "id", "type": "string", "descKey": "settings.refProfileId" },
+        {
+          "field": "name",
+          "type": "string",
+          "descKey": "settings.refProfileName"
+        },
+        {
+          "field": "quality_tiers",
+          "type": "string[]",
+          "descKey": "settings.refProfileQualityTiers"
+        },
+        {
+          "field": "archival_quality",
+          "type": "string?",
+          "descKey": "settings.refProfileArchivalQuality"
+        },
+        {
+          "field": "allow_unknown_quality",
+          "type": "bool",
+          "descKey": "settings.refProfileAllowUnknown"
+        },
+        {
+          "field": "source_allowlist",
+          "type": "string[]",
+          "descKey": "settings.refProfileSourceAllow"
+        },
+        {
+          "field": "source_blocklist",
+          "type": "string[]",
+          "descKey": "settings.refProfileSourceBlock"
+        },
+        {
+          "field": "video_codec_allowlist",
+          "type": "string[]",
+          "descKey": "settings.refProfileVCodecAllow"
+        },
+        {
+          "field": "video_codec_blocklist",
+          "type": "string[]",
+          "descKey": "settings.refProfileVCodecBlock"
+        },
+        {
+          "field": "audio_codec_allowlist",
+          "type": "string[]",
+          "descKey": "settings.refProfileACodecAllow"
+        },
+        {
+          "field": "audio_codec_blocklist",
+          "type": "string[]",
+          "descKey": "settings.refProfileACodecBlock"
+        },
+        {
+          "field": "atmos_preferred",
+          "type": "bool",
+          "descKey": "settings.refProfileAtmosPreferred"
+        },
+        {
+          "field": "dolby_vision_allowed",
+          "type": "bool",
+          "descKey": "settings.refProfileDVAllowed"
+        },
+        {
+          "field": "detected_hdr_allowed",
+          "type": "bool",
+          "descKey": "settings.refProfileHdrAllowed"
+        },
+        {
+          "field": "prefer_remux",
+          "type": "bool",
+          "descKey": "settings.refProfilePreferRemux"
+        },
+        {
+          "field": "allow_bd_disk",
+          "type": "bool",
+          "descKey": "settings.refProfileAllowBdDisk"
+        },
+        {
+          "field": "allow_upgrades",
+          "type": "bool",
+          "descKey": "settings.refProfileAllowUpgrades"
+        },
+        {
+          "field": "prefer_dual_audio",
+          "type": "bool",
+          "descKey": "settings.refProfilePreferDualAudio"
+        },
+        {
+          "field": "required_audio_languages",
+          "type": "string[]",
+          "descKey": "settings.refProfileRequiredLangs"
+        }
+      ]
+    },
+    {
+      "titleKey": "settings.refSectionContext",
+      "path": "input.context",
+      "fields": [
+        {
+          "field": "title_id",
+          "type": "string?",
+          "descKey": "settings.refCtxTitleId"
+        },
+        {
+          "field": "library_name",
+          "type": "string?",
+          "descKey": "settings.refCtxLibraryName"
+        },
+        {
+          "field": "media_type",
+          "type": "string",
+          "descKey": "settings.refCtxMediaType"
+        },
+        {
+          "field": "category",
+          "type": "string",
+          "descKey": "settings.refCtxCategory"
+        },
+        {
+          "field": "tags",
+          "type": "string[]",
+          "descKey": "settings.refCtxTags"
+        },
+        {
+          "field": "has_existing_file",
+          "type": "bool",
+          "descKey": "settings.refCtxHasExisting"
+        },
+        {
+          "field": "existing_score",
+          "type": "number?",
+          "descKey": "settings.refCtxExistingScore"
+        },
+        {
+          "field": "search_mode",
+          "type": "string",
+          "descKey": "settings.refCtxSearchMode"
+        },
+        {
+          "field": "runtime_minutes",
+          "type": "number?",
+          "descKey": "settings.refCtxRuntimeMin"
+        },
+        {
+          "field": "is_anime",
+          "type": "bool",
+          "descKey": "settings.refCtxIsAnime"
+        },
+        {
+          "field": "is_filler",
+          "type": "bool",
+          "descKey": "settings.refCtxIsFiller"
+        }
+      ]
+    },
+    {
+      "titleKey": "settings.refSectionBuiltinScore",
+      "path": "input.builtin_score",
+      "fields": [
+        {
+          "field": "total",
+          "type": "number",
+          "descKey": "settings.refBuiltinTotal"
+        },
+        {
+          "field": "blocked",
+          "type": "bool",
+          "descKey": "settings.refBuiltinBlocked"
+        },
+        {
+          "field": "codes",
+          "type": "string[]",
+          "descKey": "settings.refBuiltinCodes"
+        }
+      ]
+    },
+    {
+      "titleKey": "settings.refSectionFile",
+      "path": "input.file",
+      "fields": [
+        {
+          "field": "video_codec",
+          "type": "string?",
+          "descKey": "settings.refFileVideoCodec"
+        },
+        {
+          "field": "video_width",
+          "type": "number?",
+          "descKey": "settings.refFileVideoWidth"
+        },
+        {
+          "field": "video_height",
+          "type": "number?",
+          "descKey": "settings.refFileVideoHeight"
+        },
+        {
+          "field": "video_bitrate_kbps",
+          "type": "number?",
+          "descKey": "settings.refFileVideoBitrateKbps"
+        },
+        {
+          "field": "video_bit_depth",
+          "type": "number?",
+          "descKey": "settings.refFileVideoBitDepth"
+        },
+        {
+          "field": "video_hdr_format",
+          "type": "string?",
+          "descKey": "settings.refFileVideoHdrFormat"
+        },
+        {
+          "field": "dovi_profile",
+          "type": "number?",
+          "descKey": "settings.refFileDoviProfile"
+        },
+        {
+          "field": "dovi_bl_compat_id",
+          "type": "number?",
+          "descKey": "settings.refFileDoviBlCompatId"
+        },
+        {
+          "field": "video_frame_rate",
+          "type": "string?",
+          "descKey": "settings.refFileVideoFrameRate"
+        },
+        {
+          "field": "video_profile",
+          "type": "string?",
+          "descKey": "settings.refFileVideoProfile"
+        },
+        {
+          "field": "audio_codec",
+          "type": "string?",
+          "descKey": "settings.refFileAudioCodec"
+        },
+        {
+          "field": "audio_profile",
+          "type": "string?",
+          "descKey": "settings.refFileAudioProfile"
+        },
+        {
+          "field": "audio_channels",
+          "type": "number?",
+          "descKey": "settings.refFileAudioChannels"
+        },
+        {
+          "field": "audio_bitrate_kbps",
+          "type": "number?",
+          "descKey": "settings.refFileAudioBitrateKbps"
+        },
+        {
+          "field": "audio_languages",
+          "type": "string[]",
+          "descKey": "settings.refFileAudioLanguages"
+        },
+        {
+          "field": "audio_streams",
+          "type": "object[]",
+          "descKey": "settings.refFileAudioStreams"
+        },
+        {
+          "field": "subtitle_languages",
+          "type": "string[]",
+          "descKey": "settings.refFileSubtitleLanguages"
+        },
+        {
+          "field": "subtitle_codecs",
+          "type": "string[]",
+          "descKey": "settings.refFileSubtitleCodecs"
+        },
+        {
+          "field": "subtitle_streams",
+          "type": "object[]",
+          "descKey": "settings.refFileSubtitleStreams"
+        },
+        {
+          "field": "has_multiaudio",
+          "type": "bool",
+          "descKey": "settings.refFileHasMultiAudio"
+        },
+        {
+          "field": "duration_seconds",
+          "type": "number?",
+          "descKey": "settings.refFileDurationSeconds"
+        },
+        {
+          "field": "num_chapters",
+          "type": "number?",
+          "descKey": "settings.refFileNumChapters"
+        },
+        {
+          "field": "container_format",
+          "type": "string?",
+          "descKey": "settings.refFileContainerFormat"
+        }
+      ]
+    },
+    {
+      "titleKey": "settings.refSectionAudioStreams",
+      "path": "input.file.audio_streams[]",
+      "fields": [
+        {
+          "field": "codec",
+          "type": "string?",
+          "descKey": "settings.refAudioStreamCodec"
+        },
+        {
+          "field": "profile",
+          "type": "string?",
+          "descKey": "settings.refAudioStreamProfile"
+        },
+        {
+          "field": "channels",
+          "type": "number?",
+          "descKey": "settings.refAudioStreamChannels"
+        },
+        {
+          "field": "language",
+          "type": "string?",
+          "descKey": "settings.refAudioStreamLanguage"
+        },
+        {
+          "field": "bitrate_kbps",
+          "type": "number?",
+          "descKey": "settings.refAudioStreamBitrateKbps"
+        }
+      ]
+    },
+    {
+      "titleKey": "settings.refSectionSubtitleStreams",
+      "path": "input.file.subtitle_streams[]",
+      "fields": [
+        {
+          "field": "codec",
+          "type": "string?",
+          "descKey": "settings.refSubtitleStreamCodec"
+        },
+        {
+          "field": "language",
+          "type": "string?",
+          "descKey": "settings.refSubtitleStreamLanguage"
+        },
+        {
+          "field": "name",
+          "type": "string?",
+          "descKey": "settings.refSubtitleStreamName"
+        },
+        {
+          "field": "forced",
+          "type": "bool",
+          "descKey": "settings.refSubtitleStreamForced"
+        },
+        {
+          "field": "default",
+          "type": "bool",
+          "descKey": "settings.refSubtitleStreamDefault"
+        }
+      ]
+    }
+  ]
+}

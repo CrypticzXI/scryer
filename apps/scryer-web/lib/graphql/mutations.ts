@@ -1,4 +1,5 @@
 import {
+  BACKUP_INFO_FIELDS,
   JOB_RUN_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
@@ -89,6 +90,9 @@ export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndex
     rateLimitBurst
     disabledUntil
     isEnabled
+    isManaged
+    managedParentConfigId
+    supportsManagedChildrenSync
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
@@ -111,6 +115,9 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     rateLimitBurst
     disabledUntil
     isEnabled
+    isManaged
+    managedParentConfigId
+    supportsManagedChildrenSync
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
@@ -123,6 +130,15 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
 
 export const deleteIndexerMutation = `mutation DeleteIndexer($input: DeleteIndexerConfigInput!) {
   deleteIndexerConfig(input: $input)
+}`;
+
+export const syncIndexerConfigMutation = `mutation SyncIndexerConfig($id: String!) {
+  syncIndexerConfig(id: $id) {
+    parentConfigId
+    createdIds
+    updatedIds
+    deletedIds
+  }
 }`;
 
 export const testIndexerConnectionMutation = `mutation TestIndexerConnection($input: TestIndexerConnectionInput!) {
@@ -402,6 +418,31 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   updateGeneralSettings(input: $input) {
     keepHistoryForever
     historyRetentionDays
+  }
+}`;
+
+export const createBackupMutation = `mutation CreateBackup($password: String) {
+  createBackup(password: $password) {${BACKUP_INFO_FIELDS}
+  }
+}`;
+
+export const prepareBackupDownloadMutation = `mutation PrepareBackupDownload($filename: String!) {
+  prepareBackupDownload(filename: $filename) {
+    downloadUrl
+    expiresAt
+  }
+}`;
+
+export const deleteBackupMutation = `mutation DeleteBackup($filename: String!) {
+  deleteBackup(filename: $filename)
+}`;
+
+export const updateAutoBackupSettingsMutation = `mutation UpdateAutoBackupSettings($input: UpdateAutoBackupSettingsInput!) {
+  updateAutoBackupSettings(input: $input) {
+    enabled
+    dailyTimeLocal
+    autoBackupKeyPresent
+    nextRunAt
   }
 }`;
 
@@ -1301,12 +1342,44 @@ export const completeSetupMutation = `mutation CompleteSetup {
 
 // ── External Import (Sonarr/Radarr) ──────────────────────────────────
 
+const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
+    sessionId
+    status
+    phase
+    startedAt
+    updatedAt
+    overallTotalKnown
+    overallProgress { total completed failed }
+    moviesTotalKnown
+    moviesProgress { total completed failed }
+    seriesTotalKnown
+    seriesProgress { total completed failed }
+    episodeFetchTotalKnown
+    episodeFetchExpectedTotal
+    episodeFetchExpectedMonitoredTotal
+    episodeFetchProgress { total completed failed }
+    snapshotBuildTotalKnown
+    snapshotBuildProgress { total completed failed }
+    matchedMovieCount
+    matchedSeriesCount
+    unmatchedMovieCount
+    unmatchedSeriesCount
+    ambiguousMovieCount
+    ambiguousSeriesCount
+    errorMessage
+`;
+
 export const previewExternalImportMutation = `mutation PreviewExternalImport($input: PreviewExternalImportInput!) {
   previewExternalImport(input: $input) {
     sonarrConnected
     radarrConnected
+    prowlarrConnected
     sonarrVersion
     radarrVersion
+    prowlarrVersion
+    sonarrError
+    radarrError
+    prowlarrError
     rootFolders { source path }
     downloadClients {
       sources name implementation scryerClientType
@@ -1316,8 +1389,18 @@ export const previewExternalImportMutation = `mutation PreviewExternalImport($in
     indexers {
       sources name implementation scryerProviderType
       baseUrl apiKey dedupKey supported
+      childCount childNames requiresApiKeyOverride apiKeyHelpUrl
     }
   }
+}`;
+
+export const startExternalImportMonitorWarmupMutation = `mutation StartExternalImportMonitorWarmup($input: StartExternalImportMonitorWarmupInput!) {
+  startExternalImportMonitorWarmup(input: $input) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+export const cancelExternalImportMonitorWarmupMutation = `mutation CancelExternalImportMonitorWarmup($input: CancelExternalImportMonitorWarmupInput!) {
+  cancelExternalImportMonitorWarmup(input: $input)
 }`;
 
 export const executeExternalImportMutation = `mutation ExecuteExternalImport($input: ExecuteExternalImportInput!) {
@@ -1328,6 +1411,10 @@ export const executeExternalImportMutation = `mutation ExecuteExternalImport($in
     pluginsInstalled
     errors
   }
+}`;
+
+export const finalizeExternalImportMutation = `mutation FinalizeExternalImport($input: FinalizeExternalImportInput!) {
+  finalizeExternalImport(input: $input)
 }`;
 
 export const rehydrateAllMetadataMutation = `mutation RehydrateAllMetadata($language: String!) {

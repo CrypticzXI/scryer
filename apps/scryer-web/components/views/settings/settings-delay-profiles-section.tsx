@@ -1,6 +1,11 @@
 import * as React from "react";
-import { Edit, Trash2 } from "lucide-react";
+import { Edit, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import {
+  boxedActionButtonBaseClass,
+  boxedActionButtonToneClass,
+} from "@/lib/utils/action-button-styles";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
@@ -32,6 +37,9 @@ type SettingsDelayProfilesSectionProps = {
   deleteProfile: (profileId: string) => void;
   loadProfileById: (profileId: string) => void;
   resetDraft: () => void;
+  isEditorOpen: boolean;
+  editorMode: "create" | "edit";
+  startCreateProfile: () => void;
 };
 
 const FACET_LABELS: Record<string, string> = {
@@ -51,10 +59,13 @@ export function SettingsDelayProfilesSection({
   deleteProfile,
   loadProfileById,
   resetDraft,
+  isEditorOpen,
+  editorMode,
+  startCreateProfile,
 }: SettingsDelayProfilesSectionProps) {
   const t = useTranslate();
 
-  const isEditing = !!draft.id;
+  const isEditing = editorMode === "edit";
 
   function updateField<K extends keyof DelayProfileDraft>(field: K, value: DelayProfileDraft[K]) {
     setDraft((prev) => ({ ...prev, [field]: value }));
@@ -136,21 +147,33 @@ export function SettingsDelayProfilesSection({
                     <TableCell>
                       <div className="flex gap-1">
                         <Button
-                          variant="ghost"
-                          size="icon"
+                          type="button"
+                          size="icon-sm"
+                          variant="secondary"
                           onClick={() => loadProfileById(profile.id)}
                           title={t("label.load")}
+                          aria-label={t("label.edit")}
+                          className={cn(
+                            boxedActionButtonBaseClass,
+                            boxedActionButtonToneClass.edit,
+                          )}
                         >
                           <Edit className="h-4 w-4" />
                         </Button>
                         <Button
-                          variant="ghost"
-                          size="icon"
+                          type="button"
+                          size="icon-sm"
+                          variant="secondary"
                           onClick={() => deleteProfile(profile.id)}
                           disabled={saving}
                           title={t("label.delete")}
+                          aria-label={t("label.delete")}
+                          className={cn(
+                            boxedActionButtonBaseClass,
+                            boxedActionButtonToneClass.delete,
+                          )}
                         >
-                          <Trash2 className="h-4 w-4 text-rose-400" />
+                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                     </TableCell>
@@ -162,6 +185,8 @@ export function SettingsDelayProfilesSection({
         </CardContent>
       </Card>
 
+      {isEditorOpen ? (
+        <>
       {/* Draft editor */}
       <Card className="bg-card border-border">
         <CardHeader>
@@ -345,15 +370,42 @@ export function SettingsDelayProfilesSection({
                     ? t("label.save")
                     : t("settings.delayProfileCreate")}
               </Button>
-              {isEditing && (
-                <Button type="button" variant="outline" onClick={resetDraft}>
-                  {t("label.cancel")}
-                </Button>
-              )}
+              <Button type="button" variant="outline" onClick={resetDraft}>
+                {t("label.cancel")}
+              </Button>
             </div>
           </form>
         </CardContent>
       </Card>
+      {editorMode === "edit" ? (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={startCreateProfile}
+            disabled={saving}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("settings.delayProfileCreateNew")}
+          </Button>
+        </div>
+      ) : null}
+        </>
+      ) : (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            onClick={startCreateProfile}
+            disabled={saving}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+          >
+            <Plus className="h-5 w-5" />
+            {t("settings.delayProfileCreateNew")}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -210,11 +210,23 @@ impl RateLimitRegistry {
 }
 
 fn reqwest_client_builder() -> reqwest::ClientBuilder {
+    install_default_rustls_provider();
     Client::builder()
 }
 
+pub fn install_default_rustls_provider() {
+    static INSTALL_RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
+
+    INSTALL_RUSTLS_PROVIDER.get_or_init(|| {
+        // The provider is process-global; parallel workspace tests may install it first.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
 pub fn default_reqwest_client() -> Client {
-    Client::new()
+    reqwest_client_builder()
+        .build()
+        .expect("default reqwest client should build")
 }
 
 pub fn timeout_reqwest_client(timeout: Option<Duration>) -> Result<Client, reqwest::Error> {
@@ -255,14 +267,16 @@ pub fn external_arr_reqwest_client() -> Client {
     reqwest_client_builder()
         .timeout(Duration::from_secs(15))
         .build()
-        .unwrap_or_else(|_| Client::new())
+        .unwrap_or_else(|_| default_reqwest_client())
 }
 
 pub fn metadata_gateway_reqwest_client(
     accept_invalid_certs: bool,
+    user_agent: &str,
 ) -> Result<Client, reqwest::Error> {
     reqwest_client_builder()
         .timeout(Duration::from_secs(100))
+        .user_agent(user_agent)
         .danger_accept_invalid_certs(accept_invalid_certs)
         .build()
 }
@@ -280,8 +294,11 @@ pub fn metadata_gateway_mtls_reqwest_client(
 
 pub fn enrollment_reqwest_client(
     ca_cert_override: Option<Certificate>,
+    user_agent: &str,
 ) -> Result<Client, reqwest::Error> {
-    let mut builder = reqwest_client_builder().timeout(Duration::from_secs(30));
+    let mut builder = reqwest_client_builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent(user_agent);
     if let Some(ca_cert_override) = ca_cert_override {
         builder = builder.add_root_certificate(ca_cert_override);
     }
@@ -657,7 +674,7 @@ mod tests {
         ])
         .await;
 
-        let client = OutboundHttpClient::new(Client::new(), RateLimitRegistry::new());
+        let client = OutboundHttpClient::new(default_reqwest_client(), RateLimitRegistry::new());
         let policy = RequestPolicy::safe_read("test-server", "retry-test")
             .with_max_retries(1)
             .with_backoff(Duration::from_millis(5), Duration::from_millis(5));
@@ -676,7 +693,7 @@ mod tests {
         let (url, hits) =
             spawn_http_server(vec![http_response(429, &[("Retry-After", "bogus")], "")]).await;
 
-        let client = OutboundHttpClient::new(Client::new(), RateLimitRegistry::new());
+        let client = OutboundHttpClient::new(default_reqwest_client(), RateLimitRegistry::new());
         let policy = RequestPolicy::no_retry("test-server", "no-retry")
             .with_backoff(Duration::from_millis(5), Duration::from_millis(5));
 

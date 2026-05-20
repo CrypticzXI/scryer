@@ -369,6 +369,38 @@ const ko: LocaleDictionary = {
     "다운로드 클라이언트 기록에서 실패한 다운로드를 제거합니다.",
   "settings.downloadClientEnabledInfo":
     "비활성화하면 다운로드 라우팅에서 이 클라이언트를 건너뜁니다.",
+  "settings.downloadClientRemotePathMappings": "Remote Path Mappings",
+  "settings.downloadClientRemotePathMappingsHelp":
+    "Map download-client paths reported inside its container or host to local paths Scryer can read. Enter one rule per line as REMOTE => LOCAL.",
+  "settings.downloadClientEnabledLabel": "Enable download client",
+  "settings.downloadClientFilesystemPathMapping":
+    "Filesystem Path Mapping (Advanced)",
+  "settings.downloadClientFilesystemPathMappingHelp":
+    "Remote path mappings are rarely needed. Use them only when Scryer and this download client see the same download folder at different filesystem paths.",
+  "settings.downloadClientRemotePathMappingsRemoteLabel": "Remote Path",
+  "settings.downloadClientRemotePathMappingsRemoteHelp":
+    "Path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsLocalLabel": "Local Path",
+  "settings.downloadClientRemotePathMappingsLocalHelp":
+    "Path Scryer should use on this machine.",
+  "settings.downloadClientRemotePathMappingsAdd": "Add Mapping",
+  "settings.downloadClientRemotePathMappingsEmptyState":
+    "No path mappings configured yet. Add one only if Scryer cannot read the path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsExampleLabel": "Example",
+  "settings.downloadClientRemotePathMappingsRemoteRequired":
+    "Remote Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalRequired":
+    "Local Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalAbsolute":
+    "Local Path must be an absolute path.",
+  "settings.downloadClientRemotePathMappingsRemoteDuplicate":
+    "Remote Path duplicates another mapping in this client.",
+  "settings.downloadClientSabnzbdAuthHelp":
+    "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientQbittorrentDecypharrHelp":
+    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
+  "settings.downloadClientDecypharrFilesystemHelp":
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "내 다운로드 클라이언트",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "예: api",
@@ -942,23 +974,17 @@ const ko: LocaleDictionary = {
   "settings.pp.fireAndForget": "화재 및 잊어 버리기",
   "settings.pp.blockingHelp":
     "우선순위로 실행됩니다. 다음 스크립트는 이 스크립트가 완료될 때까지 기다립니다.",
-  "settings.pp.fireAndForgetHelp":
-    "가져오기를 차단하지 않고 백그라운드에서 실행됩니다.",
   "settings.pp.executionMode": "실행 모드",
   "settings.pp.timeout": "시간 초과(초)",
   "settings.pp.priority": "우선순위",
   "settings.pp.priorityHelp": "낮은 숫자가 먼저 실행됩니다.",
   "settings.pp.facets": "적용 대상",
   "settings.pp.debug": "스크립트 출력 캡처",
-  "settings.pp.debugHelp":
-    "활성화되면 각 실행마다 stdout 및 stderr이 저장됩니다. 문제 해결에 유용합니다.",
   "settings.pp.runHistory": "실행 기록",
   "settings.pp.noRuns": "아직 처형이 없습니다.",
   "settings.pp.outputNotCaptured":
     "출력이 캡처되지 않았습니다. 출력을 보려면 이 스크립트에서 디버그 모드를 활성화하세요.",
   "settings.pp.envHeading": "환경 변수",
-  "settings.pp.envDescription":
-    "스크립트는 제목, 에피소드, 릴리스 및 미디어 정보 메타데이터가 포함된 SCRYER_METADATA 환경 변수에서 JSON 페이로드를 수신합니다. SCRYER_FILE_PATH에는 가져온 파일 경로가 포함됩니다.",
   "settings.pp.created": "스크립트가 생성되었습니다.",
   "settings.pp.updated": "스크립트가 업데이트되었습니다.",
   "settings.pp.deleted": "스크립트가 삭제되었습니다.",
@@ -1498,6 +1524,10 @@ const ko: LocaleDictionary = {
   "settings.notificationProviderType": "제공자 유형",
   "settings.notificationNoProviders":
     "알림 플러그인이 설치되지 않았습니다. 먼저 플러그인 페이지에서 알림 플러그인을 설치하세요.",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "릴리스 가져옴",
   "settings.notificationEvent.download": "다운로드 실패함",
   "settings.notificationEvent.upgrade": "업그레이드 가져옴",

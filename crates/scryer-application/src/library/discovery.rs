@@ -3,7 +3,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, UNIX_EPOCH};
 
 use super::*;
+use crate::helpers::{
+    has_usable_release_title_signal, normalize_release_title_signal, parse_usable_release_title,
+};
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use scryer_domain::VIDEO_EXTENSIONS;
+use unicode_normalization::UnicodeNormalization;
 
 const LIBRARY_SCAN_DISCOVERY_WORK_QUEUE_CAPACITY: usize = 16;
 const LIBRARY_PROBE_SIGNATURE_DIRECTORY_SCHEME: &str = "immediate_children_v1";
@@ -46,23 +51,93 @@ pub(crate) fn extract_library_queries(
     path: &str,
     library_root: &str,
 ) -> (Vec<String>, Option<u32>) {
-    let root = library_root.trim_end_matches('/');
+    let path = stored_path_to_path_buf(path);
+    let root = stored_path_to_path_buf(library_root);
 
-    let stem = Path::new(path)
+    let stem = path
         .file_stem()
-        .and_then(|s| s.to_str())
+        .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let parsed = parse_release_metadata(stem);
-    let parsed_queries = if parsed.normalized_title_variants.is_empty() {
-        vec![parsed.normalized_title.clone()]
+    let parsed = normalize_release_title_signal(parse_release_metadata(stem.as_str()));
+    let parsed_has_usable_title_signal = has_usable_release_title_signal(&parsed);
+    let parsed_queries = if parsed_has_usable_title_signal {
+        if parsed.normalized_title_variants.is_empty() {
+            vec![parsed.normalized_title.clone()]
+        } else {
+            parsed.normalized_title_variants.clone()
+        }
     } else {
-        parsed.normalized_title_variants.clone()
+        Vec::new()
     };
 
     let mut queries = Vec::new();
     let mut seen_normalized = HashSet::new();
     let mut folder_year = None;
-    let mut folder_query = None;
+    let mut folder_queries = Vec::new();
+    let mut raw_folder_query = None;
+
+    if let Some(parent) = path.parent()
+        && parent != root.as_path()
+        && let Some(folder_name) = parent
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.trim().is_empty())
+    {
+        let clean = normalize_folder_name(&folder_name);
+        let (clean_title, clean_year) = strip_year_suffix(&clean);
+        if let Some(parsed_folder) = parse_usable_release_title(&folder_name) {
+            let looks_human_named = !folder_name.contains('.') && !folder_name.contains('_');
+            let has_release_decoration = parsed_folder
+                .release_group
+                .as_ref()
+                .is_some_and(|group| !group.trim().is_empty())
+                || parsed_folder.quality.is_some()
+                || parsed_folder.source.is_some()
+                || parsed_folder.video_codec.is_some()
+                || parsed_folder.video_encoding.is_some()
+                || parsed_folder.audio.is_some()
+                || !parsed_folder.audio_codecs.is_empty()
+                || parsed_folder.audio_channels.is_some()
+                || parsed_folder.streaming_service.is_some()
+                || parsed_folder.edition.is_some()
+                || parsed_folder.is_proper_upload
+                || parsed_folder.is_repack
+                || parsed_folder.is_remux
+                || parsed_folder.is_bd_disk
+                || parsed_folder.is_dual_audio
+                || parsed_folder.episode.is_some();
+            let raw_folder_title = parsed_folder
+                .year
+                .and_then(|year| u32::try_from(year).ok())
+                .map(|year| strip_trailing_plain_year_token(&clean_title, year))
+                .unwrap_or_else(|| clean_title.clone());
+            if !clean_title.trim().is_empty()
+                && !has_release_decoration
+                && (clean_year.is_some() || parsed_folder.year.is_some() || looks_human_named)
+            {
+                raw_folder_query = Some(raw_folder_title);
+            }
+            let parsed_folder_queries = if parsed_folder.normalized_title_variants.is_empty() {
+                vec![parsed_folder.normalized_title.clone()]
+            } else {
+                parsed_folder.normalized_title_variants.clone()
+            };
+            folder_queries.extend(parsed_folder_queries);
+            folder_year = parsed_folder.year.and_then(|year| u32::try_from(year).ok());
+            if folder_year.is_none() {
+                folder_year = clean_year;
+            }
+        } else if !clean_title.trim().is_empty() {
+            folder_queries.push(clean_title);
+            folder_year = clean_year;
+        }
+    }
+
+    if !parsed_has_usable_title_signal {
+        for folder_query in folder_queries.iter().cloned() {
+            push_unique_query(&mut queries, &mut seen_normalized, folder_query);
+        }
+    }
 
     for query in parsed_queries {
         if let Some(reduced) = part_reduced_query(query.as_str()) {
@@ -72,28 +147,21 @@ pub(crate) fn extract_library_queries(
         }
     }
 
-    if let Some(parent) = Path::new(path).parent() {
-        let parent_str = parent.to_string_lossy();
-        if parent_str.trim_end_matches('/') != root
-            && let Some(folder_name) = parent.file_name().and_then(|n| n.to_str())
-        {
-            let clean = normalize_folder_name(folder_name);
-            let (title, year) = strip_year_suffix(&clean);
-            if !title.trim().is_empty() {
-                folder_query = Some(title);
-                folder_year = year;
-            }
+    if parsed_has_usable_title_signal {
+        for folder_query in folder_queries {
+            push_unique_query(&mut queries, &mut seen_normalized, folder_query);
         }
     }
 
-    if let Some(folder_query) = folder_query {
-        push_unique_query(&mut queries, &mut seen_normalized, folder_query);
+    if let Some(raw_folder_query) = raw_folder_query {
+        push_unique_literal_query(&mut queries, raw_folder_query);
     }
 
     (
         queries,
-        parsed
-            .year
+        parsed_has_usable_title_signal
+            .then_some(parsed.year)
+            .flatten()
             .and_then(|year| u32::try_from(year).ok())
             .or(folder_year),
     )
@@ -133,6 +201,18 @@ pub(crate) fn strip_year_suffix(folder: &str) -> (String, Option<u32>) {
     (folder.to_string(), None)
 }
 
+fn strip_trailing_plain_year_token(folder: &str, year: u32) -> String {
+    let suffix = year.to_string();
+    if let Some(prefix) = folder.strip_suffix(&suffix) {
+        let trimmed = prefix.trim_end();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    folder.to_string()
+}
+
 fn push_unique_query(
     queries: &mut Vec<String>,
     seen_normalized: &mut HashSet<String>,
@@ -145,6 +225,34 @@ fn push_unique_query(
 
     let normalized = crate::app_usecase_rss::normalize_for_matching(trimmed);
     if normalized.is_empty() || !seen_normalized.insert(normalized) {
+        return;
+    }
+
+    queries.push(trimmed.to_string());
+}
+
+fn push_unique_literal_query(queries: &mut Vec<String>, query: String) {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let normalized = trimmed
+        .nfkc()
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    if normalized.trim().is_empty() {
+        return;
+    }
+
+    if queries.iter().any(|existing| {
+        existing
+            .trim()
+            .nfkc()
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+            == normalized
+    }) {
         return;
     }
 
@@ -199,12 +307,11 @@ pub(crate) async fn list_series_loose_root_files(root: &Path) -> AppResult<Vec<L
         }
 
         results.push(LibraryFile {
-            path: path.to_string_lossy().to_string(),
+            path: path_to_stored_string(&path),
             display_name: path
                 .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_string(),
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             nfo_path: None,
             size_bytes: None,
             source_signature_scheme: None,
@@ -395,14 +502,17 @@ pub(crate) fn is_ignored_movie_subdir_name(name: &str) -> bool {
 }
 
 pub(crate) fn should_skip_library_top_level_entry(path: &Path, is_dir: bool) -> bool {
-    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-        return true;
+    let Some(name) = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+    else {
+        return false;
     };
 
     if is_dir {
-        is_ignored_library_dir_name(name)
+        is_ignored_library_dir_name(name.as_str())
     } else {
-        is_ignored_library_file_name(name)
+        is_ignored_library_file_name(name.as_str())
     }
 }
 
@@ -464,13 +574,13 @@ fn is_allowed_video_path(path: &Path) -> bool {
 pub(crate) fn matching_movie_nfo_path(path: &Path) -> Option<String> {
     let same_stem = path.with_extension("nfo");
     if same_stem.is_file() {
-        return Some(same_stem.to_string_lossy().to_string());
+        return Some(path_to_stored_string(&same_stem));
     }
 
     let parent = path.parent()?;
     let movie_nfo = parent.join("movie.nfo");
     if movie_nfo.is_file() {
-        return Some(movie_nfo.to_string_lossy().to_string());
+        return Some(path_to_stored_string(&movie_nfo));
     }
 
     None
@@ -483,7 +593,7 @@ pub(crate) async fn matching_movie_nfo_path_async(path: &Path) -> Option<String>
         .map(|metadata| metadata.is_file())
         .unwrap_or(false)
     {
-        return Some(same_stem.to_string_lossy().to_string());
+        return Some(path_to_stored_string(&same_stem));
     }
 
     let parent = path.parent()?;
@@ -493,7 +603,7 @@ pub(crate) async fn matching_movie_nfo_path_async(path: &Path) -> Option<String>
         .map(|metadata| metadata.is_file())
         .unwrap_or(false)
     {
-        return Some(movie_nfo.to_string_lossy().to_string());
+        return Some(path_to_stored_string(&movie_nfo));
     }
 
     None
@@ -509,7 +619,7 @@ pub(crate) fn derive_movie_probe_path(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+        .map(stored_path_to_path_buf)
         .filter(|path| path.starts_with(root))
     {
         return Some(folder_path);
@@ -518,7 +628,7 @@ pub(crate) fn derive_movie_probe_path(
     let mut ordered_paths = collections
         .iter()
         .filter_map(|collection| collection.ordered_path.as_deref())
-        .map(PathBuf::from)
+        .map(stored_path_to_path_buf)
         .filter(|path| path.starts_with(root))
         .collect::<Vec<_>>();
     ordered_paths.sort();
@@ -560,7 +670,7 @@ async fn begin_background_refresh_probe(
     title_id: &str,
     path: &Path,
 ) -> AppResult<Option<PendingLibraryProbe>> {
-    let path_string = path.to_string_lossy().to_string();
+    let path_string = path_to_stored_string(path);
     let now = Utc::now();
     let (scheme, value) = compute_library_probe_signature(path).await?;
     let stored_probe = app
@@ -695,9 +805,8 @@ fn compute_library_probe_signature_blocking(path: PathBuf) -> AppResult<(String,
                 .unwrap_or_else(|| "unknown".to_string());
             let name = child_path
                 .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_string();
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default();
             markers.push(format!("{name}|{kind}|{marker}"));
         }
         markers.sort();
@@ -801,6 +910,16 @@ mod tests {
         let path = Path::new("/library/Show Name/Show.Name.S01E01.trickplay");
 
         assert!(should_skip_library_subpath(root, path, true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_skip_non_utf8_top_level_entries() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(OsStr::from_bytes(b"/library/\xFFMovie.mkv"));
+        assert!(!should_skip_library_top_level_entry(path, false));
     }
 
     #[test]

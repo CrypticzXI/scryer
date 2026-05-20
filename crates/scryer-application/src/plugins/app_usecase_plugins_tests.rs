@@ -748,8 +748,13 @@ fn viewer() -> User {
         id: scryer_domain::Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
-        entitlements: vec![scryer_domain::Entitlement::ViewCatalog],
-        authorization: Default::default(),
+        authorization: scryer_domain::UserAuthorization {
+            default_library: scryer_domain::LibraryPermissionMask::from_permissions([
+                scryer_domain::LibraryPermission::View,
+            ]),
+            loaded: true,
+            ..Default::default()
+        },
     }
 }
 
@@ -758,10 +763,6 @@ fn config_admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "config-admin".to_string(),
         password_hash: None,
-        entitlements: vec![
-            scryer_domain::Entitlement::ViewCatalog,
-            scryer_domain::Entitlement::ManageConfig,
-        ],
         authorization: scryer_domain::UserAuthorization {
             app: scryer_domain::AppPermissionMask::from_permissions([
                 scryer_domain::AppPermission::ManageSystemSettings,
@@ -1052,6 +1053,10 @@ fn make_indexer_config(provider_type: &str) -> IndexerConfig {
         rate_limit_seconds: None,
         rate_limit_burst: None,
         disabled_until: None,
+        managed_parent_config_id: None,
+        managed_child_key: None,
+        managed_metadata_json: None,
+        caps_snapshot_json: None,
         last_health_status: None,
         last_error_at: None,
         config_json: None,

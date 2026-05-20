@@ -72,7 +72,7 @@ async fn create_script(
 
 async fn seed_title(ctx: &TestContext, id: &str, name: &str, facet: MediaFacet) {
     TitleRepository::create(
-        &ctx.catalog,
+        &ctx.titles,
         scryer_domain::Title {
             id: id.to_string(),
             name: name.to_string(),

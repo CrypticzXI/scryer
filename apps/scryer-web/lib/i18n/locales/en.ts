@@ -33,6 +33,7 @@ const en: LocaleDictionary = {
   "label.actions": "Actions",
   "label.create": "Create",
   "label.cancel": "Cancel",
+  "label.discard": "Discard changes",
   "label.clear": "Clear",
   "label.add": "Add",
   "label.remove": "Remove",
@@ -91,6 +92,7 @@ const en: LocaleDictionary = {
   settings: "Settings",
   "settings.profile": "Profile",
   "settings.general": "General",
+  "settings.backups": "Backups",
   "settings.security": "Security",
   "settings.securityDescription":
     "Choose whether Scryer requires a signed-in user session.",
@@ -204,6 +206,7 @@ const en: LocaleDictionary = {
   "settings.libraryEffectiveAudio": "Effective: {{value}}",
   "settings.libraryQualityProfileLabel": "Quality profile",
   "settings.libraryInheritFacet": "Inherit catalog default",
+  "settings.libraryCustomRouting": "Custom library routing",
   "settings.libraryEffectiveProfile": "Effective: {{value}}",
   "settings.libraryScoringPersonaLabel": "Scoring persona",
   "settings.libraryEffectivePersona": "Effective: {{value}}",
@@ -291,6 +294,7 @@ const en: LocaleDictionary = {
   "jobs.triggerSource.manual": "Manual",
   "jobs.triggerSource.scheduledStartup": "Scheduled startup",
   "jobs.triggerSource.scheduledInterval": "Scheduled interval",
+  "jobs.triggerSource.scheduledDaily": "Scheduled daily",
   "jobs.triggerSource.systemInternal": "System internal",
   "deletePreview.counting": "Counting files to delete...",
   "deletePreview.error": "Unable to prepare delete preview.",
@@ -322,6 +326,7 @@ const en: LocaleDictionary = {
     "Define profile behavior as JSON. Save with valid JSON and a list of profiles with unique `id` values.",
   "settings.qualityProfileGlobalLabel": "Default quality profile (global)",
   "settings.qualityProfileNameRequired": "Quality profile name is required.",
+  "settings.qualityProfileNameDuplicate": "Quality profile names must be unique.",
   "settings.qualityProfileGlobalHelp":
     "Used when a category does not override it.",
   "settings.qualityProfileOverrideLabel": "{{category}} quality override",
@@ -341,7 +346,13 @@ const en: LocaleDictionary = {
   "settings.delayProfileNone":
     "No delay profiles configured. Releases will be grabbed immediately.",
   "settings.delayProfileCreate": "Create Profile",
+  "settings.delayProfileCreateNew": "Create new delay profile",
   "settings.delayProfileEdit": "Edit Profile",
+  "settings.delayProfileConfirmDiscardTitle": "Discard current delay profile edits?",
+  "settings.delayProfileConfirmDiscardDescription":
+    "Your current delay profile edits will be lost.",
+  "settings.delayProfileDeleteConfirm":
+    "Delete this delay profile?",
   "settings.delayProfileNameLabel": "Name",
   "settings.delayProfileNamePlaceholder": "e.g. Wait for better quality",
   "settings.delayProfileNameRequired": "Delay profile name is required.",
@@ -378,7 +389,12 @@ const en: LocaleDictionary = {
   "settings.delayProfileSaveError": "Failed to save delay profiles.",
   "settings.downloadClientSection": "Download client settings",
   "settings.downloadClientCreate": "Save Download Client",
+  "settings.downloadClientCreateNew": "Create new download client",
   "settings.downloadClientUpdate": "Update Download Client",
+  "settings.downloadClientConfirmDiscardTitle":
+    "Discard current download client edits?",
+  "settings.downloadClientConfirmDiscardDescription":
+    "Your current download client edits will be lost.",
   "settings.downloadClientUseSsl": "Use SSL",
   "settings.downloadClientUrlBase": "URL Base",
   "settings.downloadClientUrlPreview": "Computed base URL",
@@ -403,6 +419,46 @@ const en: LocaleDictionary = {
     "It removes failed downloads from the download client history.",
   "settings.downloadClientEnabledInfo":
     "When disabled, this client is skipped during download routing.",
+  "settings.downloadClientEnabledLabel": "Enable download client",
+  "settings.downloadClientFilesystemPathMapping":
+    "Filesystem Path Mapping (Advanced)",
+  "settings.downloadClientFilesystemPathMappingHelp":
+    "Remote path mappings are rarely needed. Use them only when Scryer and this download client see the same download folder at different filesystem paths.",
+  "settings.downloadClientRemotePathMappings": "Remote Path Mappings",
+  "settings.downloadClientRemotePathMappingsHelp":
+    "Each rule is saved as REMOTE => LOCAL.",
+  "settings.downloadClientArtifactMode": "Completed Download Artifact Mode",
+  "settings.downloadClientArtifactModeHelp":
+    "Choose how Scryer should interpret completed SAB-compatible downloads. Use NZBDAV .strm for mounted .strm artifacts, or NZBDAV Plex symlink when completed-symlinks is mounted locally through rclone --links.",
+  "settings.downloadClientArtifactModePlain": "Plain Filesystem Download",
+  "settings.downloadClientArtifactModeNzbdavStrm": "NZBDAV .strm",
+  "settings.downloadClientArtifactModeNzbdavSymlink": "NZBDAV Plex Symlink",
+  "settings.downloadClientRemotePathMappingsRemoteLabel": "Remote Path",
+  "settings.downloadClientRemotePathMappingsRemoteHelp":
+    "Path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsLocalLabel": "Local Path",
+  "settings.downloadClientRemotePathMappingsLocalHelp":
+    "Path Scryer should use on this machine.",
+  "settings.downloadClientRemotePathMappingsAdd": "Add Mapping",
+  "settings.downloadClientRemotePathMappingsEmptyState":
+    "No path mappings configured yet. Add one only if Scryer cannot read the path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsExampleLabel": "Example",
+  "settings.downloadClientRemotePathMappingsRemoteRequired":
+    "Remote Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalRequired":
+    "Local Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalAbsolute":
+    "Local Path must be an absolute path.",
+  "settings.downloadClientRemotePathMappingsRemoteDuplicate":
+    "Remote Path duplicates another mapping in this client.",
+  "settings.downloadClientSabnzbdAuthHelp":
+    "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientSabnzbdNzbdavHelp":
+    "For NzbDav, point SAB-compatible completed downloads at the mounted completed-symlinks path, make sure Scryer can read that mount locally, and add remote path mappings if NzbDav reports a different visible path.",
+  "settings.downloadClientQbittorrentDecypharrHelp":
+    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
+  "settings.downloadClientDecypharrFilesystemHelp":
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr or NzbDav output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "My Download Client",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "e.g. api",
@@ -410,6 +466,9 @@ const en: LocaleDictionary = {
   "settings.downloadClientPriorityPlaceholder": "Default",
   "settings.downloadClientCategoryPlaceholder": "series",
   "settings.downloadClientStatus": "Status",
+  "settings.downloadClientLastError": "Error",
+  "settings.downloadClientLastSeen": "Seen {{time}}",
+  "settings.downloadClientNoActivity": "No activity",
   "settings.existingDownloadClients": "Existing download clients",
   "settings.downloadClientRoutingScope":
     "Download client metadata for {{scope}}",
@@ -631,6 +690,9 @@ const en: LocaleDictionary = {
     "Run a library scan to detect files on disk.",
   "title.configureRootFoldersHint":
     "Configure your root data folders in facet settings before scanning this library.",
+  "title.invalidRootFoldersTitle": "One or more root folders are invalid.",
+  "title.invalidRootFoldersHint":
+    "Fix your configured root data folders in facet settings before running a library scan.",
   "title.configureRootFoldersButton": "Configure root data folders",
   "title.descriptionUnavailable": "No description available.",
   "title.canon": "Canon",
@@ -935,16 +997,29 @@ const en: LocaleDictionary = {
   "settings.indexerInteractiveSearch": "Interactive",
   "settings.indexerAutoSearch": "Auto",
   "settings.indexerStatus": "Status",
-  "settings.indexerDisabledUntil": "Backoff {{time}}",
+  "settings.indexerDisabledUntil": "Disabled until {{time}}",
   "settings.indexerLastError": "Error {{time}}",
   "settings.indexerLastSearched": "Searched {{time}}",
   "settings.indexerNoActivity": "No activity",
+  "settings.indexerSyncNow": "Sync now",
   "settings.indexerAdd": "Add indexer",
   "settings.indexerUpdate": "Update Indexer",
   "settings.indexerCreate": "Create Indexer",
+  "settings.indexerCreateNew": "Create new indexer",
+  "settings.indexerManagedParentHint":
+    "Prowlarr parent configs are management-only. Search modes come from synced child indexers.",
+  "settings.indexerConfirmDiscardTitle": "Discard current indexer edits?",
+  "settings.indexerConfirmDiscardDescription":
+    "Your current indexer edits will be lost.",
   "settings.indexerFilterPlaceholder": "Filter by provider type",
   "settings.noIndexersFound": "No indexers found.",
-  "settings.indexerConfig": "Plugin Configuration",
+  "settings.indexerConfig": "Provider Configuration",
+  "settings.managedIndexerBadge": "Managed",
+  "settings.managedByIndexer": "Managed by {{name}}",
+  "settings.managedByParent": "Managed by parent",
+  "settings.managesIndexerCount": "Manages {{count}} indexers",
+  "settings.managedIndexerReadOnly": "Managed indexers are controlled by their parent sync and cannot be edited directly.",
+  "settings.managedIndexerReadOnlyShort": "Read-only",
   "settings.downloadClientsSection": "Download clients",
   "settings.downloadClientFilterPlaceholder": "Filter by client name or type",
   "settings.newPassword": "New Password",
@@ -967,7 +1042,12 @@ const en: LocaleDictionary = {
   "settings.existingRules": "Existing rules",
   "settings.noRulesFound": "No custom rules configured.",
   "settings.ruleCreate": "Create Rule",
+  "settings.ruleCreateNew": "Create new rule",
   "settings.ruleUpdate": "Update Rule",
+  "settings.ruleApplyTemplate": "Apply template",
+  "settings.ruleConfirmDiscardTitle": "Discard current rule edits?",
+  "settings.ruleConfirmDiscardDescription":
+    "Your current rule edits will be lost.",
   "settings.ruleDescription": "Description",
   "settings.ruleRegoSource": "Rego Source",
   "settings.rulePriority": "Priority",
@@ -1025,6 +1105,8 @@ const en: LocaleDictionary = {
     "True when the parser detected an AI-enhanced encode marker",
   "settings.refReleaseIsHardcodedSubs":
     "True when hardcoded subtitles are detected in the release name",
+  "settings.refReleaseIsPasswordProtected":
+    "True when the indexer supplied a normalized archive or pack password hint for the release",
   "settings.refReleaseIsHdr10Plus":
     "True when HDR10+ is detected from the release metadata",
   "settings.refReleaseIsHlg":
@@ -1212,6 +1294,8 @@ const en: LocaleDictionary = {
     "Rules must define a score_entry rule that returns a map of string keys (score codes) to integer values (point deltas). Positive values boost the release, negative values penalize it, and scryer.block_score() hard-blocks it. File-based rules naturally no-op pre-download because input.file is null until post-download evaluation.",
 
   "settings.subtitles": "Subtitles",
+  "settings.subtitlesDescription":
+    "Configure subtitle languages, matching thresholds, sync behavior, and provider connections.",
   "settings.subtitlesSaved": "Subtitle settings saved.",
   "settings.subtitleProviders": "Subtitle providers",
   "settings.existingSubtitleProviders": "Configured subtitle providers",
@@ -1222,7 +1306,12 @@ const en: LocaleDictionary = {
     "Scryer only searches this provider for the selected content types. Plugin recommendations seed these defaults, but do not restrict your choices.",
   "settings.subtitleProviderEmpty": "No subtitle providers configured yet.",
   "settings.subtitleProviderCreate": "Add subtitle provider",
+  "settings.subtitleProviderCreateNew": "Create new subtitle provider",
   "settings.subtitleProviderEdit": "Edit subtitle provider",
+  "settings.subtitleProviderConfirmDiscardTitle":
+    "Discard current subtitle provider edits?",
+  "settings.subtitleProviderConfirmDiscardDescription":
+    "Your current subtitle provider edits will be lost.",
   "settings.subtitleProviderNamePlaceholder": "OpenSubtitles",
   "settings.subtitleProviderCreated": "Subtitle provider created.",
   "settings.subtitleProviderUpdated": "Subtitle provider updated.",
@@ -1293,24 +1382,31 @@ const en: LocaleDictionary = {
   "settings.pp.blocking": "Blocking",
   "settings.pp.fireAndForget": "Fire & Forget",
   "settings.pp.blockingHelp": "Runs in priority order. Next script waits for this one to finish.",
-  "settings.pp.fireAndForgetHelp": "Runs in the background without blocking import.",
+  "settings.pp.fireAndForgetHelp":
+    "Runs in the background without blocking import. Output can still be captured if enabled.",
   "settings.pp.executionMode": "Execution Mode",
   "settings.pp.timeout": "Timeout (seconds)",
   "settings.pp.priority": "Priority",
   "settings.pp.priorityHelp": "Lower number runs first.",
   "settings.pp.facets": "Applies To",
   "settings.pp.debug": "Capture script output",
-  "settings.pp.debugHelp": "When enabled, stdout and stderr are saved for each run. Useful for troubleshooting.",
+  "settings.pp.debugHelp":
+    "When enabled, stdout and stderr are saved for each run, including background runs. Useful for troubleshooting.",
   "settings.pp.runHistory": "Run History",
   "settings.pp.noRuns": "No executions yet.",
   "settings.pp.outputNotCaptured": "Output not captured. Enable debug mode on this script to see output.",
   "settings.pp.envHeading": "Environment Variables",
   "settings.pp.envDescription":
-    "Scripts receive a JSON payload in the SCRYER_METADATA environment variable containing title, episode, release, and mediainfo metadata. SCRYER_FILE_PATH contains the imported file path.",
+    "Scripts receive a JSON payload in SCRYER_METADATA, plus the convenience variables shown below. Values may be null when Scryer does not have them.",
   "settings.pp.created": "Script created.",
   "settings.pp.updated": "Script updated.",
   "settings.pp.deleted": "Script deleted.",
   "settings.pp.toggled": "Script {{state}}.",
+  "settings.pp.createNewScript": "Create new script",
+  "settings.pp.confirmDiscardTitle":
+    "Discard current post-processing script edits?",
+  "settings.pp.confirmDiscardDescription":
+    "Your current post-processing script edits will be lost.",
 
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Manage plugins",
@@ -1407,12 +1503,19 @@ const en: LocaleDictionary = {
   "qualityProfile.existingProfiles": "Existing quality profiles",
   "qualityProfile.noProfilesFound": "No profiles found.",
   "qualityProfile.createProfile": "Create quality profile",
+  "qualityProfile.createNewProfile": "Create new quality profile",
   "qualityProfile.defaultProfileName": "Default",
   "qualityProfile.idGeneratedDescription":
     "Profile ID will be generated from the name.",
   "qualityProfile.createProfileDescription":
     "Profile names can be edited after creation; IDs are auto-generated and must stay unique.",
   "qualityProfile.editProfile": "Edit quality profile",
+  "qualityProfile.confirmCreateFromEditTitle": "Discard current quality profile edits?",
+  "qualityProfile.confirmCreateFromEditDescription":
+    "Your current quality profile edits will be lost and replaced with a new blank profile form.",
+  "qualityProfile.confirmDiscardTitle": "Discard current quality profile edits?",
+  "qualityProfile.confirmDiscardDescription":
+    "Your current quality profile edits will be lost.",
   "qualityProfile.profileNameLabel": "Profile name",
   "qualityProfile.qualityTiersAndArchival":
     "Quality tiers and archival quality",
@@ -1724,6 +1827,7 @@ const en: LocaleDictionary = {
   "status.failedToUpdate": "Failed to update item.",
   "status.indexerCreated": "Indexer saved.",
   "status.indexerUpdated": "Indexer updated.",
+  "status.indexerSynced": "Synced indexers managed by {{name}}.",
   "status.searchMonitoredQueued":
     "Queued {{count}} monitored item(s) for background search.",
   "status.searchSkippedInProgress":
@@ -1891,9 +1995,19 @@ const en: LocaleDictionary = {
   "settings.notificationChannels": "Channels",
   "settings.notificationSubscriptions": "Subscriptions",
   "settings.notificationChannelCreate": "Add Channel",
+  "settings.notificationChannelCreateNew": "Create new channel",
   "settings.notificationChannelUpdate": "Update Channel",
   "settings.notificationSubscriptionCreate": "Add Subscription",
+  "settings.notificationSubscriptionCreateNew": "Create new subscription",
   "settings.notificationSubscriptionUpdate": "Update Subscription",
+  "settings.notificationChannelConfirmDiscardTitle":
+    "Discard current channel edits?",
+  "settings.notificationChannelConfirmDiscardDescription":
+    "Your current notification channel edits will be lost.",
+  "settings.notificationSubscriptionConfirmDiscardTitle":
+    "Discard current subscription edits?",
+  "settings.notificationSubscriptionConfirmDiscardDescription":
+    "Your current notification subscription edits will be lost.",
   "settings.notificationNoChannels": "No notification channels configured.",
   "settings.notificationNoSubscriptions":
     "No notification subscriptions configured.",
@@ -1913,6 +2027,10 @@ const en: LocaleDictionary = {
   "settings.notificationProviderType": "Provider Type",
   "settings.notificationNoProviders":
     "No notification plugins installed. Install a notification plugin from the Plugins page first.",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "Grabbed Release",
   "settings.notificationEvent.download": "Download Failed",
   "settings.notificationEvent.upgrade": "Upgrade Imported",
@@ -1979,6 +2097,9 @@ const en: LocaleDictionary = {
   "setup.importSetup": "Import from Sonarr / Radarr",
   "setup.importSetupDescription":
     "Bring your existing configuration into Scryer.",
+  "setup.restoreSetup": "Restore from Backup",
+  "setup.restoreSetupDescription":
+    "Upload a Scryer backup bundle and restore this fresh instance.",
   "setup.stepPersona": "Persona",
   "setup.stepMediaPaths": "Media Paths",
   "setup.stepPlugins": "Plugins",
@@ -1987,6 +2108,36 @@ const en: LocaleDictionary = {
   "setup.stepSummary": "Summary",
   "setup.stepConnect": "Connect",
   "setup.stepReview": "Review",
+  "setup.stepRestore": "Restore",
+  "setup.restoreTitle": "Restore from a backup bundle",
+  "setup.restoreDescription":
+    "Upload a Scryer backup bundle, inspect its manifest, and restore it into this fresh instance.",
+  "setup.restoreSelectBundle": "Backup bundle",
+  "setup.restoreDropTargetTitle": "Drag and drop a backup bundle here",
+  "setup.restoreDropTargetDescription":
+    "Choose a backup file from your device or drop it here to inspect before restoring.",
+  "setup.restoreDropTargetSelected": "Bundle selected and ready to inspect.",
+  "setup.restoreDropTargetEncryptedSelected":
+    "Encrypted bundle selected. Enter the password used during backup creation to continue.",
+  "setup.restoreDropTargetFormats":
+    "Supported formats: .tar.zst and .enc",
+  "setup.restoreSelectFile": "Select file",
+  "setup.restoreClearFile": "Clear selection",
+  "setup.restorePasswordHelp":
+    "Enter the password used when this encrypted backup was created.",
+  "setup.restoreNoFile": "Choose a backup bundle to continue.",
+  "setup.restorePasswordRequired": "Enter the bundle password before continuing.",
+  "setup.restoreInspect": "Inspect bundle",
+  "setup.restoreApply": "Restore now",
+  "setup.restoreChooseAnother": "Choose another bundle",
+  "setup.restoreSummaryTitle": "Bundle contents",
+  "setup.restoreConfirmDescription":
+    "This replaces the fresh setup database, writes restored instance secrets, and restarts Scryer into the restored instance.",
+  "setup.restoreCreatedAt": "Created",
+  "setup.restoreSourceVersion": "Source version",
+  "setup.restoreSourceEngine": "Source engine",
+  "setup.restoreMigrationKey": "Source migration key",
+  "setup.restoreTotalRows": "Total rows",
 
   "setup.personaTitle": "Quality Preferences",
   "setup.personaDescription":
@@ -2060,17 +2211,19 @@ const en: LocaleDictionary = {
   "setup.skipSetup": "Skip setup entirely",
   "setup.skipping": "Skipping…",
 
-  "setup.connectTitle": "Connect to Sonarr & Radarr",
+  "setup.connectTitle": "Connect to Sonarr, Radarr & Prowlarr",
   "setup.connectDescription":
-    "Enter the URL and API key for your Sonarr and/or Radarr instance. At least one is required.",
+    "Enter the URL and API key for your Sonarr, Radarr, and/or Prowlarr instance. At least one is required.",
   "setup.sonarrUrl": "Sonarr URL",
   "setup.sonarrApiKey": "Sonarr API Key",
   "setup.radarrUrl": "Radarr URL",
   "setup.radarrApiKey": "Radarr API Key",
+  "setup.prowlarrUrl": "Prowlarr URL",
+  "setup.prowlarrApiKey": "Prowlarr API Key",
   "setup.findApiKey": "Find your API key",
   "setup.connectAndScan": "Connect & Scan",
   "setup.connectError": "Connection failed",
-  "setup.atLeastOneRequired": "Enter at least one of Sonarr or Radarr.",
+  "setup.atLeastOneRequired": "Enter at least one of Sonarr, Radarr, or Prowlarr.",
   "setup.urlPlaceholder": "http://localhost:8989",
 
   "setup.reviewTitle": "Review & Import",
@@ -2085,6 +2238,7 @@ const en: LocaleDictionary = {
   "setup.notSupported": "Not supported",
   "setup.fromSonarr": "Sonarr",
   "setup.fromRadarr": "Radarr",
+  "setup.fromProwlarr": "Prowlarr",
   "setup.importSelected": "Import Selected",
   "setup.importing": "Importing…",
   "setup.noneSelected": "Select at least one item to import.",
@@ -2095,10 +2249,33 @@ const en: LocaleDictionary = {
     "Do you use custom formats? Many of those features are covered in the Persona section. More customization is available after setup.",
   "setup.summaryImportedClients": "Download clients imported",
   "setup.summaryImportedIndexers": "Indexers imported",
+  "setup.monitorWarmupTitle": "Preparing monitored-state import",
+  "setup.monitorWarmupDescription":
+    "Scryer is pulling monitored status in the background so the final import step is faster.",
+  "setup.monitorWarmupQueued": "Waiting for progress details…",
+  "setup.monitorWarmupLoadingMovies": "Loading movies",
+  "setup.monitorWarmupLoadingSeries": "Loading series",
+  "setup.monitorWarmupLoadingEpisodes": "Loading episodes",
+  "setup.monitorWarmupBuildingSnapshot": "Building snapshot",
+  "setup.monitorWarmupReady": "Ready",
+  "setup.monitorWarmupFailed":
+    "Background preparation hit an error. Scryer will retry when you start the import.",
+  "setup.monitorWarmupCanceled":
+    "Background preparation was canceled. Scryer will restart it if needed.",
+  "setup.importFinalizeFailed":
+    "Scryer could not finish preparing monitored state for this import.",
   "setup.apiKeyMasked":
     "Sonarr/Radarr hides this API key. Enter it manually to continue importing:",
   "setup.apiKeyPlaceholder": "Paste API key…",
   "setup.apiKeyHelpLink": "Find it in SABnzbd → Config → General",
+  "setup.prowlarrManagedChildren": "Managed indexers",
+  "setup.prowlarrManagedChildrenReadOnly":
+    "Managed indexers are shown for review only and are created by the Prowlarr parent sync.",
+  "setup.prowlarrApiKeyMasked":
+    "Sonarr/Radarr hides the Prowlarr API key, or the detected keys conflict. Enter the Prowlarr API key from Settings → General:",
+  "setup.prowlarrApiKeyRequired":
+    "Enter the Prowlarr API key for {{name}} before importing.",
+  "setup.prowlarrApiKeyHelpLink": "Find it in Prowlarr → Settings → General",
 
   "settings.runSetupWizard": "Run setup wizard",
 
@@ -2140,6 +2317,62 @@ const en: LocaleDictionary = {
     "Releases without these audio languages will be blocked. Creates a managed rule visible in Settings > Rules.",
 
   // Recycle Bin
+  "settings.autoBackupsTitle": "Automatic backups",
+  "settings.autoBackupsDescription":
+    "Opt in to one system backup per day at a server-local time. Automatic backups time out after 30 minutes, and Scryer keeps the last 5 successful automatic backups.",
+  "settings.autoBackupsEnabledHelp":
+    "This scheduler is system-wide and runs once per day at the saved time.",
+  "settings.autoBackupsTime": "Daily backup time",
+  "settings.autoBackupsHour": "Hour",
+  "settings.autoBackupsMinute": "Minute",
+  "settings.autoBackupsTimeHelp": "Uses the server's local timezone.",
+  "settings.autoBackupsNextRun": "Next automatic backup",
+  "settings.autoBackupsNextRunHelp":
+    "Save your changes to update the scheduler. Disabled automatic backups do not run.",
+  "settings.autoBackupsKeyLabel": "Automatic backup key",
+  "settings.autoBackupsKeyHelpLabel": "About the automatic backup key",
+  "settings.autoBackupsSetKey": "Set automatic backup key",
+  "settings.autoBackupsReplaceKey": "Replace automatic backup key",
+  "settings.autoBackupsKeyAlreadySetHint": "(backup key already set)",
+  "settings.autoBackupsKeyPresent": "A saved automatic backup key is currently configured.",
+  "settings.autoBackupsKeyAbsent": "No automatic backup key is saved. Automatic backups will be plaintext.",
+  "settings.autoBackupsClearKey": "Clear saved automatic backup key",
+  "settings.autoBackupsClearKeyHelp":
+    "Removes the stored key after you save. Future automatic backups will be plaintext unless you set a new key.",
+  "settings.autoBackupsKeySummary": "Optional automatic backup encryption",
+  "settings.autoBackupsKeyHelp":
+    "Leave the field blank to keep the existing saved key. Enter a new value to replace it. If no key is stored, automatic backups are created as plaintext.",
+  "settings.autoBackupsShowKey": "Show automatic backup key",
+  "settings.autoBackupsHideKey": "Hide automatic backup key",
+  "settings.autoBackupsSaved": "Automatic backup settings saved.",
+  "settings.backupsSection":
+    "Create restorable Scryer bundle backups. Manual backups run in the background so you can keep working while the bundle is prepared, even if an automatic backup is already running.",
+  "settings.backupsEmpty": "No backups created yet.",
+  "settings.backupsCreate": "Create backup",
+  "settings.backupsCreateTitle": "Create backup bundle",
+  "settings.backupsCreateDescription":
+    "Optionally protect this backup with a password. Password-protected bundles require the same password during restore.",
+  "settings.backupsOptionalPassword": "Optional password protection",
+  "settings.backupsConfirmPassword": "Confirm password",
+  "settings.backupsPasswordMismatch": "Passwords do not match",
+  "settings.backupsPasswordHelp":
+    "Leave this blank to create a plaintext bundle. Automatic backups use the saved automatic backup key when one is configured.",
+  "settings.backupsQueued": "Backup creation started in the background.",
+  "settings.backupsDeleted": "Backup deleted.",
+  "settings.backupsCreating": "Creating",
+  "settings.backupsReady": "Ready",
+  "settings.backupsInvalid": "Invalid",
+  "settings.backupsFailed": "Failed",
+  "settings.backupsEncrypted": "Encrypted",
+  "settings.backupsPlaintext": "Plaintext",
+  "settings.backupsManual": "Manual",
+  "settings.backupsAutomatic": "Automatic",
+  "settings.backupsDownload": "Download",
+  "settings.backupsDelete": "Delete",
+  "settings.backupsDeleteConfirm":
+    "Delete this backup bundle from the server? Any downloaded copy will be unaffected.",
+  "settings.backupsTables": "{{count}} tables",
+  "settings.backupsRows": "{{count}} rows",
   "settings.recycleBin": "Recycle Bin",
   "settings.recycleBinSection": "Manage recycled media files",
   "settings.recycleBinEmpty": "The recycle bin is empty.",

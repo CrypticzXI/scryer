@@ -9,7 +9,7 @@ pub(crate) struct ResolvedAnalysisReleaseLabels {
 
 pub(crate) fn resolve_release_labels_from_analysis(
     video_height: Option<i32>,
-    video_codec: Option<&str>,
+    video_codec: Option<&crate::release_parser::VideoCodec>,
     primary_audio_codec: Option<&str>,
     primary_audio_profile: Option<&str>,
     primary_audio_channels: Option<i32>,
@@ -71,13 +71,17 @@ pub(crate) fn quality_from_video_height(height: Option<i32>) -> Option<&'static 
     }
 }
 
-pub(crate) fn normalize_video_codec_for_release(codec: &str) -> Option<&'static str> {
-    match codec.to_ascii_lowercase().as_str() {
-        "hevc" | "h265" | "h.265" | "hvc1" | "hev1" => Some("H.265"),
-        "h264" | "h.264" | "avc" | "avc1" => Some("H.264"),
-        "av1" | "av01" => Some("AV1"),
-        "vp9" => Some("VP9"),
-        "mpeg4" | "mp4v" | "xvid" | "divx" => Some("MPEG-4"),
+pub(crate) fn normalize_video_codec_for_release(
+    codec: &crate::release_parser::VideoCodec,
+) -> Option<&'static str> {
+    match codec {
+        crate::release_parser::VideoCodec::H265 => Some("H.265"),
+        crate::release_parser::VideoCodec::H264 => Some("H.264"),
+        crate::release_parser::VideoCodec::Av1 => Some("AV1"),
+        crate::release_parser::VideoCodec::Vp9 => Some("VP9"),
+        crate::release_parser::VideoCodec::Mpeg4
+        | crate::release_parser::VideoCodec::Xvid
+        | crate::release_parser::VideoCodec::Divx => Some("MPEG-4"),
         _ => None,
     }
 }

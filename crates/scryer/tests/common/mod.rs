@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use async_graphql_axum::GraphQLRequest;
+use async_trait::async_trait;
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -14,14 +15,22 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use scryer_application::{
-    AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
-    MovieFacetHandler, SeriesFacetHandler,
+    AppResult, AppServices, AppUseCase, BlocklistRepository, FacetRegistry, HousekeepingRepository,
+    IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler, PendingReleaseRepository,
+    SeriesFacetHandler, SubtitleDownloadRepository, WantedItemRepository,
+};
+use scryer_infrastructure::sqlite::{
+    LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
+    SettingsStore, ShowStore, TitleStore, UserStore,
 };
 use scryer_infrastructure::{
-    FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient,
-    MultiIndexerSearchClient, NzbgetDownloadClient, SmgEnrollmentConfig, SqliteCatalogStore,
-    SqliteConfigStore, SqliteCustomizationStore, SqliteLibraryStateStore, SqliteReleaseStore,
-    SqliteServices, SqliteSettingsStore,
+    AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadQueueCommandStore,
+    DownloadSubmissionStore, ExternalImportMonitorStore, FileSystemLibraryScanner,
+    FileSystemStagedNzbStore, HousekeepingStore, ImportStore, IndexerConfigStore,
+    LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MetadataGatewayClient,
+    MultiIndexerSearchClient, NzbgetDownloadClient, PendingReleaseStore, ReleaseStore,
+    SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore, WantedStore,
+    WorkflowOperationStore,
 };
 use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
 use scryer_interface::{ApiSchema, build_schema};
@@ -40,13 +49,507 @@ pub struct TestContext {
     pub schema: ApiSchema,
     pub auth_runtime: AuthRuntimeStateHandle,
     pub app: AppUseCase,
-    pub catalog: SqliteCatalogStore,
-    pub customization: SqliteCustomizationStore,
-    pub library_state: SqliteLibraryStateStore,
+    pub titles: TitleStore,
+    pub shows: ShowStore,
+    pub libraries: LibraryStore,
+    pub users: UserStore,
+    pub customization: PluginStore,
+    pub library_probe: LibraryProbeStore,
+    pub library_state: TestLibraryStateStore,
+    pub library_scan_unmatched: LibraryScanUnmatchedStore,
+    pub media_files: MediaFileStore,
     pub db: SqliteServices,
-    pub settings_store: SqliteSettingsStore,
+    pub settings_store: Arc<SettingsStore>,
+    pub app_data_dir: tempfile::TempDir,
     pub staged_nzb_store: Arc<FileSystemStagedNzbStore>,
     pub staged_nzb_dir: tempfile::TempDir,
+}
+
+#[derive(Clone)]
+pub struct TestLibraryStateStore {
+    pub wanted: WantedStore,
+    pub pending_releases: PendingReleaseStore,
+    pub blocklist: scryer_infrastructure::BlocklistStore,
+    pub housekeeping: HousekeepingStore,
+    pub subtitle_downloads: SubtitleDownloadStore,
+}
+
+#[async_trait]
+impl WantedItemRepository for TestLibraryStateStore {
+    async fn upsert_wanted_item(&self, item: &scryer_application::WantedItem) -> AppResult<String> {
+        self.wanted.upsert_wanted_item(item).await
+    }
+
+    async fn list_due_wanted_items(
+        &self,
+        now: &str,
+        batch_limit: i64,
+        excluded_facets: &[scryer_domain::MediaFacet],
+    ) -> AppResult<Vec<scryer_application::WantedItem>> {
+        self.wanted
+            .list_due_wanted_items(now, batch_limit, excluded_facets)
+            .await
+    }
+
+    async fn update_wanted_item_status(
+        &self,
+        id: &str,
+        status: &str,
+        next_search_at: Option<&str>,
+        last_search_at: Option<&str>,
+        search_count: i64,
+        current_score: Option<i32>,
+        grabbed_release: Option<&str>,
+    ) -> AppResult<()> {
+        self.wanted
+            .update_wanted_item_status(
+                id,
+                status,
+                next_search_at,
+                last_search_at,
+                search_count,
+                current_score,
+                grabbed_release,
+            )
+            .await
+    }
+
+    async fn get_wanted_item_for_title(
+        &self,
+        title_id: &str,
+        episode_id: Option<&str>,
+    ) -> AppResult<Option<scryer_application::WantedItem>> {
+        self.wanted
+            .get_wanted_item_for_title(title_id, episode_id)
+            .await
+    }
+
+    async fn delete_wanted_items_for_title(&self, title_id: &str) -> AppResult<()> {
+        self.wanted.delete_wanted_items_for_title(title_id).await
+    }
+
+    async fn delete_wanted_items_for_collection(&self, collection_id: &str) -> AppResult<()> {
+        self.wanted
+            .delete_wanted_items_for_collection(collection_id)
+            .await
+    }
+
+    async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()> {
+        self.wanted
+            .delete_wanted_items_for_episode(episode_id)
+            .await
+    }
+
+    async fn reset_fruitless_wanted_items(&self, now: &str) -> AppResult<u64> {
+        self.wanted.reset_fruitless_wanted_items(now).await
+    }
+
+    async fn insert_release_decision(
+        &self,
+        decision: &scryer_application::ReleaseDecision,
+    ) -> AppResult<String> {
+        self.wanted.insert_release_decision(decision).await
+    }
+
+    async fn get_wanted_item_by_id(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<scryer_application::WantedItem>> {
+        self.wanted.get_wanted_item_by_id(id).await
+    }
+
+    async fn list_wanted_items(
+        &self,
+        query: scryer_application::WantedItemsQuery,
+    ) -> AppResult<Vec<scryer_application::WantedItem>> {
+        self.wanted.list_wanted_items(query).await
+    }
+
+    async fn count_wanted_items(
+        &self,
+        query: scryer_application::WantedItemsQuery,
+    ) -> AppResult<i64> {
+        self.wanted.count_wanted_items(query).await
+    }
+
+    async fn list_release_decisions_for_title(
+        &self,
+        title_id: &str,
+        limit: i64,
+    ) -> AppResult<Vec<scryer_application::ReleaseDecision>> {
+        self.wanted
+            .list_release_decisions_for_title(title_id, limit)
+            .await
+    }
+
+    async fn list_release_decisions_for_wanted_item(
+        &self,
+        wanted_item_id: &str,
+        limit: i64,
+    ) -> AppResult<Vec<scryer_application::ReleaseDecision>> {
+        self.wanted
+            .list_release_decisions_for_wanted_item(wanted_item_id, limit)
+            .await
+    }
+}
+
+#[async_trait]
+impl PendingReleaseRepository for TestLibraryStateStore {
+    async fn insert_pending_release(
+        &self,
+        release: &scryer_application::PendingRelease,
+    ) -> AppResult<String> {
+        self.pending_releases.insert_pending_release(release).await
+    }
+
+    async fn list_expired_pending_releases(
+        &self,
+        now: &str,
+    ) -> AppResult<Vec<scryer_application::PendingRelease>> {
+        self.pending_releases
+            .list_expired_pending_releases(now)
+            .await
+    }
+
+    async fn list_waiting_pending_releases(
+        &self,
+    ) -> AppResult<Vec<scryer_application::PendingRelease>> {
+        self.pending_releases.list_waiting_pending_releases().await
+    }
+
+    async fn get_pending_release(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<scryer_application::PendingRelease>> {
+        self.pending_releases.get_pending_release(id).await
+    }
+
+    async fn list_pending_releases_for_wanted_item(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<Vec<scryer_application::PendingRelease>> {
+        self.pending_releases
+            .list_pending_releases_for_wanted_item(wanted_item_id)
+            .await
+    }
+
+    async fn list_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<scryer_application::PendingRelease>> {
+        self.pending_releases
+            .list_pending_releases_for_title(title_id)
+            .await
+    }
+
+    async fn update_pending_release_status(
+        &self,
+        id: &str,
+        status: scryer_application::PendingReleaseStatus,
+        grabbed_at: Option<&str>,
+    ) -> AppResult<()> {
+        self.pending_releases
+            .update_pending_release_status(id, status, grabbed_at)
+            .await
+    }
+
+    async fn list_standby_pending_releases_for_wanted_item(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<Vec<scryer_application::PendingRelease>> {
+        self.pending_releases
+            .list_standby_pending_releases_for_wanted_item(wanted_item_id)
+            .await
+    }
+
+    async fn delete_standby_pending_releases_for_wanted_item(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<()> {
+        self.pending_releases
+            .delete_standby_pending_releases_for_wanted_item(wanted_item_id)
+            .await
+    }
+
+    async fn list_all_standby_pending_releases(
+        &self,
+    ) -> AppResult<Vec<scryer_application::PendingRelease>> {
+        self.pending_releases
+            .list_all_standby_pending_releases()
+            .await
+    }
+
+    async fn compare_and_set_pending_release_status(
+        &self,
+        id: &str,
+        current_status: scryer_application::PendingReleaseStatus,
+        next_status: scryer_application::PendingReleaseStatus,
+        grabbed_at: Option<&str>,
+    ) -> AppResult<bool> {
+        self.pending_releases
+            .compare_and_set_pending_release_status(id, current_status, next_status, grabbed_at)
+            .await
+    }
+
+    async fn supersede_pending_releases_for_wanted_item(
+        &self,
+        wanted_item_id: &str,
+        except_id: &str,
+    ) -> AppResult<()> {
+        self.pending_releases
+            .supersede_pending_releases_for_wanted_item(wanted_item_id, except_id)
+            .await
+    }
+
+    async fn delete_pending_releases_for_title(&self, title_id: &str) -> AppResult<()> {
+        self.pending_releases
+            .delete_pending_releases_for_title(title_id)
+            .await
+    }
+}
+
+#[async_trait]
+impl BlocklistRepository for TestLibraryStateStore {
+    async fn add(&self, entry: &scryer_application::NewBlocklistEntry) -> AppResult<String> {
+        self.blocklist.add(entry).await
+    }
+
+    async fn list_for_title(
+        &self,
+        title_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<scryer_domain::BlocklistEntry>> {
+        self.blocklist.list_for_title(title_id, limit).await
+    }
+
+    async fn list_all(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<(Vec<scryer_domain::BlocklistEntry>, i64)> {
+        self.blocklist.list_all(limit, offset).await
+    }
+
+    async fn has_recorded_download_failure(
+        &self,
+        title_id: &str,
+        source_title: Option<&str>,
+    ) -> AppResult<bool> {
+        self.blocklist
+            .has_recorded_download_failure(title_id, source_title)
+            .await
+    }
+
+    async fn remove(&self, id: &str) -> AppResult<()> {
+        self.blocklist.remove(id).await
+    }
+
+    async fn is_blocklisted(&self, title_id: &str, source_title: &str) -> AppResult<bool> {
+        self.blocklist.is_blocklisted(title_id, source_title).await
+    }
+
+    async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
+        self.blocklist.delete_for_title(title_id).await
+    }
+}
+
+#[async_trait]
+impl HousekeepingRepository for TestLibraryStateStore {
+    async fn delete_release_decisions_older_than(&self, days: i64) -> AppResult<u32> {
+        self.housekeeping
+            .delete_release_decisions_older_than(days)
+            .await
+    }
+
+    async fn delete_release_attempts_older_than(&self, days: i64) -> AppResult<u32> {
+        self.housekeeping
+            .delete_release_attempts_older_than(days)
+            .await
+    }
+
+    async fn delete_dispatched_event_outboxes_older_than(&self, days: i64) -> AppResult<u32> {
+        self.housekeeping
+            .delete_dispatched_event_outboxes_older_than(days)
+            .await
+    }
+
+    async fn delete_history_events_older_than(&self, days: i64) -> AppResult<u32> {
+        self.housekeeping
+            .delete_history_events_older_than(days)
+            .await
+    }
+
+    async fn delete_domain_events_older_than_for_types(
+        &self,
+        days: i64,
+        event_types: &[scryer_domain::DomainEventType],
+    ) -> AppResult<u32> {
+        self.housekeeping
+            .delete_domain_events_older_than_for_types(days, event_types)
+            .await
+    }
+
+    async fn delete_title_history_older_than(&self, days: i64) -> AppResult<u32> {
+        self.housekeeping
+            .delete_title_history_older_than(days)
+            .await
+    }
+
+    async fn delete_download_import_artifacts_older_than(&self, days: i64) -> AppResult<u32> {
+        self.housekeeping
+            .delete_download_import_artifacts_older_than(days)
+            .await
+    }
+
+    async fn delete_terminal_imports_older_than(&self, days: i64) -> AppResult<u32> {
+        self.housekeeping
+            .delete_terminal_imports_older_than(days)
+            .await
+    }
+
+    async fn delete_terminal_download_queue_commands_older_than(
+        &self,
+        days: i64,
+    ) -> AppResult<u32> {
+        self.housekeeping
+            .delete_terminal_download_queue_commands_older_than(days)
+            .await
+    }
+
+    async fn delete_rule_set_history_older_than(&self, days: i64) -> AppResult<u32> {
+        self.housekeeping
+            .delete_rule_set_history_older_than(days)
+            .await
+    }
+
+    async fn delete_history_events_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
+        self.housekeeping
+            .delete_history_events_for_title_ids(title_ids)
+            .await
+    }
+
+    async fn delete_download_import_artifacts_for_title_ids(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<u32> {
+        self.housekeeping
+            .delete_download_import_artifacts_for_title_ids(title_ids)
+            .await
+    }
+
+    async fn delete_release_attempts_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
+        self.housekeeping
+            .delete_release_attempts_for_title_ids(title_ids)
+            .await
+    }
+
+    async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>> {
+        self.housekeeping.list_all_media_file_paths().await
+    }
+
+    async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32> {
+        self.housekeeping.delete_media_files_by_ids(ids).await
+    }
+
+    async fn run_database_maintenance(&self) -> AppResult<()> {
+        self.housekeeping.run_database_maintenance().await
+    }
+}
+
+#[async_trait]
+impl SubtitleDownloadRepository for TestLibraryStateStore {
+    async fn list_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SubtitleDownload>> {
+        self.subtitle_downloads.list_for_title(title_id).await
+    }
+
+    async fn get(&self, id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>> {
+        self.subtitle_downloads.get(id).await
+    }
+
+    async fn list_for_media_file(
+        &self,
+        media_file_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SubtitleDownload>> {
+        self.subtitle_downloads
+            .list_for_media_file(media_file_id)
+            .await
+    }
+
+    async fn list_probe_cache_for_media_file(
+        &self,
+        media_file_id: &str,
+    ) -> AppResult<Vec<scryer_application::subtitles::ExternalSubtitleProbeCacheEntry>> {
+        self.subtitle_downloads
+            .list_probe_cache_for_media_file(media_file_id)
+            .await
+    }
+
+    async fn list_blocklist_for_media_file(
+        &self,
+        media_file_id: &str,
+    ) -> AppResult<Vec<scryer_domain::SubtitleBlocklistEntry>> {
+        self.subtitle_downloads
+            .list_blocklist_for_media_file(media_file_id)
+            .await
+    }
+
+    async fn insert(&self, download: &scryer_domain::SubtitleDownload) -> AppResult<()> {
+        self.subtitle_downloads.insert(download).await
+    }
+
+    async fn upsert_probe_cache_entry(
+        &self,
+        entry: &scryer_application::subtitles::ExternalSubtitleProbeCacheEntry,
+    ) -> AppResult<()> {
+        self.subtitle_downloads
+            .upsert_probe_cache_entry(entry)
+            .await
+    }
+
+    async fn set_synced(&self, id: &str, synced: bool) -> AppResult<()> {
+        self.subtitle_downloads.set_synced(id, synced).await
+    }
+
+    async fn delete(&self, id: &str) -> AppResult<Option<scryer_domain::SubtitleDownload>> {
+        self.subtitle_downloads.delete(id).await
+    }
+
+    async fn delete_probe_cache_entry(
+        &self,
+        media_file_id: &str,
+        file_path: &str,
+    ) -> AppResult<()> {
+        self.subtitle_downloads
+            .delete_probe_cache_entry(media_file_id, file_path)
+            .await
+    }
+
+    async fn is_blocklisted(
+        &self,
+        media_file_id: &str,
+        provider: &str,
+        provider_file_id: &str,
+    ) -> AppResult<bool> {
+        self.subtitle_downloads
+            .is_blocklisted(media_file_id, provider, provider_file_id)
+            .await
+    }
+
+    async fn blocklist(
+        &self,
+        media_file_id: &str,
+        provider: &str,
+        provider_file_id: &str,
+        language: &str,
+        reason: Option<&str>,
+    ) -> AppResult<()> {
+        self.subtitle_downloads
+            .blocklist(media_file_id, provider, provider_file_id, language, reason)
+            .await
+    }
 }
 
 pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
@@ -72,6 +575,10 @@ impl TestContext {
         let db = SqliteServices::new(":memory:")
             .await
             .expect("failed to create in-memory SQLite");
+        let app_data_dir = tempfile::Builder::new()
+            .prefix("scryer-test-data-")
+            .tempdir_in("/tmp")
+            .expect("failed to create app data tempdir");
         let staged_nzb_dir = tempfile::TempDir::new().expect("failed to create staged nzb tempdir");
         let staged_nzb_store = Arc::new(
             FileSystemStagedNzbStore::new(staged_nzb_dir.path())
@@ -79,8 +586,13 @@ impl TestContext {
                 .expect("failed to create staged nzb store"),
         );
         let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
-        let release_store = Arc::new(SqliteReleaseStore::new(&db));
-        let settings_store = Arc::new(SqliteSettingsStore::new(&db));
+        let datastore = db.datastore();
+        let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+        let settings_store = Arc::new(SettingsStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
 
         // Real clients pointed at wiremock URLs
         let nzbget = NzbgetDownloadClient::with_staged_nzb_store(
@@ -92,7 +604,14 @@ impl TestContext {
             staged_nzb_pipeline_limit.clone(),
         );
 
-        let config_store = Arc::new(SqliteConfigStore::new(&db));
+        let indexer_config_store = Arc::new(IndexerConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
+        let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
 
         // Build indexer client backed by built-in WASM plugins (using DynamicPluginProvider
         // so reload_plugins works in integration tests)
@@ -106,7 +625,7 @@ impl TestContext {
             scryer_infrastructure::InMemoryIndexerStatsTracker::new(None),
         );
         let indexer_client = MultiIndexerSearchClient::new(
-            config_store.clone(),
+            indexer_config_store.clone(),
             indexer_stats.clone(),
             plugin_provider.clone(),
         );
@@ -122,22 +641,50 @@ impl TestContext {
         );
 
         // Build repository implementations from the shared DB runtime.
-        let catalog_store = SqliteCatalogStore::new(&db);
-        let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(catalog_store.clone());
-        let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(catalog_store.clone());
-        let users: Arc<dyn scryer_application::UserRepository> = Arc::new(catalog_store.clone());
+        let title_store = TitleStore::new(datastore.clone());
+        let show_store = ShowStore::new(datastore.clone());
+        let library_store = LibraryStore::new(datastore.clone());
+        let user_store = UserStore::new(datastore.clone());
+        let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(title_store.clone());
+        let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(show_store.clone());
+        let users: Arc<dyn scryer_application::UserRepository> = Arc::new(user_store.clone());
         let indexer_configs: Arc<dyn scryer_application::IndexerConfigRepository> =
-            config_store.clone();
+            indexer_config_store;
         let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
-            config_store.clone();
+            download_client_config_store;
         let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
         let settings: Arc<dyn scryer_application::SettingsRepository> = settings_store.clone();
         let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
-            settings_store.clone();
+            quality_profile_store.clone();
 
-        let library_state_store = SqliteLibraryStateStore::new(&db);
-        let customization_store = SqliteCustomizationStore::new(&db);
-        let workflow_store = Arc::new(scryer_infrastructure::SqliteWorkflowStore::new(&db));
+        let library_probe_store = LibraryProbeStore::new(datastore.clone());
+        let wanted_store = WantedStore::new(datastore.clone());
+        let pending_release_store = PendingReleaseStore::new(datastore.clone());
+        let blocklist_store = scryer_infrastructure::BlocklistStore::new(datastore.clone());
+        let housekeeping_store = HousekeepingStore::new(datastore.clone());
+        let subtitle_download_store = SubtitleDownloadStore::new(datastore.clone());
+        let library_state_store = TestLibraryStateStore {
+            wanted: wanted_store.clone(),
+            pending_releases: pending_release_store.clone(),
+            blocklist: blocklist_store.clone(),
+            housekeeping: housekeeping_store.clone(),
+            subtitle_downloads: subtitle_download_store.clone(),
+        };
+        let library_scan_unmatched_store = LibraryScanUnmatchedStore::new(datastore.clone());
+        let media_file_store = MediaFileStore::new(datastore.clone());
+        let title_image_store = TitleImageStore::new(datastore.clone());
+        let rule_set_store = RuleSetStore::new(datastore.clone());
+        let post_processing_script_store = PostProcessingScriptStore::new(datastore.clone());
+        let plugin_store = PluginStore::new(datastore.clone());
+        let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
+        let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+        let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
+        let import_store = Arc::new(ImportStore::new(datastore.clone()));
+        let external_import_monitor_store =
+            Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let download_queue_command_store =
+            Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
+        let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
         let services = AppServices::builder(
             titles,
             shows,
@@ -149,18 +696,29 @@ impl TestContext {
             release_attempts,
             settings,
             quality_profiles,
-            ":memory:".to_string(),
+            app_data_dir.path().display().to_string(),
         )
-        .with_library_state_store(Arc::new(library_state_store.clone()))
-        .with_libraries(Arc::new(catalog_store.clone()))
-        .with_customization_store(Arc::new(customization_store.clone()))
-        .with_acquisition_state(workflow_store.clone())
-        .with_domain_events(workflow_store.clone())
-        .with_download_queue_commands(workflow_store.clone())
-        .with_download_submissions(workflow_store.clone())
-        .with_import_artifacts(workflow_store.clone())
-        .with_imports(workflow_store.clone())
-        .with_job_runs(workflow_store.clone())
+        .with_media_files(Arc::new(media_file_store.clone()))
+        .with_wanted_items(Arc::new(wanted_store))
+        .with_pending_releases(Arc::new(pending_release_store))
+        .with_blocklist_repo(Arc::new(blocklist_store))
+        .with_library_probe_signatures(Arc::new(library_probe_store.clone()))
+        .with_library_scan_unmatched_items(Arc::new(library_scan_unmatched_store.clone()))
+        .with_title_images(Arc::new(title_image_store))
+        .with_housekeeping(Arc::new(housekeeping_store))
+        .with_subtitle_downloads(Arc::new(subtitle_download_store))
+        .with_libraries(Arc::new(library_store.clone()))
+        .with_rule_set_store(Arc::new(rule_set_store))
+        .with_post_processing_script_store(Arc::new(post_processing_script_store))
+        .with_plugin_installation_store(Arc::new(plugin_store.clone()))
+        .with_acquisition_state(acquisition_store)
+        .with_domain_events(domain_event_store)
+        .with_download_queue_commands(download_queue_command_store)
+        .with_download_submissions(download_submission_store)
+        .with_external_import_monitor_snapshots(external_import_monitor_store)
+        .with_import_artifacts(import_store.clone())
+        .with_imports(import_store)
+        .with_job_runs(workflow_operation_store.clone())
         .with_system_info(settings_store.clone())
         .with_metadata_gateway(Arc::new(metadata_gateway))
         .with_library_scanner(Arc::new(FileSystemLibraryScanner::new()))
@@ -168,7 +726,7 @@ impl TestContext {
         .with_plugin_provider(plugin_provider)
         .with_staged_nzb_store(staged_nzb_store.clone())
         .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
-        .with_workflow_operations(workflow_store)
+        .with_workflow_operations(workflow_operation_store)
         .build();
 
         // Facet registry with all built-in facets
@@ -218,11 +776,18 @@ impl TestContext {
             schema,
             auth_runtime,
             app,
-            catalog: catalog_store,
-            customization: customization_store,
+            titles: title_store,
+            shows: show_store,
+            libraries: library_store,
+            users: user_store,
+            customization: plugin_store,
+            library_probe: library_probe_store,
             library_state: library_state_store,
+            library_scan_unmatched: library_scan_unmatched_store,
+            media_files: media_file_store,
             db,
-            settings_store: settings_store.as_ref().clone(),
+            settings_store,
+            app_data_dir,
             staged_nzb_store,
             staged_nzb_dir,
         }
@@ -235,6 +800,7 @@ impl TestContext {
 
     /// Build a reqwest client suitable for hitting the test server.
     pub fn http_client(&self) -> reqwest::Client {
+        scryer_outbound_http::install_default_rustls_provider();
         reqwest::Client::builder()
             .build()
             .expect("failed to build reqwest client")

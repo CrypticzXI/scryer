@@ -21,7 +21,7 @@ The backend is authoritative. The web app is a projection client, not a second s
 Scryer is intentionally:
 
 - a single deployable binary
-- SQLite-backed
+- datastore-backed, with SQLite as the default engine and PostgreSQL as a first-class BYO engine
 - GraphQL-first
 - event-driven internally
 - plugin-extensible at specific boundaries
@@ -92,7 +92,7 @@ scryer-domain         (types only)
      ^
 scryer-application    (business logic, ports)
      ^
-scryer-infrastructure (SQLite, HTTP, WASM implementations)
+scryer-infrastructure (datastore engines, HTTP, WASM implementations)
      ^
 scryer-interface      (GraphQL boundary)
      ^
@@ -151,23 +151,26 @@ We do not expose raw tables, ad hoc status strings, plugin internals, or SQLite 
 
 The public model should reflect how people think about wanted titles, releases, imports, library items, jobs, notifications, and settings, not how the storage happens to be laid out.
 
-### 6. Single-Node SQLite Runtime Is Deliberate
+### 6. Datastore Support Is Dual-Engine By Default
 
-Scryer is SQLite-first by design.
+Scryer's application boundary is datastore-engine neutral.
 
-This is not a placeholder for a future distributed architecture. It is the deliberate operating model for the product.
+SQLite remains the default local and self-hosted engine. PostgreSQL is a first-class BYO engine. This is still a single-node product architecture, not permission to add Redis, external queues, or unrelated persistence systems. Any change that touches durable datastore behavior must implement and verify both engines in the same work unless the change is explicitly engine-local operational behavior.
 
 That means:
 
-- all state lives in SQLite
-- we do not add Redis, external queues, or alternate persistence systems
-- production SQLite writes go through one serialized writer path
-- reads stay direct on the pool
-- write contention is handled by the writer deadline/retry policy rather than ad hoc per-store behavior
-- backup, restore, upgrade, and portability matter
-- operational simplicity matters
+- application and domain code must not import engine-specific pools, rows, paths, URLs, services, stores, or maintenance methods
+- new repository methods, schema columns, seed data, migrations, backup catalog entries, restore behavior, derived-state rebuilds, and search projection changes need SQLite and PostgreSQL treatment
+- engine-specific SQL belongs under the engine implementation namespace; shared Rust mapping logic may be shared only when the logical behavior is identical
+- SQLite keeps its serialized writer, busy retry/deadline policy, WAL behavior, and `spellfix` search support
+- PostgreSQL uses pooled connections, explicit transactions for multi-step mutation units, and no required extensions
+- migration steps must declare explicit treatment for both engines, including deliberate no-op treatment when one engine does not need a step
+- logical JSON remains an application value, but storage/query details are engine-local: SQLite stores JSON as text and PostgreSQL stores logical JSON as `JSONB`
+- backup bundles are the engine-neutral interchange format; import/export code must preserve all supported SQLite and PostgreSQL restore paths
 
-The database is part of the product's reliability story, not an implementation detail to ignore.
+If a datastore-affecting change cannot be implemented for both engines, stop and narrow the feature, add an explicit guarded engine-local exception, or split the work. Do not silently land a normal runtime path that only works on one engine.
+
+The datastore is part of the product's reliability story, not an implementation detail to ignore.
 
 ### 7. Memory Must Be Bounded
 
@@ -547,10 +550,12 @@ Implements application ports and external integrations.
 
 Responsibilities:
 
-- smaller SQLite store implementations grouped by concern
-- shared SQLite runtime through `DbRuntime` / `SqliteServices`
-- one canonical serialized SQLite writer through `DbRuntime` / `DbCommand`
-- read-query modules
+- engine-specific datastore implementations grouped by concern under explicit engine namespaces
+- shared datastore assembly that hides concrete engines from the application and binary crates
+- SQLite runtime support through `SqliteServices`, `StoreDatastore`, and the shared SQL runtime
+- one canonical serialized SQLite writer gate owned by `SqliteServices`
+- PostgreSQL runtime support through `PgPool`-backed services and explicit transactions
+- engine-specific read-query modules
 - download client integrations
 - metadata gateway integration
 - multi-indexer orchestration
@@ -558,15 +563,18 @@ Responsibilities:
 
 Persistence rules:
 
-- reads query the pool directly through the store/query modules
+- application code talks to repository ports and datastore info/backup ports, not concrete engine types
+- SQLite reads query the pool directly through the store/query modules
 - production SQLite mutations are sent through the serialized writer, not executed directly from stores
-- stores may keep both `db` and `pool`, but `pool` is for reads and inspections while `db` owns writes
-- the writer is the only place that applies SQLite busy retry/deadline policy for serialized commands
-- batch and maintenance writes remain single commands on the writer rather than hand-rolled loops from callers
+- SQLite stores may keep both `db` and `pool`, but `pool` is for reads and inspections while `db` owns writes
+- the SQLite writer is the only place that applies busy retry/deadline policy for serialized commands
+- SQLite batch and maintenance writes remain single commands on the writer rather than hand-rolled loops from callers
+- PostgreSQL reads and writes use pooled connections, with explicit transactions around equivalent multi-step mutation units
 - SQL is parameterized and explicit
 - dynamic SQL goes through `QueryBuilder`
-- migrations are embedded and applied at startup
+- migrations are embedded, engine-aware, and applied at startup
 - embedded migration files are append-only and immutable after release; never edit a historical migration in place
+- every new datastore change must include SQLite and PostgreSQL implementation, tests, or an explicit engine-scoped no-op with a guard
 
 ### `scryer-interface`
 
@@ -687,11 +695,13 @@ State flows through:
 
 1. Define the trait in application ports.
 2. Add it to the smallest relevant grouped dependency struct inside `AppServices`.
-3. Implement it in infrastructure.
-4. Add explicit query support.
-5. If the trait mutates SQLite state, route that mutation through `DbRuntime` / `DbCommand` instead of writing directly from the store.
-6. Add testing/null implementations as needed.
-7. Wire the concrete implementation in the binary crate.
+3. Implement it in infrastructure for every first-class datastore engine.
+4. Add explicit query support in the appropriate engine namespace.
+5. If the trait mutates database state, route that mutation through `SqlRuntime::run_in_transaction` so SQLite uses the shared writer gate and PostgreSQL uses an explicit transaction.
+6. If the trait performs a multi-step PostgreSQL mutation, wrap it in an explicit transaction.
+7. Add testing/null implementations as needed.
+8. Add parity coverage proving SQLite and PostgreSQL produce the same logical behavior.
+9. Wire the concrete implementation through the datastore assembly, not by constructing engine stores directly in the binary crate.
 
 ### Adding a New GraphQL Query or Mutation
 

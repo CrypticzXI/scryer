@@ -3,14 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[path = "src/migration_assets.rs"]
+#[path = "src/storage/migrations/assets.rs"]
 mod migration_assets;
-#[path = "src/migration_hook_ids.rs"]
+#[path = "src/storage/migrations/hook_ids.rs"]
 mod migration_hook_ids;
 
 fn main() {
     println!("cargo:rerun-if-changed=src");
-    println!("cargo:rerun-if-changed=src/graphql");
     println!("cargo:rerun-if-changed=build.rs");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -20,13 +19,8 @@ fn main() {
 }
 
 fn validate_graphql_documents(manifest_dir: &Path) {
-    let graphql_dir = manifest_dir.join("src/graphql");
-
-    if !graphql_dir.exists() {
-        return;
-    }
-
-    let mut stack = vec![graphql_dir];
+    let src_dir = manifest_dir.join("src");
+    let mut stack = vec![src_dir];
 
     while let Some(dir) = stack.pop() {
         println!("cargo:rerun-if-changed={}", dir.display());

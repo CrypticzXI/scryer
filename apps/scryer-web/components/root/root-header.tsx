@@ -80,9 +80,25 @@ export const RootHeader = React.memo(function RootHeader({
   const { theme } = useTheme();
   const navigate = useNavigate();
   const { token, user, logout, effectiveFormLoginEnabled } = useAuth();
+  const headerRef = React.useRef<HTMLElement>(null);
   const searchShellRef = React.useRef<HTMLDivElement>(null);
   const searchPanelRef = React.useRef<HTMLDivElement>(null);
+  const lastScrollYRef = React.useRef(0);
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
+  const [mobileHeaderHeight, setMobileHeaderHeight] = React.useState(0);
+  const [isMobileHeaderVisible, setIsMobileHeaderVisible] = React.useState(true);
+  const readPageScrollTop = React.useCallback(() => {
+    if (typeof window === "undefined") {
+      return 0;
+    }
+
+    return Math.max(
+      window.scrollY,
+      document.scrollingElement?.scrollTop ?? 0,
+      document.documentElement?.scrollTop ?? 0,
+      document.body?.scrollTop ?? 0,
+    );
+  }, []);
   const hasAnyMatches =
     catalogSearchResults.length > 0 ||
     FACET_REGISTRY.some((f) => (metadataSearchResults[f.metadataKey] ?? []).length > 0);
@@ -175,11 +191,108 @@ export const RootHeader = React.memo(function RootHeader({
     globalSearchInputRef.current?.focus();
   }, [globalSearchInputRef, setGlobalSearch]);
 
+  React.useEffect(() => {
+    const headerElement = headerRef.current;
+    if (!headerElement) {
+      return;
+    }
+
+    const updateHeaderHeight = () => {
+      const height = headerElement.getBoundingClientRect().height;
+      document.documentElement.style.setProperty("--root-header-height", `${height}px`);
+      setMobileHeaderHeight(isMobile ? height : 0);
+    };
+
+    updateHeaderHeight();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateHeaderHeight);
+      return () => window.removeEventListener("resize", updateHeaderHeight);
+    }
+
+    const resizeObserver = new ResizeObserver(() => updateHeaderHeight());
+    resizeObserver.observe(headerElement);
+    return () => {
+      resizeObserver.disconnect();
+      document.documentElement.style.removeProperty("--root-header-height");
+    };
+  }, [isMobile]);
+
+  React.useEffect(() => {
+    if (!isMobile || accountMenuOpen || isGlobalSearchPanelOpen) {
+      setIsMobileHeaderVisible(true);
+    }
+  }, [accountMenuOpen, isGlobalSearchPanelOpen, isMobile]);
+
+  React.useEffect(() => {
+    if (!isMobile) {
+      return;
+    }
+
+    lastScrollYRef.current = readPageScrollTop();
+    let frameId: number | null = null;
+
+    const updateHeaderVisibility = () => {
+      frameId = null;
+      const nextScrollY = readPageScrollTop();
+      const previousScrollY = lastScrollYRef.current;
+      const delta = nextScrollY - previousScrollY;
+
+      if (Math.abs(delta) < 12) {
+        return;
+      }
+
+      lastScrollYRef.current = nextScrollY;
+
+      if (nextScrollY <= Math.max(mobileHeaderHeight, 24)) {
+        setIsMobileHeaderVisible(true);
+        return;
+      }
+
+      if (accountMenuOpen || isGlobalSearchPanelOpen) {
+        setIsMobileHeaderVisible(true);
+        return;
+      }
+
+      setIsMobileHeaderVisible(delta < 0);
+    };
+
+    const handleScroll = () => {
+      if (frameId !== null) {
+        return;
+      }
+      frameId = window.requestAnimationFrame(updateHeaderVisibility);
+    };
+
+    const scrollTargets = new Set<EventTarget>([window, document]);
+    if (document.scrollingElement) {
+      scrollTargets.add(document.scrollingElement);
+    }
+    for (const target of scrollTargets) {
+      target.addEventListener("scroll", handleScroll, { passive: true });
+    }
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      for (const target of scrollTargets) {
+        target.removeEventListener("scroll", handleScroll);
+      }
+    };
+  }, [
+    accountMenuOpen,
+    isGlobalSearchPanelOpen,
+    isMobile,
+    mobileHeaderHeight,
+    readPageScrollTop,
+  ]);
+
   const renderCatalogSection = React.useCallback(
     (items: import("@/lib/types").TitleRecord[], facet: Facet) => {
       return items.map((title) => {
         const targetView: ViewId = viewFromFacet(facet);
-        const tvdbId = title.externalIds
+        const tvdbId = (title.externalIds ?? [])
           .find((externalId) => externalId.source.toLowerCase() === "tvdb")
           ?.value.trim();
         const posterUrl = selectPosterVariantUrl(title.posterUrl, "w70");
@@ -356,8 +469,13 @@ export const RootHeader = React.memo(function RootHeader({
   return (
     <>
       <header
+        ref={headerRef}
         data-slot="root-header"
-        className="relative sticky top-0 z-50 border-b border-border bg-background/90 pt-safe-comfort px-safe backdrop-blur"
+        className={cn(
+          "relative z-50 border-b border-border bg-background/90 pt-safe-comfort px-safe backdrop-blur transition-transform duration-200 ease-out",
+          isMobile ? "fixed inset-x-0 top-0" : "sticky top-0",
+          !isMobileHeaderVisible && isMobile ? "-translate-y-full" : "translate-y-0",
+        )}
       >
         <RouteCommandPalette
           config={routeCommandPalette}
@@ -525,6 +643,13 @@ export const RootHeader = React.memo(function RootHeader({
           ) : null}
         </div>
       </header>
+      {isMobile ? (
+        <div
+          aria-hidden="true"
+          className="shrink-0 transition-[height] duration-200 ease-out"
+          style={{ height: isMobileHeaderVisible ? mobileHeaderHeight : 0 }}
+        />
+      ) : null}
       {isGlobalSearchPanelOpen && !isMobile ? (
         <div
           className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm"

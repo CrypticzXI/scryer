@@ -99,6 +99,7 @@ export function OverviewControlPanel({
   const t = useTranslate();
   const [expandedPanel, setExpandedPanel] = React.useState<"settings" | "interactive" | null>(null);
   const hasInteractiveSearch = Boolean(interactiveSearchPanel);
+  const showPersistentSearchNotice = Boolean(searchNotice) && expandedPanel !== "interactive";
   const resolvedSearchMonitoredLabel =
     searchMonitoredLabel ?? t("title.searchMonitoredAction");
 
@@ -181,7 +182,7 @@ export function OverviewControlPanel({
           />
         </div>
 
-        {searchNotice ? (
+        {showPersistentSearchNotice ? (
           <div className="border-t border-border bg-card/70 p-4">
             {searchNotice}
           </div>

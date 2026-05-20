@@ -7,13 +7,13 @@ import type { LocaleCode } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import {
+  catalogSearchTitlesQuery,
   globalSearchInitQuery,
   metadataMovieQuery,
   metadataSeriesQuery,
   searchMetadataMultiQuery,
   searchMetadataQuery,
   titlesByExternalIdsQuery,
-  titlesQuery,
 } from "@/lib/graphql/queries";
 import {
   isAbortError,
@@ -87,7 +87,7 @@ function normalizeOrderedLookupValues(values: string[]): string[] {
 }
 
 function titleTvdbIds(title: TitleRecord): string[] {
-  return title.externalIds
+  return (title.externalIds ?? [])
     .filter((externalId) => externalId.source.toLowerCase() === "tvdb")
     .map((externalId) => externalId.value.trim())
     .filter(Boolean);
@@ -141,15 +141,17 @@ function mergeCatalogResults(
 }
 
 function sameExternalIds(
-  previous: ExternalId[],
-  next: ExternalId[],
+  previous: ExternalId[] | null | undefined,
+  next: ExternalId[] | null | undefined,
 ): boolean {
+  const previousIds = previous ?? [];
+  const nextIds = next ?? [];
   return (
-    previous.length === next.length &&
-    previous.every(
+    previousIds.length === nextIds.length &&
+    previousIds.every(
       (item, index) =>
-        item.source === next[index]?.source &&
-        item.value === next[index]?.value,
+        item.source === nextIds[index]?.source &&
+        item.value === nextIds[index]?.value,
     )
   );
 }
@@ -516,7 +518,7 @@ export function useGlobalSearch({
         return title;
       }
 
-      const tvdbId = title.externalIds
+      const tvdbId = (title.externalIds ?? [])
         .find((externalId) => externalId.source.toLowerCase() === "tvdb")
         ?.value.trim();
       if (!tvdbId) {
@@ -670,7 +672,7 @@ export function useGlobalSearch({
       // so the fast catalog query populates immediately while the metadata
       // spinner keeps spinning.
 
-      const catalogPromise = client.query(titlesQuery, {
+      const catalogPromise = client.query(catalogSearchTitlesQuery, {
         query: trimmed,
         facet: null,
       }, { fetch: abortableFetch }).toPromise()

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
-use ring::digest as ring_digest;
+use aws_lc_rs::digest as aws_lc_digest;
 use scryer_domain::{
     Collection, CollectionType, DomainEventPayload, Episode, ImportType, MediaFacet,
     MediaFileRenamedEventData, Title, User,
@@ -17,9 +17,10 @@ use crate::domain_events::{
 };
 use crate::facet_handler::{RenameFacetSettings, rename_facet_settings};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
-    AppError, AppResult, AppUseCase, CollectionUpdate, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
+    AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -377,8 +378,7 @@ impl AppUseCase {
             .workflow
             .imports
             .queue_import_request(
-                "scryer_rename".to_string(),
-                source_ref,
+                DownloadSourceIdentity::new(None, "scryer_rename", source_ref),
                 ImportType::RenameApplyResult.as_str().to_string(),
                 payload_json,
             )
@@ -811,7 +811,7 @@ impl AppUseCase {
                 continue;
             }
 
-            let destination_exists_on_disk = Path::new(&proposed_path).exists();
+            let destination_exists_on_disk = stored_path_to_path_buf(&proposed_path).exists();
 
             let tracked_media_file = if let Some(existing) = media_file_cache.get(&proposed_path) {
                 existing.clone()
@@ -1052,7 +1052,7 @@ pub fn build_rename_plan_fingerprint(
         items,
     ))
     .unwrap_or_default();
-    let hash = ring_digest::digest(&ring_digest::SHA256, &bytes);
+    let hash = aws_lc_digest::digest(&aws_lc_digest::SHA256, &bytes);
     crate::to_hex(hash.as_ref())
 }
 
@@ -1173,7 +1173,7 @@ fn prepare_rename_plan_source(
         )));
     }
 
-    let current_file = PathBuf::from(&current_path);
+    let current_file = stored_path_to_path_buf(&current_path);
     let source_metadata = std::fs::metadata(&current_file).ok();
     let source_size_bytes = source_metadata.as_ref().map(|meta| meta.len());
     let source_mtime_unix_ms = source_metadata
@@ -1225,7 +1225,7 @@ fn resolved_analysis_labels_for_media_file(
 ) -> crate::media::release_labels::ResolvedAnalysisReleaseLabels {
     resolve_release_labels_from_analysis(
         media_file.video_height,
-        media_file.video_codec.as_deref(),
+        media_file.video_codec.as_ref(),
         media_file.audio_codec.as_deref(),
         media_file.audio_profile.as_deref(),
         media_file.audio_channels,
@@ -1255,8 +1255,20 @@ fn resolve_rename_common_metadata(
         .unwrap_or_default();
     let video_codec = analyzed
         .video_codec
-        .or_else(|| media_file.and_then(|file| non_empty_owned(file.video_codec_parsed.clone())))
-        .or_else(|| parsed_current.video_codec.clone())
+        .map(|codec| codec.to_string())
+        .or_else(|| {
+            media_file.and_then(|file| {
+                file.video_codec_parsed
+                    .clone()
+                    .map(|codec| codec.to_string())
+            })
+        })
+        .or_else(|| {
+            parsed_current
+                .video_codec
+                .clone()
+                .map(|codec| codec.to_string())
+        })
         .unwrap_or_default();
     let audio_codec = analyzed
         .audio_codec
@@ -1345,7 +1357,7 @@ fn finalize_rename_plan_item(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let proposed_path_str = parent.join(&rendered).to_string_lossy().to_string();
+    let proposed_path_str = path_to_stored_string(parent.join(&rendered));
 
     if proposed_path_str == source.current_path {
         return source.build_item(

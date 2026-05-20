@@ -23,6 +23,21 @@ const RULE_SET_INITIAL_DRAFT: RuleSetDraft = {
   appliedFacets: [],
 };
 
+type PendingRuleEditorAction =
+  | { type: "create" }
+  | { type: "edit"; record: RuleSetRecord }
+  | { type: "close" }
+  | {
+      type: "template";
+      template: {
+        title: string;
+        description: string;
+        regoSource: string;
+        appliedFacets?: string[];
+      };
+    }
+  | null;
+
 export function SettingsRulesContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -30,16 +45,123 @@ export function SettingsRulesContainer() {
   const [ruleSetRecords, setRuleSetRecords] = useState<RuleSetRecord[]>([]);
   const [mutatingRuleSetId, setMutatingRuleSetId] = useState<string | null>(null);
   const [editingRuleSetId, setEditingRuleSetId] = useState<string | null>(null);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [pendingDeleteRuleSet, setPendingDeleteRuleSet] = useState<RuleSetRecord | null>(null);
+  const [pendingEditorAction, setPendingEditorAction] =
+    useState<PendingRuleEditorAction>(null);
   const [ruleSetDraft, setRuleSetDraft] = useState<RuleSetDraft>(() => ({ ...RULE_SET_INITIAL_DRAFT }));
+  const [ruleSetDraftBaseline, setRuleSetDraftBaseline] = useState<RuleSetDraft>(() => ({
+    ...RULE_SET_INITIAL_DRAFT,
+  }));
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState<RuleValidationResult | null>(null);
 
-  const resetRuleSetDraft = useCallback(() => {
+  const closeRuleSetEditor = useCallback(() => {
+    setIsEditorOpen(false);
     setEditingRuleSetId(null);
     setRuleSetDraft(() => ({ ...RULE_SET_INITIAL_DRAFT }));
+    setRuleSetDraftBaseline(() => ({ ...RULE_SET_INITIAL_DRAFT }));
     setValidationResult(null);
   }, []);
+
+  const isRuleDraftDirty =
+    JSON.stringify(ruleSetDraft) !== JSON.stringify(ruleSetDraftBaseline);
+
+  const openCreateRuleEditor = useCallback(() => {
+    const nextDraft = { ...RULE_SET_INITIAL_DRAFT };
+    setEditingRuleSetId(null);
+    setRuleSetDraft(nextDraft);
+    setRuleSetDraftBaseline(nextDraft);
+    setValidationResult(null);
+    setIsEditorOpen(true);
+  }, []);
+
+  const openEditRuleEditor = useCallback(
+    (record: RuleSetRecord) => {
+      const nextDraft = {
+        name: record.name,
+        description: record.description,
+        regoSource: record.regoSource,
+        enabled: record.enabled,
+        priority: record.priority,
+        appliedFacets: [...record.appliedFacets],
+      };
+      setEditingRuleSetId(record.id);
+      setRuleSetDraft(nextDraft);
+      setRuleSetDraftBaseline(nextDraft);
+      setValidationResult(null);
+      setIsEditorOpen(true);
+      setGlobalStatus(t("status.editingRule", { name: record.name }));
+    },
+    [setGlobalStatus, t],
+  );
+
+  const openTemplateRuleEditor = useCallback(
+    (template: {
+      title: string;
+      description: string;
+      regoSource: string;
+      appliedFacets?: string[];
+    }) => {
+      const nextDraft = {
+        ...RULE_SET_INITIAL_DRAFT,
+        name: template.title.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
+        description: template.description,
+        regoSource: template.regoSource,
+        appliedFacets: template.appliedFacets ?? [],
+      };
+      setEditingRuleSetId(null);
+      setRuleSetDraft(nextDraft);
+      setRuleSetDraftBaseline(nextDraft);
+      setValidationResult(null);
+      setIsEditorOpen(true);
+    },
+    [],
+  );
+
+  const requestCreateRuleEditor = useCallback(() => {
+    if (!isEditorOpen || !isRuleDraftDirty) {
+      openCreateRuleEditor();
+      return;
+    }
+    setPendingEditorAction({ type: "create" });
+  }, [isEditorOpen, isRuleDraftDirty, openCreateRuleEditor]);
+
+  const requestEditRuleSet = useCallback(
+    (record: RuleSetRecord) => {
+      if (!isEditorOpen || !isRuleDraftDirty) {
+        openEditRuleEditor(record);
+        return;
+      }
+      setPendingEditorAction({ type: "edit", record });
+    },
+    [isEditorOpen, isRuleDraftDirty, openEditRuleEditor],
+  );
+
+  const requestCloseRuleEditor = useCallback(() => {
+    if (!isEditorOpen) return;
+    if (!isRuleDraftDirty) {
+      closeRuleSetEditor();
+      return;
+    }
+    setPendingEditorAction({ type: "close" });
+  }, [closeRuleSetEditor, isEditorOpen, isRuleDraftDirty]);
+
+  const requestApplyTemplate = useCallback(
+    (template: {
+      title: string;
+      description: string;
+      regoSource: string;
+      appliedFacets?: string[];
+    }) => {
+      if (!isEditorOpen || !isRuleDraftDirty) {
+        openTemplateRuleEditor(template);
+        return;
+      }
+      setPendingEditorAction({ type: "template", template });
+    },
+    [isEditorOpen, isRuleDraftDirty, openTemplateRuleEditor],
+  );
 
   const refreshRuleSets = useCallback(async () => {
     try {
@@ -103,27 +225,13 @@ export function SettingsRulesContainer() {
         if (error) throw error;
         setGlobalStatus(t("status.ruleCreated"));
       }
-      resetRuleSetDraft();
+      closeRuleSetEditor();
       await refreshRuleSets();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
       setMutatingRuleSetId(null);
     }
-  };
-
-  const editRuleSet = (record: RuleSetRecord) => {
-    setEditingRuleSetId(record.id);
-    setRuleSetDraft({
-      name: record.name,
-      description: record.description,
-      regoSource: record.regoSource,
-      enabled: record.enabled,
-      priority: record.priority,
-      appliedFacets: [...record.appliedFacets],
-    });
-    setValidationResult(null);
-    setGlobalStatus(t("status.editingRule", { name: record.name }));
   };
 
   const deleteRuleSet = async (record: RuleSetRecord) => {
@@ -168,7 +276,7 @@ export function SettingsRulesContainer() {
       setGlobalStatus(t("status.ruleDeleted", { name: record.name }));
       await refreshRuleSets();
       if (editingRuleSetId === record.id) {
-        resetRuleSetDraft();
+        closeRuleSetEditor();
       }
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));
@@ -177,6 +285,26 @@ export function SettingsRulesContainer() {
       setPendingDeleteRuleSet(null);
     }
   };
+
+  const confirmPendingEditorAction = useCallback(() => {
+    if (!pendingEditorAction) return;
+    if (pendingEditorAction.type === "create") {
+      openCreateRuleEditor();
+    } else if (pendingEditorAction.type === "edit") {
+      openEditRuleEditor(pendingEditorAction.record);
+    } else if (pendingEditorAction.type === "template") {
+      openTemplateRuleEditor(pendingEditorAction.template);
+    } else {
+      closeRuleSetEditor();
+    }
+    setPendingEditorAction(null);
+  }, [
+    closeRuleSetEditor,
+    openCreateRuleEditor,
+    openEditRuleEditor,
+    openTemplateRuleEditor,
+    pendingEditorAction,
+  ]);
 
   const validateDraft = async () => {
     if (!ruleSetDraft.regoSource.trim()) return;
@@ -206,19 +334,23 @@ export function SettingsRulesContainer() {
   return (
     <>
       <SettingsRulesSection
+        isEditorOpen={isEditorOpen}
+        editorMode={editingRuleSetId ? "edit" : "create"}
         editingRuleSetId={editingRuleSetId}
         ruleSetDraft={ruleSetDraft}
         setRuleSetDraft={setRuleSetDraft}
         submitRuleSet={submitRuleSet}
         mutatingRuleSetId={mutatingRuleSetId}
-        resetRuleSetDraft={resetRuleSetDraft}
+        resetRuleSetDraft={requestCloseRuleEditor}
+        startCreateRuleSet={requestCreateRuleEditor}
         ruleSetRecords={ruleSetRecords}
-        editRuleSet={editRuleSet}
+        editRuleSet={requestEditRuleSet}
         toggleRuleSetEnabled={toggleRuleSetEnabled}
         deleteRuleSet={deleteRuleSet}
         validateDraft={validateDraft}
         validating={validating}
         validationResult={validationResult}
+        applyTemplate={requestApplyTemplate}
       />
       <ConfirmDialog
         open={pendingDeleteRuleSet !== null}
@@ -233,6 +365,24 @@ export function SettingsRulesContainer() {
         isBusy={mutatingRuleSetId !== null}
         onConfirm={confirmDeleteRuleSet}
         onCancel={() => setPendingDeleteRuleSet(null)}
+      />
+      <ConfirmDialog
+        open={pendingEditorAction !== null}
+        title={t("settings.ruleConfirmDiscardTitle")}
+        description={t("settings.ruleConfirmDiscardDescription")}
+        confirmLabel={
+          pendingEditorAction?.type === "create"
+            ? t("settings.ruleCreateNew")
+            : pendingEditorAction?.type === "template"
+              ? t("settings.ruleApplyTemplate")
+              : pendingEditorAction?.type === "edit"
+                ? t("label.edit")
+                : t("label.discard")
+        }
+        cancelLabel={t("label.cancel")}
+        isBusy={mutatingRuleSetId !== null}
+        onConfirm={confirmPendingEditorAction}
+        onCancel={() => setPendingEditorAction(null)}
       />
     </>
   );

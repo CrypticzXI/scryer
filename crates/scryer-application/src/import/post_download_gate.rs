@@ -94,7 +94,10 @@ pub(crate) fn build_media_file_analysis(
     );
 
     crate::MediaFileAnalysis {
-        video_codec: analysis.video_codec.clone(),
+        video_codec: analysis
+            .video_codec
+            .as_deref()
+            .and_then(crate::release_parser::VideoCodec::parse),
         video_width: analysis.video_width,
         video_height: analysis.video_height,
         video_bitrate_kbps: analysis.video_bitrate_kbps,
@@ -144,6 +147,97 @@ pub(crate) fn build_media_file_analysis(
     }
 }
 
+pub(crate) fn build_stream_pointer_media_file_analysis() -> crate::MediaFileAnalysis {
+    crate::MediaFileAnalysis {
+        video_codec: None,
+        video_width: None,
+        video_height: None,
+        video_bitrate_kbps: None,
+        video_bit_depth: None,
+        video_hdr_format: None,
+        video_frame_rate: None,
+        video_profile: None,
+        audio_codec: None,
+        audio_profile: None,
+        audio_channels: None,
+        audio_bitrate_kbps: None,
+        audio_languages: Vec::new(),
+        audio_streams: Vec::new(),
+        subtitle_languages: Vec::new(),
+        subtitle_codecs: Vec::new(),
+        subtitle_streams: Vec::new(),
+        has_multiaudio: false,
+        duration_seconds: None,
+        num_chapters: None,
+        container_format: Some("strm".to_string()),
+    }
+}
+
+fn build_synthetic_media_file_analysis(
+    parsed: &crate::ParsedReleaseMetadata,
+    container_format: Option<String>,
+) -> crate::MediaFileAnalysis {
+    let (video_width, video_height) = infer_video_dimensions(parsed.quality.as_deref());
+
+    crate::MediaFileAnalysis {
+        video_codec: None,
+        video_width,
+        video_height,
+        video_bitrate_kbps: None,
+        video_bit_depth: None,
+        video_hdr_format: None,
+        video_frame_rate: None,
+        video_profile: None,
+        audio_codec: None,
+        audio_profile: None,
+        audio_channels: None,
+        audio_bitrate_kbps: None,
+        audio_languages: Vec::new(),
+        audio_streams: Vec::new(),
+        subtitle_languages: Vec::new(),
+        subtitle_codecs: Vec::new(),
+        subtitle_streams: Vec::new(),
+        has_multiaudio: false,
+        duration_seconds: None,
+        num_chapters: None,
+        container_format,
+    }
+}
+
+fn build_stream_pointer_media_file_analysis_from_parsed(
+    parsed: &crate::ParsedReleaseMetadata,
+) -> crate::MediaFileAnalysis {
+    build_synthetic_media_file_analysis(parsed, Some("strm".to_string()))
+}
+
+fn infer_video_dimensions(quality: Option<&str>) -> (Option<i32>, Option<i32>) {
+    match quality
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("2160p") => (Some(3840), Some(2160)),
+        Some("1080p") => (Some(1920), Some(1080)),
+        Some("720p") => (Some(1280), Some(720)),
+        Some("480p") => (Some(854), Some(480)),
+        _ => (None, None),
+    }
+}
+
+fn inferred_container_format_for_path(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| ext.to_ascii_lowercase())
+}
+
+fn path_is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
 /// Probe a file at the given path and validate it against the quality profile and user rules.
 /// The file does NOT need to be at its final destination — this can probe a file in-place
 /// at its download location before any move/copy.
@@ -162,12 +256,29 @@ pub(crate) async fn probe_and_validate(
     existing_score: Option<i32>,
     is_filler: bool,
 ) -> ImportedFileGateDecision {
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("strm"))
+    {
+        return ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
+            analysis: Some(build_stream_pointer_media_file_analysis_from_parsed(parsed)),
+            scan_error: None,
+        }));
+    }
+
     let analysis = match scryer_mediainfo::analyze_file(path) {
         Ok(analysis) => analysis,
         Err(error) => {
             warn!(error = %error, path = %path.display(), "media analysis failed");
+            let synthetic_analysis = path_is_symlink(path).then(|| {
+                build_synthetic_media_file_analysis(
+                    parsed,
+                    inferred_container_format_for_path(path),
+                )
+            });
             return ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
-                analysis: None,
+                analysis: synthetic_analysis,
                 scan_error: Some(error.to_string()),
             }));
         }
@@ -272,6 +383,7 @@ pub(crate) async fn probe_and_validate(
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: None,
             },
@@ -401,7 +513,7 @@ pub(crate) fn rescore_from_mediainfo(
     let mut changes = Vec::new();
     let resolved = resolve_release_labels_from_analysis(
         analysis.video_height,
-        analysis.video_codec.as_deref(),
+        analysis.video_codec.as_ref(),
         analysis.audio_codec.as_deref(),
         analysis.audio_profile.as_deref(),
         analysis.audio_channels,
@@ -422,14 +534,20 @@ pub(crate) fn rescore_from_mediainfo(
 
     // Override video codec (map mediainfo names → release parser names)
     if let Some(ref normalized) = resolved.video_codec
-        && merged.video_codec.as_deref() != Some(normalized.as_str())
+        && let Some(parsed_codec) = crate::release_parser::VideoCodec::parse(normalized.as_str())
+        && merged.video_codec.as_ref() != Some(&parsed_codec)
     {
         changes.push(format!(
             "video_codec: {} → {}",
-            merged.video_codec.as_deref().unwrap_or("?"),
+            merged
+                .video_codec
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref()
+                .unwrap_or("?"),
             normalized
         ));
-        merged.video_codec = Some(normalized.clone());
+        merged.video_codec = Some(parsed_codec);
     }
 
     if analysis.video_bit_depth.unwrap_or_default() >= 10 && !merged.is_10bit {

@@ -182,6 +182,12 @@ impl AppUseCase {
             }
         }
 
+        self.services
+            .workflow
+            .housekeeping
+            .run_database_maintenance()
+            .await?;
+
         let report = HousekeepingReport {
             orphaned_media_files,
             stale_release_decisions,

@@ -43,6 +43,13 @@ export type SecuritySettings = {
   envOverrideDescription: string | null;
 };
 
+export type AutoBackupSettings = {
+  enabled: boolean;
+  dailyTimeLocal: string;
+  autoBackupKeyPresent: boolean;
+  nextRunAt: string | null;
+};
+
 export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;

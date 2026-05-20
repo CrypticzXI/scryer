@@ -13,8 +13,8 @@ scryer-outbound-http = { path = "../scryer-outbound-http" }
 jsonwebtoken = { workspace = true }
 rand_core = { workspace = true }
 argon2 = { workspace = true }
-ring = { workspace = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls", "http2", "gzip", "brotli", "zstd", "deflate"] }
+aws-lc-rs = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider", "http2", "gzip", "brotli", "zstd", "deflate"] }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,7 +26,7 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 semver = { workspace = true }
 metrics = { workspace = true }
-weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.3.2" }
+weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.4.3", default-features = false }
 sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 tar = "0.4"
@@ -54,4 +54,5 @@ url = "2"
 libc = "0.2"
 
 [dev-dependencies]
+criterion.workspace = true
 wiremock = { workspace = true }

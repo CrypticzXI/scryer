@@ -70,6 +70,66 @@ Scryer ships as a single Rust binary with:
     └──────────┘         └────────────┘
 ```
 
+## Docker
+
+Scryer publishes a first-party container image:
+
+- `ghcr.io/scryer-media/scryer:latest` auto-selects the best embedded Linux payload for the host CPU while keeping portable plus optimized Linux payloads in one image
+- `ghcr.io/scryer-media/scryer:<minor>-latest` tracks a stable release line without moving to the next breaking branch, for example `15-latest` for the `0.15.x` line
+- `ghcr.io/scryer-media/scryer:pr-<number>-rc` and `ghcr.io/scryer-media/scryer:pr-<number>-<shortsha>` are PR candidate images; they never move `latest`
+
+The Docker contract is intentionally small:
+
+- Persist app data in `/config`
+- Use `PUID` / `PGID` when you want the container to re-own `/config` and then drop privileges
+- `TZ` defaults to `Etc/UTC`
+- `UMASK` is optional and accepts standard octal values such as `022`
+- `--user=1000:1000` and `--read-only=true` are both supported
+
+### docker-compose
+
+```yaml
+services:
+  scryer:
+    image: ghcr.io/scryer-media/scryer:latest
+    container_name: scryer
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - UMASK=022 # optional
+      - SCRYER_METADATA_GATEWAY_GRAPHQL_URL=https://smg.scryer.media/graphql
+    volumes:
+      - /path/to/scryer/config:/config
+      - /path/to/your/movies:/data/movies
+      - /path/to/your/series:/data/series
+    ports:
+      - 8080:8080
+    restart: unless-stopped
+```
+
+### docker run
+
+```bash
+docker run -d \
+  --name=scryer \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TZ=Etc/UTC \
+  -e UMASK=022 \
+  -e SCRYER_METADATA_GATEWAY_GRAPHQL_URL=https://smg.scryer.media/graphql \
+  -p 8080:8080 \
+  -v /path/to/scryer/config:/config \
+  -v /path/to/your/movies:/data/movies \
+  -v /path/to/your/series:/data/series \
+  --restart unless-stopped \
+  ghcr.io/scryer-media/scryer:latest
+```
+
+If you run the container as root, the entrypoint will re-own `/config` to `PUID` / `PGID` and then drop privileges before starting `scryer`. If you run with `--user=1000:1000`, make sure the bind mount is already owned by that uid/gid because the ownership repair path is skipped in non-root mode.
+
+For hardened deployments, `scryer` supports `--read-only=true` as long as `/config` remains writable.
+
 ## Development
 
 - [Contributors guide](CONTRIBUTORS.md)

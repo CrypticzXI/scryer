@@ -1,3 +1,5 @@
+import type { DownloadClientRoutingEntry } from "./download-clients";
+
 export type Facet = "movie" | "series" | "anime";
 
 export type ExternalId = {
@@ -20,7 +22,7 @@ export type TitleRecord = {
   sortTitle?: string | null;
   slug?: string | null;
   imdbId?: string | null;
-  externalIds: ExternalId[];
+  externalIds?: ExternalId[] | null;
   qualityTier?: string | null;
   currentQualityTier?: string | null;
   sizeBytes?: number | null;
@@ -97,7 +99,7 @@ export type LibrarySettingsRecord = {
   plexmatchWriteOnImportOverride: boolean | null;
   plexmatchWriteOnImport: boolean | null;
   indexerRoutingOverride: unknown[] | null;
-  downloadClientRoutingOverride: unknown[] | null;
+  downloadClientRoutingOverride: DownloadClientRoutingEntry[] | null;
 };
 
 export type LibrarySettingsDraft = {
@@ -112,7 +114,7 @@ export type LibrarySettingsDraft = {
   nfoWriteOnImport: boolean | null;
   plexmatchWriteOnImport: boolean | null;
   indexerRouting?: unknown[] | null;
-  downloadClientRouting?: unknown[] | null;
+  downloadClientRouting?: DownloadClientRoutingEntry[] | null;
 };
 
 export type LibraryScanSummary = {

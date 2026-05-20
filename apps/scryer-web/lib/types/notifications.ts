@@ -54,4 +54,6 @@ export type NotificationProviderType = {
   name: string;
   defaultBaseUrl: string | null;
   configFields: ConfigFieldDef[];
+  supportedEvents: string[];
+  supportsTest: boolean;
 };

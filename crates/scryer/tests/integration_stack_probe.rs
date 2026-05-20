@@ -148,7 +148,7 @@ async fn run_iron_vale_stack_probe() {
     wait_for_library_scan_sessions_to_clear(&ctx).await;
 
     let titles = ctx
-        .catalog
+        .titles
         .list(Some(MediaFacet::Anime), None)
         .await
         .expect("list anime titles after stack probe");
@@ -172,7 +172,7 @@ async fn run_iron_vale_stack_probe() {
         .expect("post-hydration title scan should succeed");
 
     let collections = ctx
-        .catalog
+        .shows
         .list_collections_for_title(&titles[0].id)
         .await
         .expect("list anime collections after stack probe");
@@ -185,7 +185,7 @@ async fn run_iron_vale_stack_probe() {
     );
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&titles[0].id)
         .await
         .expect("list anime media files after stack probe");
@@ -542,7 +542,7 @@ async fn wait_for_iron_vale_scan_to_settle(
         .unwrap_or_else(Instant::now);
     loop {
         let titles = ctx
-            .catalog
+            .titles
             .list(Some(MediaFacet::Anime), None)
             .await
             .expect("list anime titles while waiting for stack probe scan");
@@ -555,7 +555,7 @@ async fn wait_for_iron_vale_scan_to_settle(
         if last_log.elapsed() >= Duration::from_secs(1) {
             if let Some(title) = title.as_ref() {
                 let media_files = ctx
-                    .library_state
+                    .media_files
                     .list_media_files_for_title(&title.id)
                     .await
                     .expect("list media files while logging stack probe wait state");
@@ -590,12 +590,12 @@ async fn wait_for_iron_vale_scan_to_settle(
             && let Some(metadata_fetched_at) = title.metadata_fetched_at
         {
             let collections = ctx
-                .catalog
+                .shows
                 .list_collections_for_title(&title.id)
                 .await
                 .expect("list collections while waiting for stack probe scan");
             let media_files = ctx
-                .library_state
+                .media_files
                 .list_media_files_for_title(&title.id)
                 .await
                 .expect("list media files while waiting for stack probe scan");

@@ -355,6 +355,40 @@ const zh_CN: LocaleDictionary = {
     "从下载客户端历史中移除失败的下载。",
   "settings.downloadClientEnabledInfo":
     "禁用后，此客户端在下载路由中将被跳过。",
+  "settings.downloadClientRemotePathMappings": "远程路径映射",
+  "settings.downloadClientRemotePathMappingsHelp":
+    "将下载客户端在其容器或主机内报告的路径映射到 Scryer 可读取的本地路径。每行输入一条规则，格式为 REMOTE => LOCAL。",
+  "settings.downloadClientEnabledLabel": "Enable download client",
+  "settings.downloadClientFilesystemPathMapping":
+    "Filesystem Path Mapping (Advanced)",
+  "settings.downloadClientFilesystemPathMappingHelp":
+    "Remote path mappings are rarely needed. Use them only when Scryer and this download client see the same download folder at different filesystem paths.",
+  "settings.downloadClientRemotePathMappingsRemoteLabel": "Remote Path",
+  "settings.downloadClientRemotePathMappingsRemoteHelp":
+    "Path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsLocalLabel": "Local Path",
+  "settings.downloadClientRemotePathMappingsLocalHelp":
+    "Path Scryer should use on this machine.",
+  "settings.downloadClientRemotePathMappingsAdd": "Add Mapping",
+  "settings.downloadClientRemotePathMappingsEmptyState":
+    "No path mappings configured yet. Add one only if Scryer cannot read the path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsExampleLabel": "Example",
+  "settings.downloadClientRemotePathMappingsRemoteRequired":
+    "Remote Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalRequired":
+    "Local Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalAbsolute":
+    "Local Path must be an absolute path.",
+  "settings.downloadClientRemotePathMappingsRemoteDuplicate":
+    "Remote Path duplicates another mapping in this client.",
+  "settings.downloadClientSabnzbdAuthHelp":
+    "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientSabnzbdNzbdavHelp":
+    "For NzbDav, point SAB-compatible completed downloads at the mounted completed-symlinks path, make sure Scryer can read that mount locally, and add remote path mappings if NzbDav reports a different visible path.",
+  "settings.downloadClientQbittorrentDecypharrHelp":
+    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
+  "settings.downloadClientDecypharrFilesystemHelp":
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr or NzbDav output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "我的下载客户端",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "例如 api",
@@ -910,22 +944,17 @@ const zh_CN: LocaleDictionary = {
   "settings.pp.blocking": "阻塞",
   "settings.pp.fireAndForget": "发射即忘",
   "settings.pp.blockingHelp": "按优先顺序运行。下一个脚本等待此脚本完成。",
-  "settings.pp.fireAndForgetHelp": "在后台运行，不会阻止导入。",
   "settings.pp.executionMode": "执行模式",
   "settings.pp.timeout": "超时（秒）",
   "settings.pp.priority": "优先级",
   "settings.pp.priorityHelp": "数字较小的先运行。",
   "settings.pp.facets": "适用于",
   "settings.pp.debug": "捕获脚本输出",
-  "settings.pp.debugHelp":
-    "启用后，每次运行都会保存 stdout 和 stderr。对于故障排除很有用。",
   "settings.pp.runHistory": "运行历史",
   "settings.pp.noRuns": "尚未执行死刑。",
   "settings.pp.outputNotCaptured":
     "未捕获输出。对此脚本启用调试模式以查看输出。",
   "settings.pp.envHeading": "环境变量",
-  "settings.pp.envDescription":
-    "脚本在 SCRYER_METADATA 环境变量中接收 JSON 有效负载，其中包含标题、剧集、版本和媒体信息元数据。 SCRYER_FILE_PATH 包含导入的文件路径。",
   "settings.pp.created": "脚本已创建。",
   "settings.pp.updated": "脚本已更新。",
   "settings.pp.deleted": "脚本已删除。",
@@ -1440,6 +1469,10 @@ const zh_CN: LocaleDictionary = {
   "settings.notificationProviderType": "提供者类型",
   "settings.notificationNoProviders":
     "未安装通知插件。请先在插件页面安装通知插件。",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "已抓取发布",
   "settings.notificationEvent.download": "下载失败",
   "settings.notificationEvent.upgrade": "升级进口",

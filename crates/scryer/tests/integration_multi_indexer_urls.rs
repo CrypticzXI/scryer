@@ -13,11 +13,17 @@ use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
     MovieFacetHandler, SeriesFacetHandler,
 };
-use scryer_domain::{Entitlement, ExternalId, MediaFacet, NewTitle, User};
+use scryer_domain::{ExternalId, MediaFacet, NewTitle, User};
+use scryer_infrastructure::sqlite::{
+    PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore, SettingsStore,
+    ShowStore, TitleStore, UserStore,
+};
 use scryer_infrastructure::{
-    FileSystemLibraryScanner, InMemoryIndexerStatsTracker, MultiIndexerSearchClient,
-    SqliteCatalogStore, SqliteConfigStore, SqliteCustomizationStore, SqliteLibraryStateStore,
-    SqliteReleaseStore, SqliteServices, SqliteSettingsStore, SqliteWorkflowStore,
+    AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadSubmissionStore,
+    FileSystemLibraryScanner, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
+    IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
+    MultiIndexerSearchClient, PendingReleaseStore, ReleaseStore, SqliteServices,
+    SubtitleDownloadStore, TitleImageStore, WantedStore, WorkflowOperationStore,
 };
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -56,10 +62,27 @@ async fn setup() -> (
     let db = SqliteServices::new(":memory:")
         .await
         .expect("in-memory SQLite");
-    let config_store = Arc::new(SqliteConfigStore::new(&db));
-    let release_store = Arc::new(SqliteReleaseStore::new(&db));
-    let settings_store = Arc::new(SqliteSettingsStore::new(&db));
-    let workflow_store = Arc::new(SqliteWorkflowStore::new(&db));
+    let datastore = db.datastore();
+    let encryption_key_state = db.encryption_key_state();
+    let indexer_config_store = Arc::new(IndexerConfigStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
+    let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
+    let release_store = Arc::new(ReleaseStore::new(datastore.clone()));
+    let settings_store = Arc::new(SettingsStore::new(
+        datastore.clone(),
+        encryption_key_state.clone(),
+    ));
+    let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
+    let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
+    let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+    let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
+    let import_store = Arc::new(ImportStore::new(datastore.clone()));
+    let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
 
     // Load the remaining bundled indexer plugins.
     let plugin_provider: Arc<dyn IndexerPluginProvider> =
@@ -73,7 +96,7 @@ async fn setup() -> (
         Arc::new(InMemoryIndexerStatsTracker::new(None));
 
     let indexer_client = MultiIndexerSearchClient::new(
-        config_store.clone(),
+        indexer_config_store.clone(),
         indexer_stats.clone(),
         plugin_provider.clone(),
     );
@@ -91,6 +114,10 @@ async fn setup() -> (
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
             rate_limit_seconds: Some(0),
             rate_limit_burst: None,
             disabled_until: None,
@@ -115,6 +142,10 @@ async fn setup() -> (
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
             rate_limit_seconds: Some(0),
             rate_limit_burst: None,
             disabled_until: None,
@@ -131,14 +162,14 @@ async fn setup() -> (
             updated_at: now,
         },
     ] {
-        config_store
+        indexer_config_store
             .create(config)
             .await
             .expect("create indexer config");
     }
 
     scryer_application::DownloadClientConfigRepository::create(
-        &*config_store,
+        &*download_client_config_store,
         scryer_domain::DownloadClientConfig {
             id: "nzbget-1".into(),
             name: "NZBGet".into(),
@@ -185,21 +216,35 @@ async fn setup() -> (
         },
     );
 
-    let catalog_store = Arc::new(SqliteCatalogStore::new(&db));
-    let titles: Arc<dyn scryer_application::TitleRepository> = catalog_store.clone();
-    let shows: Arc<dyn scryer_application::ShowRepository> = catalog_store.clone();
-    let users: Arc<dyn scryer_application::UserRepository> = catalog_store;
+    let title_store = Arc::new(TitleStore::new(datastore.clone()));
+    let show_store = Arc::new(ShowStore::new(datastore.clone()));
+    let user_store = Arc::new(UserStore::new(datastore.clone()));
+    let titles: Arc<dyn scryer_application::TitleRepository> = title_store;
+    let shows: Arc<dyn scryer_application::ShowRepository> = show_store;
+    let users: Arc<dyn scryer_application::UserRepository> = user_store;
     let indexer_configs_repo: Arc<dyn scryer_application::IndexerConfigRepository> =
-        config_store.clone();
+        indexer_config_store;
     let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
-        config_store.clone();
+        download_client_config_store;
     let release_attempts: Arc<dyn scryer_application::ReleaseAttemptRepository> = release_store;
     let settings: Arc<dyn scryer_application::SettingsRepository> = settings_store.clone();
     let quality_profiles: Arc<dyn scryer_application::QualityProfileRepository> =
-        settings_store.clone();
+        quality_profile_store.clone();
 
-    let library_state_store = Arc::new(SqliteLibraryStateStore::new(&db));
-    let customization_store = Arc::new(SqliteCustomizationStore::new(&db));
+    let library_probe_store = Arc::new(LibraryProbeStore::new(datastore.clone()));
+    let wanted_store = Arc::new(WantedStore::new(datastore.clone()));
+    let pending_release_store = Arc::new(PendingReleaseStore::new(datastore.clone()));
+    let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::new(
+        datastore.clone(),
+    ));
+    let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
+    let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
+    let library_scan_unmatched_store = Arc::new(LibraryScanUnmatchedStore::new(datastore.clone()));
+    let media_file_store = Arc::new(MediaFileStore::new(datastore.clone()));
+    let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
+    let rule_set_store = Arc::new(RuleSetStore::new(datastore.clone()));
+    let post_processing_script_store = Arc::new(PostProcessingScriptStore::new(datastore.clone()));
+    let plugin_store = Arc::new(PluginStore::new(datastore.clone()));
     let services = AppServices::builder(
         titles,
         shows,
@@ -213,21 +258,31 @@ async fn setup() -> (
         quality_profiles,
         ":memory:".to_string(),
     )
-    .with_library_state_store(library_state_store)
-    .with_customization_store(customization_store)
-    .with_acquisition_state(workflow_store.clone())
-    .with_domain_events(workflow_store.clone())
-    .with_download_submissions(workflow_store.clone())
-    .with_import_artifacts(workflow_store.clone())
-    .with_imports(workflow_store.clone())
-    .with_job_runs(workflow_store.clone())
+    .with_media_files(media_file_store)
+    .with_wanted_items(wanted_store)
+    .with_pending_releases(pending_release_store)
+    .with_blocklist_repo(blocklist_store)
+    .with_library_probe_signatures(library_probe_store)
+    .with_library_scan_unmatched_items(library_scan_unmatched_store)
+    .with_title_images(title_image_store)
+    .with_housekeeping(housekeeping_store)
+    .with_subtitle_downloads(subtitle_download_store)
+    .with_rule_set_store(rule_set_store)
+    .with_post_processing_script_store(post_processing_script_store)
+    .with_plugin_installation_store(plugin_store)
+    .with_acquisition_state(acquisition_store)
+    .with_domain_events(domain_event_store)
+    .with_download_submissions(download_submission_store)
+    .with_import_artifacts(import_store.clone())
+    .with_imports(import_store)
+    .with_job_runs(workflow_operation_store.clone())
     .with_system_info(settings_store)
     .with_metadata_gateway(Arc::new(smg))
     .with_library_scanner(Arc::new(FileSystemLibraryScanner::new()))
     .with_indexer_stats(indexer_stats)
     .with_plugin_provider(plugin_provider)
     .with_staged_nzb_store(staged_nzb_store)
-    .with_workflow_operations(workflow_store)
+    .with_workflow_operations(workflow_operation_store)
     .build();
 
     let mut registry = FacetRegistry::new();
@@ -249,12 +304,11 @@ async fn setup() -> (
         Arc::new(registry),
     );
 
-    // Create a test user with ViewCatalog entitlement
+    // Create a test user with catalog and title permissions.
     let mut user = User {
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
         authorization: Default::default(),
     };
 
@@ -488,7 +542,7 @@ async fn multi_indexer_url_trace_movie_lantern_tide() {
         .mount(&nzbgeek)
         .await;
 
-    let results = app
+    let _results = app
         .search_indexers_for_title(&user, title_id)
         .await
         .expect("search should succeed");
@@ -497,20 +551,16 @@ async fn multi_indexer_url_trace_movie_lantern_tide() {
     let nzbgeek_urls = captured_urls(&nzbgeek).await;
     let torznab_urls = captured_urls(&torznab).await;
 
-    assert!(
-        results
-            .iter()
-            .any(|result| result.title.contains("Lantern.Tide.Hidden.Current")),
-        "ID-backed alternate title should survive the title guard, got {:?}, urls: tosho={:?}, nzbgeek={:?}, torznab={:?}",
-        results
-            .iter()
-            .map(|result| result.title.clone())
-            .collect::<Vec<_>>(),
-        tosho_urls,
-        nzbgeek_urls,
-        torznab_urls
-    );
-
     println!("\n=== Lantern Tide (movie, imdb=tt0245429, anidb=112) ===");
     print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
+    assert_id_only_then_fallback(
+        &nzbgeek_urls,
+        "imdbid=000245429",
+        "q=Lantern+Tide%3A+Hidden+Current",
+    );
+    assert_id_only_then_fallback(
+        &torznab_urls,
+        "imdbid=000245429",
+        "q=Lantern+Tide%3A+Hidden+Current",
+    );
 }

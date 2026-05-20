@@ -377,6 +377,38 @@ const ja: LocaleDictionary = {
     "ダウンロードクライアントの履歴から失敗したダウンロードを削除します。",
   "settings.downloadClientEnabledInfo":
     "無効にすると、ダウンロードルーティングでこのクライアントはスキップされます。",
+  "settings.downloadClientRemotePathMappings": "Remote Path Mappings",
+  "settings.downloadClientRemotePathMappingsHelp":
+    "Map download-client paths reported inside its container or host to local paths Scryer can read. Enter one rule per line as REMOTE => LOCAL.",
+  "settings.downloadClientEnabledLabel": "Enable download client",
+  "settings.downloadClientFilesystemPathMapping":
+    "Filesystem Path Mapping (Advanced)",
+  "settings.downloadClientFilesystemPathMappingHelp":
+    "Remote path mappings are rarely needed. Use them only when Scryer and this download client see the same download folder at different filesystem paths.",
+  "settings.downloadClientRemotePathMappingsRemoteLabel": "Remote Path",
+  "settings.downloadClientRemotePathMappingsRemoteHelp":
+    "Path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsLocalLabel": "Local Path",
+  "settings.downloadClientRemotePathMappingsLocalHelp":
+    "Path Scryer should use on this machine.",
+  "settings.downloadClientRemotePathMappingsAdd": "Add Mapping",
+  "settings.downloadClientRemotePathMappingsEmptyState":
+    "No path mappings configured yet. Add one only if Scryer cannot read the path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsExampleLabel": "Example",
+  "settings.downloadClientRemotePathMappingsRemoteRequired":
+    "Remote Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalRequired":
+    "Local Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalAbsolute":
+    "Local Path must be an absolute path.",
+  "settings.downloadClientRemotePathMappingsRemoteDuplicate":
+    "Remote Path duplicates another mapping in this client.",
+  "settings.downloadClientSabnzbdAuthHelp":
+    "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientQbittorrentDecypharrHelp":
+    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
+  "settings.downloadClientDecypharrFilesystemHelp":
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "マイダウンロードクライアント",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "例: api",
@@ -958,23 +990,17 @@ const ja: LocaleDictionary = {
   "settings.pp.fireAndForget": "ファイア＆フォーゲット",
   "settings.pp.blockingHelp":
     "優先順位に従って実行されます。次のスクリプトは、このスクリプトが完了するまで待機します。",
-  "settings.pp.fireAndForgetHelp":
-    "インポートをブロックせずにバックグラウンドで実行されます。",
   "settings.pp.executionMode": "実行モード",
   "settings.pp.timeout": "タイムアウト (秒)",
   "settings.pp.priority": "優先度",
   "settings.pp.priorityHelp": "小さい番号が最初に実行されます。",
   "settings.pp.facets": "適用対象",
   "settings.pp.debug": "スクリプト出力のキャプチャ",
-  "settings.pp.debugHelp":
-    "有効にすると、実行ごとに stdout と stderr が保存されます。トラブルシューティングに役立ちます。",
   "settings.pp.runHistory": "実行履歴",
   "settings.pp.noRuns": "まだ処刑はされていない。",
   "settings.pp.outputNotCaptured":
     "出力がキャプチャされませんでした。出力を確認するには、このスクリプトでデバッグ モードを有効にします。",
   "settings.pp.envHeading": "環境変数",
-  "settings.pp.envDescription":
-    "スクリプトは、タイトル、エピソード、リリース、メディア情報のメタデータを含む JSON ペイロードを SCRYER_METADATA 環境変数で受け取ります。 SCRYER_FILE_PATH には、インポートされたファイルのパスが含まれます。",
   "settings.pp.created": "スクリプトが作成されました。",
   "settings.pp.updated": "スクリプトが更新されました。",
   "settings.pp.deleted": "スクリプトが削除されました。",
@@ -1535,6 +1561,10 @@ const ja: LocaleDictionary = {
   "settings.notificationProviderType": "プロバイダータイプ",
   "settings.notificationNoProviders":
     "通知プラグインがインストールされていません。先にプラグインページから通知プラグインをインストールしてください。",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "リリース取得",
   "settings.notificationEvent.download": "ダウンロードに失敗しました",
   "settings.notificationEvent.upgrade": "インポートされたアップグレード",

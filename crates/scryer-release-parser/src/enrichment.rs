@@ -1,6 +1,6 @@
 use crate::lex::Token;
 use crate::model::{
-    MetadataEnrichment, ParsedExternalId, ParsedReleaseMetadata, ReleaseParseCandidate,
+    MetadataEnrichment, ParsedExternalId, ParsedReleaseMetadata, ReleaseParseCandidate, VideoCodec,
 };
 
 #[derive(Clone, Copy)]
@@ -324,7 +324,10 @@ pub(crate) fn project_final_metadata(
         projected.video_encoding = enrichment.video_encoding.clone();
     }
     if projected.video_codec.is_none() {
-        projected.video_codec = enrichment.video_codec.clone();
+        projected.video_codec = enrichment
+            .video_codec
+            .as_deref()
+            .and_then(VideoCodec::parse);
     }
     if enrichment.audio.is_some() {
         projected.audio = enrichment.audio.clone();

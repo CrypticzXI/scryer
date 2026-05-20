@@ -20,7 +20,7 @@ pub use model::{
     ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata,
     ParsedSpecialKind, ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate,
     TargetScoredAnalysis, TargetedReleaseParseAnalysis, TitleSegment, TitleSegmentKind,
-    TokenAnnotations, TokenRange, TokenRole,
+    TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
 
 use parse::{AnalysisInputs, analyze_inputs};

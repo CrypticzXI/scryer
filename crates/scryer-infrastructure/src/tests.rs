@@ -1,24 +1,26 @@
 use super::*;
 use chrono::Utc;
 use scryer_application::{
-    CollectionUpdate, DownloadClientConfigRepository, DownloadQueueCommandRepository,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository, EpisodeUpdate,
-    ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
-    NotificationChannelRepository, NotificationSubscriptionRepository, PendingImportStatus,
-    PluginInstallationRepository, ReleaseAttemptRepository, ReleaseDecision,
-    ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository, ShowRepository,
-    SubmissionScope, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
+    CollectionUpdate, DomainEventRepository, DownloadClientConfigRepository,
+    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionRepository, EpisodeUpdate, HousekeepingRepository, ImportRepository,
+    InsertMediaFileInput, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
+    LibraryScanUnmatchedSearchAttempt, MediaFileRepository, NotificationChannelRepository,
+    NotificationSubscriptionRepository, PendingImportStatus, PluginInstallationRepository,
+    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
+    SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
+    SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleImageBlob, TitleImageKind,
     TitleImageReplacement, TitleImageRepository, TitleImageStorageMode, TitleImageVariantRecord,
     TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem, WantedItemRepository,
     WantedItemsQuery, WantedStatus,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
-    ChannelType, Collection, CollectionType, DownloadClientConfig, DownloadClientStatus,
-    Entitlement, Episode, ExternalId, ImportType, InterstitialMovieMetadata, MediaFacet,
+    ChannelType, Collection, CollectionType, DomainEventFilter, DomainEventPayload,
+    DomainEventStream, DownloadClientConfig, DownloadClientStatus, Episode, ExternalId, Id,
+    ImportStatus, ImportType, InterstitialMovieMetadata, MediaFacet, NewDomainEvent,
     NotificationChannelConfig, NotificationEventType, NotificationSubscription,
-    SubtitleProviderConfig, TaggedAlias, Title,
+    SubtitleProviderConfig, TaggedAlias, Title, TitleContextSnapshot, TitleUpdatedEventData,
 };
 use sqlx::{Row, sqlite::SqlitePoolOptions};
 use std::collections::HashSet;
@@ -137,7 +139,7 @@ async fn sqlite_can_initialize() {
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy()).await.unwrap();
-    let users = UserRepository::list_all(&catalog_store(&services))
+    let users = UserRepository::list_all(&user_store(&services))
         .await
         .expect("query should return users after initialization");
 
@@ -148,7 +150,7 @@ async fn sqlite_can_initialize() {
 #[tokio::test]
 async fn seed_builtin_refreshes_existing_builtin_metadata_without_resetting_enabled_state() {
     let (services, db) = temp_services("scryer_plugin_builtin_refresh").await;
-    let customization = SqliteCustomizationStore::new(&services);
+    let customization = PluginStore::new(services.datastore());
 
     customization
         .seed_builtin(
@@ -207,7 +209,7 @@ async fn seed_builtin_refreshes_existing_builtin_metadata_without_resetting_enab
 #[tokio::test]
 async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
     let (services, db) = temp_services("scryer_plugin_builtin_revert").await;
-    let customization = SqliteCustomizationStore::new(&services);
+    let customization = PluginStore::new(services.datastore());
     let now = Utc::now();
     let installation = scryer_domain::PluginInstallation {
         id: scryer_domain::Id::new().0,
@@ -288,7 +290,7 @@ async fn reverting_downloaded_builtin_clears_downloaded_artifact_state() {
 #[tokio::test]
 async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
     let (services, db) = temp_services("scryer_plugin_cleanup_legacy").await;
-    let customization = SqliteCustomizationStore::new(&services);
+    let customization = PluginStore::new(services.datastore());
     let now = Utc::now();
 
     let legacy_external = scryer_domain::PluginInstallation {
@@ -365,7 +367,7 @@ async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
 #[tokio::test]
 async fn legacy_external_rows_are_hidden_and_do_not_block_reinstall() {
     let (services, db) = temp_services("scryer_plugin_reinstall_legacy").await;
-    let customization = SqliteCustomizationStore::new(&services);
+    let customization = PluginStore::new(services.datastore());
     let now = Utc::now();
 
     let legacy_external = scryer_domain::PluginInstallation {
@@ -477,7 +479,7 @@ async fn legacy_external_rows_are_hidden_and_do_not_block_reinstall() {
 #[tokio::test]
 async fn plugin_catalog_source_rows_survive_cleanup() {
     let (services, db) = temp_services("scryer_plugin_catalog_source_shape").await;
-    let customization = SqliteCustomizationStore::new(&services);
+    let customization = PluginStore::new(services.datastore());
     let source = scryer_domain::PluginCatalogSource {
         source_key: "__central_catalog_v2".to_string(),
         source_kind: "central".to_string(),
@@ -534,7 +536,7 @@ async fn plugin_catalog_source_rows_survive_cleanup() {
 #[tokio::test]
 async fn enabled_plugin_payloads_preserve_zstd_encoding() {
     let (services, db) = temp_services("scryer_plugin_payload_encoding").await;
-    let customization = SqliteCustomizationStore::new(&services);
+    let customization = PluginStore::new(services.datastore());
     let now = Utc::now();
     let wasm_bytes = b"hello compressed plugin";
     let compressed = zstd::encode_all(&wasm_bytes[..], 1).expect("compress plugin bytes");
@@ -601,7 +603,7 @@ async fn enabled_plugin_payloads_preserve_zstd_encoding() {
 }
 
 #[tokio::test]
-async fn list_imports_for_sources_handles_multiple_pairs() {
+async fn list_imports_for_identities_handles_multiple_pairs() {
     let db = std::env::temp_dir().join(format!(
         "scryer_import_sources_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -609,12 +611,11 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = SqliteWorkflowStore::new(&services);
+    let workflow = ImportStore::new(services.datastore());
 
     workflow
         .queue_import_request(
-            "weaver".to_string(),
-            "10000".to_string(),
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "10000"),
             ImportType::ManualImport.as_str().to_string(),
             "{}".to_string(),
         )
@@ -622,8 +623,7 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
         .expect("first import should queue");
     workflow
         .queue_import_request(
-            "weaver".to_string(),
-            "10001".to_string(),
+            DownloadSourceIdentity::new(Some("client-b"), "weaver", "10001"),
             ImportType::ManualImport.as_str().to_string(),
             "{}".to_string(),
         )
@@ -631,9 +631,9 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
         .expect("second import should queue");
 
     let records = workflow
-        .list_imports_for_sources(&[
-            ("weaver".to_string(), "10000".to_string()),
-            ("weaver".to_string(), "10001".to_string()),
+        .list_imports_for_identities(&[
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "10000"),
+            DownloadSourceIdentity::new(Some("client-b"), "weaver", "10001"),
         ])
         .await
         .expect("batch lookup should succeed");
@@ -641,6 +641,101 @@ async fn list_imports_for_sources_handles_multiple_pairs() {
     assert_eq!(records.len(), 2);
 
     let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn queue_import_request_reuses_existing_row_for_same_identity() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool should initialize");
+    sqlx::query(
+        "CREATE TABLE imports (
+            id TEXT PRIMARY KEY,
+            source_client_id TEXT,
+            source_system TEXT NOT NULL,
+            source_ref TEXT NOT NULL,
+            import_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            result_json TEXT,
+            rename_plan_json TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("imports table should create");
+    sqlx::query(
+        "CREATE UNIQUE INDEX idx_imports_source_ref
+         ON imports (COALESCE(source_client_id, ''), source_system, source_ref, import_type)",
+    )
+    .execute(&pool)
+    .await
+    .expect("imports identity index should create");
+
+    let workflow = ImportStore::new(crate::queries::sql_runtime::StoreDatastore::Sqlite {
+        pool: pool.clone(),
+        writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+    });
+    let identity = DownloadSourceIdentity::new(Some("client-a"), "weaver", "10000");
+
+    let first_id = workflow
+        .queue_import_request(
+            identity.clone(),
+            ImportType::ManualImport.as_str().to_string(),
+            "{\"attempt\":1}".to_string(),
+        )
+        .await
+        .expect("first import should queue");
+    workflow
+        .update_import_status(
+            &first_id,
+            ImportStatus::Completed,
+            Some("{\"result\":\"done\"}".to_string()),
+        )
+        .await
+        .expect("import status should update");
+
+    let second_id = workflow
+        .queue_import_request(
+            identity,
+            ImportType::ManualImport.as_str().to_string(),
+            "{\"attempt\":2}".to_string(),
+        )
+        .await
+        .expect("second import should requeue");
+
+    assert_eq!(second_id, first_id);
+
+    let record = workflow
+        .get_import_by_id(&second_id)
+        .await
+        .expect("import lookup should succeed")
+        .expect("import should exist");
+    assert_eq!(record.status, ImportStatus::Pending);
+    assert_eq!(record.payload_json, "{\"attempt\":2}");
+    assert_eq!(record.result_json, None);
+
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM imports
+         WHERE COALESCE(source_client_id, '') = ?
+           AND source_system = ?
+           AND source_ref = ?
+           AND import_type = ?",
+    )
+    .bind("client-a")
+    .bind("weaver")
+    .bind("10000")
+    .bind(ImportType::ManualImport.as_str())
+    .fetch_one(&pool)
+    .await
+    .expect("import count should load");
+    assert_eq!(row_count, 1);
 }
 
 #[test]
@@ -651,7 +746,7 @@ fn download_submission_lookup_chunks_and_deduplicates_client_items() {
     client_items.push(DownloadSourceIdentity::new(None, "weaver", "job-12"));
     client_items.push(DownloadSourceIdentity::new(None, "weaver", "job-400"));
 
-    let chunks = crate::queries::workflow::chunk_download_submission_client_items(&client_items);
+    let chunks = crate::workflow_store::chunk_download_submission_client_items(&client_items);
 
     assert_eq!(chunks.len(), 3);
     assert_eq!(chunks[0].len(), 400);
@@ -680,7 +775,7 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = SqliteWorkflowStore::new(&services);
+    let workflow = DownloadSubmissionStore::new(services.datastore());
 
     for idx in 0..805 {
         workflow
@@ -728,7 +823,7 @@ async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = SqliteWorkflowStore::new(&services);
+    let workflow = DownloadSubmissionStore::new(services.datastore());
 
     workflow
         .record_submission(DownloadSubmission {
@@ -775,7 +870,7 @@ async fn record_download_submission_persists_episode_set_scope() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = SqliteWorkflowStore::new(&services);
+    let workflow = DownloadSubmissionStore::new(services.datastore());
 
     workflow
         .record_submission(DownloadSubmission {
@@ -822,7 +917,7 @@ async fn serialized_writer_handles_settings_batch_and_encrypted_upserts() {
         .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([7; 32]))
         .await
         .expect("encryption key should set");
-    let settings = SqliteSettingsStore::new(&services);
+    let settings = SettingsStore::new(services.datastore(), services.encryption_key_state());
 
     settings
         .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
@@ -883,14 +978,14 @@ async fn serialized_writer_handles_settings_batch_and_encrypted_upserts() {
 }
 
 #[tokio::test]
-async fn settings_with_defaults_query_and_tx_paths_match() {
+async fn settings_with_defaults_store_reads_scoped_overrides() {
     let (services, db) = temp_services("scryer_settings_parity").await;
     let encryption_key = crate::encryption::EncryptionKey::from_bytes([11; 32]);
     services
         .set_encryption_key(encryption_key.clone())
         .await
         .expect("encryption key should set");
-    let settings = SqliteSettingsStore::new(&services);
+    let settings = SettingsStore::new(services.datastore(), services.encryption_key_state());
 
     settings
         .batch_ensure_setting_definitions(vec![
@@ -939,28 +1034,10 @@ async fn settings_with_defaults_query_and_tx_paths_match() {
         .await
         .expect("scoped override should succeed");
 
-    let query_rows = crate::queries::settings::list_settings_with_defaults_query(
-        services.pool(),
-        "system",
-        Some("movie".to_string()),
-        Some(&encryption_key),
-    )
-    .await
-    .expect("query path should succeed");
-
-    let mut tx = services
-        .pool()
-        .begin()
+    let query_rows = settings
+        .list_settings_with_defaults("system", Some("movie".to_string()))
         .await
-        .expect("transaction should open");
-    let tx_rows = crate::queries::settings::list_settings_with_defaults_tx(
-        &mut tx,
-        "system",
-        Some("movie".to_string()),
-        Some(&encryption_key),
-    )
-    .await
-    .expect("tx path should succeed");
+        .expect("settings should load");
 
     let summarize = |rows: Vec<crate::types::SettingsValueRecord>| {
         let mut summary = rows
@@ -979,26 +1056,19 @@ async fn settings_with_defaults_query_and_tx_paths_match() {
         summary.sort_by(|left, right| left.0.cmp(&right.0));
         summary
     };
-    assert_eq!(summarize(query_rows), summarize(tx_rows));
+    assert!(summarize(query_rows).contains(&(
+        "secret.scoped".to_string(),
+        Some("movie".to_string()),
+        "\"overridden-scoped\"".to_string(),
+        Some("\"overridden-scoped\"".to_string()),
+        Some("user".to_string()),
+        true,
+    )));
 
-    let query_record = crate::queries::settings::get_setting_with_defaults_query(
-        services.pool(),
-        "system",
-        "secret.scoped",
-        Some("movie".to_string()),
-        Some(&encryption_key),
-    )
-    .await
-    .expect("single query path should succeed");
-    let tx_record = crate::queries::settings::get_setting_with_defaults_tx(
-        &mut tx,
-        "system",
-        "secret.scoped",
-        Some("movie".to_string()),
-        Some(&encryption_key),
-    )
-    .await
-    .expect("single tx path should succeed");
+    let query_record = settings
+        .get_setting_with_defaults("system", "secret.scoped", Some("movie".to_string()))
+        .await
+        .expect("single setting should load");
     let summarize_record = |row: Option<crate::types::SettingsValueRecord>| {
         row.map(|record| {
             (
@@ -1011,16 +1081,24 @@ async fn settings_with_defaults_query_and_tx_paths_match() {
             )
         })
     };
-    assert_eq!(summarize_record(query_record), summarize_record(tx_record));
-
-    tx.rollback().await.expect("tx should roll back cleanly");
+    assert_eq!(
+        summarize_record(query_record),
+        Some((
+            "secret.scoped".to_string(),
+            Some("movie".to_string()),
+            "\"overridden-scoped\"".to_string(),
+            Some("\"overridden-scoped\"".to_string()),
+            Some("user".to_string()),
+            true,
+        ))
+    );
     let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]
 async fn explicit_setting_query_skips_definition_defaults_for_missing_scopes() {
     let (services, db) = temp_services("scryer_settings_explicit").await;
-    let settings = SqliteSettingsStore::new(&services);
+    let settings = SettingsStore::new(services.datastore(), services.encryption_key_state());
 
     settings
         .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
@@ -1071,13 +1149,79 @@ async fn explicit_setting_query_skips_definition_defaults_for_missing_scopes() {
 }
 
 #[tokio::test]
+async fn sqlite_library_scoped_download_client_routing_round_trips_explicit_json() {
+    let (services, db) = temp_services("scryer_library_download_client_routing").await;
+    let settings = SettingsStore::new(services.datastore(), services.encryption_key_state());
+
+    settings
+        .batch_ensure_setting_definitions(vec![crate::types::SettingDefinitionSeed {
+            category: "media".to_string(),
+            scope: "system".to_string(),
+            key_name: "download_client.routing".to_string(),
+            data_type: "json".to_string(),
+            default_value_json: "{}".to_string(),
+            is_sensitive: false,
+            validation_json: None,
+        }])
+        .await
+        .expect("definitions should seed");
+
+    let library_id = "series_default_library";
+    let value_json = serde_json::json!({
+        "weaver": {
+            "enabled": true,
+            "category": "series",
+            "recentQueuePriority": "high",
+            "olderQueuePriority": "normal",
+            "removeCompleted": true,
+            "removeFailed": false
+        }
+    })
+    .to_string();
+
+    SettingsRepository::upsert_setting_json(
+        &settings,
+        "system",
+        "download_client.routing",
+        Some(library_id.to_string()),
+        value_json.clone(),
+        "test",
+        None,
+    )
+    .await
+    .expect("library-scoped routing should save");
+
+    let explicit = SettingsRepository::get_setting_json_explicit(
+        &settings,
+        "system",
+        "download_client.routing",
+        Some(library_id.to_string()),
+    )
+    .await
+    .expect("explicit lookup should succeed");
+    assert_eq!(explicit.as_deref(), Some(value_json.as_str()));
+
+    let default_lookup = SettingsRepository::get_setting_json(
+        &settings,
+        "system",
+        "download_client.routing",
+        Some("another_library".to_string()),
+    )
+    .await
+    .expect("default lookup should succeed");
+    assert_eq!(default_lookup.as_deref(), Some("{}"));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn serialized_writer_handles_notification_channel_and_subscription_round_trip() {
     let (services, db) = temp_services("scryer_notification_writer").await;
     services
         .set_encryption_key(crate::encryption::EncryptionKey::from_bytes([9; 32]))
         .await
         .expect("encryption key should set");
-    let store = SqliteNotificationStore::new(&services);
+    let store = NotificationStore::new(services.datastore(), services.encryption_key_state());
     let now = Utc::now();
 
     let channel = NotificationChannelConfig {
@@ -1135,19 +1279,55 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
         .await
         .expect("subscription should update");
 
+    let later_subscription = NotificationSubscription {
+        id: "subscription-2".to_string(),
+        scope: "movie".to_string(),
+        scope_id: Some("title-1".to_string()),
+        created_at: now + chrono::Duration::seconds(1),
+        updated_at: now + chrono::Duration::seconds(1),
+        ..subscription.clone()
+    };
+    NotificationSubscriptionRepository::create_subscription(&store, later_subscription.clone())
+        .await
+        .expect("second subscription should create");
+
+    let by_event = NotificationSubscriptionRepository::list_subscriptions_for_event(
+        &store,
+        NotificationEventType::ImportComplete,
+    )
+    .await
+    .expect("event subscriptions should load");
+    assert_eq!(by_event.len(), 2);
+    assert_eq!(by_event[0].id, later_subscription.id);
+    assert_eq!(by_event[1].id, subscription.id);
+    assert!(
+        !by_event[1].is_enabled,
+        "event listing should preserve disabled rows for dispatcher-side filtering"
+    );
+
     let by_channel =
         NotificationSubscriptionRepository::list_subscriptions_for_channel(&store, &updated.id)
             .await
             .expect("subscription list should load");
-    assert_eq!(by_channel.len(), 1);
-    assert!(!by_channel[0].is_enabled);
+    assert_eq!(by_channel.len(), 2);
 
     NotificationSubscriptionRepository::delete_subscription(&store, &subscription.id)
         .await
         .expect("subscription should delete");
+    NotificationSubscriptionRepository::delete_subscription(&store, &later_subscription.id)
+        .await
+        .expect("second subscription should delete");
+    assert!(matches!(
+        NotificationSubscriptionRepository::delete_subscription(&store, &subscription.id).await,
+        Err(scryer_application::AppError::NotFound(_))
+    ));
     NotificationChannelRepository::delete_channel(&store, &updated.id)
         .await
         .expect("channel should delete");
+    assert!(matches!(
+        NotificationChannelRepository::delete_channel(&store, &updated.id).await,
+        Err(scryer_application::AppError::NotFound(_))
+    ));
 
     let remaining =
         NotificationSubscriptionRepository::list_subscriptions_for_channel(&store, &updated.id)
@@ -1167,7 +1347,8 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
 #[tokio::test]
 async fn serialized_writer_handles_download_client_reorder() {
     let (services, db) = temp_services("scryer_download_client_writer").await;
-    let store = SqliteConfigStore::new(&services);
+    let store =
+        DownloadClientConfigStore::new(services.datastore(), services.encryption_key_state());
     let now = Utc::now();
 
     let client_a = DownloadClientConfig {
@@ -1220,13 +1401,13 @@ async fn serialized_writer_handles_download_client_reorder() {
 #[tokio::test]
 async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
     let (services, db) = temp_services("scryer_release_writer").await;
-    let release_store = SqliteReleaseStore::new(&services);
+    let release_store = ReleaseStore::new(services.datastore());
 
     ReleaseAttemptRepository::record_release_attempt(
         &release_store,
         None,
         Some("weaver".to_string()),
-        Some("Outlander.S08E05".to_string()),
+        Some("Farwander.S08E05".to_string()),
         ReleaseDownloadAttemptOutcome::Failed,
         Some("boom".to_string()),
         Some("secret".to_string()),
@@ -1244,7 +1425,7 @@ async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
         &release_store,
         None,
         Some("weaver"),
-        Some("Outlander.S08E05"),
+        Some("Farwander.S08E05"),
     )
     .await
     .expect("latest password should load");
@@ -1267,8 +1448,8 @@ async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
 #[tokio::test]
 async fn release_attempt_queries_dedupe_failed_signatures_by_normalized_source_title() {
     let (services, db) = temp_services("scryer_release_dedupe").await;
-    let release_store = SqliteReleaseStore::new(&services);
-    let catalog = catalog_store(&services);
+    let release_store = ReleaseStore::new(services.datastore());
+    let catalog = title_store(&services);
 
     catalog
         .create_or_get_existing(make_test_title("title-1", None))
@@ -1355,12 +1536,40 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
     }
 }
 
-fn catalog_store(services: &SqliteServices) -> SqliteCatalogStore {
-    SqliteCatalogStore::new(services)
+fn title_store(services: &SqliteServices) -> TitleStore {
+    TitleStore::new(services.datastore())
 }
 
-fn library_state_store(services: &SqliteServices) -> SqliteLibraryStateStore {
-    SqliteLibraryStateStore::new(services)
+fn show_store(services: &SqliteServices) -> ShowStore {
+    ShowStore::new(services.datastore())
+}
+
+fn user_store(services: &SqliteServices) -> UserStore {
+    UserStore::new(services.datastore())
+}
+
+fn wanted_store(services: &SqliteServices) -> WantedStore {
+    WantedStore::new(services.datastore())
+}
+
+fn housekeeping_store(services: &SqliteServices) -> HousekeepingStore {
+    HousekeepingStore::new(services.datastore())
+}
+
+fn subtitle_download_store(services: &SqliteServices) -> SubtitleDownloadStore {
+    SubtitleDownloadStore::new(services.datastore())
+}
+
+fn media_file_store(services: &SqliteServices) -> MediaFileStore {
+    MediaFileStore::new(services.datastore())
+}
+
+fn library_scan_unmatched_store(services: &SqliteServices) -> LibraryScanUnmatchedStore {
+    LibraryScanUnmatchedStore::new(services.datastore())
+}
+
+fn title_image_store(services: &SqliteServices) -> TitleImageStore {
+    TitleImageStore::new(services.datastore())
 }
 
 async fn temp_services(prefix: &str) -> (SqliteServices, std::path::PathBuf) {
@@ -1376,17 +1585,30 @@ async fn temp_services(prefix: &str) -> (SqliteServices, std::path::PathBuf) {
 }
 
 #[tokio::test]
+async fn sqlite_database_maintenance_runs_without_command_bus() {
+    let (services, db) = temp_services("scryer_sqlite_database_maintenance").await;
+    let housekeeping = housekeeping_store(&services);
+
+    housekeeping
+        .run_database_maintenance()
+        .await
+        .expect("database maintenance should complete");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn external_subtitle_probe_cache_round_trips_replace_and_delete() {
     let (services, db) = temp_services("scryer_external_subtitle_probe_cache").await;
-    let pool = services.pool();
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let media_files = media_file_store(&services);
+    let subtitles = subtitle_download_store(&services);
 
     let title = make_test_title("title-probe-cache", None);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
-    let media_file_id = library_state
+    let media_file_id = media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: "/library/Example.Movie.mkv".to_string(),
@@ -1409,16 +1631,15 @@ async fn external_subtitle_probe_cache_round_trips_replace_and_delete() {
         updated_at: "2026-04-29T00:00:01Z".to_string(),
     };
 
-    crate::queries::subtitle::upsert_external_subtitle_probe_cache_entry(pool, &initial)
+    subtitles
+        .upsert_probe_cache_entry(&initial)
         .await
         .expect("initial probe cache row should insert");
 
-    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
-        pool,
-        &media_file_id,
-    )
-    .await
-    .expect("probe cache rows should list");
+    let listed = subtitles
+        .list_probe_cache_for_media_file(&media_file_id)
+        .await
+        .expect("probe cache rows should list");
     assert_eq!(listed, vec![initial.clone()]);
 
     let replaced = ExternalSubtitleProbeCacheEntry {
@@ -1430,32 +1651,26 @@ async fn external_subtitle_probe_cache_round_trips_replace_and_delete() {
         ..initial
     };
 
-    crate::queries::subtitle::upsert_external_subtitle_probe_cache_entry(pool, &replaced)
+    subtitles
+        .upsert_probe_cache_entry(&replaced)
         .await
         .expect("probe cache row should replace");
 
-    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
-        pool,
-        &media_file_id,
-    )
-    .await
-    .expect("replaced probe cache row should list");
+    let listed = subtitles
+        .list_probe_cache_for_media_file(&media_file_id)
+        .await
+        .expect("replaced probe cache row should list");
     assert_eq!(listed, vec![replaced.clone()]);
 
-    crate::queries::subtitle::delete_external_subtitle_probe_cache_entry(
-        pool,
-        &media_file_id,
-        "/tmp/Example.Movie.srt",
-    )
-    .await
-    .expect("probe cache row should delete");
+    subtitles
+        .delete_probe_cache_entry(&media_file_id, "/tmp/Example.Movie.srt")
+        .await
+        .expect("probe cache row should delete");
 
-    let listed = crate::queries::subtitle::list_external_subtitle_probe_cache_for_media_file(
-        pool,
-        &media_file_id,
-    )
-    .await
-    .expect("probe cache rows should list after delete");
+    let listed = subtitles
+        .list_probe_cache_for_media_file(&media_file_id)
+        .await
+        .expect("probe cache rows should list after delete");
     assert!(listed.is_empty());
 
     let _ = std::fs::remove_file(db);
@@ -1464,7 +1679,8 @@ async fn external_subtitle_probe_cache_round_trips_replace_and_delete() {
 #[tokio::test]
 async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes() {
     let (services, db) = temp_services("scryer_scoped_anibridge_ids").await;
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
+    let shows = show_store(&services);
 
     let mut title = make_test_title("title-anime", None);
     title.facet = MediaFacet::Anime;
@@ -1492,7 +1708,7 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
         monitored: true,
         created_at: Utc::now(),
     };
-    ShowRepository::create_collection(&catalog, collection.clone())
+    ShowRepository::create_collection(&shows, collection.clone())
         .await
         .expect("collection should insert");
 
@@ -1517,12 +1733,12 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
         monitored: true,
         created_at: Utc::now(),
     };
-    ShowRepository::create_episode(&catalog, episode.clone())
+    ShowRepository::create_episode(&shows, episode.clone())
         .await
         .expect("episode should insert");
 
     ShowRepository::replace_anibridge_scoped_external_ids_for_title(
-        &catalog,
+        &shows,
         &title.id,
         vec![ScopedExternalId {
             scope_id: collection.id.clone(),
@@ -1542,7 +1758,7 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
     .await
     .expect("replace scoped ids should succeed");
 
-    let collection_ids = ShowRepository::list_collection_external_ids(&catalog, &collection.id)
+    let collection_ids = ShowRepository::list_collection_external_ids(&shows, &collection.id)
         .await
         .expect("collection ids should load");
     assert_eq!(collection_ids.len(), 1);
@@ -1551,7 +1767,7 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
     assert_eq!(collection_ids[0].external_id, "176301");
     assert_eq!(collection_ids[0].source_scope.as_deref(), Some("R"));
 
-    let episode_ids = ShowRepository::list_episode_external_ids(&catalog, &episode.id)
+    let episode_ids = ShowRepository::list_episode_external_ids(&shows, &episode.id)
         .await
         .expect("episode ids should load");
     assert_eq!(episode_ids.len(), 1);
@@ -1608,6 +1824,16 @@ async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
             .await
             .expect("migration statement should succeed");
     }
+}
+
+#[test]
+fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_table() {
+    let keys = crate::migrations::list_embedded_migration_keys();
+    assert!(
+        keys.iter()
+            .any(|key| key == "0117_external_import_monitor_snapshot_chunks"),
+        "embedded migration bundle is missing 0117_external_import_monitor_snapshot_chunks: {keys:?}"
+    );
 }
 
 #[tokio::test]
@@ -1924,6 +2150,8 @@ async fn review_regression_download_submission_episode_links_cascade_with_parent
 #[tokio::test]
 async fn review_regression_subtitle_provider_update_sets_and_clears_disabled_until() {
     let (services, db) = single_connection_services("scryer_subtitle_disabled_until").await;
+    let store =
+        SubtitleProviderConfigStore::new(services.datastore(), services.encryption_key_state());
     let now = Utc::now();
     let config = SubtitleProviderConfig {
         id: "subtitle-provider-1".to_string(),
@@ -1939,32 +2167,35 @@ async fn review_regression_subtitle_provider_update_sets_and_clears_disabled_unt
         created_at: now,
         updated_at: now,
     };
-    services
-        .create_subtitle_provider_config(config)
+    SubtitleProviderConfigRepository::create(&store, config)
         .await
         .expect("subtitle provider should be created");
 
     let disabled_until = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
         .expect("fixed timestamp should parse")
         .with_timezone(&Utc);
-    let updated = services
-        .update_subtitle_provider_config(SubtitleProviderConfigUpdate {
+    let updated = SubtitleProviderConfigRepository::update(
+        &store,
+        SubtitleProviderConfigUpdate {
             id: "subtitle-provider-1".to_string(),
             disabled_until: Some(Some(disabled_until)),
             ..Default::default()
-        })
-        .await
-        .expect("subtitle provider disabled_until should update");
+        },
+    )
+    .await
+    .expect("subtitle provider disabled_until should update");
     assert_eq!(updated.disabled_until, Some(disabled_until));
 
-    let updated = services
-        .update_subtitle_provider_config(SubtitleProviderConfigUpdate {
+    let updated = SubtitleProviderConfigRepository::update(
+        &store,
+        SubtitleProviderConfigUpdate {
             id: "subtitle-provider-1".to_string(),
             disabled_until: Some(None),
             ..Default::default()
-        })
-        .await
-        .expect("subtitle provider disabled_until should clear");
+        },
+    )
+    .await
+    .expect("subtitle provider disabled_until should clear");
     assert_eq!(updated.disabled_until, None);
 
     let _ = std::fs::remove_file(db);
@@ -1990,9 +2221,9 @@ async fn single_connection_services(name: &str) -> (SqliteServices, std::path::P
         .expect("migrations should apply");
 
     let services = SqliteServices {
-        sender: crate::commands::spawn_db_command_worker(pool.clone()),
         pool,
         encryption_key: Arc::new(RwLock::new(None)),
+        writer_gate: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     (services, db)
@@ -2114,8 +2345,8 @@ async fn title_queries_prefer_local_cached_poster_url() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let title = make_test_title("title-1", Some("https://tvdb.example/poster.jpg"));
     TitleRepository::create(&catalog, title.clone())
@@ -2131,7 +2362,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
         Some("https://tvdb.example/poster.jpg")
     );
 
-    library_state
+    title_images
         .replace_title_image(
             &title.id,
             TitleImageReplacement {
@@ -2190,14 +2421,21 @@ async fn title_queries_prefer_local_cached_poster_url() {
 async fn hydrated_title_metadata_with_extra_external_ids_completes_on_single_connection_sqlite() {
     let (services, db) =
         single_connection_services("scryer_title_hydration_single_connection").await;
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut title = make_test_title("title-hydration-extra-ids", None);
     title.facet = MediaFacet::Anime;
-    title.external_ids = vec![ExternalId {
-        source: "tvdb".to_string(),
-        value: "12345".to_string(),
-    }];
+    title.external_ids = vec![
+        ExternalId {
+            source: "tvdb".to_string(),
+            value: "12345".to_string(),
+        },
+        ExternalId {
+            source: "mal".to_string(),
+            value: "old-mal".to_string(),
+        },
+    ];
+    title.tags = vec!["score:old".to_string(), "keep".to_string()];
 
     TitleRepository::create(&catalog, title.clone())
         .await
@@ -2216,6 +2454,7 @@ async fn hydrated_title_metadata_with_extra_external_ids_completes_on_single_con
                 value: "269".to_string(),
             },
         ],
+        extra_tags: vec!["score:9.1".to_string()],
         ..TitleMetadataUpdate::default()
     };
 
@@ -2239,6 +2478,94 @@ async fn hydrated_title_metadata_with_extra_external_ids_completes_on_single_con
             .iter()
             .any(|external_id| { external_id.source == "anilist" && external_id.value == "269" })
     );
+    assert_eq!(
+        updated
+            .external_ids
+            .iter()
+            .filter(|external_id| external_id.source == "mal")
+            .map(|external_id| external_id.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["834"]
+    );
+    assert!(!updated.tags.iter().any(|tag| tag == "score:old"));
+    assert!(updated.tags.iter().any(|tag| tag == "score:9.1"));
+    assert!(updated.tags.iter().any(|tag| tag == "keep"));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn hydrated_title_metadata_preserves_retry_until_fetch_marker_sqlite() {
+    let (services, db) = temp_services("scryer_title_hydration_retry_preserve").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-hydration-retry-preserve", None);
+    title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "12345".to_string(),
+    }];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    sqlx::query(
+        "UPDATE titles
+         SET metadata_hydration_next_attempt_at = ?,
+             metadata_hydration_attempt_count = ?
+         WHERE id = ?",
+    )
+    .bind("2026-01-01T00:00:00Z")
+    .bind(7_i64)
+    .bind(&title.id)
+    .execute(services.pool())
+    .await
+    .expect("retry state should update");
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_language: Some("eng".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("partial metadata update should succeed");
+
+    let retry_state: (Option<String>, i64) = sqlx::query_as(
+        "SELECT metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
+         FROM titles
+         WHERE id = ?",
+    )
+    .bind(&title.id)
+    .fetch_one(services.pool())
+    .await
+    .expect("retry state should load");
+    assert_eq!(retry_state.0.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert_eq!(retry_state.1, 7);
+
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some("2026-02-01T00:00:00Z".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fetched metadata update should succeed");
+
+    let cleared_retry_state: (Option<String>, i64) = sqlx::query_as(
+        "SELECT metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
+         FROM titles
+         WHERE id = ?",
+    )
+    .bind(&title.id)
+    .fetch_one(services.pool())
+    .await
+    .expect("cleared retry state should load");
+    assert_eq!(cleared_retry_state.0, None);
+    assert_eq!(cleared_retry_state.1, 0);
 
     let _ = std::fs::remove_file(db);
 }
@@ -2247,7 +2574,7 @@ async fn hydrated_title_metadata_with_extra_external_ids_completes_on_single_con
 async fn replace_title_match_state_completes_on_single_connection_sqlite() {
     let (services, db) =
         single_connection_services("scryer_replace_match_state_single_connection").await;
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut title = make_test_title("title-replace-match-state", None);
     title.facet = MediaFacet::Anime;
@@ -2292,6 +2619,63 @@ async fn replace_title_match_state_completes_on_single_connection_sqlite() {
 }
 
 #[tokio::test]
+async fn title_update_metadata_keeps_validation_and_not_found_errors() {
+    let (services, db) = temp_services("scryer_title_update_metadata_errors").await;
+    let catalog = title_store(&services);
+
+    let title = make_test_title("title-update-metadata-errors", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let empty_err = TitleRepository::update_metadata(&catalog, &title.id, None, None, None)
+        .await
+        .expect_err("empty update should fail validation");
+    assert!(matches!(
+        empty_err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("at least one title field")
+    ));
+
+    let blank_name_err =
+        TitleRepository::update_metadata(&catalog, &title.id, Some("   ".to_string()), None, None)
+            .await
+            .expect_err("blank title name should fail validation");
+    assert!(matches!(
+        blank_name_err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("title name cannot be empty")
+    ));
+
+    let missing_err = TitleRepository::update_metadata(
+        &catalog,
+        "missing-title",
+        Some("Renamed".to_string()),
+        None,
+        None,
+    )
+    .await
+    .expect_err("missing title update should fail not found");
+    assert!(matches!(
+        missing_err,
+        scryer_application::AppError::NotFound(message) if message.contains("missing-title")
+    ));
+
+    let renamed = TitleRepository::update_metadata(
+        &catalog,
+        &title.id,
+        Some(" Renamed Title ".to_string()),
+        None,
+        None,
+    )
+    .await
+    .expect("valid metadata update should succeed");
+    assert_eq!(renamed.name, "Renamed Title");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_queries_change_local_version_when_cached_poster_changes() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_poster_version_{}.db",
@@ -2300,8 +2684,8 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let title = make_test_title("title-2", Some("https://tvdb.example/poster-a.jpg"));
     TitleRepository::create(&catalog, title.clone())
@@ -2318,7 +2702,7 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
             "22222222222222222222222222222222",
         ),
     ] {
-        library_state
+        title_images
             .replace_title_image(
                 &title.id,
                 TitleImageReplacement {
@@ -2381,7 +2765,7 @@ async fn create_title_only_marks_tvdb_titles_for_background_hydration() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut tvdb_title = make_test_title("title-tvdb", None);
     tvdb_title.external_ids = vec![ExternalId {
@@ -2431,7 +2815,7 @@ async fn list_titles_due_for_hydration_excludes_active_facets_in_due_order() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut anime_title = make_test_title("anime-due", None);
     anime_title.facet = MediaFacet::Anime;
@@ -2503,8 +2887,8 @@ async fn title_queries_find_by_external_id() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let mut title = make_test_title(
         "title-external-id",
@@ -2517,7 +2901,7 @@ async fn title_queries_find_by_external_id() {
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
-    library_state
+    title_images
         .replace_title_image(
             &title.id,
             TitleImageReplacement {
@@ -2562,11 +2946,31 @@ async fn title_queries_find_by_external_id() {
         found.poster_source_url.as_deref(),
         Some("https://tvdb.example/poster-external.jpg")
     );
+
+    let uppercase_source = catalog
+        .find_by_external_id("TVDB", "123456")
+        .await
+        .expect("uppercase source lookup should succeed")
+        .expect("title should exist for uppercase source");
+    assert_eq!(uppercase_source.id, title.id);
+
+    let padded_source = catalog
+        .find_by_external_id(" tvdb ", "123456")
+        .await
+        .expect("padded source lookup should succeed");
+    assert!(padded_source.is_none());
+
+    let padded_value = catalog
+        .find_by_external_id("tvdb", " 123456 ")
+        .await
+        .expect("padded value lookup should succeed");
+    assert!(padded_value.is_none());
+
     let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]
-async fn title_queries_list_by_external_ids_returns_unique_first_matches() {
+async fn title_queries_list_by_external_ids_preserve_request_order_for_unique_first_matches() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_external_id_batch_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -2574,7 +2978,7 @@ async fn title_queries_list_by_external_ids_returns_unique_first_matches() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut first = make_test_title("title-a", Some("https://tvdb.example/a.jpg"));
     first.external_ids = vec![ExternalId {
@@ -2595,10 +2999,10 @@ async fn title_queries_list_by_external_ids_returns_unique_first_matches() {
         .expect("second title should insert");
 
     let values = vec![
+        "345678".to_string(),
         "123456".to_string(),
         "123456".to_string(),
         "000000".to_string(),
-        "345678".to_string(),
     ];
     let matches = catalog
         .list_by_external_ids("tvdb", &values)
@@ -2606,8 +3010,268 @@ async fn title_queries_list_by_external_ids_returns_unique_first_matches() {
         .expect("batch lookup should succeed");
 
     assert_eq!(matches.len(), 2);
-    assert_eq!(matches[0].id, first.id);
-    assert_eq!(matches[1].id, second.id);
+    assert_eq!(matches[0].id, second.id);
+    assert_eq!(matches[1].id, first.id);
+
+    let padded_values = vec![" 345678 ".to_string()];
+    let padded_value_matches = catalog
+        .list_by_external_ids("tvdb", &padded_values)
+        .await
+        .expect("padded value batch lookup should succeed");
+    assert!(padded_value_matches.is_empty());
+
+    let exact_values = vec!["345678".to_string()];
+    let padded_source_matches = catalog
+        .list_by_external_ids(" tvdb ", &exact_values)
+        .await
+        .expect("padded source batch lookup should succeed");
+    assert!(padded_source_matches.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_with_empty_library_allowlist_return_no_results() {
+    let (services, db) = temp_services("scryer_title_empty_library_allowlist").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-empty-library-allowlist", None);
+    title.name = "Alpha Allowlist".to_string();
+    TitleRepository::create(&catalog, title)
+        .await
+        .expect("title should insert");
+
+    let empty_library_ids = Vec::<String>::new();
+
+    let listed = TitleRepository::list_for_libraries(&catalog, None, &empty_library_ids, None)
+        .await
+        .expect("plain library listing should succeed");
+    assert!(listed.is_empty());
+
+    let searched = TitleRepository::list_for_libraries_without_external_ids(
+        &catalog,
+        None,
+        &empty_library_ids,
+        Some("alpha".to_string()),
+    )
+    .await
+    .expect("ranked library listing should succeed");
+    assert!(searched.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_get_by_facet_and_slug_trim_input_and_reject_duplicates() {
+    let (services, db) = temp_services("scryer_title_slug_lookup").await;
+    let catalog = title_store(&services);
+
+    let mut first = make_test_title("title-slug-primary", None);
+    first.facet = MediaFacet::Movie;
+    first.library_id = "library-a".to_string();
+    first.slug = Some("earth-defenders".to_string());
+    TitleRepository::create(&catalog, first.clone())
+        .await
+        .expect("first title should insert");
+
+    let found =
+        TitleRepository::get_by_facet_and_slug(&catalog, MediaFacet::Movie, " earth-defenders ")
+            .await
+            .expect("trimmed slug lookup should succeed")
+            .expect("trimmed slug lookup should find a title");
+    assert_eq!(found.id, first.id);
+
+    let mut duplicate = make_test_title("title-slug-duplicate", None);
+    duplicate.facet = MediaFacet::Movie;
+    duplicate.library_id = "library-b".to_string();
+    duplicate.slug = Some("earth-defenders".to_string());
+    TitleRepository::create(&catalog, duplicate)
+        .await
+        .expect("duplicate title should insert in a different library");
+
+    let err =
+        TitleRepository::get_by_facet_and_slug(&catalog, MediaFacet::Movie, "earth-defenders")
+            .await
+            .expect_err("duplicate slug lookup should fail validation");
+    assert!(matches!(
+        err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("earth-defenders") && message.contains("multiple titles")
+    ));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_queries_get_by_facet_libraries_and_slug_trim_input_and_reject_duplicates() {
+    let (services, db) = temp_services("scryer_title_library_slug_lookup").await;
+    let catalog = title_store(&services);
+
+    let mut first = make_test_title("title-library-slug-a", None);
+    first.facet = MediaFacet::Movie;
+    first.library_id = "library-a".to_string();
+    first.slug = Some("planet-heroes".to_string());
+    TitleRepository::create(&catalog, first)
+        .await
+        .expect("first title should insert");
+
+    let mut second = make_test_title("title-library-slug-b", None);
+    second.facet = MediaFacet::Movie;
+    second.library_id = "library-b".to_string();
+    second.slug = Some("planet-heroes".to_string());
+    TitleRepository::create(&catalog, second.clone())
+        .await
+        .expect("second title should insert");
+
+    let library_b = vec!["library-b".to_string()];
+    let found = TitleRepository::get_by_facet_libraries_and_slug(
+        &catalog,
+        MediaFacet::Movie,
+        &library_b,
+        " planet-heroes ",
+    )
+    .await
+    .expect("trimmed library slug lookup should succeed")
+    .expect("trimmed library slug lookup should find a title");
+    assert_eq!(found.id, second.id);
+
+    let libraries = vec!["library-a".to_string(), "library-b".to_string()];
+    let err = TitleRepository::get_by_facet_libraries_and_slug(
+        &catalog,
+        MediaFacet::Movie,
+        &libraries,
+        "planet-heroes",
+    )
+    .await
+    .expect_err("duplicate library slug lookup should fail validation");
+    assert!(matches!(
+        err,
+        scryer_application::AppError::Validation(message)
+            if message.contains("planet-heroes") && message.contains("multiple titles")
+    ));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_query_modes_keep_spellfix_search_scoped_to_presentation_sqlite() {
+    let (services, db) = temp_services("scryer_title_query_mode_search_scope").await;
+    let catalog = title_store(&services);
+
+    let mut title = make_test_title("title-query-mode-search-scope", None);
+    title.name = "Canonical Search Name".to_string();
+    title.aliases = vec!["Hidden Search Alias".to_string()];
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let presentation_hits =
+        TitleRepository::list(&catalog, None, Some("hidden search alias".to_string()))
+            .await
+            .expect("presentation search should load");
+    assert_eq!(
+        presentation_hits.first().map(|title| title.id.as_str()),
+        Some(title.id.as_str())
+    );
+
+    let matching_alias_hits =
+        TitleRepository::list_for_matching(&catalog, None, Some("hidden search alias".to_string()))
+            .await
+            .expect("matching search should load");
+    assert!(
+        !matching_alias_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let matching_name_hits =
+        TitleRepository::list_for_matching(&catalog, None, Some("canonical search".to_string()))
+            .await
+            .expect("matching name search should load");
+    assert!(
+        matching_name_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let padded_matching_name_hits =
+        TitleRepository::list_for_matching(&catalog, None, Some(" canonical search ".to_string()))
+            .await
+            .expect("padded matching name search should load");
+    assert!(
+        !padded_matching_name_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let library_ids = vec![title.library_id.clone()];
+    let library_alias_hits = TitleRepository::list_for_libraries(
+        &catalog,
+        None,
+        &library_ids,
+        Some("hidden search alias".to_string()),
+    )
+    .await
+    .expect("library search should load");
+    assert!(
+        !library_alias_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let library_padded_name_hits = TitleRepository::list_for_libraries(
+        &catalog,
+        None,
+        &library_ids,
+        Some(" canonical search ".to_string()),
+    )
+    .await
+    .expect("padded library search should load");
+    assert!(
+        !library_padded_name_hits
+            .iter()
+            .any(|candidate| candidate.id == title.id)
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_create_or_get_existing_reuses_external_ids_not_slug_only() {
+    let (services, db) = temp_services("scryer_title_create_or_get_existing_parity").await;
+    let catalog = title_store(&services);
+
+    let mut existing = make_test_title("title-existing-external-id", None);
+    existing.slug = Some("shared-slug".to_string());
+    existing.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "12345".to_string(),
+    }];
+    TitleRepository::create(&catalog, existing.clone())
+        .await
+        .expect("existing title should insert");
+
+    let mut same_slug = make_test_title("title-same-slug-new-external-id", None);
+    same_slug.slug = Some("shared-slug".to_string());
+    same_slug.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "67890".to_string(),
+    }];
+    let same_slug_outcome = TitleRepository::create_or_get_existing(&catalog, same_slug.clone())
+        .await
+        .expect("same-slug title should create");
+    assert!(!same_slug_outcome.reused_existing);
+    assert_eq!(same_slug_outcome.title.id, same_slug.id);
+
+    let mut same_external_id = make_test_title("title-same-external-id", None);
+    same_external_id.slug = Some("different-slug".to_string());
+    same_external_id.external_ids = existing.external_ids.clone();
+    let same_external_id_outcome =
+        TitleRepository::create_or_get_existing(&catalog, same_external_id)
+            .await
+            .expect("same external id title should reuse");
+    assert!(same_external_id_outcome.reused_existing);
+    assert_eq!(same_external_id_outcome.title.id, existing.id);
 
     let _ = std::fs::remove_file(db);
 }
@@ -2621,8 +3285,8 @@ async fn title_list_for_matching_keeps_source_image_urls() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let title = make_test_title(
         "title-list-matching",
@@ -2631,7 +3295,7 @@ async fn title_list_for_matching_keeps_source_image_urls() {
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
-    library_state
+    title_images
         .replace_title_image(
             &title.id,
             TitleImageReplacement {
@@ -2687,15 +3351,15 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let media_files = media_file_store(&services);
 
     let title = make_test_title("title-media-file", None);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    let file_id = library_state
+    let file_id = media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: "/library/Movie.Title.2024.mkv".to_string(),
@@ -2711,7 +3375,7 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
         .await
         .expect("scan status should update");
 
-    library_state
+    media_files
         .update_media_file_source_signature(
             &file_id,
             4_096,
@@ -2721,7 +3385,7 @@ async fn media_file_source_signature_refresh_preserves_scan_status() {
         .await
         .expect("source signature should refresh");
 
-    let media_file = library_state
+    let media_file = media_files
         .get_media_file_by_id(&file_id)
         .await
         .expect("lookup should succeed")
@@ -2746,15 +3410,15 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let title = make_test_title("title-3", Some("https://tvdb.example/poster-original.jpg"));
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    library_state
+    title_images
         .replace_title_image(
             &title.id,
             TitleImageReplacement {
@@ -2786,7 +3450,7 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
         Some("/images/titles/title-3/poster/original?v=cccccccccccccccc")
     );
 
-    let original = library_state
+    let original = title_images
         .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
         .await
         .expect("original blob lookup should succeed");
@@ -2803,6 +3467,97 @@ async fn title_queries_use_local_original_url_for_original_storage_mode() {
 }
 
 #[tokio::test]
+async fn replace_title_image_and_append_event_commits_image_and_event_atomically() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_event_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+    let domain_events = DomainEventStore::new(services.datastore());
+
+    let title = make_test_title("title-image-event", Some("https://tvdb.example/poster.jpg"));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let event = NewDomainEvent {
+        event_id: Id::new().0,
+        occurred_at: Utc::now(),
+        actor_user_id: None,
+        title_id: Some(title.id.clone()),
+        facet: Some(title.facet.clone()),
+        correlation_id: None,
+        causation_id: None,
+        schema_version: 1,
+        stream: DomainEventStream::Title {
+            title_id: title.id.clone(),
+        },
+        payload: DomainEventPayload::TitleUpdated(TitleUpdatedEventData {
+            title: TitleContextSnapshot {
+                title_name: title.name.clone(),
+                facet: title.facet.clone(),
+                external_ids: Default::default(),
+                poster_url: title.poster_url.clone(),
+                year: title.year,
+            },
+        }),
+    };
+
+    let stored = title_images
+        .replace_title_image_and_append_event(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Poster,
+                source_url: "https://tvdb.example/poster.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 400,
+                source_height: 600,
+                storage_mode: TitleImageStorageMode::Original,
+                master_format: "jpeg".to_string(),
+                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+                master_width: 400,
+                master_height: 600,
+                master_bytes: vec![4, 5, 6],
+                variants: Vec::new(),
+            },
+            event.clone(),
+        )
+        .await
+        .expect("title image and event should commit");
+
+    assert_eq!(stored.event_id, event.event_id);
+    let blob = title_images
+        .get_title_image_blob(&title.id, TitleImageKind::Poster, "original")
+        .await
+        .expect("blob lookup should succeed")
+        .expect("blob should exist");
+    assert_eq!(blob.bytes, vec![4, 5, 6]);
+
+    let events = domain_events
+        .list(&DomainEventFilter {
+            title_id: Some(title.id.clone()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("domain event list should succeed");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, event.event_id);
+    assert!(matches!(
+        events[0].payload,
+        DomainEventPayload::TitleUpdated(_)
+    ));
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_poster_incomplete_{}.db",
@@ -2811,8 +3566,8 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let title = make_test_title(
         "title-4",
@@ -2822,7 +3577,7 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
         .await
         .expect("title should insert");
 
-    library_state
+    title_images
         .replace_title_image(
             &title.id,
             TitleImageReplacement {
@@ -2854,7 +3609,7 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
         Some("/images/titles/title-4/poster/original?v=dddddddddddddddd")
     );
 
-    let pending = library_state
+    let pending = title_images
         .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
         .await
         .expect("list pending poster refresh should succeed");
@@ -2875,8 +3630,8 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let title = make_test_title("title-banner-fanart", None);
     TitleRepository::create(&catalog, title.clone())
@@ -2891,7 +3646,7 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
         .await
         .expect("source urls should update");
 
-    library_state
+    title_images
         .replace_title_image(
             &title.id,
             TitleImageReplacement {
@@ -2913,7 +3668,7 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
         )
         .await
         .expect("banner image should insert");
-    library_state
+    title_images
         .replace_title_image(
             &title.id,
             TitleImageReplacement {
@@ -2957,7 +3712,7 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
         Some("https://tvdb.example/fanart.jpg")
     );
 
-    let banner = library_state
+    let banner = title_images
         .get_title_image_blob(&title.id, TitleImageKind::Banner, "master")
         .await
         .expect("banner blob lookup should succeed");
@@ -2970,7 +3725,7 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
         })
     );
 
-    let fanart = library_state
+    let fanart = title_images
         .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
         .await
         .expect("fanart blob lookup should succeed");
@@ -2996,8 +3751,8 @@ async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_m
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let title = make_test_title("title-banner-fanart-refresh", None);
     TitleRepository::create(&catalog, title.clone())
@@ -3024,7 +3779,7 @@ async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_m
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         ),
     ] {
-        library_state
+        title_images
             .replace_title_image(
                 &title.id,
                 TitleImageReplacement {
@@ -3048,13 +3803,13 @@ async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_m
             .expect("title image should insert");
     }
 
-    let pending_banner = library_state
+    let pending_banner = title_images
         .list_titles_requiring_image_refresh(TitleImageKind::Banner, 10)
         .await
         .expect("list pending banner refresh should succeed");
     assert!(pending_banner.is_empty());
 
-    let pending_fanart = library_state
+    let pending_fanart = title_images
         .list_titles_requiring_image_refresh(TitleImageKind::Fanart, 10)
         .await
         .expect("list pending fanart refresh should succeed");
@@ -3072,8 +3827,8 @@ async fn title_image_master_dedup_migration_rewrites_paths_and_deletes_banner_fa
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
-    let library_state = library_state_store(&services);
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
 
     let title = make_test_title("title-master-dedup", None);
     TitleRepository::create(&catalog, title.clone())
@@ -3237,7 +3992,7 @@ async fn title_image_master_dedup_migration_rewrites_paths_and_deletes_banner_fa
     .expect("count remaining master variants");
     assert_eq!(remaining_master_variants, 0);
 
-    let banner = library_state
+    let banner = title_images
         .get_title_image_blob(&title.id, TitleImageKind::Banner, "master")
         .await
         .expect("banner blob lookup should succeed after migration");
@@ -3250,7 +4005,7 @@ async fn title_image_master_dedup_migration_rewrites_paths_and_deletes_banner_fa
         })
     );
 
-    let fanart = library_state
+    let fanart = title_images
         .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
         .await
         .expect("fanart blob lookup should succeed after migration");
@@ -3275,7 +4030,7 @@ async fn title_image_local_path_backfill_matches_legacy_served_path() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let title = make_test_title(
         "title-backfill",
@@ -3463,7 +4218,7 @@ CREATE TABLE _sqlx_migrations (
     assert!(
         err.to_string()
             .contains("0103_custom_migrator_runtime_cutover"),
-        "validate mode should report the pending custom migration"
+        "validate mode should report the pending custom migration, got {err:?}"
     );
 
     let pool = SqlitePoolOptions::new()
@@ -3589,7 +4344,7 @@ CREATE TABLE _sqlx_migrations (
         .await
         .expect("status listing should succeed");
     assert_eq!(statuses.len(), 1);
-    assert_eq!(statuses[0].migration_checksum_algo, "sha384");
+    assert_eq!(statuses[0].migration_checksum_algo, "inferred");
 
     let checksum_algo_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
@@ -3631,7 +4386,7 @@ version = 2
 description = "bad hook"
 checksum_algo = "blake3"
 steps = [
-  { kind = "rust", hook_id = "missing_hook", scope = "all" },
+  { kind = "rust", hook_id = "missing_hook", engine = "all", scope = "all" },
 ]
 "#,
     )
@@ -3679,6 +4434,26 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
     .execute(&pool)
     .await
     .expect("create legacy title_history compatibility table");
+
+    for statement in [
+        "CREATE TABLE IF NOT EXISTS releases (
+            id TEXT PRIMARY KEY,
+            collection_id TEXT
+        )",
+        "CREATE TABLE IF NOT EXISTS workflow_operations (
+            id TEXT PRIMARY KEY,
+            collection_id TEXT
+        )",
+        "CREATE TABLE IF NOT EXISTS download_submissions (
+            id TEXT PRIMARY KEY,
+            collection_id TEXT
+        )",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect("create legacy compatibility table");
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
@@ -3870,8 +4645,8 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = library_state_store(&services);
-    let catalog = catalog_store(&services);
+    let workflow = wanted_store(&services);
+    let catalog = title_store(&services);
     let now = Utc::now().to_rfc3339();
 
     let title = make_test_title("title-series", None);
@@ -3941,8 +4716,9 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow = library_state_store(&services);
-    let catalog = catalog_store(&services);
+    let workflow = wanted_store(&services);
+    let catalog = title_store(&services);
+    let shows = show_store(&services);
     let now = Utc::now().to_rfc3339();
 
     let mut movie_title = make_test_title("title-movie", None);
@@ -3967,7 +4743,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
         .expect("anime title should insert");
 
     let series_collection = ShowRepository::create_collection(
-        &catalog,
+        &shows,
         Collection {
             id: "series-season-1".to_string(),
             title_id: series_title.id.clone(),
@@ -3989,7 +4765,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
     .expect("series collection should insert");
 
     let series_episode = ShowRepository::create_episode(
-        &catalog,
+        &shows,
         Episode {
             id: "series-episode-1".to_string(),
             title_id: series_title.id.clone(),
@@ -4016,7 +4792,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
     .expect("series episode should insert");
 
     let anime_collection = ShowRepository::create_collection(
-        &catalog,
+        &shows,
         Collection {
             id: "anime-interstitial-1".to_string(),
             title_id: anime_title.id.clone(),
@@ -4150,14 +4926,14 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             .expect("wanted item should insert");
     }
 
-    let rows = crate::queries::wanted::list_due_wanted_items_query(
-        services.pool(),
-        "2024-01-02T00:00:00Z",
-        2,
-        &[MediaFacet::Movie, MediaFacet::Anime],
-    )
-    .await
-    .expect("due wanted items query should succeed");
+    let rows = workflow
+        .list_due_wanted_items(
+            "2024-01-02T00:00:00Z",
+            2,
+            &[MediaFacet::Movie, MediaFacet::Anime],
+        )
+        .await
+        .expect("due wanted items query should succeed");
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "wanted-series-episode");
@@ -4168,8 +4944,8 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
 #[tokio::test]
 async fn list_wanted_items_filters_on_latest_decision_code() {
     let (services, db) = temp_services("scryer_wanted_latest_decision").await;
-    let workflow = library_state_store(&services);
-    let catalog = catalog_store(&services);
+    let workflow = wanted_store(&services);
+    let catalog = title_store(&services);
     let now = Utc::now();
 
     let title = make_test_title("title-latest-decision", None);
@@ -4309,7 +5085,7 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
 #[tokio::test]
 async fn title_search_matches_aliases_slug_and_typos_with_direct_priority() {
     let (services, db) = temp_services("scryer_catalog_title_search").await;
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut direct_title = make_test_title("title-search-direct", None);
     direct_title.name = "Schoolhouse Rock! Earth".to_string();
@@ -4362,7 +5138,7 @@ async fn title_search_matches_aliases_slug_and_typos_with_direct_priority() {
 #[tokio::test]
 async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
     let (services, db) = temp_services("scryer_catalog_title_search_short_typo").await;
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut aoashi = make_test_title("title-search-aoashi", None);
     aoashi.name = "Aoashi".to_string();
@@ -4410,7 +5186,7 @@ async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
 #[tokio::test]
 async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
     let (services, db) = temp_services("scryer_catalog_title_search_frieren_typo").await;
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut frieren = make_test_title("title-search-frieren", None);
     frieren.name = "Silver Horizon: Beyond Journey's End".to_string();
@@ -4449,7 +5225,7 @@ async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
 #[tokio::test]
 async fn title_search_projection_refreshes_after_hydrated_metadata_update_and_delete() {
     let (services, db) = temp_services("scryer_title_search_projection_refresh").await;
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
 
     let mut title = make_test_title("title-projection-refresh", None);
     title.name = "Example Show".to_string();
@@ -4504,8 +5280,8 @@ async fn title_search_projection_refreshes_after_hydrated_metadata_update_and_de
 #[tokio::test]
 async fn list_wanted_items_filters_with_fuzzy_title_search() {
     let (services, db) = temp_services("scryer_wanted_title_search").await;
-    let workflow = library_state_store(&services);
-    let catalog = catalog_store(&services);
+    let workflow = wanted_store(&services);
+    let catalog = title_store(&services);
     let now = Utc::now();
 
     let mut title = make_test_title("title-search-match", None);
@@ -5034,7 +5810,12 @@ async fn migration_0084_backfills_analysis_json_and_preserves_stream_reads() {
     assert!(stored_analysis_json.get("audio_streams").is_some());
     assert!(stored_analysis_json.get("tracks").is_none());
 
-    let media_file = crate::queries::media_file::get_media_file_by_id_query(&pool, "file-legacy")
+    let media_files = MediaFileStore::new(crate::queries::sql_runtime::StoreDatastore::Sqlite {
+        pool: pool.clone(),
+        writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+    });
+    let media_file = media_files
+        .get_media_file_by_id("file-legacy")
         .await
         .expect("lookup should succeed")
         .expect("media file should exist");
@@ -5064,8 +5845,6 @@ async fn migration_0084_backfills_analysis_json_and_preserves_stream_reads() {
 
 #[tokio::test]
 async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
-    use crate::queries::workflow::get_tracked_state_query;
-
     let db = std::env::temp_dir().join(format!(
         "scryer_tracked_state_upsert_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -5073,7 +5852,7 @@ async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow_store = SqliteWorkflowStore::new(&services);
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
 
     workflow_store
         .update_tracked_state(
@@ -5083,12 +5862,10 @@ async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
         .await
         .expect("tracked state upsert should succeed without a preexisting submission row");
 
-    let tracked_state = get_tracked_state_query(
-        services.pool(),
-        &DownloadSourceIdentity::new(None, "weaver", "job-123"),
-    )
-    .await
-    .expect("tracked state query should succeed");
+    let tracked_state = workflow_store
+        .get_tracked_state(&DownloadSourceIdentity::new(None, "weaver", "job-123"))
+        .await
+        .expect("tracked state query should succeed");
     assert_eq!(tracked_state.as_deref(), Some("failed"));
 
     let row = sqlx::query(
@@ -5237,7 +6014,7 @@ async fn queued_delete_stale_recovery_only_recovers_stale_rows() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let workflow_store = SqliteWorkflowStore::new(&services);
+    let workflow_store = DownloadQueueCommandStore::new(services.datastore());
 
     let stale = workflow_store
         .queue_delete_command(None, "nzbget", "job-stale", false, Some("admin"))
@@ -5303,7 +6080,7 @@ async fn queued_delete_stale_recovery_only_recovers_stale_rows() {
 }
 
 #[tokio::test]
-async fn unique_constraints_enforce_settings_and_user_entitlements() {
+async fn unique_constraints_enforce_settings_and_user_permission_masks() {
     let db = std::env::temp_dir().join(format!(
         "scryer_unique_constraints_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -5374,47 +6151,34 @@ async fn unique_constraints_enforce_settings_and_user_entitlements() {
     .await;
     assert!(duplicate_setting_value.is_err());
 
-    sqlx::query("INSERT INTO users (id, username, entitlements) VALUES (?, ?, ?)")
+    sqlx::query("INSERT INTO users (id, username) VALUES (?, ?)")
         .bind("user-1")
         .bind("constraint_user")
-        .bind("[]")
         .execute(&pool)
         .await
         .expect("insert user");
 
-    sqlx::query("INSERT INTO entitlements (code, description, category) VALUES (?, ?, ?)")
-        .bind("ent.code.manage")
-        .bind("Manage")
-        .bind("admin")
-        .execute(&pool)
-        .await
-        .expect("insert entitlement");
-
     sqlx::query(
-        "INSERT INTO user_entitlements (user_id, entitlement_code, granted_by_user_id, granted_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO user_app_permission_masks (user_id, permission_mask, updated_at)
+        VALUES (?, ?, ?)",
     )
     .bind("user-1")
-    .bind("ent.code.manage")
-    .bind(Option::<String>::None)
+    .bind(1_i64)
     .bind(&now)
-    .bind(Option::<String>::None)
     .execute(&pool)
     .await
-    .expect("insert first user entitlement");
+    .expect("insert first app permission mask");
 
-    let duplicate_user_entitlement = sqlx::query(
-        "INSERT INTO user_entitlements (user_id, entitlement_code, granted_by_user_id, granted_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)",
+    let duplicate_app_permission_mask = sqlx::query(
+        "INSERT INTO user_app_permission_masks (user_id, permission_mask, updated_at)
+        VALUES (?, ?, ?)",
     )
     .bind("user-1")
-    .bind("ent.code.manage")
-    .bind(Option::<String>::None)
+    .bind(1_i64)
     .bind(&now)
-    .bind(Option::<String>::None)
     .execute(&pool)
     .await;
-    assert!(duplicate_user_entitlement.is_err());
+    assert!(duplicate_app_permission_mask.is_err());
 
     let _ = std::fs::remove_file(db);
 }
@@ -5428,14 +6192,13 @@ async fn user_crud_queries_work() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let catalog = catalog_store(&services);
+    let users = user_store(&services);
 
     let created = UserRepository::create(
-        &catalog,
+        &users,
         scryer_domain::User {
             id: "u-1".to_string(),
             username: "editor".to_string(),
-            entitlements: vec![Entitlement::ViewCatalog],
             password_hash: None,
             authorization: Default::default(),
         },
@@ -5443,25 +6206,22 @@ async fn user_crud_queries_work() {
     .await
     .expect("create user");
 
-    let from_db = UserRepository::get_by_id(&catalog, &created.id)
+    let from_db = UserRepository::get_by_id(&users, &created.id)
         .await
         .expect("query by id")
         .expect("id should exist");
     assert_eq!(from_db.username, created.username);
 
-    let updated = UserRepository::update_entitlements(
-        &catalog,
-        &created.id,
-        vec![Entitlement::ManageTitle, Entitlement::ManageUsers],
-    )
-    .await
-    .expect("update entitlements");
-    assert!(updated.entitlements.contains(&Entitlement::ManageTitle));
+    let updated =
+        UserRepository::update_password_hash(&users, &created.id, "hashed-password".to_string())
+            .await
+            .expect("update password hash");
+    assert_eq!(updated.password_hash.as_deref(), Some("hashed-password"));
 
-    UserRepository::delete(&catalog, &created.id)
+    UserRepository::delete(&users, &created.id)
         .await
         .expect("delete user");
-    let missing = UserRepository::get_by_id(&catalog, &created.id)
+    let missing = UserRepository::get_by_id(&users, &created.id)
         .await
         .expect("query after delete");
     assert!(missing.is_none());
@@ -5476,7 +6236,8 @@ async fn sqlite_show_queries_roundtrip() {
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy()).await.unwrap();
-    let catalog = catalog_store(&services);
+    let catalog = title_store(&services);
+    let shows = show_store(&services);
 
     let title = Title {
         id: "title-show-1".into(),
@@ -5583,7 +6344,7 @@ async fn sqlite_show_queries_roundtrip() {
         monitored: true,
         created_at: Utc::now(),
     };
-    ShowRepository::create_collection(&catalog, collection.clone())
+    ShowRepository::create_collection(&shows, collection.clone())
         .await
         .expect("insert collection");
 
@@ -5608,14 +6369,14 @@ async fn sqlite_show_queries_roundtrip() {
         monitored: true,
         created_at: Utc::now(),
     };
-    ShowRepository::create_episode(&catalog, episode.clone())
+    ShowRepository::create_episode(&shows, episode.clone())
         .await
         .expect("insert episode");
 
-    let collections = ShowRepository::list_collections_for_title(&catalog, &title.id)
+    let collections = ShowRepository::list_collections_for_title(&shows, &title.id)
         .await
         .expect("list collections");
-    let episodes = ShowRepository::list_episodes_for_collection(&catalog, &collection.id)
+    let episodes = ShowRepository::list_episodes_for_collection(&shows, &collection.id)
         .await
         .expect("list episodes");
 
@@ -5628,7 +6389,7 @@ async fn sqlite_show_queries_roundtrip() {
             .map(|movie| movie.name.as_str()),
         Some("Test Movie")
     );
-    let loaded_collection = ShowRepository::get_collection_by_id(&catalog, &collection.id)
+    let loaded_collection = ShowRepository::get_collection_by_id(&shows, &collection.id)
         .await
         .expect("get collection by id")
         .expect("collection should exist");
@@ -5647,14 +6408,14 @@ async fn sqlite_show_queries_roundtrip() {
     );
     assert_eq!(episodes.len(), 1);
     assert_eq!(episodes[0].id, episode.id);
-    let loaded_episode = ShowRepository::get_episode_by_id(&catalog, &episode.id)
+    let loaded_episode = ShowRepository::get_episode_by_id(&shows, &episode.id)
         .await
         .expect("get episode by id")
         .expect("episode should exist");
     assert_eq!(loaded_episode.id, episode.id);
 
     let updated_collection = ShowRepository::update_collection(
-        &catalog,
+        &shows,
         &collection.id,
         CollectionUpdate {
             collection_type: Some(CollectionType::Arc),
@@ -5674,7 +6435,7 @@ async fn sqlite_show_queries_roundtrip() {
     assert_eq!(updated_collection.last_episode_number, Some("12".into()));
 
     let updated_episode = ShowRepository::update_episode(
-        &catalog,
+        &shows,
         &episode.id,
         EpisodeUpdate {
             episode_type: Some(scryer_domain::EpisodeType::Special),
@@ -5707,27 +6468,27 @@ async fn sqlite_show_queries_roundtrip() {
     assert!(updated_episode.has_multi_audio);
     assert!(!updated_episode.has_subtitle);
 
-    ShowRepository::delete_episode(&catalog, &episode.id)
+    ShowRepository::delete_episode(&shows, &episode.id)
         .await
         .expect("delete episode");
     let episodes_after_delete =
-        ShowRepository::list_episodes_for_collection(&catalog, &collection.id)
+        ShowRepository::list_episodes_for_collection(&shows, &collection.id)
             .await
             .expect("list episodes after delete");
     assert!(episodes_after_delete.is_empty());
-    let missing_episode = ShowRepository::get_episode_by_id(&catalog, &episode.id)
+    let missing_episode = ShowRepository::get_episode_by_id(&shows, &episode.id)
         .await
         .expect("get episode by id after delete");
     assert!(missing_episode.is_none());
 
-    ShowRepository::delete_collection(&catalog, &collection.id)
+    ShowRepository::delete_collection(&shows, &collection.id)
         .await
         .expect("delete collection");
-    let collections_after_delete = ShowRepository::list_collections_for_title(&catalog, &title.id)
+    let collections_after_delete = ShowRepository::list_collections_for_title(&shows, &title.id)
         .await
         .expect("list collections after delete");
     assert!(collections_after_delete.is_empty());
-    let missing_collection = ShowRepository::get_collection_by_id(&catalog, &collection.id)
+    let missing_collection = ShowRepository::get_collection_by_id(&shows, &collection.id)
         .await
         .expect("get collection by id after delete");
     assert!(missing_collection.is_none());
@@ -5744,7 +6505,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let library_state = library_state_store(&services);
+    let library_scan_unmatched = library_scan_unmatched_store(&services);
 
     let created_at = "2026-04-07T00:00:00Z".to_string();
     let updated_at = "2026-04-07T00:00:00Z".to_string();
@@ -5771,12 +6532,12 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         updated_at: updated_at.clone(),
     };
 
-    library_state
+    library_scan_unmatched
         .upsert_library_scan_unmatched_item(&item)
         .await
         .expect("insert unmatched item");
 
-    let count = library_state
+    let count = library_scan_unmatched
         .count_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -5786,7 +6547,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         .expect("count unmatched items after insert");
     assert_eq!(count, 1);
 
-    let listed = library_state
+    let listed = library_scan_unmatched
         .list_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -5817,12 +6578,12 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
         ..item.clone()
     };
 
-    library_state
+    library_scan_unmatched
         .upsert_library_scan_unmatched_item(&updated)
         .await
         .expect("update unmatched item");
 
-    let listed_after_update = library_state
+    let listed_after_update = library_scan_unmatched
         .list_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -5842,12 +6603,12 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     assert_eq!(listed_after_update[0].updated_at, updated.updated_at);
     assert_eq!(listed_after_update[0].search_attempts[0].result_count, 2);
 
-    library_state
+    library_scan_unmatched
         .delete_library_scan_unmatched_item(&item.library_id, MediaFacet::Movie, &item.item_path)
         .await
         .expect("delete unmatched item");
 
-    let count_after_delete = library_state
+    let count_after_delete = library_scan_unmatched
         .count_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -5869,7 +6630,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
     let services = SqliteServices::new(db.to_string_lossy())
         .await
         .expect("db should initialize");
-    let library_state = library_state_store(&services);
+    let library_scan_unmatched = library_scan_unmatched_store(&services);
 
     let ignored_item = LibraryScanUnmatchedItem {
         id: "library_scan_unmatched:ignored".to_string(),
@@ -5890,7 +6651,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
         updated_at: "2026-04-07T00:00:00Z".to_string(),
     };
 
-    library_state
+    library_scan_unmatched
         .upsert_library_scan_unmatched_item(&ignored_item)
         .await
         .expect("seed ignored item");
@@ -5902,12 +6663,12 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
         ..ignored_item.clone()
     };
 
-    library_state
+    library_scan_unmatched
         .upsert_library_scan_unmatched_item(&scan_refresh)
         .await
         .expect("refresh ignored item from scan");
 
-    let pending_count = library_state
+    let pending_count = library_scan_unmatched
         .count_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -5915,7 +6676,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
         )
         .await
         .expect("count pending items");
-    let ignored_count = library_state
+    let ignored_count = library_scan_unmatched
         .count_library_scan_unmatched_items(
             Some(MediaFacet::Movie),
             Some("/library"),
@@ -5926,7 +6687,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
     assert_eq!(pending_count, 0);
     assert_eq!(ignored_count, 1);
 
-    let stored = library_state
+    let stored = library_scan_unmatched
         .get_library_scan_unmatched_item(&ignored_item.id)
         .await
         .expect("load stored item")

@@ -147,7 +147,7 @@ export function MobileSearchOverlay({
     (title: import("@/lib/types").TitleRecord, facet: "movie" | "series" | "anime") => {
       const targetView: ViewId =
         facet === "series" ? "series" : facet === "anime" ? "anime" : "movies";
-      const tvdbId = title.externalIds
+      const tvdbId = (title.externalIds ?? [])
         .find((externalId) => externalId.source.toLowerCase() === "tvdb")
         ?.value.trim();
       const posterUrl = selectPosterVariantUrl(title.posterUrl, "w70");

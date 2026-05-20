@@ -31,6 +31,7 @@ const REMATCH_DERIVED_TAG_PREFIXES: &[&str] = &[
     "scryer:anime-status:",
 ];
 pub(crate) const HYDRATION_BULK_BATCH_SIZE: usize = 20;
+const EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE: i32 = 4;
 
 fn blocklist_episode_ids(data_json: Option<&str>) -> Vec<String> {
     let Some(raw) = data_json else {
@@ -103,24 +104,13 @@ fn unique_title_match(map: &HashMap<String, Vec<Title>>, key: Option<&str>) -> O
     (matches.len() == 1).then(|| matches[0].clone())
 }
 
-fn unique_episode_match(
-    episodes_by_tvdb: &HashMap<String, Vec<Episode>>,
-    episodes_by_number: &HashMap<(String, String), Vec<Episode>>,
-    tvdb_id: Option<&str>,
-    season_number: i32,
-    episode_number: i32,
-) -> Option<Episode> {
-    let tvdb_match = tvdb_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| episodes_by_tvdb.get(value))
-        .and_then(|matches| (matches.len() == 1).then(|| matches[0].clone()));
-
-    tvdb_match.or_else(|| {
-        let key = (season_number.to_string(), episode_number.to_string());
-        episodes_by_number
-            .get(&key)
-            .and_then(|matches| (matches.len() == 1).then(|| matches[0].clone()))
+fn parse_external_import_monitor_snapshot_line<T: serde::de::DeserializeOwned>(
+    line: &str,
+) -> AppResult<T> {
+    serde_json::from_str(line).map_err(|err| {
+        AppError::Validation(format!(
+            "failed to parse external import monitor snapshot line: {err}"
+        ))
     })
 }
 
@@ -624,6 +614,27 @@ impl AppUseCase {
             .await
     }
 
+    async fn read_explicit_download_client_routing_value(
+        &self,
+        scope_id: &str,
+    ) -> AppResult<Option<String>> {
+        if let Some(value) = self
+            .read_setting_string_value_explicit(
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                Some(scope_id),
+            )
+            .await?
+        {
+            return Ok(Some(value));
+        }
+
+        self.read_setting_string_value_explicit(
+            LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+            Some(scope_id),
+        )
+        .await
+    }
+
     /// Returns `Some(entry)` when the persisted JSON has an entry for this
     /// client in this scope, else `None`. Callers are responsible for applying
     /// the canonical default — the explicit fallback site — so the read path
@@ -631,9 +642,30 @@ impl AppUseCase {
     /// the startup `normalize_routing_settings` pass.
     async fn read_download_client_routing_entry(
         &self,
+        library_id: Option<&str>,
         facet: &MediaFacet,
         client_id: &str,
     ) -> AppResult<Option<DownloadClientRoutingEntry>> {
+        let client_id = client_id.trim();
+        if client_id.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(library_id) = library_id.map(str::trim).filter(|value| !value.is_empty())
+            && let Some(raw_json) = self
+                .read_explicit_download_client_routing_value(library_id)
+                .await?
+            && let Some(routing_map) = parse_download_client_routing_map(&raw_json)
+        {
+            if let Some(config) = routing_map.get(client_id) {
+                return Ok(Some(parse_download_client_routing_entry(config)));
+            }
+
+            let mut disabled_entry = default_download_client_routing_entry();
+            disabled_entry.enabled = false;
+            return Ok(Some(disabled_entry));
+        }
+
         let scope_id = facet.as_str();
 
         let Some(raw_json) = self.read_download_client_routing_value(scope_id).await? else {
@@ -651,11 +683,12 @@ impl AppUseCase {
 
     pub(crate) async fn should_remove_completed_download(
         &self,
+        library_id: Option<&str>,
         facet: &MediaFacet,
         client_id: &str,
     ) -> bool {
         match self
-            .read_download_client_routing_entry(facet, client_id)
+            .read_download_client_routing_entry(library_id, facet, client_id)
             .await
             .ok()
             .flatten()
@@ -667,11 +700,12 @@ impl AppUseCase {
 
     pub(crate) async fn should_remove_failed_download(
         &self,
+        library_id: Option<&str>,
         facet: &MediaFacet,
         client_id: &str,
     ) -> bool {
         match self
-            .read_download_client_routing_entry(facet, client_id)
+            .read_download_client_routing_entry(library_id, facet, client_id)
             .await
             .ok()
             .flatten()
@@ -724,6 +758,37 @@ impl AppUseCase {
             .catalog
             .titles
             .list_for_libraries(facet, &library_ids, query)
+            .await
+    }
+
+    pub async fn list_titles_without_external_ids(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        let mut library_ids = self
+            .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
+            .await?;
+        let requested_library_ids = requested_library_ids
+            .as_ref()
+            .map(|requested| {
+                requested
+                    .iter()
+                    .map(|library_id| library_id.trim())
+                    .filter(|library_id| !library_id.is_empty())
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_library_ids.is_empty() {
+            library_ids.retain(|library_id| requested_library_ids.contains(library_id));
+        }
+        self.services
+            .catalog
+            .titles
+            .list_for_libraries_without_external_ids(facet, &library_ids, query)
             .await
     }
 
@@ -3292,11 +3357,7 @@ impl AppUseCase {
         Ok(episode)
     }
 
-    async fn apply_movie_monitor_snapshot_entries(
-        &self,
-        entries: &[ExternalImportMonitorMovieEntry],
-        now: &DateTime<Utc>,
-    ) -> AppResult<()> {
+    async fn apply_movie_monitor_snapshot_chunks(&self, now: &DateTime<Utc>) -> AppResult<()> {
         let titles = self
             .services
             .catalog
@@ -3320,15 +3381,50 @@ impl AppUseCase {
         }
 
         let mut touched_title_ids = HashSet::new();
-        for entry in entries {
-            let matched_title = unique_title_match(&titles_by_tmdb, entry.tmdb_id.as_deref())
-                .or_else(|| unique_title_match(&titles_by_imdb, entry.imdb_id.as_deref()));
-            let Some(title) = matched_title else { continue };
-
-            let updated = self
-                .apply_title_monitoring_change(None, &title.id, entry.monitored)
+        let mut processed_chunk_count = 0i32;
+        let mut after_chunk_index = None;
+        loop {
+            let chunks = self
+                .services
+                .workflow
+                .external_import_monitor_snapshots
+                .list_external_import_monitor_snapshot_chunk_batch(
+                    MediaFacet::Movie,
+                    ExternalImportMonitorSnapshotEntryKind::Movie,
+                    after_chunk_index,
+                    EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE,
+                )
                 .await?;
-            touched_title_ids.insert(updated.id);
+            if chunks.is_empty() {
+                break;
+            }
+
+            for chunk in chunks {
+                after_chunk_index = Some(chunk.chunk_index);
+                processed_chunk_count += 1;
+                for line in chunk
+                    .payload_ndjson
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                {
+                    let entry: ExternalImportMonitorMovieEntry =
+                        parse_external_import_monitor_snapshot_line(line)?;
+                    let matched_title =
+                        unique_title_match(&titles_by_tmdb, entry.tmdb_id.as_deref()).or_else(
+                            || unique_title_match(&titles_by_imdb, entry.imdb_id.as_deref()),
+                        );
+                    let Some(title) = matched_title else { continue };
+
+                    let updated = self
+                        .apply_title_monitoring_change(None, &title.id, entry.monitored)
+                        .await?;
+                    touched_title_ids.insert(updated.id);
+                }
+            }
+        }
+        if processed_chunk_count == 0 {
+            return Ok(());
         }
 
         for title_id in touched_title_ids {
@@ -3350,10 +3446,146 @@ impl AppUseCase {
         Ok(())
     }
 
-    async fn apply_series_monitor_snapshot_entries(
+    async fn apply_series_monitor_snapshot_entry(
+        &self,
+        title: &Title,
+        entry: &ExternalImportMonitorSeriesEntry,
+    ) -> AppResult<(bool, bool)> {
+        let updated_title = self
+            .apply_title_monitoring_change(None, &title.id, entry.monitored)
+            .await?;
+        let collections = self
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(&title.id)
+            .await?;
+        let episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await?;
+
+        let mut season_overrides = HashMap::<String, bool>::new();
+        for season in &entry.seasons {
+            season_overrides.insert(season.season_number.to_string(), season.monitored);
+        }
+
+        let mut episode_overrides_by_tvdb = HashMap::<String, bool>::new();
+        let mut episode_overrides_by_number = HashMap::<(String, String), bool>::new();
+        for episode in &entry.episodes {
+            if let Some(tvdb_id) = episode.tvdb_id.as_deref().map(str::trim)
+                && !tvdb_id.is_empty()
+            {
+                episode_overrides_by_tvdb.insert(tvdb_id.to_string(), episode.monitored);
+            }
+            episode_overrides_by_number.insert(
+                (
+                    episode.season_number.to_string(),
+                    episode.episode_number.to_string(),
+                ),
+                episode.monitored,
+            );
+        }
+
+        let mut collections_with_monitored_episodes = HashSet::new();
+        let mut episodes_to_enable = Vec::new();
+        let mut episodes_to_disable = Vec::new();
+        for episode in &episodes {
+            let season_default = episode
+                .season_number
+                .as_deref()
+                .map(str::trim)
+                .and_then(|season_number| season_overrides.get(season_number))
+                .copied()
+                .unwrap_or(entry.monitored);
+            let desired = episode
+                .tvdb_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .and_then(|tvdb_id| episode_overrides_by_tvdb.get(tvdb_id))
+                .copied()
+                .or_else(|| {
+                    let season_number = episode.season_number.as_deref()?.trim();
+                    let episode_number = episode.episode_number.as_deref()?.trim();
+                    episode_overrides_by_number
+                        .get(&(season_number.to_string(), episode_number.to_string()))
+                        .copied()
+                })
+                .unwrap_or(season_default);
+            if desired && let Some(collection_id) = episode.collection_id.as_deref() {
+                collections_with_monitored_episodes.insert(collection_id.to_string());
+            }
+            if episode.monitored != desired {
+                if desired {
+                    episodes_to_enable.push(episode.id.clone());
+                } else {
+                    episodes_to_disable.push(episode.id.clone());
+                }
+            }
+        }
+
+        let mut collections_to_enable = Vec::new();
+        let mut collections_to_disable = Vec::new();
+        for collection in &collections {
+            let desired = season_overrides
+                .get(collection.collection_index.trim())
+                .copied()
+                .unwrap_or(entry.monitored)
+                || collections_with_monitored_episodes.contains(&collection.id);
+            if collection.monitored != desired {
+                if desired {
+                    collections_to_enable.push(collection.id.clone());
+                } else {
+                    collections_to_disable.push(collection.id.clone());
+                }
+            }
+        }
+
+        if !collections_to_disable.is_empty() {
+            self.services
+                .catalog
+                .shows
+                .set_collections_monitored(&collections_to_disable, false)
+                .await?;
+        }
+        if !collections_to_enable.is_empty() {
+            self.services
+                .catalog
+                .shows
+                .set_collections_monitored(&collections_to_enable, true)
+                .await?;
+        }
+        if !episodes_to_disable.is_empty() {
+            self.services
+                .catalog
+                .shows
+                .set_episodes_monitored(&episodes_to_disable, false)
+                .await?;
+        }
+        if !episodes_to_enable.is_empty() {
+            self.services
+                .catalog
+                .shows
+                .set_episodes_monitored(&episodes_to_enable, true)
+                .await?;
+        }
+
+        Ok((
+            updated_title.monitored != title.monitored
+                || !collections_to_enable.is_empty()
+                || !collections_to_disable.is_empty()
+                || !episodes_to_enable.is_empty()
+                || !episodes_to_disable.is_empty(),
+            updated_title.monitored != title.monitored,
+        ))
+    }
+
+    async fn apply_series_monitor_snapshot_chunks(
         &self,
         facet: &MediaFacet,
-        entries: &[ExternalImportMonitorSeriesEntry],
         now: &DateTime<Utc>,
     ) -> AppResult<()> {
         let titles = self
@@ -3373,101 +3605,55 @@ impl AppUseCase {
         }
 
         let mut touched_title_ids = HashSet::new();
-        for entry in entries {
-            let Some(title) = unique_title_match(&titles_by_tvdb, entry.tvdb_id.as_deref()) else {
-                continue;
-            };
-
-            let updated_title = self
-                .apply_title_monitoring_change(None, &title.id, entry.monitored)
-                .await?;
-            touched_title_ids.insert(updated_title.id.clone());
-
-            let collections = self
+        let mut title_ids_needing_activity = HashSet::<String>::new();
+        let mut processed_chunk_count = 0i32;
+        let mut after_chunk_index = None;
+        loop {
+            let chunks = self
                 .services
-                .catalog
-                .shows
-                .list_collections_for_title(&updated_title.id)
+                .workflow
+                .external_import_monitor_snapshots
+                .list_external_import_monitor_snapshot_chunk_batch(
+                    facet.clone(),
+                    ExternalImportMonitorSnapshotEntryKind::Series,
+                    after_chunk_index,
+                    EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE,
+                )
                 .await?;
-            let episodes = self
-                .services
-                .catalog
-                .shows
-                .list_episodes_for_title(&updated_title.id)
-                .await?;
-
-            let mut collections_by_season = HashMap::<String, Collection>::new();
-            let mut episodes_by_tvdb = HashMap::<String, Vec<Episode>>::new();
-            let mut episodes_by_number = HashMap::<(String, String), Vec<Episode>>::new();
-
-            for collection in &collections {
-                collections_by_season
-                    .entry(collection.collection_index.clone())
-                    .or_insert_with(|| collection.clone());
+            if chunks.is_empty() {
+                break;
             }
 
-            for episode in &episodes {
-                if let Some(tvdb_id) = episode.tvdb_id.as_deref().filter(|value| !value.is_empty())
+            for chunk in chunks {
+                after_chunk_index = Some(chunk.chunk_index);
+                processed_chunk_count += 1;
+                for line in chunk
+                    .payload_ndjson
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
                 {
-                    episodes_by_tvdb
-                        .entry(tvdb_id.to_string())
-                        .or_default()
-                        .push(episode.clone());
-                }
-                if let (Some(season_number), Some(episode_number)) = (
-                    episode.season_number.as_deref(),
-                    episode.episode_number.as_deref(),
-                ) {
-                    episodes_by_number
-                        .entry((season_number.to_string(), episode_number.to_string()))
-                        .or_default()
-                        .push(episode.clone());
-                }
-            }
+                    let entry: ExternalImportMonitorSeriesEntry =
+                        parse_external_import_monitor_snapshot_line(line)?;
+                    let Some(title) = unique_title_match(&titles_by_tvdb, entry.tvdb_id.as_deref())
+                    else {
+                        continue;
+                    };
 
-            for collection in &collections {
-                self.apply_collection_monitoring_change(None, &collection.id, false, false, false)
-                    .await?;
-            }
-            for episode in &episodes {
-                self.apply_episode_monitoring_change(None, &episode.id, false, false)
-                    .await?;
-            }
-
-            if updated_title.monitored {
-                for season in entry.seasons.iter().filter(|season| season.monitored) {
-                    if let Some(collection) =
-                        collections_by_season.get(&season.season_number.to_string())
-                    {
-                        self.apply_collection_monitoring_change(
-                            None,
-                            &collection.id,
-                            true,
-                            false,
-                            false,
-                        )
+                    let (changed, title_activity_emitted) = self
+                        .apply_series_monitor_snapshot_entry(&title, &entry)
                         .await?;
-                    }
-                }
-
-                for episode in entry.episodes.iter().filter(|episode| episode.monitored) {
-                    if let Some(matched_episode) = unique_episode_match(
-                        &episodes_by_tvdb,
-                        &episodes_by_number,
-                        episode.tvdb_id.as_deref(),
-                        episode.season_number,
-                        episode.episode_number,
-                    ) {
-                        self.apply_episode_monitoring_change(
-                            None,
-                            &matched_episode.id,
-                            true,
-                            false,
-                        )
-                        .await?;
+                    if changed {
+                        touched_title_ids.insert(title.id.clone());
+                        if !title_activity_emitted {
+                            title_ids_needing_activity.insert(title.id.clone());
+                        }
                     }
                 }
             }
+        }
+        if processed_chunk_count == 0 {
+            return Ok(());
         }
 
         for title_id in touched_title_ids {
@@ -3475,15 +3661,10 @@ impl AppUseCase {
                 continue;
             };
 
-            if title.monitored {
-                self.sync_wanted_series_inner(&title, now, true).await;
-            } else {
-                self.services
-                    .workflow
-                    .wanted_items
-                    .delete_wanted_items_for_title(&title.id)
-                    .await?;
+            if title_ids_needing_activity.contains(&title_id) {
+                self.emit_title_updated_activity(None, &title).await;
             }
+            self.sync_wanted_series_inner(&title, now, true).await;
         }
 
         Ok(())
@@ -3493,35 +3674,43 @@ impl AppUseCase {
         &self,
         facet: &MediaFacet,
     ) -> AppResult<bool> {
-        let Some(snapshot) = self.pending_external_import_monitor_snapshot(facet).await? else {
-            return Ok(false);
-        };
-
         let now = Utc::now();
-        match (&snapshot.facet, &snapshot.payload) {
-            (MediaFacet::Movie, ExternalImportMonitorSnapshotPayload::Movie { entries }) => {
-                self.apply_movie_monitor_snapshot_entries(entries, &now)
-                    .await?;
+        let chunk_entry_kind = match facet {
+            MediaFacet::Movie => ExternalImportMonitorSnapshotEntryKind::Movie,
+            MediaFacet::Series | MediaFacet::Anime => {
+                ExternalImportMonitorSnapshotEntryKind::Series
             }
-            (
-                MediaFacet::Series | MediaFacet::Anime,
-                ExternalImportMonitorSnapshotPayload::Series { entries },
-            ) => {
-                self.apply_series_monitor_snapshot_entries(&snapshot.facet, entries, &now)
-                    .await?;
+        };
+        let chunk_batch = self
+            .services
+            .workflow
+            .external_import_monitor_snapshots
+            .list_external_import_monitor_snapshot_chunk_batch(
+                facet.clone(),
+                chunk_entry_kind,
+                None,
+                1,
+            )
+            .await?;
+
+        if chunk_batch.is_empty() {
+            return Ok(false);
+        }
+
+        match facet {
+            MediaFacet::Movie => {
+                self.apply_movie_monitor_snapshot_chunks(&now).await?;
             }
-            (snapshot_facet, _) => {
-                return Err(AppError::Validation(format!(
-                    "monitor snapshot payload did not match facet {}",
-                    snapshot_facet.as_str()
-                )));
+            MediaFacet::Series | MediaFacet::Anime => {
+                self.apply_series_monitor_snapshot_chunks(facet, &now)
+                    .await?;
             }
         }
 
         self.services
             .workflow
             .external_import_monitor_snapshots
-            .delete_external_import_monitor_snapshot(facet)
+            .delete_external_import_monitor_snapshot_chunks(facet.clone())
             .await?;
 
         Ok(true)
@@ -4417,6 +4606,28 @@ impl AppUseCase {
 
     pub async fn get_title(&self, actor: &User, id: &str) -> AppResult<Option<Title>> {
         let title = self.services.catalog.titles.get_by_id(id).await?;
+        if let Some(title) = title.as_ref() {
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        }
+        Ok(title)
+    }
+
+    pub async fn get_title_without_external_ids(
+        &self,
+        actor: &User,
+        id: &str,
+    ) -> AppResult<Option<Title>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id_without_external_ids(id)
+            .await?;
         if let Some(title) = title.as_ref() {
             self.require_library_permission(
                 actor,

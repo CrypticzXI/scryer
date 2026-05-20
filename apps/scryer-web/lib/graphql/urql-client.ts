@@ -86,12 +86,40 @@ function redirectToLogin() {
   window.location.replace(destination);
 }
 
+function getHealthUrl() {
+  const basePath = getRuntimeBasePath();
+  return basePath === "/" ? "/health" : `${basePath}/health`;
+}
+
+async function backendHealthLooksOk(): Promise<boolean> {
+  try {
+    const response = await fetch(getHealthUrl(), {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        accept: "application/json",
+      },
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const body = await response.json().catch(() => null);
+    return isRecord(body) && body.status === "ok";
+  } catch {
+    return false;
+  }
+}
+
 export const scryerFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
   const ct = response.headers.get("content-type") ?? "";
   if (ct.includes("text/html")) {
-    onBackendRestarting?.();
-    throw new TypeError("Service is restarting");
+    const backendHealthy = await backendHealthLooksOk();
+    if (!backendHealthy) {
+      onBackendRestarting?.();
+      throw new TypeError("Service is restarting");
+    }
+    throw new TypeError("Unexpected HTML response from backend");
   }
 
   if (ct.includes("application/json")) {

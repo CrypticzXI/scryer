@@ -2,7 +2,9 @@ use async_graphql::{Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
     AcquisitionSettings as AppAcquisitionSettings, QualityProfile, QualityProfileCriteria,
-    SecuritySettings as AppSecuritySettings, UpdateGeneralSettings as AppUpdateGeneralSettings,
+    SecuritySettings as AppSecuritySettings,
+    UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
+    UpdateGeneralSettings as AppUpdateGeneralSettings,
     UpdateSecuritySettings as AppUpdateSecuritySettings,
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
@@ -67,6 +69,17 @@ fn from_general_settings(settings: scryer_application::GeneralSettings) -> Gener
     }
 }
 
+fn from_auto_backup_settings(
+    settings: scryer_application::AutoBackupSettings,
+) -> AutoBackupSettingsPayload {
+    AutoBackupSettingsPayload {
+        enabled: settings.enabled,
+        daily_time_local: settings.daily_time_local,
+        auto_backup_key_present: settings.auto_backup_key_present,
+        next_run_at: settings.next_run_at,
+    }
+}
+
 fn from_security_settings(
     settings: AppSecuritySettings,
     auth_runtime: &crate::context::AuthRuntimeStateSnapshot,
@@ -123,6 +136,14 @@ fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
             .collect::<Vec<_>>()
     };
 
+    let normalize_video_codec_list = |values: Vec<scryer_application::VideoCodec>| {
+        let mut seen = std::collections::HashSet::new();
+        values
+            .into_iter()
+            .filter(|codec| seen.insert(codec.to_string()))
+            .collect::<Vec<_>>()
+    };
+
     let criteria = profile.criteria;
     let mut facet_persona_overrides = std::collections::HashMap::new();
     for (scope, persona) in criteria.facet_persona_overrides {
@@ -143,8 +164,8 @@ fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
             allow_unknown_quality: criteria.allow_unknown_quality,
             source_allowlist: normalize_list(criteria.source_allowlist),
             source_blocklist: normalize_list(criteria.source_blocklist),
-            video_codec_allowlist: normalize_list(criteria.video_codec_allowlist),
-            video_codec_blocklist: normalize_list(criteria.video_codec_blocklist),
+            video_codec_allowlist: normalize_video_codec_list(criteria.video_codec_allowlist),
+            video_codec_blocklist: normalize_video_codec_list(criteria.video_codec_blocklist),
             audio_codec_allowlist: normalize_list(criteria.audio_codec_allowlist),
             audio_codec_blocklist: normalize_list(criteria.audio_codec_blocklist),
             atmos_preferred: criteria.atmos_preferred,
@@ -172,6 +193,14 @@ fn quality_profile_from_input(
     existing: Option<&QualityProfile>,
 ) -> GqlResult<QualityProfile> {
     let criteria = input.criteria;
+    let video_codec_allowlist = parse_video_codec_values(
+        criteria.video_codec_allowlist,
+        "criteria.video_codec_allowlist",
+    )?;
+    let video_codec_blocklist = parse_video_codec_values(
+        criteria.video_codec_blocklist,
+        "criteria.video_codec_blocklist",
+    )?;
 
     let profile = normalize_quality_profile(QualityProfile {
         id: input.id,
@@ -182,8 +211,8 @@ fn quality_profile_from_input(
             allow_unknown_quality: criteria.allow_unknown_quality,
             source_allowlist: criteria.source_allowlist,
             source_blocklist: criteria.source_blocklist,
-            video_codec_allowlist: criteria.video_codec_allowlist,
-            video_codec_blocklist: criteria.video_codec_blocklist,
+            video_codec_allowlist,
+            video_codec_blocklist,
             audio_codec_allowlist: criteria.audio_codec_allowlist,
             audio_codec_blocklist: criteria.audio_codec_blocklist,
             atmos_preferred: existing
@@ -217,6 +246,21 @@ fn quality_profile_from_input(
     }
 
     Ok(profile)
+}
+
+fn parse_video_codec_values(
+    values: Vec<String>,
+    field: &str,
+) -> GqlResult<Vec<scryer_application::VideoCodec>> {
+    values
+        .into_iter()
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            scryer_application::VideoCodec::parse(trimmed.as_str()).ok_or_else(|| {
+                async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
+            })
+        })
+        .collect()
 }
 
 #[Object]
@@ -311,6 +355,30 @@ impl SettingsMutations {
             .map_err(to_gql_error)?;
 
         Ok(from_general_settings(settings))
+    }
+
+    async fn update_auto_backup_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateAutoBackupSettingsInput,
+    ) -> GqlResult<AutoBackupSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+
+        let settings = app
+            .update_auto_backup_settings(
+                &actor,
+                AppUpdateAutoBackupSettings {
+                    enabled: input.enabled,
+                    daily_time_local: input.daily_time_local,
+                    set_auto_backup_key: input.set_auto_backup_key,
+                    clear_auto_backup_key: input.clear_auto_backup_key,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_auto_backup_settings(settings))
     }
 
     async fn update_security_settings(

@@ -7,36 +7,15 @@ fn to_u64<T: Into<u64>>(value: T) -> u64 {
     value.into()
 }
 
-fn app_permission_mask_from_entitlements(
-    entitlements: &[Entitlement],
-) -> scryer_domain::AppPermissionMask {
-    let mut permissions = scryer_domain::AppPermissionMask::NONE;
-    if entitlements.contains(&Entitlement::ManageUsers) {
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_USERS);
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_PERMISSIONS);
-    }
-    if entitlements.contains(&Entitlement::ManageConfig) {
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_SYSTEM_SETTINGS);
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_CATALOG_SETTINGS);
-    }
-    permissions
-}
-
 impl AppUseCase {
     async fn ensure_user_admin_permission_masks(&self, user: &User) -> AppResult<()> {
+        let admin_authorization = scryer_domain::UserAuthorization::full_admin();
         self.services
             .catalog
             .libraries
-            .set_app_permission_mask_for_user(
-                &user.id,
-                scryer_domain::AppPermissionMask::from_permissions([
-                    scryer_domain::AppPermission::ManageUsers,
-                    scryer_domain::AppPermission::ManagePermissions,
-                    scryer_domain::AppPermission::ManageSystemSettings,
-                    scryer_domain::AppPermission::ManageCatalogSettings,
-                ]),
-            )
+            .set_app_permission_mask_for_user(&user.id, admin_authorization.app)
             .await?;
+        let mut seen_library_ids = std::collections::HashSet::new();
         let grants = self
             .services
             .catalog
@@ -44,17 +23,15 @@ impl AppUseCase {
             .list(None)
             .await?
             .into_iter()
-            .map(|library| scryer_domain::LibraryGrant {
-                user_id: user.id.clone(),
-                library_id: library.id,
-                permissions: scryer_domain::LibraryPermissionMask::from_permissions([
-                    scryer_domain::LibraryPermission::View,
-                    scryer_domain::LibraryPermission::ManageTitles,
-                    scryer_domain::LibraryPermission::ResolveImports,
-                    scryer_domain::LibraryPermission::ManageLibrary,
-                    scryer_domain::LibraryPermission::Request,
-                    scryer_domain::LibraryPermission::AutoApproveRequests,
-                ]),
+            .filter_map(|library| {
+                if !seen_library_ids.insert(library.id.clone()) {
+                    return None;
+                }
+                Some(scryer_domain::LibraryGrant {
+                    user_id: user.id.clone(),
+                    library_id: library.id,
+                    permissions: admin_authorization.default_library,
+                })
             })
             .collect();
         self.services
@@ -95,19 +72,20 @@ impl AppUseCase {
             recent_event_preview.push(event.message.clone());
         }
 
-        let db_migration_version = self
-            .services
-            .config
-            .system_info
-            .current_migration_version()
-            .await
-            .ok()
-            .flatten();
+        let datastore_info = self.services.config.system_info.datastore_info().await.ok();
+        let db_migration_version = datastore_info
+            .as_ref()
+            .and_then(|info| info.current_migration_key.clone());
+        let datastore_engine = datastore_info
+            .map(|info| info.engine)
+            .unwrap_or_else(|| "unknown".to_string());
         let indexer_stats = self.services.integrations.indexer_stats.all_stats();
 
         Ok(SystemHealth {
             service_ready: true,
-            db_path: self.services.config.db_path.clone(),
+            db_path: datastore_engine.clone(),
+            datastore_engine,
+            datastore_migration_key: db_migration_version.clone(),
             total_titles: titles.len(),
             monitored_titles,
             total_users: users.len(),
@@ -223,8 +201,6 @@ impl AppUseCase {
         if password.trim().is_empty() {
             return Err(AppError::Validation("admin password is required".into()));
         }
-        let desired_entitlements = User::all_entitlements();
-
         if let Some(mut found) = self
             .services
             .identity
@@ -232,14 +208,6 @@ impl AppUseCase {
             .get_by_username(username)
             .await?
         {
-            if !found.has_all_entitlements() {
-                found = self
-                    .services
-                    .identity
-                    .users
-                    .update_entitlements(&found.id, desired_entitlements)
-                    .await?;
-            }
             self.ensure_user_admin_permission_masks(&found).await?;
             // Migration-seeded admin may lack a password hash — set one.
             if found.password_hash.is_none() {
@@ -258,7 +226,6 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.to_string(),
             password_hash: Some(self.hash_password(password)?),
-            entitlements: desired_entitlements,
             authorization: Default::default(),
         };
 
@@ -279,34 +246,8 @@ impl AppUseCase {
         self.ensure_default_admin("admin", "admin").await
     }
 
-    pub async fn migrate_user_entitlements(&self) -> AppResult<u32> {
-        let users = self.services.identity.users.list_all().await?;
-        let mut migrated = 0u32;
-
-        for user in users {
-            if !user.has_entitlement(&Entitlement::ManageConfig)
-                || user.has_entitlement(&Entitlement::ManageUsers)
-            {
-                continue;
-            }
-
-            let mut entitlements = user.entitlements.clone();
-            entitlements.push(Entitlement::ManageUsers);
-            let app_permissions = app_permission_mask_from_entitlements(&entitlements);
-            self.services
-                .identity
-                .users
-                .update_entitlements(&user.id, entitlements)
-                .await?;
-            self.services
-                .catalog
-                .libraries
-                .set_app_permission_mask_for_user(&user.id, app_permissions)
-                .await?;
-            migrated += 1;
-        }
-
-        Ok(migrated)
+    pub async fn find_default_user(&self) -> AppResult<Option<User>> {
+        self.services.identity.users.get_by_username("admin").await
     }
 
     pub async fn list_users(&self, actor: &User) -> AppResult<Vec<User>> {
@@ -366,7 +307,6 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.clone(),
             password_hash: Some(password_hash),
-            entitlements: Vec::new(),
             authorization: Default::default(),
         };
 

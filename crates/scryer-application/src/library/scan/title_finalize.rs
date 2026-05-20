@@ -1,4 +1,5 @@
 use super::*;
+use crate::stored_paths::stored_path_to_path_buf;
 
 struct ExistingScannedMediaFile<'a> {
     file_id: &'a str,
@@ -372,12 +373,13 @@ pub(crate) async fn finalize_title_scan_file(
             .await;
     }
 
+    let file_path = stored_path_to_path_buf(&file.path);
     match crate::subtitles::reconcile_external_subtitles_for_media_file(
         app,
         &title.id,
         &persisted_file.file_id,
         external_subtitle_episode_id,
-        Path::new(&file.path),
+        file_path.as_path(),
     )
     .await
     {
@@ -435,7 +437,8 @@ pub(super) async fn finalize_movie_scan_file(
     summary: &mut LibraryScanSummary,
     cancel_token: Option<&CancellationToken>,
 ) {
-    let file_stem = Path::new(&file.path)
+    let file_path = stored_path_to_path_buf(&file.path);
+    let file_stem = file_path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
@@ -444,7 +447,7 @@ pub(super) async fn finalize_movie_scan_file(
     let snapshot = if let Some(snapshot) = file_source_snapshot_from_library_file(file) {
         snapshot
     } else {
-        let metadata = match tokio::fs::metadata(&file.path).await {
+        let metadata = match tokio::fs::metadata(&file_path).await {
             Ok(metadata) => metadata,
             Err(error) => {
                 warn!(
@@ -525,7 +528,7 @@ pub(super) async fn finalize_movie_scan_file(
         &title.id,
         &persisted_file.file_id,
         None,
-        Path::new(&file.path),
+        file_path.as_path(),
     )
     .await
     {
@@ -554,7 +557,7 @@ pub(super) async fn finalize_movie_scan_file(
             .services
             .library
             .media_analyzer
-            .analyze_file(PathBuf::from(&file.path))
+            .analyze_file(file_path.clone())
             .await
         {
             Ok(outcome) => outcome,

@@ -1,4 +1,4 @@
-import { ArrowLeft, ExternalLink, Film, Loader2, Monitor } from "lucide-react";
+import { ArrowLeft, ExternalLink, Film, Loader2, Monitor, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -8,14 +8,21 @@ interface SetupImportConnectViewProps {
   sonarrApiKey: string;
   radarrUrl: string;
   radarrApiKey: string;
+  prowlarrUrl: string;
+  prowlarrApiKey: string;
   onSonarrUrlChange: (v: string) => void;
   onSonarrApiKeyChange: (v: string) => void;
   onRadarrUrlChange: (v: string) => void;
   onRadarrApiKeyChange: (v: string) => void;
+  onProwlarrUrlChange: (v: string) => void;
+  onProwlarrApiKeyChange: (v: string) => void;
   onConnect: () => void;
   onBack: () => void;
   connecting: boolean;
   error: string | null;
+  sonarrError: string | null;
+  radarrError: string | null;
+  prowlarrError: string | null;
 }
 
 function normalizeUrl(raw: string): string {
@@ -42,21 +49,30 @@ export function SetupImportConnectView({
   sonarrApiKey,
   radarrUrl,
   radarrApiKey,
+  prowlarrUrl,
+  prowlarrApiKey,
   onSonarrUrlChange,
   onSonarrApiKeyChange,
   onRadarrUrlChange,
   onRadarrApiKeyChange,
+  onProwlarrUrlChange,
+  onProwlarrApiKeyChange,
   onConnect,
   onBack,
   connecting,
   error,
+  sonarrError,
+  radarrError,
+  prowlarrError,
 }: SetupImportConnectViewProps) {
   const hasSonarr = sonarrUrl.trim().length > 0 && sonarrApiKey.trim().length > 0;
   const hasRadarr = radarrUrl.trim().length > 0 && radarrApiKey.trim().length > 0;
-  const canConnect = hasSonarr || hasRadarr;
+  const hasProwlarr = prowlarrUrl.trim().length > 0 && prowlarrApiKey.trim().length > 0;
+  const canConnect = hasSonarr || hasRadarr || hasProwlarr;
 
   const sonarrSettingsUrl = settingsUrl(sonarrUrl);
   const radarrSettingsUrl = settingsUrl(radarrUrl);
+  const prowlarrSettingsUrl = settingsUrl(prowlarrUrl);
 
   return (
     <div className="w-full space-y-6">
@@ -65,7 +81,7 @@ export function SetupImportConnectView({
         <p className="text-sm text-muted-foreground">{t("setup.connectDescription")}</p>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid gap-6 xl:grid-cols-3">
         {/* Sonarr */}
         <div className="space-y-3 rounded-lg border border-border p-4">
           <div className="flex items-center gap-2 font-medium">
@@ -86,9 +102,22 @@ export function SetupImportConnectView({
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
-              {t("setup.sonarrApiKey")}
-            </label>
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <label className="block text-xs text-muted-foreground">
+                {t("setup.sonarrApiKey")}
+              </label>
+              {sonarrSettingsUrl ? (
+                <a
+                  href={sonarrSettingsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:underline"
+                >
+                  {t("setup.findApiKey")}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              ) : null}
+            </div>
             <Input
               type="password"
               value={sonarrApiKey}
@@ -96,18 +125,8 @@ export function SetupImportConnectView({
               placeholder="API key from Settings > General"
               className="font-mono text-xs"
             />
-            {sonarrSettingsUrl ? (
-              <a
-                href={sonarrSettingsUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-blue-500 hover:underline"
-              >
-                {t("setup.findApiKey")}
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            ) : null}
           </div>
+          {sonarrError ? <p className="text-xs text-destructive">{sonarrError}</p> : null}
         </div>
 
         {/* Radarr */}
@@ -130,9 +149,22 @@ export function SetupImportConnectView({
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
-              {t("setup.radarrApiKey")}
-            </label>
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <label className="block text-xs text-muted-foreground">
+                {t("setup.radarrApiKey")}
+              </label>
+              {radarrSettingsUrl ? (
+                <a
+                  href={radarrSettingsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] text-amber-500 hover:underline"
+                >
+                  {t("setup.findApiKey")}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              ) : null}
+            </div>
             <Input
               type="password"
               value={radarrApiKey}
@@ -140,18 +172,55 @@ export function SetupImportConnectView({
               placeholder="API key from Settings > General"
               className="font-mono text-xs"
             />
-            {radarrSettingsUrl ? (
-              <a
-                href={radarrSettingsUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-amber-500 hover:underline"
-              >
-                {t("setup.findApiKey")}
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            ) : null}
           </div>
+          {radarrError ? <p className="text-xs text-destructive">{radarrError}</p> : null}
+        </div>
+
+        {/* Prowlarr */}
+        <div className="space-y-3 rounded-lg border border-border p-4">
+          <div className="flex items-center gap-2 font-medium">
+            <Search className="h-4 w-4 text-emerald-500" />
+            <span>Prowlarr</span>
+            <span className="text-xs text-muted-foreground">(managed indexers)</span>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              {t("setup.prowlarrUrl")}
+            </label>
+            <Input
+              value={prowlarrUrl}
+              onChange={(e) => onProwlarrUrlChange(e.target.value)}
+              onBlur={() => onProwlarrUrlChange(normalizeUrl(prowlarrUrl))}
+              placeholder="http://localhost:9696"
+              className="font-mono text-xs"
+            />
+          </div>
+          <div>
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <label className="block text-xs text-muted-foreground">
+                {t("setup.prowlarrApiKey")}
+              </label>
+              {prowlarrSettingsUrl ? (
+                <a
+                  href={prowlarrSettingsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] text-emerald-500 hover:underline"
+                >
+                  {t("setup.findApiKey")}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              ) : null}
+            </div>
+            <Input
+              type="password"
+              value={prowlarrApiKey}
+              onChange={(e) => onProwlarrApiKeyChange(e.target.value)}
+              placeholder="API key from Settings > General"
+              className="font-mono text-xs"
+            />
+          </div>
+          {prowlarrError ? <p className="text-xs text-destructive">{prowlarrError}</p> : null}
         </div>
       </div>
 

@@ -3,6 +3,7 @@ use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
 use crate::quality_profile::ScoringSource;
 use crate::quality_profile::evaluate_against_profile_for_category;
 use scryer_domain::TaggedAlias;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::task::JoinSet;
@@ -104,6 +105,146 @@ pub(crate) fn release_search_key(result: &IndexerSearchResult) -> String {
     }
 
     result.title.clone()
+}
+
+fn looks_like_structured_query_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let upper = trimmed.to_ascii_uppercase();
+    if upper == "OVA" || upper == "SPECIAL" {
+        return true;
+    }
+
+    if let Some(rest) = upper.strip_prefix('S') {
+        if rest.chars().all(|ch| ch.is_ascii_digit()) {
+            return true;
+        }
+        if let Some((season_part, episode_part)) = rest.split_once('E') {
+            return !season_part.is_empty()
+                && !episode_part.is_empty()
+                && season_part.chars().all(|ch| ch.is_ascii_digit())
+                && episode_part.chars().all(|ch| ch.is_ascii_digit());
+        }
+    }
+
+    false
+}
+
+fn normalize_structured_dispatch_query(query: &str, absolute_episode: Option<u32>) -> String {
+    let mut tokens: Vec<&str> = query.split_whitespace().collect();
+    while let Some(last) = tokens.last().copied() {
+        let trimmed = last.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+        if trimmed.is_empty() {
+            tokens.pop();
+            continue;
+        }
+
+        let removable_numeric = absolute_episode.is_some_and(|value| {
+            trimmed.chars().all(|ch| ch.is_ascii_digit())
+                && trimmed.parse::<u32>().ok() == Some(value)
+        });
+        let removable_structured = removable_numeric || looks_like_structured_query_token(trimmed);
+        if removable_structured {
+            tokens.pop();
+            continue;
+        }
+        break;
+    }
+
+    tokens.join(" ").trim().to_string()
+}
+
+fn dedupe_structured_dispatch_queries(
+    queries: Vec<String>,
+    season: Option<u32>,
+    episode: Option<u32>,
+    absolute_episode: Option<u32>,
+) -> Vec<String> {
+    if season.is_none() && episode.is_none() && absolute_episode.is_none() {
+        return queries;
+    }
+
+    let mut deduped = Vec::with_capacity(queries.len());
+    let mut seen = std::collections::HashSet::new();
+
+    for query in queries {
+        let normalized = normalize_structured_dispatch_query(&query, absolute_episode);
+        let key_source = if normalized.is_empty() {
+            query.trim()
+        } else {
+            normalized.as_str()
+        };
+        if seen.insert(key_source.to_ascii_lowercase()) {
+            deduped.push(query);
+        }
+    }
+
+    deduped
+}
+
+fn should_collapse_structured_nab_queries(
+    configs: &[IndexerConfig],
+    routing: Option<&IndexerRoutingPlan>,
+    mode: SearchMode,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if configs.is_empty() {
+        return false;
+    }
+
+    let mut saw_nab_transport = false;
+
+    for config in configs {
+        if !config.is_enabled {
+            continue;
+        }
+        if config.disabled_until.is_some_and(|until| until > now) {
+            continue;
+        }
+
+        let mode_ok = match mode {
+            SearchMode::Interactive => config.enable_interactive_search,
+            SearchMode::Auto => auto_mode_enabled_for_structured_collapse(config),
+        };
+        if !mode_ok {
+            continue;
+        }
+
+        let routing_entry = routing.and_then(|plan| plan.entries.get(&config.id));
+        if routing_entry.is_some_and(|entry| !entry.enabled) {
+            continue;
+        }
+
+        match config.nab_transport_kind() {
+            Some(_) => saw_nab_transport = true,
+            None => return false,
+        }
+    }
+
+    saw_nab_transport
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ManagedIndexerAutoModeMetadata {
+    enable_automatic_search: Option<bool>,
+}
+
+fn auto_mode_enabled_for_structured_collapse(config: &IndexerConfig) -> bool {
+    if !config.enable_auto_search {
+        return false;
+    }
+
+    let Some(raw) = config.managed_metadata_json.as_deref() else {
+        return true;
+    };
+    let Ok(metadata) = serde_json::from_str::<ManagedIndexerAutoModeMetadata>(raw) else {
+        return true;
+    };
+
+    metadata.enable_automatic_search.unwrap_or(true)
 }
 
 pub(crate) fn dedupe_cross_indexer_release_results(
@@ -577,6 +718,7 @@ impl AppUseCase {
         let ReleaseSearchRequest {
             queries,
             imdb_id,
+            tmdb_id,
             tvdb_id,
             anidb_id,
             category,
@@ -607,6 +749,7 @@ impl AppUseCase {
         let indexer_routing = self
             .resolve_indexer_routing(library_id, scope_id.as_deref())
             .await;
+        let newznab_categories = None;
 
         // If routing exists and every indexer is disabled, skip the search entirely.
         if let Some(ref plan) = indexer_routing {
@@ -621,19 +764,48 @@ impl AppUseCase {
             }
         }
 
+        let configured_indexers = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "failed to load indexer configs for transport-aware query collapse");
+                vec![]
+            });
+        let collapse_structured_queries = search_subject_kind == ReleaseSearchSubjectKind::Episode
+            && should_collapse_structured_nab_queries(
+                &configured_indexers,
+                indexer_routing.as_ref(),
+                mode,
+                chrono::Utc::now(),
+            );
+
         // Auto mode normally conserves API calls by using the first query, but
         // episode acquisition needs season/title fallbacks so packs and ranges
-        // can be considered for a single requested episode.
-        let effective_queries: Vec<String> = match mode {
+        // can be considered for a single requested episode. Equivalent
+        // structured variants are only collapsed when the eligible search set
+        // is *nab-only, because non-*nab indexers may still need the full
+        // variant fanout.
+        let effective_queries = match mode {
             SearchMode::Auto if search_subject_kind == ReleaseSearchSubjectKind::Episode => queries,
             SearchMode::Auto => queries.into_iter().take(1).collect(),
             SearchMode::Interactive => queries,
+        };
+        let effective_queries = if collapse_structured_queries {
+            dedupe_structured_dispatch_queries(effective_queries, season, episode, absolute_episode)
+        } else {
+            effective_queries
         };
 
         let mut set = JoinSet::new();
         let mut ids = HashMap::new();
         if let Some(imdb_id) = imdb_id.clone() {
             ids.insert("imdb_id".to_string(), imdb_id);
+        }
+        if let Some(tmdb_id) = tmdb_id.clone() {
+            ids.insert("tmdb_id".to_string(), tmdb_id);
         }
         if let Some(tvdb_id) = tvdb_id.clone() {
             ids.insert("tvdb_id".to_string(), tvdb_id);
@@ -648,6 +820,7 @@ impl AppUseCase {
             let category = category.clone();
             let facet = facet.clone();
             let indexer_routing = indexer_routing.clone();
+            let newznab_categories = newznab_categories.clone();
             let tagged_aliases = tagged_aliases.to_vec();
 
             set.spawn(async move {
@@ -657,7 +830,7 @@ impl AppUseCase {
                         ids,
                         category.clone(),
                         facet,
-                        None,
+                        newznab_categories,
                         indexer_routing,
                         mode,
                         season,
@@ -745,6 +918,7 @@ impl AppUseCase {
             .search_and_score_releases(ReleaseSearchRequest {
                 queries: subject.queries.clone(),
                 imdb_id: subject.imdb_id.clone(),
+                tmdb_id: subject.tmdb_id.clone(),
                 tvdb_id: subject.tvdb_id.clone(),
                 anidb_id: subject.anidb_id.clone(),
                 category: Some(subject.category.clone()),
@@ -1079,6 +1253,7 @@ pub(crate) struct QualityProfileLookup<'a> {
 pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) queries: Vec<String>,
     pub(crate) imdb_id: Option<String>,
+    pub(crate) tmdb_id: Option<String>,
     pub(crate) tvdb_id: Option<String>,
     pub(crate) anidb_id: Option<String>,
     pub(crate) category: Option<String>,

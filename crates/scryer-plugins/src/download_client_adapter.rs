@@ -44,10 +44,13 @@ impl WasmDownloadClient {
             descriptor,
             client_name,
             client_id,
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            http: {
+                scryer_outbound_http::install_default_rustls_provider();
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30))
+                    .build()
+                    .unwrap_or_default()
+            },
         }
     }
 }
@@ -787,6 +790,7 @@ impl DownloadClient for WasmDownloadClient {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use scryer_plugin_sdk::PluginTorrentItem;
 
     fn sample_request() -> DownloadClientAddRequest {
         DownloadClientAddRequest {
@@ -966,5 +970,76 @@ mod tests {
         assert_eq!(queue_item.state, DownloadQueueState::Completed);
         assert_eq!(queue_item.progress_percent, 100);
         assert_eq!(queue_item.remaining_seconds, Some(0));
+    }
+
+    #[test]
+    fn queue_item_falls_back_to_nested_torrent_info_hash_for_qbit_facades() {
+        let queue_item = map_queue_item(
+            PluginDownloadItem {
+                client_item_id: "native-id-1".to_string(),
+                info_hash: None,
+                title: "Decypharr Queue Item".to_string(),
+                state: DownloadItemState::Seeding,
+                message: None,
+                category: Some("series".to_string()),
+                remote_output_path: Some("/downloads/series".to_string()),
+                torrent: Some(PluginTorrentItem {
+                    info_hash_v1: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+                    ..PluginTorrentItem::default()
+                }),
+                total_size_bytes: Some(2048),
+                remaining_size_bytes: Some(0),
+                eta_seconds: Some(0),
+                progress_percent: Some(100),
+                can_move_files: Some(true),
+                can_remove: Some(true),
+                removed: Some(false),
+                raw_state: Some("uploading".to_string()),
+                completed_at: Some("2026-05-02T00:00:00Z".to_string()),
+            },
+            "client-1",
+            "Decypharr qBit",
+            "qbittorrent",
+        );
+
+        assert_eq!(
+            queue_item.id,
+            "qbittorrent:abcdef0123456789abcdef0123456789abcdef01"
+        );
+        assert_eq!(
+            queue_item.download_client_item_id,
+            "native-id-1".to_string()
+        );
+        assert_eq!(queue_item.state, DownloadQueueState::Completed);
+    }
+
+    #[test]
+    fn completed_download_prefers_info_hash_identity_for_qbit_facades() {
+        let completed = map_completed_download(
+            PluginCompletedDownload {
+                client_item_id: "native-id-2".to_string(),
+                info_hash: Some("fedcba9876543210fedcba9876543210fedcba98".to_string()),
+                name: "Decypharr Completed".to_string(),
+                dest_dir: "/downloads/movies".to_string(),
+                category: Some("movies".to_string()),
+                output_kind: None,
+                content_paths: vec!["/downloads/movies/Decypharr.Completed.mkv".to_string()],
+                size_bytes: Some(4096),
+                completed_at: Some("2026-05-03T00:00:00Z".to_string()),
+                parameters: vec![("source".to_string(), "decypharr".to_string())],
+            },
+            "client-1",
+            "qbittorrent",
+        );
+
+        assert_eq!(
+            completed.download_client_item_id,
+            "fedcba9876543210fedcba9876543210fedcba98"
+        );
+        assert_eq!(completed.dest_dir, "/downloads/movies");
+        assert_eq!(
+            completed.parameters,
+            vec![("source".to_string(), "decypharr".to_string())]
+        );
     }
 }

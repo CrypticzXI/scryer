@@ -13,9 +13,7 @@ use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
     ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, TitleRepository,
 };
-use scryer_domain::{
-    Entitlement, LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization,
-};
+use scryer_domain::{LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization};
 use scryer_infrastructure::FsFileImporter;
 
 // ---------------------------------------------------------------------------
@@ -25,7 +23,7 @@ use scryer_infrastructure::FsFileImporter;
 fn app_with_real_fs(ctx: &TestContext) -> scryer_application::AppUseCase {
     ctx.app.with_test_overrides(|builder| {
         builder
-            .with_media_files(Arc::new(ctx.library_state.clone()))
+            .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_file_importer(Arc::new(FsFileImporter))
     })
 }
@@ -68,7 +66,7 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.catalog.create(title.clone()).await.expect("seed title");
+    ctx.titles.create(title.clone()).await.expect("seed title");
     title
 }
 
@@ -97,12 +95,12 @@ async fn seed_media_file(
         ..Default::default()
     };
     let file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&input)
         .await
         .expect("insert");
     let files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(title_id)
         .await
         .unwrap();
@@ -120,7 +118,6 @@ fn test_actor() -> User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageConfig],
         authorization: UserAuthorization {
             loaded: true,
             default_library: LibraryPermissionMask::from_permissions([
@@ -202,7 +199,7 @@ async fn upgrade_replaces_old_file_with_new() {
 
     // DB should have the new file, not the old one
     let files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title("title-1")
         .await
         .unwrap();

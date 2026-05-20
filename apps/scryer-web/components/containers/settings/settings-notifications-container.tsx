@@ -187,6 +187,36 @@ type SettingsNotificationsContainerProps = {
   providerCatalogVersion?: number;
 };
 
+type PendingNotificationChannelEditorAction =
+  | { type: "create" }
+  | { type: "edit"; channel: NotificationChannel }
+  | { type: "close" }
+  | null;
+
+type PendingNotificationSubscriptionEditorAction =
+  | { type: "create" }
+  | { type: "edit"; subscription: NotificationSubscriptionRow }
+  | { type: "close" }
+  | null;
+
+function cloneChannelDraft(draft: NotificationChannelDraft): NotificationChannelDraft {
+  return {
+    ...draft,
+    configValues: { ...draft.configValues },
+  };
+}
+
+function cloneSubscriptionDraft(
+  draft: NotificationSubscriptionDraft,
+): NotificationSubscriptionDraft {
+  return {
+    ...draft,
+    eventTypes: [...draft.eventTypes],
+    facetScopeIds: [...draft.facetScopeIds],
+    titleScopeTitle: draft.titleScopeTitle,
+  };
+}
+
 export function SettingsNotificationsContainer({
   providerCatalogVersion = 0,
 }: SettingsNotificationsContainerProps) {
@@ -199,18 +229,40 @@ export function SettingsNotificationsContainer({
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
   const [mutatingChannelId, setMutatingChannelId] = useState<string | null>(null);
   const [pendingDeleteChannel, setPendingDeleteChannel] = useState<NotificationChannel | null>(null);
-  const [channelDraft, setChannelDraft] = useState<NotificationChannelDraft>(() => ({ ...CHANNEL_INITIAL_DRAFT }));
+  const [channelDraft, setChannelDraft] = useState<NotificationChannelDraft>(() => cloneChannelDraft(CHANNEL_INITIAL_DRAFT));
   const [providerTypes, setProviderTypes] = useState<NotificationProviderType[]>([]);
   const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
+  const [isChannelEditorOpen, setIsChannelEditorOpen] = useState(false);
+  const [channelEditorMode, setChannelEditorMode] = useState<"create" | "edit">("create");
+  const [pendingChannelEditorAction, setPendingChannelEditorAction] =
+    useState<PendingNotificationChannelEditorAction>(null);
+  const [channelDraftBaseline, setChannelDraftBaseline] =
+    useState<NotificationChannelDraft>(() => cloneChannelDraft(CHANNEL_INITIAL_DRAFT));
+  const [awaitingChannelBaselineSync, setAwaitingChannelBaselineSync] =
+    useState(false);
 
   // --- Subscription state ---
   const [subscriptions, setSubscriptions] = useState<NotificationSubscription[]>([]);
   const [editingSubscriptionId, setEditingSubscriptionId] = useState<string | null>(null);
   const [mutatingSubscriptionId, setMutatingSubscriptionId] = useState<string | null>(null);
   const [pendingDeleteSubscription, setPendingDeleteSubscription] = useState<NotificationSubscriptionRow | null>(null);
-  const [subscriptionDraft, setSubscriptionDraft] = useState<NotificationSubscriptionDraft>(() => ({ ...SUBSCRIPTION_INITIAL_DRAFT }));
+  const [subscriptionDraft, setSubscriptionDraft] =
+    useState<NotificationSubscriptionDraft>(() =>
+      cloneSubscriptionDraft(SUBSCRIPTION_INITIAL_DRAFT),
+    );
   const [eventTypes, setEventTypes] = useState<string[]>([]);
   const [subscriptionTitlesById, setSubscriptionTitlesById] = useState<Record<string, TitleRecord | null>>({});
+  const [isSubscriptionEditorOpen, setIsSubscriptionEditorOpen] = useState(false);
+  const [subscriptionEditorMode, setSubscriptionEditorMode] =
+    useState<"create" | "edit">("create");
+  const [pendingSubscriptionEditorAction, setPendingSubscriptionEditorAction] =
+    useState<PendingNotificationSubscriptionEditorAction>(null);
+  const [subscriptionDraftBaseline, setSubscriptionDraftBaseline] =
+    useState<NotificationSubscriptionDraft>(() =>
+      cloneSubscriptionDraft(SUBSCRIPTION_INITIAL_DRAFT),
+    );
+  const [awaitingSubscriptionBaselineSync, setAwaitingSubscriptionBaselineSync] =
+    useState(false);
   const providerCatalogVersionRef = useRef(providerCatalogVersion);
   const subscriptionRows = useMemo(
     () => buildNotificationSubscriptionRows(subscriptions),
@@ -227,6 +279,28 @@ export function SettingsNotificationsContainer({
       ),
     [subscriptions],
   );
+  const isChannelDraftDirty =
+    JSON.stringify(channelDraft) !== JSON.stringify(channelDraftBaseline);
+  const isSubscriptionDraftDirty =
+    JSON.stringify(subscriptionDraft) !== JSON.stringify(subscriptionDraftBaseline);
+
+  useEffect(() => {
+    if (!awaitingChannelBaselineSync) {
+      return;
+    }
+
+    setChannelDraftBaseline(cloneChannelDraft(channelDraft));
+    setAwaitingChannelBaselineSync(false);
+  }, [awaitingChannelBaselineSync, channelDraft]);
+
+  useEffect(() => {
+    if (!awaitingSubscriptionBaselineSync) {
+      return;
+    }
+
+    setSubscriptionDraftBaseline(cloneSubscriptionDraft(subscriptionDraft));
+    setAwaitingSubscriptionBaselineSync(false);
+  }, [awaitingSubscriptionBaselineSync, subscriptionDraft]);
 
   // --- Fetch data ---
   const refreshChannels = useCallback(async () => {
@@ -350,7 +424,7 @@ export function SettingsNotificationsContainer({
   // --- Channel CRUD ---
   const resetChannelDraft = useCallback(() => {
     setEditingChannelId(null);
-    setChannelDraft(() => ({ ...CHANNEL_INITIAL_DRAFT }));
+    setChannelDraft(() => cloneChannelDraft(CHANNEL_INITIAL_DRAFT));
   }, []);
 
   const submitChannel = async (event: FormEvent<HTMLFormElement>) => {
@@ -393,6 +467,9 @@ export function SettingsNotificationsContainer({
         setGlobalStatus(t("status.notificationChannelCreated"));
       }
       resetChannelDraft();
+      setIsChannelEditorOpen(false);
+      setChannelEditorMode("create");
+      setAwaitingChannelBaselineSync(true);
       await refreshChannels();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
@@ -401,17 +478,89 @@ export function SettingsNotificationsContainer({
     }
   };
 
-   const editChannel = (channel: NotificationChannel) => {
-     setEditingChannelId(channel.id);
-     const provider = providerTypes.find((pt) => pt.providerType === channel.channelType);
-     setChannelDraft({
-       name: provider?.name ?? channel.name,
-       channelType: channel.channelType,
-       isEnabled: channel.isEnabled,
-       configValues: parseConfigJson(channel.configJson),
-     });
-     setGlobalStatus(t("status.editingNotificationChannel", { name: channel.name }));
-   };
+  const editChannel = useCallback((channel: NotificationChannel) => {
+    setEditingChannelId(channel.id);
+    const provider = providerTypes.find((pt) => pt.providerType === channel.channelType);
+    setChannelDraft({
+      name: provider?.name ?? channel.name,
+      channelType: channel.channelType,
+      isEnabled: channel.isEnabled,
+      configValues: parseConfigJson(channel.configJson),
+    });
+    setGlobalStatus(t("status.editingNotificationChannel", { name: channel.name }));
+  }, [providerTypes, setGlobalStatus, t]);
+
+  const openCreateChannelEditor = useCallback(() => {
+    resetChannelDraft();
+    setChannelEditorMode("create");
+    setIsChannelEditorOpen(true);
+    setAwaitingChannelBaselineSync(true);
+  }, [resetChannelDraft]);
+
+  const openEditChannelEditor = useCallback((channel: NotificationChannel) => {
+    editChannel(channel);
+    setChannelEditorMode("edit");
+    setIsChannelEditorOpen(true);
+    setAwaitingChannelBaselineSync(true);
+  }, [editChannel]);
+
+  const requestCreateChannelEditor = useCallback(() => {
+    if (!isChannelEditorOpen || !isChannelDraftDirty) {
+      openCreateChannelEditor();
+      return;
+    }
+
+    setPendingChannelEditorAction({ type: "create" });
+  }, [isChannelDraftDirty, isChannelEditorOpen, openCreateChannelEditor]);
+
+  const requestEditChannel = useCallback((channel: NotificationChannel) => {
+    if (!isChannelEditorOpen || !isChannelDraftDirty) {
+      openEditChannelEditor(channel);
+      return;
+    }
+
+    setPendingChannelEditorAction({ type: "edit", channel });
+  }, [isChannelDraftDirty, isChannelEditorOpen, openEditChannelEditor]);
+
+  const requestCloseChannelEditor = useCallback(() => {
+    if (!isChannelEditorOpen) {
+      return;
+    }
+
+    if (!isChannelDraftDirty) {
+      setIsChannelEditorOpen(false);
+      setChannelEditorMode("create");
+      resetChannelDraft();
+      setAwaitingChannelBaselineSync(true);
+      return;
+    }
+
+    setPendingChannelEditorAction({ type: "close" });
+  }, [isChannelDraftDirty, isChannelEditorOpen, resetChannelDraft]);
+
+  const confirmPendingChannelEditorAction = useCallback(() => {
+    if (!pendingChannelEditorAction) {
+      return;
+    }
+
+    if (pendingChannelEditorAction.type === "create") {
+      openCreateChannelEditor();
+    } else if (pendingChannelEditorAction.type === "edit") {
+      openEditChannelEditor(pendingChannelEditorAction.channel);
+    } else {
+      setIsChannelEditorOpen(false);
+      setChannelEditorMode("create");
+      resetChannelDraft();
+      setAwaitingChannelBaselineSync(true);
+    }
+
+    setPendingChannelEditorAction(null);
+  }, [
+    openCreateChannelEditor,
+    openEditChannelEditor,
+    pendingChannelEditorAction,
+    resetChannelDraft,
+  ]);
 
   const deleteChannel = (channel: NotificationChannel) => {
     setPendingDeleteChannel(channel);
@@ -431,6 +580,9 @@ export function SettingsNotificationsContainer({
       await refreshSubscriptions();
       if (editingChannelId === channel.id) {
         resetChannelDraft();
+        setIsChannelEditorOpen(false);
+        setChannelEditorMode("create");
+        setAwaitingChannelBaselineSync(true);
       }
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));
@@ -502,7 +654,7 @@ export function SettingsNotificationsContainer({
   // --- Subscription CRUD ---
   const resetSubscriptionDraft = useCallback(() => {
     setEditingSubscriptionId(null);
-    setSubscriptionDraft(() => ({ ...SUBSCRIPTION_INITIAL_DRAFT }));
+    setSubscriptionDraft(() => cloneSubscriptionDraft(SUBSCRIPTION_INITIAL_DRAFT));
   }, []);
 
   const submitSubscription = async (event: FormEvent<HTMLFormElement>) => {
@@ -602,6 +754,9 @@ export function SettingsNotificationsContainer({
         setGlobalStatus(t("status.notificationSubscriptionCreated"));
       }
       resetSubscriptionDraft();
+      setIsSubscriptionEditorOpen(false);
+      setSubscriptionEditorMode("create");
+      setAwaitingSubscriptionBaselineSync(true);
       await refreshSubscriptions();
     } catch (error) {
       await refreshSubscriptions().catch(() => undefined);
@@ -611,7 +766,7 @@ export function SettingsNotificationsContainer({
     }
   };
 
-  const editSubscription = (sub: NotificationSubscriptionRow) => {
+  const editSubscription = useCallback((sub: NotificationSubscriptionRow) => {
     setEditingSubscriptionId(sub.id);
     setSubscriptionDraft({
       channelId: sub.channelId,
@@ -626,7 +781,87 @@ export function SettingsNotificationsContainer({
       isEnabled: sub.isEnabled,
     });
     setGlobalStatus(t("status.editingNotificationSubscription"));
-  };
+  }, [setGlobalStatus, subscriptionTitlesById, t]);
+
+  const openCreateSubscriptionEditor = useCallback(() => {
+    resetSubscriptionDraft();
+    setSubscriptionEditorMode("create");
+    setIsSubscriptionEditorOpen(true);
+    setAwaitingSubscriptionBaselineSync(true);
+  }, [resetSubscriptionDraft]);
+
+  const openEditSubscriptionEditor = useCallback((sub: NotificationSubscriptionRow) => {
+    editSubscription(sub);
+    setSubscriptionEditorMode("edit");
+    setIsSubscriptionEditorOpen(true);
+    setAwaitingSubscriptionBaselineSync(true);
+  }, [editSubscription]);
+
+  const requestCreateSubscriptionEditor = useCallback(() => {
+    if (!isSubscriptionEditorOpen || !isSubscriptionDraftDirty) {
+      openCreateSubscriptionEditor();
+      return;
+    }
+
+    setPendingSubscriptionEditorAction({ type: "create" });
+  }, [
+    isSubscriptionDraftDirty,
+    isSubscriptionEditorOpen,
+    openCreateSubscriptionEditor,
+  ]);
+
+  const requestEditSubscription = useCallback((sub: NotificationSubscriptionRow) => {
+    if (!isSubscriptionEditorOpen || !isSubscriptionDraftDirty) {
+      openEditSubscriptionEditor(sub);
+      return;
+    }
+
+    setPendingSubscriptionEditorAction({ type: "edit", subscription: sub });
+  }, [
+    isSubscriptionDraftDirty,
+    isSubscriptionEditorOpen,
+    openEditSubscriptionEditor,
+  ]);
+
+  const requestCloseSubscriptionEditor = useCallback(() => {
+    if (!isSubscriptionEditorOpen) {
+      return;
+    }
+
+    if (!isSubscriptionDraftDirty) {
+      setIsSubscriptionEditorOpen(false);
+      setSubscriptionEditorMode("create");
+      resetSubscriptionDraft();
+      setAwaitingSubscriptionBaselineSync(true);
+      return;
+    }
+
+    setPendingSubscriptionEditorAction({ type: "close" });
+  }, [isSubscriptionDraftDirty, isSubscriptionEditorOpen, resetSubscriptionDraft]);
+
+  const confirmPendingSubscriptionEditorAction = useCallback(() => {
+    if (!pendingSubscriptionEditorAction) {
+      return;
+    }
+
+    if (pendingSubscriptionEditorAction.type === "create") {
+      openCreateSubscriptionEditor();
+    } else if (pendingSubscriptionEditorAction.type === "edit") {
+      openEditSubscriptionEditor(pendingSubscriptionEditorAction.subscription);
+    } else {
+      setIsSubscriptionEditorOpen(false);
+      setSubscriptionEditorMode("create");
+      resetSubscriptionDraft();
+      setAwaitingSubscriptionBaselineSync(true);
+    }
+
+    setPendingSubscriptionEditorAction(null);
+  }, [
+    openCreateSubscriptionEditor,
+    openEditSubscriptionEditor,
+    pendingSubscriptionEditorAction,
+    resetSubscriptionDraft,
+  ]);
 
   const deleteSubscription = (sub: NotificationSubscriptionRow) => {
     setPendingDeleteSubscription(sub);
@@ -647,6 +882,9 @@ export function SettingsNotificationsContainer({
       await refreshSubscriptions();
       if (editingSubscriptionId === sub.id) {
         resetSubscriptionDraft();
+        setIsSubscriptionEditorOpen(false);
+        setSubscriptionEditorMode("create");
+        setAwaitingSubscriptionBaselineSync(true);
       }
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));
@@ -686,12 +924,15 @@ export function SettingsNotificationsContainer({
         setChannelDraft={setChannelDraft}
         submitChannel={submitChannel}
         mutatingChannelId={mutatingChannelId}
-        resetChannelDraft={resetChannelDraft}
-        editChannel={editChannel}
+        resetChannelDraft={requestCloseChannelEditor}
+        editChannel={requestEditChannel}
         toggleChannelEnabled={toggleChannelEnabled}
         deleteChannel={deleteChannel}
         testChannel={testChannel}
         testingChannelId={testingChannelId}
+        isChannelEditorOpen={isChannelEditorOpen}
+        channelEditorMode={channelEditorMode}
+        startCreateChannel={requestCreateChannelEditor}
         providerTypes={providerTypes}
         subscriptions={subscriptionRows}
         subscriptionTitlesById={subscriptionTitlesById}
@@ -700,11 +941,30 @@ export function SettingsNotificationsContainer({
         setSubscriptionDraft={setSubscriptionDraft}
         submitSubscription={submitSubscription}
         mutatingSubscriptionId={mutatingSubscriptionId}
-        resetSubscriptionDraft={resetSubscriptionDraft}
-        editSubscription={editSubscription}
+        resetSubscriptionDraft={requestCloseSubscriptionEditor}
+        editSubscription={requestEditSubscription}
         toggleSubscriptionEnabled={toggleSubscriptionEnabled}
         deleteSubscription={deleteSubscription}
         eventTypes={eventTypes}
+        isSubscriptionEditorOpen={isSubscriptionEditorOpen}
+        subscriptionEditorMode={subscriptionEditorMode}
+        startCreateSubscription={requestCreateSubscriptionEditor}
+      />
+      <ConfirmDialog
+        open={pendingChannelEditorAction !== null}
+        title={t("settings.notificationChannelConfirmDiscardTitle")}
+        description={t("settings.notificationChannelConfirmDiscardDescription")}
+        confirmLabel={
+          pendingChannelEditorAction?.type === "create"
+            ? t("settings.notificationChannelCreateNew")
+            : pendingChannelEditorAction?.type === "edit"
+              ? t("label.edit")
+              : t("label.discard")
+        }
+        cancelLabel={t("label.cancel")}
+        isBusy={mutatingChannelId !== null}
+        onConfirm={confirmPendingChannelEditorAction}
+        onCancel={() => setPendingChannelEditorAction(null)}
       />
       <ConfirmDialog
         open={pendingDeleteChannel !== null}
@@ -717,6 +977,22 @@ export function SettingsNotificationsContainer({
         isBusy={mutatingChannelId !== null}
         onConfirm={confirmDeleteChannel}
         onCancel={() => setPendingDeleteChannel(null)}
+      />
+      <ConfirmDialog
+        open={pendingSubscriptionEditorAction !== null}
+        title={t("settings.notificationSubscriptionConfirmDiscardTitle")}
+        description={t("settings.notificationSubscriptionConfirmDiscardDescription")}
+        confirmLabel={
+          pendingSubscriptionEditorAction?.type === "create"
+            ? t("settings.notificationSubscriptionCreateNew")
+            : pendingSubscriptionEditorAction?.type === "edit"
+              ? t("label.edit")
+              : t("label.discard")
+        }
+        cancelLabel={t("label.cancel")}
+        isBusy={mutatingSubscriptionId !== null}
+        onConfirm={confirmPendingSubscriptionEditorAction}
+        onCancel={() => setPendingSubscriptionEditorAction(null)}
       />
       <ConfirmDialog
         open={pendingDeleteSubscription !== null}

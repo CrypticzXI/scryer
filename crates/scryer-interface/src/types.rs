@@ -1258,6 +1258,8 @@ pub struct DiskSpacePayload {
 pub struct SystemHealthPayload {
     pub service_ready: bool,
     pub db_path: String,
+    pub datastore_engine: String,
+    pub datastore_migration_key: Option<String>,
     pub total_titles: i32,
     pub monitored_titles: i32,
     pub total_users: i32,
@@ -1369,6 +1371,8 @@ pub enum JobKeyValue {
     PluginRegistryRefresh,
     Housekeeping,
     HealthChecks,
+    AutoBackup,
+    ProwlarrSync,
     WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
@@ -1389,6 +1393,8 @@ impl JobKeyValue {
             Self::PluginRegistryRefresh => AppJobKey::PluginRegistryRefresh,
             Self::Housekeeping => AppJobKey::Housekeeping,
             Self::HealthChecks => AppJobKey::HealthChecks,
+            Self::AutoBackup => AppJobKey::AutoBackup,
+            Self::ProwlarrSync => AppJobKey::ProwlarrSync,
             Self::WantedSync => AppJobKey::WantedSync,
             Self::PendingReleaseProcessing => AppJobKey::PendingReleaseProcessing,
             Self::StagedNzbPrune => AppJobKey::StagedNzbPrune,
@@ -1409,6 +1415,8 @@ impl JobKeyValue {
             AppJobKey::PluginRegistryRefresh => Self::PluginRegistryRefresh,
             AppJobKey::Housekeeping => Self::Housekeeping,
             AppJobKey::HealthChecks => Self::HealthChecks,
+            AppJobKey::AutoBackup => Self::AutoBackup,
+            AppJobKey::ProwlarrSync => Self::ProwlarrSync,
             AppJobKey::WantedSync => Self::WantedSync,
             AppJobKey::PendingReleaseProcessing => Self::PendingReleaseProcessing,
             AppJobKey::StagedNzbPrune => Self::StagedNzbPrune,
@@ -1460,6 +1468,7 @@ pub enum JobScheduleKindValue {
     Manual,
     Interval,
     StartupAndInterval,
+    DailyAtTime,
 }
 
 impl JobScheduleKindValue {
@@ -1468,6 +1477,7 @@ impl JobScheduleKindValue {
             AppJobScheduleKind::Manual => Self::Manual,
             AppJobScheduleKind::Interval => Self::Interval,
             AppJobScheduleKind::StartupAndInterval => Self::StartupAndInterval,
+            AppJobScheduleKind::DailyAtTime => Self::DailyAtTime,
         }
     }
 }
@@ -1478,6 +1488,7 @@ pub enum JobTriggerSourceValue {
     Manual,
     ScheduledStartup,
     ScheduledInterval,
+    ScheduledDaily,
     SystemInternal,
 }
 
@@ -1487,6 +1498,7 @@ impl JobTriggerSourceValue {
             AppJobTriggerSource::Manual => Self::Manual,
             AppJobTriggerSource::ScheduledStartup => Self::ScheduledStartup,
             AppJobTriggerSource::ScheduledInterval => Self::ScheduledInterval,
+            AppJobTriggerSource::ScheduledDaily => Self::ScheduledDaily,
             AppJobTriggerSource::SystemInternal => Self::SystemInternal,
         }
     }
@@ -1731,6 +1743,9 @@ pub struct IndexerConfigPayload {
     pub provider_type: String,
     pub base_url: String,
     pub has_api_key: bool,
+    pub is_managed: bool,
+    pub managed_parent_config_id: Option<String>,
+    pub supports_managed_children_sync: bool,
     pub stored_secret_keys: Vec<String>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
@@ -1744,6 +1759,14 @@ pub struct IndexerConfigPayload {
     pub config_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerConfigSyncPayload {
+    pub parent_config_id: String,
+    pub created_ids: Vec<String>,
+    pub updated_ids: Vec<String>,
+    pub deleted_ids: Vec<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2239,6 +2262,14 @@ pub struct GeneralSettingsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct AutoBackupSettingsPayload {
+    pub enabled: bool,
+    pub daily_time_local: String,
+    pub auto_backup_key_present: bool,
+    pub next_run_at: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct SecuritySettingsPayload {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
@@ -2653,6 +2684,14 @@ pub struct UpdateServiceSettingsInput {
 pub struct UpdateGeneralSettingsInput {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateAutoBackupSettingsInput {
+    pub enabled: bool,
+    pub daily_time_local: String,
+    pub set_auto_backup_key: Option<String>,
+    pub clear_auto_backup_key: bool,
 }
 
 #[derive(InputObject, Clone)]
@@ -3638,6 +3677,8 @@ pub struct ProviderTypePayload {
     pub default_base_url: Option<String>,
     pub available_host_bindings: Vec<String>,
     pub recommended_facets: Vec<MediaFacetValue>,
+    pub supported_events: Vec<String>,
+    pub supports_test: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3715,10 +3756,24 @@ pub struct NotificationProviderTypePayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct BackupRowCountPayload {
+    pub table: String,
+    pub row_count: String,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct BackupInfoPayload {
     pub filename: String,
     pub size_bytes: String,
     pub created_at: String,
+    pub format_version: String,
+    pub source_engine: String,
+    pub source_migration_key: Option<String>,
+    pub encrypted: bool,
+    pub row_counts: Vec<BackupRowCountPayload>,
+    pub trigger: String,
+    pub status: String,
+    pub error_message: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3806,7 +3861,7 @@ pub struct DirectoryEntryPayload {
 
 // ── External Import (Sonarr/Radarr) ────────────────────────────────────────
 
-#[derive(InputObject)]
+#[derive(InputObject, Clone)]
 pub struct ExternalImportConnectionInput {
     pub base_url: String,
     pub api_key: String,
@@ -3816,6 +3871,7 @@ pub struct ExternalImportConnectionInput {
 pub struct PreviewExternalImportInput {
     pub sonarr: Option<ExternalImportConnectionInput>,
     pub radarr: Option<ExternalImportConnectionInput>,
+    pub prowlarr: Option<ExternalImportConnectionInput>,
 }
 
 /// API key supplied by the user for a download client whose key was masked by
@@ -3826,8 +3882,9 @@ pub struct DownloadClientApiKeyOverrideInput {
     pub api_key: String,
 }
 
-/// API key supplied by the user for an indexer whose key was masked by
-/// Sonarr/Radarr and could not be retrieved automatically.
+/// API key supplied by the user for a grouped Prowlarr import candidate whose
+/// key was masked or conflicted in Sonarr/Radarr, or for another indexer
+/// whose key could not be retrieved automatically.
 #[derive(InputObject)]
 pub struct IndexerApiKeyOverrideInput {
     pub dedup_key: String,
@@ -3838,6 +3895,7 @@ pub struct IndexerApiKeyOverrideInput {
 pub struct ExecuteExternalImportInput {
     pub sonarr: Option<ExternalImportConnectionInput>,
     pub radarr: Option<ExternalImportConnectionInput>,
+    pub prowlarr: Option<ExternalImportConnectionInput>,
     pub selected_movies_paths: Vec<String>,
     pub selected_series_paths: Vec<String>,
     pub selected_anime_paths: Vec<String>,
@@ -3846,17 +3904,91 @@ pub struct ExecuteExternalImportInput {
     /// User-supplied API keys for download clients whose keys were masked by
     /// Sonarr/Radarr.  Keyed by the client's `dedup_key`.
     pub download_client_api_key_overrides: Vec<DownloadClientApiKeyOverrideInput>,
-    /// User-supplied API keys for indexers whose keys were masked by
-    /// Sonarr/Radarr.  Keyed by the indexer's `dedup_key`.
+    /// User-supplied API keys for grouped indexer import candidates, keyed by
+    /// the import candidate's `dedup_key`.
     pub indexer_api_key_overrides: Vec<IndexerApiKeyOverrideInput>,
+}
+
+#[derive(InputObject)]
+pub struct StartExternalImportMonitorWarmupInput {
+    pub sonarr: Option<ExternalImportConnectionInput>,
+    pub radarr: Option<ExternalImportConnectionInput>,
+}
+
+#[derive(InputObject)]
+pub struct CancelExternalImportMonitorWarmupInput {
+    pub session_id: String,
+}
+
+#[derive(InputObject)]
+pub struct FinalizeExternalImportInput {
+    pub sonarr: Option<ExternalImportConnectionInput>,
+    pub radarr: Option<ExternalImportConnectionInput>,
+    pub monitor_warmup_session_id: Option<String>,
+    pub selected_movies_paths: Vec<String>,
+    pub selected_series_paths: Vec<String>,
+    pub selected_anime_paths: Vec<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalImportMonitorWarmupStatusValue {
+    Queued,
+    Running,
+    Completed,
+    Canceled,
+    Failed,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalImportMonitorWarmupPhaseValue {
+    LoadingMovies,
+    LoadingSeries,
+    LoadingEpisodes,
+    BuildingSnapshot,
+    Ready,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExternalImportMonitorWarmupProgressPayload {
+    pub session_id: String,
+    pub status: ExternalImportMonitorWarmupStatusValue,
+    pub phase: ExternalImportMonitorWarmupPhaseValue,
+    pub started_at: String,
+    pub updated_at: String,
+    pub overall_total_known: bool,
+    pub overall_progress: LibraryScanPhaseProgressPayload,
+    pub movies_total_known: bool,
+    pub movies_progress: LibraryScanPhaseProgressPayload,
+    pub series_total_known: bool,
+    pub series_progress: LibraryScanPhaseProgressPayload,
+    pub episode_fetch_total_known: bool,
+    pub episode_fetch_expected_total: Option<i32>,
+    pub episode_fetch_expected_monitored_total: Option<i32>,
+    pub episode_fetch_progress: LibraryScanPhaseProgressPayload,
+    pub snapshot_build_total_known: bool,
+    pub snapshot_build_progress: LibraryScanPhaseProgressPayload,
+    pub matched_movie_count: i32,
+    pub matched_series_count: i32,
+    pub unmatched_movie_count: i32,
+    pub unmatched_series_count: i32,
+    pub ambiguous_movie_count: i32,
+    pub ambiguous_series_count: i32,
+    pub error_message: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct ExternalImportPreviewPayload {
     pub sonarr_connected: bool,
     pub radarr_connected: bool,
+    pub prowlarr_connected: bool,
     pub sonarr_version: Option<String>,
     pub radarr_version: Option<String>,
+    pub prowlarr_version: Option<String>,
+    pub sonarr_error: Option<String>,
+    pub radarr_error: Option<String>,
+    pub prowlarr_error: Option<String>,
     pub root_folders: Vec<ExternalImportRootFolderPayload>,
     pub download_clients: Vec<ExternalImportDownloadClientPayload>,
     pub indexers: Vec<ExternalImportIndexerPayload>,
@@ -3894,6 +4026,10 @@ pub struct ExternalImportIndexerPayload {
     pub api_key: Option<String>,
     pub dedup_key: String,
     pub supported: bool,
+    pub child_count: i32,
+    pub child_names: Vec<String>,
+    pub requires_api_key_override: bool,
+    pub api_key_help_url: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]

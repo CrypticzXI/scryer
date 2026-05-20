@@ -314,6 +314,24 @@ impl AppUseCase {
             .and_then(|p| p.plugin_name_for_provider(provider_type))
     }
 
+    pub fn notification_provider_supported_events(
+        &self,
+        provider_type: &str,
+    ) -> Vec<NotificationEventType> {
+        self.services
+            .notifications
+            .notification_provider()
+            .map(|p| p.supported_events_for_provider(provider_type))
+            .unwrap_or_default()
+    }
+
+    pub fn notification_provider_supports_test(&self, provider_type: &str) -> bool {
+        self.services
+            .notifications
+            .notification_provider()
+            .is_some_and(|p| p.supports_test_for_provider(provider_type))
+    }
+
     pub fn notification_channels_repo(
         &self,
     ) -> AppResult<&std::sync::Arc<dyn crate::NotificationChannelRepository>> {

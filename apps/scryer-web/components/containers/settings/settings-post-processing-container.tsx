@@ -69,8 +69,21 @@ const INITIAL_DRAFT: PPScriptDraft = {
   executionMode: "blocking",
   timeoutSecs: 300,
   priority: 0,
-  debug: false,
+  debug: true,
 };
+
+function cloneScriptDraft(draft: PPScriptDraft): PPScriptDraft {
+  return {
+    ...draft,
+    appliedFacets: [...draft.appliedFacets],
+  };
+}
+
+type PendingScriptEditorAction =
+  | { type: "create" }
+  | { type: "edit"; record: PPScript }
+  | { type: "close" }
+  | null;
 
 export function SettingsPostProcessingContainer() {
   const setGlobalStatus = useGlobalStatus();
@@ -78,16 +91,81 @@ export function SettingsPostProcessingContainer() {
   const client = useClient();
   const [scripts, setScripts] = useState<PPScript[]>([]);
   const [editingScriptId, setEditingScriptId] = useState<string | null>(null);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [pendingDeleteScript, setPendingDeleteScript] = useState<PPScript | null>(null);
+  const [pendingEditorAction, setPendingEditorAction] =
+    useState<PendingScriptEditorAction>(null);
   const [mutatingScriptId, setMutatingScriptId] = useState<string | null>(null);
-  const [scriptDraft, setScriptDraft] = useState<PPScriptDraft>(() => ({ ...INITIAL_DRAFT }));
+  const [scriptDraft, setScriptDraft] = useState<PPScriptDraft>(() =>
+    cloneScriptDraft(INITIAL_DRAFT),
+  );
+  const [scriptDraftBaseline, setScriptDraftBaseline] = useState<PPScriptDraft>(() =>
+    cloneScriptDraft(INITIAL_DRAFT),
+  );
   const [expandedScriptId, setExpandedScriptId] = useState<string | null>(null);
   const [scriptRuns, setScriptRuns] = useState<Record<string, PPScriptRun[]>>({});
 
-  const resetDraft = useCallback(() => {
+  const closeEditor = useCallback(() => {
+    setIsEditorOpen(false);
     setEditingScriptId(null);
-    setScriptDraft(() => ({ ...INITIAL_DRAFT }));
+    setScriptDraft(() => cloneScriptDraft(INITIAL_DRAFT));
+    setScriptDraftBaseline(() => cloneScriptDraft(INITIAL_DRAFT));
   }, []);
+
+  const isDraftDirty =
+    JSON.stringify(scriptDraft) !== JSON.stringify(scriptDraftBaseline);
+
+  const openCreateEditor = useCallback(() => {
+    const nextDraft = cloneScriptDraft(INITIAL_DRAFT);
+    setEditingScriptId(null);
+    setScriptDraft(nextDraft);
+    setScriptDraftBaseline(cloneScriptDraft(nextDraft));
+    setIsEditorOpen(true);
+  }, []);
+
+  const openEditEditor = useCallback((record: PPScript) => {
+    const nextDraft = {
+      name: record.name,
+      description: record.description,
+      scriptType: record.scriptType,
+      scriptContent: record.scriptContent,
+      appliedFacets: [...record.appliedFacets],
+      executionMode: record.executionMode,
+      timeoutSecs: record.timeoutSecs,
+      priority: record.priority,
+      debug: record.debug,
+    };
+    setEditingScriptId(record.id);
+    setScriptDraft(nextDraft);
+    setScriptDraftBaseline(cloneScriptDraft(nextDraft));
+    setIsEditorOpen(true);
+    setGlobalStatus(t("status.editingRule", { name: record.name }));
+  }, [setGlobalStatus, t]);
+
+  const requestCreateEditor = useCallback(() => {
+    if (!isEditorOpen || !isDraftDirty) {
+      openCreateEditor();
+      return;
+    }
+    setPendingEditorAction({ type: "create" });
+  }, [isDraftDirty, isEditorOpen, openCreateEditor]);
+
+  const requestEditScript = useCallback((record: PPScript) => {
+    if (!isEditorOpen || !isDraftDirty) {
+      openEditEditor(record);
+      return;
+    }
+    setPendingEditorAction({ type: "edit", record });
+  }, [isDraftDirty, isEditorOpen, openEditEditor]);
+
+  const requestCloseEditor = useCallback(() => {
+    if (!isEditorOpen) return;
+    if (!isDraftDirty) {
+      closeEditor();
+      return;
+    }
+    setPendingEditorAction({ type: "close" });
+  }, [closeEditor, isDraftDirty, isEditorOpen]);
 
   const refreshScripts = useCallback(async () => {
     try {
@@ -157,29 +235,13 @@ export function SettingsPostProcessingContainer() {
         if (error) throw error;
         setGlobalStatus(t("settings.pp.created"));
       }
-      resetDraft();
+      closeEditor();
       await refreshScripts();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
       setMutatingScriptId(null);
     }
-  };
-
-  const editScript = (record: PPScript) => {
-    setEditingScriptId(record.id);
-    setScriptDraft({
-      name: record.name,
-      description: record.description,
-      scriptType: record.scriptType,
-      scriptContent: record.scriptContent,
-      appliedFacets: [...record.appliedFacets],
-      executionMode: record.executionMode,
-      timeoutSecs: record.timeoutSecs,
-      priority: record.priority,
-      debug: record.debug,
-    });
-    setGlobalStatus(t("status.editingRule", { name: record.name }));
   };
 
   const deleteScript = (record: PPScript) => {
@@ -221,7 +283,7 @@ export function SettingsPostProcessingContainer() {
       setGlobalStatus(t("settings.pp.deleted"));
       await refreshScripts();
       if (editingScriptId === record.id) {
-        resetDraft();
+        closeEditor();
       }
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToDelete"));
@@ -231,17 +293,32 @@ export function SettingsPostProcessingContainer() {
     }
   };
 
+  const confirmPendingEditorAction = useCallback(() => {
+    if (!pendingEditorAction) return;
+    if (pendingEditorAction.type === "create") {
+      openCreateEditor();
+    } else if (pendingEditorAction.type === "edit") {
+      openEditEditor(pendingEditorAction.record);
+    } else {
+      closeEditor();
+    }
+    setPendingEditorAction(null);
+  }, [closeEditor, openCreateEditor, openEditEditor, pendingEditorAction]);
+
   return (
     <>
       <SettingsPostProcessingSection
         scripts={scripts}
+        isEditorOpen={isEditorOpen}
+        editorMode={editingScriptId ? "edit" : "create"}
         editingScriptId={editingScriptId}
         scriptDraft={scriptDraft}
         setScriptDraft={setScriptDraft}
         submitScript={submitScript}
         mutatingScriptId={mutatingScriptId}
-        resetDraft={resetDraft}
-        editScript={editScript}
+        resetDraft={requestCloseEditor}
+        startCreateScript={requestCreateEditor}
+        editScript={requestEditScript}
         toggleScript={toggleScript}
         deleteScript={deleteScript}
         expandedScriptId={expandedScriptId}
@@ -262,6 +339,22 @@ export function SettingsPostProcessingContainer() {
         isBusy={mutatingScriptId !== null}
         onConfirm={confirmDeleteScript}
         onCancel={() => setPendingDeleteScript(null)}
+      />
+      <ConfirmDialog
+        open={pendingEditorAction !== null}
+        title={t("settings.pp.confirmDiscardTitle")}
+        description={t("settings.pp.confirmDiscardDescription")}
+        confirmLabel={
+          pendingEditorAction?.type === "create"
+            ? t("settings.pp.createNewScript")
+            : pendingEditorAction?.type === "edit"
+              ? t("label.edit")
+              : t("label.discard")
+        }
+        cancelLabel={t("label.cancel")}
+        isBusy={mutatingScriptId !== null}
+        onConfirm={confirmPendingEditorAction}
+        onCancel={() => setPendingEditorAction(null)}
       />
     </>
   );

@@ -85,6 +85,85 @@ pub(crate) fn normalize_release_password(raw: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+pub(crate) fn is_obfuscated_release_name(parsed: &ParsedReleaseMetadata) -> bool {
+    if parsed
+        .release_group
+        .as_ref()
+        .is_some_and(|group| !group.trim().is_empty())
+    {
+        return false;
+    }
+
+    parsed
+        .raw_title
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| token.len() >= 8)
+        .any(|token| {
+            let has_alpha = token.chars().any(|ch| ch.is_ascii_alphabetic());
+            let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
+            let hex_like = token.chars().all(|ch| ch.is_ascii_hexdigit());
+            (has_alpha && has_digit) || hex_like
+        })
+}
+
+pub(crate) fn has_usable_release_title_signal(parsed: &ParsedReleaseMetadata) -> bool {
+    let normalized_title = parsed.normalized_title.trim();
+    if normalized_title.is_empty() {
+        return false;
+    }
+
+    if matches!(
+        normalized_title.to_ascii_uppercase().as_str(),
+        "MOVIE" | "VIDEO" | "FILE" | "DOWNLOAD" | "UNKNOWN"
+    ) {
+        return false;
+    }
+
+    !is_obfuscated_release_name(parsed)
+}
+
+pub(crate) fn normalize_release_title_signal(
+    mut parsed: ParsedReleaseMetadata,
+) -> ParsedReleaseMetadata {
+    parsed.normalized_title = normalize_compact_part_token(&parsed.normalized_title);
+    parsed.normalized_title_variants = parsed
+        .normalized_title_variants
+        .into_iter()
+        .map(|variant| normalize_compact_part_token(&variant))
+        .collect();
+    parsed
+}
+
+pub(crate) fn parse_usable_release_title(raw: &str) -> Option<ParsedReleaseMetadata> {
+    let parsed = normalize_release_title_signal(parse_release_metadata(raw));
+    has_usable_release_title_signal(&parsed).then_some(parsed)
+}
+
+fn normalize_compact_part_token(title: &str) -> String {
+    let mut tokens = Vec::new();
+    let mut changed = false;
+
+    for token in title.split_whitespace() {
+        let upper = token.to_ascii_uppercase();
+        if let Some(number) = upper.strip_prefix("PART")
+            && !number.is_empty()
+            && number.chars().all(|ch| ch.is_ascii_digit())
+        {
+            tokens.push("PART".to_string());
+            tokens.push(number.to_string());
+            changed = true;
+        } else {
+            tokens.push(token.to_string());
+        }
+    }
+
+    if changed {
+        tokens.join(" ")
+    } else {
+        title.to_string()
+    }
+}
+
 pub(crate) fn normalize_release_selection_signature(
     source_hint: Option<&str>,
     source_title: Option<&str>,
@@ -113,7 +192,7 @@ pub(crate) fn normalize_release_selection_signature(
 }
 
 pub(crate) fn sha256_hex(input: impl AsRef<str>) -> String {
-    let hash = ring_digest::digest(&ring_digest::SHA256, input.as_ref().as_bytes());
+    let hash = aws_lc_digest::digest(&aws_lc_digest::SHA256, input.as_ref().as_bytes());
     to_hex(hash.as_ref())
 }
 

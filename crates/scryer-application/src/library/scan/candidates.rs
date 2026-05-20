@@ -1,11 +1,12 @@
 use super::*;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 async fn ensure_title_folder_path_if_missing(
     app: &AppUseCase,
     title: &mut Title,
     folder_path: &Path,
 ) {
-    let folder_path = folder_path.to_string_lossy().trim().to_string();
+    let folder_path = path_to_stored_string(folder_path).trim().to_string();
     if folder_path.is_empty()
         || title
             .folder_path
@@ -44,20 +45,22 @@ fn scanned_movie_entry_folder_path(scan_root: &Path, representative_path: &str) 
         return None;
     }
 
-    let item_path = PathBuf::from(representative_path);
+    let item_path = stored_path_to_path_buf(representative_path);
     if let Ok(relative) = item_path.strip_prefix(scan_root)
         && let Some(first_component) = relative.components().next()
     {
         let entry_path = scan_root.join(first_component.as_os_str());
-        let entry_path = entry_path.to_string_lossy().trim().to_string();
+        let entry_path = path_to_stored_string(&entry_path).trim().to_string();
         if entry_path.is_empty() || entry_path == representative_path {
             return None;
         }
         return Some(entry_path);
     }
 
-    let parent = item_path.parent()?.to_string_lossy().trim().to_string();
-    if parent.is_empty() || parent == scan_root.to_string_lossy() {
+    let parent = path_to_stored_string(item_path.parent()?)
+        .trim()
+        .to_string();
+    if parent.is_empty() || parent == path_to_stored_string(scan_root) {
         None
     } else {
         Some(parent)
@@ -288,6 +291,27 @@ fn find_existing_series_title_index(
         })
 }
 
+async fn load_existing_title_for_media_file_path(
+    app: &AppUseCase,
+    file_path: &str,
+) -> AppResult<Option<Title>> {
+    let Some(existing_media_file) = app
+        .services
+        .library
+        .media_files
+        .get_media_file_by_path(file_path)
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    app.services
+        .catalog
+        .titles
+        .get_by_id(&existing_media_file.title_id)
+        .await
+}
+
 enum MovieCandidateResolution {
     Ready(Title),
     ReadyCreated {
@@ -420,7 +444,7 @@ pub(super) async fn scan_episodic_title_directory_for_progress_metrics(
     folder_path: &Path,
 ) -> AppResult<LibraryDirectoryScanResult> {
     library_scanner
-        .scan_directory_for_progress_with_metrics(folder_path.to_string_lossy().as_ref())
+        .scan_directory_for_progress_with_metrics(path_to_stored_string(folder_path).as_str())
         .await
 }
 
@@ -647,6 +671,25 @@ pub(super) async fn process_movie_full_scan_candidate(
     let representative_path = candidate.file.path.clone();
     let scan_root = Path::new(library_path);
 
+    if let Some(mut title) =
+        load_existing_title_for_media_file_path(app, &candidate.file.path).await?
+    {
+        sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
+            .await;
+        sync_existing_title_folder_path_in_memory(existing_titles, &title);
+        summary.matched += 1;
+        merge_default_movie_title_work(
+            workset,
+            title,
+            discovered_files,
+            LibraryScanTitleWalkMode::Full,
+            false,
+        );
+        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+        coordinator.mark_title_match_completed(1).await;
+        return Ok(None);
+    }
+
     match resolve_movie_scan_candidate(
         app,
         actor,
@@ -762,6 +805,24 @@ pub(super) async fn process_series_full_scan_candidate(
             return Ok(None);
         }
     };
+
+    if let Some(file) = candidate.source_file.as_ref()
+        && let Some(title) = load_existing_title_for_media_file_path(app, &file.path).await?
+    {
+        merge_library_scan_title_work(
+            workset,
+            episodic_title_work(
+                title,
+                vec![file.clone()],
+                LibraryScanTitleWalkMode::Full,
+                false,
+            ),
+        );
+        summary.matched += 1;
+        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+        coordinator.mark_title_match_completed(1).await;
+        return Ok(None);
+    }
 
     if let Some(index) = find_existing_series_title_index(
         &candidate,

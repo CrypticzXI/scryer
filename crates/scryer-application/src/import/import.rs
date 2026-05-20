@@ -1,15 +1,20 @@
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity, ImportArtifact,
     ParsedEpisodeMetadata, ParsedReleaseMetadata, WantedCompleteTransition, WantedItemsQuery,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
+    apply_remote_path_mappings_to_completed_download,
     domain_events::{
         created_media_update, deleted_media_update, new_title_domain_event, title_context_snapshot,
+    },
+    helpers::{
+        has_usable_release_title_signal, normalize_release_title_signal, parse_usable_release_title,
     },
     import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
     import_title_resolution::normalize_imdb_id,
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
-    parse_release_metadata,
+    parse_download_client_remote_path_mappings, parse_release_metadata,
     polling_worker::PollingWorker,
     render_rename_template, sanitize_filesystem_component,
 };
@@ -17,11 +22,10 @@ use chrono::{DateTime, Utc};
 use scryer_domain::{
     Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem,
     DownloadQueueState, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
-    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet,
+    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title,
     TrackedDownloadState, User, is_video_file,
 };
-use std::collections::BTreeMap;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// If subtitles.auto_download_on_import is enabled, spawn a background subtitle search.
@@ -40,6 +44,43 @@ fn maybe_trigger_subtitle_search(app: &AppUseCase, title_id: &str, media_file_id
             crate::spawn_subtitle_search_for_file(app, title_id, media_file_id);
         }
     });
+}
+
+async fn remap_completed_download_for_client(app: &AppUseCase, completed: &mut CompletedDownload) {
+    let client_id = completed.client_id.trim();
+    if client_id.is_empty() {
+        return;
+    }
+
+    let config = match app
+        .services
+        .integrations
+        .download_client_configs
+        .get_by_id(client_id)
+        .await
+    {
+        Ok(Some(config)) => config,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                error = %error,
+                "import: failed to load download client config for remote path mapping"
+            );
+            return;
+        }
+    };
+
+    match parse_download_client_remote_path_mappings(&config.config_json) {
+        Ok(mappings) => apply_remote_path_mappings_to_completed_download(completed, &mappings),
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                error = %error,
+                "import: failed to parse remote path mappings"
+            );
+        }
+    }
 }
 
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
@@ -214,8 +255,9 @@ pub async fn retry_failed_import(
         )));
     }
 
-    let completed: CompletedDownload = serde_json::from_str(&record.payload_json)
+    let mut completed: CompletedDownload = serde_json::from_str(&record.payload_json)
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
+    remap_completed_download_for_client(app, &mut completed).await;
 
     if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id")
         .map(|value| value.trim().to_string())
@@ -347,13 +389,23 @@ pub async fn try_import_completed_downloads(
         }
     };
 
+    let completed_downloads_by_identity = completed_downloads
+        .iter()
+        .map(|completed| (completed_download_identity(completed), completed))
+        .collect::<HashMap<_, _>>();
+
     for item in completed_items {
         let source_ref = &item.download_client_item_id;
+        let item_identity = DownloadSourceIdentity::new(
+            Some(item.client_id.as_str()),
+            &item.client_type,
+            &item.download_client_item_id,
+        );
         let already_imported = match app
             .services
             .workflow
             .imports
-            .is_already_imported(&item.client_type, source_ref)
+            .is_already_imported(&item_identity)
             .await
         {
             Ok(result) => result,
@@ -364,11 +416,8 @@ pub async fn try_import_completed_downloads(
         };
 
         // Find the matching CompletedDownload
-        let completed = match completed_downloads
-            .iter()
-            .find(|cd| cd.download_client_item_id == item.download_client_item_id)
-        {
-            Some(cd) => cd,
+        let completed = match completed_downloads_by_identity.get(&item_identity).copied() {
+            Some(completed) => completed,
             None => {
                 tracing::debug!(
                     source_ref = %source_ref,
@@ -401,15 +450,12 @@ pub async fn try_import_completed_downloads(
                 Ok(Some(submission)) if submission_has_scryer_origin(&submission) => {
                     let collection_id = submission.scope.collection_id().map(str::to_string);
                     let mut patched = completed.clone();
-                    patched.parameters = vec![
-                        ("*scryer_title_id".to_string(), submission.title_id),
-                        ("*scryer_facet".to_string(), submission.facet),
-                    ];
-                    if let Some(coll_id) = collection_id {
-                        patched
-                            .parameters
-                            .push(("*scryer_collection_id".to_string(), coll_id));
-                    }
+                    merge_scryer_origin_parameters(
+                        &mut patched.parameters,
+                        submission.title_id,
+                        submission.facet,
+                        collection_id,
+                    );
                     patched
                 }
                 Ok(Some(_)) => {
@@ -602,6 +648,27 @@ fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceI
     )
 }
 
+fn merge_scryer_origin_parameters(
+    parameters: &mut Vec<(String, String)>,
+    title_id: String,
+    facet: String,
+    collection_id: Option<String>,
+) {
+    upsert_parameter(parameters, "*scryer_title_id", title_id);
+    upsert_parameter(parameters, "*scryer_facet", facet);
+    if let Some(collection_id) = collection_id {
+        upsert_parameter(parameters, "*scryer_collection_id", collection_id);
+    }
+}
+
+fn upsert_parameter(parameters: &mut Vec<(String, String)>, key: &str, value: String) {
+    if let Some((_, existing_value)) = parameters.iter_mut().find(|(name, _)| name == key) {
+        *existing_value = value;
+    } else {
+        parameters.push((key.to_string(), value));
+    }
+}
+
 async fn persist_completed_download_tracked_state(
     app: &AppUseCase,
     completed: &CompletedDownload,
@@ -690,6 +757,7 @@ async fn reconcile_terminal_download_cleanup(
     client_id: &str,
     client_type: &str,
     download_client_item_id: &str,
+    library_id: Option<&str>,
     facet: Option<&MediaFacet>,
     state: TrackedDownloadState,
 ) -> TerminalDownloadCleanupOutcome {
@@ -703,13 +771,16 @@ async fn reconcile_terminal_download_cleanup(
     let should_remove = match state {
         TrackedDownloadState::Imported => match facet {
             Some(facet) => {
-                app.should_remove_completed_download(facet, routing_key)
+                app.should_remove_completed_download(library_id, facet, routing_key)
                     .await
             }
             None => false,
         },
         TrackedDownloadState::Failed => match facet {
-            Some(facet) => app.should_remove_failed_download(facet, routing_key).await,
+            Some(facet) => {
+                app.should_remove_failed_download(library_id, facet, routing_key)
+                    .await
+            }
             None => false,
         },
         TrackedDownloadState::Ignored => true,
@@ -777,17 +848,35 @@ async fn reconcile_terminal_download_cleanup(
     }
 }
 
+async fn cleanup_routing_scope_for_title_id(
+    app: &AppUseCase,
+    title_id: Option<&str>,
+) -> (Option<String>, Option<MediaFacet>) {
+    let Some(title_id) = title_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return (None, None);
+    };
+
+    match app.services.catalog.titles.get_by_id(title_id).await {
+        Ok(Some(title)) => (Some(title.library_id), Some(title.facet)),
+        Ok(None) | Err(_) => (None, None),
+    }
+}
+
 pub(crate) async fn reconcile_terminal_download_cleanup_for_completed(
     app: &AppUseCase,
     completed: &CompletedDownload,
     state: TrackedDownloadState,
 ) -> TerminalDownloadCleanupOutcome {
-    let facet = facet_for_completed_download(completed);
+    let title_id = extract_parameter(&completed.parameters, "*scryer_title_id").unwrap_or_default();
+    let (library_id, resolved_facet) =
+        cleanup_routing_scope_for_title_id(app, Some(title_id.as_str())).await;
+    let facet = resolved_facet.or_else(|| facet_for_completed_download(completed));
     reconcile_terminal_download_cleanup(
         app,
         &completed.client_id,
         &completed.client_type,
         &completed.download_client_item_id,
+        library_id.as_deref(),
         facet.as_ref(),
         state,
     )
@@ -799,12 +888,15 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
     tracked: &crate::tracked_downloads::TrackedDownload,
     state: TrackedDownloadState,
 ) -> TerminalDownloadCleanupOutcome {
-    let facet = facet_from_tracked_label(tracked.facet.as_deref());
+    let (library_id, resolved_facet) =
+        cleanup_routing_scope_for_title_id(app, tracked.title_id.as_deref()).await;
+    let facet = resolved_facet.or_else(|| facet_from_tracked_label(tracked.facet.as_deref()));
     reconcile_terminal_download_cleanup(
         app,
         &tracked.client_id,
         &tracked.client_type,
         &tracked.client_item.download_client_item_id,
+        library_id.as_deref(),
         facet.as_ref(),
         state,
     )
@@ -852,13 +944,8 @@ async fn maybe_remove_completed_manual_import_download(
         return;
     };
 
-    let facet = match title_id.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(title_id) => match app.services.catalog.titles.get_by_id(title_id).await {
-            Ok(Some(title)) => Some(title.facet),
-            Ok(None) | Err(_) => facet_for_completed_download(completed),
-        },
-        None => facet_for_completed_download(completed),
-    };
+    let (library_id, resolved_facet) = cleanup_routing_scope_for_title_id(app, title_id).await;
+    let facet = resolved_facet.or_else(|| facet_for_completed_download(completed));
 
     let Some(facet) = facet else {
         return;
@@ -869,6 +956,7 @@ async fn maybe_remove_completed_manual_import_download(
         &completed.client_id,
         &completed.client_type,
         &completed.download_client_item_id,
+        library_id.as_deref(),
         Some(&facet),
         TrackedDownloadState::Imported,
     )
@@ -880,21 +968,24 @@ pub async fn import_completed_download(
     actor: &User,
     completed: &CompletedDownload,
 ) -> AppResult<ImportResult> {
+    let mut completed = completed.clone();
+    remap_completed_download_for_client(app, &mut completed).await;
     let started_at = Utc::now();
     let source_ref = &completed.download_client_item_id;
+    let source_identity = completed_download_identity(&completed);
 
     // 1. DEDUP CHECK
     if app
         .services
         .workflow
         .imports
-        .is_already_imported(&completed.client_type, source_ref)
+        .is_already_imported(&source_identity)
         .await?
     {
         return Ok(ImportResult {
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::AlreadyImported),
-            ..base_completed_import_result("", completed, started_at)
+            ..base_completed_import_result("", &completed, started_at)
         });
     }
 
@@ -916,10 +1007,9 @@ pub async fn import_completed_download(
         .workflow
         .imports
         .queue_import_request(
-            completed.client_type.clone(),
-            source_ref.clone(),
+            source_identity,
             import_type.as_str().to_string(),
-            serde_json::to_string(completed).unwrap_or_default(),
+            serde_json::to_string(&completed).unwrap_or_default(),
         )
         .await?;
 
@@ -936,7 +1026,7 @@ pub async fn import_completed_download(
         let result = ImportResult {
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::NoVideoFiles),
-            ..base_completed_import_result(&import_id, completed, started_at)
+            ..base_completed_import_result(&import_id, &completed, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
         let _ = app
@@ -951,7 +1041,7 @@ pub async fn import_completed_download(
 
     // From here on, any error must update the import record to "failed" rather than
     // propagating via `?`. Otherwise the record stays "processing" indefinitely.
-    match run_import(app, actor, &import_id, completed, started_at, None).await {
+    match run_import(app, actor, &import_id, &completed, started_at, None).await {
         Ok(result) => Ok(result),
         Err(error) => {
             let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
@@ -963,7 +1053,7 @@ pub async fn import_completed_download(
                 decision: ImportDecision::Failed,
                 skip_reason,
                 error_message: Some(error.to_string()),
-                ..base_completed_import_result(&import_id, completed, started_at)
+                ..base_completed_import_result(&import_id, &completed, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             let _ = app
@@ -984,8 +1074,12 @@ async fn run_import(
 ) -> AppResult<ImportResult> {
     // 2. TITLE MATCHING
     let mut title = None;
-    let parsed_completed_name = parse_release_metadata(&completed.name);
-    let parsed_completed_folder = parsed_release_from_folder_name(Path::new(&completed.dest_dir));
+    let dest_dir = Path::new(&completed.dest_dir);
+    let mut extracted_dir: Option<PathBuf> = None;
+    let mut title_evidence_video_files: Option<Vec<PathBuf>> = None;
+    let parsed_completed_name =
+        normalize_release_title_signal(parse_release_metadata(&completed.name));
+    let parsed_completed_folder = parsed_release_from_folder_name(dest_dir);
     if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id") {
         let title_id = title_id.trim();
         if !title_id.is_empty() {
@@ -1037,38 +1131,41 @@ async fn run_import(
         let facet_hint = extract_parameter(&completed.parameters, "*scryer_facet")
             .or_else(|| completed.category.clone());
 
-        title = if parsed_completed_name.episode.is_some() {
-            crate::import_title_resolution::resolve_monitored_episode_title_from_release(
-                &titles,
-                &parsed_completed_name,
-                facet_hint.as_deref(),
-            )
-            .map(|resolved| resolved.title.clone())
-        } else {
-            crate::import_title_resolution::resolve_monitored_movie_title_from_release(
-                &titles,
-                &parsed_completed_name,
-            )
-            .map(|resolved| resolved.title.clone())
-        };
+        title = resolve_title_from_release_candidate(
+            &titles,
+            &parsed_completed_name,
+            facet_hint.as_deref(),
+        );
 
         if title.is_none()
             && let Some(parsed_completed_folder) = parsed_completed_folder.as_ref()
         {
-            title = if parsed_completed_folder.episode.is_some() {
-                crate::import_title_resolution::resolve_monitored_episode_title_from_release(
+            title = resolve_title_from_release_candidate(
+                &titles,
+                parsed_completed_folder,
+                facet_hint.as_deref(),
+            );
+        }
+
+        if title.is_none() {
+            extracted_dir =
+                crate::archive_extractor::extract_archives_if_needed(dest_dir, archive_password)
+                    .await?;
+            let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
+            let video_files = find_video_files(effective_dir, true)?;
+
+            for candidate in title_evidence_candidates_from_video_files(&video_files) {
+                title = resolve_title_from_release_candidate(
                     &titles,
-                    parsed_completed_folder,
+                    &candidate,
                     facet_hint.as_deref(),
-                )
-                .map(|resolved| resolved.title.clone())
-            } else {
-                crate::import_title_resolution::resolve_monitored_movie_title_from_release(
-                    &titles,
-                    parsed_completed_folder,
-                )
-                .map(|resolved| resolved.title.clone())
-            };
+                );
+                if title.is_some() {
+                    break;
+                }
+            }
+
+            title_evidence_video_files = Some(video_files);
         }
     }
 
@@ -1114,12 +1211,20 @@ async fn run_import(
     }
 
     // 3. FIND VIDEO FILES (extract archives first if needed)
-    let dest_dir = Path::new(&completed.dest_dir);
     let is_series = matches!(title.facet, MediaFacet::Series | MediaFacet::Anime);
-    let extracted_dir =
-        crate::archive_extractor::extract_archives_if_needed(dest_dir, archive_password).await?;
+    if extracted_dir.is_none() {
+        extracted_dir =
+            crate::archive_extractor::extract_archives_if_needed(dest_dir, archive_password)
+                .await?;
+    }
     let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
-    let video_files = find_video_files(effective_dir, is_series)?;
+    let video_files = if is_series {
+        title_evidence_video_files
+            .take()
+            .unwrap_or(find_video_files(effective_dir, true)?)
+    } else {
+        find_video_files(effective_dir, false)?
+    };
 
     if video_files.is_empty() {
         let result = ImportResult {
@@ -1263,7 +1368,7 @@ async fn import_movie_download(
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
                 source_title: Some(completed.name.clone()),
-                source_path: source_video.to_string_lossy().to_string(),
+                source_path: path_to_stored_string(&source_video),
                 dest_path: None,
                 quality: parsed.quality.clone(),
                 episode_ids: Vec::new(),
@@ -1302,7 +1407,7 @@ async fn import_movie_download(
             .services
             .catalog
             .titles
-            .set_folder_path(&title.id, &full_folder_path.to_string_lossy())
+            .set_folder_path(&title.id, &path_to_stored_string(&full_folder_path))
             .await;
     }
 
@@ -1346,8 +1451,8 @@ async fn import_movie_download(
             source_system: Some(completed.client_type.clone()),
             source_ref: Some(completed.download_client_item_id.clone()),
             source_title: Some(completed.name.clone()),
-            source_path: source_video.to_string_lossy().to_string(),
-            dest_path: Some(dest_path.to_string_lossy().to_string()),
+            source_path: path_to_stored_string(&source_video),
+            dest_path: Some(path_to_stored_string(&dest_path)),
             quality: prepared.parsed.quality.clone(),
             episode_ids: Vec::new(),
             file_size_bytes: Some(source_size),
@@ -1425,8 +1530,8 @@ async fn import_movie_download(
                             source_system: Some(completed.client_type.clone()),
                             source_ref: Some(completed.download_client_item_id.clone()),
                             source_title: Some(completed.name.clone()),
-                            source_path: source_video.to_string_lossy().to_string(),
-                            dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            source_path: path_to_stored_string(&source_video),
+                            dest_path: Some(path_to_stored_string(&dest_path)),
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
@@ -1473,8 +1578,8 @@ async fn import_movie_download(
                             source_system: Some(completed.client_type.clone()),
                             source_ref: Some(completed.download_client_item_id.clone()),
                             source_title: Some(completed.name.clone()),
-                            source_path: source_video.to_string_lossy().to_string(),
-                            dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            source_path: path_to_stored_string(&source_video),
+                            dest_path: Some(path_to_stored_string(&dest_path)),
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
@@ -1538,7 +1643,7 @@ async fn import_movie_download(
 
     let media_file_input = crate::InsertMediaFileInput {
         title_id: title.id.clone(),
-        file_path: dest_path.to_string_lossy().to_string(),
+        file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
         quality_label: prepared.parsed.quality.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
@@ -1548,7 +1653,7 @@ async fn import_movie_download(
         video_codec_parsed: prepared.parsed.video_codec.clone(),
         audio_codec_parsed: prepared.parsed.audio.clone(),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
-        original_file_path: Some(source_video.to_string_lossy().to_string()),
+        original_file_path: Some(path_to_stored_string(source_video.clone())),
         acquisition_score: Some(acq_score),
         ..Default::default()
     };
@@ -1613,7 +1718,7 @@ async fn import_movie_download(
         collection_type: CollectionType::Movie,
         collection_index: "1".to_string(),
         label: prepared.parsed.quality.clone(),
-        ordered_path: Some(dest_path.to_string_lossy().to_string()),
+        ordered_path: Some(path_to_stored_string(&dest_path)),
         narrative_order: None,
         first_episode_number: None,
         last_episode_number: None,
@@ -1670,8 +1775,8 @@ async fn import_movie_download(
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
         source_title: Some(completed.name.clone()),
-        source_path: source_video.to_string_lossy().to_string(),
-        dest_path: Some(dest_path.to_string_lossy().to_string()),
+        source_path: path_to_stored_string(&source_video),
+        dest_path: Some(path_to_stored_string(&dest_path)),
         quality: prepared.parsed.quality.clone(),
         episode_ids: Vec::new(),
         file_size_bytes: Some(file_result.size_bytes as i64),
@@ -1690,16 +1795,14 @@ async fn import_movie_download(
             title,
             DomainEventPayload::ImportCompleted(ImportCompletedEventData {
                 title: title_context_snapshot(title),
-                media_updates: vec![created_media_update(
-                    dest_path.to_string_lossy().to_string(),
-                )],
+                media_updates: vec![created_media_update(path_to_stored_string(&dest_path))],
                 imported_count: 1,
                 import_id: Some(import_id.to_string()),
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
                 source_title: Some(completed.name.clone()),
-                source_path: Some(source_video.to_string_lossy().to_string()),
-                dest_path: Some(dest_path.to_string_lossy().to_string()),
+                source_path: Some(path_to_stored_string(&source_video)),
+                dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: prepared.parsed.quality.clone(),
                 episode_ids: Vec::new(),
             }),
@@ -1873,8 +1976,8 @@ async fn import_interstitial_movie_download(
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
                 source_title: Some(completed.name.clone()),
-                source_path: source_video.to_string_lossy().to_string(),
-                dest_path: Some(dest_path.to_string_lossy().to_string()),
+                source_path: path_to_stored_string(&source_video),
+                dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: parsed.quality.clone(),
                 episode_ids: Vec::new(),
                 file_size_bytes: Some(source_size),
@@ -1962,8 +2065,8 @@ async fn import_interstitial_movie_download(
                             source_system: Some(completed.client_type.clone()),
                             source_ref: Some(completed.download_client_item_id.clone()),
                             source_title: Some(completed.name.clone()),
-                            source_path: source_video.to_string_lossy().to_string(),
-                            dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            source_path: path_to_stored_string(&source_video),
+                            dest_path: Some(path_to_stored_string(&dest_path)),
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
@@ -2003,8 +2106,8 @@ async fn import_interstitial_movie_download(
                             source_system: Some(completed.client_type.clone()),
                             source_ref: Some(completed.download_client_item_id.clone()),
                             source_title: Some(completed.name.clone()),
-                            source_path: source_video.to_string_lossy().to_string(),
-                            dest_path: Some(dest_path.to_string_lossy().to_string()),
+                            source_path: path_to_stored_string(&source_video),
+                            dest_path: Some(path_to_stored_string(&dest_path)),
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
@@ -2052,8 +2155,8 @@ async fn import_interstitial_movie_download(
                     source_system: Some(completed.client_type.clone()),
                     source_ref: Some(completed.download_client_item_id.clone()),
                     source_title: Some(completed.name.clone()),
-                    source_path: source_video.to_string_lossy().to_string(),
-                    dest_path: Some(dest_path.to_string_lossy().to_string()),
+                    source_path: path_to_stored_string(&source_video),
+                    dest_path: Some(path_to_stored_string(&dest_path)),
                     quality: prepared.parsed.quality.clone(),
                     episode_ids: Vec::new(),
                     file_size_bytes: Some(source_size),
@@ -2104,7 +2207,7 @@ async fn import_interstitial_movie_download(
         .media_files
         .insert_media_file(&crate::InsertMediaFileInput {
             title_id: title.id.clone(),
-            file_path: dest_path.to_string_lossy().to_string(),
+            file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
             quality_label: prepared.parsed.quality.clone(),
             scene_name: Some(prepared.parsed.raw_title.clone()),
@@ -2114,7 +2217,7 @@ async fn import_interstitial_movie_download(
             video_codec_parsed: prepared.parsed.video_codec.clone(),
             audio_codec_parsed: prepared.parsed.audio.clone(),
             audio_channels_parsed: prepared.parsed.audio_channels.clone(),
-            original_file_path: Some(source_video.to_string_lossy().to_string()),
+            original_file_path: Some(path_to_stored_string(&source_video)),
             acquisition_score: Some(acq_score),
             ..Default::default()
         })
@@ -2167,7 +2270,7 @@ async fn import_interstitial_movie_download(
         .update_collection(
             collection_id,
             CollectionUpdate {
-                ordered_path: Some(dest_path.to_string_lossy().to_string()),
+                ordered_path: Some(path_to_stored_string(&dest_path)),
                 ..Default::default()
             },
         )
@@ -2235,8 +2338,8 @@ async fn import_interstitial_movie_download(
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
         source_title: Some(completed.name.clone()),
-        source_path: source_video.to_string_lossy().to_string(),
-        dest_path: Some(dest_path.to_string_lossy().to_string()),
+        source_path: path_to_stored_string(&source_video),
+        dest_path: Some(path_to_stored_string(&dest_path)),
         quality: prepared.parsed.quality.clone(),
         episode_ids: Vec::new(),
         file_size_bytes: Some(file_result.size_bytes as i64),
@@ -2254,16 +2357,14 @@ async fn import_interstitial_movie_download(
         title,
         DomainEventPayload::ImportCompleted(ImportCompletedEventData {
             title: title_context_snapshot(title),
-            media_updates: vec![created_media_update(
-                dest_path.to_string_lossy().to_string(),
-            )],
+            media_updates: vec![created_media_update(path_to_stored_string(&dest_path))],
             imported_count: 1,
             import_id: Some(import_id.to_string()),
             source_system: Some(completed.client_type.clone()),
             source_ref: Some(completed.download_client_item_id.clone()),
             source_title: Some(completed.name.clone()),
-            source_path: Some(source_video.to_string_lossy().to_string()),
-            dest_path: Some(dest_path.to_string_lossy().to_string()),
+            source_path: Some(path_to_stored_string(&source_video)),
+            dest_path: Some(path_to_stored_string(&dest_path)),
             quality: prepared.parsed.quality.clone(),
             episode_ids: Vec::new(),
         }),
@@ -2346,7 +2447,7 @@ async fn import_series_download(
             .services
             .catalog
             .titles
-            .set_folder_path(&title.id, &full_folder_path.to_string_lossy())
+            .set_folder_path(&title.id, &path_to_stored_string(&full_folder_path))
             .await;
     }
 
@@ -3080,7 +3181,7 @@ async fn execute_resolved_episode_import(
                     mark_wanted_completed(app, &title.id, Some(episode_id), None).await;
                 }
                 return Ok(EpisodeImportOutcome::Imported {
-                    dest_path: dest_path.to_string_lossy().to_string(),
+                    dest_path: path_to_stored_string(&dest_path),
                     episode_ids: target_episode_ids,
                     imported_media_file_id: None,
                     reason_code: Some("upgrade".to_string()),
@@ -3109,7 +3210,7 @@ async fn execute_resolved_episode_import(
 
     let has_existing = existing_files
         .iter()
-        .any(|file| file.file_path == dest_path.to_string_lossy().as_ref() as &str);
+        .any(|file| file.file_path == path_to_stored_string(&dest_path));
     let acq_score = crate::post_download_gate::compute_acquisition_score(
         app,
         &effective_parsed,
@@ -3123,7 +3224,7 @@ async fn execute_resolved_episode_import(
 
     let media_file_input = crate::InsertMediaFileInput {
         title_id: title.id.clone(),
-        file_path: dest_path.to_string_lossy().to_string(),
+        file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
         quality_label: effective_quality_label.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
@@ -3133,7 +3234,7 @@ async fn execute_resolved_episode_import(
         video_codec_parsed: prepared.parsed.video_codec.clone(),
         audio_codec_parsed: prepared.parsed.audio.clone(),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
-        original_file_path: Some(source_video.to_string_lossy().to_string()),
+        original_file_path: Some(path_to_stored_string(source_video)),
         acquisition_score: Some(acq_score),
         ..Default::default()
     };
@@ -3186,7 +3287,7 @@ async fn execute_resolved_episode_import(
     }
 
     Ok(EpisodeImportOutcome::Imported {
-        dest_path: dest_path.to_string_lossy().to_string(),
+        dest_path: path_to_stored_string(&dest_path),
         episode_ids: target_episode_ids,
         imported_media_file_id: Some(media_file_id),
         reason_code: None,
@@ -3325,7 +3426,11 @@ pub(crate) fn build_rename_tokens(
     );
     tokens.insert(
         "video_codec".to_string(),
-        parsed.video_codec.clone().unwrap_or_default(),
+        parsed
+            .video_codec
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
     );
     tokens.insert(
         "audio".to_string(),
@@ -3789,7 +3894,7 @@ async fn persist_file_import_artifact(
     let relative_path = source_path
         .strip_prefix(&completed.dest_dir)
         .ok()
-        .map(|path| path.to_string_lossy().to_string())
+        .map(path_to_stored_string)
         .filter(|path| !path.is_empty());
     let normalized_file_name = source_path
         .file_name()
@@ -3821,6 +3926,7 @@ async fn persist_file_import_artifact(
     for (episode_id, season_number, episode_number) in episode_rows {
         let artifact = ImportArtifact {
             id: Id::new().0,
+            source_client_id: Some(completed.client_id.clone()),
             source_system: completed.client_type.clone(),
             source_ref: completed.download_client_item_id.clone(),
             import_id: Some(import_id.to_string()),
@@ -3889,8 +3995,8 @@ const SAMPLE_SIZE_THRESHOLD: u64 = 50 * 1024 * 1024; // 50 MB
 pub(crate) fn is_sample_file(path: &Path) -> bool {
     let filename = path
         .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
         .to_ascii_lowercase();
 
     if filename.contains("sample") {
@@ -3914,21 +4020,88 @@ pub(crate) fn pick_largest_file(files: &[PathBuf]) -> AppResult<PathBuf> {
 fn parsed_release_from_file_stem(path: &Path) -> ParsedReleaseMetadata {
     let fallback = path
         .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let stem = path
         .file_stem()
-        .and_then(|value| value.to_str())
+        .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or(fallback);
-    parse_release_metadata(stem)
+    normalize_release_title_signal(parse_release_metadata(stem.as_str()))
+}
+
+fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
+    let fallback = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or(fallback);
+    parse_usable_release_title(stem.as_str())
 }
 
 fn parsed_release_from_folder_name(path: &Path) -> Option<ParsedReleaseMetadata> {
     path.file_name()
-        .and_then(|value| value.to_str())
-        .map(str::trim)
+        .map(|value| value.to_string_lossy().into_owned())
+        .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .map(parse_release_metadata)
+        .map(|value| parse_release_metadata(value.as_str()))
+        .map(normalize_release_title_signal)
+}
+
+fn parsed_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
+    path.parent().and_then(parsed_release_from_folder_name)
+}
+
+fn parsed_usable_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
+    parsed_release_from_parent_folder(path).filter(has_usable_release_title_signal)
+}
+
+fn resolve_title_from_release_candidate(
+    titles: &[Title],
+    candidate: &ParsedReleaseMetadata,
+    facet_hint: Option<&str>,
+) -> Option<Title> {
+    if candidate.episode.is_some() {
+        crate::import_title_resolution::resolve_monitored_episode_title_from_release(
+            titles, candidate, facet_hint,
+        )
+        .map(|resolved| resolved.title.clone())
+    } else {
+        crate::import_title_resolution::resolve_monitored_movie_title_from_release(
+            titles, candidate,
+        )
+        .map(|resolved| resolved.title.clone())
+    }
+}
+
+fn title_evidence_candidates_from_video_files(
+    video_files: &[PathBuf],
+) -> Vec<ParsedReleaseMetadata> {
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for video_file in video_files {
+        let candidate = parsed_usable_release_from_file_stem(video_file)
+            .or_else(|| parsed_usable_release_from_parent_folder(video_file));
+
+        if let Some(candidate) = candidate {
+            let key = candidate.raw_title.to_ascii_uppercase();
+            if seen.insert(key) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn clear_unusable_release_title_signal(parsed: &mut ParsedReleaseMetadata) {
+    if !has_usable_release_title_signal(parsed) {
+        parsed.normalized_title.clear();
+        parsed.normalized_title_variants.clear();
+    }
 }
 
 fn fill_missing_release_metadata(
@@ -4018,10 +4191,29 @@ fn build_augmented_episode_import_metadata(
 ) -> ParsedReleaseMetadata {
     let mut parsed = parsed_release_from_file_stem(source_video);
     let file_episode = parsed.episode.clone();
-    let download_client_info = parse_release_metadata(&completed.name);
+    let file_has_usable_title_signal = has_usable_release_title_signal(&parsed);
+    if !file_has_usable_title_signal {
+        clear_unusable_release_title_signal(&mut parsed);
+    }
+    let source_parent_info = if file_has_usable_title_signal {
+        None
+    } else {
+        parsed_usable_release_from_parent_folder(source_video)
+    };
+    let download_client_info =
+        normalize_release_title_signal(parse_release_metadata(&completed.name));
     let folder_info = parsed_release_from_folder_name(Path::new(&completed.dest_dir));
 
     if !other_video_files {
+        if let Some(source_parent_info) = source_parent_info.as_ref()
+            && let Some(other_episode_info) = source_parent_info.episode.as_ref()
+            && !other_episode_info.full_season
+            && prefer_other_episode_info(parsed.episode.as_ref(), other_episode_info)
+        {
+            fill_missing_release_metadata(&mut parsed, source_parent_info, true);
+            return parsed;
+        }
+
         if let Some(other_episode_info) = download_client_info.episode.as_ref()
             && !other_episode_info.full_season
             && prefer_other_episode_info(parsed.episode.as_ref(), other_episode_info)
@@ -4040,6 +4232,9 @@ fn build_augmented_episode_import_metadata(
         }
     }
 
+    if let Some(source_parent_info) = source_parent_info.as_ref() {
+        fill_missing_release_metadata(&mut parsed, source_parent_info, false);
+    }
     fill_missing_release_metadata(&mut parsed, &download_client_info, false);
     if let Some(folder_info) = folder_info.as_ref() {
         fill_missing_release_metadata(&mut parsed, folder_info, false);
@@ -4055,7 +4250,14 @@ fn build_augmented_movie_import_metadata(
     completed: &CompletedDownload,
 ) -> ParsedReleaseMetadata {
     let mut parsed = parsed_release_from_file_stem(source_video);
-    let download_client_info = parse_release_metadata(&completed.name);
+    clear_unusable_release_title_signal(&mut parsed);
+    if !has_usable_release_title_signal(&parsed)
+        && let Some(source_parent_info) = parsed_usable_release_from_parent_folder(source_video)
+    {
+        fill_missing_release_metadata(&mut parsed, &source_parent_info, false);
+    }
+    let download_client_info =
+        normalize_release_title_signal(parse_release_metadata(&completed.name));
     fill_missing_release_metadata(&mut parsed, &download_client_info, false);
     if let Some(folder_info) = parsed_release_from_folder_name(Path::new(&completed.dest_dir)) {
         fill_missing_release_metadata(&mut parsed, &folder_info, false);
@@ -4240,7 +4442,7 @@ pub async fn preview_manual_import(
         }
 
         previews.push(ManualImportFilePreview {
-            file_path: path.to_string_lossy().to_string(),
+            file_path: path_to_stored_string(path),
             file_name,
             size_bytes: size,
             quality: parsed.quality.clone(),
@@ -4422,7 +4624,11 @@ pub(crate) async fn find_active_manual_import_for_source(
         .services
         .workflow
         .imports
-        .list_imports_for_sources(&[(normalized_client_type.clone(), source_ref.to_string())])
+        .list_imports_for_identities(&[DownloadSourceIdentity::new(
+            client_id,
+            normalized_client_type.as_str(),
+            source_ref,
+        )])
         .await?;
 
     Ok(records.into_iter().find(|record| {
@@ -4561,7 +4767,7 @@ pub async fn execute_manual_import(
     let mut results = Vec::new();
 
     for mapping in &files {
-        let source = Path::new(&mapping.file_path);
+        let source = stored_path_to_path_buf(&mapping.file_path);
 
         // Validate file exists
         if !source.exists() || !source.is_file() {
@@ -4612,9 +4818,9 @@ pub async fn execute_manual_import(
         // Parse release metadata for quality/codec tokens
         let parsed = completed
             .map(|completed| {
-                build_augmented_episode_import_metadata(source, completed, files.len() > 1)
+                build_augmented_episode_import_metadata(&source, completed, files.len() > 1)
             })
-            .unwrap_or_else(|| parsed_release_from_file_stem(source));
+            .unwrap_or_else(|| parsed_release_from_file_stem(&source));
 
         let season_num: u32 = episode
             .season_number
@@ -4637,7 +4843,7 @@ pub async fn execute_manual_import(
             &media_root,
             &rename_template,
             &title_folder,
-            source,
+            &source,
             &parsed,
             std::slice::from_ref(&episode),
             &coverage_episodes,
@@ -4889,7 +5095,7 @@ pub async fn execute_queued_manual_import(
 
 #[cfg(test)]
 mod tests {
-    use super::sanitized_title_folder_component;
+    use super::{is_sample_file, sanitized_title_folder_component};
 
     #[test]
     fn title_folder_component_falls_back_when_sanitized_empty() {
@@ -4902,6 +5108,17 @@ mod tests {
             sanitized_title_folder_component("Movie Title (2024)"),
             "Movie Title (2024)"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sample_file_detection_uses_lossy_non_utf8_stem() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::Path;
+
+        let path = Path::new(OsStr::from_bytes(b"/tmp/\xFFsample-clip.mkv"));
+        assert!(is_sample_file(path));
     }
 }
 

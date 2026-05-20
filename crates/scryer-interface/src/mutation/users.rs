@@ -76,6 +76,10 @@ impl UserMutations {
                 .await
                 .map_err(to_gql_error)?
         };
+        let user = app
+            .attach_user_authorization(user)
+            .await
+            .map_err(to_gql_error)?;
         Ok(from_user(user))
     }
 

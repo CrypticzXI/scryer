@@ -10,14 +10,13 @@ use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
 use scryer_application::{IndexerClient, IndexerPluginProvider, MetadataSearchQuery, SearchMode};
-use scryer_domain::{Entitlement, LibraryPermissionMask, User, UserAuthorization};
+use scryer_domain::{LibraryPermissionMask, User, UserAuthorization};
 
 fn admin() -> User {
     User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageConfig],
         authorization: UserAuthorization {
             loaded: true,
             default_library: LibraryPermissionMask::from_permissions([
@@ -42,6 +41,10 @@ fn new_nzbgeek_client(uri: &str) -> Arc<dyn IndexerClient> {
         is_enabled: true,
         enable_interactive_search: true,
         enable_auto_search: true,
+        managed_parent_config_id: None,
+        managed_child_key: None,
+        managed_metadata_json: None,
+        caps_snapshot_json: None,
         rate_limit_seconds: None,
         rate_limit_burst: None,
         disabled_until: None,
@@ -522,6 +525,10 @@ async fn nzbgeek_search_no_api_key_fails() {
         is_enabled: true,
         enable_interactive_search: true,
         enable_auto_search: true,
+        managed_parent_config_id: None,
+        managed_child_key: None,
+        managed_metadata_json: None,
+        caps_snapshot_json: None,
         rate_limit_seconds: None,
         rate_limit_burst: None,
         disabled_until: None,

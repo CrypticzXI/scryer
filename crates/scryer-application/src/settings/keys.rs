@@ -23,6 +23,9 @@ pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];
 pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
 pub const HISTORY_KEEP_FOREVER_KEY: &str = "history.keep_forever";
 pub const HISTORY_RETENTION_DAYS_KEY: &str = "history.retention_days";
+pub const AUTO_BACKUP_ENABLED_KEY: &str = "backup.auto.enabled";
+pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local";
+pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";
 pub const FORM_LOGIN_ENABLED_KEY: &str = "auth.form_login_enabled";
 pub const SKIP_LOGIN_FOR_LOCAL_IPS_KEY: &str = "auth.skip_login_for_local_ips";
 
@@ -98,3 +101,4 @@ pub const DEFAULT_RENAME_COLLISION_POLICY: &str = "skip";
 pub const DEFAULT_RENAME_MISSING_METADATA_POLICY: &str = "fallback_title";
 pub const DEFAULT_FILLER_POLICY: &str = "download_all";
 pub const DEFAULT_RECAP_POLICY: &str = "download_all";
+pub const DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL: &str = "03:00";

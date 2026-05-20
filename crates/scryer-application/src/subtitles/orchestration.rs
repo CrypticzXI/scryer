@@ -7,6 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::normalize::normalize_imdb_id;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::subtitles::provider::{
     SubtitleFile, SubtitleMatch, SubtitleMediaKind, SubtitleProvider, SubtitleQuery,
 };
@@ -477,7 +478,7 @@ impl AppUseCase {
         let results = search_all_subtitle_providers(
             self,
             &providers,
-            Path::new(&media_file.file_path),
+            &stored_path_to_path_buf(&media_file.file_path),
             &query,
             0,
         )
@@ -539,12 +540,12 @@ impl AppUseCase {
         let provider =
             runtime_subtitle_provider_for_download(self, &settings, &provider_name).await?;
 
-        let file_path = Path::new(&media_file.file_path);
+        let file_path = stored_path_to_path_buf(&media_file.file_path);
         let episode_context = media_file_episode_context(self, &media_file).await;
         let (dest_path, _) = crate::subtitles::download::download_and_save_with_selection(
             &provider,
             &provider_file_id,
-            file_path,
+            file_path.as_path(),
             &language,
             forced,
             hearing_impaired,
@@ -564,7 +565,7 @@ impl AppUseCase {
             language,
             provider: Some(provider_name),
             provider_file_id: Some(provider_file_id),
-            file_path: dest_path.to_string_lossy().to_string(),
+            file_path: path_to_stored_string(&dest_path),
             score,
             hearing_impaired,
             forced,
@@ -585,7 +586,7 @@ impl AppUseCase {
             self,
             read_subtitle_sync_settings(&settings),
             subtitle_media_kind(&title),
-            file_path,
+            file_path.as_path(),
             &dest_path,
             Some(&record.id),
             score,
@@ -1139,7 +1140,7 @@ fn build_subtitle_query(
     let (imdb_id, series_imdb_id) = title_imdb_ids(title, preferred_release);
     let analysis_labels = resolve_release_labels_from_analysis(
         media_file.video_height,
-        media_file.video_codec.as_deref(),
+        media_file.video_codec.as_ref(),
         media_file.audio_codec.as_deref(),
         media_file.audio_profile.as_deref(),
         media_file.audio_channels,
@@ -1170,8 +1171,13 @@ fn build_subtitle_query(
             .and_then(|release| release.source.clone())
             .or_else(|| media_file.source_type.clone()),
         video_codec: preferred_release
-            .and_then(|release| release.video_codec.clone())
-            .or_else(|| media_file.video_codec_parsed.clone())
+            .and_then(|release| release.video_codec.as_ref().map(ToString::to_string))
+            .or_else(|| {
+                media_file
+                    .video_codec_parsed
+                    .clone()
+                    .map(|codec| codec.to_string())
+            })
             .or(analysis_labels.video_codec),
         audio_codec: preferred_release
             .and_then(release_audio_codec)
@@ -1270,7 +1276,7 @@ async fn run_subtitle_search_for_file(
     let missing = compute_missing_subtitles_from_streams(&wanted_languages, &existing, &embedded);
 
     let episode_context = media_file_episode_context(app, &mf).await;
-    let file_path = Path::new(&mf.file_path);
+    let file_path = stored_path_to_path_buf(&mf.file_path);
 
     for lang_pref in &missing {
         let query = build_subtitle_query(
@@ -1283,7 +1289,11 @@ async fn run_subtitle_search_for_file(
             include_machine,
         );
         let results = match search_all_subtitle_providers(
-            app, &providers, file_path, &query, min_score,
+            app,
+            &providers,
+            file_path.as_path(),
+            &query,
+            min_score,
         )
         .await
         {
@@ -1337,7 +1347,7 @@ async fn run_subtitle_search_for_file(
         match crate::subtitles::download::download_and_save_with_selection(
             &download_provider,
             &best.provider_file_id,
-            file_path,
+            file_path.as_path(),
             &best.language,
             best.forced,
             best.hearing_impaired,
@@ -1358,7 +1368,7 @@ async fn run_subtitle_search_for_file(
                     language: best.language.clone(),
                     provider: Some(best.provider.clone()),
                     provider_file_id: Some(best.provider_file_id.clone()),
-                    file_path: dest_path.to_string_lossy().to_string(),
+                    file_path: path_to_stored_string(&dest_path),
                     score: Some(best.score),
                     hearing_impaired: best.hearing_impaired,
                     forced: best.forced,
@@ -1387,7 +1397,7 @@ async fn run_subtitle_search_for_file(
                     app,
                     sync_settings,
                     query.media_kind,
-                    file_path,
+                    file_path.as_path(),
                     &dest_path,
                     record_inserted.then_some(record_id.as_str()),
                     Some(best.score),
@@ -1488,7 +1498,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 min_score_movie
             };
 
-            let file_path = Path::new(&mf.file_path);
+            let file_path = stored_path_to_path_buf(&mf.file_path);
             let episode_context = media_file_episode_context(app, mf).await;
 
             for lang_pref in &missing {
@@ -1504,7 +1514,11 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 );
 
                 let results = match search_all_subtitle_providers(
-                    app, &providers, file_path, &query, min_score,
+                    app,
+                    &providers,
+                    file_path.as_path(),
+                    &query,
+                    min_score,
                 )
                 .await
                 {
@@ -1577,7 +1591,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 match crate::subtitles::download::download_and_save_with_selection(
                     &download_provider,
                     &best.provider_file_id,
-                    file_path,
+                    file_path.as_path(),
                     &best.language,
                     best.forced,
                     best.hearing_impaired,
@@ -1599,7 +1613,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                             language: best.language.clone(),
                             provider: Some(best.provider.clone()),
                             provider_file_id: Some(best.provider_file_id.clone()),
-                            file_path: dest_path.to_string_lossy().to_string(),
+                            file_path: path_to_stored_string(&dest_path),
                             score: Some(best.score),
                             hearing_impaired: best.hearing_impaired,
                             forced: best.forced,
@@ -1629,7 +1643,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                             app,
                             sync_settings,
                             query.media_kind,
-                            file_path,
+                            file_path.as_path(),
                             &dest_path,
                             record_inserted.then_some(record.id.as_str()),
                             Some(best.score),
@@ -1784,7 +1798,9 @@ mod tests {
             release_group: Some("fallback-group".into()),
             source_type: Some("BluRay".into()),
             resolution: Some("720p".into()),
-            video_codec_parsed: Some("x265".into()),
+            video_codec_parsed: Some(
+                crate::release_parser::VideoCodec::parse("x265").expect("parse codec"),
+            ),
             audio_codec_parsed: Some("DTS".into()),
             audio_channels_parsed: None,
             acquisition_score: None,
@@ -1843,7 +1859,7 @@ mod tests {
 
     #[test]
     fn build_subtitle_query_prefers_scene_release_metadata_over_grabbed_and_stored_fields() {
-        let scene_name = "Superman.and.Lois.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
+        let scene_name = "Silver.and.Sage.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
         let grabbed = "Wrong.Show.S01E01.720p.BluRay.x265-Different";
         let parsed = parse_release_metadata(scene_name);
         let title = sample_title(MediaFacet::Series, None);
@@ -1869,7 +1885,10 @@ mod tests {
         assert_eq!(query.title_candidates, release_title_candidates(&parsed));
         assert_eq!(query.release_group, parsed.release_group);
         assert_eq!(query.source, parsed.source);
-        assert_eq!(query.video_codec, parsed.video_codec);
+        assert_eq!(
+            query.video_codec,
+            parsed.video_codec.as_ref().map(ToString::to_string)
+        );
         assert_eq!(query.audio_codec, release_audio_codec(&parsed));
         assert_eq!(query.resolution, parsed.quality);
         assert_eq!(query.season, Some(2));
@@ -1880,7 +1899,7 @@ mod tests {
 
     #[test]
     fn build_subtitle_query_uses_grabbed_release_title_when_scene_name_is_missing() {
-        let grabbed = "Superman.and.Lois.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
+        let grabbed = "Silver.and.Sage.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
         let parsed = parse_release_metadata(grabbed);
         let title = sample_title(MediaFacet::Series, None);
         let media_file = sample_media_file(None, Some(grabbed));
@@ -1898,7 +1917,10 @@ mod tests {
         assert_eq!(query.title_candidates, release_title_candidates(&parsed));
         assert_eq!(query.release_group, parsed.release_group);
         assert_eq!(query.source, parsed.source);
-        assert_eq!(query.video_codec, parsed.video_codec);
+        assert_eq!(
+            query.video_codec,
+            parsed.video_codec.as_ref().map(ToString::to_string)
+        );
         assert_eq!(query.audio_codec, release_audio_codec(&parsed));
         assert_eq!(query.resolution, parsed.quality);
         assert_eq!(query.season, Some(1));
@@ -1913,7 +1935,8 @@ mod tests {
         media_file.resolution = None;
         media_file.video_codec_parsed = None;
         media_file.audio_codec_parsed = None;
-        media_file.video_codec = Some("h264".into());
+        media_file.video_codec =
+            Some(crate::release_parser::VideoCodec::parse("h264").expect("parse codec"));
         media_file.video_height = Some(1080);
         media_file.audio_codec = Some("aac".into());
         media_file.audio_profile = Some("LC".into());

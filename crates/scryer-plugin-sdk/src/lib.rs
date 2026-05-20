@@ -391,7 +391,9 @@ impl PluginDescriptor {
 fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'static str> {
     let mut exports = vec![EXPORT_DESCRIBE];
     match &descriptor.provider {
-        ProviderDescriptor::Indexer(_) => exports.push(EXPORT_INDEXER_SEARCH),
+        ProviderDescriptor::Indexer(_) => {
+            exports.push(EXPORT_INDEXER_SEARCH);
+        }
         ProviderDescriptor::DownloadClient(_) => exports.extend([
             EXPORT_DOWNLOAD_ADD,
             EXPORT_DOWNLOAD_LIST_QUEUE,

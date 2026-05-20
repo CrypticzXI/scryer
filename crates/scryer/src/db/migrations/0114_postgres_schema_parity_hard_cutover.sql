@@ -1,0 +1,2 @@
+-- SQLite is already the canonical logical schema for this cutover.
+-- The PostgreSQL sibling migration removes its pre-launch compatibility schema.

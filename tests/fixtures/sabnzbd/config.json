@@ -1,0 +1,22 @@
+{
+  "config": {
+    "misc": {
+      "complete_dir": "downloads/complete",
+      "tv_categories": ["series", "anime"],
+      "enable_tv_sorting": true,
+      "movie_categories": ["movies"],
+      "enable_movie_sorting": true,
+      "date_categories": [],
+      "enable_date_sorting": false,
+      "history_retention_option": "number-delete",
+      "history_retention_number": 10
+    },
+    "categories": [
+      { "Name": "*", "Dir": "" },
+      { "Name": "series", "Dir": "series" },
+      { "Name": "movies", "Dir": "movies" },
+      { "Name": "anime", "Dir": "anime" }
+    ],
+    "sorters": []
+  }
+}

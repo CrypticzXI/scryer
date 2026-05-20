@@ -80,6 +80,7 @@ function normalizeTriggerSource(value: unknown): JobTriggerSource {
     case "manual":
     case "scheduled_startup":
     case "scheduled_interval":
+    case "scheduled_daily":
     case "system_internal":
       return value;
     default:

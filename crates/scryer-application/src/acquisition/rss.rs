@@ -274,6 +274,14 @@ impl AppUseCase {
             return Ok(RssSyncReport::default());
         }
 
+        if !super::acquisition_workflow::has_enabled_download_clients(self).await {
+            warn!("RSS sync: no enabled download clients configured, skipping indexer search");
+            metrics::counter!("scryer_rss_sync_total").increment(1);
+            metrics::histogram!("scryer_rss_sync_duration_seconds")
+                .record(sync_start.elapsed().as_secs_f64());
+            return Ok(RssSyncReport::default());
+        }
+
         // Collect Newznab categories from indexer routing config across all facets.
         // These tell Newznab plugins which categories to fetch in RSS mode.
         let rss_categories = {
@@ -1298,35 +1306,41 @@ mod tests {
 
     #[test]
     fn normalize_basic_title() {
-        assert_eq!(normalize_for_matching("The Dark Knight"), "the dark knight");
+        assert_eq!(
+            normalize_for_matching("The Silver Harbor"),
+            "the silver harbor"
+        );
     }
 
     #[test]
     fn normalize_dots_and_dashes() {
         assert_eq!(
-            normalize_for_matching("The.Dark.Knight-2008"),
-            "the dark knight 2008"
+            normalize_for_matching("The.Silver.Harbor-2008"),
+            "the silver harbor 2008"
         );
     }
 
     #[test]
     fn normalize_underscores() {
-        assert_eq!(normalize_for_matching("the_dark_knight"), "the dark knight");
+        assert_eq!(
+            normalize_for_matching("the_silver_harbor"),
+            "the silver harbor"
+        );
     }
 
     #[test]
     fn normalize_strips_special_chars() {
         assert_eq!(
-            normalize_for_matching("Spider-Man: Across the Spider-Verse"),
-            "spider man across the spider verse"
+            normalize_for_matching("Sky-Rider: Beyond the Silent City"),
+            "sky rider beyond the silent city"
         );
     }
 
     #[test]
     fn normalize_collapses_whitespace() {
         assert_eq!(
-            normalize_for_matching("  The   Dark   Knight  "),
-            "the dark knight"
+            normalize_for_matching("  The   Silver   Harbor  "),
+            "the silver harbor"
         );
     }
 

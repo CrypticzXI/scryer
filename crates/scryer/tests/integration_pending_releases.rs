@@ -14,6 +14,7 @@ use scryer_application::{
 use scryer_domain::{
     Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
 };
+use scryer_infrastructure::{AcquisitionStore, DownloadSubmissionStore};
 use sqlx::{Row, query};
 
 // ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ async fn seed_title_in_library(ctx: &TestContext, id: &str, library_id: &str) {
         digital_release_date: None,
         folder_path: None,
     };
-    TitleRepository::create(&ctx.catalog, title)
+    TitleRepository::create(&ctx.titles, title)
         .await
         .expect("seed title");
 }
@@ -144,7 +145,7 @@ async fn seed_pending_release(
         published_at: None,
         info_hash: None,
     };
-    ctx.db
+    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
         .insert_pending_release(&pr)
         .await
         .expect("seed pending release");
@@ -170,7 +171,7 @@ async fn direct_wanted_item_lookup_requires_access_to_item_library() {
     let adult_root = tempfile::tempdir().expect("adult library root");
     let now = Utc::now();
     LibraryRepository::create(
-        &ctx.catalog,
+        &ctx.libraries,
         Library {
             id: "movie_adult_library".to_string(),
             facet: MediaFacet::Movie,
@@ -199,19 +200,18 @@ async fn direct_wanted_item_lookup_requires_access_to_item_library() {
 
     let user_id = Id::new().0;
     let viewer = UserRepository::create(
-        &ctx.catalog,
+        &ctx.users,
         User {
             id: user_id.clone(),
             username: "default-viewer".to_string(),
             password_hash: None,
-            entitlements: vec![],
             authorization: Default::default(),
         },
     )
     .await
     .expect("create viewer");
     LibraryRepository::set_grants_for_user(
-        &ctx.catalog,
+        &ctx.libraries,
         &user_id,
         vec![LibraryGrant {
             user_id: user_id.clone(),
@@ -339,7 +339,7 @@ async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     )
     .await;
 
-    ctx.db
+    scryer_infrastructure::PendingReleaseStore::new(ctx.db.datastore())
         .delete_standby_pending_releases_for_wanted_item(&wi.id)
         .await
         .expect("delete standby");
@@ -443,9 +443,10 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         "grabbed_at": grabbed_at.clone(),
     })
     .to_string();
-    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+    let acquisition_store = AcquisitionStore::new(ctx.db.datastore());
+    let download_submission_store = DownloadSubmissionStore::new(ctx.db.datastore());
 
-    workflow_store
+    acquisition_store
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             covered_wanted_item_ids: Vec::new(),
@@ -486,7 +487,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         Some(grabbed_release.as_str())
     );
 
-    let submission = workflow_store
+    let submission = download_submission_store
         .find_by_client_item_id(&DownloadSourceIdentity::new(None, "nzbget", "job-1"))
         .await
         .expect("find submission")
@@ -542,7 +543,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
     )
     .await;
     let grabbed_at = Utc::now().to_rfc3339();
-    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = AcquisitionStore::new(ctx.db.datastore());
 
     workflow_store
         .commit_successful_grab(&SuccessfulGrabCommit {
@@ -601,7 +602,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
 async fn download_submission_roundtrips_episode_scope() {
     let ctx = TestContext::new().await;
     seed_title(&ctx, "title-episode-scope").await;
-    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
 
     workflow_store
         .record_submission(DownloadSubmission {
@@ -668,7 +669,7 @@ async fn download_submission_roundtrips_episode_scope() {
 async fn download_submission_legacy_rows_without_episode_id_still_load() {
     let ctx = TestContext::new().await;
     seed_title(&ctx, "title-legacy-scope").await;
-    let workflow_store = scryer_infrastructure::SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
 
     query(
         "INSERT INTO download_submissions

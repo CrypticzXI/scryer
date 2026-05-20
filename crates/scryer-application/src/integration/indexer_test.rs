@@ -42,11 +42,11 @@ impl AppUseCase {
             .integrations
             .plugin_provider
             .available()
-            .ok_or_else(|| AppError::Repository("plugin provider not available".into()))?;
+            .ok_or_else(|| AppError::Repository("indexer provider not available".into()))?;
 
         let now = Utc::now();
 
-        // Build a temporary IndexerConfig to get a client from the plugin
+        // Build a temporary IndexerConfig to get a client from the provider.
         // Reject obviously invalid API keys (e.g. masked placeholders from
         // Sonarr/Radarr import that were stored before the masking fix).
         let parsed_config: serde_json::Value = serde_json::from_str(&normalized_config_json)
@@ -80,6 +80,10 @@ impl AppUseCase {
             enable_interactive_search: true,
             enable_auto_search: true,
             disabled_until: None,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(normalized_config_json),
@@ -87,9 +91,30 @@ impl AppUseCase {
             updated_at: now,
         };
 
+        let management_capabilities = provider.management_capabilities_for_provider(provider_type);
+        if management_capabilities.supports_validate_config
+            || management_capabilities.supports_managed_children_sync
+        {
+            let client = provider
+                .management_client_for_provider(&temp_config)
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "no indexer management client available for provider type '{provider_type}'"
+                    ))
+                })?;
+            if management_capabilities.supports_validate_config {
+                let result = client.validate_connection().await?;
+                validate_indexer_connection_result(result)?;
+            }
+            if management_capabilities.supports_managed_children_sync {
+                client.plan_sync("test-connection").await?;
+            }
+            return Ok(());
+        }
+
         let client = provider.client_for_provider(&temp_config).ok_or_else(|| {
             AppError::Validation(format!(
-                "no indexer plugin available for provider type '{provider_type}'"
+                "no indexer provider available for provider type '{provider_type}'"
             ))
         })?;
         let capabilities = provider.capabilities_for_provider(provider_type);
@@ -113,8 +138,130 @@ impl AppUseCase {
             .await
             .map_err(|e| AppError::Repository(format!("indexer connection test failed: {e}")))?;
 
+        let _ = self
+            .refresh_caps_snapshot_json_best_effort(&temp_config, None)
+            .await;
+
         Ok(())
     }
+
+    pub async fn preview_managed_indexer_children(
+        &self,
+        actor: &User,
+        provider_type: &str,
+        config_json: Option<&str>,
+    ) -> AppResult<(crate::IndexerValidationResult, crate::IndexerSyncPlan)> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let fields = self.indexer_config_fields_for_provider_type(provider_type)?;
+        let normalized_config_json = crate::app_usecase_integration::normalize_indexer_config_json(
+            &fields,
+            config_json,
+            None,
+        )?;
+        let base_url = crate::app_usecase_integration::derive_indexer_base_url_from_config_fields(
+            &fields,
+            Some(&normalized_config_json),
+        )?;
+        let validated_base_url = validate_test_flight_url(&base_url)?;
+        preflight_test_flight_url(&validated_base_url).await?;
+
+        let provider = self
+            .services
+            .integrations
+            .plugin_provider
+            .available()
+            .ok_or_else(|| AppError::Repository("indexer provider not available".into()))?;
+        let management_capabilities = provider.management_capabilities_for_provider(provider_type);
+        if !management_capabilities.supports_managed_children_sync {
+            return Err(AppError::Validation(format!(
+                "provider type '{provider_type}' does not support managed child sync"
+            )));
+        }
+
+        let parsed_config: serde_json::Value = serde_json::from_str(&normalized_config_json)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        for field in fields
+            .iter()
+            .filter(|field| field.field_type == scryer_domain::ConfigFieldType::Password)
+        {
+            if let Some(trimmed) = parsed_config
+                .get(&field.key)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                && trimmed.chars().all(|c| c == '*')
+                && !trimmed.is_empty()
+            {
+                return Err(AppError::Validation(
+                    "API key appears to be a masked placeholder — enter the real key".into(),
+                ));
+            }
+        }
+
+        let now = Utc::now();
+        let temp_config = IndexerConfig {
+            id: "preview-managed-sync".to_string(),
+            name: "Preview Managed Sync".to_string(),
+            provider_type: provider_type.to_string(),
+            base_url,
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            is_enabled: true,
+            enable_interactive_search: false,
+            enable_auto_search: false,
+            disabled_until: None,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(normalized_config_json),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let client = provider
+            .management_client_for_provider(&temp_config)
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "no indexer management client available for provider type '{provider_type}'"
+                ))
+            })?;
+        let validation = if management_capabilities.supports_validate_config {
+            client.validate_connection().await?
+        } else {
+            crate::IndexerValidationResult {
+                status: "valid".to_string(),
+                message: None,
+                retry_after_seconds: None,
+            }
+        };
+        validate_indexer_connection_result(validation.clone())?;
+        let plan = client.plan_sync("preview-managed-sync").await?;
+
+        Ok((validation, plan))
+    }
+}
+
+fn validate_indexer_connection_result(result: crate::IndexerValidationResult) -> AppResult<()> {
+    if result.status.eq_ignore_ascii_case("valid") {
+        return Ok(());
+    }
+
+    let message = result.message.unwrap_or(result.status.clone());
+    if matches!(
+        result.status.as_str(),
+        "invalid_config" | "auth_failed" | "missing_host_binding"
+    ) {
+        return Err(AppError::Validation(message));
+    }
+
+    Err(AppError::Repository(format!(
+        "indexer connection test failed: {message}"
+    )))
 }
 
 fn validate_test_flight_url(raw: &str) -> AppResult<url::Url> {
@@ -134,6 +281,17 @@ fn validate_test_flight_url(raw: &str) -> AppResult<url::Url> {
         ));
     }
     Ok(url)
+}
+
+fn format_preflight_transport_error(url: &url::Url, origin: &str, error: &str) -> String {
+    let mut message =
+        format!("base URL preflight failed before sending credentials to {origin}: {error}");
+    if url.scheme().eq_ignore_ascii_case("https") {
+        message.push_str(
+            ". If this service is not configured for TLS, try http:// instead of https://.",
+        );
+    }
+    message
 }
 
 #[cfg(not(test))]
@@ -159,8 +317,10 @@ async fn preflight_test_flight_url(url: &url::Url) -> AppResult<()> {
         )
         .await
         .map_err(|error| {
-            AppError::Validation(format!(
-                "base URL preflight failed before sending credentials: {error}"
+            AppError::Validation(format_preflight_transport_error(
+                url,
+                &origin,
+                &error.to_string(),
             ))
         })?;
 
@@ -344,6 +504,18 @@ mod tests {
             if let Some(enable_auto_search) = update.enable_auto_search {
                 config.enable_auto_search = enable_auto_search;
             }
+            if let Some(managed_parent_config_id) = update.managed_parent_config_id {
+                config.managed_parent_config_id = managed_parent_config_id;
+            }
+            if let Some(managed_child_key) = update.managed_child_key {
+                config.managed_child_key = managed_child_key;
+            }
+            if let Some(managed_metadata_json) = update.managed_metadata_json {
+                config.managed_metadata_json = managed_metadata_json;
+            }
+            if let Some(caps_snapshot_json) = update.caps_snapshot_json {
+                config.caps_snapshot_json = caps_snapshot_json;
+            }
             if let Some(config_json) = update.config_json {
                 config.config_json = Some(config_json);
             }
@@ -362,12 +534,81 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingSettingsRepository {
+        values: RecordingSettingsValues,
+    }
+
+    type RecordingSettingsKey = (String, String, Option<String>);
+    type RecordingSettingsValues = Arc<Mutex<HashMap<RecordingSettingsKey, String>>>;
+
+    #[async_trait]
+    impl SettingsRepository for RecordingSettingsRepository {
+        async fn get_setting_json(
+            &self,
+            scope_kind: &str,
+            key: &str,
+            scope_id: Option<String>,
+        ) -> AppResult<Option<String>> {
+            Ok(self
+                .values
+                .lock()
+                .await
+                .get(&(scope_kind.to_string(), key.to_string(), scope_id))
+                .cloned())
+        }
+
+        async fn upsert_setting_json(
+            &self,
+            scope_kind: &str,
+            key: &str,
+            scope_id: Option<String>,
+            value: String,
+            _source: &str,
+            _updated_by_user_id: Option<String>,
+        ) -> AppResult<()> {
+            self.values
+                .lock()
+                .await
+                .insert((scope_kind.to_string(), key.to_string(), scope_id), value);
+            Ok(())
+        }
+
+        async fn delete_setting_value(
+            &self,
+            scope_kind: &str,
+            key: &str,
+            scope_id: Option<String>,
+        ) -> AppResult<()> {
+            self.values
+                .lock()
+                .await
+                .remove(&(scope_kind.to_string(), key.to_string(), scope_id));
+            Ok(())
+        }
+
+        async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
+            let mut values = self.values.lock().await;
+            let before = values.len();
+            values.retain(|(_, _, entry_scope_id), _| entry_scope_id.as_deref() != Some(scope_id));
+            Ok((before - values.len()) as u32)
+        }
+    }
+
     struct RecordingPluginProvider {
         seen_configs: Arc<std::sync::Mutex<Vec<IndexerConfig>>>,
+        seen_management_configs: Arc<std::sync::Mutex<Vec<IndexerConfig>>>,
         client: Arc<RecordingIndexerClient>,
         provider_type: String,
         fields: Vec<scryer_domain::ConfigFieldDef>,
         capabilities: scryer_domain::IndexerProviderCapabilities,
+        supports_validate_config: bool,
+        supports_managed_children_sync: bool,
+        validate_result: crate::IndexerValidationResult,
+        sync_plan: crate::IndexerSyncPlan,
+        plan_sync_error: Option<String>,
+        plan_sync_fail_on_call: Option<usize>,
+        plan_sync_calls: Arc<std::sync::Mutex<usize>>,
     }
 
     impl RecordingPluginProvider {
@@ -379,11 +620,108 @@ mod tests {
         ) -> Self {
             Self {
                 seen_configs: Arc::new(std::sync::Mutex::new(Vec::new())),
+                seen_management_configs: Arc::new(std::sync::Mutex::new(Vec::new())),
                 client,
                 provider_type: provider_type.to_string(),
                 fields,
                 capabilities,
+                supports_validate_config: false,
+                supports_managed_children_sync: false,
+                validate_result: crate::IndexerValidationResult {
+                    status: "valid".to_string(),
+                    message: None,
+                    retry_after_seconds: None,
+                },
+                sync_plan: crate::IndexerSyncPlan::default(),
+                plan_sync_error: None,
+                plan_sync_fail_on_call: None,
+                plan_sync_calls: Arc::new(std::sync::Mutex::new(0)),
             }
+        }
+
+        fn with_validate_config_support() -> Self {
+            let mut provider = Self::new(
+                "torrent_rss",
+                vec![string_field(
+                    "feed_url",
+                    "Feed URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                rss_only_capabilities(),
+                Arc::new(RecordingIndexerClient::new(false)),
+            );
+            provider.supports_validate_config = true;
+            provider
+        }
+
+        fn with_sync_plan(sync_plan: crate::IndexerSyncPlan) -> Self {
+            Self::with_sync_plan_for_provider("manager", sync_plan)
+        }
+
+        fn with_sync_plan_for_provider(
+            provider_type: &str,
+            sync_plan: crate::IndexerSyncPlan,
+        ) -> Self {
+            let mut provider = Self::new(
+                provider_type,
+                vec![string_field(
+                    "base_url",
+                    "Base URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                Default::default(),
+                Arc::new(RecordingIndexerClient::new(false)),
+            );
+            provider.supports_validate_config = true;
+            provider.supports_managed_children_sync = true;
+            provider.sync_plan = sync_plan;
+            provider
+        }
+
+        fn with_plan_sync_error(message: &str) -> Self {
+            let mut provider = Self::with_sync_plan(crate::IndexerSyncPlan::default());
+            provider.plan_sync_error = Some(message.to_string());
+            provider.plan_sync_fail_on_call = Some(1);
+            provider
+        }
+
+        fn with_plan_sync_error_on_call(message: &str, fail_on_call: usize) -> Self {
+            let mut provider = Self::with_sync_plan(crate::IndexerSyncPlan::default());
+            provider.plan_sync_error = Some(message.to_string());
+            provider.plan_sync_fail_on_call = Some(fail_on_call);
+            provider
+        }
+    }
+
+    struct RecordingIndexerManagementClient {
+        validate_result: crate::IndexerValidationResult,
+        sync_plan: crate::IndexerSyncPlan,
+        plan_sync_error: Option<String>,
+        plan_sync_fail_on_call: Option<usize>,
+        plan_sync_calls: Arc<std::sync::Mutex<usize>>,
+    }
+
+    #[async_trait]
+    impl IndexerManagementClient for RecordingIndexerManagementClient {
+        async fn validate_connection(&self) -> AppResult<crate::IndexerValidationResult> {
+            Ok(self.validate_result.clone())
+        }
+
+        async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<crate::IndexerSyncPlan> {
+            let mut calls = self.plan_sync_calls.lock().unwrap();
+            *calls += 1;
+            if let Some(message) = &self.plan_sync_error
+                && self
+                    .plan_sync_fail_on_call
+                    .is_none_or(|call| *calls == call)
+            {
+                return Err(AppError::Validation(message.clone()));
+            }
+            Ok(self.sync_plan.clone())
+        }
+
+        fn name(&self) -> &str {
+            "torrent_rss"
         }
     }
 
@@ -393,8 +731,43 @@ mod tests {
             Some(self.client.clone())
         }
 
+        fn management_client_for_provider(
+            &self,
+            config: &IndexerConfig,
+        ) -> Option<Arc<dyn IndexerManagementClient>> {
+            self.seen_management_configs
+                .lock()
+                .unwrap()
+                .push(config.clone());
+            Some(Arc::new(RecordingIndexerManagementClient {
+                validate_result: self.validate_result.clone(),
+                sync_plan: self.sync_plan.clone(),
+                plan_sync_error: self.plan_sync_error.clone(),
+                plan_sync_fail_on_call: self.plan_sync_fail_on_call,
+                plan_sync_calls: self.plan_sync_calls.clone(),
+            }))
+        }
+
         fn available_provider_types(&self) -> Vec<String> {
-            vec![self.provider_type.clone()]
+            let mut provider_types = vec![self.provider_type.clone()];
+            if self.provider_type == "manager" {
+                provider_types.push("torrent_rss".to_string());
+            }
+            provider_types
+        }
+
+        fn management_capabilities_for_provider(
+            &self,
+            provider_type: &str,
+        ) -> scryer_domain::IndexerManagementCapabilities {
+            if provider_type != self.provider_type {
+                return scryer_domain::IndexerManagementCapabilities::default();
+            }
+
+            scryer_domain::IndexerManagementCapabilities {
+                supports_validate_config: self.supports_validate_config,
+                supports_managed_children_sync: self.supports_managed_children_sync,
+            }
         }
 
         fn config_fields_for_provider(
@@ -402,6 +775,13 @@ mod tests {
             provider_type: &str,
         ) -> Vec<scryer_domain::ConfigFieldDef> {
             if provider_type != self.provider_type {
+                if self.provider_type == "manager" && provider_type == "torrent_rss" {
+                    return vec![string_field(
+                        "feed_url",
+                        "Feed URL",
+                        Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                    )];
+                }
                 return vec![];
             }
             self.fields.clone()
@@ -478,6 +858,7 @@ mod tests {
     fn test_app(
         indexer_configs: Arc<dyn IndexerConfigRepository>,
         plugin_provider: Option<Arc<dyn IndexerPluginProvider>>,
+        settings: Arc<dyn SettingsRepository>,
     ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(NullTitleRepository),
@@ -488,7 +869,7 @@ mod tests {
             Arc::new(NullDownloadClient),
             Arc::new(NullDownloadClientConfigRepository),
             Arc::new(NullReleaseAttemptRepository),
-            Arc::new(NullSettingsRepository),
+            settings,
             Arc::new(NullQualityProfileRepository),
             String::new(),
         );
@@ -546,6 +927,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn preflight_transport_error_hints_when_https_service_lacks_tls() {
+        let url = validate_test_flight_url("https://localhost:9696").expect("valid URL");
+        let message = format_preflight_transport_error(
+            &url,
+            "https://localhost:9696/",
+            "error sending request for url (https://localhost:9696/)",
+        );
+
+        assert!(message.contains("try http:// instead of https://"));
+        assert!(message.contains("https://localhost:9696/"));
+    }
+
     #[tokio::test]
     async fn create_indexer_config_derives_base_url_from_feed_url() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
@@ -562,8 +956,8 @@ mod tests {
                 rss_only_capabilities(),
                 client,
             ))),
+            Arc::new(NullSettingsRepository),
         );
-
         let created = app
             .create_indexer_config(
                 &test_admin(),
@@ -605,6 +999,7 @@ mod tests {
                 searchable_capabilities(),
                 client,
             ))),
+            Arc::new(NullSettingsRepository),
         );
 
         let error = app
@@ -649,6 +1044,10 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(
@@ -673,6 +1072,7 @@ mod tests {
                 searchable_capabilities(),
                 client,
             ))),
+            Arc::new(NullSettingsRepository),
         );
 
         let error = app
@@ -688,6 +1088,10 @@ mod tests {
                     is_enabled: None,
                     enable_interactive_search: None,
                     enable_auto_search: None,
+                    managed_parent_config_id: None,
+                    managed_child_key: None,
+                    managed_metadata_json: None,
+                    caps_snapshot_json: None,
                     config_json: Some(
                         r#"{"base_url":"https://api.nzbgeek.info/","api_key":"bad-key"}"#
                             .to_string(),
@@ -727,6 +1131,10 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(
@@ -751,6 +1159,7 @@ mod tests {
                 searchable_capabilities(),
                 client.clone(),
             ))),
+            Arc::new(NullSettingsRepository),
         );
 
         let updated = app
@@ -766,6 +1175,10 @@ mod tests {
                     is_enabled: None,
                     enable_interactive_search: None,
                     enable_auto_search: None,
+                    managed_parent_config_id: None,
+                    managed_child_key: None,
+                    managed_metadata_json: None,
+                    caps_snapshot_json: None,
                     config_json: None,
                 },
             )
@@ -774,6 +1187,173 @@ mod tests {
 
         assert_eq!(updated.name, "NZBGeek Mirror");
         assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_with_indexer_id_uses_persisted_base_url_and_api_key() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        indexer_repo.created.lock().await.push(IndexerConfig {
+            id: "cfg-1".to_string(),
+            name: "NZBGeek".to_string(),
+            provider_type: "nzbgeek".to_string(),
+            base_url: "https://api.nzbgeek.info".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(
+                r#"{"base_url":"https://api.nzbgeek.info","api_key":"good-key"}"#.to_string(),
+            ),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+        let client = Arc::new(RecordingIndexerClient::new(false));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "nzbgeek",
+            vec![
+                string_field(
+                    "base_url",
+                    "Base URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                ),
+                password_field("api_key", "API Key"),
+            ],
+            searchable_capabilities(),
+            client,
+        ));
+        let app = test_app(
+            indexer_repo,
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        app.test_indexer_connection(&test_admin(), "nzbgeek", None, Some("cfg-1"))
+            .await
+            .expect("persisted config should be reused");
+
+        let seen = provider.seen_configs.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].base_url, "https://api.nzbgeek.info");
+        assert_eq!(
+            seen[0].config_json.as_deref(),
+            Some(r#"{"base_url":"https://api.nzbgeek.info","api_key":"good-key"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn create_indexer_config_rejects_managed_sync_preflight_failures() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error(
+            "managed sync preflight failed",
+        ));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .create_indexer_config(
+                &test_admin(),
+                NewIndexerConfig {
+                    name: "Manager".to_string(),
+                    provider_type: "manager".to_string(),
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: true,
+                    config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                },
+            )
+            .await
+            .expect_err("managed sync preflight should fail save");
+
+        assert_eq!(
+            error.to_string(),
+            "validation: managed sync preflight failed"
+        );
+        assert!(indexer_repo.created.lock().await.is_empty());
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn update_indexer_config_rejects_managed_sync_preflight_failures() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        indexer_repo.created.lock().await.push(IndexerConfig {
+            id: "cfg-1".to_string(),
+            name: "Manager".to_string(),
+            provider_type: "manager".to_string(),
+            base_url: "https://manager.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: false,
+            enable_interactive_search: false,
+            enable_auto_search: false,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+        let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error(
+            "managed sync preflight failed",
+        ));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .update_indexer_config(
+                &test_admin(),
+                crate::IndexerConfigUpdate {
+                    id: "cfg-1".to_string(),
+                    name: None,
+                    provider_type: None,
+                    derived_base_url: None,
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: Some(true),
+                    enable_interactive_search: None,
+                    enable_auto_search: None,
+                    managed_parent_config_id: None,
+                    managed_child_key: None,
+                    managed_metadata_json: None,
+                    caps_snapshot_json: None,
+                    config_json: None,
+                },
+            )
+            .await
+            .expect_err("managed sync preflight should fail enable");
+
+        assert_eq!(
+            error.to_string(),
+            "validation: managed sync preflight failed"
+        );
+        let stored = indexer_repo
+            .get_by_id("cfg-1")
+            .await
+            .unwrap()
+            .expect("existing config");
+        assert!(!stored.is_enabled);
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
     #[tokio::test]
@@ -792,6 +1372,7 @@ mod tests {
         let app = test_app(
             Arc::new(RecordingIndexerConfigRepo::new()),
             Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
         );
 
         app.test_indexer_connection(
@@ -830,6 +1411,7 @@ mod tests {
         let app = test_app(
             Arc::new(RecordingIndexerConfigRepo::new()),
             Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
         );
 
         app.test_indexer_connection(
@@ -859,7 +1441,11 @@ mod tests {
             searchable_capabilities(),
             client.clone(),
         ));
-        let app = test_app(Arc::new(RecordingIndexerConfigRepo::new()), Some(provider));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
 
         app.test_indexer_connection(
             &test_admin(),
@@ -896,7 +1482,11 @@ mod tests {
             },
             client.clone(),
         ));
-        let app = test_app(Arc::new(RecordingIndexerConfigRepo::new()), Some(provider));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
 
         app.test_indexer_connection(
             &test_admin(),
@@ -930,7 +1520,11 @@ mod tests {
             searchable_capabilities(),
             client,
         ));
-        let app = test_app(Arc::new(RecordingIndexerConfigRepo::new()), Some(provider));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
 
         let error = app
             .test_indexer_connection(
@@ -945,6 +1539,831 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "repository: indexer connection test failed: repository: forced failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_uses_validate_config_when_supported() {
+        let provider = Arc::new(RecordingPluginProvider::with_validate_config_support());
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        app.test_indexer_connection(
+            &test_admin(),
+            "torrent_rss",
+            Some(r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let seen_search = provider.seen_configs.lock().unwrap();
+        assert!(seen_search.is_empty());
+
+        let seen_management = provider.seen_management_configs.lock().unwrap();
+        assert_eq!(seen_management.len(), 1);
+        assert_eq!(seen_management[0].base_url, "https://ipt.beelyrics.net");
+    }
+
+    #[tokio::test]
+    async fn create_indexer_config_auto_syncs_managed_children() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let sync_plan = crate::IndexerSyncPlan {
+            children: vec![crate::ManagedIndexerChildPlan {
+                child_key: "new".to_string(),
+                name: "Managed New".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                config_json: r#"{"feed_url":"https://new.example/rss"}"#.to_string(),
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: true,
+                managed_metadata_json: Some("{\"source\":\"new\"}".to_string()),
+                caps_snapshot_json: None,
+                routing_scopes: vec![crate::ManagedIndexerRoutingScope {
+                    scope_id: "anime".to_string(),
+                    categories: vec!["5070".to_string()],
+                }],
+            }],
+        };
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(sync_plan));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider.clone()),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+
+        let created = app
+            .create_indexer_config(
+                &test_admin(),
+                NewIndexerConfig {
+                    name: "Parent Manager".to_string(),
+                    provider_type: "manager".to_string(),
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: true,
+                    config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                },
+            )
+            .await
+            .expect("managed parent should auto-sync");
+
+        let configs = indexer_repo.list(None).await.unwrap();
+        assert_eq!(configs.len(), 2);
+        assert!(configs.iter().any(|config| config.id == created.id));
+        let child = configs
+            .iter()
+            .find(|config| config.managed_child_key.as_deref() == Some("new"))
+            .expect("managed child created");
+        assert_eq!(
+            child.managed_parent_config_id.as_deref(),
+            Some(created.id.as_str())
+        );
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn create_indexer_config_rolls_back_when_auto_sync_fails() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error_on_call(
+            "managed sync failed after create",
+            2,
+        ));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider.clone()),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+
+        let error = app
+            .create_indexer_config(
+                &test_admin(),
+                NewIndexerConfig {
+                    name: "Parent Manager".to_string(),
+                    provider_type: "manager".to_string(),
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: true,
+                    config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                },
+            )
+            .await
+            .expect_err("create should roll back if auto-sync fails");
+
+        assert_eq!(
+            error.to_string(),
+            "validation: managed sync failed after create"
+        );
+        assert!(indexer_repo.list(None).await.unwrap().is_empty());
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn managed_parent_providers_disable_search_modes_on_create_and_update() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let app = test_app(
+            indexer_repo,
+            Some(Arc::new(RecordingPluginProvider::with_sync_plan(
+                crate::IndexerSyncPlan::default(),
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let created = app
+            .create_indexer_config(
+                &test_admin(),
+                NewIndexerConfig {
+                    name: "Parent Manager".to_string(),
+                    provider_type: "manager".to_string(),
+                    rate_limit_seconds: None,
+                    rate_limit_burst: None,
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: true,
+                    config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!created.enable_interactive_search);
+        assert!(!created.enable_auto_search);
+
+        let updated = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: created.id.clone(),
+                    name: Some("Renamed Parent Manager".to_string()),
+                    enable_interactive_search: Some(true),
+                    enable_auto_search: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.name, "Renamed Parent Manager");
+        assert!(!updated.enable_interactive_search);
+        assert!(!updated.enable_auto_search);
+    }
+
+    #[tokio::test]
+    async fn disabling_managed_parent_disables_existing_children_without_syncing() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "parent".to_string(),
+                name: "Parent Manager".to_string(),
+                provider_type: "manager".to_string(),
+                base_url: "https://manager.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "child".to_string(),
+                name: "Managed Child".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                base_url: "https://child.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: true,
+                managed_parent_config_id: Some("parent".to_string()),
+                managed_child_key: Some("child".to_string()),
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"feed_url":"https://child.example/rss"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(
+            crate::IndexerSyncPlan::default(),
+        ));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let updated = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: "parent".to_string(),
+                    is_enabled: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!updated.is_enabled);
+        let child = indexer_repo.get_by_id("child").await.unwrap().unwrap();
+        assert!(!child.is_enabled);
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn enabling_managed_parent_resyncs_and_reenables_children() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "parent".to_string(),
+                name: "Parent Manager".to_string(),
+                provider_type: "manager".to_string(),
+                base_url: "https://manager.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: false,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "child".to_string(),
+                name: "Managed Child".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                base_url: "https://child.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: false,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: Some("parent".to_string()),
+                managed_child_key: Some("keep".to_string()),
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"feed_url":"https://child.example/rss"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let sync_plan = crate::IndexerSyncPlan {
+            children: vec![crate::ManagedIndexerChildPlan {
+                child_key: "keep".to_string(),
+                name: "Managed Child".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                config_json: r#"{"feed_url":"https://child.example/rss"}"#.to_string(),
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: false,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                routing_scopes: vec![],
+            }],
+        };
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(sync_plan));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let updated = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: "parent".to_string(),
+                    is_enabled: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(updated.is_enabled);
+        let child = indexer_repo.get_by_id("child").await.unwrap().unwrap();
+        assert!(child.is_enabled);
+        assert!(child.enable_interactive_search);
+        assert!(!child.enable_auto_search);
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn updating_enabled_managed_parent_config_triggers_immediate_sync() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "parent".to_string(),
+                name: "Parent Manager".to_string(),
+                provider_type: "manager".to_string(),
+                base_url: "https://manager.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(
+            crate::IndexerSyncPlan::default(),
+        ));
+        let app = test_app(
+            indexer_repo,
+            Some(provider.clone()),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let updated = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: "parent".to_string(),
+                    config_json: Some(
+                        r#"{"base_url":"https://manager.changed.example"}"#.to_string(),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.base_url, "https://manager.changed.example");
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn sync_enabled_prowlarr_indexers_skips_disabled_parents() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "enabled-parent".to_string(),
+                name: "Enabled Prowlarr".to_string(),
+                provider_type: "prowlarr".to_string(),
+                base_url: "http://prowlarr.local".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(
+                    r#"{"base_url":"http://prowlarr.local","api_key":"secret"}"#.to_string(),
+                ),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "disabled-parent".to_string(),
+                name: "Disabled Prowlarr".to_string(),
+                provider_type: "prowlarr".to_string(),
+                base_url: "http://prowlarr.disabled".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: false,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(
+                    r#"{"base_url":"http://prowlarr.disabled","api_key":"secret"}"#.to_string(),
+                ),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan_for_provider(
+            "prowlarr",
+            crate::IndexerSyncPlan::default(),
+        ));
+        let app = test_app(
+            indexer_repo,
+            Some(provider.clone()),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+
+        let (synced_count, failures) = app
+            .sync_enabled_prowlarr_indexers(&test_admin())
+            .await
+            .unwrap();
+
+        assert_eq!(synced_count, 1);
+        assert!(failures.is_empty());
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
+        let seen = provider.seen_management_configs.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].id, "enabled-parent");
+    }
+
+    #[tokio::test]
+    async fn sync_indexer_config_reconciles_managed_children_and_routing() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        let parent = IndexerConfig {
+            id: "parent".to_string(),
+            name: "Parent Manager".to_string(),
+            provider_type: "manager".to_string(),
+            base_url: "https://manager.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some("{}".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        let existing_keep = IndexerConfig {
+            id: "managed-keep".to_string(),
+            name: "Old Keep".to_string(),
+            provider_type: "torrent_rss".to_string(),
+            base_url: "https://old.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: false,
+            enable_interactive_search: false,
+            enable_auto_search: false,
+            managed_parent_config_id: Some(parent.id.clone()),
+            managed_child_key: Some("keep".to_string()),
+            managed_metadata_json: Some(
+                serde_json::json!({
+                    "old": true,
+                    "caps_snapshot": {
+                        "search": {
+                            "available": true,
+                            "supported_params": ["q"]
+                        }
+                    }
+                })
+                .to_string(),
+            ),
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(r#"{"feed_url":"https://old.example/rss"}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        let existing_delete = IndexerConfig {
+            id: "managed-delete".to_string(),
+            name: "Delete Me".to_string(),
+            provider_type: "torrent_rss".to_string(),
+            base_url: "https://delete.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            managed_parent_config_id: Some(parent.id.clone()),
+            managed_child_key: Some("delete".to_string()),
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(r#"{"feed_url":"https://delete.example/rss"}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        indexer_repo.create(parent.clone()).await.unwrap();
+        indexer_repo.create(existing_keep).await.unwrap();
+        indexer_repo.create(existing_delete).await.unwrap();
+
+        let sync_plan = crate::IndexerSyncPlan {
+            children: vec![
+                crate::ManagedIndexerChildPlan {
+                    child_key: "keep".to_string(),
+                    name: "Managed Keep".to_string(),
+                    provider_type: "torrent_rss".to_string(),
+                    config_json: r#"{"feed_url":"https://keep.example/rss"}"#.to_string(),
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: false,
+                    managed_metadata_json: Some("{\"source\":\"keep\"}".to_string()),
+                    caps_snapshot_json: None,
+                    routing_scopes: vec![
+                        crate::ManagedIndexerRoutingScope {
+                            scope_id: "movie".to_string(),
+                            categories: vec!["2000".to_string()],
+                        },
+                        crate::ManagedIndexerRoutingScope {
+                            scope_id: "series".to_string(),
+                            categories: vec!["5000".to_string()],
+                        },
+                    ],
+                },
+                crate::ManagedIndexerChildPlan {
+                    child_key: "new".to_string(),
+                    name: "Managed New".to_string(),
+                    provider_type: "torrent_rss".to_string(),
+                    config_json: r#"{"feed_url":"https://new.example/rss"}"#.to_string(),
+                    is_enabled: true,
+                    enable_interactive_search: false,
+                    enable_auto_search: true,
+                    managed_metadata_json: Some("{\"source\":\"new\"}".to_string()),
+                    caps_snapshot_json: None,
+                    routing_scopes: vec![crate::ManagedIndexerRoutingScope {
+                        scope_id: "anime".to_string(),
+                        categories: vec!["5070".to_string(), "5070".to_string()],
+                    }],
+                },
+            ],
+        };
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(sync_plan));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider.clone()),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+
+        app.update_indexer_routing(
+            &test_admin(),
+            "movie",
+            vec![IndexerRoutingSettingsEntry {
+                indexer_id: "managed-keep".to_string(),
+                enabled: false,
+                categories: vec!["1111".to_string()],
+                priority: 17,
+            }],
+        )
+        .await
+        .unwrap();
+        app.update_indexer_routing(
+            &test_admin(),
+            "anime",
+            vec![
+                IndexerRoutingSettingsEntry {
+                    indexer_id: "managed-keep".to_string(),
+                    enabled: true,
+                    categories: vec!["9999".to_string()],
+                    priority: 3,
+                },
+                IndexerRoutingSettingsEntry {
+                    indexer_id: "managed-delete".to_string(),
+                    enabled: true,
+                    categories: vec!["8888".to_string()],
+                    priority: 4,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let result = app
+            .sync_indexer_config(&test_admin(), &parent.id)
+            .await
+            .unwrap();
+
+        assert_eq!(result.parent_config_id, parent.id);
+        assert_eq!(result.created_ids.len(), 1);
+        assert_eq!(result.updated_ids, vec!["managed-keep".to_string()]);
+        assert_eq!(result.deleted_ids, vec!["managed-delete".to_string()]);
+
+        let configs = indexer_repo.list(None).await.unwrap();
+        assert_eq!(configs.len(), 3);
+        let synced_parent = configs
+            .iter()
+            .find(|config| config.id == parent.id)
+            .unwrap();
+        assert!(!synced_parent.enable_interactive_search);
+        assert!(!synced_parent.enable_auto_search);
+        let keep = configs
+            .iter()
+            .find(|config| config.id == "managed-keep")
+            .unwrap();
+        assert_eq!(keep.name, "Managed Keep");
+        assert_eq!(keep.base_url, "https://keep.example");
+        assert_eq!(keep.managed_child_key.as_deref(), Some("keep"));
+        let keep_metadata: serde_json::Value = serde_json::from_str(
+            keep.managed_metadata_json
+                .as_deref()
+                .expect("managed keep metadata"),
+        )
+        .unwrap();
+        assert_eq!(keep_metadata["source"], "keep");
+        assert_eq!(keep_metadata["caps_snapshot"]["search"]["available"], true);
+        assert_eq!(
+            keep_metadata["caps_snapshot"]["search"]["supported_params"],
+            serde_json::json!(["q"])
+        );
+        assert!(
+            configs
+                .iter()
+                .any(|config| config.managed_child_key.as_deref() == Some("new"))
+        );
+        assert!(!configs.iter().any(|config| config.id == "managed-delete"));
+
+        let movie = app
+            .get_indexer_routing(&test_admin(), "movie")
+            .await
+            .unwrap();
+        let keep_movie = movie
+            .iter()
+            .find(|entry| entry.indexer_id == "managed-keep")
+            .unwrap();
+        assert!(!keep_movie.enabled);
+        assert_eq!(keep_movie.categories, vec!["2000"]);
+        assert_eq!(keep_movie.priority, 17);
+
+        let series = app
+            .get_indexer_routing(&test_admin(), "series")
+            .await
+            .unwrap();
+        assert!(series.iter().any(|entry| {
+            entry.indexer_id == "managed-keep" && entry.enabled && entry.categories == vec!["5000"]
+        }));
+
+        let anime = app
+            .get_indexer_routing(&test_admin(), "anime")
+            .await
+            .unwrap();
+        assert!(!anime.iter().any(|entry| entry.indexer_id == "managed-keep"));
+        assert!(
+            !anime
+                .iter()
+                .any(|entry| entry.indexer_id == "managed-delete")
+        );
+        assert!(anime.iter().any(|entry| {
+            entry.indexer_id == result.created_ids[0]
+                && entry.enabled
+                && entry.categories == vec!["5070"]
+        }));
+    }
+
+    #[tokio::test]
+    async fn managed_child_indexers_reject_all_direct_updates() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "child".to_string(),
+                name: "Managed Child".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                base_url: "https://managed.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: true,
+                managed_parent_config_id: Some("parent".to_string()),
+                managed_child_key: Some("child".to_string()),
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"feed_url":"https://managed.example/rss"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        let app = test_app(
+            indexer_repo,
+            Some(Arc::new(RecordingPluginProvider::new(
+                "torrent_rss",
+                vec![string_field(
+                    "feed_url",
+                    "Feed URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                rss_only_capabilities(),
+                Arc::new(RecordingIndexerClient::new(false)),
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let rate_limit_error = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: "child".to_string(),
+                    rate_limit_seconds: Some(15),
+                    rate_limit_burst: Some(3),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            rate_limit_error
+                .to_string()
+                .contains("managed child indexers are controlled by their parent sync")
+        );
+
+        let update_error = app
+            .update_indexer_config(
+                &test_admin(),
+                IndexerConfigUpdate {
+                    id: "child".to_string(),
+                    name: Some("Renamed".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            update_error
+                .to_string()
+                .contains("managed child indexers are controlled by their parent sync")
+        );
+
+        let delete_error = app
+            .delete_indexer_config(&test_admin(), "child")
+            .await
+            .unwrap_err();
+        assert!(
+            delete_error
+                .to_string()
+                .contains("managed child indexers are controlled by their parent sync")
         );
     }
 }

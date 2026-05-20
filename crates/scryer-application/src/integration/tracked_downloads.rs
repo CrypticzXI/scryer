@@ -426,7 +426,11 @@ impl TrackedDownloadService {
             .services
             .workflow
             .imports
-            .is_already_imported(&td.client_type, &td.client_item.download_client_item_id)
+            .is_already_imported(&DownloadSourceIdentity::new(
+                Some(td.client_id.as_str()),
+                &td.client_type,
+                &td.client_item.download_client_item_id,
+            ))
             .await
         {
             td.state = TrackedDownloadState::Imported;
@@ -779,9 +783,8 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Utc;
     use scryer_domain::{
-        CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Entitlement, Id,
-        ImportRecord, ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title,
-        TitleHistoryEventType, User,
+        CompletedDownload, DomainEvent, DomainEventFilter, DownloadQueueState, Id, ImportRecord,
+        ImportStatus, ImportType, MediaFacet, NewDomainEvent, Title, TitleHistoryEventType, User,
     };
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -956,8 +959,7 @@ mod tests {
     impl ImportRepository for TestImportRepo {
         async fn queue_import_request(
             &self,
-            _: String,
-            _: String,
+            _: DownloadSourceIdentity,
             _: String,
             _: String,
         ) -> AppResult<String> {
@@ -966,23 +968,6 @@ mod tests {
 
         async fn get_import_by_id(&self, _: &str) -> AppResult<Option<ImportRecord>> {
             Ok(None)
-        }
-
-        async fn get_import_by_source_ref(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> AppResult<Option<ImportRecord>> {
-            Ok(self.stored_imports().into_iter().next())
-        }
-
-        async fn get_import_by_source_ref_and_type(
-            &self,
-            _: &str,
-            _: &str,
-            _: ImportType,
-        ) -> AppResult<Option<ImportRecord>> {
-            Ok(self.stored_imports().into_iter().next())
         }
 
         async fn update_import_status(
@@ -1021,19 +1006,33 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn list_imports_for_sources(
+        async fn list_imports_for_identities(
             &self,
-            _: &[(String, String)],
+            identities: &[DownloadSourceIdentity],
         ) -> AppResult<Vec<ImportRecord>> {
-            Ok(self.stored_imports())
+            Ok(self
+                .stored_imports()
+                .into_iter()
+                .filter(|record| {
+                    identities.iter().any(|identity| {
+                        record.source_client_id.as_deref().unwrap_or("")
+                            == identity.client_id_or_empty()
+                            && record.source_system == identity.client_type
+                            && record.source_ref == identity.item_id
+                    })
+                })
+                .collect())
         }
 
-        async fn is_already_imported(&self, _: &str, _: &str) -> AppResult<bool> {
+        async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
             Ok(self.stored_imports().iter().any(|record| {
-                matches!(
-                    record.status,
-                    ImportStatus::Completed | ImportStatus::Skipped
-                )
+                record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
+                    && record.source_system == identity.client_type
+                    && record.source_ref == identity.item_id
+                    && matches!(
+                        record.status,
+                        ImportStatus::Completed | ImportStatus::Skipped
+                    )
             }))
         }
 
@@ -1614,7 +1613,6 @@ mod tests {
             id: "user-1".to_string(),
             username: "user@example.test".to_string(),
             password_hash: None,
-            entitlements: vec![Entitlement::ManageTitle],
             authorization: scryer_domain::UserAuthorization {
                 app: scryer_domain::AppPermissionMask::NONE,
                 libraries,
@@ -1739,6 +1737,7 @@ mod tests {
         let imports = Arc::new(TestImportRepo {
             import_record: Some(ImportRecord {
                 id: Id::new().0,
+                source_client_id: Some("client-1".to_string()),
                 source_system: "nzbget".to_string(),
                 source_ref: "dl-1".to_string(),
                 import_type: ImportType::SeriesDownload,
@@ -1879,9 +1878,9 @@ mod tests {
     #[tokio::test]
     async fn completed_episode_download_uses_title_parse_to_become_import_pending() {
         let title = build_title(
-            "Karasu wa Aruji wo Erabanai",
+            "House of Ravens",
             MediaFacet::Anime,
-            &["YATAGARASU The Raven Does Not Choose Its Master"],
+            &["RAVENCOURT The Last Regent"],
         );
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![title.clone()],
@@ -1896,13 +1895,13 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let completed_dir = tempdir
             .path()
-            .join("YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL");
+            .join("RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL");
         std::fs::create_dir_all(&completed_dir).expect("create completed download dir");
         let download_client = Arc::new(TestDownloadClient {
             completed_downloads: Arc::new(Mutex::new(vec![build_completed_download(
                 "weaver",
                 "job-1",
-                "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL",
+                "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL",
                 completed_dir.to_string_lossy().as_ref(),
                 Some("anime"),
             )])),
@@ -1919,8 +1918,7 @@ mod tests {
         item.client_type = "weaver".to_string();
         item.client_name = "weaver".to_string();
         item.download_client_item_id = "job-1".to_string();
-        item.title_name =
-            "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL".to_string();
+        item.title_name = "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL".to_string();
         item.facet = Some("anime".to_string());
         item.is_scryer_origin = false;
 
@@ -2180,7 +2178,7 @@ mod tests {
 
     #[tokio::test]
     async fn track_reresolves_when_scryer_metadata_arrives_on_later_snapshot() {
-        let title = build_title("Karasu wa Aruji wo Erabanai", MediaFacet::Anime, &[]);
+        let title = build_title("House of Ravens", MediaFacet::Anime, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![title.clone()],
         });
@@ -2195,7 +2193,7 @@ mod tests {
         initial.download_client_item_id = "job-2".to_string();
         initial.title_id = None;
         initial.facet = Some("anime".to_string());
-        initial.title_name = "YATAGARASU".to_string();
+        initial.title_name = "RAVENCOURT".to_string();
         initial.is_scryer_origin = false;
 
         tracker.track(&app, initial).await;
@@ -2209,7 +2207,7 @@ mod tests {
         updated.download_client_item_id = "job-2".to_string();
         updated.title_id = Some(title.id.clone());
         updated.facet = Some("anime".to_string());
-        updated.title_name = "YATAGARASU".to_string();
+        updated.title_name = "RAVENCOURT".to_string();
         updated.is_scryer_origin = true;
 
         tracker.track(&app, updated).await;
@@ -2222,8 +2220,8 @@ mod tests {
 
     #[tokio::test]
     async fn track_reresolves_when_facet_hint_arrives_on_later_snapshot() {
-        let anime_title = build_title("One Piece", MediaFacet::Anime, &[]);
-        let series_title = build_title("One Piece", MediaFacet::Series, &[]);
+        let anime_title = build_title("Tidal Quest", MediaFacet::Anime, &[]);
+        let series_title = build_title("Tidal Quest", MediaFacet::Series, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![anime_title.clone(), series_title],
         });
@@ -2236,7 +2234,7 @@ mod tests {
         initial.client_type = "weaver".to_string();
         initial.client_name = "weaver".to_string();
         initial.download_client_item_id = "job-facet-reresolve".to_string();
-        initial.title_name = "One.Piece.S01E01.1080p.WEB-DL".to_string();
+        initial.title_name = "Tidal.Quest.S01E01.1080p.WEB-DL".to_string();
         initial.facet = None;
         initial.is_scryer_origin = false;
 
@@ -2252,7 +2250,7 @@ mod tests {
         updated.client_type = "weaver".to_string();
         updated.client_name = "weaver".to_string();
         updated.download_client_item_id = "job-facet-reresolve".to_string();
-        updated.title_name = "One.Piece.S01E01.1080p.WEB-DL".to_string();
+        updated.title_name = "Tidal.Quest.S01E01.1080p.WEB-DL".to_string();
         updated.facet = Some("anime".to_string());
         updated.is_scryer_origin = false;
 
@@ -2438,6 +2436,7 @@ mod tests {
         let imports = Arc::new(TestImportRepo {
             import_record: Some(ImportRecord {
                 id: "import-1".to_string(),
+                source_client_id: Some("client-1".to_string()),
                 source_system: "weaver".to_string(),
                 source_ref: "job-active-manual".to_string(),
                 import_type: ImportType::ManualImport,
@@ -2510,6 +2509,7 @@ mod tests {
             import_records: vec![
                 ImportRecord {
                     id: "import-other".to_string(),
+                    source_client_id: Some("client-2".to_string()),
                     source_system: "weaver".to_string(),
                     source_ref: "job-shared".to_string(),
                     import_type: ImportType::ManualImport,
@@ -2524,6 +2524,7 @@ mod tests {
                 },
                 ImportRecord {
                     id: "import-match".to_string(),
+                    source_client_id: Some("client-1".to_string()),
                     source_system: "weaver".to_string(),
                     source_ref: "job-shared".to_string(),
                     import_type: ImportType::ManualImport,
@@ -2591,6 +2592,7 @@ mod tests {
             import_records: vec![
                 ImportRecord {
                     id: "import-other".to_string(),
+                    source_client_id: Some("client-2".to_string()),
                     source_system: "weaver".to_string(),
                     source_ref: "job-shared".to_string(),
                     import_type: ImportType::ManualImport,
@@ -2605,6 +2607,7 @@ mod tests {
                 },
                 ImportRecord {
                     id: "import-match".to_string(),
+                    source_client_id: Some("client-1".to_string()),
                     source_system: "weaver".to_string(),
                     source_ref: "job-shared".to_string(),
                     import_type: ImportType::ManualImport,

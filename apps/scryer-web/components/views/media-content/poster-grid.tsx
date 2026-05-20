@@ -9,7 +9,10 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
-import { TitleCollectionEmptyState } from "./title-table-shared";
+import {
+  TitleCollectionEmptyState,
+  TitleCollectionLoadingState,
+} from "./title-table-shared";
 
 const QP_TAG_PREFIX = "scryer:quality-profile:";
 
@@ -52,6 +55,7 @@ function resolveDisplayedQualityLabel(
 
 type PosterGridProps = {
   titles: TitleRecord[];
+  catalogInitialLoadComplete?: boolean;
   isMovieView: boolean;
   resolvedProfileName: string | null;
   qualityProfiles: ParsedQualityProfile[];
@@ -63,6 +67,7 @@ type PosterGridProps = {
   overviewTargetView: ViewId;
   showScanLibraryAction?: boolean;
   showConfigureRootsAction?: boolean;
+  configureRootsReason?: "missing" | "invalid";
   configureRootsHref?: string;
   onScanLibrary?: () => Promise<void> | void;
   scanLibraryLoading?: boolean;
@@ -72,6 +77,7 @@ type PosterGridProps = {
 
 export const PosterGrid = React.memo(function PosterGrid({
   titles,
+  catalogInitialLoadComplete = true,
   isMovieView,
   resolvedProfileName,
   qualityProfiles,
@@ -80,6 +86,7 @@ export const PosterGrid = React.memo(function PosterGrid({
   overviewTargetView,
   showScanLibraryAction = false,
   showConfigureRootsAction = false,
+  configureRootsReason = "missing",
   configureRootsHref,
   onScanLibrary,
   scanLibraryLoading = false,
@@ -89,12 +96,17 @@ export const PosterGrid = React.memo(function PosterGrid({
   const t = useTranslate();
   const isMobile = useIsMobile();
 
+  if (!catalogInitialLoadComplete) {
+    return <TitleCollectionLoadingState />;
+  }
+
   if (titles.length === 0) {
     return (
       <TitleCollectionEmptyState
         t={t}
         showScanAction={showScanLibraryAction}
         showConfigureRootsAction={showConfigureRootsAction}
+        configureRootsReason={configureRootsReason}
         configureRootsHref={configureRootsHref}
         scanLoading={scanLibraryLoading}
         scanDisabled={scanLibraryDisabled}

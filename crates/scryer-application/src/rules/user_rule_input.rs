@@ -7,6 +7,7 @@ pub(crate) struct ReleaseRuntimeInfo<'a> {
     pub published_at: Option<&'a str>,
     pub thumbs_up: Option<i32>,
     pub thumbs_down: Option<i32>,
+    pub is_password_protected: Option<bool>,
     pub extra: Option<&'a HashMap<String, serde_json::Value>>,
     pub indexer_languages: Option<&'a [String]>,
 }
@@ -55,7 +56,7 @@ pub(crate) fn build_rule_input(
             raw_title: parsed.raw_title.clone(),
             quality: parsed.quality.clone(),
             source: parsed.source.clone(),
-            video_codec: parsed.video_codec.clone(),
+            video_codec: parsed.video_codec.as_ref().map(ToString::to_string),
             audio: parsed.audio.clone(),
             audio_codecs: parsed.audio_codecs.clone(),
             audio_channels: parsed.audio_channels.clone(),
@@ -71,6 +72,7 @@ pub(crate) fn build_rule_input(
             is_repack: parsed.is_repack,
             is_ai_enhanced: parsed.is_ai_enhanced,
             is_hardcoded_subs: parsed.is_hardcoded_subs,
+            is_password_protected: release_runtime.is_password_protected,
             is_hdr10plus: parsed.is_hdr10plus,
             is_hlg: parsed.is_hlg,
             is_10bit: parsed.is_10bit,
@@ -105,8 +107,18 @@ pub(crate) fn build_rule_input(
             allow_unknown_quality: profile.criteria.allow_unknown_quality,
             source_allowlist: profile.criteria.source_allowlist.clone(),
             source_blocklist: profile.criteria.source_blocklist.clone(),
-            video_codec_allowlist: profile.criteria.video_codec_allowlist.clone(),
-            video_codec_blocklist: profile.criteria.video_codec_blocklist.clone(),
+            video_codec_allowlist: profile
+                .criteria
+                .video_codec_allowlist
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            video_codec_blocklist: profile
+                .criteria
+                .video_codec_blocklist
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             audio_codec_allowlist: profile.criteria.audio_codec_allowlist.clone(),
             audio_codec_blocklist: profile.criteria.audio_codec_blocklist.clone(),
             atmos_preferred: profile.criteria.atmos_preferred,
@@ -176,24 +188,7 @@ fn release_type_details(parsed: &ParsedReleaseMetadata) -> (Option<String>, bool
 }
 
 fn is_obfuscated_release(parsed: &ParsedReleaseMetadata) -> bool {
-    if parsed
-        .release_group
-        .as_ref()
-        .is_some_and(|group| !group.trim().is_empty())
-    {
-        return false;
-    }
-
-    parsed
-        .raw_title
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| token.len() >= 8)
-        .any(|token| {
-            let has_alpha = token.chars().any(|ch| ch.is_ascii_alphabetic());
-            let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
-            let hex_like = token.chars().all(|ch| ch.is_ascii_hexdigit());
-            (has_alpha && has_digit) || hex_like
-        })
+    crate::helpers::is_obfuscated_release_name(parsed)
 }
 
 fn is_retagged_release(parsed: &ParsedReleaseMetadata) -> bool {
@@ -229,6 +224,10 @@ pub(crate) fn build_search_rule_input(
             published_at: result.published_at.as_deref(),
             thumbs_up: result.thumbs_up,
             thumbs_down: result.thumbs_down,
+            is_password_protected: crate::normalize_release_password(
+                result.password_hint.as_deref(),
+            )
+            .map(|_| true),
             extra: Some(&result.extra),
             indexer_languages: result.indexer_languages.as_deref(),
         },
@@ -381,7 +380,7 @@ mod tests {
                 indexer_languages: None,
                 indexer_subtitles: None,
                 indexer_grabs: None,
-                password_hint: None,
+                password_hint: Some("secret".to_string()),
                 parsed_release_metadata: None,
                 quality_profile_decision: None,
                 extra: HashMap::from([("indexer".to_string(), serde_json::json!("test"))]),
@@ -407,6 +406,56 @@ mod tests {
         assert!(value["file"].is_null());
         assert_eq!(value["context"]["library_name"], "Movies");
         assert_eq!(value["release"]["extra"]["indexer"], "test");
+        assert_eq!(value["release"]["is_password_protected"], true);
+    }
+
+    #[test]
+    fn build_search_rule_input_normalizes_password_placeholders() {
+        for password_hint in [Some("0".to_string()), Some("   ".to_string())] {
+            let input = build_search_rule_input(
+                &test_parsed(),
+                &test_profile(),
+                &IndexerSearchResult {
+                    source: "test-indexer".to_string(),
+                    title: "Test Movie".to_string(),
+                    link: None,
+                    download_url: None,
+                    source_kind: None,
+                    size_bytes: Some(8_000_000_000),
+                    published_at: Some("2026-03-10T12:00:00Z".to_string()),
+                    thumbs_up: Some(5),
+                    thumbs_down: Some(1),
+                    indexer_languages: None,
+                    indexer_subtitles: None,
+                    indexer_grabs: None,
+                    password_hint,
+                    parsed_release_metadata: None,
+                    quality_profile_decision: None,
+                    extra: HashMap::new(),
+                    guid: None,
+                    info_url: None,
+                    provenance: None,
+                    candidate_token: None,
+                    queue_scope: None,
+                    auto_eligible: None,
+                    auto_decision_code: None,
+                    auto_decision_summary: None,
+                },
+                &test_decision(),
+                SearchRuleInputContext {
+                    category: Some("movie"),
+                    library_name: Some("Movies"),
+                    title_tags: &[],
+                    runtime_minutes: Some(120),
+                },
+            );
+
+            let value = serde_json::to_value(input).unwrap();
+            assert!(
+                value["release"]["is_password_protected"].is_null(),
+                "placeholder password hints should normalize away"
+            );
+        }
     }
 
     #[test]
@@ -430,6 +479,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: None,
             },
@@ -450,6 +500,7 @@ mod tests {
         let value = serde_json::to_value(input).unwrap();
         assert_eq!(value["context"]["search_mode"], "post_download");
         assert_eq!(value["context"]["existing_score"], 900);
+        assert!(value["release"]["is_password_protected"].is_null());
         assert_eq!(value["file"]["num_chapters"], 0);
         assert_eq!(value["file"]["audio_profile"], "LC");
         assert_eq!(value["file"]["audio_streams"][0]["codec"], "aac");
@@ -467,6 +518,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: Some(&["English".to_string(), "French".to_string()]),
             },
@@ -508,6 +560,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: Some(&["French".to_string()]),
             },
@@ -545,6 +598,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: Some(&[
                     "Filipino".to_string(),
@@ -581,6 +635,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: None,
             },
@@ -619,6 +674,7 @@ mod tests {
                 published_at: None,
                 thumbs_up: None,
                 thumbs_down: None,
+                is_password_protected: None,
                 extra: None,
                 indexer_languages: None,
             },

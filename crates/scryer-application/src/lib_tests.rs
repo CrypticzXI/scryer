@@ -10,11 +10,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
+type DeleteOperationLog = Arc<Mutex<Vec<String>>>;
+type OptionalDeleteOperationLog = Arc<Mutex<Option<DeleteOperationLog>>>;
+type TrackedDownloadStateKey = (String, String, String);
+type TrackedDownloadStates = Arc<Mutex<HashMap<TrackedDownloadStateKey, String>>>;
+type DeletedDownloadRequest = (Option<String>, Option<String>, String, bool);
+type DeletedDownloadRequests = Arc<Mutex<Vec<DeletedDownloadRequest>>>;
+
 #[derive(Default)]
 struct MockTitleRepo {
     store: Arc<Mutex<Vec<Title>>>,
     create_or_get_existing_error: Arc<Mutex<Option<String>>>,
-    delete_operation_log: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
+    delete_operation_log: OptionalDeleteOperationLog,
 }
 
 impl MockTitleRepo {
@@ -723,8 +730,7 @@ struct TrackingImportRepo {
 impl ImportRepository for TrackingImportRepo {
     async fn queue_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
@@ -732,8 +738,9 @@ impl ImportRepository for TrackingImportRepo {
         let now = Utc::now().to_rfc3339();
         self.records.lock().await.push(ImportRecord {
             id: id.clone(),
-            source_system,
-            source_ref,
+            source_client_id: source_identity.client_id.clone(),
+            source_system: source_identity.client_type,
+            source_ref: source_identity.item_id,
             import_type: ImportType::parse(&import_type).unwrap_or(ImportType::ManualImport),
             status: ImportStatus::Pending,
             payload_json,
@@ -753,41 +760,6 @@ impl ImportRepository for TrackingImportRepo {
             .await
             .iter()
             .find(|record| record.id == id)
-            .cloned())
-    }
-
-    async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>> {
-        Ok(self
-            .records
-            .lock()
-            .await
-            .iter()
-            .rev()
-            .find(|record| record.source_system == source_system && record.source_ref == source_ref)
-            .cloned())
-    }
-
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        import_type: ImportType,
-    ) -> AppResult<Option<ImportRecord>> {
-        Ok(self
-            .records
-            .lock()
-            .await
-            .iter()
-            .rev()
-            .find(|record| {
-                record.source_system == source_system
-                    && record.source_ref == source_ref
-                    && record.import_type == import_type
-            })
             .cloned())
     }
 
@@ -852,33 +824,40 @@ impl ImportRepository for TrackingImportRepo {
             .collect())
     }
 
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        sources: &[(String, String)],
+        identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>> {
         let records = self.records.lock().await;
-        Ok(sources
+        Ok(identities
             .iter()
-            .filter_map(|(source_system, source_ref)| {
+            .filter_map(|identity| {
                 records
                     .iter()
                     .rev()
                     .find(|record| {
-                        record.source_system == *source_system && record.source_ref == *source_ref
+                        record.source_client_id.as_deref().unwrap_or("")
+                            == identity.client_id_or_empty()
+                            && record.source_system == identity.client_type
+                            && record.source_ref == identity.item_id
                     })
                     .cloned()
             })
             .collect())
     }
 
-    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool> {
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
         Ok(self
             .records
             .lock()
             .await
             .iter()
             .rev()
-            .find(|record| record.source_system == source_system && record.source_ref == source_ref)
+            .find(|record| {
+                record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
+                    && record.source_system == identity.client_type
+                    && record.source_ref == identity.item_id
+            })
             .is_some_and(|record| {
                 matches!(
                     record.status,
@@ -944,20 +923,6 @@ impl UserRepository for MockUserRepo {
         Ok(self.store.lock().await.clone())
     }
 
-    async fn update_entitlements(
-        &self,
-        id: &str,
-        entitlements: Vec<Entitlement>,
-    ) -> AppResult<User> {
-        let mut users = self.store.lock().await;
-        let user = users
-            .iter_mut()
-            .find(|entry| entry.id == id)
-            .ok_or_else(|| AppError::NotFound(format!("user {}", id)))?;
-        user.entitlements = entitlements;
-        Ok(user.clone())
-    }
-
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
         let mut users = self.store.lock().await;
         let user = users
@@ -983,7 +948,7 @@ impl UserRepository for MockUserRepo {
 struct MockDomainEventRepo {
     events: Arc<Mutex<Vec<DomainEvent>>>,
     subscriber_offsets: Arc<Mutex<HashMap<String, i64>>>,
-    delete_operation_log: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
+    delete_operation_log: OptionalDeleteOperationLog,
 }
 
 impl MockDomainEventRepo {
@@ -994,37 +959,76 @@ impl MockDomainEventRepo {
 
 #[derive(Default)]
 struct MockExternalImportMonitorSnapshotRepo {
-    snapshots: Arc<Mutex<Vec<ExternalImportMonitorSnapshot>>>,
+    chunks: Arc<Mutex<Vec<ExternalImportMonitorSnapshotChunk>>>,
 }
 
 #[async_trait]
 impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapshotRepo {
-    async fn upsert_external_import_monitor_snapshot(
+    async fn append_external_import_monitor_snapshot_chunk(
         &self,
-        snapshot: &ExternalImportMonitorSnapshot,
+        chunk: &ExternalImportMonitorSnapshotChunk,
     ) -> AppResult<()> {
-        let mut snapshots = self.snapshots.lock().await;
-        snapshots.retain(|existing| existing.facet != snapshot.facet);
-        snapshots.push(snapshot.clone());
+        self.chunks.lock().await.push(chunk.clone());
         Ok(())
     }
 
-    async fn get_external_import_monitor_snapshot(
+    async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        facet: &MediaFacet,
-    ) -> AppResult<Option<ExternalImportMonitorSnapshot>> {
-        let snapshots = self.snapshots.lock().await;
-        Ok(snapshots
+        facet: MediaFacet,
+        entry_kind: ExternalImportMonitorSnapshotEntryKind,
+        after_chunk_index: Option<i32>,
+        limit: i32,
+    ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
+        let chunks = self.chunks.lock().await;
+        let mut matched = chunks
             .iter()
-            .find(|snapshot| &snapshot.facet == facet)
-            .cloned())
+            .filter(|chunk| {
+                chunk.facet == facet
+                    && chunk.entry_kind == entry_kind
+                    && after_chunk_index
+                        .map(|after| chunk.chunk_index > after)
+                        .unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        matched.sort_by_key(|chunk| chunk.chunk_index);
+        matched.truncate(limit.max(0) as usize);
+        Ok(matched)
     }
 
-    async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()> {
-        let mut snapshots = self.snapshots.lock().await;
-        snapshots.retain(|snapshot| &snapshot.facet != facet);
+    async fn delete_external_import_monitor_snapshot_chunks(
+        &self,
+        facet: MediaFacet,
+    ) -> AppResult<()> {
+        let mut chunks = self.chunks.lock().await;
+        chunks.retain(|chunk| chunk.facet != facet);
         Ok(())
     }
+}
+
+async fn append_series_monitor_snapshot_chunk(
+    app: &AppUseCase,
+    user: &User,
+    facet: MediaFacet,
+    entries: Vec<ExternalImportMonitorSeriesEntry>,
+) {
+    let payload_ndjson = entries
+        .into_iter()
+        .map(|entry| serde_json::to_string(&entry).expect("serialize series snapshot entry"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.append_external_import_monitor_snapshot_chunk(
+        user,
+        ExternalImportMonitorSnapshotChunk {
+            facet,
+            entry_kind: ExternalImportMonitorSnapshotEntryKind::Series,
+            chunk_index: 0,
+            payload_ndjson,
+            created_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .await
+    .expect("append monitor snapshot chunk");
 }
 
 #[async_trait]
@@ -1198,18 +1202,28 @@ struct MockLibraryRepo {
     grants: Arc<Mutex<HashMap<String, Vec<LibraryGrant>>>>,
 }
 
-impl Default for MockLibraryRepo {
-    fn default() -> Self {
+impl MockLibraryRepo {
+    fn with_libraries(libraries: Vec<Library>) -> Self {
         Self {
-            libraries: Arc::new(Mutex::new(
-                [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
-                    .into_iter()
-                    .map(mock_default_library)
-                    .collect(),
-            )),
+            libraries: Arc::new(Mutex::new(libraries)),
             app_permissions: Arc::new(Mutex::new(HashMap::new())),
             grants: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn empty() -> Self {
+        Self::with_libraries(Vec::new())
+    }
+}
+
+impl Default for MockLibraryRepo {
+    fn default() -> Self {
+        Self::with_libraries(
+            [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+                .into_iter()
+                .map(mock_default_library)
+                .collect(),
+        )
     }
 }
 
@@ -1532,6 +1546,21 @@ impl ShowRepository for MockShowRepo {
         Ok(())
     }
 
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        let wanted = collection_ids.iter().cloned().collect::<HashSet<_>>();
+        let mut collections = self.collections.lock().await;
+        for collection in collections.iter_mut() {
+            if wanted.contains(&collection.id) {
+                collection.monitored = monitored;
+            }
+        }
+        Ok(())
+    }
+
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()> {
         let mut collections = self.collections.lock().await;
         let index = collections
@@ -1650,6 +1679,21 @@ impl ShowRepository for MockShowRepo {
         }
 
         Ok(item.clone())
+    }
+
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()> {
+        let wanted = episode_ids.iter().cloned().collect::<HashSet<_>>();
+        let mut episodes = self.episodes.lock().await;
+        for episode in episodes.iter_mut() {
+            if wanted.contains(&episode.id) {
+                episode.monitored = monitored;
+            }
+        }
+        Ok(())
     }
 
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()> {
@@ -2014,6 +2058,129 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 candidate_token: None,
                 queue_scope: None,
             }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedSearchCall {
+    facet: Option<String>,
+    newznab_categories: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedStructuredQueryCall {
+    query: String,
+    season: Option<u32>,
+    episode: Option<u32>,
+    absolute_episode: Option<u32>,
+}
+
+#[derive(Clone)]
+struct RecordingCategoriesIndexerClient {
+    release_title: String,
+    calls: Arc<Mutex<Vec<RecordedSearchCall>>>,
+}
+
+impl RecordingCategoriesIndexerClient {
+    fn new(release_title: impl Into<String>) -> Self {
+        Self {
+            release_title: release_title.into(),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecordingStructuredQueryIndexerClient {
+    calls: Arc<Mutex<Vec<RecordedStructuredQueryCall>>>,
+}
+
+#[async_trait]
+impl IndexerClient for RecordingCategoriesIndexerClient {
+    async fn search(
+        &self,
+        _query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        facet: Option<String>,
+        newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        _season: Option<u32>,
+        _episode: Option<u32>,
+        _absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        self.calls.lock().await.push(RecordedSearchCall {
+            facet,
+            newznab_categories,
+        });
+
+        Ok(IndexerSearchResponse {
+            results: vec![IndexerSearchResult {
+                source: "nzbgeek".into(),
+                title: self.release_title.clone(),
+                link: Some("https://example.invalid/info".to_string()),
+                download_url: Some("https://example.invalid/download.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                size_bytes: None,
+                published_at: Some("1970-01-01T00:00:00Z".into()),
+                thumbs_up: None,
+                thumbs_down: None,
+                indexer_languages: None,
+                indexer_subtitles: None,
+                indexer_grabs: None,
+                password_hint: None,
+                parsed_release_metadata: Some(crate::parse_release_metadata(&self.release_title)),
+                quality_profile_decision: None,
+                extra: Default::default(),
+                guid: Some("guid-recording-release".to_string()),
+                info_url: Some("https://example.invalid/info".to_string()),
+                provenance: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+                candidate_token: None,
+                queue_scope: None,
+            }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
+#[async_trait]
+impl IndexerClient for RecordingStructuredQueryIndexerClient {
+    async fn search(
+        &self,
+        query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        _facet: Option<String>,
+        _newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+    ) -> AppResult<IndexerSearchResponse> {
+        self.calls.lock().await.push(RecordedStructuredQueryCall {
+            query,
+            season,
+            episode,
+            absolute_episode,
+        });
+
+        Ok(IndexerSearchResponse {
+            results: vec![],
             api_current: None,
             api_max: None,
             grab_current: None,
@@ -2884,6 +3051,10 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
             is_enabled,
             enable_interactive_search,
             enable_auto_search,
+            managed_parent_config_id,
+            managed_child_key,
+            managed_metadata_json,
+            caps_snapshot_json,
             config_json,
         } = update;
         let mut entries = self.store.lock().await;
@@ -2915,6 +3086,18 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         }
         if let Some(enable_auto_search) = enable_auto_search {
             item.enable_auto_search = enable_auto_search;
+        }
+        if let Some(managed_parent_config_id) = managed_parent_config_id {
+            item.managed_parent_config_id = managed_parent_config_id;
+        }
+        if let Some(managed_child_key) = managed_child_key {
+            item.managed_child_key = managed_child_key;
+        }
+        if let Some(managed_metadata_json) = managed_metadata_json {
+            item.managed_metadata_json = managed_metadata_json;
+        }
+        if let Some(caps_snapshot_json) = caps_snapshot_json {
+            item.caps_snapshot_json = caps_snapshot_json;
         }
         if let Some(config_json) = config_json {
             item.config_json = Some(config_json);
@@ -3267,7 +3450,7 @@ impl BlocklistRepository for MockBlocklistRepo {
 #[derive(Default, Clone)]
 struct TrackingDownloadSubmissionRepo {
     store: Arc<Mutex<Vec<DownloadSubmission>>>,
-    tracked_states: Arc<Mutex<HashMap<(String, String, String), String>>>,
+    tracked_states: TrackedDownloadStates,
     deleted_title_ids: Arc<Mutex<Vec<String>>>,
     list_for_title_calls: Arc<Mutex<Vec<String>>>,
 }
@@ -3467,10 +3650,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
                 (statuses.is_empty()
                     || statuses.iter().any(|status| item.status.as_str() == status))
-                    && (media_types.is_empty()
-                        || media_types
-                            .iter()
-                            .any(|media_type| item.media_type == *media_type))
+                    && (media_types.is_empty() || media_types.contains(&item.media_type))
                     && title_id
                         .as_deref()
                         .is_none_or(|title_id| item.title_id == title_id)
@@ -3516,10 +3696,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                     .max_by(|left, right| left.created_at.cmp(&right.created_at));
                 (statuses.is_empty()
                     || statuses.iter().any(|status| item.status.as_str() == status))
-                    && (media_types.is_empty()
-                        || media_types
-                            .iter()
-                            .any(|media_type| item.media_type == *media_type))
+                    && (media_types.is_empty() || media_types.contains(&item.media_type))
                     && title_id
                         .as_deref()
                         .is_none_or(|title_id| item.title_id == title_id)
@@ -4093,7 +4270,7 @@ struct StubDownloadClient {
     history_items: Arc<Mutex<Vec<DownloadQueueItem>>>,
     completed_downloads: Arc<Mutex<Vec<CompletedDownload>>>,
     deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
-    deleted_requests: Arc<Mutex<Vec<(Option<String>, Option<String>, String, bool)>>>,
+    deleted_requests: DeletedDownloadRequests,
     delete_error: Arc<Mutex<Option<String>>>,
     submitted_release_titles: Arc<Mutex<Vec<String>>>,
     queue_calls: Arc<Mutex<usize>>,
@@ -5194,7 +5371,6 @@ fn test_user_with_app_permissions(username: &str, app_permissions: AppPermission
         id: Id::new().0,
         username: username.to_string(),
         password_hash: None,
-        entitlements: Vec::new(),
         authorization: Default::default(),
     };
     user.authorization.app = app_permissions;
@@ -5521,10 +5697,81 @@ fn bootstrap_with_search_settings_and_indexer(
     )
 }
 
+fn bootstrap_with_search_settings_indexer_and_configs(
+    settings: Arc<StoredSettingsRepo>,
+    indexer_client: Arc<dyn IndexerClient>,
+    configs: Vec<IndexerConfig>,
+) -> (AppUseCase, User) {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo {
+        store: Arc::new(Mutex::new(configs)),
+    });
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
+    let download_client = Arc::new(StubDownloadClient::default());
+    let plugin_provider = Arc::new(MockIndexerPluginProvider {
+        client: Arc::clone(&indexer_client),
+    });
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        String::new(),
+    )
+    .with_plugin_provider(plugin_provider)
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
+    );
+
+    (app, test_admin_user())
+}
+
 fn bootstrap_with_settings_repo_and_profiles(
     settings: Arc<dyn SettingsRepository>,
     quality_profiles: Arc<dyn QualityProfileRepository>,
     indexer_client: Arc<dyn IndexerClient>,
+) -> (AppUseCase, User) {
+    bootstrap_with_settings_repo_and_profiles_and_libraries(
+        settings,
+        quality_profiles,
+        indexer_client,
+        Arc::new(MockLibraryRepo::default()),
+    )
+}
+
+fn bootstrap_with_settings_repo_and_profiles_and_libraries(
+    settings: Arc<dyn SettingsRepository>,
+    quality_profiles: Arc<dyn QualityProfileRepository>,
+    indexer_client: Arc<dyn IndexerClient>,
+    libraries: Arc<dyn LibraryRepository>,
 ) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
@@ -5552,7 +5799,7 @@ fn bootstrap_with_settings_repo_and_profiles(
     )
     .with_plugin_provider(plugin_provider)
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
-    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .with_libraries(libraries)
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -5574,6 +5821,31 @@ fn bootstrap_with_settings_repo_and_profiles(
     );
 
     (app, test_admin_user())
+}
+
+fn synthetic_direct_nab_indexer_config(id: &str, provider_type: &str) -> IndexerConfig {
+    IndexerConfig {
+        id: id.to_string(),
+        name: format!("Synthetic {provider_type}"),
+        provider_type: provider_type.to_string(),
+        base_url: "https://example.invalid".to_string(),
+        api_key_encrypted: None,
+        rate_limit_seconds: None,
+        rate_limit_burst: None,
+        disabled_until: None,
+        is_enabled: true,
+        enable_interactive_search: true,
+        enable_auto_search: true,
+        managed_parent_config_id: None,
+        managed_child_key: None,
+        managed_metadata_json: None,
+        caps_snapshot_json: None,
+        last_health_status: None,
+        last_error_at: None,
+        config_json: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
 }
 
 #[tokio::test]
@@ -5603,12 +5875,266 @@ async fn remove_completed_download_defaults_true_when_scope_has_no_saved_entry()
         bootstrap_with_search_settings_and_indexer(settings, Arc::new(MockIndexerClient));
 
     assert!(
-        app.should_remove_completed_download(&MediaFacet::Movie, "weaver")
+        app.should_remove_completed_download(None, &MediaFacet::Movie, "weaver")
             .await
     );
     assert!(
-        !app.should_remove_failed_download(&MediaFacet::Movie, "weaver")
+        !app.should_remove_failed_download(None, &MediaFacet::Movie, "weaver")
             .await
+    );
+}
+
+#[tokio::test]
+async fn library_cleanup_routing_override_beats_facet_cleanup_flags() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+            &serde_json::json!({
+                "weaver": {
+                    "enabled": true,
+                    "removeCompleted": true,
+                    "removeFailed": false
+                }
+            })
+            .to_string(),
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+            &serde_json::json!({
+                "weaver": {
+                    "enabled": true,
+                    "removeCompleted": false,
+                    "removeFailed": true
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings, Arc::new(MockIndexerClient));
+
+    assert!(
+        !app.should_remove_completed_download(
+            Some(movie_library_id.as_str()),
+            &MediaFacet::Movie,
+            "weaver"
+        )
+        .await
+    );
+    assert!(
+        app.should_remove_failed_download(
+            Some(movie_library_id.as_str()),
+            &MediaFacet::Movie,
+            "weaver"
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn library_settings_download_client_routing_override_normalizes_current_clients_and_hydrates_new_ones()
+ {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let primary = create_enabled_download_client_config(&app, &user, "Primary", "weaver").await;
+    let secondary =
+        create_enabled_download_client_config(&app, &user, "Secondary", "sabnzbd").await;
+
+    app.update_library_settings(
+        &user,
+        &movie_library_id,
+        LibrarySettingsOverrideDraft {
+            download_client_routing: Some(vec![DownloadClientRoutingSettingsEntry {
+                client_id: primary.id.clone(),
+                enabled: true,
+                category: Some("movies".to_string()),
+                recent_queue_priority: Some("high".to_string()),
+                older_queue_priority: Some("low".to_string()),
+                remove_completed: false,
+                remove_failed: true,
+            }]),
+            ..empty_library_settings_override()
+        },
+    )
+    .await
+    .expect("library routing override should save");
+
+    let raw = settings
+        .get_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+        )
+        .await
+        .expect("saved library routing JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("saved library routing JSON should parse");
+    assert_eq!(
+        parsed[secondary.id.as_str()]["enabled"],
+        serde_json::json!(false),
+        "saving a library override should materialize current missing clients as disabled",
+    );
+
+    let tertiary = create_enabled_download_client_config(&app, &user, "Tertiary", "nzbget").await;
+    let library_settings = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("library settings should reload");
+    let routing = library_settings
+        .download_client_routing_override
+        .expect("library override should be present");
+
+    assert_eq!(routing[0].client_id, primary.id);
+    assert_eq!(routing[0].category.as_deref(), Some("movies"));
+    assert_eq!(routing[0].recent_queue_priority.as_deref(), Some("high"));
+    assert_eq!(routing[0].older_queue_priority.as_deref(), Some("low"));
+    assert!(!routing[0].remove_completed);
+    assert!(routing[0].remove_failed);
+
+    let secondary_entry = routing
+        .iter()
+        .find(|entry| entry.client_id == secondary.id)
+        .expect("secondary client should be present");
+    assert!(!secondary_entry.enabled);
+    assert_eq!(secondary_entry.category, None);
+    assert_eq!(secondary_entry.recent_queue_priority, None);
+    assert_eq!(secondary_entry.older_queue_priority, None);
+    assert!(secondary_entry.remove_completed);
+    assert!(!secondary_entry.remove_failed);
+
+    let tertiary_entry = routing
+        .iter()
+        .find(|entry| entry.client_id == tertiary.id)
+        .expect("newly added client should be hydrated as disabled");
+    assert!(!tertiary_entry.enabled);
+    assert_eq!(tertiary_entry.category, None);
+    assert_eq!(tertiary_entry.recent_queue_priority, None);
+    assert_eq!(tertiary_entry.older_queue_priority, None);
+    assert!(tertiary_entry.remove_completed);
+    assert!(!tertiary_entry.remove_failed);
+}
+
+#[tokio::test]
+async fn library_settings_download_client_routing_override_reads_legacy_key_and_clears_it_when_reset()
+ {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let primary = create_enabled_download_client_config(&app, &user, "Primary", "weaver").await;
+    let secondary =
+        create_enabled_download_client_config(&app, &user, "Secondary", "sabnzbd").await;
+
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+            &serde_json::json!({
+                primary.id.as_str(): {
+                    "enabled": true,
+                    "category": "movies",
+                    "recentQueuePriority": "high",
+                    "olderQueuePriority": "low",
+                    "removeCompleted": false,
+                    "removeFailed": true
+                }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let library_settings = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("library settings should read legacy routing override");
+    let routing = library_settings
+        .download_client_routing_override
+        .expect("legacy routing override should be surfaced");
+
+    let primary_entry = routing
+        .iter()
+        .find(|entry| entry.client_id == primary.id)
+        .expect("primary client should be present");
+    assert!(primary_entry.enabled);
+    assert_eq!(primary_entry.category.as_deref(), Some("movies"));
+    assert_eq!(primary_entry.recent_queue_priority.as_deref(), Some("high"));
+    assert_eq!(primary_entry.older_queue_priority.as_deref(), Some("low"));
+    assert!(!primary_entry.remove_completed);
+    assert!(primary_entry.remove_failed);
+
+    let secondary_entry = routing
+        .iter()
+        .find(|entry| entry.client_id == secondary.id)
+        .expect("missing clients should hydrate as disabled");
+    assert!(!secondary_entry.enabled);
+
+    app.update_library_settings(&user, &movie_library_id, empty_library_settings_override())
+        .await
+        .expect("resetting library settings should succeed");
+
+    assert!(
+        settings
+            .get_scoped_value(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                &movie_library_id,
+            )
+            .await
+            .is_none(),
+        "resetting should remove the canonical library override",
+    );
+    assert!(
+        settings
+            .get_scoped_value(
+                SETTINGS_SCOPE_SYSTEM,
+                LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+                &movie_library_id,
+            )
+            .await
+            .is_none(),
+        "resetting should remove the legacy library override too",
+    );
+}
+
+#[tokio::test]
+async fn library_settings_download_client_routing_override_ignores_invalid_json() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings.clone(), Arc::new(MockIndexerClient));
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+            "[]",
+        )
+        .await;
+
+    let library_settings = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("library settings should load");
+
+    assert!(
+        library_settings.download_client_routing_override.is_none(),
+        "invalid library routing JSON should be ignored instead of materialized as a disabled override",
     );
 }
 
@@ -5876,6 +6402,10 @@ async fn ensure_indexer_routing_entries_for_existing_indexers_backfills_missing_
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
             last_health_status: None,
             last_error_at: None,
             config_json: Some(
@@ -6161,11 +6691,68 @@ fn bootstrap_with_acquisition_tracking_and_indexer(
     wanted_items: Arc<TrackingWantedItemRepo>,
     indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User) {
-    let (app, user) = bootstrap_with_cleanup_tracking_and_indexer(
-        download_client,
-        download_submissions.clone(),
-        pending_releases.clone(),
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    download_client_configs
+        .store
+        .try_lock()
+        .expect("download client config store should not be contended during bootstrap")
+        .push(DownloadClientConfig {
+            id: "background-search-default-client".to_string(),
+            name: "Background Search Default Client".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 10_000,
+            is_enabled: true,
+            status: scryer_domain::DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+
+    let services = AppServices::builder(
+        titles,
+        shows,
+        users,
+        indexer_configs,
         indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(Arc::new(MockDomainEventRepo::default()))
+    .with_download_submissions(download_submissions.clone())
+    .with_pending_releases(pending_releases.clone())
+    .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
+    .with_libraries(Arc::new(MockLibraryRepo::default()))
+    .build_partial_for_tests();
+
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+    let app = AppUseCase::new(
+        services,
+        JwtAuthConfig {
+            issuer: "scryer-test".to_string(),
+            access_ttl_seconds: 3600,
+            jwt_signing_salt: "test-salt".to_string(),
+        },
+        Arc::new(registry),
     );
     let app = app.with_test_overrides(|services| {
         services
@@ -6176,7 +6763,7 @@ fn bootstrap_with_acquisition_tracking_and_indexer(
             }))
             .with_wanted_items(wanted_items)
     });
-    (app, user)
+    (app, test_admin_user())
 }
 
 fn bootstrap_with_scan_unmatched_tracking(
@@ -6205,6 +6792,23 @@ fn bootstrap_with_library_delete_repositories(
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    download_client_configs
+        .store
+        .try_lock()
+        .expect("download client config store should not be contended during bootstrap")
+        .push(DownloadClientConfig {
+            id: "default-download-client".to_string(),
+            name: "Default Download Client".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+            status: scryer_domain::DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
@@ -6822,6 +7426,8 @@ async fn movie_full_scan_title_create_failure_from_search_persists_unmatched_ite
                 tvdb_id: "123456".to_string(),
                 name: "Matched Movie".to_string(),
                 year: Some(2020),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
             }],
         }),
     );
@@ -8010,6 +8616,140 @@ async fn reconcile_default_library_roots_keeps_non_bootstrap_canonical_roots() {
         .expect("read mirror"),
         Some("/canonical/movies".to_string())
     );
+}
+
+#[tokio::test]
+async fn reconcile_default_library_roots_repairs_missing_default_libraries() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_settings_repo_and_profiles_and_libraries(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+        Arc::new(MockLibraryRepo::empty()),
+    );
+
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile missing defaults");
+
+    let libraries = app
+        .services
+        .catalog
+        .libraries
+        .list(None)
+        .await
+        .expect("list repaired libraries");
+    assert_eq!(libraries.len(), 3);
+
+    let library_paths = app.get_library_paths(&user).await.expect("library paths");
+    assert_eq!(library_paths.movie_path, "/data/movies");
+    assert_eq!(library_paths.series_path, "/data/series");
+    assert_eq!(library_paths.anime_path, "/data/anime");
+
+    for (facet, expected_path) in [
+        (MediaFacet::Movie, "/data/movies"),
+        (MediaFacet::Series, "/data/series"),
+        (MediaFacet::Anime, "/data/anime"),
+    ] {
+        let library = app
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await
+            .expect("lookup repaired library")
+            .expect("default library should be recreated");
+        assert_eq!(
+            crate::settings::runtime::root_folder_entries_from_library_roots(&library.roots),
+            vec![RootFolderEntry {
+                path: expected_path.to_string(),
+                is_default: true,
+            }]
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_library_paths_repairs_missing_default_libraries_before_save() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let (app, user) = bootstrap_with_settings_repo_and_profiles_and_libraries(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+        Arc::new(MockLibraryRepo::empty()),
+    );
+
+    let updated = app
+        .update_library_paths(
+            &user,
+            UpdateLibraryPaths {
+                movie_path: "/wizard-movies".to_string(),
+                series_path: "/wizard-series".to_string(),
+                anime_path: Some("/wizard-anime".to_string()),
+            },
+        )
+        .await
+        .expect("update repaired library paths");
+
+    assert_eq!(updated.movie_path, "/wizard-movies");
+    assert_eq!(updated.series_path, "/wizard-series");
+    assert_eq!(updated.anime_path, "/wizard-anime");
+
+    for (facet, expected_path) in [
+        (MediaFacet::Movie, "/wizard-movies"),
+        (MediaFacet::Series, "/wizard-series"),
+        (MediaFacet::Anime, "/wizard-anime"),
+    ] {
+        let root_folders = app
+            .root_folders_for_facet(&facet)
+            .await
+            .expect("repaired root folders");
+        assert_eq!(
+            root_folders,
+            vec![RootFolderEntry {
+                path: expected_path.to_string(),
+                is_default: true,
+            }]
+        );
+    }
+}
+
+#[tokio::test]
+async fn find_or_create_default_user_dedupes_duplicate_default_library_grants() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let duplicate_movie_library = mock_default_library(MediaFacet::Movie);
+    let libraries = vec![
+        duplicate_movie_library.clone(),
+        duplicate_movie_library,
+        mock_default_library(MediaFacet::Series),
+        mock_default_library(MediaFacet::Anime),
+    ];
+    let (app, user) = bootstrap_with_settings_repo_and_profiles_and_libraries(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+        Arc::new(MockLibraryRepo::with_libraries(libraries)),
+    );
+
+    let admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create default admin");
+    assert_eq!(admin.username, user.username);
+
+    let grants = app
+        .services
+        .catalog
+        .libraries
+        .permission_masks_for_user(&admin.id)
+        .await
+        .expect("load grants");
+    let unique_library_ids = grants
+        .iter()
+        .map(|grant| grant.library_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(grants.len(), 3);
+    assert_eq!(unique_library_ids.len(), 3);
 }
 
 #[tokio::test]
@@ -10032,7 +10772,10 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
         &admin,
         "token_queue_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await;
 
@@ -10659,6 +11402,248 @@ async fn search_titles_supports_facet_filter() {
 }
 
 #[tokio::test]
+async fn search_indexers_for_title_keeps_direct_nab_searches_uncategorized_when_routing_is_empty() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let recording_client = Arc::new(RecordingCategoriesIndexerClient::new(
+        "Generic.Release.2026.1080p.WEB-DL",
+    ));
+    let (app, user) =
+        bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
+
+    let movie = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Default Category Movie".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2026),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie title");
+    let series = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Default Category Series".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+    let anime = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Default Category Anime".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+
+    app.search_indexers_for_title(&user, movie.id.clone())
+        .await
+        .expect("movie search should succeed");
+    app.search_indexers_for_title(&user, series.id.clone())
+        .await
+        .expect("series search should succeed");
+    app.search_indexers_for_title(&user, anime.id.clone())
+        .await
+        .expect("anime search should succeed");
+
+    let calls = recording_client.calls.lock().await.clone();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0].newznab_categories, None);
+    assert_eq!(calls[1].newznab_categories, None);
+    assert_eq!(calls[2].newznab_categories, None);
+}
+
+#[tokio::test]
+async fn search_indexers_for_episode_dedupes_equivalent_structured_series_queries() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let recording_client = Arc::new(RecordingStructuredQueryIndexerClient::default());
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        recording_client.clone(),
+        vec![synthetic_direct_nab_indexer_config("idx-series", "nzbgeek")],
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Synthetic Signal".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "2".to_string(),
+            label: Some("Season 2".to_string()),
+            ordered_path: None,
+            narrative_order: Some("2".to_string()),
+            first_episode_number: Some("11".to_string()),
+            last_episode_number: Some("11".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create season");
+
+    app.services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("11".to_string()),
+            season_number: Some("2".to_string()),
+            episode_label: Some("S02E11".to_string()),
+            title: Some("Episode 11".to_string()),
+            air_date: Some("2026-01-01".to_string()),
+            duration_seconds: Some(1_500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: Some("tvdb-series-211".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create series episode");
+
+    app.search_indexers_for_episode(&user, title.id.clone(), "2".to_string(), "11".to_string())
+        .await
+        .expect("series episode search should succeed");
+
+    let calls = recording_client.calls.lock().await.clone();
+    assert_eq!(
+        calls,
+        vec![RecordedStructuredQueryCall {
+            query: "Synthetic Signal S02E11".to_string(),
+            season: Some(2),
+            episode: Some(11),
+            absolute_episode: None,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn search_indexers_for_episode_dedupes_equivalent_structured_anime_queries() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let recording_client = Arc::new(RecordingStructuredQueryIndexerClient::default());
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        recording_client.clone(),
+        vec![synthetic_direct_nab_indexer_config("idx-anime", "nzbgeek")],
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Synthetic Atlas".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+
+    let season = app
+        .services
+        .catalog
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "2".to_string(),
+            label: Some("Season 2".to_string()),
+            ordered_path: None,
+            narrative_order: Some("2".to_string()),
+            first_episode_number: Some("11".to_string()),
+            last_episode_number: Some("11".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create anime season");
+
+    app.services
+        .catalog
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("11".to_string()),
+            season_number: Some("2".to_string()),
+            episode_label: Some("S02E11".to_string()),
+            title: Some("Episode 11".to_string()),
+            air_date: Some("2026-01-01".to_string()),
+            duration_seconds: Some(1_500),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("35".to_string()),
+            overview: None,
+            tvdb_id: Some("tvdb-anime-211".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        })
+        .await
+        .expect("create anime episode");
+
+    app.search_indexers_for_episode(&user, title.id.clone(), "2".to_string(), "11".to_string())
+        .await
+        .expect("anime episode search should succeed");
+
+    let calls = recording_client.calls.lock().await.clone();
+    assert_eq!(
+        calls,
+        vec![RecordedStructuredQueryCall {
+            query: "Synthetic Atlas 035".to_string(),
+            season: Some(2),
+            episode: Some(11),
+            absolute_episode: Some(35),
+        }]
+    );
+}
+
+#[tokio::test]
 async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
@@ -10746,12 +11731,15 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
     .await
     .expect("create download client config");
 
-    let search_user = create_user_from_entitlements(
+    let search_user = create_user_with_permissions(
         &app,
         &user,
         "title_search_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await
     .expect("create search user");
@@ -10852,7 +11840,6 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
         id: "ghost-search-user".to_string(),
         username: "ghost".to_string(),
         password_hash: None,
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
         authorization: Default::default(),
     };
     ghost_actor.authorization = scryer_domain::UserAuthorization {
@@ -10877,12 +11864,15 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
 async fn create_user_and_list_users() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "editor",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await
     .expect("create user");
@@ -10955,12 +11945,12 @@ async fn create_user_with_library_permission_grants_requires_manage_permissions(
 async fn get_user_by_id_returns_created_user() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "viewer",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -10977,22 +11967,22 @@ async fn get_user_by_id_returns_created_user() {
 async fn create_user_rejects_duplicate_username() {
     let (app, user) = bootstrap();
 
-    let _created = create_user_from_entitlements(
+    let _created = create_user_with_permissions(
         &app,
         &user,
         "editor",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("first create");
 
-    let second = create_user_from_entitlements(
+    let second = create_user_with_permissions(
         &app,
         &user,
         "editor",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
 
@@ -12315,6 +13305,7 @@ async fn try_import_completed_downloads_removes_already_imported_history_with_ex
     let item_id = "legacy-completed-1";
     import_repo.records.lock().await.push(ImportRecord {
         id: Id::new().0,
+        source_client_id: Some(config.id.clone()),
         source_system: "nzbget".to_string(),
         source_ref: item_id.to_string(),
         import_type: ImportType::MovieDownload,
@@ -12372,6 +13363,7 @@ async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed
     let item_id = "legacy-missing-completed-1";
     import_repo.records.lock().await.push(ImportRecord {
         id: Id::new().0,
+        source_client_id: Some("client-1".to_string()),
         source_system: "nzbget".to_string(),
         source_ref: item_id.to_string(),
         import_type: ImportType::MovieDownload,
@@ -15794,6 +16786,94 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
 }
 
 #[tokio::test]
+async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let default_client = app
+        .list_download_client_configs(&user, None)
+        .await
+        .expect("list download client configs")
+        .into_iter()
+        .next()
+        .expect("default download client");
+    app.update_download_client_config(
+        &user,
+        crate::DownloadClientConfigUpdate {
+            id: default_client.id.clone(),
+            is_enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("disable default download client");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "No Downloader Search Gate".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+
+    wanted_items
+        .upsert_wanted_item(&WantedItem {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_slug: None,
+            title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            episode_number: None,
+            media_type: "movie".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some(Utc::now().to_rfc3339()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2024-01-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        })
+        .await
+        .expect("seed due movie wanted item");
+
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+
+    assert!(indexer_client.searches.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -15869,6 +16949,63 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
     assert_eq!(searches[0].query, title.name);
     assert_eq!(searches[0].season, None);
     assert_eq!(searches[0].episode, None);
+}
+
+#[tokio::test]
+async fn rss_sync_skips_indexer_search_when_no_download_clients_are_enabled() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items,
+        indexer_client.clone(),
+    );
+
+    let default_client = app
+        .list_download_client_configs(&user, None)
+        .await
+        .expect("list download client configs")
+        .into_iter()
+        .next()
+        .expect("default download client");
+    app.update_download_client_config(
+        &user,
+        crate::DownloadClientConfigUpdate {
+            id: default_client.id.clone(),
+            is_enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("disable default download client");
+
+    app.add_title(
+        &user,
+        NewTitle {
+            name: "RSS Skip Without Downloader".into(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            min_availability: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create monitored movie");
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert!(indexer_client.searches.lock().await.is_empty());
+    assert_eq!(report.releases_fetched, 0);
+    assert_eq!(report.releases_matched, 0);
+    assert_eq!(report.releases_grabbed, 0);
+    assert_eq!(report.releases_held, 0);
 }
 
 #[tokio::test]
@@ -16888,19 +18025,19 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
 async fn update_user_library_permissions_changes_grants() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "editor",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
 
-    let grants = test_library_grants_from_entitlements(&[
-        Entitlement::ViewCatalog,
-        Entitlement::ManageTitle,
+    let grants = test_library_grants_from_presets(&[
+        TestPermissionPreset::CatalogView,
+        TestPermissionPreset::TitleManagement,
     ]);
     let updated = app
         .set_user_library_permissions(&user, &created.id, grants)
@@ -16920,12 +18057,12 @@ async fn update_user_library_permissions_changes_grants() {
 async fn update_user_password_is_hashed() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "password-user",
         "before-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -16947,12 +18084,12 @@ async fn update_user_password_is_hashed() {
 async fn self_password_change_is_hashed() {
     let (app, admin) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &admin,
         "self-password-user",
         "before-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -16978,12 +18115,12 @@ async fn self_password_change_is_hashed() {
 async fn delete_other_user_removes_user() {
     let (app, user) = bootstrap();
 
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &user,
         "removable",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -17217,21 +18354,18 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
     .await
     .expect("create episode");
 
-    app.save_external_import_monitor_snapshot(
+    append_series_monitor_snapshot_chunk(
+        &app,
         &user,
         MediaFacet::Series,
-        ExternalImportMonitorSnapshotPayload::Series {
-            entries: vec![ExternalImportMonitorSeriesEntry {
-                root_path: "/media/series".to_string(),
-                tvdb_id: Some("4242".to_string()),
-                monitored: false,
-                seasons: vec![],
-                episodes: vec![],
-            }],
-        },
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("4242".to_string()),
+            monitored: false,
+            seasons: vec![],
+            episodes: vec![],
+        }],
     )
-    .await
-    .expect("save monitor snapshot");
+    .await;
 
     let applied = app
         .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
@@ -17240,24 +18374,21 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
 
     assert!(applied);
     let events = title_updated_events(&app, &title.id).await;
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 1);
     assert!(events.iter().all(|event| event.actor_user_id.is_none()));
 
-    app.save_external_import_monitor_snapshot(
+    append_series_monitor_snapshot_chunk(
+        &app,
         &user,
         MediaFacet::Series,
-        ExternalImportMonitorSnapshotPayload::Series {
-            entries: vec![ExternalImportMonitorSeriesEntry {
-                root_path: "/media/series".to_string(),
-                tvdb_id: Some("4242".to_string()),
-                monitored: false,
-                seasons: vec![],
-                episodes: vec![],
-            }],
-        },
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("4242".to_string()),
+            monitored: false,
+            seasons: vec![],
+            episodes: vec![],
+        }],
     )
-    .await
-    .expect("save unchanged monitor snapshot");
+    .await;
 
     let reapplied = app
         .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
@@ -17266,7 +18397,7 @@ async fn external_import_monitor_snapshot_emits_title_updated_without_actor() {
 
     assert!(reapplied);
     let replay_events = title_updated_events(&app, &title.id).await;
-    assert_eq!(replay_events.len(), 3);
+    assert_eq!(replay_events.len(), 1);
     assert!(
         replay_events
             .iter()
@@ -17327,46 +18458,47 @@ async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
         )
         .await
         .expect("create collection");
-    app.create_episode(
-        &user,
-        title.id.clone(),
-        Some(collection.id),
-        "standard".into(),
-        Some("1".into()),
-        Some("1".into()),
-        Some("Pilot".into()),
-        Some("Pilot".into()),
-        None,
-        Some(1_200),
-        false,
-        false,
-    )
-    .await
-    .expect("create episode");
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+    app.set_episode_monitored(&user, &episode.id, false)
+        .await
+        .expect("disable episode");
 
-    app.save_external_import_monitor_snapshot(
+    append_series_monitor_snapshot_chunk(
+        &app,
         &user,
         MediaFacet::Series,
-        ExternalImportMonitorSnapshotPayload::Series {
-            entries: vec![ExternalImportMonitorSeriesEntry {
-                root_path: "/media/series".to_string(),
-                tvdb_id: Some("5150".to_string()),
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("5150".to_string()),
+            monitored: true,
+            seasons: vec![ExternalImportMonitorSeasonEntry {
+                season_number: 1,
                 monitored: true,
-                seasons: vec![ExternalImportMonitorSeasonEntry {
-                    season_number: 1,
-                    monitored: true,
-                }],
-                episodes: vec![ExternalImportMonitorEpisodeEntry {
-                    tvdb_id: None,
-                    season_number: 1,
-                    episode_number: 1,
-                    monitored: true,
-                }],
             }],
-        },
+            episodes: vec![ExternalImportMonitorEpisodeEntry {
+                tvdb_id: None,
+                season_number: 1,
+                episode_number: 1,
+                monitored: true,
+            }],
+        }],
     )
-    .await
-    .expect("save monitor snapshot");
+    .await;
 
     let upserts_before_apply = wanted_items.upsert_call_count();
     let applied = app
@@ -17375,6 +18507,228 @@ async fn external_import_monitor_snapshot_syncs_wanted_state_once_per_title() {
         .expect("apply monitor snapshot");
 
     assert!(applied);
+    let upserts_after_apply = wanted_items.upsert_call_count();
+    assert_eq!(upserts_after_apply - upserts_before_apply, 1);
+}
+
+#[tokio::test]
+async fn external_import_monitor_snapshot_emits_title_updated_for_child_only_changes() {
+    let (app, user) = bootstrap();
+    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
+    let app = app.with_test_overrides(|services| {
+        services.with_external_import_monitor_snapshots(snapshots.clone())
+    });
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Snapshot Child Activity Fixture".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "6262".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+    app.set_episode_monitored(&user, &episode.id, false)
+        .await
+        .expect("disable episode");
+
+    let events_before_apply = title_updated_events(&app, &title.id).await.len();
+
+    append_series_monitor_snapshot_chunk(
+        &app,
+        &user,
+        MediaFacet::Series,
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("6262".to_string()),
+            monitored: true,
+            seasons: vec![ExternalImportMonitorSeasonEntry {
+                season_number: 1,
+                monitored: true,
+            }],
+            episodes: vec![ExternalImportMonitorEpisodeEntry {
+                tvdb_id: None,
+                season_number: 1,
+                episode_number: 1,
+                monitored: true,
+            }],
+        }],
+    )
+    .await;
+
+    let applied = app
+        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
+        .await
+        .expect("apply monitor snapshot");
+
+    assert!(applied);
+    let updated_episode = app
+        .get_episode(&user, &episode.id)
+        .await
+        .expect("get episode")
+        .expect("episode exists");
+    assert!(updated_episode.monitored);
+
+    let events_after_apply = title_updated_events(&app, &title.id).await;
+    assert_eq!(events_after_apply.len(), events_before_apply + 1);
+    assert!(
+        events_after_apply
+            .last()
+            .expect("latest event")
+            .actor_user_id
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn external_import_monitor_snapshot_enables_collection_for_monitored_episode_override() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+    );
+    let snapshots = Arc::new(MockExternalImportMonitorSnapshotRepo::default());
+    let app = app.with_test_overrides(|services| {
+        services.with_external_import_monitor_snapshots(snapshots.clone())
+    });
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Snapshot Episode Override Fixture".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "7373".to_string(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Series)
+        .await;
+
+    let collection = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "1".into(),
+            Some("Season One".into()),
+            None,
+            Some("1".into()),
+            Some("12".into()),
+        )
+        .await
+        .expect("create collection");
+    let episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(collection.id.clone()),
+            "standard".into(),
+            Some("1".into()),
+            Some("1".into()),
+            Some("Pilot".into()),
+            Some("Pilot".into()),
+            None,
+            Some(1_200),
+            false,
+            false,
+        )
+        .await
+        .expect("create episode");
+    app.set_collection_monitored(&user, &collection.id, false)
+        .await
+        .expect("disable collection");
+
+    append_series_monitor_snapshot_chunk(
+        &app,
+        &user,
+        MediaFacet::Series,
+        vec![ExternalImportMonitorSeriesEntry {
+            tvdb_id: Some("7373".to_string()),
+            monitored: false,
+            seasons: vec![],
+            episodes: vec![ExternalImportMonitorEpisodeEntry {
+                tvdb_id: None,
+                season_number: 1,
+                episode_number: 1,
+                monitored: true,
+            }],
+        }],
+    )
+    .await;
+
+    let upserts_before_apply = wanted_items.upsert_call_count();
+    let applied = app
+        .apply_pending_external_import_monitor_snapshot_for_facet(&MediaFacet::Series)
+        .await
+        .expect("apply monitor snapshot");
+
+    assert!(applied);
+    let updated_collection = app
+        .get_collection(&user, &collection.id)
+        .await
+        .expect("get collection")
+        .expect("collection exists");
+    let updated_episode = app
+        .get_episode(&user, &episode.id)
+        .await
+        .expect("get episode")
+        .expect("episode exists");
+    assert!(updated_collection.monitored);
+    assert!(updated_episode.monitored);
+
     let upserts_after_apply = wanted_items.upsert_call_count();
     assert_eq!(upserts_after_apply - upserts_before_apply, 1);
 }
@@ -19083,19 +20437,52 @@ fn validate_password_unknown_version_returns_error() {
 
 // ── JWT round-trip ────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestPermissionPreset {
+    CatalogView,
+    TitleManagement,
+    UserManagement,
+    ConfigManagement,
+}
+
 /// Derive a per-user JWT signing key (mirrors `AppUseCase::derive_jwt_key`).
-fn test_derive_jwt_key(salt: &str, password_hash: &str, entitlements: &[Entitlement]) -> Vec<u8> {
-    use ring::hmac;
-    let mut entitlement_claims = entitlements
-        .iter()
-        .map(AppUseCase::entitlement_claim_string)
+fn test_derive_jwt_key(
+    salt: &str,
+    password_hash: &str,
+    permissions: &[TestPermissionPreset],
+) -> Vec<u8> {
+    use aws_lc_rs::hmac;
+    let app_permissions = test_app_permissions_from_presets(permissions);
+    let library_grants = test_library_grants_from_presets(permissions);
+    let mut app_claims = app_permissions
+        .to_permissions()
+        .into_iter()
+        .map(AppUseCase::app_permission_claim_string)
         .map(str::to_string)
         .collect::<Vec<_>>();
-    entitlement_claims.sort();
-    entitlement_claims.dedup();
-    let legacy_claims = entitlement_claims.join("\n");
-    let authorization_fingerprint =
-        sha256_hex(format!("app\n\nlibrary\n\nlegacy\n{legacy_claims}"));
+    app_claims.sort();
+    app_claims.dedup();
+    let mut library_claims = library_grants
+        .into_iter()
+        .map(|grant| {
+            let mut permissions = grant
+                .permissions
+                .to_permissions()
+                .into_iter()
+                .map(AppUseCase::library_permission_claim_string)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            permissions.sort();
+            permissions.dedup();
+            format!("{}:{}", grant.library_id, permissions.join(","))
+        })
+        .collect::<Vec<_>>();
+    library_claims.sort();
+    let authorization_fingerprint = sha256_hex(format!(
+        "app\n{}\nlibrary\n{}",
+        app_claims.join("\n"),
+        library_claims.join("\n")
+    ));
     let signing_material = format!("{password_hash}\n{authorization_fingerprint}");
     let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, salt.as_bytes());
     hmac::sign(&hmac_key, signing_material.as_bytes())
@@ -19105,29 +20492,29 @@ fn test_derive_jwt_key(salt: &str, password_hash: &str, entitlements: &[Entitlem
 
 const TEST_PASSWORD_HASH: &str = "v2$argon2id$v=19$m=19456,t=2,p=1$dGVzdHNhbHQ$dGVzdGhhc2g";
 
-fn test_app_permissions_from_entitlements(
-    entitlements: &[Entitlement],
+fn test_app_permissions_from_presets(
+    permissions: &[TestPermissionPreset],
 ) -> scryer_domain::AppPermissionMask {
-    let mut permissions = scryer_domain::AppPermissionMask::NONE;
-    if entitlements.contains(&Entitlement::ManageUsers) {
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_USERS);
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_PERMISSIONS);
+    let mut mask = scryer_domain::AppPermissionMask::NONE;
+    if permissions.contains(&TestPermissionPreset::UserManagement) {
+        mask.insert(scryer_domain::AppPermissionMask::MANAGE_USERS);
+        mask.insert(scryer_domain::AppPermissionMask::MANAGE_PERMISSIONS);
     }
-    if entitlements.contains(&Entitlement::ManageConfig) {
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_SYSTEM_SETTINGS);
-        permissions.insert(scryer_domain::AppPermissionMask::MANAGE_CATALOG_SETTINGS);
+    if permissions.contains(&TestPermissionPreset::ConfigManagement) {
+        mask.insert(scryer_domain::AppPermissionMask::MANAGE_SYSTEM_SETTINGS);
+        mask.insert(scryer_domain::AppPermissionMask::MANAGE_CATALOG_SETTINGS);
     }
-    permissions
+    mask
 }
 
-fn test_library_grants_from_entitlements(
-    entitlements: &[Entitlement],
+fn test_library_grants_from_presets(
+    presets: &[TestPermissionPreset],
 ) -> Vec<scryer_domain::LibraryGrant> {
     let mut permissions = scryer_domain::LibraryPermissionMask::NONE;
-    if entitlements.contains(&Entitlement::ViewCatalog) {
+    if presets.contains(&TestPermissionPreset::CatalogView) {
         permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);
     }
-    if entitlements.contains(&Entitlement::ManageTitle) {
+    if presets.contains(&TestPermissionPreset::TitleManagement) {
         permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);
         permissions.insert(scryer_domain::LibraryPermissionMask::MANAGE_TITLES);
         permissions.insert(scryer_domain::LibraryPermissionMask::RESOLVE_IMPORTS);
@@ -19146,19 +20533,19 @@ fn test_library_grants_from_entitlements(
         .collect()
 }
 
-async fn create_user_from_entitlements(
+async fn create_user_with_permissions(
     app: &AppUseCase,
     actor: &User,
     username: &str,
     password: &str,
-    entitlements: Vec<Entitlement>,
+    permissions: Vec<TestPermissionPreset>,
 ) -> AppResult<User> {
     app.create_user(
         actor,
         username.to_string(),
         password.to_string(),
-        test_app_permissions_from_entitlements(&entitlements),
-        test_library_grants_from_entitlements(&entitlements),
+        test_app_permissions_from_presets(&permissions),
+        test_library_grants_from_presets(&permissions),
     )
     .await
 }
@@ -19168,9 +20555,9 @@ async fn create_authenticated_user(
     admin: &User,
     username: &str,
     password: &str,
-    entitlements: Vec<Entitlement>,
+    permissions: Vec<TestPermissionPreset>,
 ) -> (User, User) {
-    let created = create_user_from_entitlements(app, admin, username, password, entitlements)
+    let created = create_user_with_permissions(app, admin, username, password, permissions)
         .await
         .expect("create user");
     let token = app.issue_access_token(&created).await.expect("issue token");
@@ -19189,7 +20576,6 @@ async fn issue_and_authenticate_token_round_trips() {
         id: "user-jwt-1".to_string(),
         username: "jwt_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog],
         authorization: Default::default(),
     };
     app.services
@@ -19208,28 +20594,40 @@ async fn issue_and_authenticate_token_round_trips() {
 }
 
 #[tokio::test]
-async fn entitlements_survive_token_round_trip() {
-    let (app, _) = bootstrap();
-    let user = User {
-        id: "user-jwt-2".to_string(),
-        username: "ent_user".to_string(),
-        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
-        authorization: Default::default(),
-    };
-    app.services
-        .identity
-        .users
-        .create(user.clone())
-        .await
-        .unwrap();
+async fn permission_claims_survive_token_round_trip() {
+    let (app, admin) = bootstrap();
+    let user = create_user_with_permissions(
+        &app,
+        &admin,
+        "permission_claims_user",
+        "password123",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+            TestPermissionPreset::UserManagement,
+        ],
+    )
+    .await
+    .expect("create user");
     let token = app.issue_access_token(&user).await.expect("issue token");
-    let decoded = app
-        .authenticate_token(&token)
-        .await
-        .expect("authenticate token");
-    assert!(decoded.entitlements.contains(&Entitlement::ViewCatalog));
-    assert!(decoded.entitlements.contains(&Entitlement::ManageTitle));
+    let decoded =
+        jsonwebtoken::dangerous::insecure_decode::<JwtClaims>(&token).expect("token should decode");
+    assert!(
+        decoded
+            .claims
+            .app_permissions
+            .contains(&"manageUsers".to_string())
+    );
+    assert!(
+        decoded
+            .claims
+            .app_permissions
+            .contains(&"managePermissions".to_string())
+    );
+    assert!(decoded.claims.library_permissions.iter().any(|grant| {
+        grant.permissions.contains(&"view".to_string())
+            && grant.permissions.contains(&"manageTitles".to_string())
+    }));
 }
 
 #[tokio::test]
@@ -19240,7 +20638,10 @@ async fn release_candidate_token_round_trips_for_matching_actor_title_and_scope(
         &admin,
         "release_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19281,7 +20682,10 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
         &admin,
         "release_episode_set_user",
         "password123",
-        vec![Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19318,7 +20722,7 @@ async fn release_candidate_token_rejects_tampering() {
         &admin,
         "release_user_2",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19359,7 +20763,7 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         &admin,
         "release_user_3",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let (_other_created, other_authenticated_user) = create_authenticated_user(
@@ -19367,7 +20771,7 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         &admin,
         "release_user_4",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19431,7 +20835,7 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
         &admin,
         "candidate_pw_rotate",
         "before-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19475,7 +20879,7 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         &admin,
         "candidate_permission_rotate",
         "same-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await;
     let selection = QueuedReleaseSelection {
@@ -19493,9 +20897,9 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         .await
         .expect("candidate token should issue");
 
-    let grants = test_library_grants_from_entitlements(&[
-        Entitlement::ViewCatalog,
-        Entitlement::ManageTitle,
+    let grants = test_library_grants_from_presets(&[
+        TestPermissionPreset::CatalogView,
+        TestPermissionPreset::TitleManagement,
     ]);
     app.set_user_library_permissions(&admin, &created.id, grants)
         .await
@@ -19516,13 +20920,183 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
 }
 
 #[tokio::test]
+async fn backup_download_token_round_trips() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "backup_download_user",
+        "password123",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+
+    let ticket = app
+        .issue_backup_download_token(&authenticated_user, "backup_20260515_abcd1234.tar.zst")
+        .await
+        .expect("backup download token should issue");
+
+    app.verify_backup_download_token(
+        &authenticated_user,
+        "backup_20260515_abcd1234.tar.zst",
+        &ticket.token,
+    )
+    .await
+    .expect("backup download token should verify");
+}
+
+#[tokio::test]
+async fn backup_download_token_rejects_tampering_and_filename_mismatch() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "backup_download_user_2",
+        "password123",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+
+    let ticket = app
+        .issue_backup_download_token(&authenticated_user, "backup_20260515_abcd1234.tar.zst")
+        .await
+        .expect("backup download token should issue");
+
+    assert!(
+        app.verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_different.tar.zst",
+            &ticket.token,
+        )
+        .await
+        .is_err(),
+        "filename mismatch should be rejected"
+    );
+
+    let tampered = format!("{}x", ticket.token);
+    assert!(
+        app.verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_abcd1234.tar.zst",
+            &tampered,
+        )
+        .await
+        .is_err(),
+        "tampered token should be rejected"
+    );
+}
+
+#[tokio::test]
+async fn backup_download_token_rejects_wrong_kind_and_expired_claims() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "backup_download_user_3",
+        "password123",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+
+    let signing_key = app
+        .backup_download_signing_key_for_actor(&authenticated_user)
+        .await
+        .expect("signing key should resolve");
+    let now = Utc::now();
+    let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
+    let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+
+    let wrong_kind = crate::types::BackupDownloadTokenClaims {
+        sub: authenticated_user.id.clone(),
+        exp: (now + chrono::Duration::minutes(5)).timestamp(),
+        iat: now.timestamp(),
+        iss: app.auth.issuer.clone(),
+        kind: "wrong_backup_kind".to_string(),
+        filename: "backup_20260515_abcd1234.tar.zst".to_string(),
+    };
+    let wrong_kind_token =
+        jsonwebtoken::encode(&header, &wrong_kind, &key).expect("wrong kind token should encode");
+    assert!(
+        app.verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_abcd1234.tar.zst",
+            &wrong_kind_token,
+        )
+        .await
+        .is_err(),
+        "wrong kind token should be rejected"
+    );
+
+    let expired = crate::types::BackupDownloadTokenClaims {
+        sub: authenticated_user.id.clone(),
+        exp: (now - chrono::Duration::minutes(5)).timestamp(),
+        iat: (now - chrono::Duration::minutes(10)).timestamp(),
+        iss: app.auth.issuer.clone(),
+        kind: "backup_download_v1".to_string(),
+        filename: "backup_20260515_abcd1234.tar.zst".to_string(),
+    };
+    let expired_token =
+        jsonwebtoken::encode(&header, &expired, &key).expect("expired token should encode");
+    assert!(
+        app.verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_abcd1234.tar.zst",
+            &expired_token,
+        )
+        .await
+        .is_err(),
+        "expired token should be rejected"
+    );
+}
+
+#[tokio::test]
+async fn backup_download_token_is_invalidated_by_permission_change() {
+    let (app, admin) = bootstrap();
+    let (created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "backup_download_permission_rotate",
+        "same-pass",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+
+    let ticket = app
+        .issue_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_permission_rotate.tar.zst",
+        )
+        .await
+        .expect("backup download token should issue");
+
+    let grants = test_library_grants_from_presets(&[
+        TestPermissionPreset::CatalogView,
+        TestPermissionPreset::TitleManagement,
+    ]);
+    app.set_user_library_permissions(&admin, &created.id, grants)
+        .await
+        .expect("update permissions");
+
+    let result = app
+        .verify_backup_download_token(
+            &authenticated_user,
+            "backup_20260515_permission_rotate.tar.zst",
+            &ticket.token,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "backup download token should be rejected after permission change"
+    );
+}
+
+#[tokio::test]
 async fn expired_token_returns_unauthorized() {
     let (app, _) = bootstrap();
     let user = User {
         id: "user-jwt-3".to_string(),
         username: "exp_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![],
         authorization: Default::default(),
     };
     app.services
@@ -19538,7 +21112,6 @@ async fn expired_token_returns_unauthorized() {
         iat: Utc::now().timestamp() - 200,
         iss: app.auth.issuer.clone(),
         username: user.username.clone(),
-        entitlements: vec![],
         app_permissions: vec![],
         library_permissions: vec![],
     };
@@ -19557,7 +21130,6 @@ async fn wrong_issuer_token_returns_unauthorized() {
         id: "user-jwt-4".to_string(),
         username: "iss_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog],
         authorization: Default::default(),
     };
     app.services
@@ -19572,16 +21144,11 @@ async fn wrong_issuer_token_returns_unauthorized() {
         iat: Utc::now().timestamp(),
         iss: "wrong-issuer".to_string(),
         username: user.username.clone(),
-        entitlements: vec!["view_catalog".to_string()],
         app_permissions: vec![],
         library_permissions: vec![],
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-    let signing_key = test_derive_jwt_key(
-        &app.auth.jwt_signing_salt,
-        TEST_PASSWORD_HASH,
-        &user.entitlements,
-    );
+    let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
     let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
     let bad_token = jsonwebtoken::encode(&header, &claims, &key).expect("encode");
     let result = app.authenticate_token(&bad_token).await;
@@ -19599,7 +21166,6 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
         id: "user-jwt-cache-1".to_string(),
         username: "cache_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog],
         authorization: Default::default(),
     };
     app.services
@@ -19624,12 +21190,12 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
 #[tokio::test]
 async fn password_change_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &admin,
         "pw_rotate",
         "before-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -19649,20 +21215,20 @@ async fn password_change_invalidates_existing_token_immediately() {
 #[tokio::test]
 async fn permission_change_invalidates_existing_token_and_relogin_works() {
     let (app, admin) = bootstrap();
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &admin,
         "permission_rotate",
         "same-pass",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
     let old_token = app.issue_access_token(&created).await.expect("issue token");
 
-    let grants = test_library_grants_from_entitlements(&[
-        Entitlement::ViewCatalog,
-        Entitlement::ManageTitle,
+    let grants = test_library_grants_from_presets(&[
+        TestPermissionPreset::CatalogView,
+        TestPermissionPreset::TitleManagement,
     ]);
     let updated = app
         .set_user_library_permissions(&admin, &created.id, grants)
@@ -19701,12 +21267,12 @@ async fn permission_change_invalidates_existing_token_and_relogin_works() {
 #[tokio::test]
 async fn deleting_user_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
-    let created = create_user_from_entitlements(
+    let created = create_user_with_permissions(
         &app,
         &admin,
         "gone_user",
         "password123",
-        vec![Entitlement::ViewCatalog],
+        vec![TestPermissionPreset::CatalogView],
     )
     .await
     .expect("create user");
@@ -19721,17 +21287,23 @@ async fn deleting_user_invalidates_existing_token_immediately() {
 }
 
 #[test]
-fn jwt_key_derivation_is_stable_across_entitlement_order() {
+fn jwt_key_derivation_is_stable_across_permission_order() {
     let (app, _) = bootstrap();
     let key_a = test_derive_jwt_key(
         &app.auth.jwt_signing_salt,
         TEST_PASSWORD_HASH,
-        &[Entitlement::ManageTitle, Entitlement::ViewCatalog],
+        &[
+            TestPermissionPreset::TitleManagement,
+            TestPermissionPreset::CatalogView,
+        ],
     );
     let key_b = test_derive_jwt_key(
         &app.auth.jwt_signing_salt,
         TEST_PASSWORD_HASH,
-        &[Entitlement::ViewCatalog, Entitlement::ManageTitle],
+        &[
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::TitleManagement,
+        ],
     );
 
     assert_eq!(key_a, key_b);
@@ -19744,7 +21316,6 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         id: "user-jwt-malformed".to_string(),
         username: "jwt_claims".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
-        entitlements: vec![Entitlement::ViewCatalog],
         authorization: Default::default(),
     };
     app.services
@@ -19763,16 +21334,11 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         iat: Utc::now().timestamp(),
         iss: app.auth.issuer.clone(),
         username: user.username.clone(),
-        entitlements: vec!["definitely_not_real".to_string()],
         app_permissions: vec!["manageSystemSettings".to_string()],
         library_permissions: vec![],
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-    let signing_key = test_derive_jwt_key(
-        &app.auth.jwt_signing_salt,
-        TEST_PASSWORD_HASH,
-        &user.entitlements,
-    );
+    let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
     let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
     let token = jsonwebtoken::encode(&header, &claims, &key).expect("encode");
 

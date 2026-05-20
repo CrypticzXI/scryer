@@ -92,6 +92,12 @@ docker compose up -d
 
 Open `http://localhost:8080` to access the web UI.
 
+Published container image:
+
+- `ghcr.io/scryer-media/scryer:latest` auto-selects the best embedded Linux payload for the host CPU while carrying both portable and optimized Linux payloads in one image
+- `ghcr.io/scryer-media/scryer:<minor>-latest` follows a stable release line, for example `15-latest` for the `0.15.x` series
+- `ghcr.io/scryer-media/scryer:pr-<number>-rc` and `ghcr.io/scryer-media/scryer:pr-<number>-<shortsha>` are PR candidate images and do not affect stable tags
+
 ## Manual Setup
 
 If you prefer to create the compose file yourself:

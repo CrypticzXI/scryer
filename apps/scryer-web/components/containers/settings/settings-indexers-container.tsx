@@ -21,6 +21,7 @@ import {
 import {
   createIndexerMutation,
   deleteIndexerMutation,
+  syncIndexerConfigMutation,
   testIndexerConnectionMutation,
   updateIndexerMutation,
 } from "@/lib/graphql/mutations";
@@ -175,6 +176,22 @@ type SettingsIndexersContainerProps = {
   providerCatalogVersion?: number;
 };
 
+type PendingIndexerEditorAction =
+  | { type: "create" }
+  | { type: "edit"; indexer: IndexerRecord }
+  | { type: "close" }
+  | null;
+
+function cloneIndexerDraft(
+  draft: SettingsIndexersSectionProps["indexerDraft"],
+): SettingsIndexersSectionProps["indexerDraft"] {
+  return {
+    ...draft,
+    storedSecretKeys: [...draft.storedSecretKeys],
+    configValues: { ...draft.configValues },
+  };
+}
+
 export function SettingsIndexersContainer({
   providerCatalogVersion = 0,
 }: SettingsIndexersContainerProps) {
@@ -193,14 +210,34 @@ export function SettingsIndexersContainer({
   const [providerTypes, setProviderTypes] = useState<ProviderTypeInfo[]>([]);
   const [indexerDraft, setIndexerDraft] = useState<
     SettingsIndexersSectionProps["indexerDraft"]
-  >(() => ({ ...INDEXER_INITIAL_DRAFT }));
+  >(() => cloneIndexerDraft(INDEXER_INITIAL_DRAFT));
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
+  const [pendingEditorAction, setPendingEditorAction] =
+    useState<PendingIndexerEditorAction>(null);
+  const [draftBaseline, setDraftBaseline] = useState<
+    SettingsIndexersSectionProps["indexerDraft"]
+  >(() => cloneIndexerDraft(INDEXER_INITIAL_DRAFT));
+  const [awaitingBaselineSync, setAwaitingBaselineSync] = useState(false);
   const didMountRef = useRef(false);
   const providerCatalogVersionRef = useRef(providerCatalogVersion);
 
   const resetIndexerDraft = useCallback(() => {
     setEditingIndexerId(null);
-    setIndexerDraft(() => ({ ...INDEXER_INITIAL_DRAFT }));
+    setIndexerDraft(() => cloneIndexerDraft(INDEXER_INITIAL_DRAFT));
   }, []);
+
+  useEffect(() => {
+    if (!awaitingBaselineSync) {
+      return;
+    }
+
+    setDraftBaseline(cloneIndexerDraft(indexerDraft));
+    setAwaitingBaselineSync(false);
+  }, [awaitingBaselineSync, indexerDraft]);
+
+  const isDraftDirty =
+    JSON.stringify(indexerDraft) !== JSON.stringify(draftBaseline);
 
   const refreshIndexers = useCallback(async () => {
     try {
@@ -317,6 +354,13 @@ export function SettingsIndexersContainer({
     void refreshIndexers();
   }, [refreshIndexers]);
 
+  const openCreateEditor = useCallback(() => {
+    resetIndexerDraft();
+    setEditorMode("create");
+    setIsEditorOpen(true);
+    setAwaitingBaselineSync(true);
+  }, [resetIndexerDraft]);
+
   const submitIndexer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalizedProviderType = indexerDraft.providerType.trim().toLowerCase();
@@ -385,6 +429,9 @@ export function SettingsIndexersContainer({
         setGlobalStatus(t("status.indexerCreated"));
       }
       resetIndexerDraft();
+      setIsEditorOpen(false);
+      setEditorMode("create");
+      setAwaitingBaselineSync(true);
       await refreshIndexers();
     } catch (error) {
       setGlobalStatus(
@@ -395,7 +442,11 @@ export function SettingsIndexersContainer({
     }
   };
 
-  const editIndexer = (indexer: IndexerRecord) => {
+  const editIndexer = useCallback((indexer: IndexerRecord) => {
+    if (indexer.isManaged) {
+      setGlobalStatus(t("settings.managedIndexerReadOnly"));
+      return;
+    }
     const selectedProvider =
       providerTypes.find(
         (providerType) =>
@@ -417,14 +468,82 @@ export function SettingsIndexersContainer({
       ),
     });
     setGlobalStatus(t("status.editingIndexer", { name: indexer.name }));
-  };
+  }, [providerTypes, setGlobalStatus, t]);
+
+  const openEditEditor = useCallback((indexer: IndexerRecord) => {
+    editIndexer(indexer);
+    setEditorMode("edit");
+    setIsEditorOpen(true);
+    setAwaitingBaselineSync(true);
+  }, [editIndexer]);
+
+  const requestCreateEditor = useCallback(() => {
+    if (!isEditorOpen || !isDraftDirty) {
+      openCreateEditor();
+      return;
+    }
+
+    setPendingEditorAction({ type: "create" });
+  }, [isDraftDirty, isEditorOpen, openCreateEditor]);
+
+  const requestEditIndexer = useCallback((indexer: IndexerRecord) => {
+    if (!isEditorOpen || !isDraftDirty) {
+      openEditEditor(indexer);
+      return;
+    }
+
+    setPendingEditorAction({ type: "edit", indexer });
+  }, [isDraftDirty, isEditorOpen, openEditEditor]);
+
+  const requestCloseEditor = useCallback(() => {
+    if (!isEditorOpen) {
+      return;
+    }
+
+    if (!isDraftDirty) {
+      setIsEditorOpen(false);
+      setEditorMode("create");
+      resetIndexerDraft();
+      setAwaitingBaselineSync(true);
+      return;
+    }
+
+    setPendingEditorAction({ type: "close" });
+  }, [isDraftDirty, isEditorOpen, resetIndexerDraft]);
+
+  const confirmPendingEditorAction = useCallback(() => {
+    if (!pendingEditorAction) {
+      return;
+    }
+
+    if (pendingEditorAction.type === "create") {
+      openCreateEditor();
+    } else if (pendingEditorAction.type === "edit") {
+      openEditEditor(pendingEditorAction.indexer);
+    } else {
+      setIsEditorOpen(false);
+      setEditorMode("create");
+      resetIndexerDraft();
+      setAwaitingBaselineSync(true);
+    }
+
+    setPendingEditorAction(null);
+  }, [openCreateEditor, openEditEditor, pendingEditorAction, resetIndexerDraft]);
 
   const deleteIndexer = async (indexer: IndexerRecord) => {
+    if (indexer.isManaged) {
+      setGlobalStatus(t("settings.managedIndexerReadOnly"));
+      return;
+    }
     setPendingDeleteIndexer(indexer);
   };
 
   const toggleIndexerEnabled = useCallback(
     async (indexer: IndexerRecord) => {
+      if (indexer.isManaged) {
+        setGlobalStatus(t("settings.managedIndexerReadOnly"));
+        return;
+      }
       const nextIsEnabled = !indexer.isEnabled;
       setMutatingIndexerId(indexer.id);
       try {
@@ -438,6 +557,32 @@ export function SettingsIndexersContainer({
           .toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.indexerUpdated"));
+        await refreshIndexers();
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToUpdate"),
+        );
+      } finally {
+        setMutatingIndexerId(null);
+      }
+    },
+    [client, refreshIndexers, setGlobalStatus, t],
+  );
+
+  const syncIndexer = useCallback(
+    async (indexer: IndexerRecord) => {
+      if (!indexer.supportsManagedChildrenSync || indexer.isManaged) {
+        return;
+      }
+      setMutatingIndexerId(indexer.id);
+      try {
+        const { error } = await client
+          .mutation(syncIndexerConfigMutation, {
+            id: indexer.id,
+          })
+          .toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.indexerSynced", { name: indexer.name }));
         await refreshIndexers();
       } catch (error) {
         setGlobalStatus(
@@ -467,6 +612,9 @@ export function SettingsIndexersContainer({
       await refreshIndexers();
       if (editingIndexerId === indexer.id) {
         resetIndexerDraft();
+        setIsEditorOpen(false);
+        setEditorMode("create");
+        setAwaitingBaselineSync(true);
       }
     } catch (error) {
       setGlobalStatus(
@@ -537,16 +685,36 @@ export function SettingsIndexersContainer({
         setIndexerDraft={setIndexerDraft}
         submitIndexer={submitIndexer}
         mutatingIndexerId={mutatingIndexerId}
-        resetIndexerDraft={resetIndexerDraft}
+        resetIndexerDraft={requestCloseEditor}
         settingsIndexerFilter={settingsIndexerFilter}
         setSettingsIndexerFilter={setSettingsIndexerFilter}
         settingsIndexers={settingsIndexers}
-        editIndexer={editIndexer}
+        editIndexer={requestEditIndexer}
         toggleIndexerEnabled={toggleIndexerEnabled}
         deleteIndexer={deleteIndexer}
+        syncIndexer={syncIndexer}
         providerTypes={providerTypes}
         testIndexerConnection={testIndexerConnection}
         isTestingConnection={isTestingConnection}
+        isEditorOpen={isEditorOpen}
+        editorMode={editorMode}
+        startCreateIndexer={requestCreateEditor}
+      />
+      <ConfirmDialog
+        open={pendingEditorAction !== null}
+        title={t("settings.indexerConfirmDiscardTitle")}
+        description={t("settings.indexerConfirmDiscardDescription")}
+        confirmLabel={
+          pendingEditorAction?.type === "create"
+            ? t("settings.indexerCreateNew")
+            : pendingEditorAction?.type === "edit"
+              ? t("label.edit")
+              : t("label.discard")
+        }
+        cancelLabel={t("label.cancel")}
+        isBusy={mutatingIndexerId !== null}
+        onConfirm={confirmPendingEditorAction}
+        onCancel={() => setPendingEditorAction(null)}
       />
       <ConfirmDialog
         open={pendingDeleteIndexer !== null}

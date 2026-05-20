@@ -388,6 +388,40 @@ const es: LocaleDictionary = {
     "Elimina las descargas fallidas del historial del cliente de descarga.",
   "settings.downloadClientEnabledInfo":
     "Cuando está deshabilitado, este cliente se omite durante el enrutamiento de descargas.",
+  "settings.downloadClientRemotePathMappings": "Mapeos de rutas remotas",
+  "settings.downloadClientRemotePathMappingsHelp":
+    "Asigna las rutas que el cliente de descarga informa dentro de su contenedor o host a rutas locales que Scryer puede leer. Introduce una regla por línea como REMOTE => LOCAL.",
+  "settings.downloadClientEnabledLabel": "Enable download client",
+  "settings.downloadClientFilesystemPathMapping":
+    "Filesystem Path Mapping (Advanced)",
+  "settings.downloadClientFilesystemPathMappingHelp":
+    "Remote path mappings are rarely needed. Use them only when Scryer and this download client see the same download folder at different filesystem paths.",
+  "settings.downloadClientRemotePathMappingsRemoteLabel": "Remote Path",
+  "settings.downloadClientRemotePathMappingsRemoteHelp":
+    "Path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsLocalLabel": "Local Path",
+  "settings.downloadClientRemotePathMappingsLocalHelp":
+    "Path Scryer should use on this machine.",
+  "settings.downloadClientRemotePathMappingsAdd": "Add Mapping",
+  "settings.downloadClientRemotePathMappingsEmptyState":
+    "No path mappings configured yet. Add one only if Scryer cannot read the path reported by the download client.",
+  "settings.downloadClientRemotePathMappingsExampleLabel": "Example",
+  "settings.downloadClientRemotePathMappingsRemoteRequired":
+    "Remote Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalRequired":
+    "Local Path is required when a mapping row is present.",
+  "settings.downloadClientRemotePathMappingsLocalAbsolute":
+    "Local Path must be an absolute path.",
+  "settings.downloadClientRemotePathMappingsRemoteDuplicate":
+    "Remote Path duplicates another mapping in this client.",
+  "settings.downloadClientSabnzbdAuthHelp":
+    "SABnzbd supports either an API key or username/password. For Decypharr, this is typically host :8282, URL base /sabnzbd, username = your Arr URL, password = your Arr token.",
+  "settings.downloadClientSabnzbdNzbdavHelp":
+    "For NzbDav, point SAB-compatible completed downloads at the mounted completed-symlinks path, make sure Scryer can read that mount locally, and add remote path mappings if NzbDav reports a different visible path.",
+  "settings.downloadClientQbittorrentDecypharrHelp":
+    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
+  "settings.downloadClientDecypharrFilesystemHelp":
+    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr or NzbDav output paths into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "Mi cliente de descarga",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "Ej. api",
@@ -988,23 +1022,17 @@ const es: LocaleDictionary = {
   "settings.pp.fireAndForget": "Dispara y olvida",
   "settings.pp.blockingHelp":
     "Se ejecuta en orden de prioridad. El siguiente script espera a que este termine.",
-  "settings.pp.fireAndForgetHelp":
-    "Se ejecuta en segundo plano sin bloquear la importación.",
   "settings.pp.executionMode": "Modo de ejecución",
   "settings.pp.timeout": "Tiempo de espera (segundos)",
   "settings.pp.priority": "Prioridad",
   "settings.pp.priorityHelp": "El número más bajo se ejecuta primero.",
   "settings.pp.facets": "Se aplica a",
   "settings.pp.debug": "Capturar la salida del script",
-  "settings.pp.debugHelp":
-    "Cuando está habilitado, stdout y stderr se guardan para cada ejecución. Útil para solucionar problemas.",
   "settings.pp.runHistory": "Historial de ejecución",
   "settings.pp.noRuns": "Aún no hay ejecuciones.",
   "settings.pp.outputNotCaptured":
     "Salida no capturada. Habilite el modo de depuración en este script para ver el resultado.",
   "settings.pp.envHeading": "Variables de entorno",
-  "settings.pp.envDescription":
-    "Los scripts reciben una carga útil JSON en la variable de entorno SCRYER_METADATA que contiene metadatos de título, episodio, lanzamiento y información multimedia. SCRYER_FILE_PATH contiene la ruta del archivo importado.",
   "settings.pp.created": "Guión creado.",
   "settings.pp.updated": "Guión actualizado.",
   "settings.pp.deleted": "Guión eliminado.",
@@ -1571,6 +1599,10 @@ const es: LocaleDictionary = {
   "settings.notificationProviderType": "Tipo de proveedor",
   "settings.notificationNoProviders":
     "No hay plugins de notificación instalados. Instala un plugin de notificación desde la página de Plugins.",
+  "settings.notificationJellyfinChannelHint":
+    "Path mappings should map Scryer title folders to the folder paths Jellyfin can see. Leave them empty when both services use the same paths.",
+  "settings.notificationJellyfinSubscriptionHint":
+    "Import Complete is the usual post-import Jellyfin scan trigger. Only Jellyfin events that can refresh the library are available here.",
   "settings.notificationEvent.grab": "Lanzamiento capturado",
   "settings.notificationEvent.download": "La descarga falló",
   "settings.notificationEvent.upgrade": "Actualización importada",

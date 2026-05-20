@@ -3,6 +3,7 @@ import {
   CircleAlert,
   Edit,
   Loader2,
+  Plus,
   PlugZap,
   Power,
   PowerOff,
@@ -60,6 +61,9 @@ type Props = {
   providerTypes: SubtitleProviderTypeInfo[];
   testProviderConnection: () => Promise<void> | void;
   isTestingConnection: boolean;
+  isEditorOpen: boolean;
+  editorMode: "create" | "edit";
+  startCreateProvider: () => void;
 };
 
 const SUBTITLE_FACETS = [
@@ -361,9 +365,13 @@ export function SettingsSubtitleProvidersSection({
   providerTypes,
   testProviderConnection,
   isTestingConnection,
+  isEditorOpen,
+  editorMode,
+  startCreateProvider,
 }: Props) {
   const t = useTranslate();
   const normalizedProviderType = providerDraft.providerType.trim().toLowerCase();
+  const isEditing = editorMode === "edit";
 
   const providerTypeOptions = React.useMemo(() => {
     const baseOptions = providerTypes.map((providerType) => ({
@@ -565,152 +573,182 @@ export function SettingsSubtitleProvidersSection({
         </div>
       </div>
 
-      <form className="space-y-4 rounded-lg border border-border/60 p-4" onSubmit={submitProvider}>
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle className="text-base">
-            {editingProviderId
-              ? t("settings.subtitleProviderEdit")
-              : t("settings.subtitleProviderCreate")}
-          </CardTitle>
-          {mutatingProviderId ? (
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-          ) : null}
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <label>
-            <Label className="mb-2 block">{t("settings.subtitleProviderType")}</Label>
-            <Select
-              value={normalizedProviderType}
-              onValueChange={handleProviderTypeChange}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder={t("form.providerTypePlaceholder")} />
-              </SelectTrigger>
-              <SelectContent>
-                {providerTypeOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
-
-          <label>
-            <Label className="mb-2 block">{t("label.name")}</Label>
-            <Input
-              value={providerDraft.name}
-              onChange={(event) =>
-                setProviderDraft((previous) => ({
-                  ...previous,
-                  name: event.target.value,
-                }))
-              }
-              placeholder={t("settings.subtitleProviderNamePlaceholder")}
-              required
-            />
-          </label>
-        </div>
-
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={providerDraft.isEnabled}
-            onChange={(event) =>
-              setProviderDraft((previous) => ({
-                ...previous,
-                isEnabled: event.target.checked,
-              }))
-            }
-            className="accent-primary"
-          />
-          <span className="text-sm">{t("label.enabled")}</span>
-        </label>
-
-        <div className="space-y-2">
-          <Label className="block">{t("settings.subtitleProviderFacets")}</Label>
-          <div className="flex flex-wrap gap-3">
-            {SUBTITLE_FACETS.map((facet) => (
-              <label
-                key={facet.value}
-                className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-sm"
-              >
-                <input
-                  type="checkbox"
-                  checked={providerDraft.enabledFacets.includes(facet.value)}
-                  onChange={(event) =>
-                    handleFacetToggle(facet.value, event.target.checked)
-                  }
-                  className="accent-primary"
-                />
-                <span>{t(facet.labelKey)}</span>
-              </label>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.subtitleProviderFacetsHelp")}
-          </p>
-        </div>
-
-        {selectedProviderFields.length > 0 ? (
-          <div className="grid gap-4 md:grid-cols-2">
-            {selectedProviderFields.map((field) => (
-              <DynamicSubtitleConfigField
-                key={`${normalizedProviderType}:${field.key}`}
-                field={field}
-                value={providerDraft.configValues[field.key] ?? ""}
-                onChange={handleConfigValueChange}
-                hasStoredSecretValue={providerDraft.storedSecretKeys.includes(field.key)}
-              />
-            ))}
-          </div>
-        ) : normalizedProviderType ? (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
-            <div className="flex items-start gap-2">
-              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              <p>{t("settings.subtitleProviderUnknownType")}</p>
-            </div>
-          </div>
-        ) : null}
-
-        <div className="flex flex-wrap gap-2">
-          <Button
-            type="submit"
-            disabled={
-              mutatingProviderId !== null ||
-              !providerDraft.name.trim() ||
-              !normalizedProviderType
-            }
+      {isEditorOpen ? (
+        <>
+          <form
+            className="space-y-4 rounded-lg border border-border/60 p-4"
+            onSubmit={submitProvider}
           >
-            {editingProviderId ? t("label.save") : t("label.create")}
-          </Button>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-base">
+                {isEditing
+                  ? t("settings.subtitleProviderEdit")
+                  : t("settings.subtitleProviderCreate")}
+              </CardTitle>
+              {mutatingProviderId ? (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              ) : null}
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <label>
+                <Label className="mb-2 block">{t("settings.subtitleProviderType")}</Label>
+                <Select
+                  value={normalizedProviderType}
+                  onValueChange={handleProviderTypeChange}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder={t("form.providerTypePlaceholder")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {providerTypeOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+
+              <label>
+                <Label className="mb-2 block">{t("label.name")}</Label>
+                <Input
+                  value={providerDraft.name}
+                  onChange={(event) =>
+                    setProviderDraft((previous) => ({
+                      ...previous,
+                      name: event.target.value,
+                    }))
+                  }
+                  placeholder={t("settings.subtitleProviderNamePlaceholder")}
+                  required
+                />
+              </label>
+            </div>
+
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={providerDraft.isEnabled}
+                onChange={(event) =>
+                  setProviderDraft((previous) => ({
+                    ...previous,
+                    isEnabled: event.target.checked,
+                  }))
+                }
+                className="accent-primary"
+              />
+              <span className="text-sm">{t("label.enabled")}</span>
+            </label>
+
+            <div className="space-y-2">
+              <Label className="block">{t("settings.subtitleProviderFacets")}</Label>
+              <div className="flex flex-wrap gap-3">
+                {SUBTITLE_FACETS.map((facet) => (
+                  <label
+                    key={facet.value}
+                    className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={providerDraft.enabledFacets.includes(facet.value)}
+                      onChange={(event) =>
+                        handleFacetToggle(facet.value, event.target.checked)
+                      }
+                      className="accent-primary"
+                    />
+                    <span>{t(facet.labelKey)}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.subtitleProviderFacetsHelp")}
+              </p>
+            </div>
+
+            {selectedProviderFields.length > 0 ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                {selectedProviderFields.map((field) => (
+                  <DynamicSubtitleConfigField
+                    key={`${normalizedProviderType}:${field.key}`}
+                    field={field}
+                    value={providerDraft.configValues[field.key] ?? ""}
+                    onChange={handleConfigValueChange}
+                    hasStoredSecretValue={providerDraft.storedSecretKeys.includes(
+                      field.key,
+                    )}
+                  />
+                ))}
+              </div>
+            ) : normalizedProviderType ? (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+                <div className="flex items-start gap-2">
+                  <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                  <p>{t("settings.subtitleProviderUnknownType")}</p>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="submit"
+                disabled={
+                  mutatingProviderId !== null ||
+                  !providerDraft.name.trim() ||
+                  !normalizedProviderType
+                }
+              >
+                {editingProviderId ? t("label.save") : t("label.create")}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void testProviderConnection()}
+                disabled={isTestingConnection || !normalizedProviderType}
+              >
+                {isTestingConnection ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : null}
+                {t("label.testConnection")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={resetProviderDraft}
+                disabled={mutatingProviderId !== null}
+              >
+                {t("label.cancel")}
+              </Button>
+            </div>
+          </form>
+          {isEditing ? (
+            <div className="flex justify-center">
+              <Button
+                type="button"
+                size="lg"
+                onClick={startCreateProvider}
+                disabled={mutatingProviderId !== null}
+                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
+              >
+                <Plus className="h-5 w-5" />
+                {t("settings.subtitleProviderCreateNew")}
+              </Button>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="flex justify-center">
           <Button
             type="button"
-            variant="secondary"
-            onClick={() => void testProviderConnection()}
-            disabled={
-              isTestingConnection ||
-              !normalizedProviderType
-            }
+            size="lg"
+            onClick={startCreateProvider}
+            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
           >
-            {isTestingConnection ? (
-              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-            ) : null}
-            {t("label.testConnection")}
+            <Plus className="h-5 w-5" />
+            {t("settings.subtitleProviderCreateNew")}
           </Button>
-          {editingProviderId ? (
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={resetProviderDraft}
-              disabled={mutatingProviderId !== null}
-            >
-              {t("label.cancel")}
-            </Button>
-          ) : null}
         </div>
-      </form>
+      )}
     </div>
   );
 }

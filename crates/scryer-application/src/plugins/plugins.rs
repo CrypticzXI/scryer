@@ -731,6 +731,10 @@ fn builtin_lookup_key(plugin_type: &str, provider_type: &str) -> String {
     format!("{family}::{}", normalize_provider_key(provider_type))
 }
 
+fn is_reserved_first_party_provider(provider_type: &str) -> bool {
+    provider_type.trim().eq_ignore_ascii_case("prowlarr")
+}
+
 fn source_kind_label(source_kind: PluginSourceKind) -> String {
     match source_kind {
         PluginSourceKind::Bundled => "bundled".to_string(),
@@ -1440,7 +1444,11 @@ impl AppUseCase {
             .await?;
         let disabled_builtins: Vec<String> = all_installations
             .iter()
-            .filter(|inst| inst.is_builtin && !inst.is_enabled)
+            .filter(|inst| {
+                inst.is_builtin
+                    && !inst.is_enabled
+                    && !is_reserved_first_party_provider(&inst.provider_type)
+            })
             .map(|inst| inst.provider_type.clone())
             .collect();
 
@@ -1549,6 +1557,10 @@ impl AppUseCase {
                     rate_limit_seconds: provider.rate_limit_seconds_for_provider(&pt),
                     rate_limit_burst: None,
                     disabled_until: None,
+                    managed_parent_config_id: None,
+                    managed_child_key: None,
+                    managed_metadata_json: None,
+                    caps_snapshot_json: None,
                     last_health_status: None,
                     last_error_at: None,
                     config_json: Some(
@@ -1759,6 +1771,9 @@ impl AppUseCase {
 
                 let plugin_type =
                     merged_plugin_type(&child.plugin_type, inst.map(|i| i.plugin_type.as_str()));
+                if is_reserved_first_party_provider(&child.provider_type) {
+                    continue;
+                }
                 let builtin = inst
                     .map(|installation| installation.is_builtin)
                     .unwrap_or_else(|| {
@@ -1871,6 +1886,9 @@ impl AppUseCase {
                 .iter()
                 .copied()
                 .find(|installation| installation.plugin_id == resolved.child.id);
+            if is_reserved_first_party_provider(&resolved.child.provider_type) {
+                continue;
+            }
             let plugin_type = merged_plugin_type(
                 &resolved.child.plugin_type,
                 inst.map(|i| i.plugin_type.as_str()),
@@ -1929,6 +1947,9 @@ impl AppUseCase {
         }
 
         for inst in effective_installations {
+            if is_reserved_first_party_provider(&inst.provider_type) {
+                continue;
+            }
             if !result.iter().any(|r| r.id == inst.plugin_id) {
                 let builtin = builtin_by_key
                     .contains_key(&builtin_lookup_key(&inst.plugin_type, &inst.provider_type))
@@ -2448,6 +2469,13 @@ impl AppUseCase {
         resolved: CatalogPluginResolution,
         reporter: &PluginInstallProgressReporter,
     ) -> AppResult<PluginInstallation> {
+        if is_reserved_first_party_provider(&resolved.child.provider_type) {
+            return Err(AppError::Validation(format!(
+                "provider type '{}' is reserved for first-party code",
+                resolved.child.provider_type
+            )));
+        }
+
         let (compressed_wasm_bytes, wasm_bytes, manifest, artifact_url) =
             self.fetch_catalog_release_wasm(&resolved, reporter).await?;
         let release = DownloadedPluginReleaseContract {
@@ -2745,6 +2773,12 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         let (resolved, child_json) = self.resolve_manual_plugin_repo(github_repo_url).await?;
+        if is_reserved_first_party_provider(&resolved.child.provider_type) {
+            return Err(AppError::Validation(format!(
+                "provider type '{}' is reserved for first-party code",
+                resolved.child.provider_type
+            )));
+        }
         let _operation_guard = self
             .runtime
             .plugins

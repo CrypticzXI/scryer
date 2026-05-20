@@ -18,8 +18,9 @@ pub fn build_release_dedup_key(parsed: &ParsedReleaseMetadata) -> String {
     let quality = parsed.quality.as_deref().unwrap_or("").to_ascii_lowercase();
     let codec = parsed
         .video_codec
-        .as_deref()
-        .unwrap_or("")
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default()
         .to_ascii_lowercase();
 
     let episode_key = if let Some(ref ep) = parsed.episode {

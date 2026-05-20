@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use scryer_domain::DownloadQueueCommandAction;
 use scryer_domain::ExternalId;
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::SubmissionScope;
 use crate::library_scan::LibraryScanSummary;
 use crate::quality_profile::QualityProfileDecision;
-use crate::release_parser::ParsedReleaseMetadata;
+use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryRootDraft {
@@ -114,7 +114,6 @@ pub struct PendingTitleHydration {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorMovieEntry {
-    pub root_path: String,
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub monitored: bool,
@@ -136,28 +135,44 @@ pub struct ExternalImportMonitorEpisodeEntry {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorSeriesEntry {
-    pub root_path: String,
     pub tvdb_id: Option<String>,
     pub monitored: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seasons: Vec<ExternalImportMonitorSeasonEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub episodes: Vec<ExternalImportMonitorEpisodeEntry>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ExternalImportMonitorSnapshotPayload {
-    Movie {
-        entries: Vec<ExternalImportMonitorMovieEntry>,
-    },
-    Series {
-        entries: Vec<ExternalImportMonitorSeriesEntry>,
-    },
+#[serde(rename_all = "snake_case")]
+pub enum ExternalImportMonitorSnapshotEntryKind {
+    Movie,
+    Series,
+}
+
+impl ExternalImportMonitorSnapshotEntryKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Movie => "movie",
+            Self::Series => "series",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "movie" => Some(Self::Movie),
+            "series" => Some(Self::Series),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExternalImportMonitorSnapshot {
+pub struct ExternalImportMonitorSnapshotChunk {
     pub facet: scryer_domain::MediaFacet,
-    pub payload: ExternalImportMonitorSnapshotPayload,
+    pub entry_kind: ExternalImportMonitorSnapshotEntryKind,
+    pub chunk_index: i32,
+    pub payload_ndjson: String,
     pub created_at: String,
 }
 
@@ -284,7 +299,7 @@ pub struct TitleMediaFile {
     pub scan_status: String,
     pub created_at: String,
     // Media analysis fields (populated after media scan; None until scan_status='scanned')
-    pub video_codec: Option<String>,
+    pub video_codec: Option<VideoCodec>,
     pub video_width: Option<i32>,
     pub video_height: Option<i32>,
     pub video_bitrate_kbps: Option<i32>,
@@ -310,7 +325,7 @@ pub struct TitleMediaFile {
     pub release_group: Option<String>,
     pub source_type: Option<String>,
     pub resolution: Option<String>,
-    pub video_codec_parsed: Option<String>,
+    pub video_codec_parsed: Option<VideoCodec>,
     pub audio_codec_parsed: Option<String>,
     pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,
@@ -1029,8 +1044,6 @@ pub(crate) struct JwtClaims {
     pub iss: String,
     #[serde(default)]
     pub username: String,
-    #[serde(default)]
-    pub entitlements: Vec<String>,
     #[serde(default, rename = "appPermissions")]
     pub app_permissions: Vec<String>,
     #[serde(default, rename = "libraryPermissions")]
@@ -1057,6 +1070,16 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub source_hint: String,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BackupDownloadTokenClaims {
+    pub sub: String,
+    pub exp: i64,
+    pub iat: i64,
+    pub iss: String,
+    pub kind: String,
+    pub filename: String,
 }
 
 /// Lightweight summary of the collection that should represent a title in list
@@ -1117,6 +1140,8 @@ pub struct DiskSpaceInfo {
 pub struct SystemHealth {
     pub service_ready: bool,
     pub db_path: String,
+    pub datastore_engine: String,
+    pub datastore_migration_key: Option<String>,
     pub total_titles: usize,
     pub monitored_titles: usize,
     pub total_users: usize,
@@ -1153,11 +1178,65 @@ pub struct IndexerQueryStats {
     pub grab_max: Option<u32>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupStatus {
+    Creating,
+    Ready,
+    Invalid,
+    Failed,
+}
+
+impl BackupStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Creating => "creating",
+            Self::Ready => "ready",
+            Self::Invalid => "invalid",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupTrigger {
+    #[default]
+    Manual,
+    Auto,
+}
+
+impl BackupTrigger {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackupInfo {
     pub filename: String,
     pub size_bytes: u64,
     pub created_at: String,
+    pub format_version: String,
+    #[serde(default)]
+    pub source_scryer_version: String,
+    pub source_engine: String,
+    pub source_migration_key: Option<String>,
+    pub encrypted: bool,
+    pub row_counts: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub trigger: BackupTrigger,
+    pub status: BackupStatus,
+    pub error_message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackupDownloadTicket {
+    pub token: String,
+    pub expires_at: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

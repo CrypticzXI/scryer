@@ -1,6 +1,6 @@
 use super::*;
 use async_trait::async_trait;
-use scryer_domain::{ImportType, PersistedPluginWasmPayload};
+use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
 use std::collections::BTreeMap;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -9,6 +9,13 @@ pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub trait TitleRepository: Send + Sync {
     async fn list(&self, facet: Option<MediaFacet>, query: Option<String>)
     -> AppResult<Vec<Title>>;
+    async fn list_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        self.list(facet, query).await
+    }
     async fn list_for_libraries(
         &self,
         facet: Option<MediaFacet>,
@@ -25,6 +32,22 @@ pub trait TitleRepository: Send + Sync {
             .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
             .collect())
     }
+    async fn list_for_libraries_without_external_ids(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+        query: Option<String>,
+    ) -> AppResult<Vec<Title>> {
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let titles = self.list_without_external_ids(facet, query).await?;
+        Ok(titles
+            .into_iter()
+            .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
+            .collect())
+    }
     async fn list_by_external_ids(&self, source: &str, values: &[String]) -> AppResult<Vec<Title>>;
     async fn list_for_matching(
         &self,
@@ -32,6 +55,9 @@ pub trait TitleRepository: Send + Sync {
         query: Option<String>,
     ) -> AppResult<Vec<Title>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<Title>>;
+    async fn get_by_id_without_external_ids(&self, id: &str) -> AppResult<Option<Title>> {
+        self.get_by_id(id).await
+    }
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,
@@ -229,6 +255,11 @@ pub trait ShowRepository: Send + Sync {
         collection_id: &str,
         monitored: bool,
     ) -> AppResult<()>;
+    async fn set_collections_monitored(
+        &self,
+        collection_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()>;
     async fn delete_collection(&self, collection_id: &str) -> AppResult<()>;
     async fn delete_collections_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn list_episodes_for_collection(&self, collection_id: &str) -> AppResult<Vec<Episode>>;
@@ -238,6 +269,11 @@ pub trait ShowRepository: Send + Sync {
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>>;
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode>;
     async fn update_episode(&self, episode_id: &str, update: EpisodeUpdate) -> AppResult<Episode>;
+    async fn set_episodes_monitored(
+        &self,
+        episode_ids: &[String],
+        monitored: bool,
+    ) -> AppResult<()>;
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()>;
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn find_episode_by_title_and_numbers(
@@ -274,11 +310,6 @@ pub trait UserRepository: Send + Sync {
     async fn create(&self, user: User) -> AppResult<User>;
     async fn list_all(&self) -> AppResult<Vec<User>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<User>>;
-    async fn update_entitlements(
-        &self,
-        id: &str,
-        entitlements: Vec<Entitlement>,
-    ) -> AppResult<User>;
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
@@ -320,6 +351,14 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn touch_last_error(&self, provider_type: &str) -> AppResult<()>;
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait IndexerCapsSnapshotRefresher: Send + Sync {
+    async fn fetch_for_config(
+        &self,
+        config: &IndexerConfig,
+    ) -> AppResult<Option<IndexerCapsSnapshot>>;
 }
 
 #[async_trait]
@@ -383,8 +422,23 @@ pub trait SettingsRepository: Send + Sync {
 
 #[async_trait]
 pub trait SystemInfoProvider: Send + Sync {
+    async fn datastore_info(&self) -> AppResult<DatastoreInfo>;
     async fn current_migration_version(&self) -> AppResult<Option<String>>;
-    async fn vacuum_into(&self, dest_path: &str) -> AppResult<()>;
+    async fn current_encryption_key_base64(&self) -> AppResult<Option<String>>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatastoreInfo {
+    pub engine: String,
+    pub current_migration_key: Option<String>,
+}
+
+#[async_trait]
+pub trait LogicalBackupExporter: Send + Sync {
+    async fn export_backup_bundle(
+        &self,
+        request: crate::BackupBundleExportRequest,
+    ) -> AppResult<crate::BackupExportOutcome>;
 }
 
 #[async_trait]
@@ -412,6 +466,9 @@ pub trait HousekeepingRepository: Send + Sync {
     async fn delete_release_attempts_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32>;
     async fn list_all_media_file_paths(&self) -> AppResult<Vec<(String, String)>>;
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32>;
+    async fn run_database_maintenance(&self) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 pub trait IndexerStatsTracker: Send + Sync {
@@ -530,16 +587,14 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 pub trait ImportArtifactRepository: Send + Sync {
     async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()>;
 
-    async fn list_by_source_ref(
+    async fn list_by_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
     ) -> AppResult<Vec<ImportArtifact>>;
 
-    async fn count_by_result(
+    async fn count_by_result_for_source_identity(
         &self,
-        source_system: &str,
-        source_ref: &str,
+        identity: &DownloadSourceIdentity,
         result: &str,
     ) -> AppResult<u64>;
 }
@@ -634,26 +689,12 @@ pub trait StagedNzbStore: Send + Sync {
 pub trait ImportRepository: Send + Sync {
     async fn queue_import_request(
         &self,
-        source_system: String,
-        source_ref: String,
+        source_identity: DownloadSourceIdentity,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String>;
 
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>>;
-
-    async fn get_import_by_source_ref(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-    ) -> AppResult<Option<ImportRecord>>;
-
-    async fn get_import_by_source_ref_and_type(
-        &self,
-        source_system: &str,
-        source_ref: &str,
-        import_type: ImportType,
-    ) -> AppResult<Option<ImportRecord>>;
 
     async fn update_import_status(
         &self,
@@ -677,29 +718,35 @@ pub trait ImportRepository: Send + Sync {
         import_type: ImportType,
     ) -> AppResult<Vec<ImportRecord>>;
 
-    async fn list_imports_for_sources(
+    async fn list_imports_for_identities(
         &self,
-        sources: &[(String, String)],
+        identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>>;
 
-    async fn is_already_imported(&self, source_system: &str, source_ref: &str) -> AppResult<bool>;
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool>;
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>>;
 }
 
 #[async_trait]
 pub trait ExternalImportMonitorSnapshotRepository: Send + Sync {
-    async fn upsert_external_import_monitor_snapshot(
+    async fn append_external_import_monitor_snapshot_chunk(
         &self,
-        snapshot: &crate::ExternalImportMonitorSnapshot,
+        chunk: &crate::ExternalImportMonitorSnapshotChunk,
     ) -> AppResult<()>;
 
-    async fn get_external_import_monitor_snapshot(
+    async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
-        facet: &MediaFacet,
-    ) -> AppResult<Option<crate::ExternalImportMonitorSnapshot>>;
+        facet: MediaFacet,
+        entry_kind: crate::ExternalImportMonitorSnapshotEntryKind,
+        after_chunk_index: Option<i32>,
+        limit: i32,
+    ) -> AppResult<Vec<crate::ExternalImportMonitorSnapshotChunk>>;
 
-    async fn delete_external_import_monitor_snapshot(&self, facet: &MediaFacet) -> AppResult<()>;
+    async fn delete_external_import_monitor_snapshot_chunks(
+        &self,
+        facet: MediaFacet,
+    ) -> AppResult<()>;
 }
 
 #[async_trait]
@@ -1223,6 +1270,12 @@ pub trait IndexerClient: Send + Sync {
 
 pub trait IndexerPluginProvider: Send + Sync {
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>>;
+    fn management_client_for_provider(
+        &self,
+        _config: &IndexerConfig,
+    ) -> Option<Arc<dyn IndexerManagementClient>> {
+        None
+    }
     fn available_provider_types(&self) -> Vec<String>;
     fn builtin_provider_types(&self) -> Vec<String> {
         vec![]
@@ -1286,6 +1339,12 @@ pub trait IndexerPluginProvider: Send + Sync {
     fn rate_limit_seconds_for_provider(&self, _provider_type: &str) -> Option<i64> {
         None
     }
+    fn management_capabilities_for_provider(
+        &self,
+        _provider_type: &str,
+    ) -> scryer_domain::IndexerManagementCapabilities {
+        scryer_domain::IndexerManagementCapabilities::default()
+    }
     fn capabilities_for_provider(
         &self,
         _provider_type: &str,
@@ -1307,6 +1366,17 @@ pub trait IndexerPluginProvider: Send + Sync {
             ..Default::default()
         }
     }
+}
+
+#[async_trait]
+pub trait IndexerManagementClient: Send + Sync {
+    async fn validate_connection(&self) -> AppResult<IndexerValidationResult>;
+    async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
+        Err(AppError::Repository(
+            "managed child sync is not supported for this provider".to_string(),
+        ))
+    }
+    fn name(&self) -> &str;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1636,6 +1706,15 @@ pub trait NotificationPluginProvider: Send + Sync {
     fn plugin_sdk_constraint_for_provider(&self, _provider_type: &str) -> Option<String> {
         None
     }
+    fn supported_events_for_provider(
+        &self,
+        _provider_type: &str,
+    ) -> Vec<scryer_domain::NotificationEventType> {
+        vec![]
+    }
+    fn supports_test_for_provider(&self, _provider_type: &str) -> bool {
+        false
+    }
     fn config_fields_for_provider(&self, provider_type: &str)
     -> Vec<scryer_domain::ConfigFieldDef>;
     fn plugin_name_for_provider(&self, provider_type: &str) -> Option<String>;
@@ -1912,6 +1991,13 @@ pub trait DownloadClient: Send + Sync {
         Err(AppError::Repository(
             "client status is not supported for this download client".to_string(),
         ))
+    }
+
+    async fn get_client_status_for_client_id(
+        &self,
+        _client_id: &str,
+    ) -> AppResult<DownloadClientStatus> {
+        self.get_client_status().await
     }
 
     async fn test_connection(&self) -> AppResult<String> {

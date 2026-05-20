@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
 use scryer_domain::{ExternalId, MediaFacet, NewTitle};
@@ -12,6 +12,7 @@ use crate::library::library::{
     PlannedTitleScanFile, PlannedTitleScanRecord, file_source_signature_from_metadata,
     file_source_snapshot_from_library_file, finalize_title_scan_file,
 };
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 const MAX_PENDING_IMPORTS_PAGE_SIZE: i64 = 200;
 
@@ -39,10 +40,10 @@ fn build_pending_import_search_attempt(
 }
 
 fn pending_import_movie_entry_path(item: &LibraryScanUnmatchedItem) -> PathBuf {
-    let item_path = PathBuf::from(item.item_path.trim());
-    let scan_root = Path::new(item.scan_root.trim());
+    let item_path = stored_path_to_path_buf(item.item_path.trim());
+    let scan_root = stored_path_to_path_buf(item.scan_root.trim());
 
-    if let Ok(relative) = item_path.strip_prefix(scan_root)
+    if let Ok(relative) = item_path.strip_prefix(&scan_root)
         && let Some(first_component) = relative.components().next()
     {
         return scan_root.join(first_component.as_os_str());
@@ -55,7 +56,7 @@ fn pending_import_folder_path(item: &LibraryScanUnmatchedItem) -> Option<String>
     match item.facet {
         MediaFacet::Movie => {
             let entry_path = pending_import_movie_entry_path(item);
-            let entry_path = entry_path.to_string_lossy().trim().to_string();
+            let entry_path = path_to_stored_string(&entry_path).trim().to_string();
             if entry_path.is_empty() || entry_path == item.item_path {
                 None
             } else {
@@ -103,7 +104,7 @@ async fn build_pending_import_library_file(
         ));
     }
 
-    let path = PathBuf::from(item_path);
+    let path = stored_path_to_path_buf(item_path);
     let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
         AppError::Validation(format!("pending import file is unavailable: {error}"))
     })?;
@@ -124,7 +125,7 @@ async fn build_pending_import_library_file(
     };
 
     Ok(LibraryFile {
-        path: path.to_string_lossy().trim().to_string(),
+        path: path_to_stored_string(&path).trim().to_string(),
         display_name,
         nfo_path: None,
         size_bytes: Some(metadata.len() as i64),
@@ -172,12 +173,13 @@ async fn list_pending_import_title_episodes(
     Ok(episodes)
 }
 
-fn pending_import_parse_raw_name(item: &LibraryScanUnmatchedItem) -> &str {
-    Path::new(item.item_path.trim())
+fn pending_import_parse_raw_name(item: &LibraryScanUnmatchedItem) -> String {
+    stored_path_to_path_buf(item.item_path.trim())
         .file_stem()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or(item.display_name.as_str())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| item.display_name.clone())
 }
 
 fn pending_import_suggested_episode_ids(
@@ -261,6 +263,38 @@ fn pending_import_suggested_episode_ids(
 
 fn library_scan_summary_has_pending_import_success(summary: &LibraryScanSummary) -> bool {
     summary.imported > 0 || summary.matched > 0
+}
+
+async fn pending_import_already_bound_to_title(
+    app: &AppUseCase,
+    title_id: &str,
+    item: &LibraryScanUnmatchedItem,
+    scan_path: &str,
+) -> AppResult<bool> {
+    let normalized_scan_path = scan_path.trim();
+    if normalized_scan_path.is_empty() {
+        return Ok(false);
+    }
+
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(title_id)
+        .await?;
+
+    Ok(match item.facet {
+        MediaFacet::Movie => {
+            let folder_prefix = format!("{normalized_scan_path}/");
+            media_files.iter().any(|media_file| {
+                media_file.file_path == normalized_scan_path
+                    || media_file.file_path.starts_with(folder_prefix.as_str())
+            })
+        }
+        MediaFacet::Series | MediaFacet::Anime => media_files
+            .iter()
+            .any(|media_file| media_file.file_path == normalized_scan_path),
+    })
 }
 
 struct PendingImportResolutionGuard {
@@ -642,9 +676,11 @@ impl AppUseCase {
 
         let scan_path = match item.facet {
             MediaFacet::Movie => pending_import_movie_entry_path(&item),
-            MediaFacet::Series | MediaFacet::Anime => PathBuf::from(item.item_path.trim()),
+            MediaFacet::Series | MediaFacet::Anime => {
+                stored_path_to_path_buf(item.item_path.trim())
+            }
         };
-        let scan_path_string = scan_path.to_string_lossy().trim().to_string();
+        let scan_path_string = path_to_stored_string(&scan_path).trim().to_string();
         if scan_path_string.is_empty() {
             return Err(AppError::Validation(
                 "pending import path is missing or invalid".into(),
@@ -683,6 +719,17 @@ impl AppUseCase {
                     Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => {
                         summary
                     }
+                    Ok(summary)
+                        if pending_import_already_bound_to_title(
+                            self,
+                            &title.id,
+                            &item,
+                            &scan_path_string,
+                        )
+                        .await? =>
+                    {
+                        summary
+                    }
                     Ok(_) => {
                         self.rollback_created_pending_import_title(actor, &title, created)
                             .await;
@@ -707,6 +754,17 @@ impl AppUseCase {
 
                 match self.scan_title_library(actor, &title.id).await {
                     Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => {
+                        summary
+                    }
+                    Ok(summary)
+                        if pending_import_already_bound_to_title(
+                            self,
+                            &title.id,
+                            &item,
+                            &scan_path_string,
+                        )
+                        .await? =>
+                    {
                         summary
                     }
                     Ok(_) => {
@@ -750,6 +808,17 @@ impl AppUseCase {
 
             match self.scan_title_library(actor, &title.id).await {
                 Ok(summary) if library_scan_summary_has_pending_import_success(&summary) => summary,
+                Ok(summary)
+                    if pending_import_already_bound_to_title(
+                        self,
+                        &title.id,
+                        &item,
+                        &scan_path_string,
+                    )
+                    .await? =>
+                {
+                    summary
+                }
                 Ok(_) => {
                     self.rollback_pending_import_title_binding(
                         actor,
@@ -836,12 +905,11 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
 
         let available_episodes = list_pending_import_title_episodes(self, &title.id).await?;
+        let parse_raw_name = pending_import_parse_raw_name(&item);
         let parse_context =
             crate::build_release_parse_context_for_title(&title, &available_episodes, None);
-        let parsed = crate::parse_release_metadata_for_target(
-            pending_import_parse_raw_name(&item),
-            &parse_context,
-        );
+        let parsed =
+            crate::parse_release_metadata_for_target(parse_raw_name.as_str(), &parse_context);
         let suggested_episode_ids =
             pending_import_suggested_episode_ids(&parsed, &available_episodes);
         let file = build_pending_import_library_file(&item).await?;
@@ -955,12 +1023,11 @@ impl AppUseCase {
         };
 
         let file = build_pending_import_library_file(&item).await?;
+        let parse_raw_name = pending_import_parse_raw_name(&item);
         let parse_context =
             crate::build_release_parse_context_for_title(&title, &available_episodes, None);
-        let parsed = crate::parse_release_metadata_for_target(
-            pending_import_parse_raw_name(&item),
-            &parse_context,
-        );
+        let parsed =
+            crate::parse_release_metadata_for_target(parse_raw_name.as_str(), &parse_context);
         let snapshot = file_source_snapshot_from_library_file(&file).ok_or_else(|| {
             AppError::Validation("pending import file metadata is incomplete".into())
         })?;
@@ -968,7 +1035,7 @@ impl AppUseCase {
             .services
             .library
             .media_analyzer
-            .analyze_file(PathBuf::from(&file.path))
+            .analyze_file(stored_path_to_path_buf(&file.path))
             .await
         {
             Ok(outcome) => Some(outcome),

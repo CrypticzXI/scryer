@@ -121,6 +121,10 @@ impl DownloadSourceIdentity {
     pub fn has_client_id(&self) -> bool {
         self.client_id.is_some()
     }
+
+    pub fn client_id_or_empty(&self) -> &str {
+        self.client_id.as_deref().unwrap_or("")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +144,7 @@ pub struct SuccessfulGrabCommit {
 #[derive(Clone, Debug)]
 pub struct ImportArtifact {
     pub id: String,
+    pub source_client_id: Option<String>,
     pub source_system: String,
     pub source_ref: String,
     pub import_id: Option<String>,
@@ -154,6 +159,16 @@ pub struct ImportArtifact {
     pub reason_code: Option<String>,
     pub imported_media_file_id: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+impl ImportArtifact {
+    pub fn source_identity(&self) -> DownloadSourceIdentity {
+        DownloadSourceIdentity::new(
+            self.source_client_id.as_deref(),
+            &self.source_system,
+            &self.source_ref,
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,6 +196,10 @@ pub struct IndexerConfigUpdate {
     pub is_enabled: Option<bool>,
     pub enable_interactive_search: Option<bool>,
     pub enable_auto_search: Option<bool>,
+    pub managed_parent_config_id: Option<Option<String>>,
+    pub managed_child_key: Option<Option<String>>,
+    pub managed_metadata_json: Option<Option<String>>,
+    pub caps_snapshot_json: Option<Option<String>>,
     pub config_json: Option<String>,
 }
 
@@ -194,6 +213,10 @@ impl IndexerConfigUpdate {
             || self.is_enabled.is_some()
             || self.enable_interactive_search.is_some()
             || self.enable_auto_search.is_some()
+            || self.managed_parent_config_id.is_some()
+            || self.managed_child_key.is_some()
+            || self.managed_metadata_json.is_some()
+            || self.caps_snapshot_json.is_some()
             || self.config_json.is_some()
     }
 }
@@ -249,6 +272,46 @@ pub struct SubtitleProviderValidationResult {
     pub status: String,
     pub message: Option<String>,
     pub retry_after_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerValidationResult {
+    pub status: String,
+    pub message: Option<String>,
+    pub retry_after_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedIndexerRoutingScope {
+    pub scope_id: String,
+    pub categories: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedIndexerChildPlan {
+    pub child_key: String,
+    pub name: String,
+    pub provider_type: String,
+    pub config_json: String,
+    pub is_enabled: bool,
+    pub enable_interactive_search: bool,
+    pub enable_auto_search: bool,
+    pub managed_metadata_json: Option<String>,
+    pub caps_snapshot_json: Option<String>,
+    pub routing_scopes: Vec<ManagedIndexerRoutingScope>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerSyncPlan {
+    pub children: Vec<ManagedIndexerChildPlan>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerConfigSyncResult {
+    pub parent_config_id: String,
+    pub created_ids: Vec<String>,
+    pub updated_ids: Vec<String>,
+    pub deleted_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -463,7 +526,7 @@ pub struct SubtitleStreamDetail {
 /// Mirrors `scryer_mediainfo::MediaAnalysis` without depending on that crate.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MediaFileAnalysis {
-    pub video_codec: Option<String>,
+    pub video_codec: Option<crate::release_parser::VideoCodec>,
     pub video_width: Option<i32>,
     pub video_height: Option<i32>,
     pub video_bitrate_kbps: Option<i32>,
@@ -505,7 +568,7 @@ pub struct InsertMediaFileInput {
     pub release_group: Option<String>,
     pub source_type: Option<String>,
     pub resolution: Option<String>,
-    pub video_codec_parsed: Option<String>,
+    pub video_codec_parsed: Option<crate::release_parser::VideoCodec>,
     pub audio_codec_parsed: Option<String>,
     pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,

@@ -5,6 +5,7 @@ use scryer_domain::{Collection, ExternalId, MediaFacet, NewTitle, Title};
 
 use crate::library_discovery::derive_movie_probe_path;
 use crate::library_scan::MetadataSearchItem;
+use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 fn normalize_title_key(name: &str) -> String {
     crate::title_matching::canonical_lookup_key(name)
@@ -108,10 +109,11 @@ pub(crate) fn update_movie_probe_path_index(
     file_path: &str,
     index: usize,
 ) {
-    if let Some(parent) = Path::new(file_path).parent()
+    let file_path_buf = stored_path_to_path_buf(file_path);
+    if let Some(parent) = file_path_buf.parent()
         && parent != root
     {
-        existing_titles_by_probe_path.insert(parent.to_string_lossy().to_string(), index);
+        existing_titles_by_probe_path.insert(path_to_stored_string(parent), index);
     } else {
         existing_titles_by_probe_path.insert(file_path.to_string(), index);
     }
@@ -190,7 +192,7 @@ pub(crate) fn build_movie_probe_path_indexes(
             .cloned()
             .unwrap_or_default();
         if let Some(probe_path) = derive_movie_probe_path(root, title, &collections) {
-            existing_titles_by_probe_path.insert(probe_path.to_string_lossy().to_string(), index);
+            existing_titles_by_probe_path.insert(path_to_stored_string(&probe_path), index);
         }
     }
 

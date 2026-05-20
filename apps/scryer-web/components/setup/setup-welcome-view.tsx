@@ -1,15 +1,23 @@
-import { Rocket, ArrowRightLeft } from "lucide-react";
+import { Rocket, ArrowRightLeft, Upload } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 
 interface SetupWelcomeViewProps {
   t: (key: string) => string;
   onFreshSetup: () => void;
   onImportSetup: () => void;
+  onRestoreSetup: () => void;
   onSkip: () => void;
   skipping: boolean;
 }
 
-export function SetupWelcomeView({ t, onFreshSetup, onImportSetup, onSkip, skipping }: SetupWelcomeViewProps) {
+export function SetupWelcomeView({
+  t,
+  onFreshSetup,
+  onImportSetup,
+  onRestoreSetup,
+  onSkip,
+  skipping,
+}: SetupWelcomeViewProps) {
   return (
     <div className="flex flex-col items-center gap-8">
       <div className="text-center">
@@ -21,7 +29,7 @@ export function SetupWelcomeView({ t, onFreshSetup, onImportSetup, onSkip, skipp
         </h1>
         <p className="text-muted-foreground">{t("setup.welcomeDescription")}</p>
       </div>
-      <div className="grid w-full max-w-2xl gap-4 md:grid-cols-2">
+      <div className="grid w-full max-w-5xl gap-4 xl:grid-cols-3">
         <Card
           className="cursor-pointer transition-colors hover:border-primary"
           onClick={onFreshSetup}
@@ -46,6 +54,20 @@ export function SetupWelcomeView({ t, onFreshSetup, onImportSetup, onSkip, skipp
               <p className="font-semibold">{t("setup.importSetup")}</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {t("setup.importSetupDescription")}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card
+          className="cursor-pointer transition-colors hover:border-primary"
+          onClick={onRestoreSetup}
+        >
+          <CardContent className="flex flex-col items-center gap-3 p-6 text-center">
+            <Upload className="h-8 w-8 text-violet-500" />
+            <div>
+              <p className="font-semibold">{t("setup.restoreSetup")}</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {t("setup.restoreSetupDescription")}
               </p>
             </div>
           </CardContent>

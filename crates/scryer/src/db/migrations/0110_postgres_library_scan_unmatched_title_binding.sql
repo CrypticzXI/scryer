@@ -1,0 +1,3 @@
+-- SQLite no-op.
+-- PostgreSQL library-scan unmatched title binding is handled by the engine-specific
+-- companion migration under postgres/migrations/.

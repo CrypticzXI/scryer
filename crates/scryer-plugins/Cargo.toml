@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 scryer-application = { path = "../scryer-application" }
 scryer-domain = { path = "../scryer-domain" }
+scryer-outbound-http = { path = "../scryer-outbound-http" }
 scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
 scryer-rules = { path = "../scryer-rules" }
 extism = { workspace = true }
@@ -15,11 +16,11 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2"] }
 # Enable brotli decompression for extism's ureq HTTP client (gzip is already default)
 ureq = { version = "3", default-features = false, features = ["gzip", "brotli"] }
 base64 = "0.22"
-rustls = "0.23"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
 rustls-native-certs = "0.8"
 url = "2"
 zstd = "0.13"

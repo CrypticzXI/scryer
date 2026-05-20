@@ -1,29 +1,31 @@
-FROM alpine:latest
+FROM alpine:3.22
 
 ARG TARGETARCH
 
-RUN apk add --no-cache su-exec tzdata
+RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-COPY ${TARGETARCH}/scryer /usr/local/bin/scryer
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY ${TARGETARCH}/scryer-* /opt/scryer/
+
+RUN chmod +x /opt/scryer/scryer-* \
+    && mkdir -p /config /data
+
+USER 0:0
 
 EXPOSE 8080
-
-# /config holds app state: database, WASM cache, logs.
-# /data is conventionally where users mount their media library.
-RUN mkdir -p /config /data
 VOLUME /config
 
 ENV PUID=1000
 ENV PGID=1000
+ENV TZ=Etc/UTC
+ENV UMASK=022
 ENV SCRYER_BIND=0.0.0.0:8080
 ENV SCRYER_DB_PATH=/config/scryer.db
 ENV EXTISM_CACHE_CONFIG=
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 # Graceful shutdown: let in-flight requests and background tasks finish
 STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/opt/scryer/scryer-launcher"]

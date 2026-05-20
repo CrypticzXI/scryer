@@ -6,12 +6,13 @@ use scryer_outbound_http::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::LazyLock;
 
 use super::language::{
     from_opensubtitles_language, normalize_subtitle_language_code, same_subtitle_language,
     to_opensubtitles_language,
 };
-use super::scoring::{SubtitleScoreKind, compute_verified_score};
+use super::scoring::{MatchBits, MatchFlag, SubtitleScoreKind, compute_verified_score_bits};
 use crate::{AppError, AppResult, ParsedReleaseMetadata, parse_release_metadata};
 
 /// Query parameters for searching subtitles.
@@ -271,13 +272,41 @@ const EQUIVALENT_RELEASE_GROUPS: &[&[&str]] = &[
     &["AVS", "SVA"],
 ];
 const FEATURE_LOOKUP_TITLE_VARIANTS: &[(&str, &[&str])] = &[
-    ("superman and lois", &["Superman & Lois"]),
-    ("law and order", &["Law & Order"]),
-    (
-        "marvels agents of shield",
-        &["Marvel's Agents of S.H.I.E.L.D."],
-    ),
+    ("silver and sage", &["Silver & Sage"]),
+    ("law and accord", &["Law & Accord"]),
+    ("signal agents unit", &["Signal Agents Unit"]),
 ];
+static NORMALIZED_EQUIVALENT_RELEASE_GROUPS: LazyLock<Vec<HashSet<String>>> = LazyLock::new(|| {
+    EQUIVALENT_RELEASE_GROUPS
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .map(|member| normalize_release_group(member))
+                .collect()
+        })
+        .collect()
+});
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PreparedQueryTitles {
+    normalized: HashSet<String>,
+}
+
+impl PreparedQueryTitles {
+    pub(crate) fn from_candidates(candidates: &[String]) -> Self {
+        let normalized = candidates
+            .iter()
+            .map(|candidate| normalize_title_for_match(candidate.trim()))
+            .filter(|candidate| !candidate.is_empty())
+            .collect();
+        Self { normalized }
+    }
+
+    pub(crate) fn contains_normalized(&self, normalized_title: &str) -> bool {
+        self.normalized.contains(normalized_title)
+    }
+}
 
 impl OpenSubtitlesProvider {
     pub fn new(api_key: String) -> Self {
@@ -525,6 +554,7 @@ impl SubtitleProvider for OpenSubtitlesProvider {
             .collect();
 
         let title_candidates = collect_title_candidates(query);
+        let prepared_titles = PreparedQueryTitles::from_candidates(&title_candidates);
         let feature_id = if query.imdb_id.is_none() && query.series_imdb_id.is_none() {
             self.search_feature_id(&title_candidates, query.year)
                 .await?
@@ -648,34 +678,34 @@ impl SubtitleProvider for OpenSubtitlesProvider {
             }
 
             let parsed_release = attrs.release.as_deref().map(parse_release_metadata);
-            let mut matches = HashSet::new();
+            let mut matches = MatchBits::default();
             if attrs.moviehash_match {
-                matches.insert("hash".to_string());
+                matches.insert(MatchFlag::Hash);
             }
             if movie_identifier_match {
-                matches.insert("imdb_id".to_string());
+                matches.insert(MatchFlag::ImdbId);
             }
             if series_identifier_match {
-                matches.insert("series_imdb_id".to_string());
+                matches.insert(MatchFlag::SeriesImdbId);
             }
 
             if let Some(details) = &attrs.feature_details {
                 if query.year.is_some() && details.year == query.year {
-                    matches.insert("year".to_string());
+                    matches.insert(MatchFlag::Year);
                 }
                 if query.season.is_some() && details.season_number == query.season {
-                    matches.insert("season".to_string());
+                    matches.insert(MatchFlag::Season);
                 }
                 if query.episode.is_some() && details.episode_number == query.episode {
-                    matches.insert("episode".to_string());
+                    matches.insert(MatchFlag::Episode);
                 }
-                if title_matches_query(details.movie_name.as_deref(), query) {
+                if title_matches_query(details.movie_name.as_deref(), &prepared_titles) {
                     match query.media_kind {
                         SubtitleMediaKind::Movie => {
-                            matches.insert("title".to_string());
+                            matches.insert(MatchFlag::Title);
                         }
                         SubtitleMediaKind::Episode => {
-                            matches.insert("series".to_string());
+                            matches.insert(MatchFlag::Series);
                         }
                     }
                 }
@@ -685,15 +715,15 @@ impl SubtitleProvider for OpenSubtitlesProvider {
                 if let Some(year) = parsed_release.year
                     && query.year == Some(year)
                 {
-                    matches.insert("year".to_string());
+                    matches.insert(MatchFlag::Year);
                 }
-                if release_metadata_title_matches(parsed_release, query) {
+                if release_metadata_title_matches(parsed_release, &prepared_titles) {
                     match query.media_kind {
                         SubtitleMediaKind::Movie => {
-                            matches.insert("title".to_string());
+                            matches.insert(MatchFlag::Title);
                         }
                         SubtitleMediaKind::Episode => {
-                            matches.insert("series".to_string());
+                            matches.insert(MatchFlag::Series);
                         }
                     }
                 }
@@ -701,32 +731,35 @@ impl SubtitleProvider for OpenSubtitlesProvider {
                     query.release_group.as_deref(),
                     parsed_release.release_group.as_deref(),
                 ) {
-                    matches.insert("release_group".to_string());
+                    matches.insert(MatchFlag::ReleaseGroup);
                 }
                 if source_matches(query.source.as_deref(), parsed_release.source.as_deref()) {
-                    matches.insert("source".to_string());
+                    matches.insert(MatchFlag::Source);
                 }
                 if resolution_matches(
                     query.resolution.as_deref(),
                     parsed_release.quality.as_deref(),
                 ) {
-                    matches.insert("resolution".to_string());
+                    matches.insert(MatchFlag::Resolution);
                 }
                 if video_codec_matches(
                     query.video_codec.as_deref(),
-                    parsed_release.video_codec.as_deref(),
+                    parsed_release
+                        .video_codec
+                        .as_ref()
+                        .map(crate::release_parser::VideoCodec::as_str),
                 ) {
-                    matches.insert("video_codec".to_string());
+                    matches.insert(MatchFlag::VideoCodec);
                 }
                 if audio_codec_matches(query.audio_codec.as_deref(), parsed_release) {
-                    matches.insert("audio_codec".to_string());
+                    matches.insert(MatchFlag::AudioCodec);
                 }
             }
 
             if let Some(preferred_hi) = query.hearing_impaired
                 && preferred_hi == hearing_impaired
             {
-                matches.insert("hearing_impaired".to_string());
+                matches.insert(MatchFlag::HearingImpaired);
             }
 
             let (weights, score_kind) = match query.media_kind {
@@ -740,7 +773,7 @@ impl SubtitleProvider for OpenSubtitlesProvider {
                 ),
             };
             let score =
-                compute_verified_score(&weights, score_kind, &matches, query.season == Some(0));
+                compute_verified_score_bits(&weights, score_kind, matches, query.season == Some(0));
 
             results.push(SubtitleMatch {
                 provider: "opensubtitles".to_string(),
@@ -829,7 +862,7 @@ impl SubtitleProvider for OpenSubtitlesProvider {
     }
 }
 
-fn collect_title_candidates(query: &SubtitleQuery) -> Vec<String> {
+pub(crate) fn collect_title_candidates(query: &SubtitleQuery) -> Vec<String> {
     let mut candidates =
         Vec::with_capacity(query.title_candidates.len() + query.title_aliases.len() + 1);
     let mut seen = HashSet::new();
@@ -979,17 +1012,18 @@ fn normalized_title_match_variants(title: &str) -> HashSet<String> {
         .collect()
 }
 
-fn title_matches_query(candidate: Option<&str>, query: &SubtitleQuery) -> bool {
+pub(crate) fn title_matches_query(candidate: Option<&str>, query: &PreparedQueryTitles) -> bool {
     let Some(candidate) = candidate else {
         return false;
     };
     let candidate = normalize_title_for_match(candidate);
-    collect_title_candidates(query)
-        .into_iter()
-        .any(|title| normalize_title_for_match(&title) == candidate)
+    query.contains_normalized(&candidate)
 }
 
-fn release_metadata_title_matches(parsed: &ParsedReleaseMetadata, query: &SubtitleQuery) -> bool {
+pub(crate) fn release_metadata_title_matches(
+    parsed: &ParsedReleaseMetadata,
+    query: &PreparedQueryTitles,
+) -> bool {
     let mut release_titles = if parsed.normalized_title_variants.is_empty() {
         vec![parsed.normalized_title.clone()]
     } else {
@@ -999,12 +1033,9 @@ fn release_metadata_title_matches(parsed: &ParsedReleaseMetadata, query: &Subtit
         release_titles.push(parsed.normalized_title.clone());
     }
 
-    let candidate_titles = collect_title_candidates(query);
     release_titles.into_iter().any(|release_title| {
         let normalized_release = normalize_title_for_match(&release_title);
-        candidate_titles
-            .iter()
-            .any(|candidate| normalize_title_for_match(candidate) == normalized_release)
+        query.contains_normalized(&normalized_release)
     })
 }
 
@@ -1020,7 +1051,7 @@ fn normalize_release_group(value: &str) -> String {
     normalize_compare_token(value)
 }
 
-fn release_group_matches(left: Option<&str>, right: Option<&str>) -> bool {
+pub(crate) fn release_group_matches(left: Option<&str>, right: Option<&str>) -> bool {
     let (Some(left), Some(right)) = (left, right) else {
         return false;
     };
@@ -1034,13 +1065,9 @@ fn release_group_matches(left: Option<&str>, right: Option<&str>) -> bool {
         return true;
     }
 
-    EQUIVALENT_RELEASE_GROUPS.iter().any(|group| {
-        let members: HashSet<String> = group
-            .iter()
-            .map(|member| normalize_release_group(member))
-            .collect();
-        members.contains(&left) && members.contains(&right)
-    })
+    NORMALIZED_EQUIVALENT_RELEASE_GROUPS
+        .iter()
+        .any(|group| group.contains(&left) && group.contains(&right))
 }
 
 fn source_matches(left: Option<&str>, right: Option<&str>) -> bool {
@@ -1438,7 +1465,7 @@ mod tests {
             },
         ];
 
-        matches.sort_by(|a, b| b.score.cmp(&a.score));
+        matches.sort_by_key(|entry| std::cmp::Reverse(entry.score));
         assert_eq!(matches[0].provider_file_id, "2");
     }
 
@@ -1709,7 +1736,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/features"))
-            .and(query_param("query", "superman & lois"))
+            .and(query_param("query", "silver & sage"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": []
             })))
@@ -1717,11 +1744,11 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/v1/features"))
-            .and(query_param("query", "superman and lois"))
+            .and(query_param("query", "silver and sage"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [{
                     "id": "880",
-                    "attributes": { "title": "Superman & Lois", "year": 2021 }
+                    "attributes": { "title": "Silver & Sage", "year": 2021 }
                 }]
             })))
             .mount(&server)
@@ -1748,7 +1775,7 @@ mod tests {
                 file_hash: None,
                 imdb_id: None,
                 series_imdb_id: None,
-                title: "Superman & Lois".into(),
+                title: "Silver & Sage".into(),
                 title_aliases: vec![],
                 title_candidates: vec![],
                 year: Some(2021),
@@ -1978,5 +2005,52 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].hearing_impaired);
         assert!(results[0].forced);
+    }
+
+    #[test]
+    fn release_group_equivalence_uses_pre_normalized_family_members() {
+        assert!(release_group_matches(Some("framestor"), Some("w4nk3r")));
+        assert!(release_group_matches(Some("LOL"), Some("dimension")));
+        assert!(!release_group_matches(Some("framestor"), Some("dimension")));
+    }
+
+    #[test]
+    fn prepared_query_titles_match_normalized_aliases() {
+        let query = SubtitleQuery {
+            media_kind: SubtitleMediaKind::Episode,
+            facet: Some("anime".into()),
+            file_hash: None,
+            imdb_id: None,
+            series_imdb_id: None,
+            title: "Starfall: Iron Eclipse".into(),
+            title_aliases: vec!["Starfall Iron Eclipse".into()],
+            title_candidates: vec!["Starfall - Iron Eclipse".into()],
+            year: Some(2022),
+            season: Some(1),
+            episode: Some(14),
+            absolute_episode: Some(14),
+            external_ids: Default::default(),
+            languages: vec!["eng".into()],
+            release_group: Some("Studio Nova".into()),
+            source: Some("BD".into()),
+            video_codec: Some("HEVC".into()),
+            audio_codec: Some("AAC".into()),
+            resolution: Some("1080p".into()),
+            hearing_impaired: Some(false),
+            include_ai_translated: false,
+            include_machine_translated: false,
+        };
+
+        let candidates = collect_title_candidates(&query);
+        let prepared = PreparedQueryTitles::from_candidates(&candidates);
+
+        assert!(title_matches_query(
+            Some("Starfall Iron Eclipse"),
+            &prepared
+        ));
+        assert!(title_matches_query(
+            Some("STARFALL.IRon_Eclipse"),
+            &prepared
+        ));
     }
 }

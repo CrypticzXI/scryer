@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
-    from_download_client_config, from_housekeeping_report, from_indexer_config_with_fields,
-    from_rss_sync_report, from_subtitle_provider_config,
+    from_download_client_config, from_housekeeping_report, from_indexer_config_sync_result,
+    from_indexer_config_with_fields, from_rss_sync_report, from_subtitle_provider_config,
 };
 use crate::types::*;
 
@@ -28,6 +28,68 @@ fn optional_datetime_input(
             .map(|value| Some(Some(value.with_timezone(&Utc))))
             .map_err(|error| Error::new(format!("invalid {field_name}: {error}"))),
     }
+}
+
+async fn enrich_download_client_config_json(
+    client_type: &str,
+    config_json: String,
+) -> GqlResult<String> {
+    if !client_type.eq_ignore_ascii_case("sabnzbd") {
+        return Ok(config_json);
+    }
+
+    let mut parsed: Value = if config_json.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&config_json)
+            .map_err(|error| Error::new(format!("invalid client config_json: {error}")))?
+    };
+    let Some(base_url) = scryer_infrastructure::resolve_base_url_from_config_json(&config_json)
+    else {
+        return Ok(config_json);
+    };
+
+    let api_key = parsed
+        .get("api_key")
+        .or_else(|| parsed.get("apiKey"))
+        .or_else(|| parsed.get("apikey"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let username = parsed
+        .get("username")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let password = parsed
+        .get("password")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    if api_key.is_none() && (username.is_none() || password.is_none()) {
+        return Ok(config_json);
+    }
+
+    let supports_gzip_nzb_upload = scryer_infrastructure::SabnzbdDownloadClient::with_auth(
+        base_url, api_key, username, password,
+    )
+    .detect_gzip_nzb_upload_support()
+    .await
+    .map_err(to_gql_error)?;
+
+    if let Some(config_object) = parsed.as_object_mut() {
+        config_object.insert(
+            scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY.to_string(),
+            Value::Bool(supports_gzip_nzb_upload),
+        );
+    }
+
+    serde_json::to_string(&parsed)
+        .map_err(|error| Error::new(format!("invalid client config_json: {error}")))
 }
 
 #[derive(Default)]
@@ -85,6 +147,10 @@ impl ConfigMutations {
                     is_enabled: input.is_enabled,
                     enable_interactive_search: input.enable_interactive_search,
                     enable_auto_search: input.enable_auto_search,
+                    managed_parent_config_id: None,
+                    managed_child_key: None,
+                    managed_metadata_json: None,
+                    caps_snapshot_json: None,
                     config_json: input.config_json,
                 },
             )
@@ -116,13 +182,15 @@ impl ConfigMutations {
     ) -> GqlResult<DownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let config_json =
+            enrich_download_client_config_json(&input.client_type, input.config_json).await?;
         let config = app
             .create_download_client_config(
                 &actor,
                 NewDownloadClientConfig {
                     name: input.name,
                     client_type: input.client_type,
-                    config_json: input.config_json,
+                    config_json,
                     client_priority: 0,
                     is_enabled: input.is_enabled.unwrap_or(true),
                 },
@@ -146,6 +214,35 @@ impl ConfigMutations {
     ) -> GqlResult<DownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let existing = app
+            .get_download_client_config(&actor, &input.id)
+            .await
+            .map_err(to_gql_error)?
+            .ok_or_else(|| Error::new(format!("download client not found: {}", input.id)))?;
+        let effective_client_type = input
+            .client_type
+            .as_deref()
+            .unwrap_or(existing.client_type.as_str())
+            .to_string();
+        let effective_config_json = match input.config_json {
+            Some(config_json) => {
+                Some(enrich_download_client_config_json(&effective_client_type, config_json).await?)
+            }
+            None if input
+                .client_type
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("sabnzbd")) =>
+            {
+                Some(
+                    enrich_download_client_config_json(
+                        &effective_client_type,
+                        existing.config_json.clone(),
+                    )
+                    .await?,
+                )
+            }
+            None => None,
+        };
         let config = app
             .update_download_client_config(
                 &actor,
@@ -153,7 +250,7 @@ impl ConfigMutations {
                     id: input.id,
                     name: input.name,
                     client_type: input.client_type,
-                    config_json: input.config_json,
+                    config_json: effective_config_json,
                     is_enabled: input.is_enabled,
                 },
             )
@@ -247,13 +344,30 @@ impl ConfigMutations {
                     .or_else(|| config.get("apikey"))
                     .and_then(Value::as_str)
                     .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| Error::new("sabnzbd requires an API key"))?;
+                    .filter(|value| !value.is_empty());
+                let username = config
+                    .get("username")
+                    .and_then(Value::as_str)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                let password = config
+                    .get("password")
+                    .and_then(Value::as_str)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
 
-                scryer_infrastructure::SabnzbdDownloadClient::new(base_url, api_key)
-                    .test_connection()
-                    .await
-                    .map_err(to_gql_error)?;
+                if api_key.is_none() && (username.is_none() || password.is_none()) {
+                    return Err(Error::new(
+                        "sabnzbd requires an API key or username/password",
+                    ));
+                }
+
+                scryer_infrastructure::SabnzbdDownloadClient::with_auth(
+                    base_url, api_key, username, password,
+                )
+                .test_connection()
+                .await
+                .map_err(to_gql_error)?;
             }
             "weaver" => {
                 let api_key = config
@@ -395,6 +509,20 @@ impl ConfigMutations {
         Ok(true)
     }
 
+    async fn sync_indexer_config(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> GqlResult<IndexerConfigSyncPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .sync_indexer_config(&actor, &id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_indexer_config_sync_result(result))
+    }
+
     async fn run_housekeeping(&self, ctx: &Context<'_>) -> GqlResult<HousekeepingReportPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -422,4 +550,108 @@ fn validate_test_flight_url(raw: &str) -> GqlResult<()> {
         return Err(Error::new("URL must not include embedded credentials"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn enrich_download_client_config_json_persists_false_gzip_capability() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "status": false,
+                "error": "'\\u001F', hexadecimal value 0x1F, is an invalid character. Line 1, position 1."
+            })))
+            .mount(&server)
+            .await;
+
+        let config_json = enrich_download_client_config_json(
+            "sabnzbd",
+            json!({
+                "host": "127.0.0.1",
+                "port": server.address().port().to_string(),
+                "use_ssl": false,
+                "api_key": "test-api-key"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("capability enrichment should succeed");
+
+        let parsed: Value = serde_json::from_str(&config_json).expect("parse enriched config");
+        assert_eq!(
+            parsed.get(scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY),
+            Some(&Value::Bool(false))
+        );
+    }
+
+    #[tokio::test]
+    async fn enrich_download_client_config_json_persists_false_gzip_capability_for_sab_style_json_error()
+     {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": false,
+                "error": "Unexpected character 0x1F while parsing XML document."
+            })))
+            .mount(&server)
+            .await;
+
+        let config_json = enrich_download_client_config_json(
+            "sabnzbd",
+            json!({
+                "host": "127.0.0.1",
+                "port": server.address().port().to_string(),
+                "use_ssl": false,
+                "api_key": "test-api-key"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("capability enrichment should succeed");
+
+        let parsed: Value = serde_json::from_str(&config_json).expect("parse enriched config");
+        assert_eq!(
+            parsed.get(scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY),
+            Some(&Value::Bool(false))
+        );
+    }
+
+    #[tokio::test]
+    async fn enrich_download_client_config_json_persists_true_gzip_capability() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "status": false,
+                "error": "Probe payload is not a valid NZB"
+            })))
+            .mount(&server)
+            .await;
+
+        let config_json = enrich_download_client_config_json(
+            "sabnzbd",
+            json!({
+                "host": "127.0.0.1",
+                "port": server.address().port().to_string(),
+                "use_ssl": false,
+                "api_key": "test-api-key"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("capability enrichment should succeed");
+
+        let parsed: Value = serde_json::from_str(&config_json).expect("parse enriched config");
+        assert_eq!(
+            parsed.get(scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY),
+            Some(&Value::Bool(true))
+        );
+    }
 }

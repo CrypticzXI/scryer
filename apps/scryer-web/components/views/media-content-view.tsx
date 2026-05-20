@@ -10,6 +10,7 @@ import type { ContentSettingsSection, OverviewTitleTarget, ViewId } from "@/comp
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   DownloadClientRecord,
+  DownloadClientRoutingEntry,
   IndexerCategoryRoutingSettings,
   IndexerRecord,
   LibraryScanSummary,
@@ -194,6 +195,8 @@ export function MediaContentView({
     setTitleFilter: (value: string) => void;
     refreshTitles: (query?: string) => Promise<void> | void;
     titleLoading: boolean;
+    catalogBootstrapLoading: boolean;
+    catalogInitialLoadComplete: boolean;
     monitoredTitles: TitleRecord[];
     titleQuickFilters: TitleQuickFilters;
     toggleTitleQuickMonitoringFilter: (
@@ -240,10 +243,16 @@ export function MediaContentView({
     librariesLoading: boolean;
     rootValidationLibraries: LibraryRecord[];
     rootValidationLibrariesLoading: boolean;
+    invalidRootLibraryIds: string[];
     selectedLibraryIds: string[];
     allLibrariesValue: string;
     setSelectedLibraryIds: (value: string[]) => void;
+    libraryDownloadClients: DownloadClientRecord[];
+    libraryDownloadClientsLoading: boolean;
     loadLibrarySettings: (libraryId: string) => Promise<LibrarySettingsRecord | null>;
+    loadFacetDownloadClientRouting: (
+      scopeId: Facet,
+    ) => Promise<DownloadClientRoutingEntry[]>;
     createLibrary: (input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
     updateLibrary: (libraryId: string, input: { name: string; roots: import("@/lib/types/titles").RootFolderOption[]; settings?: LibrarySettingsDraft }) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
     deleteLibrary: (libraryId: string) => Promise<boolean | void> | boolean | void;
@@ -325,6 +334,8 @@ export function MediaContentView({
     setTitleFilter,
     refreshTitles,
     titleLoading,
+    catalogBootstrapLoading,
+    catalogInitialLoadComplete,
     monitoredTitles,
     titleQuickFilters,
     toggleTitleQuickMonitoringFilter,
@@ -356,8 +367,11 @@ export function MediaContentView({
     libraryScanSummary,
     libraries,
     librariesLoading,
+    libraryDownloadClients,
+    libraryDownloadClientsLoading,
     rootValidationLibraries,
     rootValidationLibrariesLoading,
+    invalidRootLibraryIds,
     selectedLibraryIds,
     allLibrariesValue,
     setSelectedLibraryIds,
@@ -401,19 +415,39 @@ export function MediaContentView({
         ? t("search.facetSeries")
         : t("search.facetAnime");
   const effectiveViewMode: ContentViewMode = isMobile ? "poster" : viewMode;
-  const hasConfiguredRootFolders = mediaSettingsLoading || librariesLoading
+  const explicitlySelectedLibraryIds = selectedLibraryIds.filter(
+    (libraryId) => libraryId !== allLibrariesValue,
+  );
+  const selectedLibraryIdSet =
+    explicitlySelectedLibraryIds.length > 0
+      ? new Set(explicitlySelectedLibraryIds)
+      : null;
+  const relevantLibraries = selectedLibraryIdSet
+    ? libraries.filter((library) => selectedLibraryIdSet.has(library.id))
+    : libraries;
+  const hasConfiguredRootFolders =
+    !catalogInitialLoadComplete || librariesLoading
     ? null
-    : libraries.some((library) =>
+    : relevantLibraries.some((library) =>
         library.roots.some((folder) => folder.path.trim().length > 0),
       );
+  const hasInvalidConfiguredRootFolders =
+    catalogInitialLoadComplete &&
+    !librariesLoading &&
+    relevantLibraries.some((library) => invalidRootLibraryIds.includes(library.id));
   const showInitialScanAction =
     canManageConfig &&
+    catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
-    hasConfiguredRootFolders === true;
+    hasConfiguredRootFolders === true &&
+    !hasInvalidConfiguredRootFolders;
   const showConfigureRootFoldersAction =
     canManageConfig &&
+    catalogInitialLoadComplete &&
     monitoredTitles.length === 0 &&
-    hasConfiguredRootFolders === false;
+    (hasConfiguredRootFolders === false || hasInvalidConfiguredRootFolders);
+  const configureRootFoldersReason =
+    hasInvalidConfiguredRootFolders ? "invalid" : "missing";
   const configureRootFoldersHref =
     view === "movies" || view === "series" || view === "anime"
       ? buildViewPath(view, undefined, "library")
@@ -669,7 +703,10 @@ export function MediaContentView({
             scanNotice={libraryScanNotice}
             scanSummary={libraryScanSummary}
             qualityProfiles={qualityProfiles}
+            downloadClients={libraryDownloadClients}
+            downloadClientsLoading={libraryDownloadClientsLoading}
             loadLibrarySettings={state.loadLibrarySettings}
+            loadFacetDownloadClientRouting={state.loadFacetDownloadClientRouting}
             onCreateLibrary={state.createLibrary}
             onUpdateLibrary={state.updateLibrary}
             onDeleteLibrary={state.deleteLibrary}
@@ -850,6 +887,7 @@ export function MediaContentView({
                   return (
                     <PosterGrid
                       titles={deferredMonitoredTitles}
+                      catalogInitialLoadComplete={catalogInitialLoadComplete}
                       isMovieView={isMovieView}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
@@ -863,6 +901,7 @@ export function MediaContentView({
                       showConfigureRootsAction={
                         showEmptyStateActions && showConfigureRootFoldersAction
                       }
+                      configureRootsReason={configureRootFoldersReason}
                       configureRootsHref={configureRootFoldersHref}
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
@@ -877,7 +916,7 @@ export function MediaContentView({
                     <CompactTitleTable
                       view={view}
                       titles={deferredMonitoredTitles}
-                      titleLoading={titleLoading}
+                      titleLoading={titleLoading || catalogBootstrapLoading}
                       resolvedProfileName={resolvedProfileName}
                       qualityProfiles={qualityProfiles}
                       qualityProfilesLoading={mediaSettingsLoading}
@@ -897,6 +936,7 @@ export function MediaContentView({
                       showConfigureRootsAction={
                         showEmptyStateActions && showConfigureRootFoldersAction
                       }
+                      configureRootsReason={configureRootFoldersReason}
                       configureRootsHref={configureRootFoldersHref}
                       onScanLibrary={scanLibrary}
                       scanLibraryLoading={libraryScanLoading}
@@ -910,7 +950,7 @@ export function MediaContentView({
                   <TitleTable
                     view={view}
                     titles={deferredMonitoredTitles}
-                    titleLoading={titleLoading}
+                    titleLoading={titleLoading || catalogBootstrapLoading}
                     resolvedProfileName={resolvedProfileName}
                     qualityProfiles={qualityProfiles}
                     qualityProfilesLoading={mediaSettingsLoading}
@@ -926,6 +966,7 @@ export function MediaContentView({
                     showConfigureRootsAction={
                       showEmptyStateActions && showConfigureRootFoldersAction
                     }
+                    configureRootsReason={configureRootFoldersReason}
                     configureRootsHref={configureRootFoldersHref}
                     onScanLibrary={scanLibrary}
                     scanLibraryLoading={libraryScanLoading}

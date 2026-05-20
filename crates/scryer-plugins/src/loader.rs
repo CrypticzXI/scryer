@@ -1493,6 +1493,14 @@ fn validate_indexer_descriptor(
     descriptor: &PluginDescriptor,
     load_source: PluginLoadSource,
 ) -> bool {
+    if descriptor.provider_type().eq_ignore_ascii_case("prowlarr") {
+        warn!(
+            plugin = descriptor.id.as_str(),
+            provider_type = descriptor.provider_type(),
+            "skipping plugin: prowlarr is reserved for the first-party provider"
+        );
+        return false;
+    }
     validate_descriptor_for_type(descriptor, None, load_source)
         && is_indexer_plugin_type(descriptor.plugin_type())
         && validate_indexer_config_contract(descriptor)
@@ -2758,6 +2766,21 @@ impl NotificationPluginProvider for WasmNotificationPluginProvider {
         crate::builtins::builtin_description_for_provider(provider_type).map(str::to_string)
     }
 
+    fn supported_events_for_provider(
+        &self,
+        provider_type: &str,
+    ) -> Vec<scryer_domain::NotificationEventType> {
+        self.get_loaded(provider_type)
+            .map(notification_supported_events_from_loaded)
+            .unwrap_or_default()
+    }
+
+    fn supports_test_for_provider(&self, provider_type: &str) -> bool {
+        self.get_loaded(provider_type)
+            .map(notification_supports_test_from_loaded)
+            .unwrap_or(false)
+    }
+
     fn reload_plugins(
         &self,
         _external_wasm_bytes: &[ExternalPluginWasm<'_>],
@@ -2897,6 +2920,25 @@ impl NotificationPluginProvider for DynamicNotificationPluginProvider {
         guard.plugin_description_for_provider(provider_type)
     }
 
+    fn supported_events_for_provider(
+        &self,
+        provider_type: &str,
+    ) -> Vec<scryer_domain::NotificationEventType> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicNotificationPluginProvider lock poisoned");
+        guard.supported_events_for_provider(provider_type)
+    }
+
+    fn supports_test_for_provider(&self, provider_type: &str) -> bool {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicNotificationPluginProvider lock poisoned");
+        guard.supports_test_for_provider(provider_type)
+    }
+
     fn reload_plugins(
         &self,
         external_wasm_bytes: &[ExternalPluginWasm<'_>],
@@ -2978,6 +3020,31 @@ pub fn build_notification_plugin_provider_from_runtime_plugins(
     }
 
     provider
+}
+
+fn notification_supported_events_from_loaded(
+    loaded: &LoadedPlugin,
+) -> Vec<scryer_domain::NotificationEventType> {
+    loaded
+        .descriptor
+        .notification()
+        .map(|notification| {
+            notification
+                .capabilities
+                .supported_events
+                .iter()
+                .filter_map(|event| scryer_domain::NotificationEventType::parse(event.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn notification_supports_test_from_loaded(loaded: &LoadedPlugin) -> bool {
+    loaded
+        .descriptor
+        .notification()
+        .map(|notification| notification.capabilities.supports_test)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

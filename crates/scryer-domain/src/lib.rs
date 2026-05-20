@@ -335,6 +335,27 @@ impl Default for UserAuthorization {
 }
 
 impl UserAuthorization {
+    pub fn full_admin() -> Self {
+        Self {
+            app: AppPermissionMask::from_permissions([
+                AppPermission::ManageUsers,
+                AppPermission::ManagePermissions,
+                AppPermission::ManageSystemSettings,
+                AppPermission::ManageCatalogSettings,
+            ]),
+            libraries: std::collections::HashMap::new(),
+            default_library: LibraryPermissionMask::from_permissions([
+                LibraryPermission::View,
+                LibraryPermission::ManageTitles,
+                LibraryPermission::ResolveImports,
+                LibraryPermission::ManageLibrary,
+                LibraryPermission::Request,
+                LibraryPermission::AutoApproveRequests,
+            ]),
+            loaded: true,
+        }
+    }
+
     pub fn library_permissions(&self, library_id: &str) -> LibraryPermissionMask {
         self.libraries
             .get(library_id)
@@ -603,11 +624,59 @@ pub struct IndexerConfig {
     pub is_enabled: bool,
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
+    pub managed_parent_config_id: Option<String>,
+    pub managed_child_key: Option<String>,
+    pub managed_metadata_json: Option<String>,
+    pub caps_snapshot_json: Option<String>,
     pub last_health_status: Option<String>,
     pub last_error_at: Option<DateTime<Utc>>,
     pub config_json: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NabTransportKind {
+    DirectNab,
+    ProwlarrNabProxy,
+}
+
+impl NabTransportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectNab => "direct_nab",
+            Self::ProwlarrNabProxy => "prowlarr_nab_proxy",
+        }
+    }
+}
+
+pub fn is_nab_provider_type(provider_type: &str) -> bool {
+    matches!(
+        provider_type.trim().to_ascii_lowercase().as_str(),
+        "newznab" | "nzbgeek" | "torznab"
+    )
+}
+
+impl IndexerConfig {
+    pub fn nab_transport_kind(&self) -> Option<NabTransportKind> {
+        if !is_nab_provider_type(&self.provider_type) {
+            return None;
+        }
+
+        Some(if self.managed_parent_config_id.is_some() {
+            NabTransportKind::ProwlarrNabProxy
+        } else {
+            NabTransportKind::DirectNab
+        })
+    }
+
+    pub fn is_direct_nab(&self) -> bool {
+        self.nab_transport_kind() == Some(NabTransportKind::DirectNab)
+    }
+
+    pub fn is_prowlarr_nab_proxy(&self) -> bool {
+        self.nab_transport_kind() == Some(NabTransportKind::ProwlarrNabProxy)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -923,7 +992,7 @@ impl DownloadQueueDeleteStatus {
 }
 
 pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "wmv", "mov", "m4v", "ts", "m2ts", "webm", "flv", "ogv",
+    "mkv", "mp4", "avi", "wmv", "mov", "m4v", "ts", "m2ts", "webm", "flv", "ogv", "strm",
 ];
 
 pub const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "sub", "vtt", "idx"];
@@ -1193,6 +1262,7 @@ impl ImportSkipReason {
 pub enum ImportStrategy {
     HardLink,
     Copy,
+    Symlink,
 }
 
 impl ImportStrategy {
@@ -1200,6 +1270,7 @@ impl ImportStrategy {
         match self {
             Self::HardLink => "hardlink",
             Self::Copy => "copy",
+            Self::Symlink => "symlink",
         }
     }
 }
@@ -1227,6 +1298,7 @@ pub struct ImportResult {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportRecord {
     pub id: String,
+    pub source_client_id: Option<String>,
     pub source_system: String,
     pub source_ref: String,
     pub import_type: ImportType,
@@ -2447,21 +2519,11 @@ pub struct RuleSet {
     pub managed_key: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum Entitlement {
-    ViewCatalog,
-    ManageTitle,
-    ManageUsers,
-    ManageConfig,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
     pub id: String,
     pub username: String,
     pub password_hash: Option<String>,
-    pub entitlements: Vec<Entitlement>,
     #[serde(default)]
     pub authorization: UserAuthorization,
 }
@@ -2472,18 +2534,8 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: None,
-            entitlements: Self::all_entitlements(),
-            authorization: UserAuthorization::default(),
+            authorization: UserAuthorization::full_admin(),
         }
-    }
-
-    pub fn all_entitlements() -> Vec<Entitlement> {
-        vec![
-            Entitlement::ViewCatalog,
-            Entitlement::ManageTitle,
-            Entitlement::ManageUsers,
-            Entitlement::ManageConfig,
-        ]
     }
 
     pub fn with_password_hash(
@@ -2494,50 +2546,8 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: Some(password_hash.into()),
-            entitlements: Self::all_entitlements(),
-            authorization: UserAuthorization::default(),
+            authorization: UserAuthorization::full_admin(),
         }
-    }
-
-    pub fn has_entitlement(&self, required: &Entitlement) -> bool {
-        if !self.authorization.loaded {
-            return self.entitlements.contains(required);
-        }
-
-        match required {
-            Entitlement::ViewCatalog => {
-                self.authorization
-                    .default_library
-                    .contains(LibraryPermissionMask::VIEW)
-                    || self
-                        .authorization
-                        .libraries
-                        .values()
-                        .any(|permissions| permissions.contains(LibraryPermissionMask::VIEW))
-            }
-            Entitlement::ManageTitle => {
-                self.authorization
-                    .default_library
-                    .contains(LibraryPermissionMask::MANAGE_TITLES)
-                    || self.authorization.libraries.values().any(|permissions| {
-                        permissions.contains(LibraryPermissionMask::MANAGE_TITLES)
-                    })
-            }
-            Entitlement::ManageUsers => self
-                .authorization
-                .app
-                .contains(AppPermissionMask::MANAGE_USERS),
-            Entitlement::ManageConfig => self
-                .authorization
-                .app
-                .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS),
-        }
-    }
-
-    pub fn has_all_entitlements(&self) -> bool {
-        let all = Self::all_entitlements();
-        all.iter()
-            .all(|entitlement| self.has_entitlement(entitlement))
     }
 }
 
@@ -2545,7 +2555,6 @@ impl User {
 pub struct NewUser {
     pub username: String,
     pub password: String,
-    pub entitlements: Vec<Entitlement>,
 }
 
 #[derive(Debug, Error)]
@@ -2636,6 +2645,40 @@ pub struct IndexerCategoryModel {
     pub provider_category_metadata: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<IndexerCategoryDescriptor>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerCapsSearchNode {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_params: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_engine: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerCapsSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits_default: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits_max: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tv_search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movie_search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music_search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_search: Option<IndexerCapsSearchNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub book_search: Option<IndexerCapsSearchNode>,
+    #[serde(default)]
+    pub categories: IndexerCategoryModel,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -2763,6 +2806,14 @@ pub struct IndexerProviderCapabilities {
     pub torrent: Option<IndexerTorrentCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_features: Option<IndexerResponseFeatures>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerManagementCapabilities {
+    #[serde(default)]
+    pub supports_validate_config: bool,
+    #[serde(default)]
+    pub supports_managed_children_sync: bool,
 }
 
 impl IndexerProviderCapabilities {
@@ -3252,10 +3303,20 @@ mod tests {
     }
 
     #[test]
-    fn admin_has_all_entitlements() {
+    fn admin_has_full_permission_masks() {
         let admin = User::new_admin("root");
-        assert!(admin.has_entitlement(&Entitlement::ManageConfig));
-        assert!(admin.has_entitlement(&Entitlement::ManageUsers));
+        assert!(
+            admin
+                .authorization
+                .app
+                .contains(AppPermissionMask::MANAGE_SYSTEM_SETTINGS)
+        );
+        assert!(
+            admin
+                .authorization
+                .app
+                .contains(AppPermissionMask::MANAGE_USERS)
+        );
     }
 }
 

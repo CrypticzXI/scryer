@@ -2,23 +2,32 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
+use axum::Router;
+use axum::body::{Body, to_bytes};
+use axum::extract::State;
+use axum::http::{Request, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::any;
 use serde_json::json;
+use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
-use wiremock::matchers::{body_json_string, method, path, query_param};
+use wiremock::matchers::{body_json_string, body_string_contains, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
 use scryer_application::{
-    DownloadClient, DownloadClientAddRequest, DownloadSourceKind, NullSettingsRepository,
-    NullStagedNzbStore, StagedNzbRef,
+    DownloadClient, DownloadClientAddRequest, DownloadClientPluginProvider, DownloadSourceKind,
+    NullSettingsRepository, NullStagedNzbStore, StagedNzbRef,
 };
 use scryer_domain::DownloadClientConfig;
 use scryer_infrastructure::{
-    FileSystemStagedNzbStore, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
-    SabnzbdDownloadClient, SqliteConfigStore, WeaverDownloadClient,
+    DownloadClientConfigStore, FileSystemStagedNzbStore, NzbgetDownloadClient,
+    PrioritizedDownloadClientRouter, SabnzbdDownloadClient, WeaverDownloadClient,
 };
+use scryer_plugins::WasmDownloadClientPluginProvider;
 
 fn new_nzbget_client(uri: &str) -> scryer_infrastructure::NzbgetDownloadClient {
     scryer_infrastructure::NzbgetDownloadClient::new(
@@ -92,6 +101,322 @@ fn test_title(name: &str) -> scryer_domain::Title {
     }
 }
 
+#[derive(Clone, Copy)]
+enum QbMockMode {
+    StatusReauth,
+    CompletedDownloads,
+}
+
+#[derive(Clone)]
+struct QbMockState {
+    mode: QbMockMode,
+    login_count: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+struct QbMockServerHandle {
+    base_url: String,
+    login_count: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Clone, Default)]
+struct SabFallbackMockState {
+    requests: Arc<Mutex<Vec<String>>>,
+    gzip_rejection_response: Arc<Mutex<(StatusCode, String)>>,
+}
+
+struct SabFallbackMockServerHandle {
+    base_url: String,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+async fn spawn_qbittorrent_mock_server(mode: QbMockMode) -> QbMockServerHandle {
+    let state = QbMockState {
+        mode,
+        login_count: Arc::new(AtomicUsize::new(0)),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind qbittorrent mock server");
+    let address = listener.local_addr().expect("qbittorrent mock local addr");
+    let app = Router::new()
+        .fallback(any(qbittorrent_mock_handler))
+        .with_state(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("run qbittorrent mock server");
+    });
+
+    QbMockServerHandle {
+        base_url: format!("http://{address}"),
+        login_count: state.login_count,
+        requests: state.requests,
+    }
+}
+
+async fn qbittorrent_mock_handler(
+    State(state): State<QbMockState>,
+    request: Request<Body>,
+) -> impl IntoResponse {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let cookie = request
+        .headers()
+        .get("cookie")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .expect("read qbittorrent mock request body");
+    let body = String::from_utf8_lossy(&body).to_string();
+    state
+        .requests
+        .lock()
+        .expect("qbittorrent mock request log")
+        .push(format!(
+            "{} {} cookie={} body={}",
+            method, uri, cookie, body
+        ));
+
+    match (method.as_str(), uri.path()) {
+        ("POST", "/api/v2/auth/login") => {
+            let login_number = state.login_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let cookie_value = match state.mode {
+                QbMockMode::StatusReauth if login_number == 1 => "SID=stale".to_string(),
+                _ => format!("SID=fresh-{login_number}"),
+            };
+            (
+                StatusCode::OK,
+                [
+                    ("Content-Type", "text/plain; charset=utf-8"),
+                    ("Set-Cookie", &format!("{cookie_value}; HttpOnly")),
+                ],
+                "Ok.",
+            )
+                .into_response()
+        }
+        ("GET", "/api/v2/app/version") => {
+            (StatusCode::OK, [("Content-Type", "text/plain")], "4.6.1").into_response()
+        }
+        ("GET", "/api/v2/app/preferences") => {
+            if matches!(state.mode, QbMockMode::StatusReauth) && cookie.contains("SID=stale") {
+                return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+            }
+            (
+                StatusCode::OK,
+                [("Content-Type", "application/json")],
+                r#"{"save_path":"/downloads/base","auto_tmm_enabled":true,"queueing_enabled":false}"#,
+            )
+                .into_response()
+        }
+        ("GET", "/api/v2/torrents/categories") => (
+            StatusCode::OK,
+            [("Content-Type", "application/json")],
+            r#"{"series":{"savePath":"/downloads/series"},"movies":{"savePath":"/downloads/movies"}}"#,
+        )
+            .into_response(),
+        ("GET", "/api/v2/torrents/info") => (
+            StatusCode::OK,
+            [("Content-Type", "application/json")],
+            r#"[
+  {
+    "hash":"AAAABBBBCCCCDDDDEEEEFFFF0000111122223333",
+    "name":"Single File Torrent",
+    "state":"uploading",
+    "category":"movies",
+    "save_path":"/downloads/movies",
+    "content_path":"/downloads/movies/Single.File.2026.1080p.mkv",
+    "size":1234,
+    "total_size":1234,
+    "amount_left":0,
+    "eta":0,
+    "progress":1.0,
+    "completion_on":1710000000,
+    "tags":"scryer-origin,scryer-title-title-1",
+    "uploaded":10,
+    "downloaded":1234,
+    "upspeed":0,
+    "dlspeed":0,
+    "ratio":1.25,
+    "seeding_time":600
+  },
+  {
+    "hash":"BBBBCCCCDDDDEEEEFFFF00001111222233334444",
+    "name":"Directory Torrent",
+    "state":"pausedup",
+    "category":"series",
+    "save_path":"/downloads/series",
+    "content_path":"/downloads/series/Directory.Torrent.S01",
+    "size":4321,
+    "total_size":4321,
+    "amount_left":0,
+    "eta":0,
+    "progress":1.0,
+    "completion_on":1710000001,
+    "tags":"scryer-origin,scryer-facet-series",
+    "uploaded":11,
+    "downloaded":4321,
+    "upspeed":0,
+    "dlspeed":0,
+    "ratio":1.5,
+    "seeding_time":900
+  }
+]"#,
+        )
+            .into_response(),
+        _ => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+async fn spawn_sab_fallback_mock_server() -> SabFallbackMockServerHandle {
+    spawn_sab_fallback_mock_server_with_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        json!({
+            "status": false,
+            "error": "'\\u001F', hexadecimal value 0x1F, is an invalid character. Line 1, position 1."
+        })
+        .to_string(),
+    )
+    .await
+}
+
+async fn spawn_sab_fallback_mock_server_with_error(
+    status: StatusCode,
+    error_body: String,
+) -> SabFallbackMockServerHandle {
+    let state = SabFallbackMockState {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        gzip_rejection_response: Arc::new(Mutex::new((status, error_body))),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind sab fallback mock server");
+    let address = listener.local_addr().expect("sab fallback mock local addr");
+    let app = Router::new()
+        .fallback(any(sab_fallback_mock_handler))
+        .with_state(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("run sab fallback mock server");
+    });
+
+    SabFallbackMockServerHandle {
+        base_url: format!("http://{address}"),
+        requests: state.requests,
+    }
+}
+
+async fn sab_fallback_mock_handler(
+    State(state): State<SabFallbackMockState>,
+    request: Request<Body>,
+) -> impl IntoResponse {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let body = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .expect("read sab fallback mock request body");
+    let body_text = String::from_utf8_lossy(&body).to_string();
+    state
+        .requests
+        .lock()
+        .expect("sab fallback mock request log")
+        .push(format!("{method} {uri} body={body_text}"));
+
+    if uri.path() != "/api" || method.as_str() != "POST" {
+        return (StatusCode::NOT_FOUND, "not found".to_string()).into_response();
+    }
+
+    if body_text.contains("application/gzip") {
+        let (status, body) = state
+            .gzip_rejection_response
+            .lock()
+            .expect("sab fallback gzip rejection")
+            .clone();
+        return (status, body).into_response();
+    }
+
+    if body_text.contains("application/x-nzb")
+        && body_text.contains("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+    {
+        return (StatusCode::OK, load_fixture("sabnzbd/addurl.json")).into_response();
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        json!({
+            "status": false,
+            "error": "unexpected multipart upload"
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+fn qbittorrent_wasm_bytes() -> Vec<u8> {
+    let artifact_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("scryer crate parent")
+        .parent()
+        .expect("workspace repo parent")
+        .parent()
+        .expect("workspace container parent")
+        .join("scryer-plugins")
+        .join("dist")
+        .join("qbittorrent_download_client.wasm");
+    std::fs::read(&artifact_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", artifact_path.display()))
+}
+
+fn qbittorrent_wasm_client(base_url: &str) -> Arc<dyn DownloadClient> {
+    let wasm_bytes = qbittorrent_wasm_bytes();
+    let provider = WasmDownloadClientPluginProvider::empty().with_external_bytes(&wasm_bytes);
+    let provider_types = provider.available_provider_types();
+    assert!(
+        provider_types
+            .iter()
+            .any(|provider_type| provider_type == "qbittorrent"),
+        "qbittorrent provider should load from dist artifact, saw {provider_types:?}"
+    );
+    let use_ssl = base_url.trim_start().starts_with("https://");
+    let host_and_path = base_url
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let (host_port, url_base) = host_and_path.split_once('/').unwrap_or((host_and_path, ""));
+    let (host, port) = host_port
+        .rsplit_once(':')
+        .expect("qbittorrent mock host:port");
+    let config = DownloadClientConfig {
+        id: "qb-wasm".to_string(),
+        name: "qBittorrent WASM".to_string(),
+        client_type: "qbittorrent".to_string(),
+        config_json: json!({
+            "host": host,
+            "port": port,
+            "use_ssl": use_ssl,
+            "url_base": url_base,
+            "username": "test-user",
+            "password": "test-pass",
+        })
+        .to_string(),
+        client_priority: 0,
+        is_enabled: true,
+        status: scryer_domain::DownloadClientStatus::Healthy,
+        last_error: None,
+        last_seen_at: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    provider
+        .client_for_config(&config)
+        .expect("create qbittorrent wasm client")
+}
+
 fn request_with_staged_nzb(
     title: scryer_domain::Title,
     staged_nzb: StagedNzbRef,
@@ -120,7 +445,10 @@ fn request_with_staged_nzb(
 fn download_client_config_repo(
     ctx: &TestContext,
 ) -> Arc<dyn scryer_application::DownloadClientConfigRepository> {
-    Arc::new(SqliteConfigStore::new(&ctx.db))
+    Arc::new(DownloadClientConfigStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    ))
 }
 
 async fn insert_download_client_config(ctx: &TestContext, config: DownloadClientConfig) {
@@ -1345,6 +1673,15 @@ fn new_sabnzbd_client(uri: &str) -> SabnzbdDownloadClient {
     SabnzbdDownloadClient::new(uri.to_string(), "test-api-key".to_string())
 }
 
+fn new_sabnzbd_credential_client(uri: &str) -> SabnzbdDownloadClient {
+    SabnzbdDownloadClient::with_auth(
+        uri.to_string(),
+        None,
+        Some("test-user".to_string()),
+        Some("test-pass".to_string()),
+    )
+}
+
 async fn new_submit_sabnzbd_client(uri: &str) -> SabnzbdDownloadClient {
     SabnzbdDownloadClient::with_staged_nzb_store(
         uri.to_string(),
@@ -1387,6 +1724,149 @@ async fn sabnzbd_test_connection_returns_version() {
 }
 
 #[tokio::test]
+async fn sabnzbd_test_connection_accepts_username_password_auth() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "version"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/version.json")),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let result = new_sabnzbd_credential_client(&server.uri())
+        .test_connection()
+        .await;
+    assert_eq!(result.unwrap(), "4.5.1");
+
+    let requests = server.received_requests().await.unwrap();
+    let auth_request = requests
+        .iter()
+        .find(|request| request.method.as_str() == "POST" && request.url.path() == "/api")
+        .expect("credential auth request should be posted");
+    let body = String::from_utf8_lossy(&auth_request.body);
+    assert!(body.contains("mode=queue"));
+    assert!(body.contains("ma_username=test-user"));
+    assert!(body.contains("ma_password=test-pass"));
+}
+
+#[tokio::test]
+async fn sabnzbd_test_connection_supports_base_url_prefix() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/sabnzbd/api"))
+        .and(query_param("mode", "version"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/version.json")),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/sabnzbd/api"))
+        .and(query_param("mode", "queue"))
+        .and(query_param("apikey", "test-api-key"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = SabnzbdDownloadClient::new(
+        format!("{}/sabnzbd/", server.uri()),
+        "test-api-key".to_string(),
+    );
+    let result = client.test_connection().await;
+    assert_eq!(result.unwrap(), "4.5.1");
+}
+
+#[tokio::test]
+async fn sabnzbd_test_connection_falls_back_to_authenticated_version_when_required() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "version"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "status": false,
+            "error": "API Key Required"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_string_contains("mode=version"))
+        .and(body_string_contains("ma_username=test-user"))
+        .and(body_string_contains("ma_password=test-pass"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/version.json")),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_string_contains("mode=queue"))
+        .and(body_string_contains("ma_username=test-user"))
+        .and(body_string_contains("ma_password=test-pass"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let result = new_sabnzbd_credential_client(&server.uri())
+        .test_connection()
+        .await;
+    assert_eq!(result.unwrap(), "4.5.1");
+}
+
+#[tokio::test]
+async fn sabnzbd_prefers_api_key_over_username_password_when_both_are_present() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "version"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/version.json")),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .and(query_param("apikey", "preferred-key"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = SabnzbdDownloadClient::with_auth(
+        server.uri(),
+        Some("preferred-key".to_string()),
+        Some("test-user".to_string()),
+        Some("test-pass".to_string()),
+    );
+    let result = client.test_connection().await;
+    assert_eq!(result.unwrap(), "4.5.1");
+}
+
+#[tokio::test]
 async fn sabnzbd_test_connection_unreachable() {
     let client = SabnzbdDownloadClient::new("http://127.0.0.1:1".to_string(), "key".to_string());
     let result = client.test_connection().await;
@@ -1420,8 +1900,52 @@ async fn sabnzbd_test_connection_invalid_api_key() {
     let result = new_sabnzbd_client(&server.uri()).test_connection().await;
     assert!(result.is_err(), "should fail with invalid API key");
     assert!(
-        result.unwrap_err().to_string().contains("API Key"),
-        "error should mention API key"
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("authentication validation failed"),
+        "error should mention authentication validation"
+    );
+}
+
+#[tokio::test]
+async fn sabnzbd_get_client_status_reports_output_roots_and_sorting_mode() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "get_config"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/config.json")),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "fullstatus"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/fullstatus.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let status = new_sabnzbd_client(&server.uri())
+        .get_client_status()
+        .await
+        .expect("status should succeed");
+
+    assert_eq!(status.is_localhost, Some(true));
+    assert_eq!(status.sorting_mode.as_deref(), Some("TV"));
+    assert_eq!(status.removes_completed_downloads, Some(true));
+    assert_eq!(
+        status.remote_output_roots,
+        vec![
+            "/srv/downloads/complete".to_string(),
+            "/srv/downloads/complete/series".to_string(),
+            "/srv/downloads/complete/movies".to_string(),
+            "/srv/downloads/complete/anime".to_string(),
+        ]
     );
 }
 
@@ -1464,6 +1988,26 @@ async fn sabnzbd_list_queue_empty() {
         .list_queue()
         .await
         .expect("empty queue should succeed");
+    assert!(items.is_empty());
+}
+
+#[tokio::test]
+async fn sabnzbd_list_queue_accepts_top_level_slots_variant() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": true,
+            "slots": []
+        })))
+        .mount(&server)
+        .await;
+
+    let items = new_sabnzbd_client(&server.uri())
+        .list_queue()
+        .await
+        .expect("top-level queue slots should be accepted");
     assert!(items.is_empty());
 }
 
@@ -1547,6 +2091,36 @@ async fn sabnzbd_list_history_recent_entries() {
         .await
         .unwrap();
     assert_eq!(items.len(), 2, "recent entries should pass 7-day cutoff");
+}
+
+#[tokio::test]
+async fn sabnzbd_list_history_accepts_top_level_slots_variant() {
+    let server = MockServer::start().await;
+    let now = chrono::Utc::now().timestamp();
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": true,
+            "slots": [{
+                "nzo_id": "hist-top-1",
+                "name": "Top Level History",
+                "status": "Completed",
+                "completed": now,
+                "bytes": 1234,
+                "time_added": now - 60
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let items = new_sabnzbd_client(&server.uri())
+        .list_history()
+        .await
+        .expect("top-level history slots should be accepted");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].download_client_item_id, "hist-top-1");
 }
 
 #[tokio::test]
@@ -1917,17 +2491,306 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
         .expect("submit should use staged nzb");
 
     assert_eq!(result.client_type, "sabnzbd");
+    let requests = server.received_requests().await.unwrap();
+    let request_body = String::from_utf8_lossy(&requests[0].body);
+    assert!(
+        request_body.contains("filename=\"Staged.SAB.Release.nzb.gz\""),
+        "sabnzbd upload should keep the gzip filename path: {request_body}"
+    );
+    assert!(
+        request_body.contains("application/gzip"),
+        "sabnzbd upload should remain gzipped by default: {request_body}"
+    );
     assert_eq!(
-        server
-            .received_requests()
-            .await
-            .unwrap()
+        requests
             .iter()
             .filter(|request| request.method.as_str() == "GET")
             .count(),
         0
     );
     assert_eq!(staged_nzb_store.count_staged_artifacts().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_retries_plain_nzb_after_gzip_parse_failure() {
+    let server = spawn_sab_fallback_mock_server().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+    let nzb_xml = load_fixture("nzbgeek/nzb_content.xml");
+
+    let staged = staged_nzb_store
+        .stage_nzb_bytes_for_test(nzb_xml.as_bytes())
+        .await
+        .expect("staged artifact should insert");
+
+    let client = SabnzbdDownloadClient::with_staged_nzb_store(
+        server.base_url.clone(),
+        "test-api-key".to_string(),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let result = client
+        .submit_download(&request_with_staged_nzb(
+            test_title("Staged SAB Fallback"),
+            staged,
+            "Staged.SAB.Fallback",
+        ))
+        .await
+        .expect("submit should retry with a plain nzb");
+
+    assert_eq!(result.client_type, "sabnzbd");
+
+    let requests = server
+        .requests
+        .lock()
+        .expect("sab fallback request log")
+        .clone();
+    assert_eq!(
+        requests.len(),
+        2,
+        "should make a gzip attempt and one retry"
+    );
+    assert!(
+        requests[0].contains("filename=\"Staged.SAB.Fallback.nzb.gz\"")
+            && requests[0].contains("application/gzip"),
+        "first request should be the default gzip upload: {:?}",
+        requests
+    );
+    assert!(
+        requests[1].contains("filename=\"Staged.SAB.Fallback.nzb\"")
+            && requests[1].contains("application/x-nzb")
+            && requests[1].contains("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+        "retry should switch to a plain nzb upload: {:?}",
+        requests
+    );
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_uses_plain_nzb_when_gzip_capability_is_disabled() {
+    let server = spawn_sab_fallback_mock_server().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+    let nzb_xml = load_fixture("nzbgeek/nzb_content.xml");
+    let staged = staged_nzb_store
+        .stage_nzb_bytes_for_test(nzb_xml.as_bytes())
+        .await
+        .expect("staged artifact should insert");
+    let client = SabnzbdDownloadClient::with_auth_and_staged_nzb_store_with_gzip_support(
+        server.base_url.clone(),
+        Some("test-api-key".to_string()),
+        None,
+        None,
+        Some(false),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let result = client
+        .submit_download(&request_with_staged_nzb(
+            test_title("Plain SAB Capability"),
+            staged,
+            "Plain.SAB.Capability",
+        ))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "plain upload should succeed: {:?}",
+        result.err()
+    );
+
+    let requests = server
+        .requests
+        .lock()
+        .expect("sab fallback request log")
+        .clone();
+    assert_eq!(
+        requests.len(),
+        1,
+        "known plain capability should avoid retrying"
+    );
+    assert!(
+        requests[0].contains("filename=\"Plain.SAB.Capability.nzb\"")
+            && requests[0].contains("application/x-nzb"),
+        "request should use a plain nzb upload immediately: {:?}",
+        requests
+    );
+}
+
+#[tokio::test]
+async fn sabnzbd_detect_gzip_support_deletes_remote_probe_submission() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/addurl.json")),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .and(query_param("name", "delete"))
+        .and(query_param("value", "SABnzbd_nzo_abc123"))
+        .and(query_param("del_files", "1"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/delete_success.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let supports_gzip = new_sabnzbd_client(&server.uri())
+        .detect_gzip_nzb_upload_support()
+        .await
+        .expect("capability probe should succeed");
+
+    assert!(
+        supports_gzip,
+        "accepted probe should mark gzip as supported"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.iter().any(|request| {
+            request.method.as_str() == "POST"
+                && request.url.path() == "/api"
+                && String::from_utf8_lossy(&request.body)
+                    .contains("filename=\"__scryer_gzip_probe__.nzb.gz\"")
+        }),
+        "probe should upload an in-memory gzip nzb"
+    );
+    assert!(
+        requests.iter().any(|request| {
+            request.method.as_str() == "GET"
+                && request.url.query().is_some_and(|query| {
+                    query.contains("mode=queue")
+                        && query.contains("name=delete")
+                        && query.contains("value=SABnzbd_nzo_abc123")
+                })
+        }),
+        "probe should be deleted remotely after success"
+    );
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_retries_plain_nzb_for_sab_compatible_xml_parse_errors() {
+    let server = spawn_sab_fallback_mock_server_with_error(
+        StatusCode::OK,
+        json!({
+            "status": false,
+            "error": "Unexpected character 0x1F while parsing XML document."
+        })
+        .to_string(),
+    )
+    .await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+    let nzb_xml = load_fixture("nzbgeek/nzb_content.xml");
+
+    let staged = staged_nzb_store
+        .stage_nzb_bytes_for_test(nzb_xml.as_bytes())
+        .await
+        .expect("staged artifact should insert");
+
+    let client = SabnzbdDownloadClient::with_staged_nzb_store(
+        server.base_url.clone(),
+        "test-api-key".to_string(),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let result = client
+        .submit_download(&request_with_staged_nzb(
+            test_title("Staged SAB Compatible Fallback"),
+            staged,
+            "Staged.SAB.Compatible.Fallback",
+        ))
+        .await
+        .expect("submit should retry for generic sab-compatible parse errors");
+
+    assert_eq!(result.client_type, "sabnzbd");
+
+    let requests = server
+        .requests
+        .lock()
+        .expect("sab fallback request log")
+        .clone();
+    assert_eq!(requests.len(), 2, "should still retry once with plain nzb");
+    assert!(
+        requests[0].contains("filename=\"Staged.SAB.Compatible.Fallback.nzb.gz\"")
+            && requests[1].contains("filename=\"Staged.SAB.Compatible.Fallback.nzb\""),
+        "fallback should cover generic SAB-compatible parse failures: {:?}",
+        requests
+    );
+}
+
+// ===========================================================================
+// qBittorrent WASM runtime tests
+// ===========================================================================
+
+#[tokio::test]
+#[ignore = "qBittorrent dist artifact is still on an older plugin SDK line than this host"]
+async fn qbittorrent_wasm_status_reauths_after_403_and_reports_output_roots() {
+    let server = spawn_qbittorrent_mock_server(QbMockMode::StatusReauth).await;
+    let client = qbittorrent_wasm_client(&server.base_url);
+
+    let status = client
+        .get_client_status()
+        .await
+        .expect("qBittorrent status should succeed");
+
+    assert_eq!(server.login_count.load(Ordering::SeqCst), 2);
+    assert_eq!(status.version.as_deref(), Some("4.6.1"));
+    assert_eq!(status.is_localhost, Some(true));
+    assert_eq!(status.sorting_mode.as_deref(), Some("auto_tmm"));
+    assert_eq!(
+        status.remote_output_roots,
+        vec![
+            "/downloads/base".to_string(),
+            "/downloads/movies".to_string(),
+            "/downloads/series".to_string(),
+        ]
+    );
+
+    let requests = server
+        .requests
+        .lock()
+        .expect("qbittorrent request log")
+        .clone();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("/api/v2/auth/login")
+                && request.contains("username=test-user")
+                && request.contains("password=test-pass")),
+        "login request should include username/password: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("/api/v2/app/preferences")
+                && request.contains("SID=stale")),
+        "status path should hit preferences with the stale cookie before re-auth: {requests:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "qBittorrent dist artifact is still on an older plugin SDK line than this host"]
+async fn qbittorrent_wasm_completed_downloads_derive_single_file_and_directory_roots() {
+    let server = spawn_qbittorrent_mock_server(QbMockMode::CompletedDownloads).await;
+    let client = qbittorrent_wasm_client(&server.base_url);
+
+    let items = client
+        .list_completed_downloads()
+        .await
+        .expect("completed downloads should succeed");
+
+    assert_eq!(server.login_count.load(Ordering::SeqCst), 1);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].name, "Single File Torrent");
+    assert_eq!(items[0].dest_dir, "/downloads/movies");
+    assert_eq!(items[1].name, "Directory Torrent");
+    assert_eq!(items[1].dest_dir, "/downloads/series/Directory.Torrent.S01");
 }
 
 // ===========================================================================

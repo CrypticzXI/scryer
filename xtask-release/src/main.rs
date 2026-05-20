@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
 use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
@@ -18,7 +18,7 @@ use sigstore::{
     crypto::{CosignVerificationKey, SigningScheme},
     trust::{TrustRoot, sigstore::SigstoreTrustRoot},
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
@@ -73,6 +73,16 @@ const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
+const RELEASE_SIBLING_E2E_TOKENS: &[&str] = &["../e2e/", "..\\e2e\\"];
+const REQUIRED_SCRYER_DRY_RUN_STEPS: &[&str] = &[
+    "builtin_refresh",
+    "web_validation",
+    "rust_validation",
+    "release_hygiene",
+    "e2e_datastore_matrix",
+    "e2e_datastore_restore_matrix",
+];
 
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
 type FulcioTrustAnchors = Vec<TrustAnchor<'static>>;
@@ -732,6 +742,81 @@ fn git_tracked_dirty_paths(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+fn git_tracked_files(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
+    let mut command = ctx.command_in("git", &ctx.repo_root);
+    command.args(["ls-files", "-z"]);
+    let debug = format!("{command:?}");
+    let output = command.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("command failed: {debug}\n{stderr}");
+    }
+
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| ctx.path(String::from_utf8_lossy(entry).as_ref()))
+        .collect())
+}
+
+fn scan_release_hygiene_content(path: &Path, content: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    for (line_number, line) in content.lines().enumerate() {
+        let line_number = line_number + 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if RELEASE_LOCAL_PATH_TOKENS
+            .iter()
+            .any(|token| line.contains(token))
+        {
+            violations.push(format!(
+                "{}:{line_number}: local absolute path reference: {trimmed}",
+                path.display()
+            ));
+        }
+
+        if RELEASE_SIBLING_E2E_TOKENS
+            .iter()
+            .any(|token| line.contains(token))
+        {
+            violations.push(format!(
+                "{}:{line_number}: sibling e2e repo reference: {trimmed}",
+                path.display()
+            ));
+        }
+    }
+
+    violations
+}
+
+fn release_hygiene_violations(ctx: &TaskContext) -> Result<Vec<String>> {
+    let mut violations = Vec::new();
+
+    for path in git_tracked_files(ctx)? {
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(&ctx.repo_root)
+            .unwrap_or(path.as_path())
+            .to_path_buf();
+        let content = String::from_utf8_lossy(&bytes);
+        violations.extend(scan_release_hygiene_content(&relative, &content));
+    }
+
+    violations.sort();
+    Ok(violations)
+}
+
 fn latest_prefixed_tag(ctx: &TaskContext, prefix: &str) -> Result<Option<String>> {
     let tags = git_capture(ctx, &["tag", "--sort=-version:refname"])?;
     Ok(tags
@@ -1055,6 +1140,22 @@ fn release_dry_run_cache_rejection_reason(
     }
     if cache.catalog_checksum_sha256.as_deref() != Some(expected.catalog_checksum_sha256) {
         return Some("published plugin catalog checksum changed since dry run".to_string());
+    }
+    let validated_steps = cache
+        .validated_steps
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let missing_steps = REQUIRED_SCRYER_DRY_RUN_STEPS
+        .iter()
+        .copied()
+        .filter(|step| !validated_steps.contains(step))
+        .collect::<Vec<_>>();
+    if !missing_steps.is_empty() {
+        return Some(format!(
+            "dry run did not record required release-blocking validations: {}",
+            missing_steps.join(", ")
+        ));
     }
     if !builtins_present {
         return Some("cached builtin artifacts are missing or digest-mismatched".to_string());
@@ -2148,14 +2249,16 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
             }
             web_result?;
             rust_result?;
+            run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
+            run_scryer_e2e_datastore_matrix_validation(ctx, "[e2e] ")?;
+            run_scryer_e2e_datastore_restore_matrix_validation(ctx, "[e2e-restore] ")?;
             ok("Parallel validation passed");
             Ok::<(Vec<PathBuf>, Vec<String>), anyhow::Error>((
                 refreshed_builtin_paths,
-                vec![
-                    "builtin_refresh".to_string(),
-                    "web_validation".to_string(),
-                    "rust_validation".to_string(),
-                ],
+                REQUIRED_SCRYER_DRY_RUN_STEPS
+                    .iter()
+                    .map(|step| (*step).to_string())
+                    .collect(),
             ))
         };
 
@@ -2298,8 +2401,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         ok("Nothing to commit");
     }
 
-    prune_scryer_release_history(ctx)?;
-
+    // Stable release artifacts and GHCR tags are intentionally retained.
     step(format!("Creating signed tag {tag_name}"));
     let mut tag = ctx.release_command_in("git", &ctx.repo_root);
     tag.args(["tag", "-s", &tag_name, "-m", &format!("Release {tag_name}")]);
@@ -2665,6 +2767,81 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     Ok(())
 }
 
+fn run_scryer_release_hygiene_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
+    prefixed_step(prefix, "Checking release hygiene");
+    let violations = release_hygiene_violations(ctx)?;
+    if !violations.is_empty() {
+        bail!(
+            "release hygiene check failed:\n{}",
+            violations
+                .into_iter()
+                .map(|violation| format!("  - {violation}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    prefixed_ok(prefix, "Release hygiene check passed");
+    Ok(())
+}
+
+fn run_scryer_e2e_datastore_matrix_validation(
+    ctx: &TaskContext,
+    prefix: &'static str,
+) -> Result<()> {
+    let e2e_dir = ctx.repo_root.parent().unwrap_or(&ctx.repo_root).join("e2e");
+    let runner = e2e_dir.join("cmd/scryer-e2e");
+    if !runner.is_dir() {
+        bail!(
+            "release-blocking PostgreSQL e2e datastore matrix is unavailable: {} does not exist",
+            runner.display()
+        );
+    }
+
+    prefixed_step(
+        prefix,
+        "Running release-blocking Scryer e2e datastore matrix",
+    );
+    let mut command = ctx.release_command_in("go", &e2e_dir);
+    command.args([
+        "run",
+        "./cmd/scryer-e2e",
+        "release-gate",
+        "datastore-matrix",
+    ]);
+    run_streaming(&mut command, prefix)?;
+    prefixed_ok(prefix, "Scryer e2e datastore matrix passed");
+    Ok(())
+}
+
+fn run_scryer_e2e_datastore_restore_matrix_validation(
+    ctx: &TaskContext,
+    prefix: &'static str,
+) -> Result<()> {
+    let e2e_dir = ctx.repo_root.parent().unwrap_or(&ctx.repo_root).join("e2e");
+    let runner = e2e_dir.join("cmd/scryer-e2e");
+    if !runner.is_dir() {
+        bail!(
+            "release-blocking PostgreSQL e2e restore matrix is unavailable: {} does not exist",
+            runner.display()
+        );
+    }
+
+    prefixed_step(
+        prefix,
+        "Running release-blocking Scryer e2e cross-engine restore matrix",
+    );
+    let mut command = ctx.release_command_in("go", &e2e_dir);
+    command.args([
+        "run",
+        "./cmd/scryer-e2e",
+        "release-gate",
+        "datastore-restore-matrix",
+    ]);
+    run_streaming(&mut command, prefix)?;
+    prefixed_ok(prefix, "Scryer e2e cross-engine restore matrix passed");
+    Ok(())
+}
+
 fn run_scryer_ci_clippy_validation(ctx: &TaskContext, prefix: &'static str) -> Result<()> {
     prefixed_step(
         prefix,
@@ -2686,163 +2863,6 @@ fn run_scryer_nextest_validation(ctx: &TaskContext, prefix: &'static str) -> Res
     nextest.arg("--locked");
     run_streaming(&mut nextest, prefix)?;
     prefixed_ok(prefix, "Rust tests passed");
-    Ok(())
-}
-
-fn prune_scryer_release_history(ctx: &TaskContext) -> Result<()> {
-    const KEEP_RELEASES: usize = 4;
-    step(format!(
-        "Pruning old releases and artifacts (keeping {KEEP_RELEASES} most recent)"
-    ));
-
-    let mut list = ctx.command_in("gh", &ctx.repo_root);
-    list.args([
-        "release",
-        "list",
-        "--limit",
-        "100",
-        "--json",
-        "tagName,publishedAt",
-    ]);
-    let mut releases: Vec<GhRelease> = serde_json::from_str(&run_capture(&mut list)?)?;
-    releases.sort_by_key(|release| release.published_at.clone());
-    releases.reverse();
-
-    let releases_to_delete = releases
-        .iter()
-        .skip(KEEP_RELEASES)
-        .map(|release| release.tag_name.clone())
-        .collect::<Vec<_>>();
-    if releases_to_delete.is_empty() {
-        ok("No old releases to prune");
-    } else {
-        for tag in &releases_to_delete {
-            println!("   deleting release: {tag}");
-            let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
-            delete.args(["release", "delete", tag, "--yes"]);
-            if let Err(error) = run_checked(&mut delete) {
-                warn(format!("failed to delete release {tag}: {error:#}"));
-            }
-        }
-        ok(format!(
-            "Deleted {} old release(s)",
-            releases_to_delete.len()
-        ));
-    }
-
-    let keep_tags = releases
-        .iter()
-        .take(KEEP_RELEASES)
-        .map(|release| release.tag_name.clone())
-        .collect::<Vec<_>>();
-
-    let mut artifacts = ctx.command_in("gh", &ctx.repo_root);
-    artifacts.args([
-        "api",
-        "repos/{owner}/{repo}/actions/artifacts",
-        "--paginate",
-        "--jq",
-        ".artifacts[] | [(.id | tostring), .workflow_run.head_branch] | @tsv",
-    ]);
-    let artifact_rows = run_capture(&mut artifacts)?;
-    let mut deleted = 0;
-    for row in artifact_rows.lines() {
-        let mut fields = row.split('\t');
-        let Some(id) = fields.next() else {
-            continue;
-        };
-        let Some(branch) = fields.next() else {
-            continue;
-        };
-        if keep_tags.iter().any(|tag| tag == branch) {
-            continue;
-        }
-        let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
-        delete.args([
-            "api",
-            "-X",
-            "DELETE",
-            &format!("repos/{{owner}}/{{repo}}/actions/artifacts/{id}"),
-        ]);
-        let _ = run_checked(&mut delete);
-        deleted += 1;
-    }
-    if deleted == 0 {
-        ok("No old artifacts to prune");
-    } else {
-        ok(format!("Deleted {deleted} old artifact(s)"));
-    }
-
-    let mut package_check = ctx.release_command_in("gh", &ctx.repo_root);
-    package_check.args(["api", "orgs/scryer-media/packages/container/scryer"]);
-    if !run_status(&mut package_check)?.success() {
-        ok("No GHCR package found — skipping Docker cleanup");
-        return Ok(());
-    }
-
-    let mut versions = ctx.command_in("gh", &ctx.repo_root);
-    versions.args([
-        "api",
-        "orgs/scryer-media/packages/container/scryer/versions",
-        "--paginate",
-        "--jq",
-        ".[] | [(.id | tostring), .created_at, ((.metadata.container.tags | length) | tostring)] | @tsv",
-    ]);
-    let versions = run_capture(&mut versions)?;
-    let mut rows = Vec::new();
-    for row in versions.lines() {
-        let mut fields = row.split('\t');
-        let Some(id) = fields.next() else {
-            continue;
-        };
-        let Some(created_at) = fields.next() else {
-            continue;
-        };
-        let Some(tag_count) = fields.next() else {
-            continue;
-        };
-        rows.push((
-            id.to_string(),
-            DateTime::parse_from_rfc3339(created_at)?.with_timezone(&Utc),
-            tag_count.parse::<usize>()?,
-        ));
-    }
-    let mut tagged = rows
-        .iter()
-        .filter(|(_, _, tag_count)| *tag_count > 0)
-        .map(|(_, created_at, _)| *created_at)
-        .collect::<Vec<_>>();
-    tagged.sort_by_key(|created_at| *created_at);
-    tagged.reverse();
-    if tagged.len() < KEEP_RELEASES {
-        ok(format!(
-            "Fewer than {KEEP_RELEASES} Docker releases — nothing to cull"
-        ));
-        return Ok(());
-    }
-    let cutoff = tagged[KEEP_RELEASES - 1] - Duration::seconds(60);
-    let mut deleted_versions = 0;
-    for (id, created_at, _) in rows {
-        if created_at >= cutoff {
-            continue;
-        }
-        let mut delete = ctx.release_command_in("gh", &ctx.repo_root);
-        delete.args([
-            "api",
-            "--method",
-            "DELETE",
-            &format!("orgs/scryer-media/packages/container/scryer/versions/{id}"),
-        ]);
-        let _ = run_checked(&mut delete);
-        deleted_versions += 1;
-    }
-    if deleted_versions == 0 {
-        ok("No old Docker images to cull");
-    } else {
-        ok(format!(
-            "Deleted {deleted_versions} old Docker image version(s) from ghcr.io/scryer-media/scryer"
-        ));
-    }
     Ok(())
 }
 
@@ -3238,7 +3258,10 @@ mod tests {
             tag_name: "scryer-v0.13.2".to_string(),
             catalog_url: OFFICIAL_PLUGIN_CATALOG_URL.to_string(),
             catalog_checksum_sha256: Some("deadbeef".to_string()),
-            validated_steps: vec!["builtin_refresh".to_string()],
+            validated_steps: REQUIRED_SCRYER_DRY_RUN_STEPS
+                .iter()
+                .map(|step| (*step).to_string())
+                .collect(),
             cached_builtins_dir: Some("tmp/cache".to_string()),
             cached_builtins_sha256: BTreeMap::from([(
                 "nzbgeek.wasm".to_string(),
@@ -3475,6 +3498,25 @@ mod tests {
     }
 
     #[test]
+    fn release_dry_run_cache_rejects_missing_datastore_restore_gate() {
+        let mut cache = sample_release_dry_run_cache();
+        cache
+            .validated_steps
+            .retain(|step| step != "e2e_datastore_restore_matrix");
+        let reason = release_dry_run_cache_rejection_reason(
+            &cache,
+            &sample_release_dry_run_expectations(),
+            true,
+        );
+        assert_eq!(
+            reason.as_deref(),
+            Some(
+                "dry run did not record required release-blocking validations: e2e_datastore_restore_matrix"
+            )
+        );
+    }
+
+    #[test]
     fn release_dry_run_cache_rejects_latest_tag_mismatch() {
         let mut cache = sample_release_dry_run_cache();
         cache.latest_tag_seen = Some("scryer-v0.13.0".to_string());
@@ -3542,5 +3584,47 @@ mod tests {
             true,
         );
         assert!(reason.is_none());
+    }
+
+    #[test]
+    fn release_hygiene_flags_local_absolute_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-plugin-sdk/src/lib.rs"),
+            "const SDK_ROOT: &str = \"/Users/example/dev/scryer-media/scryer\";",
+        );
+
+        assert_eq!(
+            violations,
+            vec![
+                "crates/scryer-plugin-sdk/src/lib.rs:1: local absolute path reference: const SDK_ROOT: &str = \"/Users/example/dev/scryer-media/scryer\";"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_hygiene_flags_sibling_e2e_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-application/src/lib.rs"),
+            "let fixture = manifest_dir.join(\"../e2e/testdata\").join(name);",
+        );
+
+        assert_eq!(
+            violations,
+            vec![
+                "crates/scryer-application/src/lib.rs:1: sibling e2e repo reference: let fixture = manifest_dir.join(\"../e2e/testdata\").join(name);"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_hygiene_allows_repo_local_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-application/src/lib.rs"),
+            "let fixture = manifest_dir.join(\"tests/fixtures\").join(name);",
+        );
+
+        assert!(violations.is_empty());
     }
 }

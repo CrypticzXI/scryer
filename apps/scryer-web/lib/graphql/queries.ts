@@ -310,6 +310,8 @@ const PROVIDER_TYPE_FIELDS = `
     defaultBaseUrl
     availableHostBindings
     recommendedFacets
+    supportedEvents
+    supportsTest
     configFields {
       key
       label
@@ -374,6 +376,22 @@ const NOTIFICATION_SUBSCRIPTION_FIELDS = `
     isEnabled
     createdAt
     updatedAt`;
+
+export const BACKUP_INFO_FIELDS = `
+    filename
+    sizeBytes
+    createdAt
+    formatVersion
+    sourceEngine
+    sourceMigrationKey
+    trigger
+    encrypted
+    rowCounts {
+      table
+      rowCount
+    }
+    status
+    errorMessage`;
 
 const DELETE_PREVIEW_FIELDS = `
     fingerprint
@@ -715,7 +733,40 @@ export const TITLE_LIST_FIELDS = `
     episodesTotal
     contentStatus
     metadataFetchedAt
+    createdAt`;
+
+export const TITLE_COMMAND_PALETTE_FIELDS = `
+    id
+    name
+    facet
+    libraryId
+    librarySlug
+    slug
+    sortTitle
+    year
+    posterUrl
+    posterSourceUrl
+    metadataFetchedAt
+    createdAt`;
+
+export const TITLE_CATALOG_SEARCH_FIELDS = `
+    id
+    name
+    facet
+    libraryId
+    librarySlug
+    monitored
+    slug
+    posterUrl
+    posterSourceUrl
+    metadataFetchedAt
     createdAt
+    externalIds {
+      source
+      value
+    }`;
+
+export const TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS = `${TITLE_LIST_FIELDS}
     externalIds {
       source
       value
@@ -782,9 +833,21 @@ ${TITLE_LIST_FIELDS}
   }
 }`;
 
+export const catalogSearchTitlesQuery = `query CatalogSearchTitles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
+  titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
+${TITLE_CATALOG_SEARCH_FIELDS}
+  }
+}`;
+
+export const commandPaletteTitlesQuery = `query CommandPaletteTitles($facet: MediaFacetValue, $libraryIds: [String!], $query: String) {
+  titles(facet: $facet, libraryIds: $libraryIds, query: $query) {
+${TITLE_COMMAND_PALETTE_FIELDS}
+  }
+}`;
+
 export const titlesByExternalIdsQuery = `query TitlesByExternalIds($source: String!, $values: [String!]!) {
   titlesByExternalIds(source: $source, values: $values) {
-${TITLE_LIST_FIELDS}
+${TITLE_LIST_FIELDS_WITH_EXTERNAL_IDS}
   }
 }`;
 
@@ -1211,6 +1274,9 @@ export const indexersQuery = `query Indexers($providerType: String) {
     rateLimitBurst
     disabledUntil
     isEnabled
+    isManaged
+    managedParentConfigId
+    supportsManagedChildrenSync
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
@@ -1311,10 +1377,14 @@ const indexerFieldSelection = `
     rateLimitBurst
     disabledUntil
     isEnabled
+    isManaged
+    managedParentConfigId
+    supportsManagedChildrenSync
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
     lastErrorAt
+    lastQueryAt
     configJson
     createdAt
     updatedAt`;
@@ -1451,6 +1521,9 @@ export const downloadClientsInitQuery = `query DownloadClientsInit {
   }
   downloadClientProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
+  systemHealth {
+    dbPath
+  }
 }`;
 
 export const indexersInitQuery = `query IndexersInit($providerType: String) {
@@ -1464,6 +1537,9 @@ export const setupWizardProviderTypesInitQuery = `query SetupWizardProviderTypes
   downloadClientProviderTypes {${PROVIDER_TYPE_FIELDS}
   }
   indexerProviderTypes {${PROVIDER_TYPE_FIELDS}
+  }
+  systemHealth {
+    dbPath
   }
 }`;
 
@@ -1550,6 +1626,15 @@ export const securitySettingsQuery = `query SecuritySettings {
   }
 }`;
 
+export const autoBackupSettingsQuery = `query AutoBackupSettings {
+  autoBackupSettings {
+    enabled
+    dailyTimeLocal
+    autoBackupKeyPresent
+    nextRunAt
+  }
+}`;
+
 export const delayProfilesQuery = `query DelayProfiles {
   delayProfiles {
     id
@@ -1599,6 +1684,11 @@ export const subtitleSettingsInitQuery = `query SubtitleSettingsInit {
 export const downloadClientRoutingInitQuery = `query DownloadClientRoutingInit($scopeId: ContentScopeValue!) {
   downloadClientConfigs {${downloadClientFieldSelection}
   }
+  downloadClientRouting(scope: $scopeId) {${downloadClientRoutingFieldSelection}
+  }
+}`;
+
+export const downloadClientRoutingQuery = `query DownloadClientRouting($scopeId: ContentScopeValue!) {
   downloadClientRouting(scope: $scopeId) {${downloadClientRoutingFieldSelection}
   }
 }`;
@@ -1656,6 +1746,43 @@ export const pluginInstallProgressSubscription = `subscription PluginInstallProg
   }
 }`;
 
+const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
+    sessionId
+    status
+    phase
+    startedAt
+    updatedAt
+    overallTotalKnown
+    overallProgress { total completed failed }
+    moviesTotalKnown
+    moviesProgress { total completed failed }
+    seriesTotalKnown
+    seriesProgress { total completed failed }
+    episodeFetchTotalKnown
+    episodeFetchExpectedTotal
+    episodeFetchExpectedMonitoredTotal
+    episodeFetchProgress { total completed failed }
+    snapshotBuildTotalKnown
+    snapshotBuildProgress { total completed failed }
+    matchedMovieCount
+    matchedSeriesCount
+    unmatchedMovieCount
+    unmatchedSeriesCount
+    ambiguousMovieCount
+    ambiguousSeriesCount
+    errorMessage
+`;
+
+export const externalImportMonitorWarmupStatusQuery = `query ExternalImportMonitorWarmupStatus($sessionId: String!) {
+  externalImportMonitorWarmupStatus(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+export const externalImportMonitorWarmupProgressSubscription = `subscription ExternalImportMonitorWarmupProgress($sessionId: String!) {
+  externalImportMonitorWarmupProgress(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
 export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
 }`;
@@ -1664,6 +1791,8 @@ export const systemHealthQuery = `query SystemHealth {
   systemHealth {
     serviceReady
     dbPath
+    datastoreEngine
+    datastoreMigrationKey
     totalTitles
     monitoredTitles
     totalUsers
@@ -1830,6 +1959,11 @@ export const pluginsQuery = `query Plugins {
     outageMessage
     blockedActions
     lastError
+  }
+}`;
+
+export const backupsQuery = `query Backups {
+  backups {${BACKUP_INFO_FIELDS}
   }
 }`;
 

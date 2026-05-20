@@ -8,13 +8,14 @@ use std::sync::Arc;
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    BlocklistRepository, ImportRepository, MediaFileRepository, ReleaseAttemptRepository,
-    ShowRepository, TitleRepository, WantedItemRepository, import_completed_download,
+    BlocklistRepository, DownloadSourceIdentity, ImportRepository, MediaFileRepository,
+    ReleaseAttemptRepository, ShowRepository, TitleRepository, WantedItemRepository,
+    import_completed_download,
 };
 use scryer_domain::{
     Collection, CompletedDownload, Episode, Id, ImportDecision, ImportSkipReason, MediaFacet, Title,
 };
-use scryer_infrastructure::{FsFileImporter, SqliteWorkflowStore};
+use scryer_infrastructure::{FsFileImporter, ImportStore};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -23,12 +24,12 @@ use scryer_infrastructure::{FsFileImporter, SqliteWorkflowStore};
 /// Build an AppUseCase with a real SQLite import repository and filesystem
 /// file importer so that tests can exercise the full import pipeline.
 fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseCase {
-    let workflow_store = Arc::new(SqliteWorkflowStore::new(&ctx.db));
+    let workflow_store = Arc::new(ImportStore::new(ctx.db.datastore()));
     ctx.app.with_test_overrides(|builder| {
         builder
             .with_imports(workflow_store)
             .with_file_importer(Arc::new(FsFileImporter))
-            .with_media_files(Arc::new(ctx.library_state.clone()))
+            .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_wanted_items(Arc::new(ctx.library_state.clone()))
     })
 }
@@ -97,7 +98,7 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.catalog.create(title).await.expect("add movie title")
+    ctx.titles.create(title).await.expect("add movie title")
 }
 
 async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &str) -> Title {
@@ -138,7 +139,7 @@ async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &
         digital_release_date: None,
         folder_path: None,
     };
-    ctx.catalog.create(title).await.expect("add series title")
+    ctx.titles.create(title).await.expect("add series title")
 }
 
 fn mediainfo_fixture(name: &str) -> PathBuf {
@@ -213,7 +214,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_collection(collection.clone())
         .await
         .expect("create collection");
@@ -239,7 +240,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_episode(episode.clone())
         .await
         .expect("create episode");
@@ -353,7 +354,7 @@ async fn seed_series_episode_in_collection(
         monitored: true,
         created_at: chrono::Utc::now(),
     };
-    ctx.catalog
+    ctx.shows
         .create_episode(episode.clone())
         .await
         .expect("create seeded episode");
@@ -372,13 +373,12 @@ async fn import_deduplicates_completed_imports() {
     let ctx = TestContext::new().await;
     let app = app_with_real_imports(&ctx);
     let user = ctx.app.find_or_create_default_user().await.unwrap();
-    let workflow_store = SqliteWorkflowStore::new(&ctx.db);
+    let workflow_store = ImportStore::new(ctx.db.datastore());
 
     // Seed a completed import record for (nzbget, "dl-dedup").
     let import_id = workflow_store
         .queue_import_request(
-            "nzbget".to_string(),
-            "dl-dedup".to_string(),
+            DownloadSourceIdentity::new(Some("test-client"), "nzbget", "dl-dedup"),
             "movie_download".to_string(),
             "{}".to_string(),
         )
@@ -486,6 +486,129 @@ async fn import_fails_when_no_video_files_in_dest_dir() {
 
     assert_eq!(result.decision, ImportDecision::Skipped);
     assert_eq!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles));
+}
+
+#[tokio::test]
+async fn import_movie_strm_file_is_treated_as_video_artifact() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let strm = source_dir
+        .path()
+        .join("Test.Movie.2024.1080p.WEB-DL.H264.strm");
+    std::fs::write(
+        &strm,
+        b"https://nzbdav.example/stream/Test.Movie.2024.1080p.WEB-DL.H264",
+    )
+    .expect("write strm");
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_movie_title(
+        &ctx,
+        "title-movie-strm-1",
+        "Test Movie",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+
+    let completed = scryer_completed(
+        "dl-movie-strm-1",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "movie",
+    );
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("import_completed_download");
+
+    assert_eq!(result.decision, ImportDecision::Imported);
+    let dest_path = result.dest_path.expect("dest path");
+    assert!(dest_path.ends_with(".strm"));
+    assert!(std::path::Path::new(&dest_path).exists());
+    assert_eq!(
+        std::fs::read_to_string(&dest_path).expect("read imported strm"),
+        "https://nzbdav.example/stream/Test.Movie.2024.1080p.WEB-DL.H264"
+    );
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].scan_status, "scanned");
+    assert_eq!(media_files[0].container_format.as_deref(), Some("strm"));
+    assert_eq!(media_files[0].video_height, Some(1080));
+    assert_eq!(media_files[0].video_width, Some(1920));
+    assert_eq!(media_files[0].video_codec, None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_movie_symlink_file_preserves_symlink_and_synthetic_media_traits() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let backing_dir = tempfile::tempdir().expect("backing tempdir");
+    let backing_video = backing_dir
+        .path()
+        .join("Test.Movie.2024.2160p.WEB-DL.H265.DDP5.1.Atmos.mkv");
+    std::fs::write(&backing_video, b"fake video content").expect("write backing video");
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_link = source_dir
+        .path()
+        .join("Test.Movie.2024.2160p.WEB-DL.H265.DDP5.1.Atmos.mkv");
+    std::os::unix::fs::symlink(&backing_video, &source_link).expect("create source symlink");
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_movie_title(
+        &ctx,
+        "title-movie-symlink-1",
+        "Test Movie",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+
+    let completed = scryer_completed(
+        "dl-movie-symlink-1",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "movie",
+    );
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("import_completed_download");
+
+    assert_eq!(result.decision, ImportDecision::Imported);
+    assert_eq!(
+        result.link_type.map(|strategy| strategy.as_str()),
+        Some("symlink")
+    );
+    let dest_path = result.dest_path.expect("dest path");
+    assert!(
+        std::fs::symlink_metadata(&dest_path)
+            .expect("dest metadata")
+            .file_type()
+            .is_symlink()
+    );
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(media_files[0].video_height, Some(2160));
+    assert_eq!(media_files[0].video_width, Some(3840));
+    assert_eq!(media_files[0].video_codec, None);
+    assert_eq!(media_files[0].audio_codec, None);
+    assert_eq!(media_files[0].audio_channels, None);
 }
 
 // ---------------------------------------------------------------------------
@@ -665,7 +788,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         "rejected movie should not create library artifacts"
     );
     assert!(
-        ctx.library_state
+        ctx.media_files
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files")
@@ -685,7 +808,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         scryer_application::WantedStatus::Wanted
     );
 
-    let failures = scryer_infrastructure::SqliteReleaseStore::new(&ctx.db)
+    let failures = scryer_infrastructure::ReleaseStore::new(ctx.db.datastore())
         .list_failed_release_signatures_for_title(&title.id, 10)
         .await
         .expect("failed signatures");
@@ -772,7 +895,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         Some(ImportSkipReason::PostDownloadRuleBlocked)
     );
     assert!(
-        ctx.library_state
+        ctx.media_files
             .list_media_files_for_title(&title.id)
             .await
             .expect("list media files")
@@ -839,7 +962,7 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
     assert!(results[0].success, "manual import should succeed");
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -880,7 +1003,7 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
     )
     .await;
     let existing_file_id = ctx
-        .library_state
+        .media_files
         .insert_media_file(&scryer_application::InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: dest_root
@@ -897,11 +1020,11 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
         })
         .await
         .expect("insert incumbent pack");
-    ctx.library_state
+    ctx.media_files
         .link_file_to_episode(&existing_file_id, &episode1.id)
         .await
         .expect("link incumbent episode 1");
-    ctx.library_state
+    ctx.media_files
         .link_file_to_episode(&existing_file_id, &episode2.id)
         .await
         .expect("link incumbent episode 2");
@@ -939,7 +1062,7 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
     );
 
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -1002,7 +1125,7 @@ score_entry["bad_runtime"] := count(input.file.video_width) if {
 
     assert_eq!(result.decision, ImportDecision::Imported);
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");
@@ -1036,7 +1159,7 @@ async fn import_upgrade_rejected_by_post_download_rule_restores_prior_file() {
         .join("Upgrade.Movie.2024.1080p.WEB-DL.H264.mkv");
     std::fs::create_dir_all(old_path.parent().expect("old path parent")).expect("create old dir");
     std::fs::copy(mediainfo_fixture("h264_aac.mkv"), &old_path).expect("seed old movie file");
-    ctx.library_state
+    ctx.media_files
         .insert_media_file(&scryer_application::InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: old_path.to_string_lossy().to_string(),
@@ -1090,7 +1213,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         "old file should have been restored after rejected upgrade"
     );
     let media_files = ctx
-        .library_state
+        .media_files
         .list_media_files_for_title(&title.id)
         .await
         .expect("list media files");

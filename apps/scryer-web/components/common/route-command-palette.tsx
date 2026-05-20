@@ -15,7 +15,7 @@ import { TitlePosterSlot } from "@/components/title-poster-slot";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { sectionLabelForFacet, viewFromFacet } from "@/lib/facets/helpers";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
-import { titlesQuery } from "@/lib/graphql/queries";
+import { commandPaletteTitlesQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Facet, TitleRecord } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
@@ -183,7 +183,7 @@ export function RouteCommandPalette({
     setCatalogLoading(true);
     const timer = window.setTimeout(() => {
       void client
-        .query(titlesQuery, { facet: null, query }, { requestPolicy: "network-only" })
+        .query(commandPaletteTitlesQuery, { facet: null, query }, { requestPolicy: "network-only" })
         .toPromise()
         .then(({ data, error }) => {
           if (requestSeq !== catalogRequestSeqRef.current) {
