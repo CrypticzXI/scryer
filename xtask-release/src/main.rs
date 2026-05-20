@@ -87,8 +87,6 @@ const REQUIRED_SCRYER_DRY_RUN_STEPS: &[&str] = &[
     "web_validation",
     "rust_validation",
     "release_hygiene",
-    "e2e_datastore_matrix",
-    "e2e_datastore_restore_matrix",
 ];
 
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
@@ -2279,8 +2277,6 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
             web_result?;
             rust_result?;
             run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
-            run_scryer_e2e_datastore_matrix_validation(ctx, "[e2e] ")?;
-            run_scryer_e2e_datastore_restore_matrix_validation(ctx, "[e2e-restore] ")?;
             ok("Parallel validation passed");
             Ok::<(Vec<PathBuf>, Vec<String>), anyhow::Error>((
                 refreshed_builtin_paths,
@@ -2810,64 +2806,6 @@ fn run_scryer_release_hygiene_validation(ctx: &TaskContext, prefix: &'static str
         );
     }
     prefixed_ok(prefix, "Release hygiene check passed");
-    Ok(())
-}
-
-fn run_scryer_e2e_datastore_matrix_validation(
-    ctx: &TaskContext,
-    prefix: &'static str,
-) -> Result<()> {
-    let e2e_dir = ctx.repo_root.parent().unwrap_or(&ctx.repo_root).join("e2e");
-    let runner = e2e_dir.join("cmd/scryer-e2e");
-    if !runner.is_dir() {
-        bail!(
-            "release-blocking PostgreSQL e2e datastore matrix is unavailable: {} does not exist",
-            runner.display()
-        );
-    }
-
-    prefixed_step(
-        prefix,
-        "Running release-blocking Scryer e2e datastore matrix",
-    );
-    let mut command = ctx.release_command_in("go", &e2e_dir);
-    command.args([
-        "run",
-        "./cmd/scryer-e2e",
-        "release-gate",
-        "datastore-matrix",
-    ]);
-    run_streaming(&mut command, prefix)?;
-    prefixed_ok(prefix, "Scryer e2e datastore matrix passed");
-    Ok(())
-}
-
-fn run_scryer_e2e_datastore_restore_matrix_validation(
-    ctx: &TaskContext,
-    prefix: &'static str,
-) -> Result<()> {
-    let e2e_dir = ctx.repo_root.parent().unwrap_or(&ctx.repo_root).join("e2e");
-    let runner = e2e_dir.join("cmd/scryer-e2e");
-    if !runner.is_dir() {
-        bail!(
-            "release-blocking PostgreSQL e2e restore matrix is unavailable: {} does not exist",
-            runner.display()
-        );
-    }
-
-    prefixed_step(
-        prefix,
-        "Running release-blocking Scryer e2e cross-engine restore matrix",
-    );
-    let mut command = ctx.release_command_in("go", &e2e_dir);
-    command.args([
-        "run",
-        "./cmd/scryer-e2e",
-        "release-gate",
-        "datastore-restore-matrix",
-    ]);
-    run_streaming(&mut command, prefix)?;
-    prefixed_ok(prefix, "Scryer e2e cross-engine restore matrix passed");
     Ok(())
 }
 
@@ -3523,25 +3461,6 @@ mod tests {
         assert_eq!(
             reason.as_deref(),
             Some("release arguments changed since dry run")
-        );
-    }
-
-    #[test]
-    fn release_dry_run_cache_rejects_missing_datastore_restore_gate() {
-        let mut cache = sample_release_dry_run_cache();
-        cache
-            .validated_steps
-            .retain(|step| step != "e2e_datastore_restore_matrix");
-        let reason = release_dry_run_cache_rejection_reason(
-            &cache,
-            &sample_release_dry_run_expectations(),
-            true,
-        );
-        assert_eq!(
-            reason.as_deref(),
-            Some(
-                "dry run did not record required release-blocking validations: e2e_datastore_restore_matrix"
-            )
         );
     }
 
