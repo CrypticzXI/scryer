@@ -540,11 +540,14 @@ jobs:
           cargo build -p scryer --release --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Codesign binary
-        if: ${{ secrets.APPLE_SIGNING_CERT_P12 != '' && secrets.APPLE_SIGNING_CERT_PASSWORD != '' }}
         env:
           CERT_P12: ${{ secrets.APPLE_SIGNING_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.APPLE_SIGNING_CERT_PASSWORD }}
         run: |
+          if [ -z "${CERT_P12}" ] || [ -z "${CERT_PASSWORD}" ]; then
+            echo "Skipping codesign: Apple signing secrets are not configured."
+            exit 0
+          fi
           KEYCHAIN="build.keychain-db"
           KEYCHAIN_PASS="ci-ephemeral"
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
