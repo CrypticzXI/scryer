@@ -1736,7 +1736,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/features"))
-            .and(query_param("query", "superman & lois"))
+            .and(query_param("query", "silver & sage"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": []
             })))
