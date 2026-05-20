@@ -28,9 +28,11 @@ const ERROR_PATTERNS: RegExp[] = [
   /\bfailed\b/i,
   /\brequest failed\b/i,
   /\berror\b/i,
+  /\bvalidation:\s*/i,
   /\bfailed to (?:load|save|update|create|delete|queue|connect|connect\s+to)\b/i,
   /\bqueue operation failed\b/i,
   /\bdownload client connection test failed\b/i,
+  /\bno download client enabled\b/i,
   /\binvalid\b/i,
 ];
 

@@ -1306,7 +1306,10 @@ mod tests {
 
     #[test]
     fn normalize_basic_title() {
-        assert_eq!(normalize_for_matching("The Silver Harbor"), "the silver harbor");
+        assert_eq!(
+            normalize_for_matching("The Silver Harbor"),
+            "the silver harbor"
+        );
     }
 
     #[test]
@@ -1319,7 +1322,10 @@ mod tests {
 
     #[test]
     fn normalize_underscores() {
-        assert_eq!(normalize_for_matching("the_silver_harbor"), "the silver harbor");
+        assert_eq!(
+            normalize_for_matching("the_silver_harbor"),
+            "the silver harbor"
+        );
     }
 
     #[test]

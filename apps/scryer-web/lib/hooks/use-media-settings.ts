@@ -38,6 +38,11 @@ import {
   qualityProfileSettingsToCategoryPersonaSelections,
   resolveQualityProfileCatalogState,
 } from "@/lib/utils/quality-profiles";
+import {
+  facetScopedMediaSettingsScopeId,
+  updateFacetScopedStringArrayRecord,
+  updateFacetScopedStringRecord,
+} from "@/lib/utils/media-settings-scope";
 import type { RootFolderOption } from "@/lib/types/titles";
 import type {
   QualityProfileSettingsPayload,
@@ -504,42 +509,44 @@ export function useMediaSettings({
       );
 
       if (mediaSettings) {
+        const mediaSettingsScopeId = facetScopedMediaSettingsScopeId(mediaSettings);
         setCategoryRequiredAudioLanguages((previous) => {
           const nextLanguages = mediaSettings.requiredAudioLanguages ?? [];
-          const currentLanguages = previous[activeQualityScopeId] ?? [];
-          const same =
-            currentLanguages.length === nextLanguages.length &&
-            currentLanguages.every((value, index) => value === nextLanguages[index]);
-          return same
-            ? previous
-            : { ...previous, [activeQualityScopeId]: nextLanguages };
+          return updateFacetScopedStringArrayRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextLanguages,
+          );
         });
         setCategoryRenameTemplates((previous) => {
           const nextTemplate = mediaSettings.renameTemplate || DEFAULT_RENAME_TEMPLATE;
-          if (previous[activeQualityScopeId] === nextTemplate) {
-            return previous;
-          }
-          return { ...previous, [activeQualityScopeId]: nextTemplate };
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextTemplate,
+          );
         });
 
         setCategoryRenameCollisionPolicies((previous) => {
           const nextPolicy = normalizeRenameCollisionPolicy(
             mediaSettings.renameCollisionPolicy,
           );
-          if (previous[activeQualityScopeId] === nextPolicy) {
-            return previous;
-          }
-          return { ...previous, [activeQualityScopeId]: nextPolicy };
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextPolicy,
+          );
         });
 
         setCategoryRenameMissingMetadataPolicies((previous) => {
           const nextPolicy = normalizeRenameMissingMetadataPolicy(
             mediaSettings.renameMissingMetadataPolicy,
           );
-          if (previous[activeQualityScopeId] === nextPolicy) {
-            return previous;
-          }
-          return { ...previous, [activeQualityScopeId]: nextPolicy };
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextPolicy,
+          );
         });
 
         if (mediaSettings.scope === "anime") {
@@ -577,17 +584,21 @@ export function useMediaSettings({
 
         setNfoWriteOnImport((previous) => {
           const nextValue = mediaSettings.nfoWriteOnImport ? "true" : "false";
-          return previous[activeQualityScopeId] === nextValue
-            ? previous
-            : { ...previous, [activeQualityScopeId]: nextValue };
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextValue,
+          );
         });
 
         if (mediaSettings.plexmatchWriteOnImport !== null) {
           setPlexmatchWriteOnImport((previous) => {
             const nextValue = mediaSettings.plexmatchWriteOnImport ? "true" : "false";
-            return previous[activeQualityScopeId] === nextValue
-              ? previous
-              : { ...previous, [activeQualityScopeId]: nextValue };
+            return updateFacetScopedStringRecord(
+              previous,
+              mediaSettingsScopeId,
+              nextValue,
+            );
           });
         }
       }

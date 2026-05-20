@@ -1491,6 +1491,172 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
 }
 
 #[tokio::test]
+async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+
+    let title = create_catalog_title(
+        &ctx,
+        "Template Scope Show",
+        MediaFacet::Anime,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "91567".to_string(),
+        }],
+        vec![],
+        true,
+    )
+    .await;
+
+    let season_collection = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create season collection");
+
+    let season_dir = media_root
+        .path()
+        .join("Template Scope Show")
+        .join("Season 01");
+    std::fs::create_dir_all(&season_dir).expect("create season dir");
+    let file_path = season_dir.join("Template.Scope.Show.S01E01.1080p.WEB-DL.mkv");
+    std::fs::write(&file_path, b"anime-template-preview").expect("write preview file");
+
+    let episode = ctx
+        .shows
+        .create_episode(Episode {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_id: Some(season_collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Binary Bloom".to_string()),
+            air_date: None,
+            duration_seconds: Some(1440),
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some("7".to_string()),
+            overview: None,
+            tvdb_id: Some("9156701".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create episode");
+
+    let file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: file_path.to_string_lossy().to_string(),
+            size_bytes: 2048,
+            quality_label: Some("1080p".to_string()),
+            release_group: Some("SkyGroup".to_string()),
+            source_type: Some("WEB-DL".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert media file");
+    ctx.media_files
+        .link_file_to_episode(&file_id, &episode.id)
+        .await
+        .expect("link file to episode");
+
+    let update = gql(
+        &ctx,
+        r#"
+        mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+          updateMediaSettings(input: $input) {
+            scope
+            renameTemplate
+            renameCollisionPolicy
+            renameMissingMetadataPolicy
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "scope": "anime",
+                "renameTemplate": "{title} - {episode_title} - {source} - {group} - {quality}.{ext}",
+                "renameCollisionPolicy": "replace_if_better",
+                "renameMissingMetadataPolicy": "skip"
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&update);
+    assert_eq!(update["data"]["updateMediaSettings"]["scope"], "anime");
+    assert_eq!(
+        update["data"]["updateMediaSettings"]["renameTemplate"],
+        "{title} - {episode_title} - {source} - {group} - {quality}.{ext}"
+    );
+
+    let body = gql(
+        &ctx,
+        r#"
+        query($input: MediaRenamePreviewInput!) {
+          mediaRenamePreview(input: $input) {
+            total
+            renamable
+            items {
+              mediaFileId
+              currentPath
+              proposedPath
+            }
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "facet": "anime",
+                "titleId": title.id,
+                "dryRun": true
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let plan = &body["data"]["mediaRenamePreview"];
+    assert_eq!(plan["total"].as_i64(), Some(1));
+    assert_eq!(plan["renamable"].as_i64(), Some(1));
+    assert_eq!(plan["items"][0]["mediaFileId"], json!(file_id));
+    assert_eq!(
+        plan["items"][0]["currentPath"],
+        json!(file_path.to_string_lossy().to_string())
+    );
+    assert_eq!(
+        plan["items"][0]["proposedPath"],
+        json!(
+            season_dir
+                .join("Template Scope Show - Binary Bloom - WEB-DL - SkyGroup - 1080p.mkv")
+                .to_string_lossy()
+                .to_string()
+        )
+    );
+}
+
+#[tokio::test]
 async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_numbering() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;

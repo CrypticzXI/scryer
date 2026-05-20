@@ -44,6 +44,7 @@ import {
   normalizeLibraryFilterSelection,
   selectedLibraryIdsToQueryValue,
 } from "@/lib/utils/library-filter";
+import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 
 type WantedContainerProps = {
@@ -342,7 +343,7 @@ export const WantedContainer = memo(function WantedContainer({
         setGlobalStatus(t("wanted.searchTriggered"));
         void refreshItems();
       } catch (error) {
-        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
       }
     },
     [executeTriggerSearch, confirmReplaceConflict, refreshItems, setGlobalStatus, t],
@@ -440,7 +441,7 @@ export const WantedContainer = memo(function WantedContainer({
       try {
         await searchAndQueueCutoffItem(item, { allowReplaceConfirmation: true });
       } catch (error) {
-        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
       } finally {
         setCutoffAutoSearchingId(null);
       }
@@ -520,7 +521,7 @@ export const WantedContainer = memo(function WantedContainer({
         assertNoReplaceConflict(payload, conflictMessage);
         setGlobalStatus(t("status.queueSuccess", { name: release.title }));
       } catch (error) {
-        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
       }
     },
     [client, confirmReplaceConflict, setGlobalStatus, t],
