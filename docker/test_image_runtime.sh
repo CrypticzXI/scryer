@@ -28,17 +28,30 @@ reown_volume() {
 
     docker run --rm \
         -v "$volume_name:/target" \
-        alpine:3.22 \
+        alpine:3 \
         chown "$owner" /target >/dev/null
 }
 
-volume_owner() {
+seed_volume_probe() {
+    volume_name=$1
+    owner=$2
+
+    docker run --rm \
+        -v "$volume_name:/target" \
+        alpine:3 \
+        sh -eu -c '
+            mkdir -p /target/probe
+            chown "$1" /target/probe >/dev/null
+        ' _ "$owner"
+}
+
+probe_owner() {
     volume_name=$1
 
     docker run --rm \
         -v "$volume_name:/target" \
-        alpine:3.22 \
-        stat -c '%u:%g' /target
+        alpine:3 \
+        stat -c '%u:%g' /target/probe
 }
 
 requested_uid=12345
@@ -84,6 +97,7 @@ assert_contains "$output" "scryer" "noexec tmpfs should still start"
 docker volume create "$config_volume" >/dev/null
 
 reown_volume "$config_volume" "65534:65534"
+seed_volume_probe "$config_volume" "65534:65534"
 docker run --rm --platform "$PLATFORM" \
     -e PUID="$requested_uid" \
     -e PGID="$requested_gid" \
@@ -91,14 +105,15 @@ docker run --rm --platform "$PLATFORM" \
     "$IMAGE_TAG" \
     --version >/dev/null
 
-owner=$(volume_owner "$config_volume")
+owner=$(probe_owner "$config_volume")
 [ "$owner" = "$requested_uid:$requested_gid" ] || {
-    printf 'assertion failed: root entrypoint path should chown /config\nexpected: %s\nactual: %s\n' \
+    printf 'assertion failed: root entrypoint path should chown seeded config content\nexpected: %s\nactual: %s\n' \
         "$requested_uid:$requested_gid" "$owner" >&2
     exit 1
 }
 
 reown_volume "$config_volume" "65534:65534"
+seed_volume_probe "$config_volume" "65534:65534"
 docker run --rm --platform "$PLATFORM" \
     --user "$nonroot_uid:$nonroot_gid" \
     -e PUID=12345 \
@@ -107,9 +122,9 @@ docker run --rm --platform "$PLATFORM" \
     "$IMAGE_TAG" \
     --version >/dev/null
 
-owner=$(volume_owner "$config_volume")
+owner=$(probe_owner "$config_volume")
 [ "$owner" = "65534:65534" ] || {
-    printf 'assertion failed: non-root entrypoint path should skip chown\nexpected: 65534:65534\nactual: %s\n' "$owner" >&2
+    printf 'assertion failed: non-root entrypoint path should skip chown on seeded config content\nexpected: 65534:65534\nactual: %s\n' "$owner" >&2
     exit 1
 }
 
