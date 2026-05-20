@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS _sqlx_migrations (
     success BOOLEAN NOT NULL,
     checksum BLOB NOT NULL,
     execution_time BIGINT NOT NULL,
-    checksum_algo TEXT NOT NULL DEFAULT 'sha384'
+    checksum_algo TEXT NOT NULL DEFAULT ''
 )
         "#,
     )
@@ -209,21 +209,12 @@ CREATE TABLE IF NOT EXISTS _sqlx_migrations (
 
     if !checksum_algo_exists {
         sqlx::query(
-            "ALTER TABLE _sqlx_migrations ADD COLUMN checksum_algo TEXT NOT NULL DEFAULT 'sha384'",
+            "ALTER TABLE _sqlx_migrations ADD COLUMN checksum_algo TEXT NOT NULL DEFAULT ''",
         )
         .execute(pool)
         .await
         .map_err(|error| AppError::Repository(error.to_string()))?;
     }
-
-    sqlx::query(
-        "UPDATE _sqlx_migrations
-            SET checksum_algo = 'sha384'
-          WHERE COALESCE(TRIM(checksum_algo), '') = ''",
-    )
-    .execute(pool)
-    .await
-    .map_err(|error| AppError::Repository(error.to_string()))?;
 
     Ok(())
 }
@@ -274,7 +265,7 @@ async fn load_applied_migrations(pool: &SqlitePool) -> AppResult<Vec<MigrationLe
                  installed_on,
                  success,
                  checksum,
-                 COALESCE(NULLIF(TRIM(checksum_algo), ''), 'sha384') AS checksum_algo,
+                 COALESCE(TRIM(checksum_algo), '') AS checksum_algo,
                  CASE WHEN COALESCE(TRIM(checksum_algo), '') = '' THEN 1 ELSE 0 END AS checksum_algo_inferred
              FROM _sqlx_migrations
              ORDER BY version",
@@ -290,7 +281,7 @@ async fn load_applied_migrations(pool: &SqlitePool) -> AppResult<Vec<MigrationLe
                  installed_on,
                  success,
                  checksum,
-                 'sha384' AS checksum_algo,
+                 '' AS checksum_algo,
                  1 AS checksum_algo_inferred
              FROM _sqlx_migrations
              ORDER BY version",
@@ -383,6 +374,21 @@ fn validate_known_migrations(
             continue;
         };
 
+        if row.checksum_algo_inferred {
+            if row.checksum == expected.checksum
+                || legacy_sqlite_checksum_matches(
+                    ChecksumAlgorithm::Sha384,
+                    &row.checksum,
+                    expected,
+                    payload_bytes,
+                )
+            {
+                continue;
+            }
+            invalid_checksum.push(key);
+            continue;
+        }
+
         let row_algo = match checksum_algo_from_str(&row.checksum_algo) {
             Some(value) => value,
             None => {
@@ -392,10 +398,6 @@ fn validate_known_migrations(
         };
 
         if row_algo == expected.checksum_algo && row.checksum == expected.checksum {
-            continue;
-        }
-
-        if row.checksum_algo_inferred && row.checksum == expected.checksum {
             continue;
         }
 
@@ -772,15 +774,38 @@ pub(crate) async fn title_external_id_projection_conflict_hint(
 
 pub(crate) async fn list_applied_migrations(pool: &SqlitePool) -> AppResult<Vec<MigrationStatus>> {
     let rows = load_applied_migrations(pool).await?;
+    let catalog = embedded_catalog()?;
+    let payload_bytes = embedded_payload_bytes()?;
     let mut out = Vec::with_capacity(rows.len());
 
     for row in rows {
+        let checksum_algo = if row.checksum_algo_inferred {
+            catalog
+                .find_migration(row.version)
+                .map(|expected| {
+                    if row.checksum == expected.checksum {
+                        expected.checksum_algo.as_str().to_string()
+                    } else if legacy_sqlite_checksum_matches(
+                        ChecksumAlgorithm::Sha384,
+                        &row.checksum,
+                        expected,
+                        &payload_bytes,
+                    ) {
+                        ChecksumAlgorithm::Sha384.as_str().to_string()
+                    } else {
+                        "inferred".to_string()
+                    }
+                })
+                .unwrap_or_else(|| "inferred".to_string())
+        } else {
+            row.checksum_algo.clone()
+        };
         out.push(MigrationStatus {
             migration_key: migration_assets::migration_key_from_version_and_desc(
                 row.version,
                 &row.description,
             ),
-            migration_checksum_algo: row.checksum_algo,
+            migration_checksum_algo: checksum_algo,
             migration_checksum: migration_assets::checksum_hex(&row.checksum),
             applied_at: row.installed_on,
             success: row.success,

@@ -1151,44 +1151,6 @@ fn json_parity_stores_do_not_bind_repository_payloads_as_jsonb() {
 }
 
 #[test]
-fn postgres_json_text_parity_migration_covers_touched_columns() {
-    let root = repo_root();
-    let manifest = fs::read_to_string(root.join("crates/scryer/src/db/migration_manifest.toml"))
-        .expect("read migration manifest");
-    assert!(
-        manifest.contains("version = 120")
-            && manifest.contains("postgres/migrations/0120_json_text_parity.sql"),
-        "migration manifest should include the JSON text parity migration"
-    );
-
-    let sql = fs::read_to_string(
-        root.join("crates/scryer/src/db/postgres/migrations/0120_json_text_parity.sql"),
-    )
-    .expect("read Postgres JSON text parity migration");
-    for required in [
-        "rule_sets",
-        "applied_facets TYPE text",
-        "post_processing_scripts",
-        "plugin_installations",
-        "descriptor_json TYPE text",
-        "notification_channels",
-        "config_json TYPE text",
-        "library_scan_unmatched_items",
-        "search_attempts_json TYPE text",
-        "media_files",
-        "analysis_json TYPE text",
-        "collections",
-        "interstitial_genres_json TYPE text",
-        "special_movies_json TYPE text",
-    ] {
-        assert!(
-            sql.contains(required),
-            "Postgres JSON text parity migration is missing `{required}`"
-        );
-    }
-}
-
-#[test]
 fn workflow_repository_uses_shared_runtime_kernel() {
     let root = repo_root();
     let workflow_store = production_rust_source(

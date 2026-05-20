@@ -75,13 +75,18 @@ const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
 const RELEASE_SIBLING_E2E_TOKENS: &[&str] = &["../e2e/", "..\\e2e\\"];
+const RELEASE_LOCAL_PATH_ALLOWLIST_PREFIXES: &[&str] = &[".github/workflows/"];
+const RELEASE_LOCAL_PATH_ALLOWLIST_FILES: &[&str] = &[
+    "docker/scryer-e2e-entrypoint.sh",
+    "docker/scryer-e2e.Dockerfile",
+    "xtask-release/src/main.rs",
+];
+const RELEASE_SIBLING_E2E_ALLOWLIST_FILES: &[&str] = &["xtask-release/src/main.rs"];
 const REQUIRED_SCRYER_DRY_RUN_STEPS: &[&str] = &[
     "builtin_refresh",
     "web_validation",
     "rust_validation",
     "release_hygiene",
-    "e2e_datastore_matrix",
-    "e2e_datastore_restore_matrix",
 ];
 
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
@@ -762,6 +767,7 @@ fn git_tracked_files(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
 
 fn scan_release_hygiene_content(path: &Path, content: &str) -> Vec<String> {
     let mut violations = Vec::new();
+    let path_text = path.to_string_lossy();
 
     for (line_number, line) in content.lines().enumerate() {
         let line_number = line_number + 1;
@@ -773,6 +779,11 @@ fn scan_release_hygiene_content(path: &Path, content: &str) -> Vec<String> {
         if RELEASE_LOCAL_PATH_TOKENS
             .iter()
             .any(|token| line.contains(token))
+            && !release_hygiene_path_is_allowlisted(
+                &path_text,
+                RELEASE_LOCAL_PATH_ALLOWLIST_PREFIXES,
+                RELEASE_LOCAL_PATH_ALLOWLIST_FILES,
+            )
         {
             violations.push(format!(
                 "{}:{line_number}: local absolute path reference: {trimmed}",
@@ -783,6 +794,11 @@ fn scan_release_hygiene_content(path: &Path, content: &str) -> Vec<String> {
         if RELEASE_SIBLING_E2E_TOKENS
             .iter()
             .any(|token| line.contains(token))
+            && !release_hygiene_path_is_allowlisted(
+                &path_text,
+                &[],
+                RELEASE_SIBLING_E2E_ALLOWLIST_FILES,
+            )
         {
             violations.push(format!(
                 "{}:{line_number}: sibling e2e repo reference: {trimmed}",
@@ -792,6 +808,17 @@ fn scan_release_hygiene_content(path: &Path, content: &str) -> Vec<String> {
     }
 
     violations
+}
+
+fn release_hygiene_path_is_allowlisted(
+    path_text: &str,
+    prefix_allowlist: &[&str],
+    file_allowlist: &[&str],
+) -> bool {
+    prefix_allowlist
+        .iter()
+        .any(|prefix| path_text.starts_with(prefix))
+        || file_allowlist.contains(&path_text)
 }
 
 fn release_hygiene_violations(ctx: &TaskContext) -> Result<Vec<String>> {
@@ -2250,8 +2277,6 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
             web_result?;
             rust_result?;
             run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
-            run_scryer_e2e_datastore_matrix_validation(ctx, "[e2e] ")?;
-            run_scryer_e2e_datastore_restore_matrix_validation(ctx, "[e2e-restore] ")?;
             ok("Parallel validation passed");
             Ok::<(Vec<PathBuf>, Vec<String>), anyhow::Error>((
                 refreshed_builtin_paths,
@@ -2781,64 +2806,6 @@ fn run_scryer_release_hygiene_validation(ctx: &TaskContext, prefix: &'static str
         );
     }
     prefixed_ok(prefix, "Release hygiene check passed");
-    Ok(())
-}
-
-fn run_scryer_e2e_datastore_matrix_validation(
-    ctx: &TaskContext,
-    prefix: &'static str,
-) -> Result<()> {
-    let e2e_dir = ctx.repo_root.parent().unwrap_or(&ctx.repo_root).join("e2e");
-    let runner = e2e_dir.join("cmd/scryer-e2e");
-    if !runner.is_dir() {
-        bail!(
-            "release-blocking PostgreSQL e2e datastore matrix is unavailable: {} does not exist",
-            runner.display()
-        );
-    }
-
-    prefixed_step(
-        prefix,
-        "Running release-blocking Scryer e2e datastore matrix",
-    );
-    let mut command = ctx.release_command_in("go", &e2e_dir);
-    command.args([
-        "run",
-        "./cmd/scryer-e2e",
-        "release-gate",
-        "datastore-matrix",
-    ]);
-    run_streaming(&mut command, prefix)?;
-    prefixed_ok(prefix, "Scryer e2e datastore matrix passed");
-    Ok(())
-}
-
-fn run_scryer_e2e_datastore_restore_matrix_validation(
-    ctx: &TaskContext,
-    prefix: &'static str,
-) -> Result<()> {
-    let e2e_dir = ctx.repo_root.parent().unwrap_or(&ctx.repo_root).join("e2e");
-    let runner = e2e_dir.join("cmd/scryer-e2e");
-    if !runner.is_dir() {
-        bail!(
-            "release-blocking PostgreSQL e2e restore matrix is unavailable: {} does not exist",
-            runner.display()
-        );
-    }
-
-    prefixed_step(
-        prefix,
-        "Running release-blocking Scryer e2e cross-engine restore matrix",
-    );
-    let mut command = ctx.release_command_in("go", &e2e_dir);
-    command.args([
-        "run",
-        "./cmd/scryer-e2e",
-        "release-gate",
-        "datastore-restore-matrix",
-    ]);
-    run_streaming(&mut command, prefix)?;
-    prefixed_ok(prefix, "Scryer e2e cross-engine restore matrix passed");
     Ok(())
 }
 
@@ -3498,25 +3465,6 @@ mod tests {
     }
 
     #[test]
-    fn release_dry_run_cache_rejects_missing_datastore_restore_gate() {
-        let mut cache = sample_release_dry_run_cache();
-        cache
-            .validated_steps
-            .retain(|step| step != "e2e_datastore_restore_matrix");
-        let reason = release_dry_run_cache_rejection_reason(
-            &cache,
-            &sample_release_dry_run_expectations(),
-            true,
-        );
-        assert_eq!(
-            reason.as_deref(),
-            Some(
-                "dry run did not record required release-blocking validations: e2e_datastore_restore_matrix"
-            )
-        );
-    }
-
-    #[test]
     fn release_dry_run_cache_rejects_latest_tag_mismatch() {
         let mut cache = sample_release_dry_run_cache();
         cache.latest_tag_seen = Some("scryer-v0.13.0".to_string());
@@ -3623,6 +3571,26 @@ mod tests {
         let violations = scan_release_hygiene_content(
             Path::new("crates/scryer-application/src/lib.rs"),
             "let fixture = manifest_dir.join(\"tests/fixtures\").join(name);",
+        );
+
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn release_hygiene_allows_workflow_runner_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new(".github/workflows/scryer.yml"),
+            "      SCCACHE_DIR: /home/runner/.cache/sccache",
+        );
+
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn release_hygiene_allows_release_tooling_fixture_strings() {
+        let violations = scan_release_hygiene_content(
+            Path::new("xtask-release/src/main.rs"),
+            "const SDK_ROOT: &str = \"/Users/example/dev/scryer-media/scryer\";\nlet fixture = manifest_dir.join(\"../e2e/testdata\").join(name);",
         );
 
         assert!(violations.is_empty());

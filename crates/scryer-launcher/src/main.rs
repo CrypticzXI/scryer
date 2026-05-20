@@ -587,6 +587,8 @@ mod tests {
         entries: RefCell<HashMap<PathBuf, MockEntry>>,
         read_failures: RefCell<HashSet<PathBuf>>,
         warnings: RefCell<Vec<String>>,
+        chown_calls: RefCell<Vec<(PathBuf, u32, u32)>>,
+        drop_calls: RefCell<Vec<(u32, u32)>>,
         exec_calls: RefCell<Vec<(PathBuf, Vec<OsString>)>>,
         exec_results: RefCell<Vec<MockExecResult>>,
         fail_create_dir: bool,
@@ -603,6 +605,8 @@ mod tests {
                 entries: RefCell::new(HashMap::new()),
                 read_failures: RefCell::new(HashSet::new()),
                 warnings: RefCell::new(Vec::new()),
+                chown_calls: RefCell::new(Vec::new()),
+                drop_calls: RefCell::new(Vec::new()),
                 exec_calls: RefCell::new(Vec::new()),
                 exec_results: RefCell::new(Vec::new()),
                 fail_create_dir: false,
@@ -634,6 +638,14 @@ mod tests {
 
         fn warnings(&self) -> Vec<String> {
             self.warnings.borrow().clone()
+        }
+
+        fn chown_calls(&self) -> Vec<(PathBuf, u32, u32)> {
+            self.chown_calls.borrow().clone()
+        }
+
+        fn drop_calls(&self) -> Vec<(u32, u32)> {
+            self.drop_calls.borrow().clone()
         }
 
         fn exec_paths(&self) -> Vec<PathBuf> {
@@ -687,7 +699,10 @@ mod tests {
                 .is_some_and(|entry| !entry.is_dir && entry.executable)
         }
 
-        fn chown_recursive(&self, _path: &Path, _uid: u32, _gid: u32) -> io::Result<()> {
+        fn chown_recursive(&self, path: &Path, uid: u32, gid: u32) -> io::Result<()> {
+            self.chown_calls
+                .borrow_mut()
+                .push((path.to_path_buf(), uid, gid));
             if self.fail_chown {
                 Err(io::Error::other("chown failed"))
             } else {
@@ -703,7 +718,8 @@ mod tests {
             }
         }
 
-        fn drop_privileges(&self, _uid: u32, _gid: u32) -> io::Result<()> {
+        fn drop_privileges(&self, uid: u32, gid: u32) -> io::Result<()> {
+            self.drop_calls.borrow_mut().push((uid, gid));
             if self.fail_drop {
                 Err(io::Error::other("drop failed"))
             } else {
@@ -942,6 +958,23 @@ flags       : avx avx2 bmi1 bmi2 f16c fma movbe pclmulqdq popcnt rdrand sse3 sse
             ops.warnings()
                 .iter()
                 .any(|warning| warning.contains("failed to drop privileges"))
+        );
+    }
+
+    #[test]
+    fn non_root_launcher_path_should_skip_ownership_repair_and_privilege_drop() {
+        let ops = MockLauncherOps {
+            uid: 1001,
+            gid: 1002,
+            ..Default::default()
+        };
+        ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
+        run_with_ops(&ops, &base_config()).expect("launch should proceed");
+        assert!(ops.chown_calls().is_empty());
+        assert!(ops.drop_calls().is_empty());
+        assert_eq!(
+            ops.exec_paths(),
+            vec![PathBuf::from("/payloads/scryer-portable")]
         );
     }
 

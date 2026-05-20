@@ -1252,23 +1252,23 @@ mod tests {
     }
 
     fn postgres_parity_index_names_from_source() -> BTreeSet<String> {
-        std::fs::read_to_string(postgres_parity_index_migration_path())
-            .expect("read PostgreSQL parity secondary-index migration")
+        std::fs::read_to_string(postgres_0122_baseline_path())
+            .expect("read PostgreSQL 0122 baseline")
             .lines()
             .filter_map(|line| {
                 let trimmed = line.trim();
                 trimmed
-                    .strip_prefix("CREATE UNIQUE INDEX IF NOT EXISTS ")
-                    .or_else(|| trimmed.strip_prefix("CREATE INDEX IF NOT EXISTS "))
+                    .strip_prefix("CREATE UNIQUE INDEX ")
+                    .or_else(|| trimmed.strip_prefix("CREATE INDEX "))
                     .and_then(|rest| rest.split_whitespace().next())
                     .map(str::to_string)
             })
             .collect()
     }
 
-    fn postgres_parity_index_migration_path() -> PathBuf {
+    fn postgres_0122_baseline_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../scryer/src/db/postgres/migrations/0109_parity_secondary_indexes.sql")
+            .join("../scryer/src/db/postgres/baselines/0122_baseline.sql")
     }
 
     async fn assert_postgres_runtime_schema_columns(pool: &sqlx::PgPool) -> AppResult<()> {
