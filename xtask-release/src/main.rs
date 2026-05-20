@@ -820,9 +820,7 @@ fn release_hygiene_path_is_allowlisted(
     prefix_allowlist
         .iter()
         .any(|prefix| path_text.starts_with(prefix))
-        || file_allowlist
-            .iter()
-            .any(|candidate| path_text == *candidate)
+        || file_allowlist.contains(&path_text)
 }
 
 fn release_hygiene_violations(ctx: &TaskContext) -> Result<Vec<String>> {
