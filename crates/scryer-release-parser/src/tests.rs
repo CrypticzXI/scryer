@@ -152,10 +152,10 @@ fn context_does_not_invent_absent_titles() {
         name: "Different Alias".to_string(),
     }];
 
-    let analysis = analyze_release_for_target("Outlander.S08E05.1080p.WEB-DL", &target);
+    let analysis = analyze_release_for_target("Farwander.S08E05.1080p.WEB-DL", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "OUTLANDER");
+    assert_eq!(candidate.projected.normalized_title, "FARWANDER");
     assert!(
         !candidate
             .projected
@@ -1078,14 +1078,14 @@ fn service_tokens_project_to_canonical_service_names() {
 
 #[test]
 fn unicode_case_and_out_of_corpus_metadata_parse_without_fixture_bias() {
-    let mut target = context(ContextFacetHint::Movie, "Éclair Pokémon");
+    let mut target = context(ContextFacetHint::Movie, "Éclair Monstra");
     target.known_years.push(2024);
 
     let analysis =
-        analyze_release_for_target("éclair.pokémon.2024.576p.WEB-DL.VVC.OPUS.2.0-GRP", &target);
+        analyze_release_for_target("éclair.monstra.2024.576p.WEB-DL.VVC.OPUS.2.0-GRP", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "ÉCLAIR POKÉMON");
+    assert_eq!(candidate.projected.normalized_title, "ÉCLAIR MONSTRA");
     assert_eq!(candidate.projected.quality.as_deref(), Some("576p"));
     assert_eq!(
         candidate.projected.video_codec.as_ref(),
@@ -1459,7 +1459,7 @@ fn labeled_episode_range_stays_multi_episode() {
 
 #[test]
 fn labeled_single_episode_does_not_become_range_pack() {
-    let mut target = context(ContextFacetHint::Anime, "Doraemon");
+    let mut target = context(ContextFacetHint::Anime, "Clockwork Cat");
     target.known_years.push(2005);
     target.episodes = vec![ContextEpisode {
         absolute_number: Some(911),
@@ -1467,7 +1467,7 @@ fn labeled_single_episode_does_not_become_range_pack() {
     }];
 
     let analysis = analyze_release_for_target(
-        "[Ommex] Doraemon (2005) Episode 911 [ENG SUB][1080p x265 AAC]",
+        "[Ommex] Clockwork Cat (2005) Episode 911 [ENG SUB][1080p x265 AAC]",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");

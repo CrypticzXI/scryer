@@ -2045,7 +2045,7 @@ mod tests {
         let user = UserRepository::get_by_username(users, "backup-matrix-admin").await?;
         assert!(user.is_some(), "restored admin identity should exist");
 
-        let title = TitleRepository::get_by_id(titles, "backup-matrix-title").await?;
+        let title = TitleRepository::get_by_id(titles, "backup-lattice-title").await?;
         let title = title.expect("restored title should exist");
         assert_eq!(title.external_ids[0].source, "tmdb");
         assert_eq!(title.external_ids[0].value, "424242");
@@ -2054,12 +2054,12 @@ mod tests {
 
     fn backup_matrix_title() -> Title {
         Title {
-            id: "backup-matrix-title".to_string(),
+            id: "backup-lattice-title".to_string(),
             library_id: "movie_default_library".to_string(),
-            name: "Backup Matrix Movie".to_string(),
+            name: "Backup Lattice Movie".to_string(),
             facet: MediaFacet::Movie,
             monitored: true,
-            tags: vec!["backup".to_string(), "matrix".to_string()],
+            tags: vec!["backup".to_string(), "lattice".to_string()],
             external_ids: vec![ExternalId {
                 source: "tmdb".to_string(),
                 value: "424242".to_string(),
@@ -2067,15 +2067,15 @@ mod tests {
             created_by: None,
             created_at: chrono::Utc::now(),
             year: Some(2026),
-            overview: Some("Logical backup matrix fixture".to_string()),
+            overview: Some("Logical backup lattice fixture".to_string()),
             poster_url: Some("https://example.invalid/poster.jpg".to_string()),
             poster_source_url: None,
             banner_url: None,
             banner_source_url: None,
             background_url: None,
             background_source_url: None,
-            sort_title: Some("Backup Matrix Movie".to_string()),
-            slug: Some("backup-matrix-movie".to_string()),
+            sort_title: Some("Backup Lattice Movie".to_string()),
+            slug: Some("backup-lattice-movie".to_string()),
             imdb_id: Some("tt4242420".to_string()),
             runtime_minutes: Some(101),
             genres: vec!["Drama".to_string()],
@@ -2085,13 +2085,13 @@ mod tests {
             network: None,
             studio: Some("Scryer Tests".to_string()),
             country: Some("US".to_string()),
-            aliases: vec!["Matrix Fixture".to_string()],
+            aliases: vec!["Lattice Fixture".to_string()],
             tagged_aliases: Vec::new(),
             metadata_language: Some("eng".to_string()),
             metadata_fetched_at: Some(chrono::Utc::now()),
             min_availability: None,
             digital_release_date: Some("2026-01-02".to_string()),
-            folder_path: Some("/data/movies/Backup Matrix Movie (2026)".to_string()),
+            folder_path: Some("/data/movies/Backup Lattice Movie (2026)".to_string()),
         }
     }
 

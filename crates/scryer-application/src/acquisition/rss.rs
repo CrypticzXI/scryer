@@ -1306,35 +1306,35 @@ mod tests {
 
     #[test]
     fn normalize_basic_title() {
-        assert_eq!(normalize_for_matching("The Dark Knight"), "the dark knight");
+        assert_eq!(normalize_for_matching("The Silver Harbor"), "the silver harbor");
     }
 
     #[test]
     fn normalize_dots_and_dashes() {
         assert_eq!(
-            normalize_for_matching("The.Dark.Knight-2008"),
-            "the dark knight 2008"
+            normalize_for_matching("The.Silver.Harbor-2008"),
+            "the silver harbor 2008"
         );
     }
 
     #[test]
     fn normalize_underscores() {
-        assert_eq!(normalize_for_matching("the_dark_knight"), "the dark knight");
+        assert_eq!(normalize_for_matching("the_silver_harbor"), "the silver harbor");
     }
 
     #[test]
     fn normalize_strips_special_chars() {
         assert_eq!(
-            normalize_for_matching("Spider-Man: Across the Spider-Verse"),
-            "spider man across the spider verse"
+            normalize_for_matching("Sky-Rider: Beyond the Silent City"),
+            "sky rider beyond the silent city"
         );
     }
 
     #[test]
     fn normalize_collapses_whitespace() {
         assert_eq!(
-            normalize_for_matching("  The   Dark   Knight  "),
-            "the dark knight"
+            normalize_for_matching("  The   Silver   Harbor  "),
+            "the silver harbor"
         );
     }
 

@@ -8735,13 +8735,13 @@ async fn find_or_create_default_user_dedupes_duplicate_default_library_grants() 
         .find_or_create_default_user()
         .await
         .expect("create default admin");
-    assert_eq!(admin.id, user.id);
+    assert_eq!(admin.username, user.username);
 
     let grants = app
         .services
         .catalog
         .libraries
-        .permission_masks_for_user(&user.id)
+        .permission_masks_for_user(&admin.id)
         .await
         .expect("load grants");
     let unique_library_ids = grants

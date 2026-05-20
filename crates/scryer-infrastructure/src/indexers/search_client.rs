@@ -3520,6 +3520,7 @@ mod tests {
         assert_eq!(response.results.len(), 1);
         assert_eq!(response.results[0].title, "Lantern.Tide.2001.1080p.BluRay");
     }
+
     #[test]
     fn anime_strategies_try_abs_and_sxex_in_parallel() {
         let caps = IndexerProviderCapabilities {

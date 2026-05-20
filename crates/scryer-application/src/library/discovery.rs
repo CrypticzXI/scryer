@@ -76,61 +76,60 @@ pub(crate) fn extract_library_queries(
     let mut folder_queries = Vec::new();
     let mut raw_folder_query = None;
 
-    if let Some(parent) = path.parent() {
-        if parent != root.as_path()
-            && let Some(folder_name) = parent
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .filter(|name| !name.trim().is_empty())
-        {
-            let clean = normalize_folder_name(&folder_name);
-            let (clean_title, clean_year) = strip_year_suffix(&clean);
-            if let Some(parsed_folder) = parse_usable_release_title(&folder_name) {
-                let looks_human_named = !folder_name.contains('.') && !folder_name.contains('_');
-                let has_release_decoration = parsed_folder
-                    .release_group
-                    .as_ref()
-                    .is_some_and(|group| !group.trim().is_empty())
-                    || parsed_folder.quality.is_some()
-                    || parsed_folder.source.is_some()
-                    || parsed_folder.video_codec.is_some()
-                    || parsed_folder.video_encoding.is_some()
-                    || parsed_folder.audio.is_some()
-                    || !parsed_folder.audio_codecs.is_empty()
-                    || parsed_folder.audio_channels.is_some()
-                    || parsed_folder.streaming_service.is_some()
-                    || parsed_folder.edition.is_some()
-                    || parsed_folder.is_proper_upload
-                    || parsed_folder.is_repack
-                    || parsed_folder.is_remux
-                    || parsed_folder.is_bd_disk
-                    || parsed_folder.is_dual_audio
-                    || parsed_folder.episode.is_some();
-                let raw_folder_title = parsed_folder
-                    .year
-                    .and_then(|year| u32::try_from(year).ok())
-                    .map(|year| strip_trailing_plain_year_token(&clean_title, year))
-                    .unwrap_or_else(|| clean_title.clone());
-                if !clean_title.trim().is_empty()
-                    && !has_release_decoration
-                    && (clean_year.is_some() || parsed_folder.year.is_some() || looks_human_named)
-                {
-                    raw_folder_query = Some(raw_folder_title);
-                }
-                let parsed_folder_queries = if parsed_folder.normalized_title_variants.is_empty() {
-                    vec![parsed_folder.normalized_title.clone()]
-                } else {
-                    parsed_folder.normalized_title_variants.clone()
-                };
-                folder_queries.extend(parsed_folder_queries);
-                folder_year = parsed_folder.year.and_then(|year| u32::try_from(year).ok());
-                if folder_year.is_none() {
-                    folder_year = clean_year;
-                }
-            } else if !clean_title.trim().is_empty() {
-                folder_queries.push(clean_title);
+    if let Some(parent) = path.parent()
+        && parent != root.as_path()
+        && let Some(folder_name) = parent
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.trim().is_empty())
+    {
+        let clean = normalize_folder_name(&folder_name);
+        let (clean_title, clean_year) = strip_year_suffix(&clean);
+        if let Some(parsed_folder) = parse_usable_release_title(&folder_name) {
+            let looks_human_named = !folder_name.contains('.') && !folder_name.contains('_');
+            let has_release_decoration = parsed_folder
+                .release_group
+                .as_ref()
+                .is_some_and(|group| !group.trim().is_empty())
+                || parsed_folder.quality.is_some()
+                || parsed_folder.source.is_some()
+                || parsed_folder.video_codec.is_some()
+                || parsed_folder.video_encoding.is_some()
+                || parsed_folder.audio.is_some()
+                || !parsed_folder.audio_codecs.is_empty()
+                || parsed_folder.audio_channels.is_some()
+                || parsed_folder.streaming_service.is_some()
+                || parsed_folder.edition.is_some()
+                || parsed_folder.is_proper_upload
+                || parsed_folder.is_repack
+                || parsed_folder.is_remux
+                || parsed_folder.is_bd_disk
+                || parsed_folder.is_dual_audio
+                || parsed_folder.episode.is_some();
+            let raw_folder_title = parsed_folder
+                .year
+                .and_then(|year| u32::try_from(year).ok())
+                .map(|year| strip_trailing_plain_year_token(&clean_title, year))
+                .unwrap_or_else(|| clean_title.clone());
+            if !clean_title.trim().is_empty()
+                && !has_release_decoration
+                && (clean_year.is_some() || parsed_folder.year.is_some() || looks_human_named)
+            {
+                raw_folder_query = Some(raw_folder_title);
+            }
+            let parsed_folder_queries = if parsed_folder.normalized_title_variants.is_empty() {
+                vec![parsed_folder.normalized_title.clone()]
+            } else {
+                parsed_folder.normalized_title_variants.clone()
+            };
+            folder_queries.extend(parsed_folder_queries);
+            folder_year = parsed_folder.year.and_then(|year| u32::try_from(year).ok());
+            if folder_year.is_none() {
                 folder_year = clean_year;
             }
+        } else if !clean_title.trim().is_empty() {
+            folder_queries.push(clean_title);
+            folder_year = clean_year;
         }
     }
 

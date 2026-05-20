@@ -1878,9 +1878,9 @@ mod tests {
     #[tokio::test]
     async fn completed_episode_download_uses_title_parse_to_become_import_pending() {
         let title = build_title(
-            "Karasu wa Aruji wo Erabanai",
+            "House of Ravens",
             MediaFacet::Anime,
-            &["YATAGARASU The Raven Does Not Choose Its Master"],
+            &["RAVENCOURT The Last Regent"],
         );
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![title.clone()],
@@ -1895,13 +1895,13 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let completed_dir = tempdir
             .path()
-            .join("YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL");
+            .join("RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL");
         std::fs::create_dir_all(&completed_dir).expect("create completed download dir");
         let download_client = Arc::new(TestDownloadClient {
             completed_downloads: Arc::new(Mutex::new(vec![build_completed_download(
                 "weaver",
                 "job-1",
-                "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL",
+                "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL",
                 completed_dir.to_string_lossy().as_ref(),
                 Some("anime"),
             )])),
@@ -1919,7 +1919,7 @@ mod tests {
         item.client_name = "weaver".to_string();
         item.download_client_item_id = "job-1".to_string();
         item.title_name =
-            "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL".to_string();
+            "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL".to_string();
         item.facet = Some("anime".to_string());
         item.is_scryer_origin = false;
 
@@ -2179,7 +2179,7 @@ mod tests {
 
     #[tokio::test]
     async fn track_reresolves_when_scryer_metadata_arrives_on_later_snapshot() {
-        let title = build_title("Karasu wa Aruji wo Erabanai", MediaFacet::Anime, &[]);
+        let title = build_title("House of Ravens", MediaFacet::Anime, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![title.clone()],
         });
@@ -2194,7 +2194,7 @@ mod tests {
         initial.download_client_item_id = "job-2".to_string();
         initial.title_id = None;
         initial.facet = Some("anime".to_string());
-        initial.title_name = "YATAGARASU".to_string();
+        initial.title_name = "RAVENCOURT".to_string();
         initial.is_scryer_origin = false;
 
         tracker.track(&app, initial).await;
@@ -2208,7 +2208,7 @@ mod tests {
         updated.download_client_item_id = "job-2".to_string();
         updated.title_id = Some(title.id.clone());
         updated.facet = Some("anime".to_string());
-        updated.title_name = "YATAGARASU".to_string();
+        updated.title_name = "RAVENCOURT".to_string();
         updated.is_scryer_origin = true;
 
         tracker.track(&app, updated).await;
@@ -2221,8 +2221,8 @@ mod tests {
 
     #[tokio::test]
     async fn track_reresolves_when_facet_hint_arrives_on_later_snapshot() {
-        let anime_title = build_title("One Piece", MediaFacet::Anime, &[]);
-        let series_title = build_title("One Piece", MediaFacet::Series, &[]);
+        let anime_title = build_title("Tidal Quest", MediaFacet::Anime, &[]);
+        let series_title = build_title("Tidal Quest", MediaFacet::Series, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![anime_title.clone(), series_title],
         });

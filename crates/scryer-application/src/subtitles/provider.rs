@@ -272,12 +272,9 @@ const EQUIVALENT_RELEASE_GROUPS: &[&[&str]] = &[
     &["AVS", "SVA"],
 ];
 const FEATURE_LOOKUP_TITLE_VARIANTS: &[(&str, &[&str])] = &[
-    ("superman and lois", &["Superman & Lois"]),
-    ("law and order", &["Law & Order"]),
-    (
-        "marvels agents of shield",
-        &["Marvel's Agents of S.H.I.E.L.D."],
-    ),
+    ("silver and sage", &["Silver & Sage"]),
+    ("law and accord", &["Law & Accord"]),
+    ("signal agents unit", &["Signal Agents Unit"]),
 ];
 static NORMALIZED_EQUIVALENT_RELEASE_GROUPS: LazyLock<Vec<HashSet<String>>> = LazyLock::new(|| {
     EQUIVALENT_RELEASE_GROUPS
@@ -1747,11 +1744,11 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/v1/features"))
-            .and(query_param("query", "superman and lois"))
+            .and(query_param("query", "silver and sage"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [{
                     "id": "880",
-                    "attributes": { "title": "Superman & Lois", "year": 2021 }
+                    "attributes": { "title": "Silver & Sage", "year": 2021 }
                 }]
             })))
             .mount(&server)
@@ -1778,7 +1775,7 @@ mod tests {
                 file_hash: None,
                 imdb_id: None,
                 series_imdb_id: None,
-                title: "Superman & Lois".into(),
+                title: "Silver & Sage".into(),
                 title_aliases: vec![],
                 title_candidates: vec![],
                 year: Some(2021),

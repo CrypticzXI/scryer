@@ -1407,7 +1407,7 @@ async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
         &release_store,
         None,
         Some("weaver".to_string()),
-        Some("Outlander.S08E05".to_string()),
+        Some("Farwander.S08E05".to_string()),
         ReleaseDownloadAttemptOutcome::Failed,
         Some("boom".to_string()),
         Some("secret".to_string()),
@@ -1425,7 +1425,7 @@ async fn serialized_writer_handles_release_attempts_and_vacuum_into() {
         &release_store,
         None,
         Some("weaver"),
-        Some("Outlander.S08E05"),
+        Some("Farwander.S08E05"),
     )
     .await
     .expect("latest password should load");

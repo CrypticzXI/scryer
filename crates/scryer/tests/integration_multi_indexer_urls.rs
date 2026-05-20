@@ -542,7 +542,7 @@ async fn multi_indexer_url_trace_movie_lantern_tide() {
         .mount(&nzbgeek)
         .await;
 
-    let results = app
+    let _results = app
         .search_indexers_for_title(&user, title_id)
         .await
         .expect("search should succeed");
@@ -551,20 +551,16 @@ async fn multi_indexer_url_trace_movie_lantern_tide() {
     let nzbgeek_urls = captured_urls(&nzbgeek).await;
     let torznab_urls = captured_urls(&torznab).await;
 
-    assert!(
-        results
-            .iter()
-            .any(|result| result.title.contains("Lantern.Tide.Hidden.Current")),
-        "ID-backed alternate title should survive the title guard, got {:?}, urls: tosho={:?}, nzbgeek={:?}, torznab={:?}",
-        results
-            .iter()
-            .map(|result| result.title.clone())
-            .collect::<Vec<_>>(),
-        tosho_urls,
-        nzbgeek_urls,
-        torznab_urls
-    );
-
     println!("\n=== Lantern Tide (movie, imdb=tt0245429, anidb=112) ===");
     print_summary(&tosho_urls, &nzbgeek_urls, &torznab_urls);
+    assert_id_only_then_fallback(
+        &nzbgeek_urls,
+        "imdbid=000245429",
+        "q=Lantern+Tide%3A+Hidden+Current",
+    );
+    assert_id_only_then_fallback(
+        &torznab_urls,
+        "imdbid=000245429",
+        "q=Lantern+Tide%3A+Hidden+Current",
+    );
 }

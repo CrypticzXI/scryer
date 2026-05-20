@@ -994,7 +994,7 @@ mod tests {
             &root_folders,
             vec![
                 PathBuf::from("/data/anime/Emberfall/Season 01/Emberfall - S01E01.mkv"),
-                PathBuf::from("/data/anime/Naruto/Season 01/Naruto - S01E01.mkv"),
+                PathBuf::from("/data/anime/Stormleaf/Season 01/Stormleaf - S01E01.mkv"),
             ],
         );
 

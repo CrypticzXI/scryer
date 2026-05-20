@@ -651,13 +651,13 @@ mod tests {
     #[test]
     fn finds_unique_episodic_title_from_release_name() {
         let titles = vec![test_title(
-            "YATAGARASU The Raven Does Not Choose Its Master",
+            "RAVENCOURT The Last Regent",
             MediaFacet::Anime,
             None,
             &[],
         )];
         let parsed = crate::parse_release_metadata(
-            "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL",
+            "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL",
         );
 
         let matched = find_monitored_episode_title_from_release(&titles, &parsed, Some("anime"))
@@ -669,13 +669,13 @@ mod tests {
     #[test]
     fn finds_episodic_title_by_alias() {
         let titles = vec![test_title(
-            "Karasu wa Aruji wo Erabanai",
+            "House of Ravens",
             MediaFacet::Anime,
             None,
-            &["YATAGARASU The Raven Does Not Choose Its Master"],
+            &["RAVENCOURT The Last Regent"],
         )];
         let parsed = crate::parse_release_metadata(
-            "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL",
+            "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL",
         );
 
         let matched = find_monitored_episode_title_from_release(&titles, &parsed, Some("anime"))
@@ -687,10 +687,10 @@ mod tests {
     #[test]
     fn does_not_match_ambiguous_episodic_titles() {
         let titles = vec![
-            test_title("Outlander", MediaFacet::Series, Some(2014), &[]),
-            test_title("Outlander", MediaFacet::Anime, Some(2000), &[]),
+            test_title("Farwander", MediaFacet::Series, Some(2014), &[]),
+            test_title("Farwander", MediaFacet::Anime, Some(2000), &[]),
         ];
-        let parsed = crate::parse_release_metadata("Outlander.S08E05.1080p.WEB-DL");
+        let parsed = crate::parse_release_metadata("Farwander.S08E05.1080p.WEB-DL");
 
         let matched = find_monitored_episode_title_from_release(&titles, &parsed, None);
 
@@ -700,10 +700,10 @@ mod tests {
     #[test]
     fn does_not_match_ambiguous_movie_titles_without_year() {
         let titles = vec![
-            test_title("The Thing", MediaFacet::Movie, Some(1982), &[]),
-            test_title("The Thing", MediaFacet::Movie, Some(2011), &[]),
+            test_title("Cold Relic", MediaFacet::Movie, Some(1982), &[]),
+            test_title("Cold Relic", MediaFacet::Movie, Some(2011), &[]),
         ];
-        let mut parsed = crate::parse_release_metadata("The.Thing.1080p.WEB-DL");
+        let mut parsed = crate::parse_release_metadata("Cold.Relic.1080p.WEB-DL");
         parsed.year = None;
 
         let matched = find_monitored_movie_title_from_release(&titles, &parsed);
@@ -719,7 +719,7 @@ mod tests {
             value: "tt0944947".to_string(),
         });
         let titles = vec![title.clone()];
-        let parsed = crate::parse_release_metadata("Outlander.S08E05.[tt0944947].1080p.WEB-DL");
+        let parsed = crate::parse_release_metadata("Farwander.S08E05.[tt0944947].1080p.WEB-DL");
 
         let matched = find_monitored_episode_title_from_release(&titles, &parsed, Some("series"))
             .expect("matched title by imdb id");
@@ -735,7 +735,7 @@ mod tests {
             value: "tt0944947".to_string(),
         });
         let titles = vec![title.clone()];
-        let parsed = crate::parse_release_metadata("Outlander.S08E05.[tt0944947].1080p.WEB-DL");
+        let parsed = crate::parse_release_metadata("Farwander.S08E05.[tt0944947].1080p.WEB-DL");
 
         let matched =
             resolve_monitored_episode_title_from_release(&titles, &parsed, Some("series"))
@@ -748,13 +748,13 @@ mod tests {
     #[test]
     fn resolve_monitored_episode_title_marks_name_matches_as_title_parse() {
         let titles = vec![test_title(
-            "YATAGARASU The Raven Does Not Choose Its Master",
+            "RAVENCOURT The Last Regent",
             MediaFacet::Anime,
             None,
             &[],
         )];
         let parsed = crate::parse_release_metadata(
-            "YATAGARASU.The.Raven.Does.Not.Choose.Its.Master.S01E18.1080p.WEB-DL",
+            "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL",
         );
 
         let matched = resolve_monitored_episode_title_from_release(&titles, &parsed, Some("anime"))

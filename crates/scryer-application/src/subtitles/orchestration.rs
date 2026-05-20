@@ -1859,7 +1859,7 @@ mod tests {
 
     #[test]
     fn build_subtitle_query_prefers_scene_release_metadata_over_grabbed_and_stored_fields() {
-        let scene_name = "Superman.and.Lois.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
+        let scene_name = "Silver.and.Sage.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
         let grabbed = "Wrong.Show.S01E01.720p.BluRay.x265-Different";
         let parsed = parse_release_metadata(scene_name);
         let title = sample_title(MediaFacet::Series, None);
@@ -1899,7 +1899,7 @@ mod tests {
 
     #[test]
     fn build_subtitle_query_uses_grabbed_release_title_when_scene_name_is_missing() {
-        let grabbed = "Superman.and.Lois.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
+        let grabbed = "Silver.and.Sage.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb";
         let parsed = parse_release_metadata(grabbed);
         let title = sample_title(MediaFacet::Series, None);
         let media_file = sample_media_file(None, Some(grabbed));
