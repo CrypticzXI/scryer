@@ -2,41 +2,7 @@ format_version = 1
 
 [legacy_sql]
 path = "migrations"
-through_version = 100
-
-[[migration]]
-version = 101
-description = "plugin installation descriptor json"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0101_plugin_installation_descriptor_json.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0101_plugin_installation_descriptor_json.sql"
-engine = "postgres"
-scope = "all"
-
-[[migration]]
-version = 102
-description = "release name blocklist watershed"
-checksum_algo = "blake3"
-
-[[migration.steps]]
-kind = "sql"
-file = "migrations/0102_release_name_blocklist_watershed.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0102_release_name_blocklist_watershed.sql"
-engine = "postgres"
-scope = "all"
+through_version = 102
 
 [[migration]]
 version = 103
@@ -46,7 +12,6 @@ checksum_algo = "blake3"
 [[migration.steps]]
 kind = "sql"
 file = "migrations/0103_custom_migrator_runtime_cutover.sql"
-engine = "all"
 scope = "all"
 
 [[migration]]
@@ -57,13 +22,6 @@ checksum_algo = "blake3"
 [[migration.steps]]
 kind = "sql"
 file = "migrations/0104_first_class_libraries_and_permissions.sql"
-engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0104_first_class_libraries_and_permissions.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -77,12 +35,6 @@ file = "migrations/0105_indexer_managed_children.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0105_indexer_managed_children.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 106
 description = "postgres title search projection"
@@ -92,12 +44,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0106_postgres_title_search_projection.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0106_title_search_projection.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -111,12 +57,6 @@ file = "migrations/0107_postgres_ship_ready_finish.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0107_ship_ready_finish.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 108
 description = "postgres title hydration retry state"
@@ -126,12 +66,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0108_postgres_title_hydration_retry_state.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0108_title_hydration_retry_state.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -145,12 +79,6 @@ file = "migrations/0109_postgres_parity_secondary_indexes.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0109_parity_secondary_indexes.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 110
 description = "postgres library scan unmatched title binding"
@@ -160,12 +88,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0110_postgres_library_scan_unmatched_title_binding.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0110_library_scan_unmatched_title_binding.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -179,12 +101,6 @@ file = "migrations/0111_postgres_entitlement_schema_catalog_alignment.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0111_entitlement_schema_catalog_alignment.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 112
 description = "postgres title image schema alignment"
@@ -194,12 +110,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0112_postgres_title_image_schema_alignment.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0112_title_image_schema_alignment.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -213,12 +123,6 @@ file = "migrations/0113_postgres_title_read_indexes.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0113_title_read_indexes.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 114
 description = "postgres schema parity hard cutover"
@@ -228,12 +132,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0114_postgres_schema_parity_hard_cutover.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0114_schema_parity_hard_cutover.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -247,12 +145,6 @@ file = "migrations/0115_postgres_sqlite_parity_remediation.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0115_sqlite_parity_remediation.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 116
 description = "client scoped import identity"
@@ -262,12 +154,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0116_import_identity_client_scope.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0116_import_identity_client_scope.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -281,12 +167,6 @@ file = "migrations/0117_external_import_monitor_snapshot_chunks.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0117_external_import_monitor_snapshot_chunks.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 118
 description = "external import monitor snapshot chunk simplification"
@@ -296,12 +176,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0118_external_import_monitor_snapshot_chunk_simplification.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0118_external_import_monitor_snapshot_chunk_simplification.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -315,12 +189,6 @@ file = "migrations/0119_remove_legacy_entitlements.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0119_remove_legacy_entitlements.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 120
 description = "postgres json text parity"
@@ -330,12 +198,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0120_postgres_json_text_parity.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0120_json_text_parity.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]
@@ -349,12 +211,6 @@ file = "migrations/0121_drop_external_import_monitor_snapshots.sql"
 engine = "sqlite"
 scope = "all"
 
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0121_drop_external_import_monitor_snapshots.sql"
-engine = "postgres"
-scope = "all"
-
 [[migration]]
 version = 122
 description = "drop dead tables and command-era scars"
@@ -364,12 +220,6 @@ checksum_algo = "blake3"
 kind = "sql"
 file = "migrations/0122_drop_dead_tables_and_command_scars.sql"
 engine = "sqlite"
-scope = "all"
-
-[[migration.steps]]
-kind = "sql"
-file = "postgres/migrations/0122_drop_dead_tables_and_command_scars.sql"
-engine = "postgres"
 scope = "all"
 
 [[migration]]

@@ -4344,7 +4344,7 @@ CREATE TABLE _sqlx_migrations (
         .await
         .expect("status listing should succeed");
     assert_eq!(statuses.len(), 1);
-    assert_eq!(statuses[0].migration_checksum_algo, "sha384");
+    assert_eq!(statuses[0].migration_checksum_algo, "inferred");
 
     let checksum_algo_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)

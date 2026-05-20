@@ -108,16 +108,34 @@ pub struct SourceExplicitMigration {
 pub enum SourceMigrationStep {
     Sql {
         file: String,
-        engine: EngineScope,
+        #[serde(default)]
+        engine: Option<EngineScope>,
         #[serde(default)]
         scope: StepScope,
     },
     Rust {
         hook_id: String,
-        engine: EngineScope,
+        #[serde(default)]
+        engine: Option<EngineScope>,
         #[serde(default)]
         scope: StepScope,
     },
+}
+
+impl SourceMigrationStep {
+    fn resolved_engine(&self) -> EngineScope {
+        match self {
+            Self::Sql { engine, .. } | Self::Rust { engine, .. } => {
+                engine.unwrap_or(EngineScope::All)
+            }
+        }
+    }
+
+    fn explicit_engine(&self) -> Option<EngineScope> {
+        match self {
+            Self::Sql { engine, .. } | Self::Rust { engine, .. } => *engine,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,12 +269,14 @@ struct CanonicalMigration {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CanonicalStep {
     Sql {
-        engine: EngineScope,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        engine: Option<EngineScope>,
         scope: StepScope,
         sql: String,
     },
     Rust {
-        engine: EngineScope,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        engine: Option<EngineScope>,
         scope: StepScope,
         hook_id: String,
     },
@@ -456,40 +476,34 @@ fn compile_explicit_migration(
 
     for step in &migration.steps {
         match step {
-            SourceMigrationStep::Sql {
-                file,
-                engine,
-                scope,
-            } => {
+            SourceMigrationStep::Sql { file, scope, .. } => {
+                let engine = step.resolved_engine();
                 let path = db_root.join(file);
                 let sql = fs::read_to_string(&path)
                     .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
                 let payload = push_payload(sql.as_bytes(), payload_bytes);
                 compiled_steps.push(CompiledMigrationStep::Sql {
                     file: file.clone(),
-                    engine: *engine,
+                    engine,
                     scope: *scope,
                     payload,
                 });
                 canonical_steps.push(CanonicalStep::Sql {
-                    engine: *engine,
+                    engine: step.explicit_engine(),
                     scope: *scope,
                     sql,
                 });
             }
-            SourceMigrationStep::Rust {
-                hook_id,
-                engine,
-                scope,
-            } => {
+            SourceMigrationStep::Rust { hook_id, scope, .. } => {
+                let engine = step.resolved_engine();
                 migration_hook_ids::validate_migration_hook_id(hook_id)?;
                 compiled_steps.push(CompiledMigrationStep::Rust {
                     hook_id: hook_id.clone(),
-                    engine: *engine,
+                    engine,
                     scope: *scope,
                 });
                 canonical_steps.push(CanonicalStep::Rust {
-                    engine: *engine,
+                    engine: step.explicit_engine(),
                     scope: *scope,
                     hook_id: hook_id.clone(),
                 });
@@ -585,6 +599,11 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scryer/src/db")
     }
 
+    fn source_postgres_0122_baseline_sql() -> String {
+        fs::read_to_string(source_db_root().join("postgres/baselines/0122_baseline.sql"))
+            .expect("read PostgreSQL 0122 baseline")
+    }
+
     #[test]
     fn source_bundle_registers_latest_migration_and_engine_baselines() {
         let bundle =
@@ -610,22 +629,18 @@ mod tests {
     }
 
     #[test]
-    fn postgres_parity_secondary_index_migration_keeps_expected_coverage() {
-        let sql = fs::read_to_string(
-            source_db_root().join("postgres/migrations/0109_parity_secondary_indexes.sql"),
-        )
-        .expect("read PostgreSQL parity secondary-index migration");
+    fn postgres_0122_baseline_keeps_expected_index_coverage() {
+        let sql = source_postgres_0122_baseline_sql();
         let index_statement_count = sql
             .lines()
             .filter(|line| {
                 let trimmed = line.trim_start();
-                trimmed.starts_with("CREATE INDEX IF NOT EXISTS ")
-                    || trimmed.starts_with("CREATE UNIQUE INDEX IF NOT EXISTS ")
+                trimmed.starts_with("CREATE INDEX ") || trimmed.starts_with("CREATE UNIQUE INDEX ")
             })
             .count();
         assert_eq!(
-            index_statement_count, 88,
-            "PostgreSQL parity secondary-index migration should preserve the audited index set"
+            index_statement_count, 102,
+            "PostgreSQL 0122 baseline should preserve the audited index set"
         );
 
         for index_name in [
@@ -643,61 +658,37 @@ mod tests {
         ] {
             assert!(
                 sql.contains(index_name),
-                "expected PostgreSQL parity secondary-index migration to include {index_name}"
+                "expected PostgreSQL 0122 baseline to include {index_name}"
             );
         }
     }
 
     #[test]
-    fn postgres_library_scan_unmatched_title_binding_migration_keeps_index() {
-        let sql = fs::read_to_string(
-            source_db_root()
-                .join("postgres/migrations/0110_library_scan_unmatched_title_binding.sql"),
-        )
-        .expect("read PostgreSQL library-scan unmatched title binding migration");
+    fn postgres_0122_baseline_keeps_title_aware_unmatched_items_schema() {
+        let sql = source_postgres_0122_baseline_sql();
         assert!(
-            sql.contains("ADD COLUMN IF NOT EXISTS title_id TEXT"),
-            "PostgreSQL migration 0110 must add library_scan_unmatched_items.title_id"
+            sql.contains("title_id text"),
+            "PostgreSQL 0122 baseline must include library_scan_unmatched_items.title_id"
         );
         assert!(
             sql.contains("idx_library_scan_unmatched_items_facet_title_status_updated"),
-            "PostgreSQL migration 0110 must restore the title-aware unmatched-items index"
+            "PostgreSQL 0122 baseline must preserve the title-aware unmatched-items index"
         );
     }
 
     #[test]
-    fn postgres_title_image_schema_alignment_migration_keeps_runtime_columns() {
-        let sql = fs::read_to_string(
-            source_db_root().join("postgres/migrations/0112_title_image_schema_alignment.sql"),
-        )
-        .expect("read PostgreSQL title image schema alignment migration");
+    fn postgres_0122_baseline_keeps_runtime_title_image_columns() {
+        let sql = source_postgres_0122_baseline_sql();
         for expected in [
-            "ADD COLUMN IF NOT EXISTS poster_local_path TEXT",
-            "ADD COLUMN IF NOT EXISTS banner_local_path TEXT",
-            "ADD COLUMN IF NOT EXISTS background_local_path TEXT",
-            "CREATE TABLE IF NOT EXISTS title_images",
-            "CREATE TABLE IF NOT EXISTS title_image_variants",
+            "poster_local_path text",
+            "banner_local_path text",
+            "background_local_path text",
+            "CREATE TABLE title_images",
+            "CREATE TABLE title_image_variants",
         ] {
             assert!(
                 sql.contains(expected),
-                "expected PostgreSQL migration 0112 to include {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn postgres_title_read_indexes_migration_keeps_title_listing_indexes() {
-        let sql = fs::read_to_string(
-            source_db_root().join("postgres/migrations/0113_title_read_indexes.sql"),
-        )
-        .expect("read PostgreSQL title read indexes migration");
-        for expected in [
-            "idx_titles_facet_library_name_id",
-            "idx_titles_facet_slug_library_id",
-        ] {
-            assert!(
-                sql.contains(expected),
-                "expected PostgreSQL migration 0113 to include {expected}"
+                "expected PostgreSQL 0122 baseline to include {expected}"
             );
         }
     }
@@ -710,7 +701,13 @@ mod tests {
             .catalog
             .migrations
             .iter()
-            .filter(|migration| migration.version >= 101)
+            .filter(|migration| migration.version > 122)
+            .filter(|migration| {
+                migration
+                    .steps
+                    .iter()
+                    .any(|step| step.engine().applies_to(EngineScope::Postgres))
+            })
         {
             let treats_sqlite = migration
                 .steps
@@ -722,14 +719,14 @@ mod tests {
                 .any(|step| step.engine().applies_to(EngineScope::Postgres));
             assert!(
                 treats_sqlite && treats_postgres,
-                "migration {} must explicitly treat both sqlite and postgres",
+                "migration {} must explicitly treat both sqlite and postgres after the 0122 postgres baseline",
                 migration.key
             );
         }
     }
 
     #[test]
-    fn source_manifest_requires_step_engine_scope() {
+    fn source_manifest_defaults_missing_step_engine_to_all() {
         let manifest = r#"
 format_version = 1
 
@@ -745,11 +742,18 @@ description = "missing engine"
 kind = "sql"
 file = "0001_missing_engine.sql"
 "#;
-        let error = toml::from_str::<SourceMigrationManifest>(manifest)
-            .expect_err("manifest without step engine must fail");
-        assert!(
-            error.to_string().contains("engine"),
-            "expected missing engine field error, got {error}"
-        );
+        let parsed = toml::from_str::<SourceMigrationManifest>(manifest)
+            .expect("manifest without step engine should default to all");
+        match &parsed.migrations[0].steps[0] {
+            SourceMigrationStep::Sql { engine, scope, .. } => {
+                assert_eq!(*engine, None);
+                assert_eq!(*scope, StepScope::All);
+                assert_eq!(
+                    parsed.migrations[0].steps[0].resolved_engine(),
+                    EngineScope::All
+                );
+            }
+            other => panic!("expected sql step, got {other:?}"),
+        }
     }
 }

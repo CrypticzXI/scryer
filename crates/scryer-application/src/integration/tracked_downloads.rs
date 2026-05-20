@@ -1918,8 +1918,7 @@ mod tests {
         item.client_type = "weaver".to_string();
         item.client_name = "weaver".to_string();
         item.download_client_item_id = "job-1".to_string();
-        item.title_name =
-            "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL".to_string();
+        item.title_name = "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL".to_string();
         item.facet = Some("anime".to_string());
         item.is_scryer_origin = false;
 

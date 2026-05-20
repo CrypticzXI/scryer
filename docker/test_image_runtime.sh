@@ -41,8 +41,10 @@ volume_owner() {
         stat -c '%u:%g' /target
 }
 
-current_uid=$(id -u)
-current_gid=$(id -g)
+requested_uid=12345
+requested_gid=12346
+nonroot_uid=23456
+nonroot_gid=23457
 config_volume=scryer-test-config-$$
 rootfs_container_id=
 tmpdir=$(mktemp -d)
@@ -83,22 +85,22 @@ docker volume create "$config_volume" >/dev/null
 
 reown_volume "$config_volume" "65534:65534"
 docker run --rm --platform "$PLATFORM" \
-    -e PUID="$current_uid" \
-    -e PGID="$current_gid" \
+    -e PUID="$requested_uid" \
+    -e PGID="$requested_gid" \
     -v "$config_volume:/config" \
     "$IMAGE_TAG" \
     --version >/dev/null
 
 owner=$(volume_owner "$config_volume")
-[ "$owner" = "$current_uid:$current_gid" ] || {
+[ "$owner" = "$requested_uid:$requested_gid" ] || {
     printf 'assertion failed: root entrypoint path should chown /config\nexpected: %s\nactual: %s\n' \
-        "$current_uid:$current_gid" "$owner" >&2
+        "$requested_uid:$requested_gid" "$owner" >&2
     exit 1
 }
 
 reown_volume "$config_volume" "65534:65534"
 docker run --rm --platform "$PLATFORM" \
-    --user "$current_uid:$current_gid" \
+    --user "$nonroot_uid:$nonroot_gid" \
     -e PUID=12345 \
     -e PGID=12345 \
     -v "$config_volume:/config" \

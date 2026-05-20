@@ -656,9 +656,8 @@ mod tests {
             None,
             &[],
         )];
-        let parsed = crate::parse_release_metadata(
-            "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL",
-        );
+        let parsed =
+            crate::parse_release_metadata("RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL");
 
         let matched = find_monitored_episode_title_from_release(&titles, &parsed, Some("anime"))
             .expect("matched title");
@@ -674,9 +673,8 @@ mod tests {
             None,
             &["RAVENCOURT The Last Regent"],
         )];
-        let parsed = crate::parse_release_metadata(
-            "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL",
-        );
+        let parsed =
+            crate::parse_release_metadata("RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL");
 
         let matched = find_monitored_episode_title_from_release(&titles, &parsed, Some("anime"))
             .expect("matched title by alias");
@@ -753,9 +751,8 @@ mod tests {
             None,
             &[],
         )];
-        let parsed = crate::parse_release_metadata(
-            "RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL",
-        );
+        let parsed =
+            crate::parse_release_metadata("RAVENCOURT.The.Last.Regent.S01E18.1080p.WEB-DL");
 
         let matched = resolve_monitored_episode_title_from_release(&titles, &parsed, Some("anime"))
             .expect("matched title by name");
