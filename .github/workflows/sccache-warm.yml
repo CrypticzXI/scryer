@@ -71,7 +71,6 @@ jobs:
             variant: portable
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            cache_lane: linux-x86_64
             sccache_lane: scryer-linux-x86_64-musl
             sccache_writer_id: scryer-linux-x86_64-portable
             artifact_name: scryer-linux-x86_64-portable
@@ -80,7 +79,6 @@ jobs:
             variant: haswell
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            cache_lane: linux-x86_64
             sccache_lane: scryer-linux-x86_64-musl
             sccache_writer_id: scryer-linux-x86_64-haswell
             artifact_name: scryer-linux-x86_64-haswell
@@ -89,7 +87,6 @@ jobs:
             variant: portable
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            cache_lane: linux-arm64
             sccache_lane: scryer-linux-arm64-musl
             sccache_writer_id: scryer-linux-arm64-portable
             artifact_name: scryer-linux-arm64-portable
@@ -98,7 +95,6 @@ jobs:
             variant: cortex-a76
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            cache_lane: linux-arm64
             sccache_lane: scryer-linux-arm64-musl
             sccache_writer_id: scryer-linux-arm64-cortex-a76
             artifact_name: scryer-linux-arm64-cortex-a76
@@ -112,6 +108,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
+      SCRYER_CARGO_PROFILE: rc
+      SCRYER_SCCACHE_BUILD_FLAVOR: rc
     steps:
       - uses: actions/checkout@v6
 
@@ -144,23 +142,16 @@ jobs:
           echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-${{ matrix.cache_lane }}
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: ${{ matrix.artifact_name }}
-
       - name: Restore sccache directory
         id: linux-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
@@ -190,7 +181,7 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --release --locked --target "${{ matrix.target }}"
+          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}"
 
       - name: Show sccache stats
         if: always()
@@ -223,7 +214,6 @@ jobs:
             variant: portable
             runner: macos-15
             target: aarch64-apple-darwin
-            cache_lane: macos-arm64
             sccache_lane: scryer-macos-arm64
             sccache_writer_id: scryer-darwin-arm64-portable
             artifact_name: scryer-darwin-arm64-portable
@@ -232,7 +222,6 @@ jobs:
             variant: apple-m1
             runner: macos-15
             target: aarch64-apple-darwin
-            cache_lane: macos-arm64
             sccache_lane: scryer-macos-arm64
             sccache_writer_id: scryer-darwin-arm64-apple-m1
             artifact_name: scryer-darwin-arm64-apple-m1
@@ -241,7 +230,6 @@ jobs:
             variant: portable
             runner: macos-15-intel
             target: x86_64-apple-darwin
-            cache_lane: macos-x86_64
             sccache_lane: scryer-macos-x86_64
             sccache_writer_id: scryer-darwin-x86_64-portable
             artifact_name: scryer-darwin-x86_64-portable
@@ -250,7 +238,6 @@ jobs:
             variant: haswell
             runner: macos-15-intel
             target: x86_64-apple-darwin
-            cache_lane: macos-x86_64
             sccache_lane: scryer-macos-x86_64
             sccache_writer_id: scryer-darwin-x86_64-haswell
             artifact_name: scryer-darwin-x86_64-haswell
@@ -263,6 +250,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
+      SCRYER_CARGO_PROFILE: rc
+      SCRYER_SCCACHE_BUILD_FLAVOR: rc
     steps:
       - uses: actions/checkout@v6
 
@@ -290,23 +279,16 @@ jobs:
           echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-${{ matrix.cache_lane }}
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: ${{ matrix.artifact_name }}
-
       - name: Restore sccache directory
         id: macos-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
@@ -339,7 +321,7 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --release --locked --target "${{ matrix.target }}"
+          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}"
 
       - name: Show sccache stats
         if: always()
@@ -372,7 +354,6 @@ jobs:
             runner: windows-2025
             toolchain: 1.95.0-x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
-            cache_lane: windows-x64
             sccache_lane: scryer-windows-x86_64-msvc
             sccache_writer_id: scryer-windows-x86_64-portable
             artifact_name: scryer-windows-x86_64-portable
@@ -382,7 +363,6 @@ jobs:
             runner: windows-11-arm
             toolchain: 1.95.0-aarch64-pc-windows-msvc
             target: aarch64-pc-windows-msvc
-            cache_lane: windows-arm64
             sccache_lane: scryer-windows-arm64-msvc
             sccache_writer_id: scryer-windows-arm64-portable
             artifact_name: scryer-windows-arm64-portable
@@ -396,6 +376,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: ${{ github.workspace }}\.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
+      SCRYER_CARGO_PROFILE: rc
+      SCRYER_SCCACHE_BUILD_FLAVOR: rc
     steps:
       - uses: actions/checkout@v6
 
@@ -417,23 +399,16 @@ jobs:
           "SCRYER_SCCACHE_VERSION_LINE=$versionLine" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "version_line=$versionLine" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-${{ matrix.cache_lane }}
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: ${{ matrix.artifact_name }}
-
       - name: Restore sccache directory
         id: windows-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}\.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
@@ -485,7 +460,7 @@ jobs:
           if ($env:USE_CLANG_CL -eq "true") {
             $env:CC = "clang-cl"
           }
-          cargo build -p scryer --release --locked --target ${{ matrix.target }}
+          cargo build -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }}
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }

@@ -409,6 +409,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
+      SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
+      SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -456,10 +458,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
@@ -487,10 +490,10 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --release --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Package tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/release scryer
+        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE} scryer
 
       - name: Show sccache stats
         if: always()
@@ -574,6 +577,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
+      SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
+      SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -616,10 +621,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
@@ -652,7 +658,7 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --release --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Codesign binary
         env:
@@ -672,13 +678,13 @@ jobs:
           security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-          codesign --sign "Scryer Media Signing" --identifier media.scryer.app --force "target/${{ matrix.target }}/release/scryer"
-          codesign --verify --verbose "target/${{ matrix.target }}/release/scryer"
+          codesign --sign "Scryer Media Signing" --identifier media.scryer.app --force "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}/scryer"
+          codesign --verify --verbose "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}/scryer"
           rm /tmp/cert.p12
           security delete-keychain "$KEYCHAIN"
 
       - name: Package tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/release scryer
+        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE} scryer
 
       - name: Show sccache stats
         if: always()
@@ -746,6 +752,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: ${{ github.workspace }}\.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
+      SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
+      SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -782,10 +790,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}\.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
@@ -837,7 +846,7 @@ jobs:
           if ($env:USE_CLANG_CL -eq "true") {
             $env:CC = "clang-cl"
           }
-          cargo build -p scryer --release --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
+          cargo build -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
@@ -898,7 +907,7 @@ jobs:
 
       - name: Package zip
         shell: pwsh
-        run: Compress-Archive -Path "target\${{ matrix.target }}\release\scryer.exe",README.txt -DestinationPath "${{ matrix.artifact_name }}.zip"
+        run: Compress-Archive -Path "target\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe",README.txt -DestinationPath "${{ matrix.artifact_name }}.zip"
 
       - name: Show sccache stats
         if: always()
