@@ -5,12 +5,12 @@
 //! resolver behavior.
 
 pub mod context;
-pub mod mappers;
 pub mod mutation;
 pub mod query;
 pub mod subscription;
-pub mod types;
 pub mod utils;
+
+pub use scryer_interface_media::{mappers, types};
 
 pub use context::{
     ApiContext, ApiSchema, LogBuffer, RestoreContext, RestoreRestartHandle, build_schema,

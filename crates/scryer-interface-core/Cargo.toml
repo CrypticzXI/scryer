@@ -1,0 +1,11 @@
+[package]
+name = "scryer-interface-core"
+version = "0.15.2"
+edition.workspace = true
+
+[dependencies]
+async-graphql = { workspace = true }
+scryer-application = { path = "../scryer-application" }
+scryer-domain = { path = "../scryer-domain" }
+scryer-infrastructure = { path = "../scryer-infrastructure" }
+tokio = { workspace = true }

@@ -1,4 +1,4 @@
-use async_graphql::{ComplexObject, Context, Error, Object, Result as GqlResult};
+use async_graphql::{Context, Error, MergedObject, Object, Result as GqlResult};
 
 use chrono::Utc;
 use scryer_application::{
@@ -7,35 +7,25 @@ use scryer_application::{
     supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, PolicyInput, TitleHistoryEventType};
+use scryer_interface_metadata::MetadataQueries;
+use scryer_interface_settings::SettingsQueries;
 
 use crate::context::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
-    auth_runtime_from_ctx, current_user_from_ctx, require_app_permission, to_gql_error,
+    current_user_from_ctx, require_app_permission, to_gql_error,
 };
 use crate::mappers::{
-    from_activity_event, from_backup_info, from_calendar_episode, from_collection,
-    from_delete_preview, from_disk_space, from_domain_event, from_download_client_config,
-    from_download_client_routing_entry, from_download_queue_item, from_episode,
-    from_external_import_monitor_warmup_progress, from_health_check_result,
-    from_indexer_config_with_fields, from_indexer_routing_entry, from_job_definition, from_job_run,
-    from_library, from_library_paths_settings, from_library_scan_session, from_library_settings,
-    from_media_rename_plan, from_media_settings, from_pending_import_connection,
-    from_pending_import_counts, from_pending_release, from_provider_type,
-    from_quality_profile_settings, from_release_decision, from_service_settings,
-    from_smg_version_compatibility_notice, from_submission_scope, from_subtitle_provider_config,
-    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
-    from_title_history_record, from_title_media_file, from_title_release_blocklist_entry,
-    from_user, from_wanted_item,
+    from_activity_event, from_backup_info, from_collection, from_delete_preview, from_disk_space,
+    from_domain_event, from_download_queue_item, from_episode,
+    from_external_import_monitor_warmup_progress, from_health_check_result, from_job_definition,
+    from_job_run, from_library, from_library_scan_session, from_library_settings,
+    from_media_rename_plan, from_pending_import_connection, from_pending_import_counts,
+    from_pending_release, from_provider_type, from_release_decision,
+    from_smg_version_compatibility_notice, from_system_health, from_title,
+    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
+    from_title_release_blocklist_entry, from_user, from_wanted_item,
 };
 use crate::types::*;
-
-fn title_scope_from_facet(facet: MediaFacetValue) -> ContentScopeValue {
-    match facet {
-        MediaFacetValue::Movie => ContentScopeValue::Movie,
-        MediaFacetValue::Series => ContentScopeValue::Series,
-        MediaFacetValue::Anime => ContentScopeValue::Anime,
-    }
-}
 
 fn supported_title_history_values_message() -> String {
     supported_title_history_event_types()
@@ -69,110 +59,6 @@ fn parse_supported_title_history_event_types(
     }
 
     Ok(Some(parsed))
-}
-
-fn from_subtitle_settings(
-    settings: scryer_application::SubtitleSettings,
-) -> SubtitleSettingsPayload {
-    SubtitleSettingsPayload {
-        enabled: settings.enabled,
-        languages: settings
-            .languages
-            .into_iter()
-            .map(|language| SubtitleLanguagePreferencePayload {
-                code: language.code,
-                hearing_impaired: language.hearing_impaired,
-                forced: language.forced,
-            })
-            .collect(),
-        auto_download_on_import: settings.auto_download_on_import,
-        minimum_score_series: settings.minimum_score_series,
-        minimum_score_movie: settings.minimum_score_movie,
-        search_interval_hours: settings.search_interval_hours,
-        include_ai_translated: settings.include_ai_translated,
-        include_machine_translated: settings.include_machine_translated,
-        sync_enabled: settings.sync_enabled,
-        sync_threshold_series: settings.sync_threshold_series,
-        sync_threshold_movie: settings.sync_threshold_movie,
-        sync_max_offset_seconds: settings.sync_max_offset_seconds,
-    }
-}
-
-fn from_acquisition_settings(
-    settings: scryer_application::AcquisitionSettings,
-) -> AcquisitionSettingsPayload {
-    AcquisitionSettingsPayload {
-        enabled: settings.enabled,
-        upgrade_cooldown_hours: settings.upgrade_cooldown_hours,
-        same_tier_min_delta: settings.same_tier_min_delta,
-        cross_tier_min_delta: settings.cross_tier_min_delta,
-        forced_upgrade_delta_bypass: settings.forced_upgrade_delta_bypass,
-        poll_interval_seconds: settings.poll_interval_seconds,
-        sync_interval_seconds: settings.sync_interval_seconds,
-        batch_size: settings.batch_size,
-    }
-}
-
-fn from_general_settings(settings: scryer_application::GeneralSettings) -> GeneralSettingsPayload {
-    GeneralSettingsPayload {
-        keep_history_forever: settings.keep_history_forever,
-        history_retention_days: settings.history_retention_days,
-    }
-}
-
-fn from_auto_backup_settings(
-    settings: scryer_application::AutoBackupSettings,
-) -> AutoBackupSettingsPayload {
-    AutoBackupSettingsPayload {
-        enabled: settings.enabled,
-        daily_time_local: settings.daily_time_local,
-        auto_backup_key_present: settings.auto_backup_key_present,
-        next_run_at: settings.next_run_at,
-    }
-}
-
-fn from_security_settings(
-    settings: scryer_application::SecuritySettings,
-    auth_runtime: &crate::context::AuthRuntimeStateSnapshot,
-) -> SecuritySettingsPayload {
-    SecuritySettingsPayload {
-        form_login_enabled: settings.form_login_enabled,
-        skip_login_for_local_ips: settings.skip_login_for_local_ips,
-        effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
-        env_override_active: auth_runtime.env_override_active,
-        env_override_description: auth_runtime.env_override_description.clone(),
-    }
-}
-
-fn from_auth_runtime_state(
-    auth_runtime: &crate::context::AuthRuntimeStateSnapshot,
-) -> AuthRuntimeStatePayload {
-    AuthRuntimeStatePayload {
-        effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
-        skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
-    }
-}
-
-fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfilePayload {
-    DelayProfilePayload {
-        id: profile.id,
-        name: profile.name,
-        usenet_delay_minutes: profile.usenet_delay_minutes as i32,
-        torrent_delay_minutes: profile.torrent_delay_minutes as i32,
-        preferred_protocol: DelayProfilePreferredProtocolValue::from_application(
-            profile.preferred_protocol,
-        ),
-        min_age_minutes: profile.min_age_minutes as i32,
-        bypass_score_threshold: profile.bypass_score_threshold,
-        applies_to_facets: profile
-            .applies_to_facets
-            .into_iter()
-            .filter_map(|facet| MediaFacetValue::parse(&facet))
-            .collect(),
-        tags: profile.tags,
-        priority: profile.priority,
-        enabled: profile.enabled,
-    }
 }
 
 fn from_download_history_page(
@@ -209,26 +95,6 @@ fn from_download_import_page(
             .collect(),
         has_more: page.has_more,
         total_count: page.total_count as i32,
-    }
-}
-
-fn from_metadata_search_item(
-    item: scryer_application::RichMetadataSearchItem,
-) -> MetadataSearchItemPayload {
-    MetadataSearchItemPayload {
-        tvdb_id: item.tvdb_id,
-        name: item.name,
-        imdb_id: item.imdb_id,
-        slug: item.slug,
-        type_hint: item.type_hint,
-        year: item.year,
-        status: item.status,
-        overview: item.overview,
-        popularity: item.popularity,
-        poster_url: item.poster_url,
-        language: item.language,
-        runtime_minutes: item.runtime_minutes,
-        sort_title: item.sort_title,
     }
 }
 
@@ -368,15 +234,39 @@ impl TitlePayloadSelection {
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct QueryRoot;
+#[derive(Default)]
+struct CatalogQueries;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "async-graphql's Object macro generates resolver wrappers that exceed clippy's argument threshold"
-)]
+#[derive(Default)]
+struct ActivityQueries;
+
+#[derive(Default)]
+struct JobAndDownloadQueries;
+
+#[derive(Default)]
+struct SystemQueries;
+
+#[derive(Default)]
+struct AcquisitionQueries;
+
+#[derive(Default)]
+struct UtilityQueries;
+
+#[derive(MergedObject, Default)]
+pub struct QueryRoot(
+    CatalogQueries,
+    ActivityQueries,
+    JobAndDownloadQueries,
+    SettingsQueries,
+    SystemQueries,
+    AcquisitionQueries,
+    MetadataQueries,
+    UtilityQueries,
+);
+
+#[allow(clippy::too_many_arguments)]
 #[Object]
-impl QueryRoot {
+impl CatalogQueries {
     async fn titles(
         &self,
         ctx: &Context<'_>,
@@ -794,7 +684,11 @@ impl QueryRoot {
             .map(from_title_release_blocklist_entry)
             .collect())
     }
+}
 
+#[allow(clippy::too_many_arguments)]
+#[Object]
+impl ActivityQueries {
     async fn activity_events(
         &self,
         ctx: &Context<'_>,
@@ -1001,7 +895,11 @@ impl QueryRoot {
                 .collect(),
         })
     }
+}
 
+#[allow(clippy::too_many_arguments)]
+#[Object]
+impl JobAndDownloadQueries {
     async fn jobs(&self, ctx: &Context<'_>) -> GqlResult<Vec<JobDefinitionPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1156,323 +1054,11 @@ impl QueryRoot {
             .map_err(to_gql_error)?;
         Ok(from_download_history_page(page))
     }
+}
 
-    async fn subtitle_settings(&self, ctx: &Context<'_>) -> GqlResult<SubtitleSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let settings = app
-            .get_subtitle_settings(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_subtitle_settings(settings))
-    }
-
-    async fn acquisition_settings(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<AcquisitionSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let settings = app
-            .get_acquisition_settings(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_acquisition_settings(settings))
-    }
-
-    async fn general_settings(&self, ctx: &Context<'_>) -> GqlResult<GeneralSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let settings = app
-            .get_general_settings(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_general_settings(settings))
-    }
-
-    async fn auto_backup_settings(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<AutoBackupSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let settings = app
-            .get_auto_backup_settings(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_auto_backup_settings(settings))
-    }
-
-    async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let auth_runtime = auth_runtime_from_ctx(ctx);
-        let settings = app
-            .get_security_settings(&actor)
-            .await
-            .map_err(to_gql_error)?;
-
-        Ok(from_security_settings(settings, &auth_runtime.snapshot()))
-    }
-
-    async fn auth_runtime_state(&self, ctx: &Context<'_>) -> GqlResult<AuthRuntimeStatePayload> {
-        let auth_runtime = auth_runtime_from_ctx(ctx);
-        Ok(from_auth_runtime_state(&auth_runtime.snapshot()))
-    }
-
-    async fn delay_profiles(&self, ctx: &Context<'_>) -> GqlResult<Vec<DelayProfilePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let profiles = app.get_delay_profiles(&actor).await.map_err(to_gql_error)?;
-        Ok(profiles.into_iter().map(from_delay_profile).collect())
-    }
-
-    async fn media_settings(
-        &self,
-        ctx: &Context<'_>,
-        scope: ContentScopeValue,
-    ) -> GqlResult<MediaSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_media_settings(&actor, scope.into_media_facet())
-            .await
-            .map(|settings| from_media_settings(scope, settings))
-            .map_err(to_gql_error)
-    }
-
-    async fn library_paths(&self, ctx: &Context<'_>) -> GqlResult<LibraryPathsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_library_paths(&actor)
-            .await
-            .map(from_library_paths_settings)
-            .map_err(to_gql_error)
-    }
-
-    async fn service_settings(&self, ctx: &Context<'_>) -> GqlResult<ServiceSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_service_settings(&actor)
-            .await
-            .map(from_service_settings)
-            .map_err(to_gql_error)
-    }
-
-    async fn quality_profile_settings(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<QualityProfileSettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_quality_profile_settings(&actor)
-            .await
-            .map(from_quality_profile_settings)
-            .map_err(to_gql_error)
-    }
-
-    async fn download_client_routing(
-        &self,
-        ctx: &Context<'_>,
-        scope: ContentScopeValue,
-    ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_download_client_routing(&actor, scope.as_scope_id())
-            .await
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(from_download_client_routing_entry)
-                    .collect()
-            })
-            .map_err(to_gql_error)
-    }
-
-    async fn indexer_routing(
-        &self,
-        ctx: &Context<'_>,
-        scope: ContentScopeValue,
-    ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_indexer_routing(&actor, scope.as_scope_id())
-            .await
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(from_indexer_routing_entry)
-                    .collect()
-            })
-            .map_err(to_gql_error)
-    }
-
-    async fn indexers(
-        &self,
-        ctx: &Context<'_>,
-        provider_type: Option<String>,
-    ) -> GqlResult<Vec<IndexerConfigPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let configs = app
-            .list_indexer_configs(&actor, provider_type)
-            .await
-            .map_err(to_gql_error)?;
-        let stats = app
-            .indexer_query_stats(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        let mut payloads = Vec::with_capacity(configs.len());
-        for config in configs {
-            let config_fields = app
-                .indexer_config_fields_for_provider_type(&config.provider_type)
-                .unwrap_or_default();
-            payloads.push(from_indexer_config_with_fields(config, &config_fields));
-        }
-        for payload in &mut payloads {
-            if let Some(s) = stats.iter().find(|s| s.indexer_id == payload.id) {
-                payload.last_query_at = s.last_query_at.clone();
-            }
-        }
-        Ok(payloads)
-    }
-
-    async fn indexer(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<Option<IndexerConfigPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let config = app
-            .get_indexer_config(&actor, &id)
-            .await
-            .map_err(to_gql_error)?;
-        let mut payload = config.map(|config| {
-            let config_fields = app
-                .indexer_config_fields_for_provider_type(&config.provider_type)
-                .unwrap_or_default();
-            from_indexer_config_with_fields(config, &config_fields)
-        });
-        if let Some(ref mut p) = payload {
-            let stats = app
-                .indexer_query_stats(&actor)
-                .await
-                .map_err(to_gql_error)?;
-            if let Some(s) = stats.iter().find(|s| s.indexer_id == p.id) {
-                p.last_query_at = s.last_query_at.clone();
-            }
-        }
-        Ok(payload)
-    }
-
-    async fn root_folders(
-        &self,
-        ctx: &Context<'_>,
-        facet: MediaFacetValue,
-    ) -> GqlResult<Vec<RootFolderPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let media_facet = facet.into_domain();
-        let entries = app
-            .root_folders_for_facet(&media_facet)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(entries
-            .into_iter()
-            .map(|e| RootFolderPayload {
-                path: e.path,
-                is_default: e.is_default,
-            })
-            .collect())
-    }
-
-    async fn download_client_configs(
-        &self,
-        ctx: &Context<'_>,
-        client_type: Option<String>,
-    ) -> GqlResult<Vec<DownloadClientConfigPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let configs = app
-            .list_download_client_configs(&actor, client_type)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(configs
-            .into_iter()
-            .map(from_download_client_config)
-            .collect())
-    }
-
-    async fn download_client_config(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<Option<DownloadClientConfigPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let config = app
-            .get_download_client_config(&actor, &id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_download_client_config);
-        Ok(config)
-    }
-
-    async fn subtitle_provider_configs(
-        &self,
-        ctx: &Context<'_>,
-        provider_type: Option<String>,
-    ) -> GqlResult<Vec<SubtitleProviderConfigPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let configs = app
-            .list_subtitle_provider_configs(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(configs
-            .into_iter()
-            .filter(|config| {
-                provider_type.as_ref().is_none_or(|provider_type| {
-                    config.provider_type.eq_ignore_ascii_case(provider_type)
-                })
-            })
-            .map(|config| {
-                let config_fields = app.subtitle_provider_config_fields(&config.provider_type);
-                from_subtitle_provider_config(config, &config_fields)
-            })
-            .collect())
-    }
-
-    async fn users(&self, ctx: &Context<'_>) -> GqlResult<Vec<UserPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let users = app.list_users(&actor).await.map_err(to_gql_error)?;
-        let mut payloads = Vec::with_capacity(users.len());
-        for user in users {
-            let user = app
-                .attach_user_authorization(user)
-                .await
-                .map_err(to_gql_error)?;
-            payloads.push(from_user(user));
-        }
-        Ok(payloads)
-    }
-
-    async fn user(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<UserPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let user = app.get_user(&actor, &id).await.map_err(to_gql_error)?;
-        match user {
-            Some(user) => {
-                let user = app
-                    .attach_user_authorization(user)
-                    .await
-                    .map_err(to_gql_error)?;
-                Ok(Some(from_user(user)))
-            }
-            None => Ok(None),
-        }
-    }
-
+#[allow(clippy::too_many_arguments)]
+#[Object]
+impl SystemQueries {
     async fn system_health(&self, ctx: &Context<'_>) -> GqlResult<SystemHealthPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1658,7 +1244,11 @@ impl QueryRoot {
             None => Ok(None),
         }
     }
+}
 
+#[allow(clippy::too_many_arguments)]
+#[Object]
+impl AcquisitionQueries {
     async fn wanted_items(
         &self,
         ctx: &Context<'_>,
@@ -1976,168 +1566,11 @@ impl QueryRoot {
             })
             .collect())
     }
+}
 
-    // ── Metadata Gateway (proxied from SMG) ──────────────────────────────
-
-    async fn search_metadata(
-        &self,
-        ctx: &Context<'_>,
-        query: String,
-        #[graphql(name = "type")] type_hint: String,
-        #[graphql(default = 25)] limit: i32,
-        #[graphql(default_with = "\"eng\".to_string()")] language: String,
-        year: Option<i32>,
-    ) -> GqlResult<Vec<MetadataSearchItemPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let limit = limit.clamp(1, 100);
-        let results = app
-            .search_metadata(&actor, &query, &type_hint, limit, &language, year)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(results.into_iter().map(from_metadata_search_item).collect())
-    }
-
-    async fn search_metadata_multi(
-        &self,
-        ctx: &Context<'_>,
-        query: String,
-        #[graphql(default = 25)] limit: i32,
-        #[graphql(default_with = "\"eng\".to_string()")] language: String,
-    ) -> GqlResult<MetadataSearchMultiPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let limit = limit.clamp(1, 100);
-        let result = app
-            .search_metadata_multi(&actor, &query, limit, &language)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(MetadataSearchMultiPayload {
-            movies: result
-                .movies
-                .into_iter()
-                .map(from_metadata_search_item)
-                .collect(),
-            series: result
-                .series
-                .into_iter()
-                .map(from_metadata_search_item)
-                .collect(),
-            anime: result
-                .anime
-                .into_iter()
-                .map(from_metadata_search_item)
-                .collect(),
-        })
-    }
-
-    async fn metadata_movie(
-        &self,
-        ctx: &Context<'_>,
-        tvdb_id: i32,
-        #[graphql(default_with = "\"eng\".to_string()")] language: String,
-    ) -> GqlResult<MetadataMoviePayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let movie = app
-            .get_metadata_movie(&actor, tvdb_id as i64, &language)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(MetadataMoviePayload {
-            tvdb_id: movie.tvdb_id.to_string(),
-            name: movie.name,
-            slug: movie.slug,
-            year: movie.year,
-            status: movie.content_status,
-            overview: movie.overview,
-            poster_url: movie.poster_url,
-            language: movie.language,
-            runtime_minutes: movie.runtime_minutes,
-            sort_title: movie.sort_title,
-            imdb_id: movie.imdb_id,
-            genres: movie.genres,
-            studio: movie.studio,
-            tmdb_release_date: movie.tmdb_release_date,
-        })
-    }
-
-    async fn metadata_series(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-        #[graphql(default = true)] include_episodes: bool,
-        #[graphql(default_with = "\"eng\".to_string()")] language: String,
-    ) -> GqlResult<MetadataSeriesPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let tvdb_id: i64 = id.parse().map_err(|_| Error::new("invalid tvdb id"))?;
-        let series = app
-            .get_metadata_series(&actor, tvdb_id, &language)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(MetadataSeriesPayload {
-            tvdb_id: series.tvdb_id.to_string(),
-            name: series.name,
-            sort_name: series.sort_name,
-            slug: series.slug,
-            year: series.year,
-            status: series.content_status,
-            first_aired: series.first_aired,
-            overview: series.overview,
-            network: series.network,
-            runtime_minutes: series.runtime_minutes,
-            poster_url: series.poster_url,
-            country: series.country,
-            genres: series.genres,
-            aliases: series.aliases,
-            seasons: series
-                .seasons
-                .into_iter()
-                .map(|s| MetadataSeasonPayload {
-                    tvdb_id: s.tvdb_id.to_string(),
-                    number: s.number,
-                    label: s.label,
-                    episode_type: s.episode_type,
-                })
-                .collect(),
-            episodes: if include_episodes {
-                series
-                    .episodes
-                    .into_iter()
-                    .map(|e| MetadataEpisodePayload {
-                        tvdb_id: e.tvdb_id.to_string(),
-                        episode_number: e.episode_number,
-                        season_number: e.season_number,
-                        name: e.name,
-                        aired: e.aired,
-                        runtime_minutes: e.runtime_minutes,
-                        is_filler: e.is_filler,
-                    })
-                    .collect()
-            } else {
-                vec![]
-            },
-        })
-    }
-
-    // ── Calendar ──────────────────────────────────────────────────────
-
-    async fn calendar_episodes(
-        &self,
-        ctx: &Context<'_>,
-        start_date: String,
-        end_date: String,
-        library_ids: Option<Vec<String>>,
-    ) -> GqlResult<Vec<CalendarEpisodePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let episodes = app
-            .list_calendar_episodes(&actor, &start_date, &end_date, library_ids)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(episodes.into_iter().map(from_calendar_episode).collect())
-    }
-
+#[allow(clippy::too_many_arguments)]
+#[Object]
+impl UtilityQueries {
     // ── Notifications ────────────────────────────────────────────────────
 
     async fn notification_channels(
@@ -2357,434 +1790,5 @@ impl QueryRoot {
                 created_at: entry.created_at,
             })
             .collect())
-    }
-}
-
-#[ComplexObject]
-impl LibraryPayload {
-    async fn settings(&self, ctx: &Context<'_>) -> GqlResult<LibrarySettingsPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let settings = app
-            .get_library_settings(&actor, &self.id)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(from_library_settings(settings))
-    }
-}
-
-#[ComplexObject]
-impl TitlePayload {
-    async fn required_audio_languages_override(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<Option<Vec<String>>> {
-        let app = app_from_ctx(ctx)?;
-        app.load_title_required_audio_override(&self.id)
-            .await
-            .map_err(to_gql_error)
-    }
-
-    async fn effective_required_audio_languages(
-        &self,
-        ctx: &Context<'_>,
-    ) -> GqlResult<Vec<String>> {
-        let app = app_from_ctx(ctx)?;
-        if let Some(languages) = app
-            .load_title_required_audio_override(&self.id)
-            .await
-            .map_err(to_gql_error)?
-        {
-            return Ok(languages);
-        }
-        app.load_facet_required_audio_languages(title_scope_from_facet(self.facet).as_scope_id())
-            .await
-            .map_err(to_gql_error)
-    }
-
-    async fn inherits_required_audio_languages(&self, ctx: &Context<'_>) -> GqlResult<bool> {
-        let app = app_from_ctx(ctx)?;
-        Ok(app
-            .load_title_required_audio_override(&self.id)
-            .await?
-            .is_none())
-    }
-
-    async fn collections(&self, ctx: &Context<'_>) -> GqlResult<Vec<CollectionPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let collections = app
-            .list_collections(&actor, &self.id)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(collections.into_iter().map(from_collection).collect())
-    }
-
-    async fn media_files(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleMediaFilePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let files = app
-            .list_title_media_files(&actor, &self.id)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(files.into_iter().map(from_title_media_file).collect())
-    }
-
-    async fn wanted_items(
-        &self,
-        ctx: &Context<'_>,
-        status: Option<String>,
-    ) -> GqlResult<Vec<WantedItemPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let (items, _) = app
-            .list_wanted_items(
-                &actor,
-                WantedItemsQuery {
-                    statuses: status.into_iter().collect(),
-                    media_types: Vec::new(),
-                    title_id: Some(self.id.clone()),
-                    library_ids: Vec::new(),
-                    title_search: None,
-                    latest_decision_codes: Vec::new(),
-                    limit: 500,
-                    offset: 0,
-                },
-            )
-            .await
-            .map_err(to_gql_error)?;
-        Ok(items.into_iter().map(from_wanted_item).collect())
-    }
-
-    async fn release_decisions(
-        &self,
-        ctx: &Context<'_>,
-        #[graphql(default = 50)] limit: i64,
-    ) -> GqlResult<Vec<ReleaseDecisionPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let decisions = app
-            .list_release_decisions(
-                &actor,
-                ReleaseDecisionsQuery {
-                    wanted_item_id: None,
-                    title_id: Some(self.id.clone()),
-                    limit,
-                },
-            )
-            .await
-            .map_err(to_gql_error)?;
-        Ok(decisions.into_iter().map(from_release_decision).collect())
-    }
-
-    async fn download_queue_items(
-        &self,
-        ctx: &Context<'_>,
-        include_all_activity: Option<bool>,
-        include_history_only: Option<bool>,
-        include_import_activity: Option<bool>,
-        activity_filter: Option<DownloadActivityFilterValue>,
-    ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let items = app
-            .list_download_queue_for_title(
-                &actor,
-                &self.id,
-                include_all_activity.unwrap_or(false),
-                include_history_only.unwrap_or(false),
-                include_import_activity.unwrap_or(false),
-                activity_filter
-                    .unwrap_or(DownloadActivityFilterValue::All)
-                    .into_application(),
-            )
-            .await
-            .map_err(to_gql_error)?;
-        Ok(items.into_iter().map(from_download_queue_item).collect())
-    }
-}
-
-#[ComplexObject]
-impl CollectionPayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let title = app
-            .get_title(&actor, &self.title_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_title);
-        Ok(title)
-    }
-
-    async fn episodes(&self, ctx: &Context<'_>) -> GqlResult<Vec<EpisodePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let episodes = app
-            .list_episodes(&actor, &self.id)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(episodes.into_iter().map(from_episode).collect())
-    }
-}
-
-#[ComplexObject]
-impl EpisodePayload {
-    async fn parent_title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let title = app
-            .get_title(&actor, &self.title_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_title);
-        Ok(title)
-    }
-
-    async fn collection(&self, ctx: &Context<'_>) -> GqlResult<Option<CollectionPayload>> {
-        let Some(collection_id) = self.collection_id.as_deref() else {
-            return Ok(None);
-        };
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let collection = app
-            .get_collection(&actor, collection_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_collection);
-        Ok(collection)
-    }
-
-    async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let wanted_item = app
-            .get_title_wanted_item(&actor, &self.title_id, Some(&self.id))
-            .await
-            .map_err(to_gql_error)?
-            .map(from_wanted_item);
-        Ok(wanted_item)
-    }
-
-    async fn media_files(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleMediaFilePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let files = app
-            .list_title_media_files(&actor, &self.title_id)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(files
-            .into_iter()
-            .filter(|file| file.episode_id.as_deref() == Some(self.id.as_str()))
-            .map(from_title_media_file)
-            .collect())
-    }
-}
-
-#[ComplexObject]
-impl TitleMediaFilePayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let title = app
-            .get_title(&actor, &self.title_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_title);
-        Ok(title)
-    }
-
-    async fn episode(&self, ctx: &Context<'_>) -> GqlResult<Option<EpisodePayload>> {
-        let Some(episode_id) = self.episode_id.as_deref() else {
-            return Ok(None);
-        };
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let episode = app
-            .get_episode(&actor, episode_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_episode);
-        Ok(episode)
-    }
-}
-
-#[ComplexObject]
-impl WantedItemPayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let title = app
-            .get_title(&actor, &self.title_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_title);
-        Ok(title)
-    }
-
-    async fn collection(&self, ctx: &Context<'_>) -> GqlResult<Option<CollectionPayload>> {
-        let Some(collection_id) = self.collection_id.as_deref() else {
-            return Ok(None);
-        };
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let collection = app
-            .get_collection(&actor, collection_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_collection);
-        Ok(collection)
-    }
-
-    async fn episode(&self, ctx: &Context<'_>) -> GqlResult<Option<EpisodePayload>> {
-        let Some(episode_id) = self.episode_id.as_deref() else {
-            return Ok(None);
-        };
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let episode = app
-            .get_episode(&actor, episode_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_episode);
-        Ok(episode)
-    }
-
-    async fn release_decisions(
-        &self,
-        ctx: &Context<'_>,
-        #[graphql(default = 50)] limit: i64,
-    ) -> GqlResult<Vec<ReleaseDecisionPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let decisions = app
-            .list_release_decisions(
-                &actor,
-                ReleaseDecisionsQuery {
-                    wanted_item_id: Some(self.id.clone()),
-                    title_id: None,
-                    limit,
-                },
-            )
-            .await
-            .map_err(to_gql_error)?;
-        Ok(decisions.into_iter().map(from_release_decision).collect())
-    }
-
-    async fn pending_releases(&self, ctx: &Context<'_>) -> GqlResult<Vec<PendingReleasePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let releases = app
-            .list_pending_releases_for_wanted_item(&actor, &self.id)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(releases.into_iter().map(from_pending_release).collect())
-    }
-}
-
-#[ComplexObject]
-impl ReleaseDecisionPayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let title = app
-            .get_title(&actor, &self.title_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_title);
-        Ok(title)
-    }
-
-    async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let item = app
-            .get_wanted_item(&actor, &self.wanted_item_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_wanted_item);
-        Ok(item)
-    }
-}
-
-#[ComplexObject]
-impl DownloadQueueItemPayload {
-    async fn queue_scope(&self, ctx: &Context<'_>) -> GqlResult<Option<QueueDownloadScopePayload>> {
-        let client_type = self.client_type.trim();
-        let download_client_item_id = self.download_client_item_id.trim();
-        if client_type.is_empty() || download_client_item_id.is_empty() {
-            return Ok(self
-                .episode_id
-                .as_ref()
-                .map(|episode_id| QueueDownloadScopePayload {
-                    kind: "episode".to_string(),
-                    episode_id: Some(episode_id.clone()),
-                    episode_ids: Vec::new(),
-                    collection_id: None,
-                }));
-        }
-
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let client_id = self.client_id.trim();
-        let client_id = if client_id.is_empty() {
-            None
-        } else {
-            Some(client_id)
-        };
-        let scope = app
-            .find_download_queue_scope(&actor, client_id, client_type, download_client_item_id)
-            .await
-            .map_err(to_gql_error)?;
-
-        Ok(scope.map(from_submission_scope).or_else(|| {
-            self.episode_id
-                .as_ref()
-                .map(|episode_id| QueueDownloadScopePayload {
-                    kind: "episode".to_string(),
-                    episode_id: Some(episode_id.clone()),
-                    episode_ids: Vec::new(),
-                    collection_id: None,
-                })
-        }))
-    }
-
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        let Some(title_id) = self.title_id.as_deref() else {
-            return Ok(None);
-        };
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let title = app
-            .get_title_for_management(&actor, title_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_title);
-        Ok(title)
-    }
-}
-
-#[ComplexObject]
-impl PendingReleasePayload {
-    async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let title = app
-            .get_title_for_management(&actor, &self.title_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_title);
-        Ok(title)
-    }
-
-    async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let wanted_item = app
-            .get_wanted_item_for_management(&actor, &self.wanted_item_id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_wanted_item);
-        Ok(wanted_item)
     }
 }

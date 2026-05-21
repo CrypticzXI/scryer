@@ -5767,6 +5767,10 @@ dependencies = [
  "scryer-application",
  "scryer-domain",
  "scryer-infrastructure",
+ "scryer-interface-core",
+ "scryer-interface-media",
+ "scryer-interface-metadata",
+ "scryer-interface-settings",
  "scryer-rules",
  "serde",
  "serde_json",
@@ -5775,6 +5779,54 @@ dependencies = [
  "tracing",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "scryer-interface-core"
+version = "0.15.2"
+dependencies = [
+ "async-graphql",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure",
+ "tokio",
+]
+
+[[package]]
+name = "scryer-interface-media"
+version = "0.15.2"
+dependencies = [
+ "async-graphql",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure",
+ "scryer-interface-core",
+ "scryer-rules",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "scryer-interface-metadata"
+version = "0.15.2"
+dependencies = [
+ "async-graphql",
+ "scryer-application",
+ "scryer-interface-core",
+ "scryer-interface-media",
+]
+
+[[package]]
+name = "scryer-interface-settings"
+version = "0.15.2"
+dependencies = [
+ "async-graphql",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-interface-core",
+ "scryer-interface-media",
 ]
 
 [[package]]

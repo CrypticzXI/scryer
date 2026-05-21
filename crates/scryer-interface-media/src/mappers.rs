@@ -117,7 +117,7 @@ fn import_source_title_from_payload(
     payload_title.or(fallback_path_title)
 }
 
-pub(crate) fn from_scoring_overrides(
+pub fn from_scoring_overrides(
     overrides: scryer_application::ScoringOverrides,
 ) -> ScoringOverridesPayload {
     ScoringOverridesPayload {
@@ -129,7 +129,7 @@ pub(crate) fn from_scoring_overrides(
     }
 }
 
-pub(crate) fn from_quality_profile_criteria(
+pub fn from_quality_profile_criteria(
     criteria: QualityProfileCriteria,
 ) -> QualityProfileCriteriaPayload {
     QualityProfileCriteriaPayload {
@@ -161,7 +161,7 @@ pub(crate) fn from_quality_profile_criteria(
     }
 }
 
-pub(crate) fn from_quality_profile(profile: QualityProfile) -> QualityProfilePayload {
+pub fn from_quality_profile(profile: QualityProfile) -> QualityProfilePayload {
     QualityProfilePayload {
         id: profile.id,
         name: profile.name,
@@ -169,7 +169,7 @@ pub(crate) fn from_quality_profile(profile: QualityProfile) -> QualityProfilePay
     }
 }
 
-pub(crate) fn from_library_paths_settings(settings: LibraryPathsSettings) -> LibraryPathsPayload {
+pub fn from_library_paths_settings(settings: LibraryPathsSettings) -> LibraryPathsPayload {
     LibraryPathsPayload {
         movie_path: settings.movie_path,
         series_path: settings.series_path,
@@ -177,14 +177,14 @@ pub(crate) fn from_library_paths_settings(settings: LibraryPathsSettings) -> Lib
     }
 }
 
-pub(crate) fn from_service_settings(settings: ServiceSettings) -> ServiceSettingsPayload {
+pub fn from_service_settings(settings: ServiceSettings) -> ServiceSettingsPayload {
     ServiceSettingsPayload {
         tls_cert_path: settings.tls_cert_path,
         tls_key_path: settings.tls_key_path,
     }
 }
 
-pub(crate) fn from_download_client_routing_entry(
+pub fn from_download_client_routing_entry(
     entry: DownloadClientRoutingSettingsEntry,
 ) -> DownloadClientRoutingEntryPayload {
     DownloadClientRoutingEntryPayload {
@@ -198,7 +198,7 @@ pub(crate) fn from_download_client_routing_entry(
     }
 }
 
-pub(crate) fn from_indexer_routing_entry(
+pub fn from_indexer_routing_entry(
     entry: IndexerRoutingSettingsEntry,
 ) -> IndexerRoutingEntryPayload {
     IndexerRoutingEntryPayload {
@@ -209,7 +209,7 @@ pub(crate) fn from_indexer_routing_entry(
     }
 }
 
-pub(crate) fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayload {
+pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayload {
     LibrarySettingsPayload {
         required_audio_languages_override: settings.required_audio_languages_override,
         required_audio_languages: settings.required_audio_languages,
@@ -282,7 +282,7 @@ fn from_facet_scoring_persona_selection(
     }
 }
 
-pub(crate) fn from_media_settings(
+pub fn from_media_settings(
     scope: ContentScopeValue,
     settings: MediaSettings,
 ) -> MediaSettingsPayload {
@@ -312,7 +312,7 @@ pub(crate) fn from_media_settings(
     }
 }
 
-pub(crate) fn from_quality_profile_settings(
+pub fn from_quality_profile_settings(
     settings: QualityProfileSettings,
 ) -> QualityProfileSettingsPayload {
     QualityProfileSettingsPayload {
@@ -338,7 +338,7 @@ pub(crate) fn from_quality_profile_settings(
     }
 }
 
-pub(crate) fn from_delete_preview(preview: DeletePreview) -> DeletePreviewPayload {
+pub fn from_delete_preview(preview: DeletePreview) -> DeletePreviewPayload {
     DeletePreviewPayload {
         fingerprint: preview.fingerprint,
         total_file_count: preview.total_file_count,
@@ -354,7 +354,7 @@ pub(crate) fn from_delete_preview(preview: DeletePreview) -> DeletePreviewPayloa
     }
 }
 
-pub(crate) fn from_tvdb_scan_operation(
+pub fn from_tvdb_scan_operation(
     operation: WorkflowOperationInfo,
     limit: i64,
     source: String,
@@ -373,7 +373,7 @@ pub(crate) fn from_tvdb_scan_operation(
     }
 }
 
-pub(crate) fn from_search_result(result: IndexerSearchResult) -> IndexerSearchResultPayload {
+pub fn from_search_result(result: IndexerSearchResult) -> IndexerSearchResultPayload {
     let seeders = result
         .extra
         .get("seeders")
@@ -424,7 +424,7 @@ pub(crate) fn from_search_result(result: IndexerSearchResult) -> IndexerSearchRe
     }
 }
 
-pub(crate) fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScopePayload {
+pub fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScopePayload {
     match scope {
         SubmissionScope::Episode { episode_id } => QueueDownloadScopePayload {
             kind: "episode".to_string(),
@@ -459,7 +459,7 @@ pub(crate) fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScop
     }
 }
 
-pub(crate) fn from_title_release_blocklist_entry(
+pub fn from_title_release_blocklist_entry(
     entry: TitleReleaseBlocklistEntry,
 ) -> TitleReleaseBlocklistEntryPayload {
     TitleReleaseBlocklistEntryPayload {
@@ -472,7 +472,7 @@ pub(crate) fn from_title_release_blocklist_entry(
     }
 }
 
-pub(crate) fn from_quality_profile_decision(
+pub fn from_quality_profile_decision(
     decision: QualityProfileDecision,
 ) -> QualityProfileDecisionPayload {
     QualityProfileDecisionPayload {
@@ -500,7 +500,7 @@ pub(crate) fn from_quality_profile_decision(
     }
 }
 
-pub(crate) fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleasePayload {
+pub fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleasePayload {
     ParsedReleasePayload {
         raw_title: result.raw_title,
         normalized_title: result.normalized_title,
@@ -531,7 +531,7 @@ pub(crate) fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleas
     }
 }
 
-pub(crate) fn from_parsed_episode(episode: ParsedEpisodeMetadata) -> ParsedEpisodePayload {
+pub fn from_parsed_episode(episode: ParsedEpisodeMetadata) -> ParsedEpisodePayload {
     ParsedEpisodePayload {
         season: episode.season.map(|value| value as i32),
         episode_numbers: episode
@@ -544,7 +544,7 @@ pub(crate) fn from_parsed_episode(episode: ParsedEpisodeMetadata) -> ParsedEpiso
     }
 }
 
-pub(crate) fn from_indexer_config_with_fields(
+pub fn from_indexer_config_with_fields(
     config: IndexerConfig,
     config_fields: &[ConfigFieldDef],
 ) -> IndexerConfigPayload {
@@ -583,7 +583,7 @@ pub(crate) fn from_indexer_config_with_fields(
     }
 }
 
-pub(crate) fn from_indexer_config_sync_result(
+pub fn from_indexer_config_sync_result(
     result: scryer_application::IndexerConfigSyncResult,
 ) -> IndexerConfigSyncPayload {
     IndexerConfigSyncPayload {
@@ -653,7 +653,7 @@ fn indexer_config_key_is_secret(key: &str) -> bool {
     clippy::too_many_arguments,
     reason = "provider type payload is assembled from discrete application fields"
 )]
-pub(crate) fn from_provider_type(
+pub fn from_provider_type(
     provider_type: String,
     name: String,
     config_fields: Vec<scryer_domain::ConfigFieldDef>,
@@ -703,9 +703,7 @@ pub(crate) fn from_provider_type(
     }
 }
 
-pub(crate) fn from_download_client_config(
-    config: DownloadClientConfig,
-) -> DownloadClientConfigPayload {
+pub fn from_download_client_config(config: DownloadClientConfig) -> DownloadClientConfigPayload {
     let base_url = scryer_infrastructure::resolve_base_url_from_config_json(&config.config_json);
     DownloadClientConfigPayload {
         id: config.id,
@@ -722,7 +720,7 @@ pub(crate) fn from_download_client_config(
     }
 }
 
-pub(crate) fn from_subtitle_provider_config(
+pub fn from_subtitle_provider_config(
     config: SubtitleProviderConfig,
     config_fields: &[scryer_domain::ConfigFieldDef],
 ) -> SubtitleProviderConfigPayload {
@@ -795,7 +793,7 @@ fn looks_like_secret_config_key(key: &str) -> bool {
         || normalized.contains("api_key")
 }
 
-pub(crate) fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPayload {
+pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPayload {
     let display_state = DownloadDisplayStateValue::from_application(
         scryer_application::derive_download_queue_display_state(&item),
     );
@@ -863,7 +861,7 @@ fn extract_tag_bool(tags: &[String], prefix: &str) -> Option<bool> {
         .map(|value| !value.trim().eq_ignore_ascii_case("false"))
 }
 
-pub(crate) fn from_title(title: Title) -> TitlePayload {
+pub fn from_title(title: Title) -> TitlePayload {
     let quality_profile_id = extract_tag_string(&title.tags, "scryer:quality-profile:");
     let root_folder_path = extract_tag_string(&title.tags, "scryer:root-folder:");
     let monitor_type = extract_tag_string(&title.tags, "scryer:monitor-type:")
@@ -936,7 +934,7 @@ pub(crate) fn from_title(title: Title) -> TitlePayload {
     }
 }
 
-pub(crate) fn from_library(library: Library) -> LibraryPayload {
+pub fn from_library(library: Library) -> LibraryPayload {
     LibraryPayload {
         id: library.id,
         facet: MediaFacetValue::from_domain(library.facet),
@@ -955,7 +953,7 @@ pub(crate) fn from_library(library: Library) -> LibraryPayload {
     }
 }
 
-pub(crate) fn from_library_scan_summary(summary: LibraryScanSummary) -> LibraryScanSummaryPayload {
+pub fn from_library_scan_summary(summary: LibraryScanSummary) -> LibraryScanSummaryPayload {
     LibraryScanSummaryPayload {
         scanned: summary.scanned as i32,
         matched: summary.matched as i32,
@@ -965,9 +963,7 @@ pub(crate) fn from_library_scan_summary(summary: LibraryScanSummary) -> LibraryS
     }
 }
 
-pub(crate) fn from_pending_import_counts(
-    counts: PendingImportCounts,
-) -> PendingImportCountsPayload {
+pub fn from_pending_import_counts(counts: PendingImportCounts) -> PendingImportCountsPayload {
     PendingImportCountsPayload {
         movie: counts.movie as i32,
         series: counts.series as i32,
@@ -986,7 +982,7 @@ fn from_pending_import_search_attempt(
     }
 }
 
-pub(crate) fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPayload {
+pub fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPayload {
     PendingImportItemPayload {
         id: item.id,
         library_id: item.library_id,
@@ -1010,7 +1006,7 @@ pub(crate) fn from_pending_import_item(item: PendingImportItem) -> PendingImport
     }
 }
 
-pub(crate) fn from_pending_import_connection(
+pub fn from_pending_import_connection(
     connection: PendingImportConnection,
 ) -> PendingImportConnectionPayload {
     PendingImportConnectionPayload {
@@ -1023,7 +1019,7 @@ pub(crate) fn from_pending_import_connection(
     }
 }
 
-pub(crate) fn from_resolve_pending_import_result(
+pub fn from_resolve_pending_import_result(
     result: ResolvePendingImportResult,
 ) -> ResolvePendingImportPayload {
     ResolvePendingImportPayload {
@@ -1033,7 +1029,7 @@ pub(crate) fn from_resolve_pending_import_result(
     }
 }
 
-pub(crate) fn from_ignore_pending_import_result(
+pub fn from_ignore_pending_import_result(
     result: IgnorePendingImportResult,
 ) -> IgnorePendingImportPayload {
     IgnorePendingImportPayload {
@@ -1042,7 +1038,7 @@ pub(crate) fn from_ignore_pending_import_result(
     }
 }
 
-pub(crate) fn from_cancel_library_scan_result(
+pub fn from_cancel_library_scan_result(
     result: scryer_application::CancelLibraryScanResult,
 ) -> CancelLibraryScanPayload {
     CancelLibraryScanPayload {
@@ -1051,7 +1047,7 @@ pub(crate) fn from_cancel_library_scan_result(
     }
 }
 
-pub(crate) fn from_library_scan_phase_progress(
+pub fn from_library_scan_phase_progress(
     progress: scryer_application::LibraryScanPhaseProgress,
 ) -> LibraryScanPhaseProgressPayload {
     LibraryScanPhaseProgressPayload {
@@ -1061,7 +1057,7 @@ pub(crate) fn from_library_scan_phase_progress(
     }
 }
 
-pub(crate) fn from_library_scan_session(
+pub fn from_library_scan_session(
     session: scryer_application::LibraryScanSession,
 ) -> LibraryScanProgressPayload {
     LibraryScanProgressPayload {
@@ -1087,7 +1083,7 @@ pub(crate) fn from_library_scan_session(
     }
 }
 
-pub(crate) fn from_job_definition(definition: JobDefinition) -> JobDefinitionPayload {
+pub fn from_job_definition(definition: JobDefinition) -> JobDefinitionPayload {
     JobDefinitionPayload {
         key: JobKeyValue::from_application(definition.key),
         display_name: definition.display_name,
@@ -1115,7 +1111,7 @@ pub(crate) fn from_job_definition(definition: JobDefinition) -> JobDefinitionPay
     }
 }
 
-pub(crate) fn from_job_run(run: JobRun) -> JobRunPayload {
+pub fn from_job_run(run: JobRun) -> JobRunPayload {
     JobRunPayload {
         id: run.id,
         job_key: JobKeyValue::from_application(run.job_key),
@@ -1134,7 +1130,7 @@ pub(crate) fn from_job_run(run: JobRun) -> JobRunPayload {
     }
 }
 
-pub(crate) fn from_media_rename_plan(plan: RenamePlan) -> MediaRenamePlanPayload {
+pub fn from_media_rename_plan(plan: RenamePlan) -> MediaRenamePlanPayload {
     MediaRenamePlanPayload {
         facet: MediaFacetValue::from_domain(plan.facet),
         title_id: plan.title_id,
@@ -1170,7 +1166,7 @@ fn from_media_rename_plan_item(item: RenamePlanItem) -> MediaRenamePlanItemPaylo
     }
 }
 
-pub(crate) fn from_media_rename_apply(result: RenameApplyResult) -> MediaRenameApplyPayload {
+pub fn from_media_rename_apply(result: RenameApplyResult) -> MediaRenameApplyPayload {
     MediaRenameApplyPayload {
         plan_fingerprint: result.plan_fingerprint,
         total: result.total as i32,
@@ -1199,7 +1195,7 @@ fn from_media_rename_apply_item(item: RenameApplyItemResult) -> MediaRenameApply
     }
 }
 
-pub(crate) fn from_collection(collection: Collection) -> CollectionPayload {
+pub fn from_collection(collection: Collection) -> CollectionPayload {
     let file_size_bytes = file_size_bytes_for_path(collection.ordered_path.as_deref());
     let map_movie =
         |movie: scryer_domain::InterstitialMovieMetadata| InterstitialMovieMetadataPayload {
@@ -1249,7 +1245,7 @@ pub(crate) fn from_collection(collection: Collection) -> CollectionPayload {
     }
 }
 
-pub(crate) fn file_size_bytes_for_path(ordered_path: Option<&str>) -> Option<i64> {
+pub fn file_size_bytes_for_path(ordered_path: Option<&str>) -> Option<i64> {
     let path = stored_path_to_path_buf(ordered_path?);
     fs::metadata(&path).ok().and_then(|metadata| {
         if metadata.is_file() {
@@ -1260,7 +1256,7 @@ pub(crate) fn file_size_bytes_for_path(ordered_path: Option<&str>) -> Option<i64
     })
 }
 
-pub(crate) fn from_episode(episode: Episode) -> EpisodePayload {
+pub fn from_episode(episode: Episode) -> EpisodePayload {
     EpisodePayload {
         id: episode.id,
         title_id: episode.title_id,
@@ -1284,7 +1280,7 @@ pub(crate) fn from_episode(episode: Episode) -> EpisodePayload {
     }
 }
 
-pub(crate) fn from_calendar_episode(ep: CalendarEpisode) -> CalendarEpisodePayload {
+pub fn from_calendar_episode(ep: CalendarEpisode) -> CalendarEpisodePayload {
     CalendarEpisodePayload {
         id: ep.id,
         title_id: ep.title_id,
@@ -1302,9 +1298,7 @@ pub(crate) fn from_calendar_episode(ep: CalendarEpisode) -> CalendarEpisodePaylo
     }
 }
 
-pub(crate) fn from_title_media_file(
-    file: scryer_application::TitleMediaFile,
-) -> TitleMediaFilePayload {
+pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleMediaFilePayload {
     TitleMediaFilePayload {
         id: file.id,
         title_id: file.title_id,
@@ -1373,7 +1367,7 @@ pub(crate) fn from_title_media_file(
     }
 }
 
-pub(crate) fn from_user(user: User) -> UserPayload {
+pub fn from_user(user: User) -> UserPayload {
     let User {
         id,
         username,
@@ -1411,7 +1405,7 @@ pub(crate) fn from_user(user: User) -> UserPayload {
     }
 }
 
-pub(crate) fn from_activity_event(event: ActivityEvent) -> ActivityEventPayload {
+pub fn from_activity_event(event: ActivityEvent) -> ActivityEventPayload {
     ActivityEventPayload {
         id: event.id,
         kind: ActivityKindValue::from_application(event.kind),
@@ -1429,7 +1423,7 @@ pub(crate) fn from_activity_event(event: ActivityEvent) -> ActivityEventPayload 
     }
 }
 
-pub(crate) fn from_import_record(record: scryer_domain::ImportRecord) -> ImportRecordPayload {
+pub fn from_import_record(record: scryer_domain::ImportRecord) -> ImportRecordPayload {
     // Deserialize result_json to extract structured fields
     let (error_message, decision, skip_reason, title_id, source_path, dest_path) =
         if let Some(ref result_json) = record.result_json {
@@ -1480,7 +1474,7 @@ pub(crate) fn from_import_record(record: scryer_domain::ImportRecord) -> ImportR
     }
 }
 
-pub(crate) fn from_policy(policy: PolicyOutput) -> PolicyOutputPayload {
+pub fn from_policy(policy: PolicyOutput) -> PolicyOutputPayload {
     PolicyOutputPayload {
         decision: policy.decision,
         score: policy.score,
@@ -1499,7 +1493,7 @@ pub(crate) fn from_policy(policy: PolicyOutput) -> PolicyOutputPayload {
     }
 }
 
-pub(crate) fn from_wanted_item(item: scryer_application::WantedItem) -> WantedItemPayload {
+pub fn from_wanted_item(item: scryer_application::WantedItem) -> WantedItemPayload {
     WantedItemPayload {
         id: item.id,
         title_id: item.title_id,
@@ -1531,7 +1525,7 @@ pub(crate) fn from_wanted_item(item: scryer_application::WantedItem) -> WantedIt
     }
 }
 
-pub(crate) fn from_release_decision(
+pub fn from_release_decision(
     decision: scryer_application::ReleaseDecision,
 ) -> ReleaseDecisionPayload {
     ReleaseDecisionPayload {
@@ -1550,7 +1544,7 @@ pub(crate) fn from_release_decision(
     }
 }
 
-pub(crate) fn from_decision_code_count(
+pub fn from_decision_code_count(
     item: scryer_application::DecisionCodeCount,
 ) -> DecisionCodeCountPayload {
     DecisionCodeCountPayload {
@@ -1559,7 +1553,7 @@ pub(crate) fn from_decision_code_count(
     }
 }
 
-pub(crate) fn from_wanted_status_count(
+pub fn from_wanted_status_count(
     item: scryer_application::WantedStatusCount,
 ) -> WantedStatusCountPayload {
     WantedStatusCountPayload {
@@ -1570,7 +1564,7 @@ pub(crate) fn from_wanted_status_count(
     }
 }
 
-pub(crate) fn from_pending_release_status_count(
+pub fn from_pending_release_status_count(
     item: scryer_application::PendingReleaseStatusCount,
 ) -> PendingReleaseStatusCountPayload {
     PendingReleaseStatusCountPayload {
@@ -1581,7 +1575,7 @@ pub(crate) fn from_pending_release_status_count(
     }
 }
 
-pub(crate) fn from_title_acquisition_diagnostics(
+pub fn from_title_acquisition_diagnostics(
     value: scryer_application::TitleAcquisitionDiagnostics,
 ) -> TitleAcquisitionDiagnosticsPayload {
     TitleAcquisitionDiagnosticsPayload {
@@ -1611,7 +1605,7 @@ pub(crate) fn from_title_acquisition_diagnostics(
     }
 }
 
-pub(crate) fn from_disk_space(info: DiskSpaceInfo) -> DiskSpacePayload {
+pub fn from_disk_space(info: DiskSpaceInfo) -> DiskSpacePayload {
     DiskSpacePayload {
         path: info.path,
         label: info.label,
@@ -1621,7 +1615,7 @@ pub(crate) fn from_disk_space(info: DiskSpaceInfo) -> DiskSpacePayload {
     }
 }
 
-pub(crate) fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
+pub fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
     SystemHealthPayload {
         service_ready: health.service_ready,
         db_path: health.db_path,
@@ -1656,7 +1650,7 @@ pub(crate) fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
     }
 }
 
-pub(crate) fn from_smg_version_compatibility_notice(
+pub fn from_smg_version_compatibility_notice(
     notice: SmgVersionCompatibilityNotice,
 ) -> SmgVersionCompatibilityNoticePayload {
     SmgVersionCompatibilityNoticePayload {
@@ -1668,7 +1662,7 @@ pub(crate) fn from_smg_version_compatibility_notice(
     }
 }
 
-pub(crate) fn from_rule_set(rs: RuleSet) -> RuleSetPayload {
+pub fn from_rule_set(rs: RuleSet) -> RuleSetPayload {
     RuleSetPayload {
         id: rs.id,
         name: rs.name,
@@ -1688,7 +1682,7 @@ pub(crate) fn from_rule_set(rs: RuleSet) -> RuleSetPayload {
     }
 }
 
-pub(crate) fn from_registry_plugin(p: RegistryPlugin) -> RegistryPluginPayload {
+pub fn from_registry_plugin(p: RegistryPlugin) -> RegistryPluginPayload {
     RegistryPluginPayload {
         id: p.id,
         name: p.name,
@@ -1716,7 +1710,7 @@ pub(crate) fn from_registry_plugin(p: RegistryPlugin) -> RegistryPluginPayload {
     }
 }
 
-pub(crate) fn from_plugin_install_progress(
+pub fn from_plugin_install_progress(
     snapshot: scryer_application::PluginInstallProgressSnapshot,
 ) -> PluginInstallProgressPayload {
     PluginInstallProgressPayload {
@@ -1748,7 +1742,7 @@ pub(crate) fn from_plugin_install_progress(
     }
 }
 
-pub(crate) fn from_external_import_monitor_warmup_progress(
+pub fn from_external_import_monitor_warmup_progress(
     snapshot: scryer_application::ExternalImportMonitorWarmupProgressSnapshot,
 ) -> ExternalImportMonitorWarmupProgressPayload {
     let map_phase_progress =
@@ -1820,7 +1814,7 @@ pub(crate) fn from_external_import_monitor_warmup_progress(
     }
 }
 
-pub(crate) fn from_notification_channel(
+pub fn from_notification_channel(
     ch: scryer_domain::NotificationChannelConfig,
 ) -> NotificationChannelPayload {
     NotificationChannelPayload {
@@ -1834,7 +1828,7 @@ pub(crate) fn from_notification_channel(
     }
 }
 
-pub(crate) fn from_notification_subscription(
+pub fn from_notification_subscription(
     sub: scryer_domain::NotificationSubscription,
 ) -> NotificationSubscriptionPayload {
     NotificationSubscriptionPayload {
@@ -1849,7 +1843,7 @@ pub(crate) fn from_notification_subscription(
     }
 }
 
-pub(crate) fn from_domain_event(event: DomainEvent) -> DomainEventEnvelopePayload {
+pub fn from_domain_event(event: DomainEvent) -> DomainEventEnvelopePayload {
     let (stream_kind, stream_id) = match event.stream {
         scryer_domain::DomainEventStream::Global => ("global".to_string(), None),
         scryer_domain::DomainEventStream::Title { title_id } => {
@@ -1882,7 +1876,7 @@ pub(crate) fn from_domain_event(event: DomainEvent) -> DomainEventEnvelopePayloa
     }
 }
 
-pub(crate) fn from_plugin_installation(inst: PluginInstallation) -> PluginInstallationPayload {
+pub fn from_plugin_installation(inst: PluginInstallation) -> PluginInstallationPayload {
     PluginInstallationPayload {
         id: inst.id,
         plugin_id: inst.plugin_id,
@@ -1913,9 +1907,7 @@ pub(crate) fn from_plugin_installation(inst: PluginInstallation) -> PluginInstal
     }
 }
 
-pub(crate) fn from_plugin_catalog_status(
-    status: PluginCatalogStatus,
-) -> PluginCatalogStatusPayload {
+pub fn from_plugin_catalog_status(status: PluginCatalogStatus) -> PluginCatalogStatusPayload {
     PluginCatalogStatusPayload {
         refresh_state: status.refresh_state,
         github_available: status.github_available,
@@ -1926,16 +1918,14 @@ pub(crate) fn from_plugin_catalog_status(
     }
 }
 
-pub(crate) fn from_manual_plugin_preview(
-    preview: ManualPluginPreview,
-) -> ManualPluginPreviewPayload {
+pub fn from_manual_plugin_preview(preview: ManualPluginPreview) -> ManualPluginPreviewPayload {
     ManualPluginPreviewPayload {
         github_repo_url: preview.github_repo_url,
         plugin: from_registry_plugin(preview.plugin),
     }
 }
 
-pub(crate) fn from_backup_info(info: BackupInfo) -> BackupInfoPayload {
+pub fn from_backup_info(info: BackupInfo) -> BackupInfoPayload {
     BackupInfoPayload {
         filename: info.filename,
         size_bytes: info.size_bytes.to_string(),
@@ -1958,7 +1948,7 @@ pub(crate) fn from_backup_info(info: BackupInfo) -> BackupInfoPayload {
     }
 }
 
-pub(crate) fn from_health_check_result(result: HealthCheckResult) -> HealthCheckPayload {
+pub fn from_health_check_result(result: HealthCheckResult) -> HealthCheckPayload {
     HealthCheckPayload {
         source: result.source,
         status: result.status.as_str().to_string(),
@@ -1966,7 +1956,7 @@ pub(crate) fn from_health_check_result(result: HealthCheckResult) -> HealthCheck
     }
 }
 
-pub(crate) fn from_rss_sync_report(report: RssSyncReport) -> RssSyncReportPayload {
+pub fn from_rss_sync_report(report: RssSyncReport) -> RssSyncReportPayload {
     RssSyncReportPayload {
         releases_fetched: report.releases_fetched as i32,
         releases_matched: report.releases_matched as i32,
@@ -1975,7 +1965,7 @@ pub(crate) fn from_rss_sync_report(report: RssSyncReport) -> RssSyncReportPayloa
     }
 }
 
-pub(crate) fn from_pending_release(pr: PendingRelease) -> PendingReleasePayload {
+pub fn from_pending_release(pr: PendingRelease) -> PendingReleasePayload {
     PendingReleasePayload {
         id: pr.id,
         wanted_item_id: pr.wanted_item_id,
@@ -1992,9 +1982,7 @@ pub(crate) fn from_pending_release(pr: PendingRelease) -> PendingReleasePayload 
     }
 }
 
-pub(crate) fn from_pp_script(
-    s: scryer_domain::PostProcessingScript,
-) -> PostProcessingScriptPayload {
+pub fn from_pp_script(s: scryer_domain::PostProcessingScript) -> PostProcessingScriptPayload {
     PostProcessingScriptPayload {
         id: s.id,
         name: s.name,
@@ -2012,7 +2000,7 @@ pub(crate) fn from_pp_script(
     }
 }
 
-pub(crate) fn from_pp_script_run(
+pub fn from_pp_script_run(
     r: scryer_domain::PostProcessingScriptRun,
 ) -> PostProcessingScriptRunPayload {
     PostProcessingScriptRunPayload {
@@ -2034,7 +2022,7 @@ pub(crate) fn from_pp_script_run(
     }
 }
 
-pub(crate) fn from_housekeeping_report(report: HousekeepingReport) -> HousekeepingReportPayload {
+pub fn from_housekeeping_report(report: HousekeepingReport) -> HousekeepingReportPayload {
     HousekeepingReportPayload {
         orphaned_media_files: report.orphaned_media_files as i32,
         stale_release_decisions: report.stale_release_decisions as i32,
@@ -2048,7 +2036,7 @@ pub(crate) fn from_housekeeping_report(report: HousekeepingReport) -> Housekeepi
     }
 }
 
-pub(crate) fn from_title_history_record(record: TitleHistoryRecord) -> TitleHistoryEventPayload {
+pub fn from_title_history_record(record: TitleHistoryRecord) -> TitleHistoryEventPayload {
     TitleHistoryEventPayload {
         id: record.id,
         title_id: record.title_id,
@@ -2080,7 +2068,7 @@ pub(crate) fn from_title_history_record(record: TitleHistoryRecord) -> TitleHist
     }
 }
 
-pub(crate) fn from_title_history_page(page: TitleHistoryPage) -> TitleHistoryPagePayload {
+pub fn from_title_history_page(page: TitleHistoryPage) -> TitleHistoryPagePayload {
     TitleHistoryPagePayload {
         records: page
             .records

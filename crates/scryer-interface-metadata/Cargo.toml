@@ -1,0 +1,10 @@
+[package]
+name = "scryer-interface-metadata"
+version = "0.15.2"
+edition.workspace = true
+
+[dependencies]
+async-graphql = { workspace = true }
+scryer-application = { path = "../scryer-application" }
+scryer-interface-core = { path = "../scryer-interface-core" }
+scryer-interface-media = { path = "../scryer-interface-media" }

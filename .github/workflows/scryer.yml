@@ -59,14 +59,18 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  rust-check:
-    name: rust-check
+  rust-clippy:
+    name: rust-clippy
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     needs: [web]
     env:
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: debuginfo
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_TEST_STRIP: debuginfo
       CARGO_TERM_COLOR: always
       RUSTC_WRAPPER: sccache
       SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
@@ -90,7 +94,7 @@ jobs:
         run: rustup target add x86_64-unknown-linux-musl
 
       - name: Resolve sccache lane metadata
-        id: rust-check-sccache-metadata
+        id: rust-clippy-sccache-metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -108,23 +112,162 @@ jobs:
           echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-linux-rust-check
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: rust-check
-
       - name: Restore sccache directory
-        id: rust-check-sccache-restore
+        id: rust-clippy-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-check-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-rust-check-${{ github.run_id }}
+          key: gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-rust-clippy-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-check-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-check-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-rust-check-linux-x86_64-musl-
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Download embedded web artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: scryer-web-out-${{ github.run_id }}
+          path: scryer-web-out
+
+      - name: Prime sccache server
+        run: |
+          sccache --start-server || true
+          sccache --zero-stats || true
+
+      - name: Show starting disk usage
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h | tee rust-clippy-disk-start.txt
+          du -sh target "$CARGO_HOME" "$SCCACHE_DIR" 2>/dev/null | tee -a rust-clippy-disk-start.txt || true
+
+      - name: Run clippy for production binary packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
+          export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
+          export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
+          cargo clippy --target x86_64-unknown-linux-musl --locked \
+            -p scryer \
+            -p scryer-application \
+            -p scryer-domain \
+            -p scryer-infrastructure \
+            -p scryer-interface \
+            -p scryer-interface-core \
+            -p scryer-interface-media \
+            -p scryer-interface-metadata \
+            -p scryer-interface-settings \
+            -p scryer-mediainfo \
+            -p scryer-plugins \
+            -p scryer-release-parser \
+            -p scryer-rules \
+            -- -D warnings 2>&1 | tee rust-clippy.log
+
+      - name: Show ending disk usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h | tee rust-clippy-disk-end.txt
+          du -sh target "$CARGO_HOME" "$SCCACHE_DIR" 2>/dev/null | tee -a rust-clippy-disk-end.txt || true
+
+      - name: Show sccache stats
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats | tee rust-clippy-sccache-stats.txt
+          else
+            echo "sccache not installed; skipping stats" | tee rust-clippy-sccache-stats.txt
+          fi
+
+      - name: Upload rust-clippy artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-clippy-${{ github.run_id }}
+          path: |
+            rust-clippy.log
+            rust-clippy-disk-start.txt
+            rust-clippy-disk-end.txt
+            rust-clippy-sccache-stats.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Save sccache directory
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.rust-clippy-sccache-restore.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: /home/runner/.cache/sccache
+          key: ${{ steps.rust-clippy-sccache-restore.outputs.cache-primary-key }}
+
+  rust-nextest:
+    name: rust-nextest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    needs: [web]
+    env:
+      CARGO_HOME: /home/runner/.cargo
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: debuginfo
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_TEST_STRIP: debuginfo
+      CARGO_TERM_COLOR: always
+      RUSTC_WRAPPER: sccache
+      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
+      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_DIR: /home/runner/.cache/sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.95.0"
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y --no-install-recommends musl-tools mold nasm
+
+      - name: Add musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Resolve sccache lane metadata
+        id: rust-nextest-sccache-metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line="$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
+          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
+          if not match:
+              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
+          print(f"{match.group(1)}.{match.group(2)}.x")
+          PY
+          )"
+          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
+          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore sccache directory
+        id: rust-nextest-sccache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/.cache/sccache
+          key: gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-rust-nextest-${{ github.run_id }}
+          restore-keys: |
+            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-
             gha-sccache-v2-rust-check-linux-x86_64-musl-
 
       - name: Install sccache
@@ -145,25 +288,12 @@ jobs:
           sccache --start-server || true
           sccache --zero-stats || true
 
-      - name: Run clippy for production binary packages
+      - name: Show starting disk usage
         shell: bash
         run: |
           set -euo pipefail
-          export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
-          export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
-          export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
-          cargo clippy --target x86_64-unknown-linux-musl --locked \
-            -p scryer \
-            -p scryer-application \
-            -p scryer-domain \
-            -p scryer-infrastructure \
-            -p scryer-interface \
-            -p scryer-mediainfo \
-            -p scryer-plugins \
-            -p scryer-release-parser \
-            -p scryer-rules \
-            -- -D warnings 2>&1 | tee rust-check-clippy.log
+          df -h | tee rust-nextest-disk-start.txt
+          du -sh target "$CARGO_HOME" "$SCCACHE_DIR" 2>/dev/null | tee -a rust-nextest-disk-start.txt || true
 
       - name: Run production binary package tests
         shell: bash
@@ -180,10 +310,22 @@ jobs:
             -p scryer-domain \
             -p scryer-infrastructure \
             -p scryer-interface \
+            -p scryer-interface-core \
+            -p scryer-interface-media \
+            -p scryer-interface-metadata \
+            -p scryer-interface-settings \
             -p scryer-mediainfo \
             -p scryer-plugins \
             -p scryer-release-parser \
-            -p scryer-rules 2>&1 | tee rust-check-nextest.log
+            -p scryer-rules 2>&1 | tee rust-nextest.log
+
+      - name: Show ending disk usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h | tee rust-nextest-disk-end.txt
+          du -sh target "$CARGO_HOME" "$SCCACHE_DIR" 2>/dev/null | tee -a rust-nextest-disk-end.txt || true
 
       - name: Show sccache stats
         if: always()
@@ -191,29 +333,30 @@ jobs:
         run: |
           set -euo pipefail
           if command -v sccache >/dev/null 2>&1; then
-            sccache --show-stats | tee rust-check-sccache-stats.txt
+            sccache --show-stats | tee rust-nextest-sccache-stats.txt
           else
-            echo "sccache not installed; skipping stats" | tee rust-check-sccache-stats.txt
+            echo "sccache not installed; skipping stats" | tee rust-nextest-sccache-stats.txt
           fi
 
-      - name: Upload rust-check artifacts
+      - name: Upload rust-nextest artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rust-check-${{ github.run_id }}
+          name: rust-nextest-${{ github.run_id }}
           path: |
-            rust-check-clippy.log
-            rust-check-nextest.log
-            rust-check-sccache-stats.txt
+            rust-nextest.log
+            rust-nextest-disk-start.txt
+            rust-nextest-disk-end.txt
+            rust-nextest-sccache-stats.txt
           if-no-files-found: error
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.rust-check-sccache-restore.outcome == 'success'
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.rust-nextest-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
-          key: ${{ steps.rust-check-sccache-restore.outputs.cache-primary-key }}
+          key: ${{ steps.rust-nextest-sccache-restore.outputs.cache-primary-key }}
 
   launcher-build:
     name: launcher-${{ matrix.arch }}
@@ -226,14 +369,12 @@ jobs:
           - arch: amd64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            cache_lane: launcher-amd64
             sccache_lane: launcher-linux-x86_64-musl
             sccache_writer_id: launcher-linux-amd64
             artifact_name: launcher-linux-amd64
           - arch: arm64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            cache_lane: launcher-arm64
             sccache_lane: launcher-linux-arm64-musl
             sccache_writer_id: launcher-linux-arm64
             artifact_name: launcher-linux-arm64
@@ -279,14 +420,6 @@ jobs:
           )"
           echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
-
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-${{ matrix.cache_lane }}
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: ${{ matrix.artifact_name }}
 
       - name: Restore sccache directory
         id: launcher-sccache-restore
@@ -368,7 +501,6 @@ jobs:
             variant: portable
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            cache_lane: linux-x86_64
             sccache_lane: scryer-linux-x86_64-musl
             sccache_writer_id: scryer-linux-x86_64-portable
             artifact_name: scryer-linux-x86_64-portable
@@ -377,7 +509,6 @@ jobs:
             variant: haswell
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            cache_lane: linux-x86_64
             sccache_lane: scryer-linux-x86_64-musl
             sccache_writer_id: scryer-linux-x86_64-haswell
             artifact_name: scryer-linux-x86_64-haswell
@@ -386,7 +517,6 @@ jobs:
             variant: portable
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            cache_lane: linux-arm64
             sccache_lane: scryer-linux-arm64-musl
             sccache_writer_id: scryer-linux-arm64-portable
             artifact_name: scryer-linux-arm64-portable
@@ -395,7 +525,6 @@ jobs:
             variant: cortex-a76
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            cache_lane: linux-arm64
             sccache_lane: scryer-linux-arm64-musl
             sccache_writer_id: scryer-linux-arm64-cortex-a76
             artifact_name: scryer-linux-arm64-cortex-a76
@@ -444,14 +573,6 @@ jobs:
           )"
           echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
-
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-${{ matrix.cache_lane }}
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: ${{ matrix.artifact_name }}
 
       - name: Restore sccache directory
         id: linux-sccache-restore
@@ -537,7 +658,6 @@ jobs:
             variant: portable
             runner: macos-15
             target: aarch64-apple-darwin
-            cache_lane: macos-arm64
             sccache_lane: scryer-macos-arm64
             sccache_writer_id: scryer-darwin-arm64-portable
             artifact_name: scryer-darwin-arm64-portable
@@ -546,7 +666,6 @@ jobs:
             variant: apple-m1
             runner: macos-15
             target: aarch64-apple-darwin
-            cache_lane: macos-arm64
             sccache_lane: scryer-macos-arm64
             sccache_writer_id: scryer-darwin-arm64-apple-m1
             artifact_name: scryer-darwin-arm64-apple-m1
@@ -555,7 +674,6 @@ jobs:
             variant: portable
             runner: macos-15-intel
             target: x86_64-apple-darwin
-            cache_lane: macos-x86_64
             sccache_lane: scryer-macos-x86_64
             sccache_writer_id: scryer-darwin-x86_64-portable
             artifact_name: scryer-darwin-x86_64-portable
@@ -564,7 +682,6 @@ jobs:
             variant: haswell
             runner: macos-15-intel
             target: x86_64-apple-darwin
-            cache_lane: macos-x86_64
             sccache_lane: scryer-macos-x86_64
             sccache_writer_id: scryer-darwin-x86_64-haswell
             artifact_name: scryer-darwin-x86_64-haswell
@@ -607,14 +724,6 @@ jobs:
           )"
           echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
-
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-${{ matrix.cache_lane }}
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: ${{ matrix.artifact_name }}
 
       - name: Restore sccache directory
         id: macos-sccache-restore
@@ -728,7 +837,6 @@ jobs:
             runner: windows-2025
             toolchain: 1.95.0-x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
-            cache_lane: windows-x64
             sccache_lane: scryer-windows-x86_64-msvc
             sccache_writer_id: scryer-windows-x86_64-portable
             artifact_name: scryer-windows-x86_64-portable
@@ -738,7 +846,6 @@ jobs:
             runner: windows-11-arm
             toolchain: 1.95.0-aarch64-pc-windows-msvc
             target: aarch64-pc-windows-msvc
-            cache_lane: windows-arm64
             sccache_lane: scryer-windows-arm64-msvc
             sccache_writer_id: scryer-windows-arm64-portable
             artifact_name: scryer-windows-arm64-portable
@@ -776,14 +883,6 @@ jobs:
           $versionLine = "$($match.Groups['major'].Value).$($match.Groups['minor'].Value).x"
           "SCRYER_SCCACHE_VERSION_LINE=$versionLine" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "version_line=$versionLine" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-${{ matrix.cache_lane }}
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: ${{ matrix.artifact_name }}
 
       - name: Restore sccache directory
         id: windows-sccache-restore
@@ -943,7 +1042,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 20
-    needs: [rust-check, launcher-build, linux-build]
+    needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
     permissions:
       contents: read
     strategy:
@@ -1048,7 +1147,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: [rust-check, launcher-build, linux-build]
+    needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
     permissions:
       contents: read
       packages: write
@@ -1140,7 +1239,7 @@ jobs:
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: [rust-check, launcher-build, linux-build]
+    needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
     permissions:
       contents: read
       packages: write
@@ -1235,7 +1334,7 @@ jobs:
     name: publish-release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: [rust-check, linux-build, macos-build, windows-build, docker-publish]
+    needs: [rust-clippy, rust-nextest, linux-build, macos-build, windows-build, docker-publish]
     permissions:
       contents: write
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'scryer-v') }}
