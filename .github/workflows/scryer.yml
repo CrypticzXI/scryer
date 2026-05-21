@@ -190,7 +190,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sccache --show-stats | tee rust-check-sccache-stats.txt
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats | tee rust-check-sccache-stats.txt
+          else
+            echo "sccache not installed; skipping stats" | tee rust-check-sccache-stats.txt
+          fi
 
       - name: Upload rust-check artifacts
         if: always()
@@ -205,7 +209,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.rust-check-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -326,7 +330,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sccache --show-stats | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          else
+            echo "sccache not installed; skipping stats" | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          fi
 
       - name: Upload launcher artifacts
         uses: actions/upload-artifact@v7
@@ -341,7 +349,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.launcher-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -489,7 +497,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sccache --show-stats | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          else
+            echo "sccache not installed; skipping stats" | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -503,7 +515,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.linux-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -673,7 +685,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sccache --show-stats | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          else
+            echo "sccache not installed; skipping stats" | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -687,7 +703,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.macos-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.sccache
@@ -745,7 +761,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $cargoToml = Get-Content crates/scryer/Cargo.toml -Raw
-          $match = [regex]::Match($cargoToml, '(?m)^version = "(?<major>\d+)\.(?<minor>\d+)\.\d+"$')
+          $match = [regex]::Match($cargoToml, '(?m)^version = "(?<major>\d+)\.(?<minor>\d+)\.\d+"\r?$')
           if (-not $match.Success) {
             throw "failed to resolve crates/scryer/Cargo.toml version"
           }
@@ -889,7 +905,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          sccache --show-stats | Tee-Object -FilePath "${{ matrix.artifact_name }}-sccache-stats.txt"
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            sccache --show-stats | Tee-Object -FilePath "${{ matrix.artifact_name }}-sccache-stats.txt"
+          } else {
+            "sccache not installed; skipping stats" | Tee-Object -FilePath "${{ matrix.artifact_name }}-sccache-stats.txt"
+          }
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -903,7 +923,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.windows-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}\.sccache
