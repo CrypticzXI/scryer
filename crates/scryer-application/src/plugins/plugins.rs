@@ -17,9 +17,9 @@ use scryer_outbound_http::{
 };
 use scryer_plugin_sdk::{
     PluginDescriptor, SDK_VERSION, host_version_matches_constraint,
-    load_plugin_descriptor_from_wasm_bytes, plugin_descriptor_sdk_constraint,
-    sdk_constraint_or_legacy, validate_plugin_descriptor_host_permissions,
-    validate_plugin_descriptor_sdk_contract, validate_sdk_contract,
+    plugin_descriptor_sdk_constraint, sdk_constraint_or_legacy,
+    validate_plugin_descriptor_host_permissions, validate_plugin_descriptor_sdk_contract,
+    validate_sdk_contract,
 };
 use serde::{Deserialize, Serialize};
 use std::{sync::LazyLock, time::Duration};
@@ -828,26 +828,30 @@ async fn fetch_plugin_bytes(
     Ok(bytes.to_vec())
 }
 
-fn validate_catalog_downloaded_plugin_release(
-    plugin_id: &str,
-    expected_plugin_type: &str,
-    expected_provider_type: &str,
-    release: &DownloadedPluginReleaseContract,
-    wasm_bytes: &[u8],
-) -> AppResult<ValidatedDownloadedPlugin> {
-    let descriptor =
-        load_plugin_descriptor_from_wasm_bytes(wasm_bytes).map_err(AppError::Validation)?;
-    validate_downloaded_plugin_descriptor(
-        plugin_id,
-        expected_plugin_type,
-        expected_provider_type,
-        release,
-        &descriptor,
-        false,
-    )
-}
-
 impl AppUseCase {
+    fn validate_catalog_downloaded_plugin_release(
+        &self,
+        plugin_id: &str,
+        expected_plugin_type: &str,
+        expected_provider_type: &str,
+        release: &DownloadedPluginReleaseContract,
+        wasm_bytes: &[u8],
+    ) -> AppResult<ValidatedDownloadedPlugin> {
+        let descriptor = self
+            .services
+            .customization
+            .plugin_descriptor_loader
+            .load_descriptor_from_wasm_bytes(wasm_bytes)?;
+        validate_downloaded_plugin_descriptor(
+            plugin_id,
+            expected_plugin_type,
+            expected_provider_type,
+            release,
+            &descriptor,
+            false,
+        )
+    }
+
     fn builtin_plugin_inventory(&self) -> Vec<BuiltinPluginSeed> {
         let mut builtins = Vec::new();
 
@@ -1654,6 +1658,29 @@ impl AppUseCase {
                 (pt, name, fields, default_base_url)
             })
             .collect()
+    }
+
+    pub async fn test_download_client_connection(
+        &self,
+        actor: &User,
+        client_type: &str,
+        config_json: &str,
+    ) -> AppResult<()> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let client_type = client_type.trim().to_lowercase();
+        if matches!(client_type.as_str(), "nzbget" | "sabnzbd" | "weaver") {
+            return self
+                .services
+                .integrations
+                .builtin_download_client_connection_tester
+                .test_connection(&client_type, &config_json)
+                .await;
+        }
+
+        self.test_plugin_download_client_connection(actor, &client_type, &config_json)
+            .await
     }
 
     pub async fn test_plugin_download_client_connection(
@@ -2484,7 +2511,7 @@ impl AppUseCase {
             sdk_constraint: resolved.release.sdk_constraint.clone(),
             scryer_constraint: None,
         };
-        let validated = validate_catalog_downloaded_plugin_release(
+        let validated = self.validate_catalog_downloaded_plugin_release(
             &resolved.child.id,
             &resolved.child.plugin_type,
             &resolved.child.provider_type,
@@ -2580,7 +2607,7 @@ impl AppUseCase {
             sdk_constraint: resolved.release.sdk_constraint.clone(),
             scryer_constraint: None,
         };
-        let validated = validate_catalog_downloaded_plugin_release(
+        let validated = self.validate_catalog_downloaded_plugin_release(
             &resolved.child.id,
             &resolved.child.plugin_type,
             &resolved.child.provider_type,

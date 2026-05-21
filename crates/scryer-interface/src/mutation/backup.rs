@@ -14,8 +14,9 @@ use scryer_application::{
     prepare_backup_restore_payload,
 };
 use scryer_domain::AppPermission;
-use scryer_infrastructure::{
-    DatastoreConfig, DatastoreEngine, restore_backup_bundle_to_datastore_path,
+use scryer_interface_core::{
+    RestoreDatastoreConfig, RestoreDatastoreEngine, RestoreDatastoreHandle,
+    RestoreSqliteDatastoreRequest,
 };
 
 const INSTANCE_SECRETS_ENV_FILENAME: &str = "instance-secrets.env";
@@ -202,9 +203,10 @@ impl BackupMutations {
 
         let data_dir = restore.data_dir.clone();
         let datastore_config = restore.datastore_config.clone();
+        let datastore = restore.datastore.clone();
         let password = normalize_password(password);
         let summary = match tokio::task::spawn_blocking(move || {
-            stage_restore_bundle(data_dir, bundle_path, datastore_config, password)
+            stage_restore_bundle(data_dir, bundle_path, datastore_config, datastore, password)
         })
         .await
         {
@@ -294,7 +296,7 @@ async fn ensure_setup_mode(app: &AppUseCase) -> Result<(), AppError> {
     Ok(())
 }
 
-fn ensure_restore_supported(_datastore_config: &DatastoreConfig) -> Result<(), AppError> {
+fn ensure_restore_supported(_datastore_config: &RestoreDatastoreConfig) -> Result<(), AppError> {
     Ok(())
 }
 
@@ -379,7 +381,8 @@ async fn write_uploaded_bundle(
 fn stage_restore_bundle(
     data_dir: PathBuf,
     bundle_path: PathBuf,
-    datastore_config: DatastoreConfig,
+    datastore_config: RestoreDatastoreConfig,
+    datastore: RestoreDatastoreHandle,
     password: Option<String>,
 ) -> Result<RestoreSummaryPayload, AppError> {
     let pending_dir = pending_restore_dir(&data_dir);
@@ -399,47 +402,38 @@ fn stage_restore_bundle(
         ))
     })?;
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            AppError::Repository(format!("failed to start restore runtime: {error}"))
-        })?;
-
-    let result = runtime.block_on(async move {
-        match datastore_config.engine {
-            DatastoreEngine::Postgres => {
-                let prepared = prepare_backup_restore_payload(&bundle_path, password.as_deref())?;
-                let summary = restore_summary_payload(&prepared.summary());
-                let instance_secrets_env = prepared.instance_secrets_env()?;
-                write_owner_only_file_atomically(&pending_secrets_path, &instance_secrets_env)?;
-                prepared.persist_extracted_dir(&pending_prepared_bundle_dir)?;
-                Ok::<_, AppError>(summary)
-            }
-            DatastoreEngine::Sqlite => {
-                let prepared = restore_backup_bundle_to_datastore_path(
-                    &pending_db_path,
-                    datastore_config.migration_mode,
-                    &bundle_path,
-                    password.as_deref(),
-                )
-                .await?;
-
-                write_owner_only_file_atomically(
-                    &pending_secrets_path,
-                    &prepared.instance_secrets_env(),
-                )?;
-
-                let summary = restore_summary_payload(prepared.summary());
-                ensure_owner_only_permissions(&pending_db_path).map_err(|error| {
-                    AppError::Repository(format!(
-                        "failed to protect pending restore database: {error}"
-                    ))
-                })?;
-                Ok::<_, AppError>(summary)
-            }
+    let result = (|| match datastore_config.engine {
+        RestoreDatastoreEngine::Postgres => {
+            let prepared = prepare_backup_restore_payload(&bundle_path, password.as_deref())?;
+            let summary = restore_summary_payload(&prepared.summary());
+            let instance_secrets_env = prepared.instance_secrets_env()?;
+            write_owner_only_file_atomically(&pending_secrets_path, &instance_secrets_env)?;
+            prepared.persist_extracted_dir(&pending_prepared_bundle_dir)?;
+            Ok::<_, AppError>(summary)
         }
-    });
+        RestoreDatastoreEngine::Sqlite => {
+            let prepared =
+                datastore.restore_sqlite_bundle_to_path(RestoreSqliteDatastoreRequest {
+                    target_db_path: pending_db_path.clone(),
+                    migration_mode: datastore_config.migration_mode,
+                    bundle_path: bundle_path.clone(),
+                    passphrase: password.clone(),
+                })?;
+
+            write_owner_only_file_atomically(
+                &pending_secrets_path,
+                &prepared.instance_secrets_env(),
+            )?;
+
+            let summary = restore_summary_payload(prepared.summary());
+            ensure_owner_only_permissions(&pending_db_path).map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to protect pending restore database: {error}"
+                ))
+            })?;
+            Ok::<_, AppError>(summary)
+        }
+    })();
 
     match result {
         Ok(summary) => {
@@ -558,7 +552,6 @@ fn write_owner_only_file_atomically(path: &Path, contents: &str) -> Result<(), A
 mod tests {
     use super::*;
     use crate::RestoreRestartHandle;
-    use scryer_infrastructure::MigrationMode;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -583,11 +576,11 @@ mod tests {
         let restart_calls_handle = restart_calls.clone();
         let restore = crate::context::RestoreContext {
             data_dir: PathBuf::from("/tmp/scryer"),
-            datastore_config: DatastoreConfig::sqlite(
-                "sqlite:///tmp/scryer.db",
-                "/tmp",
-                MigrationMode::Apply,
-            ),
+            datastore_config: RestoreDatastoreConfig {
+                engine: RestoreDatastoreEngine::Sqlite,
+                migration_mode: scryer_interface_core::RestoreMigrationMode::Apply,
+            },
+            datastore: RestoreDatastoreHandle::unavailable(),
             restart: RestoreRestartHandle::new(move || {
                 restart_calls_handle.fetch_add(1, Ordering::SeqCst);
             }),
@@ -606,11 +599,11 @@ mod tests {
         let restart_calls_handle = restart_calls.clone();
         let restore = crate::context::RestoreContext {
             data_dir: PathBuf::from("/tmp/scryer"),
-            datastore_config: DatastoreConfig::sqlite(
-                "sqlite:///tmp/scryer.db",
-                "/tmp",
-                MigrationMode::Apply,
-            ),
+            datastore_config: RestoreDatastoreConfig {
+                engine: RestoreDatastoreEngine::Sqlite,
+                migration_mode: scryer_interface_core::RestoreMigrationMode::Apply,
+            },
+            datastore: RestoreDatastoreHandle::unavailable(),
             restart: RestoreRestartHandle::new(move || {
                 restart_calls_handle.fetch_add(1, Ordering::SeqCst);
             }),

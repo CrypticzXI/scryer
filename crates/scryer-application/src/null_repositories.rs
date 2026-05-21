@@ -19,15 +19,16 @@ use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 use scryer_domain::BlocklistEntry;
 
 use crate::{
-    AppError, AppResult, BlocklistRepository, CutoffUnmetQualitySummary, DomainEventRepository,
-    DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
-    DownloadSubmission, DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository,
-    FileImporter, HousekeepingRepository, ImportArtifact, ImportArtifactRepository,
-    ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord,
-    JobRunRepository, LibraryProbeRepository, LibraryProbeSignature, LibraryRepository,
-    LibraryRootDraft, LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository,
-    MediaFileRepository, NewBlocklistEntry, NotificationChannelRepository,
-    NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository, PendingStagedNzb,
+    AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
+    CutoffUnmetQualitySummary, DomainEventRepository, DownloadQueueCommandRecord,
+    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
+    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
+    IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
+    LibraryProbeRepository, LibraryProbeSignature, LibraryRepository, LibraryRootDraft,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
+    NewBlocklistEntry, NotificationChannelRepository, NotificationSubscriptionRepository,
+    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
@@ -567,6 +568,30 @@ impl PostProcessingScriptRepository for NullPostProcessingScriptRepository {
 
 #[derive(Default)]
 pub struct NullPluginInstallationRepository;
+
+pub struct NullBuiltinDownloadClientConnectionTester;
+
+#[async_trait]
+impl BuiltinDownloadClientConnectionTester for NullBuiltinDownloadClientConnectionTester {
+    async fn test_connection(&self, _client_type: &str, _config_json: &str) -> AppResult<()> {
+        Err(AppError::Repository(
+            "download client connection tester is not configured".to_string(),
+        ))
+    }
+}
+
+pub struct NullPluginDescriptorLoader;
+
+impl PluginDescriptorLoader for NullPluginDescriptorLoader {
+    fn load_descriptor_from_wasm_bytes(
+        &self,
+        _wasm_bytes: &[u8],
+    ) -> AppResult<scryer_plugin_sdk::PluginDescriptor> {
+        Err(AppError::Repository(
+            "plugin descriptor loader is not configured".to_string(),
+        ))
+    }
+}
 
 #[async_trait]
 impl PluginInstallationRepository for NullPluginInstallationRepository {
@@ -1747,6 +1772,13 @@ pub mod test_nulls {
 
     #[derive(Default)]
     pub struct NullDownloadClient;
+
+    #[async_trait]
+    impl BuiltinDownloadClientConnectionTester for NullDownloadClient {
+        async fn test_connection(&self, _: &str, _: &str) -> AppResult<()> {
+            Err(AppError::Repository("not configured".into()))
+        }
+    }
 
     #[async_trait]
     impl DownloadClient for NullDownloadClient {

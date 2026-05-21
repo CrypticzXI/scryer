@@ -1246,6 +1246,13 @@ pub trait PluginInstallationRepository: Send + Sync {
     ) -> AppResult<Option<PluginCatalogStatusRecord>>;
 }
 
+pub trait PluginDescriptorLoader: Send + Sync {
+    fn load_descriptor_from_wasm_bytes(
+        &self,
+        wasm_bytes: &[u8],
+    ) -> AppResult<scryer_plugin_sdk::PluginDescriptor>;
+}
+
 #[async_trait]
 pub trait IndexerClient: Send + Sync {
     #[expect(
@@ -1846,6 +1853,11 @@ pub trait NotificationSubscriptionRepository: Send + Sync {
         sub: scryer_domain::NotificationSubscription,
     ) -> AppResult<scryer_domain::NotificationSubscription>;
     async fn delete_subscription(&self, id: &str) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait BuiltinDownloadClientConnectionTester: Send + Sync {
+    async fn test_connection(&self, client_type: &str, config_json: &str) -> AppResult<()>;
 }
 
 #[async_trait]

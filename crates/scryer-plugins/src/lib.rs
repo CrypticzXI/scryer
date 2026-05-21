@@ -14,6 +14,7 @@ pub use loader::DynamicSubtitlePluginProvider;
 pub use loader::WasmDownloadClientPluginProvider;
 pub use loader::WasmIndexerPluginProvider;
 pub use loader::WasmNotificationPluginProvider;
+pub use loader::WasmPluginDescriptorLoader;
 pub use loader::WasmSubtitlePluginProvider;
 pub use loader::build_download_client_plugin_provider;
 pub use loader::build_download_client_plugin_provider_from_runtime_plugins;

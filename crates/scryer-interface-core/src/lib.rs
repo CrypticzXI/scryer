@@ -2,9 +2,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
-use scryer_application::{AppError, AppUseCase};
+use scryer_application::{AppError, AppUseCase, BackupRestorePreparedBundle};
 use scryer_domain::{AppPermission, LibraryPermission, User};
-use scryer_infrastructure::DatastoreConfig;
 use tokio::sync::{broadcast, watch};
 
 /// Opaque handle to a log snapshot provider and subscription source.
@@ -120,6 +119,40 @@ pub struct RestoreRestartHandle {
     schedule_fn: Arc<dyn Fn() + Send + Sync>,
 }
 
+pub struct RestoreSqliteDatastoreRequest {
+    pub target_db_path: PathBuf,
+    pub migration_mode: RestoreMigrationMode,
+    pub bundle_path: PathBuf,
+    pub passphrase: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct RestoreDatastoreHandle {
+    restore_sqlite_fn: Arc<
+        dyn Fn(RestoreSqliteDatastoreRequest) -> Result<BackupRestorePreparedBundle, AppError>
+            + Send
+            + Sync,
+    >,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RestoreDatastoreEngine {
+    Sqlite,
+    Postgres,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RestoreMigrationMode {
+    ValidateOnly,
+    Apply,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RestoreDatastoreConfig {
+    pub engine: RestoreDatastoreEngine,
+    pub migration_mode: RestoreMigrationMode,
+}
+
 impl RestoreRestartHandle {
     pub fn new(schedule: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
@@ -132,10 +165,41 @@ impl RestoreRestartHandle {
     }
 }
 
+impl RestoreDatastoreHandle {
+    pub fn new(
+        restore_sqlite: impl Fn(
+            RestoreSqliteDatastoreRequest,
+        ) -> Result<BackupRestorePreparedBundle, AppError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            restore_sqlite_fn: Arc::new(restore_sqlite),
+        }
+    }
+
+    pub fn unavailable() -> Self {
+        Self::new(|_| {
+            Err(AppError::Validation(
+                "restore datastore operations are not configured".into(),
+            ))
+        })
+    }
+
+    pub fn restore_sqlite_bundle_to_path(
+        &self,
+        request: RestoreSqliteDatastoreRequest,
+    ) -> Result<BackupRestorePreparedBundle, AppError> {
+        (self.restore_sqlite_fn)(request)
+    }
+}
+
 #[derive(Clone)]
 pub struct RestoreContext {
     pub data_dir: PathBuf,
-    pub datastore_config: DatastoreConfig,
+    pub datastore_config: RestoreDatastoreConfig,
+    pub datastore: RestoreDatastoreHandle,
     pub restart: RestoreRestartHandle,
 }
 

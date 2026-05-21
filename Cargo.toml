@@ -10,6 +10,7 @@ members = [
     "crates/scryer-release-parser",
     "crates/scryer-infrastructure",
     "crates/scryer-interface-core",
+    "crates/scryer-interface-media-types",
     "crates/scryer-interface-media",
     "crates/scryer-interface-metadata",
     "crates/scryer-interface-settings",

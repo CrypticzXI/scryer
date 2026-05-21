@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use async_graphql::{Context, Object, Result as GqlResult};
 use chrono::Utc;
+use scryer_application::external_import::{
+    self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, DetectedProwlarrIndexer,
+    ExternalArrClient,
+};
 use scryer_application::{
     AppError, ExternalImportLibraryPathsSelection, ExternalImportMonitorEpisodeEntry,
     ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
@@ -11,10 +15,6 @@ use scryer_application::{
     IndexerConfigUpdate,
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
-use scryer_infrastructure::external_import::{
-    self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, DetectedProwlarrIndexer,
-    ExternalArrClient,
-};
 use serde::Serialize;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -1043,7 +1043,7 @@ fn movie_monitor_entry_from_arr(movie: ArrMovie) -> ExternalImportMonitorMovieEn
 
 fn series_monitor_entry_from_arr(
     series: ArrSeries,
-    episodes: Vec<scryer_infrastructure::external_import::ArrEpisode>,
+    episodes: Vec<ArrEpisode>,
 ) -> ExternalImportMonitorSeriesEntry {
     let title_monitored = series.monitored;
     let season_defaults = series
@@ -1554,8 +1554,8 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
 mod tests {
     use std::collections::HashMap;
 
+    use scryer_application::external_import::{ArrDownloadClient, ArrIndexer};
     use scryer_domain::{ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource};
-    use scryer_infrastructure::external_import::{ArrDownloadClient, ArrIndexer};
     use serde_json::Value;
 
     use super::{
@@ -1663,7 +1663,7 @@ mod tests {
         let mut groups = HashMap::new();
         merge_prowlarr_group(
             &mut groups,
-            scryer_infrastructure::external_import::DetectedProwlarrIndexer {
+            scryer_application::external_import::DetectedProwlarrIndexer {
                 base_url: "http://prowlarr.local".into(),
                 api_key: Some("arr-key-a".into()),
                 child_name: "Indexer A".into(),
@@ -1672,7 +1672,7 @@ mod tests {
         );
         merge_prowlarr_group(
             &mut groups,
-            scryer_infrastructure::external_import::DetectedProwlarrIndexer {
+            scryer_application::external_import::DetectedProwlarrIndexer {
                 base_url: "http://prowlarr.local".into(),
                 api_key: Some("arr-key-b".into()),
                 child_name: "Indexer B".into(),

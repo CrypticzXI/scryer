@@ -2,8 +2,10 @@ mod acquisition;
 mod authorization;
 mod catalog;
 mod contracts;
+mod download_client_config;
 mod download_client_path_mappings;
 mod events;
+pub mod external_import;
 mod health;
 mod helpers;
 mod import;
@@ -75,6 +77,7 @@ pub(crate) use quality::release_parser;
 pub(crate) use quality::scoring_weights;
 pub(crate) use rules::user_rule_input;
 
+pub use download_client_config::resolve_download_client_base_url_from_config_json;
 pub use import::completed_download as completed_download_handler;
 pub(crate) mod normalize;
 pub use import::failed_download as failed_download_handler;
@@ -271,16 +274,16 @@ pub use null_repositories::{
     NullJobRunRepository, NullLibraryProbeRepository, NullLibraryRepository,
     NullLibraryScanUnmatchedItemRepository, NullLogicalBackupExporter, NullMediaFileRepository,
     NullNotificationChannelRepository, NullNotificationSubscriptionRepository,
-    NullPendingReleaseRepository, NullPluginInstallationRepository,
+    NullPendingReleaseRepository, NullPluginDescriptorLoader, NullPluginInstallationRepository,
     NullPostProcessingScriptRepository, NullRuleSetRepository, NullSettingsRepository,
     NullStagedNzbStore, NullSubtitleDownloadRepository, NullSystemInfoProvider,
     NullTitleImageProcessor, NullTitleImageRepository, NullWantedItemRepository,
     NullWorkflowOperationRepository,
 };
 pub use ports::{
-    AcquisitionStateRepository, BlocklistRepository, DatastoreInfo, DomainEventRepository,
-    DownloadClient, DownloadClientConfigRepository, DownloadClientPluginProvider,
-    DownloadQueueCommandRepository, DownloadSubmissionRepository,
+    AcquisitionStateRepository, BlocklistRepository, BuiltinDownloadClientConnectionTester,
+    DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
+    DownloadClientPluginProvider, DownloadQueueCommandRepository, DownloadSubmissionRepository,
     ExternalImportMonitorSnapshotRepository, ExternalPluginWasm, FileImporter,
     HousekeepingRepository, ImportArtifactRepository, ImportRepository,
     IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
@@ -294,11 +297,11 @@ pub use ports::{
     NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
     NotificationPluginProvider, NotificationReleasePayload, NotificationSeverityPayload,
     NotificationSubscriptionRepository, NotificationTitlePayload, PendingReleaseRepository,
-    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
-    ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad, SettingsRepository,
-    ShowRepository, StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider,
-    SubtitleProviderClient, SubtitleProviderConfigRepository, SystemInfoProvider,
-    TitleImageProcessor, TitleImageRepository, TitleRepository, UserRepository,
+    PluginDescriptorLoader, PluginInstallationRepository, PostProcessingScriptRepository,
+    QualityProfileRepository, ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad,
+    SettingsRepository, ShowRepository, StagedNzbStore, SubtitleDownloadRepository,
+    SubtitlePluginProvider, SubtitleProviderClient, SubtitleProviderConfigRepository,
+    SystemInfoProvider, TitleImageProcessor, TitleImageRepository, TitleRepository, UserRepository,
     WantedItemRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{

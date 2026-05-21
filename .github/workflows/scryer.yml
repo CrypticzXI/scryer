@@ -679,14 +679,6 @@ jobs:
             sccache_writer_id: scryer-darwin-x86_64-portable
             artifact_name: scryer-darwin-x86_64-portable
             extra_rustflags: ""
-          - arch: x86_64
-            variant: haswell
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-            sccache_lane: scryer-macos-x86_64
-            sccache_writer_id: scryer-darwin-x86_64-haswell
-            artifact_name: scryer-darwin-x86_64-haswell
-            extra_rustflags: "-C target-cpu=haswell"
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
@@ -1384,7 +1376,7 @@ jobs:
           LINUX_X86_SHA=$(shasum -a 256 release-artifacts/scryer-linux-x86_64-portable.tar.gz | cut -d ' ' -f1)
           LINUX_ARM_SHA=$(shasum -a 256 release-artifacts/scryer-linux-arm64-portable.tar.gz | cut -d ' ' -f1)
           DARWIN_ARM_SHA=$(shasum -a 256 release-artifacts/scryer-darwin-arm64-apple-m1.tar.gz | cut -d ' ' -f1)
-          DARWIN_X86_SHA=$(shasum -a 256 release-artifacts/scryer-darwin-x86_64-haswell.tar.gz | cut -d ' ' -f1)
+          DARWIN_X86_SHA=$(shasum -a 256 release-artifacts/scryer-darwin-x86_64-portable.tar.gz | cut -d ' ' -f1)
           REPO="${{ github.repository }}"
 
           mkdir -p tap/Formula
@@ -1424,7 +1416,7 @@ jobs:
               end
 
               on_intel do
-                url "https://github.com/${REPO}/releases/download/scryer-v${VERSION}/scryer-darwin-x86_64-haswell.tar.gz"
+                url "https://github.com/${REPO}/releases/download/scryer-v${VERSION}/scryer-darwin-x86_64-portable.tar.gz"
                 sha256 "${DARWIN_X86_SHA}"
               end
             end

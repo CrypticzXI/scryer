@@ -6,6 +6,10 @@ description = "SDK for building Scryer WebAssembly plugins"
 license = "GPL-3.0-only"
 repository = "https://github.com/scryer-media/scryer"
 
+[features]
+default = []
+host-runtime = ["dep:extism"]
+
 [dependencies]
 base64 = "0.22"
 schemars = "1"
@@ -17,5 +21,4 @@ serde_json = { workspace = true }
 extism-pdk = "1.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-extism = { workspace = true }
-url = "2"
+extism = { workspace = true, optional = true }

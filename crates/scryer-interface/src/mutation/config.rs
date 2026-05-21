@@ -4,7 +4,6 @@ use scryer_application::{
     DownloadClientConfigUpdate, IndexerConfigUpdate, SubtitleProviderConfigUpdate,
 };
 use scryer_domain::{NewDownloadClientConfig, NewIndexerConfig};
-use serde_json::{Value, json};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
@@ -246,94 +245,10 @@ impl ConfigMutations {
         let actor = actor_from_ctx(ctx)?;
 
         let client_type = input.client_type.trim().to_lowercase();
-
         let config_json = input.config_json.trim().to_string();
-        let config: Value = if config_json.is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&config_json)
-                .map_err(|error| Error::new(format!("invalid client config_json: {error}")))?
-        };
-
-        let base_url = scryer_infrastructure::resolve_base_url_from_config_json(&config_json)
-            .ok_or_else(|| Error::new("cannot compute base URL from config — host is required"))?;
-        validate_test_flight_url(&base_url)?;
-
-        match client_type.as_str() {
-            "nzbget" => {
-                let username = config
-                    .get("username")
-                    .and_then(Value::as_str)
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty());
-                let password = config
-                    .get("password")
-                    .and_then(Value::as_str)
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty());
-
-                scryer_infrastructure::NzbgetDownloadClient::new(
-                    base_url,
-                    username,
-                    password,
-                    "SCORE".to_string(),
-                )
-                .test_connection()
-                .await
-                .map_err(to_gql_error)?;
-            }
-            "sabnzbd" => {
-                let api_key = config
-                    .get("api_key")
-                    .or_else(|| config.get("apiKey"))
-                    .or_else(|| config.get("apikey"))
-                    .and_then(Value::as_str)
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty());
-                let username = config
-                    .get("username")
-                    .and_then(Value::as_str)
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty());
-                let password = config
-                    .get("password")
-                    .and_then(Value::as_str)
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty());
-
-                if api_key.is_none() && (username.is_none() || password.is_none()) {
-                    return Err(Error::new(
-                        "sabnzbd requires an API key or username/password",
-                    ));
-                }
-
-                scryer_infrastructure::SabnzbdDownloadClient::with_auth(
-                    base_url, api_key, username, password,
-                )
-                .test_connection()
-                .await
-                .map_err(to_gql_error)?;
-            }
-            "weaver" => {
-                let api_key = config
-                    .get("api_key")
-                    .or_else(|| config.get("apiKey"))
-                    .or_else(|| config.get("apikey"))
-                    .and_then(Value::as_str)
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty());
-
-                scryer_infrastructure::WeaverDownloadClient::new(base_url, api_key)
-                    .test_connection()
-                    .await
-                    .map_err(to_gql_error)?;
-            }
-            _ => app
-                .test_plugin_download_client_connection(&actor, &client_type, &config_json)
-                .await
-                .map_err(to_gql_error)?,
-        }
-
+        app.test_download_client_connection(&actor, &client_type, &config_json)
+            .await
+            .map_err(to_gql_error)?;
         Ok(true)
     }
 
@@ -474,20 +389,6 @@ impl ConfigMutations {
         let report = app.run_rss_sync(&actor).await.map_err(to_gql_error)?;
         Ok(from_rss_sync_report(report))
     }
-}
-
-fn validate_test_flight_url(raw: &str) -> GqlResult<()> {
-    let url = url::Url::parse(raw).map_err(|error| Error::new(format!("invalid URL: {error}")))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(Error::new("URL must use http or https"));
-    }
-    if url.host_str().is_none() {
-        return Err(Error::new("URL must include a host"));
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(Error::new("URL must not include embedded credentials"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

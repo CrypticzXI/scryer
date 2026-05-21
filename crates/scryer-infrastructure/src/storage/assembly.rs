@@ -7,10 +7,12 @@ use scryer_application::{
     DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
     LibraryRepository, LogicalBackupExporter, PluginInstallationRepository,
     PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
-    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageRepository,
-    TitleRepository, UserRepository,
+    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
+    TitleImageRepository, TitleRepository, UserRepository,
 };
 
+#[cfg(feature = "image-processing")]
+use crate::HttpTitleImageProcessor;
 use crate::postgres::{
     PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
     restore_prepared_backup_directory_into_postgres_pool,
@@ -19,11 +21,11 @@ use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
     AcquisitionStore, BlocklistStore, DomainEventStore, DownloadClientConfigStore,
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
-    FileSystemStagedNzbStore, HousekeepingStore, HttpTitleImageProcessor, ImportStore,
-    InMemoryIndexerStatsTracker, IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore,
-    MediaFileStore, MetadataGatewayClient, MigrationMode, NotificationStore, PendingReleaseStore,
-    PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore,
-    SettingsStore, ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
+    FileSystemStagedNzbStore, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
+    IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
+    MetadataGatewayClient, MigrationMode, NotificationStore, PendingReleaseStore, PluginStore,
+    PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore,
+    ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
     SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore, TitleStore, WantedStore,
     WorkflowOperationStore,
 };
@@ -33,6 +35,16 @@ use crate::{LibraryStore, UserStore};
 pub enum DatastoreEngine {
     Sqlite,
     Postgres,
+}
+
+#[cfg(feature = "image-processing")]
+fn title_image_processor() -> Arc<dyn TitleImageProcessor> {
+    Arc::new(HttpTitleImageProcessor::new())
+}
+
+#[cfg(not(feature = "image-processing"))]
+fn title_image_processor() -> Arc<dyn TitleImageProcessor> {
+    Arc::new(scryer_application::NullTitleImageProcessor)
 }
 
 impl DatastoreEngine {
@@ -1138,7 +1150,7 @@ impl DatastoreAssembly {
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())
-                .with_title_image_processor(Arc::new(HttpTitleImageProcessor::new()))
+                .with_title_image_processor(title_image_processor())
                 .with_workflow_operations(workflow_operation_store.clone())
             }
             DatastoreStores::Postgres {
@@ -1212,7 +1224,7 @@ impl DatastoreAssembly {
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())
-                .with_title_image_processor(Arc::new(HttpTitleImageProcessor::new()))
+                .with_title_image_processor(title_image_processor())
                 .with_workflow_operations(workflow_operation_store.clone())
             }
         }

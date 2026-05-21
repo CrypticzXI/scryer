@@ -926,6 +926,8 @@ pub struct AppIntegrationServices {
     pub(crate) indexer_caps_refresher: RuntimeFeature<Arc<dyn IndexerCapsSnapshotRefresher>>,
     pub(crate) indexer_client: Arc<dyn IndexerClient>,
     pub(crate) download_client: Arc<dyn DownloadClient>,
+    pub(crate) builtin_download_client_connection_tester:
+        Arc<dyn BuiltinDownloadClientConnectionTester>,
     pub(crate) download_client_configs: Arc<dyn DownloadClientConfigRepository>,
     pub(crate) subtitle_provider_configs: RuntimeFeature<Arc<dyn SubtitleProviderConfigRepository>>,
     pub(crate) indexer_stats: Arc<dyn IndexerStatsTracker>,
@@ -972,6 +974,7 @@ pub struct AppCustomizationServices {
     pub(crate) rule_sets: Arc<dyn RuleSetRepository>,
     pub(crate) pp_scripts: Arc<dyn PostProcessingScriptRepository>,
     pub(crate) plugin_installations: Arc<dyn PluginInstallationRepository>,
+    pub(crate) plugin_descriptor_loader: Arc<dyn PluginDescriptorLoader>,
     pub(crate) user_rules: Arc<std::sync::RwLock<scryer_rules::UserRulesEngine>>,
 }
 
@@ -1133,6 +1136,9 @@ impl AppServices {
                 indexer_caps_refresher: RuntimeFeature::Disabled,
                 indexer_client,
                 download_client,
+                builtin_download_client_connection_tester: Arc::new(
+                    null_repositories::NullBuiltinDownloadClientConnectionTester,
+                ),
                 download_client_configs,
                 subtitle_provider_configs: RuntimeFeature::Disabled,
                 indexer_stats: Arc::new(NullIndexerStatsTracker),
@@ -1176,6 +1182,7 @@ impl AppServices {
                 rule_sets: Arc::new(NullRuleSetRepository),
                 pp_scripts: Arc::new(NullPostProcessingScriptRepository),
                 plugin_installations: Arc::new(NullPluginInstallationRepository),
+                plugin_descriptor_loader: Arc::new(NullPluginDescriptorLoader),
                 user_rules: Arc::new(std::sync::RwLock::new(
                     scryer_rules::UserRulesEngine::empty(),
                 )),
@@ -1372,6 +1379,14 @@ impl AppServicesBuilder {
         self
     }
 
+    pub fn with_plugin_descriptor_loader<T>(mut self, loader: Arc<T>) -> Self
+    where
+        T: PluginDescriptorLoader + Send + Sync + 'static,
+    {
+        self.services.customization.plugin_descriptor_loader = loader;
+        self
+    }
+
     pub fn with_notification_store<T>(mut self, store: Arc<T>) -> Self
     where
         T: NotificationChannelRepository
@@ -1404,6 +1419,11 @@ impl AppServicesBuilder {
         self
     }
 
+    app_services_builder_setter!(
+        with_builtin_download_client_connection_tester,
+        integrations.builtin_download_client_connection_tester,
+        Arc<dyn BuiltinDownloadClientConnectionTester>
+    );
     app_services_builder_required_setter!(
         with_metadata_gateway,
         library.metadata_gateway,

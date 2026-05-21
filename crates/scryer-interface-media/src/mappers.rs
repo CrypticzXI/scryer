@@ -685,7 +685,8 @@ pub fn from_provider_type(
 }
 
 pub fn from_download_client_config(config: DownloadClientConfig) -> DownloadClientConfigPayload {
-    let base_url = scryer_infrastructure::resolve_base_url_from_config_json(&config.config_json);
+    let base_url =
+        scryer_application::resolve_download_client_base_url_from_config_json(&config.config_json);
     DownloadClientConfigPayload {
         id: config.id,
         name: config.name,

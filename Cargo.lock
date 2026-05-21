@@ -5766,7 +5766,6 @@ dependencies = [
  "chrono",
  "scryer-application",
  "scryer-domain",
- "scryer-infrastructure",
  "scryer-interface-core",
  "scryer-interface-media",
  "scryer-interface-metadata",
@@ -5788,7 +5787,6 @@ dependencies = [
  "async-graphql",
  "scryer-application",
  "scryer-domain",
- "scryer-infrastructure",
  "tokio",
 ]
 
@@ -5799,12 +5797,21 @@ dependencies = [
  "async-graphql",
  "scryer-application",
  "scryer-domain",
- "scryer-infrastructure",
  "scryer-interface-core",
+ "scryer-interface-media-types",
  "scryer-rules",
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "scryer-interface-media-types"
+version = "0.15.4"
+dependencies = [
+ "async-graphql",
+ "scryer-domain",
+ "serde_json",
 ]
 
 [[package]]
@@ -5888,7 +5895,6 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "url",
 ]
 
 [[package]]

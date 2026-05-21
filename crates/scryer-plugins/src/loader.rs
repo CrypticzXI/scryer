@@ -6,9 +6,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use extism::Manifest;
 use scryer_application::{
-    DownloadClient, DownloadClientPluginProvider, ExternalPluginWasm, IndexerClient,
-    IndexerPluginProvider, NotificationClient, NotificationPluginProvider, RuntimePluginLoad,
-    SubtitlePluginProvider, SubtitleProviderClient,
+    AppError, AppResult, DownloadClient, DownloadClientPluginProvider, ExternalPluginWasm,
+    IndexerClient, IndexerPluginProvider, NotificationClient, NotificationPluginProvider,
+    PluginDescriptorLoader, RuntimePluginLoad, SubtitlePluginProvider, SubtitleProviderClient,
 };
 use scryer_domain::{
     DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
@@ -2531,6 +2531,17 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
     validate_required_exports(&plugin, &descriptor)?;
 
     Ok((descriptor, bytes))
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WasmPluginDescriptorLoader;
+
+impl PluginDescriptorLoader for WasmPluginDescriptorLoader {
+    fn load_descriptor_from_wasm_bytes(&self, wasm_bytes: &[u8]) -> AppResult<PluginDescriptor> {
+        load_from_bytes(wasm_bytes)
+            .map(|(descriptor, _)| descriptor)
+            .map_err(AppError::Validation)
+    }
 }
 
 // ── Notification plugin provider ───────────────────────────────────────

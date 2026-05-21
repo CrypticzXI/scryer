@@ -35,8 +35,9 @@ pub(crate) mod download_clients {
     pub(crate) use crate::downloads::clients::weaver;
     pub(crate) use crate::downloads::clients::weaver_graphql;
     pub use crate::downloads::clients::{
-        NzbgetDownloadClient, PrioritizedDownloadClientRouter, SabnzbdDownloadClient,
-        WeaverDownloadClient, resolve_base_url_from_config_json, start_weaver_subscription_bridge,
+        BuiltinDownloadClientConnectionTester, NzbgetDownloadClient,
+        PrioritizedDownloadClientRouter, SabnzbdDownloadClient, WeaverDownloadClient,
+        resolve_base_url_from_config_json, start_weaver_subscription_bridge,
     };
     pub use crate::indexers::search_client::MultiIndexerSearchClient;
 }
@@ -46,7 +47,7 @@ pub mod encryption {
 }
 
 pub mod external_import {
-    pub use crate::workflow::external_import::*;
+    pub use scryer_application::external_import::*;
 }
 
 pub(crate) mod file_importer {
@@ -193,7 +194,12 @@ pub(crate) mod title_image_store {
 }
 
 pub(crate) mod title_images {
+    #[cfg(feature = "image-processing")]
     pub(crate) use crate::media::images::processor::*;
+    pub(crate) use crate::media::images::{
+        content_type_for_format, materialize_local_title_image_path, normalized_base_path_from_env,
+        required_persisted_variant_for_kind,
+    };
 }
 
 pub(crate) mod title_store {
@@ -218,6 +224,7 @@ pub mod sqlite {
     pub use crate::customization::rule_set_store::RuleSetStore;
     pub use crate::downloads::config_store::DownloadClientConfigStore;
     pub use crate::indexers::config_store::IndexerConfigStore;
+    #[cfg(feature = "image-processing")]
     pub use crate::media::images::processor::HttpTitleImageProcessor;
     pub use crate::media::images::title_image_store::TitleImageStore;
     pub use crate::media::libraries::scan_unmatched_store::LibraryScanUnmatchedStore;
@@ -247,8 +254,9 @@ pub use customization::plugin_store::PluginStore;
 pub use customization::post_processing_script_store::PostProcessingScriptStore;
 pub use customization::rule_set_store::RuleSetStore;
 pub use downloads::clients::{
-    NzbgetDownloadClient, PrioritizedDownloadClientRouter, SabnzbdDownloadClient,
-    WeaverDownloadClient, resolve_base_url_from_config_json, start_weaver_subscription_bridge,
+    BuiltinDownloadClientConnectionTester, NzbgetDownloadClient, PrioritizedDownloadClientRouter,
+    SabnzbdDownloadClient, WeaverDownloadClient, resolve_base_url_from_config_json,
+    start_weaver_subscription_bridge,
 };
 pub use downloads::config_store::DownloadClientConfigStore;
 pub use downloads::staged_nzb_store::FileSystemStagedNzbStore;
@@ -256,6 +264,7 @@ pub use indexers::config_store::IndexerConfigStore;
 pub use indexers::providers::prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
 pub use indexers::search_client::MultiIndexerSearchClient;
 pub use indexers::stats::InMemoryIndexerStatsTracker;
+#[cfg(feature = "image-processing")]
 pub use media::images::processor::HttpTitleImageProcessor;
 pub use media::images::title_image_store::TitleImageStore;
 pub use media::libraries::renamer::FileSystemLibraryRenamer;

@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader as StdBufReader, Cursor, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -28,11 +29,81 @@ pub use weaver_subscription::start_weaver_subscription_bridge;
 const MAX_NZB_BYTES: u64 = 32 * 1024 * 1024;
 const STAGED_NZB_ZSTD_LEVEL: i32 = 3;
 
+#[derive(Clone, Default)]
+pub struct BuiltinDownloadClientConnectionTester;
+
+#[async_trait]
+impl scryer_application::BuiltinDownloadClientConnectionTester
+    for BuiltinDownloadClientConnectionTester
+{
+    async fn test_connection(&self, client_type: &str, config_json: &str) -> AppResult<()> {
+        let client_type = client_type.trim().to_lowercase();
+        let config = parse_download_client_config_json(config_json)?;
+        let base_url = resolve_download_client_base_url(&config).ok_or_else(|| {
+            AppError::Validation("cannot compute base URL from config - host is required".into())
+        })?;
+        validate_test_flight_url(&base_url)?;
+
+        match client_type.as_str() {
+            "nzbget" => {
+                let username = read_config_string(&config, &["username"]);
+                let password = read_config_string(&config, &["password"]);
+                NzbgetDownloadClient::new(base_url, username, password, "SCORE".to_string())
+                    .test_connection()
+                    .await?;
+            }
+            "sabnzbd" => {
+                let api_key = read_config_string(&config, &["api_key", "apiKey", "apikey"]);
+                let username = read_config_string(&config, &["username"]);
+                let password = read_config_string(&config, &["password"]);
+                if api_key.is_none() && (username.is_none() || password.is_none()) {
+                    return Err(AppError::Validation(
+                        "sabnzbd requires an API key or username/password".into(),
+                    ));
+                }
+                SabnzbdDownloadClient::with_auth(base_url, api_key, username, password)
+                    .test_connection()
+                    .await?;
+            }
+            "weaver" => {
+                let api_key = read_config_string(&config, &["api_key", "apiKey", "apikey"]);
+                WeaverDownloadClient::new(base_url, api_key)
+                    .test_connection()
+                    .await?;
+            }
+            _ => {
+                return Err(AppError::Validation(format!(
+                    "test connection is not supported for client type '{client_type}'"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Compute a base URL from host/port/use_ssl/url_base in a config_json string.
 /// Public for use by the GraphQL mapper layer.
 pub fn resolve_base_url_from_config_json(config_json: &str) -> Option<String> {
     let parsed = parse_download_client_config_json(config_json).ok()?;
     resolve_download_client_base_url(&parsed)
+}
+
+fn validate_test_flight_url(raw: &str) -> AppResult<()> {
+    let url = url::Url::parse(raw)
+        .map_err(|error| AppError::Validation(format!("invalid URL: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(AppError::Validation("URL must use http or https".into()));
+    }
+    if url.host_str().is_none() {
+        return Err(AppError::Validation("URL must include a host".into()));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::Validation(
+            "URL must not include embedded credentials".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_download_client_config_json(raw: &str) -> AppResult<Value> {

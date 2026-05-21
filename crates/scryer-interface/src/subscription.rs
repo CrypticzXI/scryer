@@ -18,8 +18,8 @@ use crate::mappers::{
 };
 use crate::types::{
     ActivityEventPayload, DomainEventEnvelopePayload, DownloadActivityFilterValue,
-    DownloadQueueItemPayload, ExternalImportMonitorWarmupProgressPayload, JobRunPayload,
-    LibraryScanProgressPayload, PluginInstallProgressPayload,
+    DownloadQueueItemPayload, ExternalImportMonitorWarmupProgressPayload, IntoApplication,
+    JobRunPayload, LibraryScanProgressPayload, PluginInstallProgressPayload,
 };
 
 pub struct SubscriptionRoot;

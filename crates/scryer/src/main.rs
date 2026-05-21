@@ -43,14 +43,17 @@ use scryer_application::{
     tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
-    DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreEngine,
-    FileSystemLibraryRenamer, FileSystemLibraryScanner, FileSystemStagedNzbStore,
-    MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient, NzbgetDownloadClient,
-    PrioritizedDownloadClientRouter, SettingsStore, SmgEnrollmentConfig, WeaverDownloadClient,
-    resolve_datastore_config_from_env, start_weaver_subscription_bridge, validate_datastore,
+    BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
+    DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
+    FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode,
+    MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter, SettingsStore,
+    SmgEnrollmentConfig, WeaverDownloadClient, resolve_datastore_config_from_env,
+    restore_backup_bundle_to_datastore_path, start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{
-    AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, RestoreContext, RestoreRestartHandle,
+    AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, RestoreContext, RestoreDatastoreConfig,
+    RestoreDatastoreEngine, RestoreDatastoreHandle, RestoreMigrationMode, RestoreRestartHandle,
+    RestoreSqliteDatastoreRequest,
 };
 use scryer_interface::{LogBuffer, build_schema_with_log_buffer_and_restore};
 use tokio::net::TcpListener;
@@ -84,6 +87,52 @@ use ui_assets::{UiAssetMode, ui_asset_mode, ui_fallback};
 include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn restore_datastore_config(config: &DatastoreConfig) -> RestoreDatastoreConfig {
+    RestoreDatastoreConfig {
+        engine: match config.engine {
+            DatastoreEngine::Sqlite => RestoreDatastoreEngine::Sqlite,
+            DatastoreEngine::Postgres => RestoreDatastoreEngine::Postgres,
+        },
+        migration_mode: match config.migration_mode {
+            MigrationMode::ValidateOnly => RestoreMigrationMode::ValidateOnly,
+            MigrationMode::Apply => RestoreMigrationMode::Apply,
+        },
+    }
+}
+
+fn restore_migration_mode_to_infra(mode: RestoreMigrationMode) -> MigrationMode {
+    match mode {
+        RestoreMigrationMode::ValidateOnly => MigrationMode::ValidateOnly,
+        RestoreMigrationMode::Apply => MigrationMode::Apply,
+    }
+}
+
+fn restore_datastore_handle() -> RestoreDatastoreHandle {
+    RestoreDatastoreHandle::new(|request: RestoreSqliteDatastoreRequest| {
+        let RestoreSqliteDatastoreRequest {
+            target_db_path,
+            migration_mode,
+            bundle_path,
+            passphrase,
+        } = request;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                scryer_application::AppError::Repository(format!(
+                    "failed to start restore runtime: {error}"
+                ))
+            })?;
+
+        runtime.block_on(restore_backup_bundle_to_datastore_path(
+            &target_db_path,
+            restore_migration_mode_to_infra(migration_mode),
+            &bundle_path,
+            passphrase.as_deref(),
+        ))
+    })
+}
 
 fn plugin_type_belongs_to_indexer_family(plugin_type: &str) -> bool {
     matches!(
@@ -905,10 +954,14 @@ async fn bootstrap_application(
             scryer_infrastructure::indexer_caps::DirectNabCapsSnapshotRefresher::new(),
         ))
         .with_plugin_provider(plugin_provider)
+        .with_builtin_download_client_connection_tester(Arc::new(
+            BuiltinDownloadClientConnectionTester,
+        ))
         .with_download_client_plugin_provider(download_client_plugin_provider.clone())
         .with_subtitle_provider_configs(subtitle_provider_configs)
         .with_subtitle_plugin_provider(subtitle_plugin_provider)
         .with_notification_provider(Arc::new(notif_provider))
+        .with_plugin_descriptor_loader(Arc::new(scryer_plugins::WasmPluginDescriptorLoader))
         .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))
         .build();
 
@@ -996,7 +1049,8 @@ async fn bootstrap_application(
         )),
         Some(RestoreContext {
             data_dir: data_dir.clone(),
-            datastore_config: backup_datastore_config.clone(),
+            datastore_config: restore_datastore_config(&backup_datastore_config),
+            datastore: restore_datastore_handle(),
             restart: restore_restart_controller.handle(),
         }),
     );

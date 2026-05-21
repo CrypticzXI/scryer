@@ -1,7 +1,7 @@
 use async_graphql::Result as GqlResult;
 use scryer_domain::{ExternalId, NewTitle};
 
-use crate::types::{AddTitleInput, DownloadSourceKindValue, TitleOptionsInput};
+use crate::types::{AddTitleInput, DownloadSourceKindValue, IntoApplication, TitleOptionsInput};
 
 fn push_structured_tag(tags: &mut Vec<String>, prefix: &str, value: Option<String>) {
     let Some(value) = value else {

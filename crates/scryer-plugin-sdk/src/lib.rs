@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 use extism::{Function, Manifest, PluginBuilder, UserData, ValType, Wasm, host_fn};
 use schemars::{JsonSchema, schema_for};
 use semver::{Version, VersionReq};
@@ -116,10 +116,26 @@ pub fn allowed_host_pattern_is_valid(host: &str) -> bool {
     }
 
     if let Some(suffix) = host.strip_prefix("*.") {
-        return !suffix.is_empty() && !suffix.contains('*') && url::Host::parse(suffix).is_ok();
+        return !suffix.is_empty() && !suffix.contains('*') && allowed_host_name_is_valid(suffix);
     }
 
-    !host.contains('*') && url::Host::parse(host).is_ok()
+    !host.contains('*') && allowed_host_name_is_valid(host)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn allowed_host_name_is_valid(host: &str) -> bool {
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
+    }
+
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -387,7 +403,7 @@ impl PluginDescriptor {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'static str> {
     let mut exports = vec![EXPORT_DESCRIBE];
     match &descriptor.provider {
@@ -418,16 +434,16 @@ fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'stati
     exports
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 #[derive(Clone)]
 struct DisabledDescriptorSocketHost {
     state: UserData<()>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 impl DisabledDescriptorSocketHost {
     fn new() -> Self {
         Self {
@@ -484,7 +500,7 @@ impl DisabledDescriptorSocketHost {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 fn disabled_descriptor_socket_response() -> String {
     serde_json::to_string(&SocketResponse::<()>::error(
         SocketErrorCode::Unsupported,
@@ -493,37 +509,37 @@ fn disabled_descriptor_socket_response() -> String {
     .unwrap_or_else(|_| "{\"ok\":false}".to_string())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 host_fn!(descriptor_socket_open(state: (); _input: String) -> String {
     let _ = state.get()?;
     Ok(disabled_descriptor_socket_response())
 });
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 host_fn!(descriptor_socket_read(state: (); _input: String) -> String {
     let _ = state.get()?;
     Ok(disabled_descriptor_socket_response())
 });
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 host_fn!(descriptor_socket_write(state: (); _input: String) -> String {
     let _ = state.get()?;
     Ok(disabled_descriptor_socket_response())
 });
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 host_fn!(descriptor_socket_starttls(state: (); _input: String) -> String {
     let _ = state.get()?;
     Ok(disabled_descriptor_socket_response())
 });
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 host_fn!(descriptor_socket_close(state: (); _input: String) -> String {
     let _ = state.get()?;
     Ok(disabled_descriptor_socket_response())
 });
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
 pub fn load_plugin_descriptor_from_wasm_bytes(
     wasm_bytes: &[u8],
 ) -> Result<PluginDescriptor, String> {

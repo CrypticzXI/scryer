@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 scryer-application = { path = "../scryer-application" }
 scryer-domain = { path = "../scryer-domain" }
-scryer-infrastructure = { path = "../scryer-infrastructure" }
 scryer-interface-core = { path = "../scryer-interface-core" }
 scryer-interface-media = { path = "../scryer-interface-media" }
 scryer-interface-metadata = { path = "../scryer-interface-metadata" }
