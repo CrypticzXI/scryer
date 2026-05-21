@@ -9,16 +9,16 @@ use scryer_application::{
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
 
-use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error};
-use crate::mappers::{
+use scryer_interface_core::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error};
+use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
     from_media_settings, from_quality_profile_settings, from_service_settings,
     from_tvdb_scan_operation, from_user,
 };
-use crate::types::*;
+use scryer_interface_media::types::*;
 
 #[derive(Default)]
-pub(crate) struct SettingsMutations;
+pub struct SettingsMutations;
 
 fn from_subtitle_settings(
     settings: scryer_application::SubtitleSettings,
@@ -82,7 +82,7 @@ fn from_auto_backup_settings(
 
 fn from_security_settings(
     settings: AppSecuritySettings,
-    auth_runtime: &crate::context::AuthRuntimeStateSnapshot,
+    auth_runtime: &scryer_interface_core::AuthRuntimeStateSnapshot,
 ) -> SecuritySettingsPayload {
     SecuritySettingsPayload {
         form_login_enabled: settings.form_login_enabled,

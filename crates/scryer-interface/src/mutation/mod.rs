@@ -10,13 +10,13 @@ mod plugins;
 mod post_processing;
 mod recycle_bin;
 mod rules;
-mod settings;
 mod subtitle;
 mod titles;
 mod users;
 mod wanted;
 
 use async_graphql::MergedObject;
+use scryer_interface_settings::SettingsMutations;
 
 #[derive(MergedObject, Default)]
 pub struct MutationRoot(
@@ -25,7 +25,7 @@ pub struct MutationRoot(
     downloads::DownloadMutations,
     jobs::JobMutations,
     config::ConfigMutations,
-    settings::SettingsMutations,
+    SettingsMutations,
     users::UserMutations,
     library::LibraryMutations,
     wanted::WantedMutations,

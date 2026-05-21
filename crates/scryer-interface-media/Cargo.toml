@@ -1,25 +1,15 @@
 [package]
-name = "scryer-interface"
+name = "scryer-interface-media"
 version = "0.15.3"
 edition.workspace = true
 
 [dependencies]
+async-graphql = { workspace = true }
 scryer-application = { path = "../scryer-application" }
 scryer-domain = { path = "../scryer-domain" }
 scryer-infrastructure = { path = "../scryer-infrastructure" }
 scryer-interface-core = { path = "../scryer-interface-core" }
-scryer-interface-media = { path = "../scryer-interface-media" }
-scryer-interface-metadata = { path = "../scryer-interface-metadata" }
-scryer-interface-settings = { path = "../scryer-interface-settings" }
 scryer-rules = { path = "../scryer-rules" }
-async-graphql = { workspace = true }
-chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
-url = "2"
-
-[dev-dependencies]
-wiremock = { workspace = true }

@@ -24,6 +24,7 @@ permissions:
 jobs:
   web:
     name: web
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: bump scryer to ') }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
