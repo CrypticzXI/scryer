@@ -388,13 +388,21 @@ impl SabnzbdDownloadClient {
         }
     }
 
+    fn api_auth_strategy_label(&self) -> &'static str {
+        if self.api_key.is_some() {
+            "api_key"
+        } else if self.username.is_some() && self.password.is_some() {
+            "credentials"
+        } else {
+            "missing"
+        }
+    }
+
     async fn post_addfile_request(
         &self,
         request: SabAddfileRequest<'_>,
     ) -> AppResult<(reqwest::StatusCode, String)> {
-        let auth_api_key = self.api_key.clone();
-        let auth_username = self.username.clone();
-        let auth_password = self.password.clone();
+        let auth = self.api_auth()?;
         let upload_payload = request.upload_payload.clone();
         let upload_filename = request.upload_filename.to_string();
         let url = request.url.to_string();
@@ -403,10 +411,20 @@ impl SabnzbdDownloadClient {
         let upload_mime = request.upload_mime.to_string();
         let cat = request.cat.map(str::to_string);
         let password = request.password.map(str::to_string);
+        let auth_strategy = self.api_auth_strategy_label();
+
+        debug!(
+            request_mode = "addfile",
+            auth_strategy,
+            has_category = cat.is_some(),
+            has_password = password.is_some(),
+            "building sabnzbd enqueue request"
+        );
 
         let response = self
             .outbound_http
             .send_async(self.mutation_policy("sabnzbd_addfile"), move || {
+                let auth = auth.clone();
                 let url = url.clone();
                 let nzb_name = nzb_name.clone();
                 let queue_priority = queue_priority.clone();
@@ -415,9 +433,6 @@ impl SabnzbdDownloadClient {
                 let upload_mime = upload_mime.clone();
                 let cat = cat.clone();
                 let password = password.clone();
-                let auth_api_key = auth_api_key.clone();
-                let auth_username = auth_username.clone();
-                let auth_password = auth_password.clone();
                 async move {
                     let nzb_part = match upload_payload {
                         SabAddfilePayload::File { path, len } => {
@@ -445,18 +460,18 @@ impl SabnzbdDownloadClient {
                         .text("nzbname", nzb_name)
                         .text("priority", queue_priority)
                         .part("nzbfile", nzb_part);
-                    let mut request_builder = self.outbound_http.client().post(&url);
-                    form = if let Some(api_key) = auth_api_key {
-                        request_builder = request_builder.query(&[("apikey", api_key.as_str())]);
-                        form.text("apikey", api_key)
-                    } else if let (Some(username), Some(password)) = (auth_username, auth_password)
-                    {
-                        form.text("ma_username", username)
-                            .text("ma_password", password)
-                    } else {
-                        return Err(AppError::Validation(
-                            "sabnzbd requires an API key or username/password".to_string(),
-                        ));
+                    let request_builder = match auth {
+                        SabApiAuth::ApiKey(api_key) => self
+                            .outbound_http
+                            .client()
+                            .post(&url)
+                            .query(&[("apikey", api_key.as_str())]),
+                        SabApiAuth::Credentials { username, password } => {
+                            form = form
+                                .text("ma_username", username)
+                                .text("ma_password", password);
+                            self.outbound_http.client().post(&url)
+                        }
                     };
 
                     if let Some(cat) = cat {
@@ -693,9 +708,26 @@ impl DownloadClient for SabnzbdDownloadClient {
                     cat: cat.as_deref(),
                     password: password.as_deref(),
                 })
-                .await?;
+                .await
+                .map_err(|error| {
+                    debug!(
+                        request_mode = "addfile",
+                        auth_strategy = self.api_auth_strategy_label(),
+                        title = title.name.as_str(),
+                        error = %error,
+                        "sabnzbd enqueue request failed before response"
+                    );
+                    error
+                })?;
 
             if !status.is_success() {
+                debug!(
+                    request_mode = "addfile",
+                    auth_strategy = self.api_auth_strategy_label(),
+                    title = title.name.as_str(),
+                    status = %status,
+                    "sabnzbd enqueue returned non-success status"
+                );
                 return Err(map_sabnzbd_response_error(
                     "sabnzbd addfile",
                     status,
@@ -709,6 +741,13 @@ impl DownloadClient for SabnzbdDownloadClient {
 
             if sab_api_status_is_false(&json) {
                 let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
+                debug!(
+                    request_mode = "addfile",
+                    auth_strategy = self.api_auth_strategy_label(),
+                    title = title.name.as_str(),
+                    error = error_msg,
+                    "sabnzbd enqueue rejected request"
+                );
                 return Err(map_sabnzbd_api_error(
                     "sabnzbd addfile",
                     Some(status),
@@ -1299,7 +1338,9 @@ fn is_sab_auth_error_message(message: &str) -> bool {
         || normalized.contains("unauthorized")
         || normalized.contains("forbidden")
         || normalized.contains("api key required")
+        || normalized.contains("api key incorrect")
         || normalized.contains("apikey required")
+        || normalized.contains("apikey incorrect")
         || normalized.contains("login failed")
         || normalized.contains("invalid api key")
         || normalized.contains("invalid credentials")

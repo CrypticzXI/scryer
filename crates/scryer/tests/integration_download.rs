@@ -2367,6 +2367,7 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
 
     Mock::given(method("POST"))
         .and(path("/api"))
+        .and(query_param("apikey", "test-api-key"))
         .respond_with(
             ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/addurl.json")),
         )
@@ -2397,6 +2398,11 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
     assert_eq!(result.client_type, "sabnzbd");
     let requests = server.received_requests().await.unwrap();
     let request_body = String::from_utf8_lossy(&requests[0].body);
+    assert_eq!(
+        requests[0].url.query(),
+        Some("apikey=test-api-key"),
+        "sabnzbd upload should authenticate with the API key in the query string"
+    );
     assert!(
         request_body.contains("filename=\"Staged.SAB.Release.nzb\""),
         "sabnzbd upload should use the plain nzb filename path: {request_body}"
@@ -2404,6 +2410,10 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
     assert!(
         request_body.contains("application/x-nzb"),
         "sabnzbd upload should remain a plain nzb upload: {request_body}"
+    );
+    assert!(
+        !request_body.contains("name=\"apikey\""),
+        "sabnzbd upload should not duplicate API-key auth in the multipart body: {request_body}"
     );
     assert_eq!(
         requests
@@ -2413,6 +2423,107 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
         0
     );
     assert_eq!(staged_nzb_store.count_staged_artifacts().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_invalid_api_key_maps_to_authentication_failure() {
+    let server = MockServer::start().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+    let nzb_xml = load_fixture("nzbgeek/nzb_content.xml");
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(query_param("apikey", "test-api-key"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/error.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let staged = staged_nzb_store
+        .stage_nzb_bytes_for_test(nzb_xml.as_bytes())
+        .await
+        .expect("staged artifact should insert");
+
+    let client = SabnzbdDownloadClient::with_staged_nzb_store(
+        server.uri(),
+        "test-api-key".to_string(),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let error = client
+        .submit_download(&request_with_staged_nzb(
+            test_title("Broken SAB Auth"),
+            staged,
+            "Broken.SAB.Auth",
+        ))
+        .await
+        .expect_err("submit should fail with auth error");
+
+    assert!(
+        error.to_string().contains("authentication failed"),
+        "error should mention authentication failure: {error}"
+    );
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_accepts_username_password_auth() {
+    let server = MockServer::start().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+    let nzb_xml = load_fixture("nzbgeek/nzb_content.xml");
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/addurl.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let staged = staged_nzb_store
+        .stage_nzb_bytes_for_test(nzb_xml.as_bytes())
+        .await
+        .expect("staged artifact should insert");
+
+    let client = SabnzbdDownloadClient::with_auth_and_staged_nzb_store(
+        server.uri(),
+        None,
+        Some("test-user".to_string()),
+        Some("test-pass".to_string()),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let result = client
+        .submit_download(&request_with_staged_nzb(
+            test_title("Credential SAB Submit"),
+            staged,
+            "Credential.SAB.Release",
+        ))
+        .await;
+
+    assert!(result.is_ok(), "submit should accept credential auth");
+
+    let requests = server.received_requests().await.unwrap();
+    let request_body = String::from_utf8_lossy(&requests[0].body);
+    assert_eq!(
+        requests[0].url.query(),
+        None,
+        "credential-auth SAB upload should not send an API key in the query string"
+    );
+    assert!(
+        request_body.contains("name=\"ma_username\"") && request_body.contains("test-user"),
+        "credential-auth SAB upload should include ma_username in the multipart body: {request_body}"
+    );
+    assert!(
+        request_body.contains("name=\"ma_password\"") && request_body.contains("test-pass"),
+        "credential-auth SAB upload should include ma_password in the multipart body: {request_body}"
+    );
+    assert!(
+        !request_body.contains("name=\"apikey\""),
+        "credential-auth SAB upload should not include API-key fields in the multipart body: {request_body}"
+    );
 }
 
 // ===========================================================================
