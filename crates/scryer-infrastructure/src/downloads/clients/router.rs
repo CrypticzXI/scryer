@@ -19,7 +19,7 @@ use tokio::time::timeout;
 use tracing::warn;
 
 use super::nzbget::NzbgetDownloadClient;
-use super::sabnzbd::{SABNZBD_GZIP_UPLOAD_SUPPORT_KEY, SabnzbdDownloadClient};
+use super::sabnzbd::SabnzbdDownloadClient;
 use super::weaver::WeaverDownloadClient;
 use super::{
     parse_download_client_config_json, read_config_string, request_source_hint_for_nzb,
@@ -725,33 +725,20 @@ impl PrioritizedDownloadClientRouter {
                 let api_key = read_config_string(&parsed_config, &["api_key", "apiKey", "apikey"]);
                 let username = read_config_string(&parsed_config, &["username"]);
                 let password = read_config_string(&parsed_config, &["password"]);
-                let supports_gzip_nzb_upload = parsed_config
-                    .get(SABNZBD_GZIP_UPLOAD_SUPPORT_KEY)
-                    .and_then(|value| {
-                        value.as_bool().or_else(|| {
-                            value.as_str().and_then(|raw| match raw.trim() {
-                                "true" => Some(true),
-                                "false" => Some(false),
-                                _ => None,
-                            })
-                        })
-                    });
                 if api_key.is_none() && (username.is_none() || password.is_none()) {
                     return Err(AppError::Validation(format!(
                         "download client {} (sabnzbd) requires an API key or username/password",
                         config.id
                     )));
                 }
-                let client =
-                    SabnzbdDownloadClient::with_auth_and_staged_nzb_store_with_gzip_support(
-                        base_url,
-                        api_key,
-                        username,
-                        password,
-                        supports_gzip_nzb_upload,
-                        staged_nzb_store,
-                        staged_nzb_pipeline_limit,
-                    );
+                let client = SabnzbdDownloadClient::with_auth_and_staged_nzb_store(
+                    base_url,
+                    api_key,
+                    username,
+                    password,
+                    staged_nzb_store,
+                    staged_nzb_pipeline_limit,
+                );
                 Ok(Self::wrap_feedback_client(
                     Arc::new(client),
                     feedback_read_timeout,

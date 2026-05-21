@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 
-use async_compression::Level;
-use async_compression::tokio::{bufread::ZstdDecoder, write::GzipEncoder};
+use async_compression::tokio::bufread::ZstdDecoder;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use flate2::{Compression as FlateCompression, write::GzEncoder as SyncGzipEncoder};
 use reqwest::{StatusCode, Url, multipart};
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadClientStatus,
@@ -33,13 +31,10 @@ pub struct SabnzbdDownloadClient {
     api_key: Option<String>,
     username: Option<String>,
     password: Option<String>,
-    supports_gzip_nzb_upload: Option<bool>,
     outbound_http: OutboundHttpClient,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
 }
-
-pub const SABNZBD_GZIP_UPLOAD_SUPPORT_KEY: &str = "scryer_sab_supports_gzip_nzb_upload";
 
 #[derive(Debug, Deserialize)]
 struct SabnzbdConfigEnvelope {
@@ -116,7 +111,6 @@ enum SabApiAuth {
 #[derive(Clone)]
 enum SabAddfilePayload {
     File { path: PathBuf, len: u64 },
-    Bytes(Vec<u8>),
 }
 
 struct SabAddfileRequest<'a> {
@@ -182,45 +176,16 @@ impl SabnzbdDownloadClient {
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
     ) -> Self {
-        Self::with_auth_and_staged_nzb_store_with_gzip_support(
-            base_url,
-            api_key,
-            username,
-            password,
-            None,
-            staged_nzb_store,
-            staged_nzb_pipeline_limit,
-        )
-    }
-
-    pub fn with_auth_and_staged_nzb_store_with_gzip_support(
-        base_url: String,
-        api_key: Option<String>,
-        username: Option<String>,
-        password: Option<String>,
-        supports_gzip_nzb_upload: Option<bool>,
-        staged_nzb_store: Arc<dyn StagedNzbStore>,
-        staged_nzb_pipeline_limit: Arc<Semaphore>,
-    ) -> Self {
         let http_client = default_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: normalize_optional_auth_value(api_key),
             username: normalize_optional_auth_value(username),
             password: normalize_optional_auth_value(password),
-            supports_gzip_nzb_upload,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             staged_nzb_store,
             staged_nzb_pipeline_limit,
         }
-    }
-
-    fn sab_gzip_path(staged_nzb: &StagedNzbRef) -> PathBuf {
-        staged_nzb
-            .compressed_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join(format!("{}.sab.gz.part", staged_nzb.id))
     }
 
     fn sab_nzb_path(staged_nzb: &StagedNzbRef) -> PathBuf {
@@ -229,54 +194,6 @@ impl SabnzbdDownloadClient {
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join(format!("{}.sab.nzb.part", staged_nzb.id))
-    }
-
-    async fn build_transient_gzip_artifact(
-        &self,
-        staged_nzb: &StagedNzbRef,
-    ) -> AppResult<(PathBuf, u64)> {
-        let gzip_path = Self::sab_gzip_path(staged_nzb);
-        let input = File::open(&staged_nzb.compressed_path)
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to open staged nzb {}: {error}",
-                    staged_nzb.compressed_path.display()
-                ))
-            })?;
-        let output = File::create(&gzip_path).await.map_err(|error| {
-            AppError::Repository(format!(
-                "failed to create sabnzbd gzip file {}: {error}",
-                gzip_path.display()
-            ))
-        })?;
-
-        let mut decoder = ZstdDecoder::new(BufReader::new(input));
-        let mut encoder = GzipEncoder::with_quality(BufWriter::new(output), Level::Fastest);
-        tokio::io::copy(&mut decoder, &mut encoder)
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!("sabnzbd nzb gzip compression failed: {error}"))
-            })?;
-        encoder.shutdown().await.map_err(|error| {
-            AppError::Repository(format!("sabnzbd nzb gzip finalization failed: {error}"))
-        })?;
-        let mut writer = encoder.into_inner();
-        writer.flush().await.map_err(|error| {
-            AppError::Repository(format!("sabnzbd nzb gzip flush failed: {error}"))
-        })?;
-
-        let gzip_len = tokio::fs::metadata(&gzip_path)
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to stat sabnzbd gzip file {}: {error}",
-                    gzip_path.display()
-                ))
-            })?
-            .len();
-
-        Ok((gzip_path, gzip_len))
     }
 
     async fn build_transient_nzb_artifact(
@@ -321,77 +238,6 @@ impl SabnzbdDownloadClient {
             .len();
 
         Ok((nzb_path, nzb_len))
-    }
-
-    fn build_gzip_probe_payload(&self) -> AppResult<Vec<u8>> {
-        let mut encoder = SyncGzipEncoder::new(Vec::new(), FlateCompression::default());
-        std::io::Write::write_all(&mut encoder, br#"<probe />"#).map_err(|error| {
-            AppError::Repository(format!("sabnzbd gzip probe write failed: {error}"))
-        })?;
-        encoder.finish().map_err(|error| {
-            AppError::Repository(format!("sabnzbd gzip probe finalize failed: {error}"))
-        })
-    }
-
-    pub async fn detect_gzip_nzb_upload_support(&self) -> AppResult<bool> {
-        let probe_payload = self.build_gzip_probe_payload()?;
-        let url = self.api_url();
-        let queue_priority = sabnzbd_queue_priority(None).to_string();
-        let (status, body) = self
-            .post_addfile_request(SabAddfileRequest {
-                url: &url,
-                nzb_name: "__scryer_gzip_probe__",
-                queue_priority: &queue_priority,
-                upload_payload: SabAddfilePayload::Bytes(probe_payload),
-                upload_filename: "__scryer_gzip_probe__.nzb.gz",
-                upload_mime: "application/gzip",
-                cat: None,
-                password: None,
-            })
-            .await?;
-
-        if Self::should_retry_addfile_with_plain_nzb(&body) {
-            return Ok(false);
-        }
-
-        let json: Value = serde_json::from_str(&body).map_err(|err| {
-            AppError::Repository(format!(
-                "sabnzbd gzip capability probe returned non-json response: {err}"
-            ))
-        })?;
-
-        if sab_api_status_is_false(&json) {
-            let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
-            if Self::should_retry_addfile_with_plain_nzb(error_msg) {
-                return Ok(false);
-            }
-            if is_sab_auth_error_message(error_msg) {
-                return Err(map_sabnzbd_api_error(
-                    "sabnzbd gzip capability probe",
-                    Some(status),
-                    error_msg,
-                ));
-            }
-            return Ok(true);
-        }
-
-        if !status.is_success() {
-            return Err(map_sabnzbd_response_error(
-                "sabnzbd gzip capability probe",
-                status,
-                body.as_str(),
-            ));
-        }
-
-        let nzo_id = sab_addfile_nzo_id(&json).ok_or_else(|| {
-            AppError::Repository(
-                "sabnzbd gzip capability probe succeeded without returning an nzo_id for cleanup"
-                    .to_string(),
-            )
-        })?;
-        self.delete_probe_submission(nzo_id).await?;
-
-        Ok(true)
     }
 
     fn api_url(&self) -> String {
@@ -586,7 +432,6 @@ impl SabnzbdDownloadClient {
                                 len,
                             )
                         }
-                        SabAddfilePayload::Bytes(bytes) => multipart::Part::bytes(bytes),
                     }
                     .file_name(upload_filename)
                     .mime_str(&upload_mime)
@@ -638,38 +483,6 @@ impl SabnzbdDownloadClient {
         })?;
 
         Ok((status, body))
-    }
-
-    fn should_retry_addfile_with_plain_nzb(body: &str) -> bool {
-        let normalized = body.to_ascii_lowercase();
-        let mentions_gzip_magic = normalized.contains("0x1f")
-            || normalized.contains("\\u001f")
-            || normalized.contains("'\\u001f'");
-        let looks_like_parser_failure = normalized.contains("invalid character")
-            || normalized.contains("unexpected character")
-            || normalized.contains("parse error")
-            || normalized.contains("parsing xml")
-            || normalized.contains("xml")
-            || normalized.contains("doctype");
-
-        mentions_gzip_magic && looks_like_parser_failure
-    }
-
-    async fn delete_probe_submission(&self, nzo_id: &str) -> AppResult<()> {
-        let queue_cleanup = self.delete_queue_item(nzo_id, false).await;
-        if queue_cleanup.is_ok() {
-            return Ok(());
-        }
-        let queue_error = queue_cleanup
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "unknown queue cleanup failure".to_string());
-
-        self.delete_queue_item(nzo_id, true).await.map_err(|error| {
-            AppError::Repository(format!(
-                "sabnzbd gzip capability probe cleanup failed for {nzo_id}: queue={queue_error}; history={error}"
-            ))
-        })
     }
 
     fn derive_sorting_mode(config: &SabnzbdConfig) -> Option<String> {
@@ -835,7 +648,6 @@ impl DownloadClient for SabnzbdDownloadClient {
             request,
         )
         .await?;
-        let mut transient_gzip_path: Option<PathBuf> = None;
         let mut transient_nzb_path: Option<PathBuf> = None;
 
         let result: AppResult<DownloadGrabResult> = async {
@@ -855,49 +667,20 @@ impl DownloadClient for SabnzbdDownloadClient {
             let nzb_name_owned = nzb_name.to_string();
             let queue_priority =
                 sabnzbd_queue_priority(request.queue_priority.as_deref()).to_string();
-            let use_gzip_first = self.supports_gzip_nzb_upload.unwrap_or(true);
-            let fallback_allowed = self.supports_gzip_nzb_upload.is_none();
+            let (nzb_path, nzb_len) = self
+                .build_transient_nzb_artifact(&staged.staged_nzb)
+                .await?;
+            self.staged_nzb_store.mark_artifact_active(&nzb_path)?;
+            transient_nzb_path = Some(nzb_path.clone());
 
-            let (mut status, mut body) = if use_gzip_first {
-                let (gzip_path, gzip_len) = self
-                    .build_transient_gzip_artifact(&staged.staged_nzb)
-                    .await?;
-                transient_gzip_path = Some(gzip_path.clone());
-                self.staged_nzb_store.mark_artifact_active(&gzip_path)?;
-                let nzb_filename_for_request = if nzb_name.to_ascii_lowercase().ends_with(".nzb") {
-                    format!("{nzb_name}.gz")
-                } else {
-                    format!("{nzb_name}.nzb.gz")
-                };
-
-                self.post_addfile_request(SabAddfileRequest {
-                    url: &url,
-                    nzb_name: &nzb_name_owned,
-                    queue_priority: &queue_priority,
-                    upload_payload: SabAddfilePayload::File {
-                        path: gzip_path,
-                        len: gzip_len,
-                    },
-                    upload_filename: &nzb_filename_for_request,
-                    upload_mime: "application/gzip",
-                    cat: cat.as_deref(),
-                    password: password.as_deref(),
-                })
-                .await?
+            let plain_nzb_filename = if nzb_name.to_ascii_lowercase().ends_with(".nzb") {
+                nzb_name.to_string()
             } else {
-                let (nzb_path, nzb_len) = self
-                    .build_transient_nzb_artifact(&staged.staged_nzb)
-                    .await?;
-                self.staged_nzb_store.mark_artifact_active(&nzb_path)?;
-                transient_nzb_path = Some(nzb_path.clone());
+                format!("{nzb_name}.nzb")
+            };
 
-                let plain_nzb_filename = if nzb_name.to_ascii_lowercase().ends_with(".nzb") {
-                    nzb_name.to_string()
-                } else {
-                    format!("{nzb_name}.nzb")
-                };
-
-                self.post_addfile_request(SabAddfileRequest {
+            let (status, body) = self
+                .post_addfile_request(SabAddfileRequest {
                     url: &url,
                     nzb_name: &nzb_name_owned,
                     queue_priority: &queue_priority,
@@ -910,42 +693,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     cat: cat.as_deref(),
                     password: password.as_deref(),
                 })
-                .await?
-            };
-
-            if fallback_allowed && Self::should_retry_addfile_with_plain_nzb(&body) {
-                debug!(
-                    nzb_name = nzb_name_owned.as_str(),
-                    "sabnzbd addfile gzip upload rejected; retrying with plain nzb for legacy config"
-                );
-                let (nzb_path, nzb_len) = self
-                    .build_transient_nzb_artifact(&staged.staged_nzb)
-                    .await?;
-                self.staged_nzb_store.mark_artifact_active(&nzb_path)?;
-                transient_nzb_path = Some(nzb_path.clone());
-
-                let plain_nzb_filename = if nzb_name.to_ascii_lowercase().ends_with(".nzb") {
-                    nzb_name.to_string()
-                } else {
-                    format!("{nzb_name}.nzb")
-                };
-
-                (status, body) = self
-                    .post_addfile_request(SabAddfileRequest {
-                        url: &url,
-                        nzb_name: &nzb_name_owned,
-                        queue_priority: &queue_priority,
-                        upload_payload: SabAddfilePayload::File {
-                            path: nzb_path,
-                            len: nzb_len,
-                        },
-                        upload_filename: &plain_nzb_filename,
-                        upload_mime: "application/x-nzb",
-                        cat: cat.as_deref(),
-                        password: password.as_deref(),
-                    })
-                    .await?;
-            }
+                .await?;
 
             if !status.is_success() {
                 return Err(map_sabnzbd_response_error(
@@ -989,24 +737,6 @@ impl DownloadClient for SabnzbdDownloadClient {
         }
         .await;
 
-        if let Some(gzip_path) = transient_gzip_path {
-            if let Err(error) = self.staged_nzb_store.mark_artifact_inactive(&gzip_path) {
-                warn!(
-                    path = %gzip_path.display(),
-                    error = %error,
-                    "failed to mark transient sabnzbd gzip artifact inactive"
-                );
-            }
-            if let Err(error) = tokio::fs::remove_file(&gzip_path).await
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                warn!(
-                    path = %gzip_path.display(),
-                    error = %error,
-                    "failed to delete transient sabnzbd gzip artifact"
-                );
-            }
-        }
         if let Some(nzb_path) = transient_nzb_path {
             if let Err(error) = self.staged_nzb_store.mark_artifact_inactive(&nzb_path) {
                 warn!(

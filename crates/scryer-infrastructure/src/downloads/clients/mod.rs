@@ -21,7 +21,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub use nzbget::NzbgetDownloadClient;
 pub use router::PrioritizedDownloadClientRouter;
-pub use sabnzbd::{SABNZBD_GZIP_UPLOAD_SUPPORT_KEY, SabnzbdDownloadClient};
+pub use sabnzbd::SabnzbdDownloadClient;
 pub use weaver::WeaverDownloadClient;
 pub use weaver_subscription::start_weaver_subscription_bridge;
 
