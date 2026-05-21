@@ -336,7 +336,10 @@ mod tests {
         let inputs = accepted_inputs_for_client("qbittorrent", Some(&provider));
         assert_eq!(
             inputs,
-            vec![DownloadSourceKind::MagnetUri, DownloadSourceKind::TorrentFile]
+            vec![
+                DownloadSourceKind::MagnetUri,
+                DownloadSourceKind::TorrentFile
+            ]
         );
     }
 }
