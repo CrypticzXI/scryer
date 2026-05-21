@@ -4,15 +4,11 @@ export const BUILT_IN_DOWNLOAD_CLIENT_TYPES = [
   "nzbget",
   "sabnzbd",
   "weaver",
-  "qbittorrent",
 ] as const;
 
 export const DEFAULT_DOWNLOAD_CLIENT_TYPE = "nzbget";
 
-export const BUILT_IN_DOWNLOAD_CLIENT_TYPE_LABELS: Record<
-  (typeof BUILT_IN_DOWNLOAD_CLIENT_TYPES)[number],
-  string
-> = {
+export const BUILT_IN_DOWNLOAD_CLIENT_TYPE_LABELS: Record<string, string> = {
   nzbget: "NZBGet",
   sabnzbd: "SABnzbd",
   weaver: "Weaver",

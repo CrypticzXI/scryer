@@ -2,8 +2,7 @@ use super::*;
 use std::future::Future;
 
 pub(crate) const INHERIT_QUALITY_PROFILE_VALUE: &str = "__inherit__";
-pub(crate) const NATIVE_DOWNLOAD_CLIENT_TYPES: [&str; 4] =
-    ["nzbget", "sabnzbd", "qbittorrent", "weaver"];
+pub(crate) const NATIVE_DOWNLOAD_CLIENT_TYPES: [&str; 3] = ["nzbget", "sabnzbd", "weaver"];
 pub(crate) const INDEXER_PROVIDER_NZBGEEK: &str = "nzbgeek";
 
 pub(crate) fn parsed_episode_lookup_season(
@@ -44,10 +43,6 @@ pub fn accepted_inputs_for_client(
 fn native_accepted_inputs(client_type: &str) -> Vec<DownloadSourceKind> {
     match client_type {
         "nzbget" | "sabnzbd" | "weaver" => vec![DownloadSourceKind::NzbFile],
-        "qbittorrent" => vec![
-            DownloadSourceKind::TorrentFile,
-            DownloadSourceKind::MagnetUri,
-        ],
         _ => vec![],
     }
 }
@@ -288,5 +283,60 @@ where
     match await_cancellable(cancel_token, future).await {
         Some(result) => result.map(Some),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct StubDownloadClientPluginProvider {
+        available_types: Vec<String>,
+        accepted_inputs: Vec<String>,
+    }
+
+    impl DownloadClientPluginProvider for StubDownloadClientPluginProvider {
+        fn client_for_config(
+            &self,
+            _config: &DownloadClientConfig,
+        ) -> Option<Arc<dyn DownloadClient>> {
+            None
+        }
+
+        fn available_provider_types(&self) -> Vec<String> {
+            self.available_types.clone()
+        }
+
+        fn accepted_inputs_for_provider(&self, provider_type: &str) -> Vec<String> {
+            if self
+                .available_types
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(provider_type))
+            {
+                return self.accepted_inputs.clone();
+            }
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn accepted_inputs_for_client_does_not_advertise_qbittorrent_without_plugin() {
+        let inputs = accepted_inputs_for_client("qbittorrent", None);
+        assert!(inputs.is_empty());
+    }
+
+    #[test]
+    fn accepted_inputs_for_client_uses_qbittorrent_plugin_capabilities_when_available() {
+        let provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(StubDownloadClientPluginProvider {
+                available_types: vec!["qbittorrent".to_string()],
+                accepted_inputs: vec!["magnet_uri".to_string(), "torrent_file".to_string()],
+            });
+
+        let inputs = accepted_inputs_for_client("qbittorrent", Some(&provider));
+        assert_eq!(
+            inputs,
+            vec![DownloadSourceKind::MagnetUri, DownloadSourceKind::TorrentFile]
+        );
     }
 }
