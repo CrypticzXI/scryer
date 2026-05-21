@@ -1096,6 +1096,7 @@ async fn create_series_scan_title(
 ) -> (Title, Collection) {
     let mut tags = vec![format!("scryer:root-folder:{}", media_root.display())];
     tags.extend(extra_tags);
+    let title_dir = media_root.join(name);
 
     let title = Title {
         id: Id::new().0,
@@ -1132,7 +1133,7 @@ async fn create_series_scan_title(
         metadata_fetched_at: None,
         min_availability: None,
         digital_release_date: None,
-        folder_path: None,
+        folder_path: Some(title_dir.to_string_lossy().to_string()),
     };
     let title = ctx.titles.create(title).await.expect("create series title");
 
@@ -1731,7 +1732,12 @@ async fn graphql_media_rename_preview_for_anime_interstitial_uses_season_zero_nu
 
     let season_zero_dir = media_root.path().join("Festival Saga").join("Season 00");
     std::fs::create_dir_all(&season_zero_dir).expect("create season zero dir");
-    set_title_folder_path(&ctx, &title.id, season_zero_dir.parent().expect("title folder")).await;
+    set_title_folder_path(
+        &ctx,
+        &title.id,
+        season_zero_dir.parent().expect("title folder"),
+    )
+    .await;
     let file_path = season_zero_dir.join("Festival.Saga.Movie.Special.1080p.mkv");
     std::fs::write(&file_path, b"anime-interstitial").expect("write interstitial file");
 
@@ -3094,8 +3100,12 @@ async fn apply_media_rename_for_anime_interstitial_rolls_back_when_collection_up
         .join("Anime Interstitial Rollback")
         .join("Season 00");
     std::fs::create_dir_all(&season_zero_dir).expect("create season zero dir");
-    set_title_folder_path(&ctx, &title.id, season_zero_dir.parent().expect("title folder"))
-        .await;
+    set_title_folder_path(
+        &ctx,
+        &title.id,
+        season_zero_dir.parent().expect("title folder"),
+    )
+    .await;
     let source_path = season_zero_dir.join("Anime.Interstitial.Rollback.Movie.Special.1080p.mkv");
     std::fs::write(&source_path, b"anime-interstitial-rollback").expect("write source file");
     let expected_path = media_root
@@ -12033,8 +12043,10 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
                 .await
                 .expect("create old episode");
 
-            let season_dir = media_root.path().join(title_name).join("Season 01");
+            let show_dir = media_root.path().join(title_name);
+            let season_dir = show_dir.join("Season 01");
             std::fs::create_dir_all(&season_dir).expect("create season dir");
+            set_title_folder_path(&ctx, &title.id, &show_dir).await;
             let file_path = season_dir.join("Broken.Series.Match.S01E01.1080p.WEB-DL.mkv");
             std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
             let file_id = ctx
