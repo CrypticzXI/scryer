@@ -76,6 +76,7 @@
     },
     "config_fields": [
       {
+        "default_value": "https://api.nzbgeek.info",
         "field_type": "string",
         "help_text": "Indexer site URL, for example https://indexer.example",
         "key": "base_url",
@@ -126,5 +127,5 @@
   },
   "sdk_constraint": ">=1.6.0, <1.7.0",
   "sdk_version": "1.6.0",
-  "version": "0.2.9"
+  "version": "0.2.10"
 }
