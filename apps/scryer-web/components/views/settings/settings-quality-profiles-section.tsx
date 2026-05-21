@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useTranslate } from "@/lib/context/translate-context";
 import { PERSONA_OVERRIDE_DEFAULTS } from "@/lib/constants/quality-profiles";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,
@@ -673,14 +674,15 @@ export function SettingsQualityProfilesSection({
   return (
     <>
     <form
+      id="settings-quality-profiles-section"
       className="space-y-4 text-sm"
       onSubmit={(event) => {
         event.preventDefault();
       }}
     >
       <div className="space-y-2">
-        <div className="rounded border border-border">
-          <Table>
+        <div id="settings-quality-profiles-table-card" className="rounded border border-border">
+          <Table id="settings-quality-profiles-table">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("label.name")}</TableHead>
@@ -701,7 +703,10 @@ export function SettingsQualityProfilesSection({
                 </TableRow>
               ) : (
                 qualityProfiles.map((profile) => (
-                  <TableRow key={profile.id}>
+                  <TableRow
+                    key={profile.id}
+                    id={selectorId("settings-quality-profile-row", profile.name)}
+                  >
                     <TableCell>{profile.name}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
@@ -768,6 +773,7 @@ export function SettingsQualityProfilesSection({
                     <TableCell>
                       <div className="flex items-center gap-1">
                         <QualityProfileActionButton
+                          id={selectorId("settings-quality-profile-edit", profile.id)}
                           tone="edit"
                           onClick={() => handleEditProfile(profile.id)}
                           label={t("label.edit")}
@@ -782,6 +788,7 @@ export function SettingsQualityProfilesSection({
                             );
                           const deleteButton = (
                             <QualityProfileActionButton
+                              id={selectorId("settings-quality-profile-delete", profile.id)}
                               tone="delete"
                               disabled={qualityProfilesSaving || isInUse}
                               onClick={() => setPendingDeleteProfile({ id: profile.id, name: profile.name })}
@@ -818,7 +825,7 @@ export function SettingsQualityProfilesSection({
 
       {isEditorOpen ? (
         <>
-      <Card>
+      <Card id="settings-quality-profile-editor">
         <CardHeader>
           <CardTitle className="text-lg">
             {editorMode === "create"
@@ -829,8 +836,9 @@ export function SettingsQualityProfilesSection({
         <CardContent className="space-y-4">
           <div className="grid gap-3">
             <label>
-              <Label className="mb-2 block">{t("qualityProfile.profileNameLabel")}</Label>
+              <Label className="mb-2 block" htmlFor="settings-quality-profile-name">{t("qualityProfile.profileNameLabel")}</Label>
               <Input
+                id="settings-quality-profile-name"
                 value={qualityProfileDraft.name}
                 onChange={(event) => updateQualityProfileDraft({ name: event.target.value })}
               />
@@ -1217,6 +1225,7 @@ export function SettingsQualityProfilesSection({
           <div className="flex justify-end">
             <div className="flex gap-2">
               <Button
+                id="settings-quality-profile-cancel"
                 type="button"
                 variant="secondary"
                 onClick={handleCloseProfileEditor}
@@ -1225,6 +1234,7 @@ export function SettingsQualityProfilesSection({
                 {t("label.cancel")}
               </Button>
               <Button
+                id="settings-quality-profile-save"
                 type="button"
                 onClick={() => void handleSaveQualityProfile()}
                 disabled={mediaSettingsLoading || qualityProfilesSaving}
@@ -1244,6 +1254,7 @@ export function SettingsQualityProfilesSection({
       {editorMode === "edit" ? (
         <div className="flex justify-center">
           <Button
+            id="settings-quality-profile-create"
             type="button"
             size="lg"
             onClick={handleStartCreateProfile}
@@ -1259,6 +1270,7 @@ export function SettingsQualityProfilesSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-quality-profile-create"
             type="button"
             size="lg"
             onClick={handleStartCreateProfile}
@@ -1271,7 +1283,7 @@ export function SettingsQualityProfilesSection({
         </div>
       )}
 
-      <Card>
+      <Card id="settings-quality-profiles-defaults-card">
         <CardHeader>
           <CardTitle className="text-lg">{t("qualityProfile.defaultCategoryProfiles")}</CardTitle>
         </CardHeader>
@@ -1289,7 +1301,11 @@ export function SettingsQualityProfilesSection({
               onValueChange={handleGlobalProfileChange}
               disabled={mediaSettingsLoading || qualityProfilesSaving}
             >
-              <SelectTrigger className="w-full" onBlur={handleGlobalProfileBlur}>
+              <SelectTrigger
+                id="settings-quality-profile-global"
+                className="w-full"
+                onBlur={handleGlobalProfileBlur}
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1313,7 +1329,10 @@ export function SettingsQualityProfilesSection({
               onValueChange={handleGlobalScoringPersonaChange}
               disabled={mediaSettingsLoading || qualityProfilesSaving}
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger
+                id="settings-quality-profile-global-persona"
+                className="w-full"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1355,6 +1374,7 @@ export function SettingsQualityProfilesSection({
                       }
                     >
                       <SelectTrigger
+                        id={selectorId("settings-quality-profile-override", scopeId)}
                         className="w-full"
                         onBlur={() => handleCategoryProfileOverrideBlur(scopeId)}
                       >
@@ -1380,7 +1400,10 @@ export function SettingsQualityProfilesSection({
                         categoryQualityProfileSaving[scopeId]
                       }
                     >
-                      <SelectTrigger className="w-full">
+                      <SelectTrigger
+                        id={selectorId("settings-quality-profile-persona", scopeId)}
+                        className="w-full"
+                      >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>

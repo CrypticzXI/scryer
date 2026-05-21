@@ -64,6 +64,7 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4 text-foreground">
       <form
+        id="login-form"
         onSubmit={handleSubmit}
         className="w-full max-w-sm space-y-5 rounded-lg border border-border bg-card/70 p-8"
       >
@@ -105,6 +106,7 @@ export default function LoginPage() {
         </div>
 
         <button
+          id="login-submit"
           type="submit"
           disabled={submitting}
           className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/table";
 import type { DownloadClientRecord, DownloadClientRoutingSettings } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { DOWNLOAD_CLIENT_ROUTING_EMPTY } from "@/lib/constants/nzbget";
 import {
   boxedActionButtonBaseClass,
@@ -358,7 +359,7 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
   );
 
   return (
-    <Card>
+    <Card id="download-client-routing-panel">
       <CardHeader>
         <CardTitle>
           {t("settings.downloadClientRoutingScope", {
@@ -403,7 +404,10 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                     downloadClientRoutingLoading || downloadClientRoutingSaving;
 
                   return (
-                    <TableRow key={client.id}>
+                    <TableRow
+                      key={client.id}
+                      id={selectorId("download-client-routing-row", client.name)}
+                    >
                       <TableCell>{index + 1}</TableCell>
                       <TableCell>{client.name}</TableCell>
                       <TableCell className="text-center">
@@ -426,6 +430,10 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                       </TableCell>
                       <TableCell>
                         <Input
+                          id={selectorId(
+                            "download-client-routing-category",
+                            client.name,
+                          )}
                           value={routing.category}
                           onChange={(event) =>
                             handleRoutingCategoryChange(client.id, event.target.value)
@@ -445,7 +453,13 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                           }
                           disabled={controlsDisabled}
                         >
-                          <SelectTrigger className="w-full">
+                          <SelectTrigger
+                            id={selectorId(
+                              "download-client-routing-recent-priority",
+                              client.name,
+                            )}
+                            className="w-full"
+                          >
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -465,7 +479,13 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                           }
                           disabled={controlsDisabled}
                         >
-                          <SelectTrigger className="w-full">
+                          <SelectTrigger
+                            id={selectorId(
+                              "download-client-routing-older-priority",
+                              client.name,
+                            )}
+                            className="w-full"
+                          >
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -479,6 +499,10 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                       </TableCell>
                       <TableCell className="text-center">
                         <Checkbox
+                          id={selectorId(
+                            "download-client-routing-remove-completed",
+                            client.name,
+                          )}
                           checked={routing.removeCompleted}
                           onCheckedChange={(checked) =>
                             handleRoutingRemoveCompletedChange(client.id, checked === true)
@@ -488,6 +512,10 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                       </TableCell>
                       <TableCell className="text-center">
                         <Checkbox
+                          id={selectorId(
+                            "download-client-routing-remove-failed",
+                            client.name,
+                          )}
                           checked={routing.removeFailed}
                           onCheckedChange={(checked) =>
                             handleRoutingRemoveFailedChange(client.id, checked === true)
@@ -498,6 +526,12 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
                           <DownloadClientRoutingActionButton
+                            id={selectorId(
+                              routing.enabled
+                                ? "download-client-routing-disable"
+                                : "download-client-routing-enable",
+                              client.name,
+                            )}
                             tone={routing.enabled ? "disabled" : "enabled"}
                             label={
                               routing.enabled
@@ -518,6 +552,10 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                             )}
                           </DownloadClientRoutingActionButton>
                           <DownloadClientRoutingActionButton
+                            id={selectorId(
+                              "download-client-routing-move-up",
+                              client.name,
+                            )}
                             tone="reorder"
                             label={`${t("label.moveUp")} ${client.name}`}
                             onClick={() => moveClientUp(client.id)}
@@ -526,6 +564,10 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                             <ChevronUp className="h-4 w-4" />
                           </DownloadClientRoutingActionButton>
                           <DownloadClientRoutingActionButton
+                            id={selectorId(
+                              "download-client-routing-move-down",
+                              client.name,
+                            )}
                             tone="reorder"
                             label={`${t("label.moveDown")} ${client.name}`}
                             onClick={() => moveClientDown(client.id)}

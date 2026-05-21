@@ -52,7 +52,7 @@ export function SettingsSecuritySection({
 
   return (
     <>
-      <div className="space-y-6 text-sm">
+      <div id="settings-security-section" className="space-y-6 text-sm">
         <div className="space-y-2">
           <h3 className="text-base font-medium">{t("settings.security")}</h3>
           <p className="max-w-2xl text-muted-foreground">
@@ -75,7 +75,9 @@ export function SettingsSecuritySection({
             </div>
             <div className="space-y-3">
               <Button
+                id="settings-security-toggle-form-login"
                 type="button"
+                aria-pressed={settings.formLoginEnabled}
                 variant={settings.formLoginEnabled ? "destructive" : "primary"}
                 disabled={busy}
                 onClick={() => onToggle(!settings.formLoginEnabled)}
@@ -150,10 +152,13 @@ export function SettingsSecuritySection({
 
       <ConfirmDialog
         open={enableConfirmOpen}
+        contentId="settings-security-enable-dialog"
         title={t("settings.securityConfirmTitle")}
         description={t("settings.securityConfirmDescription")}
         confirmLabel={t("settings.securityConfirmAction")}
         cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-security-enable-confirm"
+        cancelButtonId="settings-security-enable-cancel"
         isBusy={confirmBusy}
         confirmDisabled={confirmDisabled}
         onConfirm={onConfirmEnable}
@@ -184,17 +189,22 @@ export function SettingsSecuritySection({
             />
           </div>
           {confirmError ? (
-            <p className="text-xs text-destructive">{confirmError}</p>
+            <p id="settings-security-confirm-error" className="text-xs text-destructive">
+              {confirmError}
+            </p>
           ) : null}
         </div>
       </ConfirmDialog>
 
       <ConfirmDialog
         open={disableConfirmOpen}
+        contentId="settings-security-disable-dialog"
         title={t("settings.securityDisableConfirmTitle")}
         description={t("settings.securityDisableConfirmDescription")}
         confirmLabel={t("settings.securityDisableConfirmAction")}
         cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-security-disable-confirm"
+        cancelButtonId="settings-security-disable-cancel"
         isBusy={confirmBusy}
         onConfirm={onConfirmDisable}
         onCancel={onCancelDisable}

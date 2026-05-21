@@ -75,7 +75,7 @@ export function SetupImportConnectView({
   const prowlarrSettingsUrl = settingsUrl(prowlarrUrl);
 
   return (
-    <div className="w-full space-y-6">
+    <div id="setup-import-connect-view" className="w-full space-y-6">
       <div className="text-center">
         <h2 className="mb-2 text-xl font-semibold">{t("setup.connectTitle")}</h2>
         <p className="text-sm text-muted-foreground">{t("setup.connectDescription")}</p>
@@ -94,6 +94,7 @@ export function SetupImportConnectView({
               {t("setup.sonarrUrl")}
             </label>
             <Input
+              id="setup-import-sonarr-url"
               value={sonarrUrl}
               onChange={(e) => onSonarrUrlChange(e.target.value)}
               onBlur={() => onSonarrUrlChange(normalizeUrl(sonarrUrl))}
@@ -119,6 +120,7 @@ export function SetupImportConnectView({
               ) : null}
             </div>
             <Input
+              id="setup-import-sonarr-api-key"
               type="password"
               value={sonarrApiKey}
               onChange={(e) => onSonarrApiKeyChange(e.target.value)}
@@ -141,6 +143,7 @@ export function SetupImportConnectView({
               {t("setup.radarrUrl")}
             </label>
             <Input
+              id="setup-import-radarr-url"
               value={radarrUrl}
               onChange={(e) => onRadarrUrlChange(e.target.value)}
               onBlur={() => onRadarrUrlChange(normalizeUrl(radarrUrl))}
@@ -166,6 +169,7 @@ export function SetupImportConnectView({
               ) : null}
             </div>
             <Input
+              id="setup-import-radarr-api-key"
               type="password"
               value={radarrApiKey}
               onChange={(e) => onRadarrApiKeyChange(e.target.value)}
@@ -188,6 +192,7 @@ export function SetupImportConnectView({
               {t("setup.prowlarrUrl")}
             </label>
             <Input
+              id="setup-import-prowlarr-url"
               value={prowlarrUrl}
               onChange={(e) => onProwlarrUrlChange(e.target.value)}
               onBlur={() => onProwlarrUrlChange(normalizeUrl(prowlarrUrl))}
@@ -213,6 +218,7 @@ export function SetupImportConnectView({
               ) : null}
             </div>
             <Input
+              id="setup-import-prowlarr-api-key"
               type="password"
               value={prowlarrApiKey}
               onChange={(e) => onProwlarrApiKeyChange(e.target.value)}
@@ -235,11 +241,20 @@ export function SetupImportConnectView({
       ) : null}
 
       <div className="flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack} disabled={connecting}>
+        <Button
+          id="setup-import-connect-back"
+          variant="ghost"
+          onClick={onBack}
+          disabled={connecting}
+        >
           <ArrowLeft className="mr-2 h-4 w-4" />
           {t("setup.back")}
         </Button>
-        <Button onClick={onConnect} disabled={!canConnect || connecting}>
+        <Button
+          id="setup-import-connect-next"
+          onClick={onConnect}
+          disabled={!canConnect || connecting}
+        >
           {connecting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
           {t("setup.connectAndScan")}
         </Button>

@@ -38,10 +38,11 @@ export function SettingsAcquisitionSection({
   }
 
   return (
-    <div className="space-y-6 text-sm">
+    <div id="settings-acquisition-section" className="space-y-6 text-sm">
       <div className="flex items-center gap-3">
-        <Label>{t("settings.acq.enabled")}</Label>
+        <Label htmlFor="settings-acquisition-enabled">{t("settings.acq.enabled")}</Label>
         <button
+          id="settings-acquisition-enabled"
           type="button"
           role="switch"
           aria-checked={settings.enabled}
@@ -56,32 +57,44 @@ export function SettingsAcquisitionSection({
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-1">
-          <Label>{t("settings.acq.cooldownHours")}</Label>
+          <Label htmlFor="settings-acquisition-cooldown-hours">
+            {t("settings.acq.cooldownHours")}
+          </Label>
           <Input
+            id="settings-acquisition-cooldown-hours"
             {...integerInputProps}
             value={settings.upgradeCooldownHours}
             onChange={(e) => update({ upgradeCooldownHours: parseIntegerInput(e.target.value) })}
           />
         </div>
         <div className="space-y-1">
-          <Label>{t("settings.acq.sameTierDelta")}</Label>
+          <Label htmlFor="settings-acquisition-same-tier-delta">
+            {t("settings.acq.sameTierDelta")}
+          </Label>
           <Input
+            id="settings-acquisition-same-tier-delta"
             {...integerInputProps}
             value={settings.sameTierMinDelta}
             onChange={(e) => update({ sameTierMinDelta: parseIntegerInput(e.target.value) })}
           />
         </div>
         <div className="space-y-1">
-          <Label>{t("settings.acq.crossTierDelta")}</Label>
+          <Label htmlFor="settings-acquisition-cross-tier-delta">
+            {t("settings.acq.crossTierDelta")}
+          </Label>
           <Input
+            id="settings-acquisition-cross-tier-delta"
             {...integerInputProps}
             value={settings.crossTierMinDelta}
             onChange={(e) => update({ crossTierMinDelta: parseIntegerInput(e.target.value) })}
           />
         </div>
         <div className="space-y-1">
-          <Label>{t("settings.acq.forcedBypassDelta")}</Label>
+          <Label htmlFor="settings-acquisition-forced-bypass-delta">
+            {t("settings.acq.forcedBypassDelta")}
+          </Label>
           <Input
+            id="settings-acquisition-forced-bypass-delta"
             {...integerInputProps}
             value={settings.forcedUpgradeDeltaBypass}
             onChange={(e) =>
@@ -90,24 +103,33 @@ export function SettingsAcquisitionSection({
           />
         </div>
         <div className="space-y-1">
-          <Label>{t("settings.acq.pollInterval")}</Label>
+          <Label htmlFor="settings-acquisition-poll-interval">
+            {t("settings.acq.pollInterval")}
+          </Label>
           <Input
+            id="settings-acquisition-poll-interval"
             {...integerInputProps}
             value={settings.pollIntervalSeconds}
             onChange={(e) => update({ pollIntervalSeconds: parseIntegerInput(e.target.value) })}
           />
         </div>
         <div className="space-y-1">
-          <Label>{t("settings.acq.syncInterval")}</Label>
+          <Label htmlFor="settings-acquisition-sync-interval">
+            {t("settings.acq.syncInterval")}
+          </Label>
           <Input
+            id="settings-acquisition-sync-interval"
             {...integerInputProps}
             value={settings.syncIntervalSeconds}
             onChange={(e) => update({ syncIntervalSeconds: parseIntegerInput(e.target.value) })}
           />
         </div>
         <div className="space-y-1">
-          <Label>{t("settings.acq.batchSize")}</Label>
+          <Label htmlFor="settings-acquisition-batch-size">
+            {t("settings.acq.batchSize")}
+          </Label>
           <Input
+            id="settings-acquisition-batch-size"
             {...integerInputProps}
             value={settings.batchSize}
             onChange={(e) => update({ batchSize: parseIntegerInput(e.target.value) })}
@@ -115,7 +137,7 @@ export function SettingsAcquisitionSection({
         </div>
       </div>
 
-      <Button onClick={onSave} disabled={saving}>
+      <Button id="settings-acquisition-save" onClick={onSave} disabled={saving}>
         {saving ? (
           <>
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />

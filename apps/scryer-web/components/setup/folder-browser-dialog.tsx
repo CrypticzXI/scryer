@@ -11,6 +11,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { browsePathQuery } from "@/lib/graphql/queries";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 
 interface DirectoryEntry {
   name: string;
@@ -76,7 +77,7 @@ export function FolderBrowserDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent id="folder-browser-dialog" className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -115,6 +116,7 @@ export function FolderBrowserDialog({
         {/* Manual path input */}
         <div className="flex gap-2">
           <Input
+            id="folder-browser-path-input"
             value={currentPath}
             onChange={(e) => setCurrentPath(e.target.value)}
             onKeyDown={(e) => {
@@ -122,7 +124,12 @@ export function FolderBrowserDialog({
             }}
             className="font-mono text-sm"
           />
-          <Button variant="outline" size="sm" onClick={() => browse(currentPath)}>
+          <Button
+            id="folder-browser-go"
+            variant="outline"
+            size="sm"
+            onClick={() => browse(currentPath)}
+          >
             Go
           </Button>
         </div>
@@ -141,6 +148,7 @@ export function FolderBrowserDialog({
             <div className="divide-y divide-border">
               {parentPath !== null && (
                 <button
+                  id="folder-browser-up"
                   type="button"
                   onClick={() => browse(parentPath)}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted"
@@ -156,6 +164,7 @@ export function FolderBrowserDialog({
               )}
               {entries.map((entry) => (
                 <button
+                  id={selectorId("folder-browser-entry", entry.path)}
                   key={entry.path}
                   type="button"
                   onClick={() => browse(entry.path)}
@@ -170,10 +179,11 @@ export function FolderBrowserDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button id="folder-browser-cancel" variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
+            id="folder-browser-select"
             onClick={() => {
               onSelect(currentPath);
               onOpenChange(false);

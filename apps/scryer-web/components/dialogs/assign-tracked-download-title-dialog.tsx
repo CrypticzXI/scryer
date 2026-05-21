@@ -13,6 +13,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { titlesQuery } from "@/lib/graphql/queries";
 import type { DownloadQueueItem } from "@/lib/types";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 
 type TitleSearchResult = {
   id: string;
@@ -127,15 +128,24 @@ export function AssignTrackedDownloadTitleDialog({
       description={t("queue.assignTitleDescription")}
       className="sm:max-w-2xl"
     >
+      <div id="activity-assign-title-dialog">
       <CommandInput
+        id="activity-assign-title-search"
         value={query}
         onValueChange={setQuery}
         placeholder={t("queue.assignTitlePlaceholder")}
       />
-      <CommandList>
-        {error ? <div className="px-4 py-3 text-sm text-rose-400">{error}</div> : null}
+      <CommandList id="activity-assign-title-list">
+        {error ? (
+          <div id="activity-assign-title-error" className="px-4 py-3 text-sm text-rose-400">
+            {error}
+          </div>
+        ) : null}
         {loading ? (
-          <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
+          <div
+            id="activity-assign-title-loading"
+            className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground"
+          >
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>{t("label.loading")}</span>
           </div>
@@ -147,6 +157,12 @@ export function AssignTrackedDownloadTitleDialog({
             return (
               <CommandItem
                 key={title.id}
+                id={selectorId(
+                  "activity-assign-title-item",
+                  title.name,
+                  title.year ?? "",
+                  title.facet,
+                )}
                 value={`${title.name} ${title.year ?? ""} ${title.facet}`}
                 onSelect={() => {
                   void handleSelect(title.id);
@@ -173,6 +189,7 @@ export function AssignTrackedDownloadTitleDialog({
           })}
         </CommandGroup>
       </CommandList>
+      </div>
     </CommandDialog>
   );
 }

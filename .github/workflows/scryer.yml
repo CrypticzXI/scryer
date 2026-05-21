@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  SCRYER_SCCACHE_SCOPE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || startsWith(github.ref, 'refs/tags/') && format('tag-{0}', github.ref_name) || format('ref-{0}', github.ref_name) }}
+  SCRYER_SCCACHE_PUBLISH_SHARED: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') && 'true' || 'false' }}
 
 jobs:
   web:
@@ -89,6 +89,25 @@ jobs:
       - name: Add musl target
         run: rustup target add x86_64-unknown-linux-musl
 
+      - name: Resolve sccache lane metadata
+        id: rust-check-sccache-metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line="$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
+          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
+          if not match:
+              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
+          print(f"{match.group(1)}.{match.group(2)}.x")
+          PY
+          )"
+          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
+          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
+
       - name: Restore cargo dependency cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -102,10 +121,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-linux-rust-check-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-check-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-rust-check-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-linux-rust-check-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-linux-rust-check-
+            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-check-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-check-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-rust-check-linux-x86_64-musl-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -185,7 +205,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always()
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -203,11 +223,15 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             cache_lane: launcher-amd64
+            sccache_lane: launcher-linux-x86_64-musl
+            sccache_writer_id: launcher-linux-amd64
             artifact_name: launcher-linux-amd64
           - arch: arm64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             cache_lane: launcher-arm64
+            sccache_lane: launcher-linux-arm64-musl
+            sccache_writer_id: launcher-linux-arm64
             artifact_name: launcher-linux-arm64
     env:
       CARGO_HOME: /home/runner/.cargo
@@ -233,6 +257,25 @@ jobs:
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
+      - name: Resolve sccache lane metadata
+        id: launcher-sccache-metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line="$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
+          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
+          if not match:
+              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
+          print(f"{match.group(1)}.{match.group(2)}.x")
+          PY
+          )"
+          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
+          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
+
       - name: Restore cargo dependency cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -246,10 +289,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.launcher-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.launcher-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.launcher-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -297,7 +341,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always()
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -317,6 +361,8 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             cache_lane: linux-x86_64
+            sccache_lane: scryer-linux-x86_64-musl
+            sccache_writer_id: scryer-linux-x86_64-portable
             artifact_name: scryer-linux-x86_64-portable
             extra_rustflags: ""
           - arch: x86_64
@@ -324,6 +370,8 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             cache_lane: linux-x86_64
+            sccache_lane: scryer-linux-x86_64-musl
+            sccache_writer_id: scryer-linux-x86_64-haswell
             artifact_name: scryer-linux-x86_64-haswell
             extra_rustflags: "-C target-cpu=haswell"
           - arch: arm64
@@ -331,6 +379,8 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             cache_lane: linux-arm64
+            sccache_lane: scryer-linux-arm64-musl
+            sccache_writer_id: scryer-linux-arm64-portable
             artifact_name: scryer-linux-arm64-portable
             extra_rustflags: ""
           - arch: arm64
@@ -338,6 +388,8 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             cache_lane: linux-arm64
+            sccache_lane: scryer-linux-arm64-musl
+            sccache_writer_id: scryer-linux-arm64-cortex-a76
             artifact_name: scryer-linux-arm64-cortex-a76
             extra_rustflags: "-C target-cpu=cortex-a76"
     env:
@@ -364,6 +416,25 @@ jobs:
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
+      - name: Resolve sccache lane metadata
+        id: linux-sccache-metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line="$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
+          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
+          if not match:
+              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
+          print(f"{match.group(1)}.{match.group(2)}.x")
+          PY
+          )"
+          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
+          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
+
       - name: Restore cargo dependency cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -377,10 +448,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -431,7 +503,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always()
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -451,6 +523,8 @@ jobs:
             runner: macos-15
             target: aarch64-apple-darwin
             cache_lane: macos-arm64
+            sccache_lane: scryer-macos-arm64
+            sccache_writer_id: scryer-darwin-arm64-portable
             artifact_name: scryer-darwin-arm64-portable
             extra_rustflags: ""
           - arch: arm64
@@ -458,6 +532,8 @@ jobs:
             runner: macos-15
             target: aarch64-apple-darwin
             cache_lane: macos-arm64
+            sccache_lane: scryer-macos-arm64
+            sccache_writer_id: scryer-darwin-arm64-apple-m1
             artifact_name: scryer-darwin-arm64-apple-m1
             extra_rustflags: "-C target-cpu=apple-m1 --cfg aes_armv8 --cfg chacha20_force_neon"
           - arch: x86_64
@@ -465,6 +541,8 @@ jobs:
             runner: macos-15-intel
             target: x86_64-apple-darwin
             cache_lane: macos-x86_64
+            sccache_lane: scryer-macos-x86_64
+            sccache_writer_id: scryer-darwin-x86_64-portable
             artifact_name: scryer-darwin-x86_64-portable
             extra_rustflags: ""
           - arch: x86_64
@@ -472,6 +550,8 @@ jobs:
             runner: macos-15-intel
             target: x86_64-apple-darwin
             cache_lane: macos-x86_64
+            sccache_lane: scryer-macos-x86_64
+            sccache_writer_id: scryer-darwin-x86_64-haswell
             artifact_name: scryer-darwin-x86_64-haswell
             extra_rustflags: "-C target-cpu=haswell"
     env:
@@ -492,6 +572,25 @@ jobs:
           toolchain: "1.95.0"
           targets: ${{ matrix.target }}
 
+      - name: Resolve sccache lane metadata
+        id: macos-sccache-metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line="$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
+          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
+          if not match:
+              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
+          print(f"{match.group(1)}.{match.group(2)}.x")
+          PY
+          )"
+          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
+          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
+
       - name: Restore cargo dependency cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -505,10 +604,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -587,7 +687,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always()
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.sccache
@@ -607,6 +707,8 @@ jobs:
             toolchain: 1.95.0-x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
             cache_lane: windows-x64
+            sccache_lane: scryer-windows-x86_64-msvc
+            sccache_writer_id: scryer-windows-x86_64-portable
             artifact_name: scryer-windows-x86_64-portable
             install_nasm: true
             use_clang_cl: false
@@ -615,6 +717,8 @@ jobs:
             toolchain: 1.95.0-aarch64-pc-windows-msvc
             target: aarch64-pc-windows-msvc
             cache_lane: windows-arm64
+            sccache_lane: scryer-windows-arm64-msvc
+            sccache_writer_id: scryer-windows-arm64-portable
             artifact_name: scryer-windows-arm64-portable
             install_nasm: false
             use_clang_cl: true
@@ -635,6 +739,20 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
 
+      - name: Resolve sccache lane metadata
+        id: windows-sccache-metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cargoToml = Get-Content crates/scryer/Cargo.toml -Raw
+          $match = [regex]::Match($cargoToml, '(?m)^version = "(?<major>\d+)\.(?<minor>\d+)\.\d+"$')
+          if (-not $match.Success) {
+            throw "failed to resolve crates/scryer/Cargo.toml version"
+          }
+          $versionLine = "$($match.Groups['major'].Value).$($match.Groups['minor'].Value).x"
+          "SCRYER_SCCACHE_VERSION_LINE=$versionLine" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version_line=$versionLine" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Restore cargo dependency cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -648,10 +766,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}\.sccache
-          key: gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-${{ env.SCRYER_SCCACHE_SCOPE }}-${{ matrix.artifact_name }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -784,7 +903,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always()
+        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}\.sccache

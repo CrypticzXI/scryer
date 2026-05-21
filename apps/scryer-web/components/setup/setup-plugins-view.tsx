@@ -15,6 +15,7 @@ import type {
   PluginInstallProgressRecord,
   RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 
 interface SetupPluginsViewProps {
   t: (
@@ -183,7 +184,7 @@ export function SetupPluginsView({
   );
 
   return (
-    <div className="flex flex-col gap-6">
+    <div id="setup-plugins-view" className="flex flex-col gap-6">
       <div className="text-center">
         <h2 className="text-xl font-semibold">{t("setup.pluginsTitle")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -208,6 +209,7 @@ export function SetupPluginsView({
           </p>
         </div>
         <Button
+          id="setup-plugins-refresh"
           variant="outline"
           size="sm"
           disabled={refreshing || loading}
@@ -266,7 +268,10 @@ export function SetupPluginsView({
                       const actionError = pluginErrors[plugin.id];
                       const blockedLabel = blockedReasonLabel(plugin, t);
                       return (
-                        <TableRow key={plugin.id}>
+                        <TableRow
+                          key={plugin.id}
+                          id={selectorId("setup-plugin-row", plugin.name)}
+                        >
                           <TableCell className="min-w-[260px]">
                             <div className="space-y-1">
                               <span className="font-medium">{plugin.name}</span>
@@ -298,6 +303,7 @@ export function SetupPluginsView({
                                   </span>
                                   {canUninstallPlugin(plugin) && (
                                     <Button
+                                      id={selectorId("setup-plugin-uninstall", plugin.name)}
                                       variant="ghost"
                                       size="icon"
                                       disabled={isBusy}
@@ -327,6 +333,7 @@ export function SetupPluginsView({
                             ) : (
                               <div className="ml-auto flex w-24 min-w-0 flex-col items-end gap-2">
                                 <Button
+                                  id={selectorId("setup-plugin-install", plugin.name)}
                                   variant="outline"
                                   size="sm"
                                   disabled={isBusy || installIsBlocked(plugin)}
@@ -367,10 +374,10 @@ export function SetupPluginsView({
       )}
 
       <div className="flex items-center justify-between pt-2">
-        <Button variant="ghost" onClick={onBack}>
+        <Button id="setup-plugins-back" variant="ghost" onClick={onBack}>
           {t("setup.back")}
         </Button>
-        <Button onClick={onNext}>
+        <Button id="setup-plugins-next" onClick={onNext}>
           <PlugZap className="mr-2 h-4 w-4" />
           {t("setup.next")}
         </Button>

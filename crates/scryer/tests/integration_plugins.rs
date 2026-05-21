@@ -76,7 +76,7 @@ fn catalog_plugin_entry(
     builtin: bool,
     wasm_url: Option<String>,
 ) -> serde_json::Value {
-    const TEST_SDK_CONSTRAINT: &str = ">=1.5.0, <1.6.0";
+    const TEST_SDK_CONSTRAINT: &str = ">=1.6.0, <1.7.0";
 
     serde_json::json!({
         "id": plugin_id,

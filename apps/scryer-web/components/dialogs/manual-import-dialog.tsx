@@ -29,6 +29,7 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { previewManualImportQuery } from "@/lib/graphql/queries";
 import { queueManualImportMutation } from "@/lib/graphql/mutations";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { useClient } from "urql";
 
 type FilePreview = {
@@ -209,7 +210,10 @@ export function ManualImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-4xl max-h-[85vh] overflow-y-auto">
+      <DialogContent
+        id="activity-manual-import-dialog"
+        className="sm:max-w-4xl max-h-[85vh] overflow-y-auto"
+      >
         <DialogHeader>
           <DialogTitle>Manual Import</DialogTitle>
           <DialogDescription>
@@ -218,20 +222,31 @@ export function ManualImportDialog({
         </DialogHeader>
 
         {loading ? (
-          <div className="flex items-center justify-center gap-3 py-12">
+          <div
+            id="activity-manual-import-loading"
+            className="flex items-center justify-center gap-3 py-12"
+          >
             <Loader2 className="h-5 w-5 animate-spin text-emerald-500" />
             <span className="text-sm text-muted-foreground">Scanning files...</span>
           </div>
         ) : error && files.length === 0 ? (
-          <div className="py-8 text-center text-sm text-red-400">{error}</div>
+          <div
+            id="activity-manual-import-error"
+            className="py-8 text-center text-sm text-red-400"
+          >
+            {error}
+          </div>
         ) : (
           <>
             {files.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">
+              <p
+                id="activity-manual-import-empty"
+                className="py-8 text-center text-sm text-muted-foreground"
+              >
                 No video files found in the download.
               </p>
             ) : (
-              <Table>
+              <Table id="activity-manual-import-table">
                 <TableHeader>
                   <TableRow>
                     <TableHead>File</TableHead>
@@ -242,7 +257,10 @@ export function ManualImportDialog({
                 </TableHeader>
                 <TableBody>
                   {files.map((file) => (
-                    <TableRow key={file.filePath}>
+                    <TableRow
+                      key={file.filePath}
+                      id={selectorId("activity-manual-import-file-row", file.filePath)}
+                    >
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <FileVideo className="h-4 w-4 shrink-0 text-muted-foreground/60" />
@@ -270,7 +288,10 @@ export function ManualImportDialog({
                             setMappings((prev) => ({ ...prev, [file.filePath]: value }))
                           }
                         >
-                          <SelectTrigger className="h-8 w-full text-xs">
+                          <SelectTrigger
+                            id={selectorId("activity-manual-import-assign", file.filePath)}
+                            className="h-8 w-full text-xs"
+                          >
                             <SelectValue placeholder="Select episode..." />
                           </SelectTrigger>
                           <SelectContent className="max-h-[300px]">
@@ -298,16 +319,24 @@ export function ManualImportDialog({
               </Table>
             )}
             {error && (
-              <p className="text-sm text-red-400">{error}</p>
+              <p id="activity-manual-import-error" className="text-sm text-red-400">
+                {error}
+              </p>
             )}
           </>
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={importing}>
+          <Button
+            id="activity-manual-import-cancel"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={importing}
+          >
             Cancel
           </Button>
           <Button
+            id="activity-manual-import-queue"
             onClick={() => void handleImport()}
             disabled={importing || assignedCount === 0 || loading}
           >

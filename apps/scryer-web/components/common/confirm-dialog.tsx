@@ -9,6 +9,9 @@ type ConfirmDialogProps = {
   description: string;
   confirmLabel: string;
   cancelLabel: string;
+  contentId?: string;
+  confirmButtonId?: string;
+  cancelButtonId?: string;
   isBusy?: boolean;
   confirmDisabled?: boolean;
   children?: ReactNode;
@@ -22,6 +25,9 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   cancelLabel,
+  contentId,
+  confirmButtonId,
+  cancelButtonId,
   isBusy = false,
   confirmDisabled = false,
   children,
@@ -52,6 +58,7 @@ export function ConfirmDialog({
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
       <section
+        id={contentId}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -63,10 +70,17 @@ export function ConfirmDialog({
         ) : null}
         {children ? <div className="mb-4">{children}</div> : null}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onCancel} disabled={isBusy}>
+          <Button
+            id={cancelButtonId}
+            type="button"
+            variant="secondary"
+            onClick={onCancel}
+            disabled={isBusy}
+          >
             {cancelLabel}
           </Button>
           <Button
+            id={confirmButtonId}
             type="button"
             variant="destructive"
             onClick={onConfirm}

@@ -19,7 +19,7 @@ export function SetupWelcomeView({
   skipping,
 }: SetupWelcomeViewProps) {
   return (
-    <div className="flex flex-col items-center gap-8">
+    <div id="setup-welcome-view" className="flex flex-col items-center gap-8">
       <div className="text-center">
         <h1
           className="mb-3 text-3xl font-bold tracking-tight"
@@ -31,6 +31,7 @@ export function SetupWelcomeView({
       </div>
       <div className="grid w-full max-w-5xl gap-4 xl:grid-cols-3">
         <Card
+          id="setup-welcome-fresh"
           className="cursor-pointer transition-colors hover:border-primary"
           onClick={onFreshSetup}
         >
@@ -45,6 +46,7 @@ export function SetupWelcomeView({
           </CardContent>
         </Card>
         <Card
+          id="setup-welcome-import"
           className="cursor-pointer transition-colors hover:border-primary"
           onClick={onImportSetup}
         >
@@ -59,6 +61,7 @@ export function SetupWelcomeView({
           </CardContent>
         </Card>
         <Card
+          id="setup-welcome-restore"
           className="cursor-pointer transition-colors hover:border-primary"
           onClick={onRestoreSetup}
         >
@@ -74,6 +77,7 @@ export function SetupWelcomeView({
         </Card>
       </div>
       <button
+        id="setup-welcome-skip"
         type="button"
         onClick={onSkip}
         disabled={skipping}

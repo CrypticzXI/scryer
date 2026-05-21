@@ -16,6 +16,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { SCORING_PERSONA_CHOICES } from "@/lib/constants/quality-profiles";
 import { cn } from "@/lib/utils";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { DownloadClientRoutingPanel } from "@/components/views/media-content/download-client-routing-panel";
 import {
   boxedActionButtonBaseClass,
@@ -813,7 +814,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
   return (
     <>
-      <Card>
+      <Card id="media-library-settings-panel">
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <CardTitle>{settingsTitle}</CardTitle>
           <Button
@@ -835,7 +836,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
               onValueChange={handleSelectLibrary}
               disabled={actionBusy || libraries.length === 0}
             >
-              <SelectTrigger className="w-full sm:w-[260px]">
+              <SelectTrigger id="media-library-select" className="w-full sm:w-[260px]">
                 <SelectValue placeholder={t("settings.librariesLabel")} />
               </SelectTrigger>
               <SelectContent>
@@ -850,6 +851,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
               </SelectContent>
             </Select>
             <Button
+              id="media-library-new"
               type="button"
               variant="outline"
               onClick={handleNewLibrary}
@@ -868,16 +870,18 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
           ) : null}
 
           {libraries.length === 0 && !librariesLoading && mode !== "new" ? (
-            <p className="text-sm text-muted-foreground">{t("settings.libraryEmpty")}</p>
+            <p id="media-library-empty" className="text-sm text-muted-foreground">
+              {t("settings.libraryEmpty")}
+            </p>
           ) : null}
 
           {mode === "new" || activeLibrary ? (
             <div className="space-y-4">
               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)]">
                 <div className="space-y-2">
-                  <Label htmlFor="library-name">{t("settings.libraryNameLabel")}</Label>
+                  <Label htmlFor="media-library-name">{t("settings.libraryNameLabel")}</Label>
                   <Input
-                    id="library-name"
+                    id="media-library-name"
                     value={draftName}
                     onChange={(event) => setDraftName(event.target.value)}
                     placeholder={t("settings.libraryNamePlaceholder")}
@@ -897,7 +901,11 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       conflictingLibraryNamesByRootPath.get(rf.path) ?? null;
 
                     return (
-                      <li key={`${rf.path}-${index}`} className="space-y-1">
+                      <li
+                        key={`${rf.path}-${index}`}
+                        id={selectorId("media-library-root-row", rf.path)}
+                        className="space-y-1"
+                      >
                         <div className="flex items-center gap-2">
                           <code className="flex-1 truncate rounded-md border border-border bg-muted/50 px-3 py-1.5 font-mono text-sm">
                             {rf.path}
@@ -908,6 +916,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             </span>
                           ) : (
                             <button
+                              id={selectorId("media-library-root-set-default", rf.path)}
                               type="button"
                               className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
                               onClick={() => handleSetDefault(index)}
@@ -917,6 +926,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             </button>
                           )}
                           <Button
+                            id={selectorId("media-library-root-edit", rf.path)}
                             type="button"
                             variant="secondary"
                             size="icon-sm"
@@ -932,6 +942,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             <Pencil className="h-4 w-4" />
                           </Button>
                           <Button
+                            id={selectorId("media-library-root-delete", rf.path)}
                             type="button"
                             variant="secondary"
                             size="icon-sm"
@@ -959,6 +970,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   })}
                 </ul>
                 <Button
+                  id="media-library-add-root"
                   type="button"
                   variant="outline"
                   onClick={openAdd}
@@ -1341,6 +1353,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button
+                  id="media-library-save-scan"
                   type="button"
                   variant="primary"
                   onClick={handleSaveAndScanLibrary}
@@ -1356,6 +1369,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   {t("settings.librarySaveAndScanButton")}
                 </Button>
                 <Button
+                  id="media-library-save"
                   type="button"
                   variant="outline"
                   onClick={handleSaveLibrary}

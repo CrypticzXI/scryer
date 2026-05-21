@@ -107,25 +107,25 @@ export function SetupDownloadClientView({
   const canProceed = saved && areRemotePathMappingsValid;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div id="setup-download-client-view" className="flex flex-col gap-6">
       <div className="text-center">
         <h2 className="text-xl font-semibold">{t("setup.downloadClientTitle")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t("setup.downloadClientDescription")}</p>
       </div>
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
-          <Label htmlFor="dc-name">{t("label.name")}</Label>
+          <Label htmlFor="setup-download-client-name">{t("label.name")}</Label>
           <Input
-            id="dc-name"
+            id="setup-download-client-name"
             value={draft.name}
             onChange={(e) => onDraftChange({ name: e.target.value })}
             placeholder="My Download Client"
           />
         </div>
         <div className="space-y-2">
-          <Label>{t("label.type")}</Label>
+          <Label htmlFor="setup-download-client-type">{t("label.type")}</Label>
           <Select value={draft.clientType} onValueChange={(v) => onDraftChange({ clientType: v })}>
-            <SelectTrigger>
+            <SelectTrigger id="setup-download-client-type">
               <SelectValue aria-label={selectedDownloadClientLabel}>
                 <DownloadClientTypeOptionContent
                   typeValue={draft.clientType}
@@ -151,18 +151,18 @@ export function SetupDownloadClientView({
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-2">
           <div className="space-y-2">
-            <Label htmlFor="dc-host">{t("settings.host")}</Label>
+            <Label htmlFor="setup-download-client-host">{t("settings.host")}</Label>
             <Input
-              id="dc-host"
+              id="setup-download-client-host"
               value={draft.host}
               onChange={(e) => onDraftChange({ host: e.target.value })}
               placeholder="192.168.1.100"
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="dc-port">{t("settings.port")}</Label>
+            <Label htmlFor="setup-download-client-port">{t("settings.port")}</Label>
             <Input
-              id="dc-port"
+              id="setup-download-client-port"
               {...integerInputProps}
               className="w-24"
               value={draft.port}
@@ -173,17 +173,17 @@ export function SetupDownloadClientView({
         </div>
         <div className="flex items-center gap-2">
           <Checkbox
-            id="dc-ssl"
+            id="setup-download-client-ssl"
             checked={draft.useSsl}
             onCheckedChange={(checked) => onDraftChange({ useSsl: checked === true })}
           />
-          <Label htmlFor="dc-ssl" className="text-sm">SSL</Label>
+          <Label htmlFor="setup-download-client-ssl" className="text-sm">SSL</Label>
         </div>
         {showApiKey && (
           <div className="space-y-2">
-            <Label htmlFor="dc-apikey">{t("settings.apiKey")}</Label>
+            <Label htmlFor="setup-download-client-api-key">{t("settings.apiKey")}</Label>
             <Input
-              id="dc-apikey"
+              id="setup-download-client-api-key"
               type="password"
               value={draft.apiKey}
               onChange={(e) => onDraftChange({ apiKey: e.target.value })}
@@ -215,23 +215,23 @@ export function SetupDownloadClientView({
         {showCredentials && (
           <>
             <div className="space-y-2">
-              <Label htmlFor="dc-username">
+              <Label htmlFor="setup-download-client-username">
                 {t("settings.username")}
                 {showSabAlternativeAuth ? " (optional)" : ""}
               </Label>
               <Input
-                id="dc-username"
+                id="setup-download-client-username"
                 value={draft.username}
                 onChange={(e) => onDraftChange({ username: e.target.value })}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="dc-password">
+              <Label htmlFor="setup-download-client-password">
                 {t("settings.password")}
                 {showSabAlternativeAuth ? " (optional)" : ""}
               </Label>
               <Input
-                id="dc-password"
+                id="setup-download-client-password"
                 type="password"
                 value={draft.password}
                 onChange={(e) => onDraftChange({ password: e.target.value })}
@@ -250,13 +250,17 @@ export function SetupDownloadClientView({
           </p>
         ) : null}
         <details
+          id="setup-download-client-filesystem-path-mapping"
           className="rounded-xl border border-border bg-card p-3"
           open={isFilesystemPathMappingOpen}
           onToggle={(event) =>
             setIsFilesystemPathMappingOpen(event.currentTarget.open)
           }
         >
-          <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+          <summary
+            id="setup-download-client-filesystem-path-mapping-toggle"
+            className="cursor-pointer select-none text-sm font-medium text-card-foreground"
+          >
             {t("settings.downloadClientFilesystemPathMapping")}
           </summary>
           <div className="mt-3 space-y-3">
@@ -277,6 +281,7 @@ export function SetupDownloadClientView({
         </details>
         <div className="flex items-center gap-3">
           <Button
+            id="setup-download-client-test-connection"
             variant="outline"
             onClick={onTestConnection}
             disabled={!canTest || testing || saving}
@@ -297,20 +302,20 @@ export function SetupDownloadClientView({
             </span>
           )}
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && <p id="setup-download-client-error" className="text-sm text-destructive">{error}</p>}
         {saved && (
-          <p className="text-sm text-emerald-500">{t("setup.saved")}</p>
+          <p id="setup-download-client-saved" className="text-sm text-emerald-500">{t("setup.saved")}</p>
         )}
       </div>
       <div className="flex items-center justify-between pt-2">
-        <Button variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <Button id="setup-download-client-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <button id="setup-download-client-skip" type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
               {t("setup.skip")}
             </button>
           )}
-          <Button onClick={onNext} disabled={!canProceed || saving}>
+          <Button id="setup-download-client-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
           </Button>
         </div>

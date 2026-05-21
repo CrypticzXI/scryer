@@ -55,14 +55,14 @@ export function SetupMediaPathsView({
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div id="setup-media-paths-view" className="flex flex-col gap-6">
       <div className="text-center">
         <h2 className="text-xl font-semibold">{t("setup.mediaPathsTitle")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t("setup.mediaPathsDescription")}</p>
       </div>
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
-          <Label htmlFor="movies-path">
+          <Label htmlFor="setup-media-paths-movies-path">
             {t("setup.moviesPath")}
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
@@ -70,12 +70,13 @@ export function SetupMediaPathsView({
           </Label>
           <div className="flex gap-2">
             <Input
-              id="movies-path"
+              id="setup-media-paths-movies-path"
               value={moviesPath}
               onChange={(e) => onMoviesPathChange(e.target.value)}
               placeholder="/data/movies"
             />
             <Button
+              id="setup-media-paths-movies-browse"
               type="button"
               variant="outline"
               size="icon"
@@ -87,7 +88,7 @@ export function SetupMediaPathsView({
           </div>
         </div>
         <div className="space-y-2">
-          <Label htmlFor="series-path">
+          <Label htmlFor="setup-media-paths-series-path">
             {t("setup.seriesPath")}
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
@@ -95,12 +96,13 @@ export function SetupMediaPathsView({
           </Label>
           <div className="flex gap-2">
             <Input
-              id="series-path"
+              id="setup-media-paths-series-path"
               value={seriesPath}
               onChange={(e) => onSeriesPathChange(e.target.value)}
               placeholder="/data/series"
             />
             <Button
+              id="setup-media-paths-series-browse"
               type="button"
               variant="outline"
               size="icon"
@@ -112,7 +114,7 @@ export function SetupMediaPathsView({
           </div>
         </div>
         <div className="space-y-2">
-          <Label htmlFor="anime-path">
+          <Label htmlFor="setup-media-paths-anime-path">
             {t("setup.animePath")}
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
@@ -120,12 +122,13 @@ export function SetupMediaPathsView({
           </Label>
           <div className="flex gap-2">
             <Input
-              id="anime-path"
+              id="setup-media-paths-anime-path"
               value={animePath}
               onChange={(e) => onAnimePathChange(e.target.value)}
               placeholder="/data/anime"
             />
             <Button
+              id="setup-media-paths-anime-browse"
               type="button"
               variant="outline"
               size="icon"
@@ -137,20 +140,20 @@ export function SetupMediaPathsView({
           </div>
         </div>
         {error && (
-          <p data-ui="setup-media-paths-error" className="text-sm text-destructive">
+          <p id="setup-media-paths-error" data-ui="setup-media-paths-error" className="text-sm text-destructive">
             {error}
           </p>
         )}
       </div>
       <div className="flex items-center justify-between pt-2">
-        <Button variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <Button id="setup-media-paths-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <button id="setup-media-paths-skip" type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
               {t("setup.skip")}
             </button>
           )}
-          <Button onClick={onNext} disabled={!canProceed || saving}>
+          <Button id="setup-media-paths-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
           </Button>
         </div>

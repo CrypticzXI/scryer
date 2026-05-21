@@ -5,6 +5,7 @@ import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
 import type { ConfigFieldDef } from "@/lib/types";
 import type { ExternalImportPreview } from "@/lib/types/external-import";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 
 import {
   externalImportDownloadClientNeedsUserSuppliedApiKey,
@@ -132,7 +133,7 @@ export function SetupImportReviewView({
   };
 
   return (
-    <div className="w-full space-y-6">
+    <div id="setup-import-review-view" className="w-full space-y-6">
       <div className="text-center">
         <h2 className="mb-2 text-xl font-semibold">{t("setup.reviewTitle")}</h2>
         <p className="text-sm text-muted-foreground">{t("setup.reviewDescription")}</p>
@@ -241,6 +242,10 @@ export function SetupImportReviewView({
                   <div className="mb-1 ml-8 space-y-1">
                     <p className="text-xs text-muted-foreground">{t("setup.apiKeyMasked")}</p>
                     <input
+                      id={selectorId(
+                        "setup-import-download-client-api-key",
+                        dc.dedupKey,
+                      )}
                       type="password"
                       value={dcApiKeyOverrides.get(dc.dedupKey) ?? ""}
                       onChange={(e) => onSetDcApiKey(dc.dedupKey, e.target.value)}
@@ -339,6 +344,10 @@ export function SetupImportReviewView({
                       {isProwlarr ? t("setup.prowlarrApiKeyMasked") : t("setup.apiKeyMasked")}
                     </p>
                     <input
+                      id={selectorId(
+                        "setup-import-indexer-api-key",
+                        idx.dedupKey,
+                      )}
                       type="password"
                       value={idxApiKeyOverrides.get(idx.dedupKey) ?? ""}
                       onChange={(e) => onSetIdxApiKey(idx.dedupKey, e.target.value)}
@@ -380,11 +389,20 @@ export function SetupImportReviewView({
       ) : null}
 
       <div className="flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack} disabled={importing}>
+        <Button
+          id="setup-import-review-back"
+          variant="ghost"
+          onClick={onBack}
+          disabled={importing}
+        >
           <ArrowLeft className="mr-2 h-4 w-4" />
           {t("setup.back")}
         </Button>
-        <Button onClick={onImport} disabled={!hasAnySelection || importing}>
+        <Button
+          id="setup-import-review-import"
+          onClick={onImport}
+          disabled={!hasAnySelection || importing}
+        >
           {importing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
           {importing ? t("setup.importing") : t("setup.importSelected")}
         </Button>

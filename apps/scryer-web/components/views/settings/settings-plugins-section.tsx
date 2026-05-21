@@ -20,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,
@@ -315,7 +316,10 @@ function PluginTable({
 
   return (
     <div className="overflow-hidden rounded-xl border border-border/70 bg-card/20">
-      <Table className="table-fixed">
+      <Table
+        id={showActions === "installed" ? "settings-plugins-installed-table" : "settings-plugins-available-table"}
+        className="table-fixed"
+      >
         <TableHeader>
           <TableRow>
             <TableHead className={nameColumnClass}>{t("label.name")}</TableHead>
@@ -348,7 +352,10 @@ function PluginTable({
                 : plugin.version;
             const blockedLabel = blockedReasonLabel(plugin, t);
             return (
-              <TableRow key={plugin.id}>
+              <TableRow
+                key={plugin.id}
+                id={selectorId("settings-plugin-row", plugin.name)}
+              >
                 <TableCell className={nameColumnClass}>
                   <div>
                     <div className="font-medium">{plugin.name}</div>
@@ -444,6 +451,7 @@ function PluginTable({
                     <div className="ml-auto flex min-w-0 flex-col items-end gap-2 w-28">
                       <div className="flex w-full items-center justify-end gap-1">
                         <PluginActionButton
+                          id={selectorId("settings-plugin-toggle", plugin.name)}
                           tone={plugin.isEnabled ? "disabled" : "enabled"}
                           disabled={isBusy}
                           onClick={() => onTogglePlugin(plugin)}
@@ -457,6 +465,7 @@ function PluginTable({
                         </PluginActionButton>
                         {plugin.updateAvailable && (
                           <PluginActionButton
+                            id={selectorId("settings-plugin-upgrade", plugin.name)}
                             tone="upgrade"
                             disabled={isBusy || upgradeBlocked}
                             onClick={() => onUpgradePlugin(plugin)}
@@ -471,6 +480,7 @@ function PluginTable({
                         )}
                         {canUninstallPlugin(plugin) && (
                           <PluginActionButton
+                            id={selectorId("settings-plugin-uninstall", plugin.name)}
                             tone="delete"
                             disabled={isBusy}
                             onClick={() => onUninstallPlugin(plugin)}
@@ -486,6 +496,7 @@ function PluginTable({
                             {pluginProgressLabel(runningProgress, t)}
                           </div>
                           <Progress
+                            id={selectorId("settings-plugin-progress", plugin.name)}
                             value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
                             className="h-1.5"
                           />
@@ -509,6 +520,7 @@ function PluginTable({
                       </div>
                       <div className="flex justify-end">
                         <PluginActionButton
+                          id={selectorId("settings-plugin-install", plugin.name)}
                           tone="install"
                           disabled={isBusy || installBlocked || installIsBlocked(plugin)}
                           onClick={() => onInstallPlugin(plugin)}

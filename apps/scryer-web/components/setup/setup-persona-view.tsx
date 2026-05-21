@@ -42,7 +42,7 @@ export function SetupPersonaView({
   saving,
 }: SetupPersonaViewProps) {
   return (
-    <div className="flex flex-col gap-6">
+    <div id="setup-persona-view" className="flex flex-col gap-6">
       <div className="text-center">
         <h2 className="text-xl font-semibold">{t("setup.personaTitle")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -133,16 +133,21 @@ export function SetupPersonaView({
       </div>
 
       <div className="flex items-center justify-between pt-2">
-        <Button variant="ghost" onClick={onBack}>
+        <Button id="setup-persona-back" variant="ghost" onClick={onBack}>
           {t("setup.back")}
         </Button>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <button
+              id="setup-persona-skip"
+              type="button"
+              onClick={onSkip}
+              className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+            >
               {t("setup.skip")}
             </button>
           )}
-          <Button onClick={onNext} disabled={saving}>
+          <Button id="setup-persona-next" onClick={onNext} disabled={saving}>
             {saving ? t("label.saving") : t("setup.next")}
           </Button>
         </div>

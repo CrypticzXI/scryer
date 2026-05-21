@@ -61,10 +61,14 @@ function CommandDialog({
 
 function CommandInput({
   className,
+  wrapperId,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+}: React.ComponentProps<typeof CommandPrimitive.Input> & {
+  wrapperId?: string
+}) {
   return (
     <div
+      id={wrapperId}
       data-slot="command-input-wrapper"
       className="flex h-9 items-center gap-2 border-b px-3"
     >

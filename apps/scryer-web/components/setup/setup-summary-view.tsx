@@ -217,11 +217,12 @@ export function SetupSummaryView({
           </CardContent>
         </Card>
       ) : null}
-      <div className="flex justify-between pt-2">
-        <Button variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+      <div id="setup-summary-view" className="flex justify-between pt-2">
+        <Button id="setup-summary-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
         {isImportPath && onImportOnly && onImportAndScan ? (
           <div className="flex items-center gap-2">
             <Button
+              id="setup-summary-import-only"
               variant="outline"
               onClick={onImportOnly}
               disabled={finishing}
@@ -230,14 +231,14 @@ export function SetupSummaryView({
                 ? t("setup.importing")
                 : t("setup.importOnly")}
             </Button>
-            <Button onClick={onImportAndScan} disabled={finishing}>
+            <Button id="setup-summary-import-and-scan" onClick={onImportAndScan} disabled={finishing}>
               {finishingAction === "importAndScan"
                 ? t("setup.importing")
                 : t("setup.importAndScan")}
             </Button>
           </div>
         ) : (
-          <Button onClick={onFinish} disabled={finishing}>
+          <Button id="setup-summary-finish" onClick={onFinish} disabled={finishing}>
             {finishing ? t("label.saving") : t("setup.finish")}
           </Button>
         )}

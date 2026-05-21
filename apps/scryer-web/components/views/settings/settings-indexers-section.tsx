@@ -29,6 +29,7 @@ import type {
   ProviderTypeInfo,
   ConfigFieldDef,
 } from "@/lib/types";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,
@@ -228,6 +229,7 @@ function DynamicConfigField({
   onChange: (key: string, value: string) => void;
 }) {
   const t = useTranslate();
+  const fieldId = selectorId("settings-indexer-field", field.key);
   const requiredMarker = field.required ? (
     <span aria-hidden="true" className="text-destructive">
       *
@@ -238,6 +240,7 @@ function DynamicConfigField({
     return (
       <label className="flex items-center gap-2">
         <input
+          id={fieldId}
           type="checkbox"
           checked={value === "true"}
           onChange={(e) =>
@@ -261,7 +264,7 @@ function DynamicConfigField({
   if (field.fieldType === "select" && field.options.length > 0) {
     return (
       <label>
-        <Label className="mb-2 inline-flex items-center gap-2">
+        <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
           {field.label}
           {requiredMarker}
         </Label>
@@ -269,7 +272,7 @@ function DynamicConfigField({
           value={value || field.defaultValue || ""}
           onValueChange={(v) => onChange(field.key, v)}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger id={fieldId} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -290,11 +293,12 @@ function DynamicConfigField({
   if (field.fieldType === "multiline") {
     return (
       <label>
-        <Label className="mb-2 inline-flex items-center gap-2">
+        <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
           {field.label}
           {requiredMarker}
         </Label>
         <Textarea
+          id={fieldId}
           value={value}
           onChange={(e) => onChange(field.key, e.target.value)}
           required={field.required && !hasStoredSecretValue}
@@ -310,11 +314,12 @@ function DynamicConfigField({
 
   return (
     <label>
-      <Label className="mb-2 inline-flex items-center gap-2">
+      <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
         {field.label}
         {requiredMarker}
       </Label>
       <Input
+        id={fieldId}
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}
         {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
@@ -467,18 +472,19 @@ export function SettingsIndexersSection({
   );
 
   return (
-    <div className="space-y-4 text-sm">
+    <div id="settings-indexers-section" className="space-y-4 text-sm">
       <CardTitle className="flex items-center gap-2 text-base">
         <MonitorCog className="h-4 w-4" />
         {t("settings.indexerProviderSection")}
       </CardTitle>
 
-      <div className="rounded border border-border">
+      <div id="settings-indexers-table-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">
             {t("settings.existingIndexers")}
           </CardTitle>
           <Input
+            id="settings-indexers-filter"
             value={settingsIndexerFilter}
             onChange={(event) => setSettingsIndexerFilter(event.target.value)}
             placeholder={t("settings.indexerFilterPlaceholder")}
@@ -486,7 +492,7 @@ export function SettingsIndexersSection({
           />
         </div>
         <div className="overflow-x-auto">
-          <Table>
+          <Table id="settings-indexers-table">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("label.name")}</TableHead>
@@ -516,6 +522,7 @@ export function SettingsIndexersSection({
                 return (
                 <TableRow
                   key={indexer.id}
+                  id={selectorId("settings-indexer-row", indexer.name)}
                   className={indexer.isManaged ? "bg-muted/25" : undefined}
                 >
                   <TableCell>
@@ -600,6 +607,7 @@ export function SettingsIndexersSection({
                         <>
                           {indexer.supportsManagedChildrenSync ? (
                             <IndexerActionButton
+                              id={selectorId("settings-indexer-sync", indexer.name)}
                               tone="search"
                               onClick={() => void syncIndexer(indexer)}
                               disabled={mutatingIndexerId === indexer.id}
@@ -612,6 +620,10 @@ export function SettingsIndexersSection({
                             </IndexerActionButton>
                           ) : null}
                           <IndexerActionButton
+                            id={selectorId(
+                              "settings-indexer-toggle",
+                              indexer.name,
+                            )}
                             tone={indexer.isEnabled ? "disabled" : "enabled"}
                             onClick={() => void toggleIndexerEnabled(indexer)}
                             disabled={mutatingIndexerId === indexer.id}
@@ -628,6 +640,7 @@ export function SettingsIndexersSection({
                             )}
                           </IndexerActionButton>
                           <IndexerActionButton
+                            id={selectorId("settings-indexer-edit", indexer.name)}
                             tone="edit"
                             onClick={() => editIndexer(indexer)}
                             label={t("label.edit")}
@@ -635,6 +648,10 @@ export function SettingsIndexersSection({
                             <Edit className="h-4 w-4" />
                           </IndexerActionButton>
                           <IndexerActionButton
+                            id={selectorId(
+                              "settings-indexer-delete",
+                              indexer.name,
+                            )}
                             tone="delete"
                             onClick={() => void deleteIndexer(indexer)}
                             disabled={mutatingIndexerId === indexer.id}
@@ -676,17 +693,17 @@ export function SettingsIndexersSection({
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <form className="space-y-3" onSubmit={submitIndexer}>
+              <form id="settings-indexer-form" className="space-y-3" onSubmit={submitIndexer}>
             <div className="grid gap-3 md:grid-cols-2">
               <label>
-                <Label className="mb-2 block">
+                <Label className="mb-2 block" htmlFor="settings-indexer-provider-type">
                   {t("form.providerTypePlaceholder")}
                 </Label>
                 <Select
                   value={normalizedProviderType || undefined}
                   onValueChange={handleProviderTypeChange}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger id="settings-indexer-provider-type" className="w-full">
                     <SelectValue
                       placeholder={t("form.providerTypePlaceholder")}
                     />
@@ -701,8 +718,9 @@ export function SettingsIndexersSection({
                 </Select>
               </label>
               <label>
-                <Label className="mb-2 block">{t("label.name")}</Label>
+                <Label className="mb-2 block" htmlFor="settings-indexer-name">{t("label.name")}</Label>
                 <Input
+                  id="settings-indexer-name"
                   value={indexerDraft.name}
                   onChange={(event) =>
                     setIndexerDraft((prev: IndexerDraft) => ({
@@ -772,6 +790,7 @@ export function SettingsIndexersSection({
               <div className="flex items-center gap-6">
                 <label className="flex items-center gap-2">
                   <input
+                    id="settings-indexer-enable-interactive-search"
                     type="checkbox"
                     checked={indexerDraft.enableInteractiveSearch}
                     onChange={(event) =>
@@ -788,6 +807,7 @@ export function SettingsIndexersSection({
                 </label>
                 <label className="flex items-center gap-2">
                   <input
+                    id="settings-indexer-enable-auto-search"
                     type="checkbox"
                     checked={indexerDraft.enableAutoSearch}
                     onChange={(event) =>
@@ -805,7 +825,7 @@ export function SettingsIndexersSection({
               </div>
             )}
             <div className="flex gap-2">
-              <Button type="submit" disabled={mutatingIndexerId === "new"}>
+              <Button id="settings-indexer-save" type="submit" disabled={mutatingIndexerId === "new"}>
                 {mutatingIndexerId === "new"
                   ? t("label.saving")
                   : editingIndexerId
@@ -813,6 +833,7 @@ export function SettingsIndexersSection({
                     : t("settings.indexerCreate")}
               </Button>
               <Button
+                id="settings-indexer-test-connection"
                 type="button"
                 variant="outline"
                 onClick={() => void testIndexerConnection()}
@@ -823,6 +844,7 @@ export function SettingsIndexersSection({
                   : t("label.testConnection")}
               </Button>
               <Button
+                id="settings-indexer-cancel"
                 type="button"
                 variant="outline"
                 onClick={resetIndexerDraft}
@@ -836,6 +858,7 @@ export function SettingsIndexersSection({
           {isEditing ? (
             <div className="flex justify-center">
               <Button
+                id="settings-indexer-create"
                 type="button"
                 size="lg"
                 onClick={startCreateIndexer}
@@ -851,6 +874,7 @@ export function SettingsIndexersSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-indexer-create"
             type="button"
             size="lg"
             onClick={startCreateIndexer}

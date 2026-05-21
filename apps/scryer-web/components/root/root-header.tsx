@@ -28,6 +28,7 @@ import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { useSearchContext } from "@/lib/context/search-context";
 import { cn } from "@/lib/utils";
 import { buildViewPath } from "@/lib/utils/routing";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
 
 
@@ -298,6 +299,7 @@ export const RootHeader = React.memo(function RootHeader({
         const posterUrl = selectPosterVariantUrl(title.posterUrl, "w70");
         return (
           <button
+            id={selectorId("global-search-catalog-result", facet, title.name)}
             key={title.id}
             type="button"
             onClick={() => {
@@ -410,6 +412,7 @@ export const RootHeader = React.memo(function RootHeader({
         const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
         return (
           <div
+            id={selectorId("global-search-metadata-result", facet, result.name)}
             key={`${facet}-${result.tvdbId}-${result.name}`}
             className="rounded-lg border border-border bg-card/60 p-3"
           >
@@ -443,6 +446,7 @@ export const RootHeader = React.memo(function RootHeader({
               </div>
               <div className="flex items-center self-center">
                 <Button
+                  id={selectorId("global-search-configure-add", facet, result.name)}
                   type="button"
                   variant={isInCatalog ? "secondary" : "default"}
                   className={
@@ -500,6 +504,7 @@ export const RootHeader = React.memo(function RootHeader({
             <div ref={searchShellRef} className="relative flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground sm:h-7 sm:w-7" />
               <Input
+                id="global-search-input"
                 ref={globalSearchInputRef}
                 value={globalSearch}
                 onChange={handleSearchChange}
@@ -515,6 +520,7 @@ export const RootHeader = React.memo(function RootHeader({
               />
               {globalSearch && !isMobile ? (
                 <button
+                  id="global-search-clear"
                   type="button"
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition hover:text-foreground"
                   onMouseDown={handleClearSearch}
@@ -526,18 +532,23 @@ export const RootHeader = React.memo(function RootHeader({
               {isGlobalSearchPanelOpen && !isMobile ? (
                 <div
                   ref={searchPanelRef}
+                  id="global-search-panel"
                   data-slot="global-search-panel"
                   className="absolute left-0 top-full z-30 mt-2 w-full max-h-[65vh] overflow-y-auto rounded-xl border border-border bg-card p-4 shadow-lg"
                 >
                 {showSectionResults ? (
                   <div className="space-y-4">
-                    <section className="space-y-2">
+                    <section id="global-search-catalog-section" className="space-y-2">
                       <h3 className="text-sm font-semibold text-foreground">{t("search.catalog")}</h3>
                       <div className="grid gap-4 md:grid-cols-3">
                         {FACET_REGISTRY.map((f) => {
                           const items = catalogSearchSections[f.id] ?? [];
                           return (
-                            <div key={f.id} className="space-y-2">
+                            <div
+                              key={f.id}
+                              id={selectorId("global-search-catalog-section", f.id)}
+                              className="space-y-2"
+                            >
                               <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                                 {sectionLabelForFacet(t, f.id)}
                               </h4>
@@ -559,7 +570,11 @@ export const RootHeader = React.memo(function RootHeader({
                         {FACET_REGISTRY.map((f) => {
                           const items = metadataSearchResults[f.metadataKey] ?? [];
                           return (
-                            <section key={f.id} className="space-y-2">
+                            <section
+                              key={f.id}
+                              id={selectorId("global-search-metadata-section", f.id)}
+                              className="space-y-2"
+                            >
                               <h3 className="text-sm font-semibold text-foreground">
                                 {sectionLabelForFacet(t, f.id)}
                               </h3>
@@ -593,6 +608,7 @@ export const RootHeader = React.memo(function RootHeader({
             <Popover open={accountMenuOpen} onOpenChange={setAccountMenuOpen}>
               <PopoverTrigger asChild>
                 <Button
+                  id="account-menu-trigger"
                   type="button"
                   variant="ghost"
                   className="h-11 shrink-0 gap-1.5 rounded-lg px-2.5 text-foreground transition hover:bg-accent/80 sm:h-10"
@@ -618,6 +634,7 @@ export const RootHeader = React.memo(function RootHeader({
                 </div>
                 <div className="space-y-1 pt-2">
                   <Button
+                    id="account-menu-profile"
                     type="button"
                     variant="ghost"
                     className="h-11 w-full justify-start px-3 text-sm"
@@ -628,6 +645,7 @@ export const RootHeader = React.memo(function RootHeader({
                   </Button>
                   {token && effectiveFormLoginEnabled !== false ? (
                     <Button
+                      id="account-menu-logout"
                       type="button"
                       variant="ghost"
                       className="h-11 w-full justify-start px-3 text-sm text-destructive hover:text-destructive"

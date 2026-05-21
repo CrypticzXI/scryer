@@ -337,11 +337,18 @@ export function DownloadClientRemotePathMappingsField({
             const rowErrors = validation.rowErrors[index] ?? {};
             const remoteInputId = `${fieldKey}-remote-${index}`;
             const localInputId = `${fieldKey}-local-${index}`;
+            const rowId = `${fieldKey}-row-${index}`;
+            const browseButtonId = `${fieldKey}-browse-${index}`;
+            const removeButtonId = `${fieldKey}-remove-${index}`;
             const hasRemoteError = rowErrors.remotePath != null;
             const hasLocalError = rowErrors.localPath != null;
 
             return (
-              <div key={`${remoteInputId}-${localInputId}`} className="space-y-2">
+              <div
+                key={`${remoteInputId}-${localInputId}`}
+                id={rowId}
+                className="space-y-2"
+              >
                 <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                   <div className="space-y-1">
                     <Label htmlFor={remoteInputId} className="text-xs font-medium md:sr-only">
@@ -384,6 +391,7 @@ export function DownloadClientRemotePathMappingsField({
                         className="pr-10 font-mono text-sm"
                       />
                       <Button
+                        id={browseButtonId}
                         type="button"
                         variant="ghost"
                         size="icon-sm"
@@ -402,6 +410,7 @@ export function DownloadClientRemotePathMappingsField({
 
                   <div className="flex items-start justify-end pt-5 md:pt-0">
                     <Button
+                      id={removeButtonId}
                       type="button"
                       variant="ghost"
                       size="icon-sm"

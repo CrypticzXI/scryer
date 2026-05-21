@@ -4,6 +4,7 @@ import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { type ConfigFieldDef, visibleIndexerConfigFields } from "@/lib/types";
 
 interface ProviderOption {
@@ -59,6 +60,7 @@ function DynamicConfigField({
   value: string;
   onChange: (key: string, value: string) => void;
 }) {
+  const fieldId = selectorId("setup-indexer-field", field.key);
   const requiredMarker = field.required ? (
     <span aria-hidden="true" className="text-destructive">
       *
@@ -69,6 +71,7 @@ function DynamicConfigField({
     return (
       <label className="flex items-center gap-2">
         <input
+          id={fieldId}
           type="checkbox"
           checked={value === "true"}
           onChange={(event) =>
@@ -92,7 +95,7 @@ function DynamicConfigField({
   if (field.fieldType === "select" && field.options.length > 0) {
     return (
       <label className="space-y-2">
-        <Label className="inline-flex items-center gap-2">
+        <Label className="inline-flex items-center gap-2" htmlFor={fieldId}>
           {field.label}
           {requiredMarker}
         </Label>
@@ -100,7 +103,7 @@ function DynamicConfigField({
           value={value || field.defaultValue || ""}
           onValueChange={(nextValue) => onChange(field.key, nextValue)}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger id={fieldId} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -121,11 +124,12 @@ function DynamicConfigField({
   if (field.fieldType === "multiline") {
     return (
       <label className="space-y-2">
-        <Label className="inline-flex items-center gap-2">
+        <Label className="inline-flex items-center gap-2" htmlFor={fieldId}>
           {field.label}
           {requiredMarker}
         </Label>
         <Textarea
+          id={fieldId}
           value={value}
           onChange={(event) => onChange(field.key, event.target.value)}
           required={field.required}
@@ -141,11 +145,12 @@ function DynamicConfigField({
 
   return (
     <label className="space-y-2">
-      <Label className="inline-flex items-center gap-2">
+      <Label className="inline-flex items-center gap-2" htmlFor={fieldId}>
         {field.label}
         {requiredMarker}
       </Label>
       <Input
+        id={fieldId}
         value={value}
         onChange={(event) => onChange(field.key, event.target.value)}
         {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
@@ -204,25 +209,25 @@ export function SetupIndexerView({
   const canProceed = saved;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div id="setup-indexer-view" className="flex flex-col gap-6">
       <div className="text-center">
         <h2 className="text-xl font-semibold">{t("setup.indexerTitle")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t("setup.indexerDescription")}</p>
       </div>
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
-          <Label htmlFor="idx-name">{t("label.name")}</Label>
+          <Label htmlFor="setup-indexer-name">{t("label.name")}</Label>
           <Input
-            id="idx-name"
+            id="setup-indexer-name"
             value={name}
             onChange={(e) => onNameChange(e.target.value)}
             placeholder="My Indexer"
           />
         </div>
         <div className="space-y-2">
-          <Label>{t("settings.indexerProvider")}</Label>
+          <Label htmlFor="setup-indexer-provider">{t("settings.indexerProvider")}</Label>
           <Select value={providerType} onValueChange={onProviderTypeChange}>
-            <SelectTrigger><SelectValue placeholder="Select provider" /></SelectTrigger>
+            <SelectTrigger id="setup-indexer-provider"><SelectValue placeholder="Select provider" /></SelectTrigger>
             <SelectContent>
               {providerOptions.map((opt) => (
                 <SelectItem key={opt.value} value={opt.value}>
@@ -268,6 +273,7 @@ export function SetupIndexerView({
         ) : null}
         <div className="flex items-center gap-3">
           <Button
+            id="setup-indexer-test-connection"
             variant="outline"
             onClick={onTestConnection}
             disabled={!canTest || testing || saving}
@@ -288,20 +294,20 @@ export function SetupIndexerView({
             </span>
           )}
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && <p id="setup-indexer-error" className="text-sm text-destructive">{error}</p>}
         {saved && (
-          <p className="text-sm text-emerald-500">{t("setup.saved")}</p>
+          <p id="setup-indexer-saved" className="text-sm text-emerald-500">{t("setup.saved")}</p>
         )}
       </div>
       <div className="flex items-center justify-between pt-2">
-        <Button variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <Button id="setup-indexer-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <button id="setup-indexer-skip" type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
               {t("setup.skip")}
             </button>
           )}
-          <Button onClick={onNext} disabled={!canProceed || saving}>
+          <Button id="setup-indexer-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
           </Button>
         </div>

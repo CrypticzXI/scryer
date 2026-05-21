@@ -186,7 +186,7 @@ export function AddToCatalogDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent id="add-to-catalog-dialog" className="sm:max-w-md">
         <DialogHeader>
           <div className="flex gap-3">
             <div className="h-20 w-14 flex-none overflow-hidden rounded-md border border-border bg-muted">
@@ -227,7 +227,7 @@ export function AddToCatalogDialog({
                 onValueChange={(v) => update({ libraryId: v, rootFolder: undefined })}
                 disabled={isSubmitting || libraries.length === 1}
               >
-                <SelectTrigger className="h-9 w-full">
+                <SelectTrigger id="add-to-catalog-library" className="h-9 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -251,7 +251,7 @@ export function AddToCatalogDialog({
               onValueChange={(v) => update({ qualityProfileId: v })}
               disabled={isSubmitting || catalogQualityProfileOptions.length === 0}
             >
-              <SelectTrigger className="h-9 w-full">
+              <SelectTrigger id="add-to-catalog-quality-profile" className="h-9 w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -286,7 +286,7 @@ export function AddToCatalogDialog({
                 onValueChange={(v) => update({ rootFolder: v })}
                 disabled={isSubmitting}
               >
-                <SelectTrigger className="h-9 w-full">
+                <SelectTrigger id="add-to-catalog-root-folder" className="h-9 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -311,7 +311,7 @@ export function AddToCatalogDialog({
                 onValueChange={(v) => update({ seasonFolder: v === "enabled" })}
                 disabled={isSubmitting}
               >
-                <SelectTrigger className="h-9 w-full">
+                <SelectTrigger id="add-to-catalog-season-folder" className="h-9 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -326,6 +326,7 @@ export function AddToCatalogDialog({
           {facet === "movie" ? (
             <label className="flex items-center gap-2 sm:col-span-2">
               <Checkbox
+                id="add-to-catalog-monitored"
                 checked={draft.monitorType === "monitored"}
                 onCheckedChange={(v) =>
                   update({ monitorType: v === true ? "monitored" : "unmonitored" })
@@ -349,7 +350,7 @@ export function AddToCatalogDialog({
                 }
                 disabled={isSubmitting}
               >
-                <SelectTrigger className="h-9 w-full">
+                <SelectTrigger id="add-to-catalog-monitor-type" className="h-9 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -366,6 +367,7 @@ export function AddToCatalogDialog({
 
         <DialogFooter>
           <Button
+            id="add-to-catalog-cancel"
             type="button"
             variant="outline"
             onClick={() => onOpenChange(false)}
@@ -374,6 +376,7 @@ export function AddToCatalogDialog({
             {t("label.cancel")}
           </Button>
           <Button
+            id="add-to-catalog-submit"
             type="button"
             onClick={() => void handleSubmit()}
             disabled={isSubmitting || !qualityProfileValue || (libraryRequired && !selectedLibrary)}

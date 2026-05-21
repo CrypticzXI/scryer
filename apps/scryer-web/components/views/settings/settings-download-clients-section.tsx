@@ -26,6 +26,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import type { DownloadClientRecord, DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
@@ -424,15 +425,15 @@ export function SettingsDownloadClientsSection({
   );
 
   return (
-    <div className="space-y-4 text-sm">
+    <div id="settings-download-clients-section" className="space-y-4 text-sm">
       <CardTitle className="flex items-center gap-2 text-base">
         <Server className="h-4 w-4" />
         {t("settings.downloadClientSection")}
       </CardTitle>
 
-      <div className="rounded border border-border">
+      <div id="settings-download-clients-table-card" className="rounded border border-border">
         <div className="overflow-x-auto">
-          <Table>
+          <Table id="settings-download-clients-table">
             <TableHeader>
                 <TableRow>
                   <TableHead>{t("settings.downloadClientPriority")}</TableHead>
@@ -449,11 +450,15 @@ export function SettingsDownloadClientsSection({
             <TableBody>
               {orderedClients.map((client, index) => {
                 return (
-                  <TableRow key={client.id}>
+                  <TableRow
+                    key={client.id}
+                    id={selectorId("settings-download-client-row", client.name)}
+                  >
                   <TableCell>
                     <div className="flex items-center gap-1">
                       <span className="w-4 text-center text-muted-foreground">{index + 1}</span>
                       <Button
+                        id={selectorId("settings-download-client-move-up", client.name)}
                         variant="ghost"
                         size="sm"
                         type="button"
@@ -465,6 +470,7 @@ export function SettingsDownloadClientsSection({
                         <ChevronUp className="h-4 w-4" />
                       </Button>
                       <Button
+                        id={selectorId("settings-download-client-move-down", client.name)}
                         variant="ghost"
                         size="sm"
                         type="button"
@@ -497,6 +503,7 @@ export function SettingsDownloadClientsSection({
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
                       <DownloadClientActionButton
+                        id={selectorId("settings-download-client-toggle", client.name)}
                         tone={client.isEnabled ? "disabled" : "enabled"}
                         onClick={() => void toggleDownloadClientEnabled(client)}
                         disabled={mutatingDownloadClientId === client.id}
@@ -509,6 +516,7 @@ export function SettingsDownloadClientsSection({
                         )}
                       </DownloadClientActionButton>
                       <DownloadClientActionButton
+                        id={selectorId("settings-download-client-edit", client.name)}
                         tone="edit"
                         onClick={() => editDownloadClient(client)}
                         label={t("label.edit")}
@@ -516,6 +524,7 @@ export function SettingsDownloadClientsSection({
                         <Edit className="h-4 w-4" />
                       </DownloadClientActionButton>
                       <DownloadClientActionButton
+                        id={selectorId("settings-download-client-delete", client.name)}
                         tone="delete"
                         onClick={() => void deleteDownloadClient(client)}
                         disabled={mutatingDownloadClientId === client.id}
@@ -544,7 +553,7 @@ export function SettingsDownloadClientsSection({
         <>
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">
+              <CardTitle id="settings-download-client-editor" className="text-base">
                 {editingDownloadClientId
                   ? t("settings.downloadClientUpdate")
                   : t("settings.downloadClientCreate")}
@@ -859,7 +868,12 @@ export function SettingsDownloadClientsSection({
                   ? t("status.testingDownloadClient", { client: selectedDownloadClientLabel })
                   : t("label.testConnection")}
               </Button>
-              <Button type="button" variant="outline" onClick={resetDownloadClientDraft}>
+              <Button
+                id="settings-download-client-cancel"
+                type="button"
+                variant="outline"
+                onClick={resetDownloadClientDraft}
+              >
                 {t("label.cancel")}
               </Button>
             </div>

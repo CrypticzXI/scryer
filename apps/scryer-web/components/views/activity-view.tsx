@@ -58,6 +58,7 @@ import type {
 import type { ActivitySection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { cn } from "@/lib/utils";
 import {
   buildQueueStatusDetail,
@@ -1181,6 +1182,10 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       {items.map((queueItem) => {
         const rowId = downloadQueueItemIdentityKey(queueItem);
         const row = deriveQueueRowPresentation(queueItem, t);
+        const rowSelectorKey = selectorId(
+          row.displayTitle || row.releaseTitle || rowId,
+          queueItem.clientName || queueItem.clientType,
+        );
         const isActionLoading = actionLoadingId === rowId;
         const isRowBusy =
           rowActionBusy[rowId] ?? rowActionBusyRef.current[rowId] ?? false;
@@ -1199,7 +1204,11 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         const isImportSelected = Boolean(selectedImportItemKeys[rowId]);
 
         return (
-          <div key={rowId} className="rounded-xl border border-border bg-card/40 p-3">
+          <div
+            key={rowId}
+            id={selectorId("activity", activeTab, "row", rowSelectorKey)}
+            className="rounded-xl border border-border bg-card/40 p-3"
+          >
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 flex-1 items-start gap-3">
                 {activeTab === "import" ? (
@@ -1318,6 +1327,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               )}
               {(row.canInteractiveManualImport || row.canDirectManualImport) && (
                 <Button
+                  id={selectorId("activity", activeTab, "manual-import", rowSelectorKey)}
                   type="button"
                   size="sm"
                   variant="secondary"
@@ -1351,6 +1361,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               )}
               {row.canAssignTitle && (
                 <Button
+                  id={selectorId("activity", activeTab, "assign-title", rowSelectorKey)}
                   type="button"
                   size="sm"
                   variant="secondary"
@@ -1453,6 +1464,10 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       {items.map((queueItem) => {
         const rowId = downloadQueueItemIdentityKey(queueItem);
         const row = deriveQueueRowPresentation(queueItem, t);
+        const rowSelectorKey = selectorId(
+          row.displayTitle || row.releaseTitle || rowId,
+          queueItem.clientName || queueItem.clientType,
+        );
         const isActionLoading = actionLoadingId === rowId;
         const isRowBusy =
           rowActionBusy[rowId] ??
@@ -1473,7 +1488,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
 
         return (
           <Fragment key={rowId}>
-            <TableRow>
+            <TableRow id={selectorId("activity", activeTab, "row", rowSelectorKey)}>
               {activeTab === "import" ? (
                 <TableCell className="w-12 min-w-12 align-middle">
                   <Checkbox
@@ -1589,6 +1604,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   )}
                   {(row.canInteractiveManualImport || row.canDirectManualImport) && (
                     <Button
+                      id={selectorId("activity", activeTab, "manual-import", rowSelectorKey)}
                       type="button"
                       size="sm"
                       variant="secondary"
@@ -1627,6 +1643,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   )}
                   {row.canAssignTitle && (
                     <Button
+                      id={selectorId("activity", activeTab, "assign-title", rowSelectorKey)}
                       type="button"
                       size="sm"
                       variant="secondary"
@@ -1784,7 +1801,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           setBulkDeleteConfirmItems([]);
         }}
       />
-      <Card>
+      <Card id={selectorId("activity-view", activeTab)}>
         <CardContent className="space-y-4">
           {queueError ? (
             <p className="rounded border border-rose-500/40 bg-rose-950/40 p-2 text-sm text-rose-200">
@@ -1841,6 +1858,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
             <Popover open={filterPopoverOpen} onOpenChange={setFilterPopoverOpen}>
               <PopoverTrigger asChild>
                 <Button
+                  id={selectorId("activity", activeTab, "filter-button")}
                   type="button"
                   variant="outline"
                   size="sm"

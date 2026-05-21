@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { LibraryRecord, UserRecord } from "@/lib/types";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 
 type LibraryGrantDrafts = Record<string, string[]>;
 
@@ -222,7 +223,7 @@ export function SettingsUsersSection({
 }: SettingsUsersSectionProps) {
   const t = useTranslate();
   return (
-    <div className="space-y-4 text-sm">
+    <div id="settings-users-section" className="space-y-4 text-sm">
       <CardTitle className="flex items-center gap-2 text-base">
         <User2 className="h-4 w-4" />
         {t("settings.knownUsers")}
@@ -233,7 +234,7 @@ export function SettingsUsersSection({
           <CardTitle className="text-base">{t("settings.createUser")}</CardTitle>
         </CardHeader>
         <CardContent>
-          <form className="space-y-4" onSubmit={createUser}>
+          <form id="settings-user-create-form" className="space-y-4" onSubmit={createUser}>
             <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <Label htmlFor="settings-user-username" className="mb-2 block">
@@ -283,7 +284,7 @@ export function SettingsUsersSection({
                 ))}
               </div>
             </div>
-            <Button type="submit" className="min-w-40">
+            <Button id="settings-user-create" type="submit" className="min-w-40">
               {t("settings.createUser")}
             </Button>
           </form>
@@ -294,7 +295,7 @@ export function SettingsUsersSection({
         <div className="border-b border-border px-3 py-2">
           <CardTitle className="text-base">{t("settings.knownUsers")}</CardTitle>
         </div>
-        <Table>
+        <Table id="settings-users-table">
           <TableHeader>
             <TableRow>
               <TableHead className="min-w-40">{t("settings.username")}</TableHead>
@@ -323,7 +324,7 @@ export function SettingsUsersSection({
                     ]),
                   );
                 return (
-                  <TableRow key={user.id}>
+                  <TableRow key={user.id} id={selectorId("settings-user-row", user.username)}>
                     <TableCell className="align-top">
                       <div className="text-lg font-semibold text-foreground">{user.username}</div>
                     </TableCell>
@@ -377,6 +378,7 @@ export function SettingsUsersSection({
                           aria-label={t("settings.newPassword")}
                         />
                         <Button
+                          id={selectorId("settings-user-update-password", user.username)}
                           variant="primary"
                           size="sm"
                           className="min-w-44"
@@ -391,6 +393,7 @@ export function SettingsUsersSection({
                     <TableCell className="align-middle text-right">
                       <div className="flex justify-end gap-2">
                         <Button
+                          id={selectorId("settings-user-delete", user.username)}
                           variant="destructive"
                           size="sm"
                           onClick={() => void deleteUser(user)}

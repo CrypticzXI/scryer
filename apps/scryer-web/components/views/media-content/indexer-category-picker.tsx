@@ -157,6 +157,8 @@ type IndexerCategoryPickerProps = {
   value: string[];
   scope: ViewCategoryId;
   disabled: boolean;
+  triggerId?: string;
+  panelId?: string;
   categoriesLabel?: string;
   onChange: (categories: string[]) => void;
 };
@@ -179,6 +181,8 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
   value,
   scope,
   disabled,
+  triggerId,
+  panelId,
   onChange,
   categoriesLabel,
 }: IndexerCategoryPickerProps) {
@@ -286,6 +290,7 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
   const floatingPanel = isOpen && panelPlacement && !disabled
     ? createPortal(
         <div
+          id={panelId}
           ref={floatingPanelRef}
           className="z-50 overflow-y-auto rounded-xl border border-border bg-popover p-2 shadow-lg"
           style={{
@@ -342,6 +347,7 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
   return (
     <div ref={pickerRef} className="relative inline-block w-full">
       <Button
+        id={triggerId}
         type="button"
         variant="secondary"
         className="h-auto w-full justify-between gap-2 border border-input bg-field px-3 py-2 text-sm"

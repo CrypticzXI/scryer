@@ -1,12 +1,21 @@
-name: gha-build-matrix
+name: sccache-warm
 
 on:
   push:
-    tags:
-      - "gha-build-matrix-v*"
+    branches:
+      - main
+    paths:
+      - ".cargo/**"
+      - ".github/workflows/sccache-warm.yml"
+      - ".github/workflows/scryer.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "apps/scryer-web/**"
+      - "crates/**"
+      - "rust-toolchain.toml"
 
 concurrency:
-  group: gha-build-matrix-${{ github.ref }}
+  group: sccache-warm-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -16,11 +25,9 @@ jobs:
   web:
     name: web
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -32,10 +39,6 @@ jobs:
       - name: Install dependencies
         working-directory: apps/scryer-web
         run: npm ci
-
-      - name: Lint
-        working-directory: apps/scryer-web
-        run: npm run lint
 
       - name: Build web app
         working-directory: apps/scryer-web
@@ -50,140 +53,10 @@ jobs:
       - name: Upload web artifact
         uses: actions/upload-artifact@v7
         with:
-          name: scryer-web-out-${{ github.run_id }}
+          name: sccache-warm-web-out-${{ github.run_id }}
           path: apps/scryer-web/dist
           if-no-files-found: error
-          retention-days: 14
-
-  rust-check:
-    name: rust-check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 50
-    needs: [web]
-    env:
-      CARGO_HOME: /home/runner/.cargo
-      CARGO_INCREMENTAL: "0"
-      CARGO_TERM_COLOR: always
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
-      SCCACHE_CACHE_SIZE: 10G
-      SCCACHE_DIR: /home/runner/.cache/sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: "1.95.0"
-          components: clippy
-
-      - name: Install system dependencies
-        run: sudo apt-get install -y --no-install-recommends musl-tools mold nasm
-
-      - name: Add musl target
-        run: rustup target add x86_64-unknown-linux-musl
-
-      - name: Restore cargo dependency cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: gha-rust-cache-linux-rust-check
-          cache-targets: "false"
-          cache-workspace-crates: "false"
-          key: rust-check
-
-      - name: Restore sccache directory
-        id: rust-check-sccache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: /home/runner/.cache/sccache
-          key: gha-sccache-linux-rust-check-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
-          restore-keys: |
-            gha-sccache-linux-rust-check-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-linux-rust-check-
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-
-      - name: Download embedded web artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-web-out-${{ github.run_id }}
-          path: scryer-web-out
-
-      - name: Prime sccache server
-        run: |
-          sccache --start-server || true
-          sccache --zero-stats || true
-
-      - name: Run clippy for production binary packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
-          export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
-          export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
-          cargo clippy --target x86_64-unknown-linux-musl --locked \
-            -p scryer \
-            -p scryer-application \
-            -p scryer-domain \
-            -p scryer-infrastructure \
-            -p scryer-interface \
-            -p scryer-mediainfo \
-            -p scryer-plugins \
-            -p scryer-release-parser \
-            -p scryer-rules \
-            -- -D warnings 2>&1 | tee rust-check-clippy.log
-
-      - name: Run production binary package tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
-          export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
-          export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
-          export RUST_MIN_STACK="4194304"
-          cargo nextest run --target x86_64-unknown-linux-musl --locked \
-            -p scryer \
-            -p scryer-application \
-            -p scryer-domain \
-            -p scryer-infrastructure \
-            -p scryer-interface \
-            -p scryer-mediainfo \
-            -p scryer-plugins \
-            -p scryer-release-parser \
-            -p scryer-rules 2>&1 | tee rust-check-nextest.log
-
-      - name: Show sccache stats
-        shell: bash
-        run: |
-          set -euo pipefail
-          sccache --show-stats | tee rust-check-sccache-stats.txt
-
-      - name: Upload rust-check artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: rust-check-${{ github.run_id }}
-          path: |
-            rust-check-clippy.log
-            rust-check-nextest.log
-            rust-check-sccache-stats.txt
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Save sccache directory
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: /home/runner/.cache/sccache
-          key: ${{ steps.rust-check-sccache-restore.outputs.cache-primary-key }}
+          retention-days: 2
 
   linux-build:
     name: linux-${{ matrix.arch }}-${{ matrix.variant }}
@@ -199,6 +72,8 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             cache_lane: linux-x86_64
+            sccache_lane: scryer-linux-x86_64-musl
+            sccache_writer_id: scryer-linux-x86_64-portable
             artifact_name: scryer-linux-x86_64-portable
             extra_rustflags: ""
           - arch: x86_64
@@ -206,6 +81,8 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             cache_lane: linux-x86_64
+            sccache_lane: scryer-linux-x86_64-musl
+            sccache_writer_id: scryer-linux-x86_64-haswell
             artifact_name: scryer-linux-x86_64-haswell
             extra_rustflags: "-C target-cpu=haswell"
           - arch: arm64
@@ -213,6 +90,8 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             cache_lane: linux-arm64
+            sccache_lane: scryer-linux-arm64-musl
+            sccache_writer_id: scryer-linux-arm64-portable
             artifact_name: scryer-linux-arm64-portable
             extra_rustflags: ""
           - arch: arm64
@@ -220,6 +99,8 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             cache_lane: linux-arm64
+            sccache_lane: scryer-linux-arm64-musl
+            sccache_writer_id: scryer-linux-arm64-cortex-a76
             artifact_name: scryer-linux-arm64-cortex-a76
             extra_rustflags: "-C target-cpu=cortex-a76"
     env:
@@ -233,8 +114,6 @@ jobs:
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -245,6 +124,25 @@ jobs:
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}
+
+      - name: Resolve sccache lane metadata
+        id: linux-sccache-metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line="$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
+          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
+          if not match:
+              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
+          print(f"{match.group(1)}.{match.group(2)}.x")
+          PY
+          )"
+          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
+          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
 
       - name: Restore cargo dependency cache
         uses: Swatinem/rust-cache@v2
@@ -259,10 +157,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-${{ matrix.artifact_name }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -270,11 +169,13 @@ jobs:
       - name: Download embedded web artifact
         uses: actions/download-artifact@v8
         with:
-          name: scryer-web-out-${{ github.run_id }}
+          name: sccache-warm-web-out-${{ github.run_id }}
           path: scryer-web-out
 
       - name: Prime sccache server
+        shell: bash
         run: |
+          set -euo pipefail
           sccache --start-server || true
           sccache --zero-stats || true
 
@@ -289,27 +190,12 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --release --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
-
-      - name: Package tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/release scryer
+          cargo build -p scryer --release --locked --target "${{ matrix.target }}"
 
       - name: Show sccache stats
+        if: always()
         shell: bash
-        run: |
-          set -euo pipefail
-          sccache --show-stats | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact_name }}-${{ github.run_id }}
-          path: |
-            ${{ matrix.artifact_name }}.tar.gz
-            ${{ matrix.artifact_name }}-build.log
-            ${{ matrix.artifact_name }}-sccache-stats.txt
-          if-no-files-found: error
-          retention-days: 14
+        run: sccache --show-stats
 
       - name: Save sccache directory
         if: always()
@@ -332,6 +218,8 @@ jobs:
             runner: macos-15
             target: aarch64-apple-darwin
             cache_lane: macos-arm64
+            sccache_lane: scryer-macos-arm64
+            sccache_writer_id: scryer-darwin-arm64-portable
             artifact_name: scryer-darwin-arm64-portable
             extra_rustflags: ""
           - arch: arm64
@@ -339,6 +227,8 @@ jobs:
             runner: macos-15
             target: aarch64-apple-darwin
             cache_lane: macos-arm64
+            sccache_lane: scryer-macos-arm64
+            sccache_writer_id: scryer-darwin-arm64-apple-m1
             artifact_name: scryer-darwin-arm64-apple-m1
             extra_rustflags: "-C target-cpu=apple-m1 --cfg aes_armv8 --cfg chacha20_force_neon"
           - arch: x86_64
@@ -346,6 +236,8 @@ jobs:
             runner: macos-15-intel
             target: x86_64-apple-darwin
             cache_lane: macos-x86_64
+            sccache_lane: scryer-macos-x86_64
+            sccache_writer_id: scryer-darwin-x86_64-portable
             artifact_name: scryer-darwin-x86_64-portable
             extra_rustflags: ""
           - arch: x86_64
@@ -353,6 +245,8 @@ jobs:
             runner: macos-15-intel
             target: x86_64-apple-darwin
             cache_lane: macos-x86_64
+            sccache_lane: scryer-macos-x86_64
+            sccache_writer_id: scryer-darwin-x86_64-haswell
             artifact_name: scryer-darwin-x86_64-haswell
             extra_rustflags: "-C target-cpu=haswell"
     env:
@@ -365,13 +259,30 @@ jobs:
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: "1.95.0"
           targets: ${{ matrix.target }}
+
+      - name: Resolve sccache lane metadata
+        id: macos-sccache-metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line="$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
+          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
+          if not match:
+              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
+          print(f"{match.group(1)}.{match.group(2)}.x")
+          PY
+          )"
+          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
+          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
 
       - name: Restore cargo dependency cache
         uses: Swatinem/rust-cache@v2
@@ -386,10 +297,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: gha-sccache-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-${{ matrix.artifact_name }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -397,7 +309,7 @@ jobs:
       - name: Download embedded web artifact
         uses: actions/download-artifact@v8
         with:
-          name: scryer-web-out-${{ github.run_id }}
+          name: sccache-warm-web-out-${{ github.run_id }}
           path: scryer-web-out
 
       - name: Install system dependencies
@@ -421,46 +333,12 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --release --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
-
-      - name: Codesign binary
-        env:
-          CERT_P12: ${{ secrets.APPLE_SIGNING_CERT_P12 }}
-          CERT_PASSWORD: ${{ secrets.APPLE_SIGNING_CERT_PASSWORD }}
-        run: |
-          KEYCHAIN="build.keychain-db"
-          KEYCHAIN_PASS="ci-ephemeral"
-          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
-          security set-keychain-settings -lut 900 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
-          echo -n "$CERT_P12" | base64 --decode > /tmp/cert.p12
-          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-          codesign --sign "Scryer Media Signing" --identifier media.scryer.app --force "target/${{ matrix.target }}/release/scryer"
-          codesign --verify --verbose "target/${{ matrix.target }}/release/scryer"
-          rm /tmp/cert.p12
-          security delete-keychain "$KEYCHAIN"
-
-      - name: Package tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/release scryer
+          cargo build -p scryer --release --locked --target "${{ matrix.target }}"
 
       - name: Show sccache stats
+        if: always()
         shell: bash
-        run: |
-          set -euo pipefail
-          sccache --show-stats | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact_name }}-${{ github.run_id }}
-          path: |
-            ${{ matrix.artifact_name }}.tar.gz
-            ${{ matrix.artifact_name }}-build.log
-            ${{ matrix.artifact_name }}-sccache-stats.txt
-          if-no-files-found: error
-          retention-days: 14
+        run: sccache --show-stats
 
       - name: Save sccache directory
         if: always()
@@ -483,6 +361,8 @@ jobs:
             toolchain: 1.95.0-x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
             cache_lane: windows-x64
+            sccache_lane: scryer-windows-x86_64-msvc
+            sccache_writer_id: scryer-windows-x86_64-portable
             artifact_name: scryer-windows-x86_64-portable
             install_nasm: true
             use_clang_cl: false
@@ -491,6 +371,8 @@ jobs:
             toolchain: 1.95.0-aarch64-pc-windows-msvc
             target: aarch64-pc-windows-msvc
             cache_lane: windows-arm64
+            sccache_lane: scryer-windows-arm64-msvc
+            sccache_writer_id: scryer-windows-arm64-portable
             artifact_name: scryer-windows-arm64-portable
             install_nasm: false
             use_clang_cl: true
@@ -504,12 +386,24 @@ jobs:
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ matrix.toolchain }}
+
+      - name: Resolve sccache lane metadata
+        id: windows-sccache-metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cargoToml = Get-Content crates/scryer/Cargo.toml -Raw
+          $match = [regex]::Match($cargoToml, '(?m)^version = "(?<major>\d+)\.(?<minor>\d+)\.\d+"$')
+          if (-not $match.Success) {
+            throw "failed to resolve crates/scryer/Cargo.toml version"
+          }
+          $versionLine = "$($match.Groups['major'].Value).$($match.Groups['minor'].Value).x"
+          "SCRYER_SCCACHE_VERSION_LINE=$versionLine" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version_line=$versionLine" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Restore cargo dependency cache
         uses: Swatinem/rust-cache@v2
@@ -524,10 +418,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}\.sccache
-          key: gha-sccache-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-${{ matrix.artifact_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-${{ matrix.artifact_name }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -535,7 +430,7 @@ jobs:
       - name: Download embedded web artifact
         uses: actions/download-artifact@v8
         with:
-          name: scryer-web-out-${{ github.run_id }}
+          name: sccache-warm-web-out-${{ github.run_id }}
           path: scryer-web-out
 
       - name: Install NASM
@@ -578,85 +473,15 @@ jobs:
           if ($env:USE_CLANG_CL -eq "true") {
             $env:CC = "clang-cl"
           }
-          cargo build -p scryer --release --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
+          cargo build -p scryer --release --locked --target ${{ matrix.target }}
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
 
-      - name: Create README.txt
-        shell: pwsh
-        run: |
-          @"
-          scryer for Windows
-          ==================
-
-          Quick Start
-          -----------
-          1. Double-click scryer.exe (or run it from a terminal).
-          2. Open http://localhost:8080 in your browser.
-
-          Data is stored in %LOCALAPPDATA%\scryer by default. To use a
-          different location, pass --data-dir:
-
-              scryer.exe --data-dir C:\scryer-data
-
-          Encryption Key
-          --------------
-          Scryer encrypts passwords and API keys stored in its database.
-          On first run an encryption key is auto-generated and stored
-          securely by Windows. No manual key management is needed.
-
-          To override the key (advanced), set the environment variable
-          SCRYER_ENCRYPTION_KEY before starting scryer.
-
-          Running as a Windows Service (NSSM)
-          ------------------------------------
-          NSSM (https://nssm.cc) lets you run scryer as a background
-          service that starts automatically with Windows.
-
-          1. Download nssm and extract it somewhere on your PATH.
-          2. Open an elevated (Administrator) terminal and run:
-
-              nssm install scryer "C:\path\to\scryer.exe"
-              nssm set scryer AppDirectory "C:\path\to"
-              nssm set scryer AppParameters "--data-dir C:\scryer-data"
-              nssm set scryer Start SERVICE_AUTO_START
-              nssm start scryer
-
-          To remove the service later:
-
-              nssm stop scryer
-              nssm remove scryer confirm
-
-          Environment Variables
-          ---------------------
-          SCRYER_MOVIES_PATH      Movies directory
-          SCRYER_SERIES_PATH      Series directory
-          SCRYER_BIND             Listen address (default: 127.0.0.1:8080)
-          SCRYER_OPEN_BROWSER     Set to "false" to disable auto-open
-          SCRYER_DB_PATH          Override database path (advanced)
-          "@ | Set-Content -Path README.txt -Encoding UTF8
-
-      - name: Package zip
-        shell: pwsh
-        run: Compress-Archive -Path "target\${{ matrix.target }}\release\scryer.exe",README.txt -DestinationPath "${{ matrix.artifact_name }}.zip"
-
       - name: Show sccache stats
+        if: always()
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          sccache --show-stats | Tee-Object -FilePath "${{ matrix.artifact_name }}-sccache-stats.txt"
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact_name }}-${{ github.run_id }}
-          path: |
-            ${{ matrix.artifact_name }}.zip
-            ${{ matrix.artifact_name }}-build.log
-            ${{ matrix.artifact_name }}-sccache-stats.txt
-          if-no-files-found: error
-          retention-days: 14
+        run: sccache --show-stats
 
       - name: Save sccache directory
         if: always()

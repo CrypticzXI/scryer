@@ -33,7 +33,7 @@ pub use notification::{
     to_script_environment, to_webhook_json,
 };
 
-pub const SDK_VERSION: &str = "1.5.0";
+pub const SDK_VERSION: &str = "1.6.0";
 
 pub fn current_sdk_constraint() -> String {
     sdk_minor_line_constraint(SDK_VERSION).unwrap_or_else(|| legacy_sdk_constraint(SDK_VERSION))

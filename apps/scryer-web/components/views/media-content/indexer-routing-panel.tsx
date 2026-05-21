@@ -17,6 +17,7 @@ import { getDefaultIndexerRouting } from "@/lib/constants/indexers";
 import type { IndexerCategoryRoutingSettings, IndexerRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
@@ -98,7 +99,7 @@ export const IndexerRoutingPanel = React.memo(function IndexerRoutingPanel({
 
   return (
     <div>
-      <Card>
+      <Card id="indexer-routing-panel">
         <CardHeader>
           <CardTitle>
             {t("settings.indexerRoutingScope", {
@@ -134,11 +135,22 @@ export const IndexerRoutingPanel = React.memo(function IndexerRoutingPanel({
                     }
                     const routing = activeScopeIndexerRouting[indexer.id] ?? getDefaultIndexerRouting(activeQualityScopeId);
                     return (
-                      <TableRow key={indexer.id}>
+                    <TableRow
+                      key={indexer.id}
+                      id={selectorId("indexer-routing-row", indexer.name)}
+                    >
                         <TableCell>{index + 1}</TableCell>
                         <TableCell>{indexer.name}</TableCell>
                         <TableCell className="w-[30rem] min-w-[30rem] max-w-[30rem]">
                           <IndexerCategoryPicker
+                            triggerId={selectorId(
+                              "indexer-routing-categories",
+                              indexer.name,
+                            )}
+                            panelId={selectorId(
+                              "indexer-routing-categories-panel",
+                              indexer.name,
+                            )}
                             value={routing.categories}
                             scope={activeQualityScopeId}
                             disabled={indexerRoutingLoading}
@@ -163,6 +175,12 @@ export const IndexerRoutingPanel = React.memo(function IndexerRoutingPanel({
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-2">
                             <IndexerRoutingActionButton
+                              id={selectorId(
+                                routing.enabled
+                                  ? "indexer-routing-disable"
+                                  : "indexer-routing-enable",
+                                indexer.name,
+                              )}
                               tone={routing.enabled ? "disabled" : "enabled"}
                               label={
                                 routing.enabled
@@ -181,6 +199,7 @@ export const IndexerRoutingPanel = React.memo(function IndexerRoutingPanel({
                               )}
                             </IndexerRoutingActionButton>
                             <IndexerRoutingActionButton
+                              id={selectorId("indexer-routing-move-up", indexer.name)}
                               tone="reorder"
                               label={`${t("label.moveUp")} ${indexer.name}`}
                               onClick={() => onMoveUp(indexer.id)}
@@ -193,6 +212,7 @@ export const IndexerRoutingPanel = React.memo(function IndexerRoutingPanel({
                               <ChevronUp className="h-4 w-4" />
                             </IndexerRoutingActionButton>
                             <IndexerRoutingActionButton
+                              id={selectorId("indexer-routing-move-down", indexer.name)}
                               tone="reorder"
                               label={`${t("label.moveDown")} ${indexer.name}`}
                               onClick={() => onMoveDown(indexer.id)}

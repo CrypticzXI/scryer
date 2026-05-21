@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/table";
 import type { Translate } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { selectorId } from "@/lib/utils/e2e-selectors";
 import { sectionLabelForFacet } from "@/lib/facets/helpers";
 import { viewFromFacet } from "@/lib/facets/helpers";
 import type {
@@ -218,6 +219,7 @@ function DynamicConfigField({
   value: string;
   onChange: (key: string, value: string) => void;
 }) {
+  const fieldId = selectorId("settings-notification-field", field.key);
   const help = field.helpText ? (
     <InfoHelp
       text={field.helpText}
@@ -234,6 +236,7 @@ function DynamicConfigField({
     return (
       <label className="flex items-center gap-2">
         <input
+          id={fieldId}
           type="checkbox"
           checked={value === "true"}
           onChange={(e) => onChange(field.key, e.target.checked ? "true" : "false")}
@@ -251,7 +254,7 @@ function DynamicConfigField({
   if (field.fieldType === "select" && field.options.length > 0) {
     return (
       <label>
-        <Label className="mb-2 inline-flex items-center gap-2">
+        <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
           {field.label}
           {requiredMarker}
           {help}
@@ -260,7 +263,7 @@ function DynamicConfigField({
           value={value || field.defaultValue || ""}
           onValueChange={(v) => onChange(field.key, v)}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger id={fieldId} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -289,12 +292,13 @@ function DynamicConfigField({
 
     return (
       <label>
-        <Label className="mb-2 inline-flex items-center gap-2">
+        <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
           {field.label}
           {requiredMarker}
           {help}
         </Label>
         <Textarea
+          id={fieldId}
           value={value}
           onChange={(e) => onChange(field.key, e.target.value)}
           required={field.required}
@@ -307,12 +311,13 @@ function DynamicConfigField({
 
   return (
     <label>
-      <Label className="mb-2 inline-flex items-center gap-2">
+      <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
         {field.label}
         {requiredMarker}
         {help}
       </Label>
       <Input
+        id={fieldId}
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}
         {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
@@ -573,7 +578,7 @@ export function SettingsNotificationsSection({
   );
 
   return (
-    <div className="space-y-6 text-sm">
+    <div id="settings-notifications-section" className="space-y-6 text-sm">
       {/* ── Channels ──────────────────────────────────── */}
       <CardTitle className="flex items-center gap-2 text-base">
         <Bell className="h-4 w-4" />
@@ -582,7 +587,7 @@ export function SettingsNotificationsSection({
 
       <div className="rounded border border-border">
         <div className="overflow-x-auto">
-          <Table>
+          <Table id="settings-notification-channels-table">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("label.name")}</TableHead>
@@ -593,7 +598,10 @@ export function SettingsNotificationsSection({
             </TableHeader>
             <TableBody>
               {channels.map((channel) => (
-                <TableRow key={channel.id}>
+                <TableRow
+                  key={channel.id}
+                  id={selectorId("settings-notification-channel-row", channel.name)}
+                >
                   <TableCell>{channel.name}</TableCell>
                   <TableCell>{channel.channelType}</TableCell>
                   <TableCell className="text-center">
@@ -605,6 +613,7 @@ export function SettingsNotificationsSection({
                   <TableCell className="text-right">
                     <div className="inline-flex items-center gap-2">
                       <NotificationActionButton
+                        id={selectorId("settings-notification-channel-test", channel.name)}
                         label={t("settings.notificationTest")}
                         tone="neutral"
                         onClick={() => void testChannel(channel)}
@@ -617,6 +626,7 @@ export function SettingsNotificationsSection({
                         )}
                       </NotificationActionButton>
                       <NotificationActionButton
+                        id={selectorId("settings-notification-channel-toggle", channel.name)}
                         label={channel.isEnabled ? t("label.disable") : t("label.enable")}
                         tone={channel.isEnabled ? "enabled" : "disabled"}
                         onClick={() => void toggleChannelEnabled(channel)}
@@ -629,6 +639,7 @@ export function SettingsNotificationsSection({
                         )}
                       </NotificationActionButton>
                       <NotificationActionButton
+                        id={selectorId("settings-notification-channel-edit", channel.name)}
                         label={t("label.edit")}
                         tone="edit"
                         onClick={() => editChannel(channel)}
@@ -636,6 +647,7 @@ export function SettingsNotificationsSection({
                         <Edit className="h-4 w-4" />
                       </NotificationActionButton>
                       <NotificationActionButton
+                        id={selectorId("settings-notification-channel-delete", channel.name)}
                         label={t("label.delete")}
                         tone="delete"
                         onClick={() => void deleteChannel(channel)}
@@ -677,10 +689,10 @@ export function SettingsNotificationsSection({
               {providerTypeOptions.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t("settings.notificationNoProviders")}</p>
               ) : (
-                <form className="space-y-3" onSubmit={submitChannel}>
+                <form id="settings-notification-channel-form" className="space-y-3" onSubmit={submitChannel}>
                <div className="grid gap-3 md:grid-cols-2">
                  <label>
-                   <Label className="mb-2 block">{t("settings.notificationProviderType")}</Label>
+                   <Label className="mb-2 block" htmlFor="settings-notification-channel-provider-type">{t("settings.notificationProviderType")}</Label>
                    <Select
                      value={normalizedChannelType || undefined}
                      onValueChange={(v) => {
@@ -692,7 +704,7 @@ export function SettingsNotificationsSection({
                        }));
                      }}
                    >
-                     <SelectTrigger className="w-full">
+                     <SelectTrigger id="settings-notification-channel-provider-type" className="w-full">
                        <SelectValue placeholder={t("settings.notificationProviderType")} />
                      </SelectTrigger>
                      <SelectContent>
@@ -703,8 +715,9 @@ export function SettingsNotificationsSection({
                    </Select>
                  </label>
                  <label>
-                   <Label className="mb-2 block">{t("label.name")}</Label>
+                   <Label className="mb-2 block" htmlFor="settings-notification-channel-name">{t("label.name")}</Label>
                    <Input
+                     id="settings-notification-channel-name"
                      value={channelDraft.name}
                      onChange={(event) =>
                        setChannelDraft((prev) => ({
@@ -757,6 +770,7 @@ export function SettingsNotificationsSection({
 
               <label className="flex items-center gap-2">
                 <input
+                  id="settings-notification-channel-enabled"
                   type="checkbox"
                   checked={channelDraft.isEnabled}
                   onChange={(event) =>
@@ -771,14 +785,14 @@ export function SettingsNotificationsSection({
               </label>
 
               <div className="flex gap-2">
-                <Button type="submit" disabled={mutatingChannelId === "new"}>
+                <Button id="settings-notification-channel-save" type="submit" disabled={mutatingChannelId === "new"}>
                   {mutatingChannelId === "new"
                     ? t("label.saving")
                     : editingChannelId
                       ? t("settings.notificationChannelUpdate")
                       : t("settings.notificationChannelCreate")}
                 </Button>
-                <Button type="button" variant="outline" onClick={resetChannelDraft}>
+                <Button id="settings-notification-channel-cancel" type="button" variant="outline" onClick={resetChannelDraft}>
                   {t("label.cancel")}
                 </Button>
               </div>
@@ -789,6 +803,7 @@ export function SettingsNotificationsSection({
           {isEditingChannel ? (
             <div className="flex justify-center">
               <Button
+                id="settings-notification-channel-create"
                 type="button"
                 size="lg"
                 onClick={startCreateChannel}
@@ -804,6 +819,7 @@ export function SettingsNotificationsSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-notification-channel-create"
             type="button"
             size="lg"
             onClick={startCreateChannel}
@@ -823,7 +839,7 @@ export function SettingsNotificationsSection({
 
       <div className="rounded border border-border">
         <div className="overflow-x-auto">
-          <Table>
+          <Table id="settings-notification-subscriptions-table">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("settings.notificationEventType")}</TableHead>
@@ -835,7 +851,10 @@ export function SettingsNotificationsSection({
             </TableHeader>
             <TableBody>
               {subscriptions.map((sub) => (
-                <TableRow key={sub.id}>
+                <TableRow
+                  key={sub.id}
+                  id={selectorId("settings-notification-subscription-row", sub.id)}
+                >
                   <TableCell>
                     <div className="space-y-1">
                       {orderedSubscriptionEventTypes(sub.eventTypes).map((eventType) => (
@@ -896,6 +915,7 @@ export function SettingsNotificationsSection({
                   <TableCell className="text-right">
                     <div className="inline-flex items-center gap-2">
                       <NotificationActionButton
+                        id={selectorId("settings-notification-subscription-toggle", sub.id)}
                         label={sub.isEnabled ? t("label.disable") : t("label.enable")}
                         tone={sub.isEnabled ? "enabled" : "disabled"}
                         onClick={() => void toggleSubscriptionEnabled(sub)}
@@ -908,6 +928,7 @@ export function SettingsNotificationsSection({
                         )}
                       </NotificationActionButton>
                       <NotificationActionButton
+                        id={selectorId("settings-notification-subscription-edit", sub.id)}
                         label={t("label.edit")}
                         tone="edit"
                         onClick={() => editSubscription(sub)}
@@ -915,6 +936,7 @@ export function SettingsNotificationsSection({
                         <Edit className="h-4 w-4" />
                       </NotificationActionButton>
                       <NotificationActionButton
+                        id={selectorId("settings-notification-subscription-delete", sub.id)}
                         label={t("label.delete")}
                         tone="delete"
                         onClick={() => void deleteSubscription(sub)}

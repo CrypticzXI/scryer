@@ -2238,7 +2238,7 @@ mod tests {
                     wasm_digest: Some("deadbeef".to_string()),
                     artifact_digest: Some("blake3:abcd".to_string()),
                     descriptor_json: Some(
-                        r#"{"id":"corrupt","name":"Corrupt","version":"0.1.0","sdk_version":"1.5.0","sdk_constraint":">=1.5.0, <2.0.0","socket_permissions":[],"provider":{"kind":"notification","provider_type":"corrupt","provider_aliases":[],"config_fields":[],"allowed_hosts":[],"default_base_url":null,"capabilities":{"supported_events":[]}}}"#.to_string(),
+                        r#"{"id":"corrupt","name":"Corrupt","version":"0.1.0","sdk_version":"1.6.0","sdk_constraint":">=1.6.0, <2.0.0","socket_permissions":[],"provider":{"kind":"notification","provider_type":"corrupt","provider_aliases":[],"config_fields":[],"allowed_hosts":[],"default_base_url":null,"capabilities":{"supported_events":[]}}}"#.to_string(),
                     ),
                     installed_at: now,
                     updated_at: now,
