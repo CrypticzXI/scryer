@@ -74,14 +74,30 @@ async fn enrich_download_client_config_json(
         return Ok(config_json);
     }
 
-    let supports_gzip_nzb_upload = scryer_infrastructure::SabnzbdDownloadClient::with_auth(
-        base_url, api_key, username, password,
+    let supports_gzip_nzb_upload = match scryer_infrastructure::SabnzbdDownloadClient::with_auth(
+        base_url.clone(),
+        api_key,
+        username,
+        password,
     )
     .detect_gzip_nzb_upload_support()
     .await
-    .map_err(to_gql_error)?;
+    {
+        Ok(supports_gzip_nzb_upload) => Some(supports_gzip_nzb_upload),
+        Err(error) => {
+            tracing::warn!(
+                client_type,
+                base_url,
+                error = %error,
+                "sabnzbd gzip capability probe failed during download client save; leaving capability unset"
+            );
+            None
+        }
+    };
 
-    if let Some(config_object) = parsed.as_object_mut() {
+    if let (Some(config_object), Some(supports_gzip_nzb_upload)) =
+        (parsed.as_object_mut(), supports_gzip_nzb_upload)
+    {
         config_object.insert(
             scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY.to_string(),
             Value::Bool(supports_gzip_nzb_upload),
@@ -555,7 +571,7 @@ fn validate_test_flight_url(raw: &str) -> GqlResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -652,6 +668,100 @@ mod tests {
         assert_eq!(
             parsed.get(scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY),
             Some(&Value::Bool(true))
+        );
+    }
+
+    #[tokio::test]
+    async fn enrich_download_client_config_json_sends_api_key_with_gzip_probe() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .and(query_param("apikey", "test-api-key"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "status": false,
+                "error": "Probe payload is not a valid NZB"
+            })))
+            .mount(&server)
+            .await;
+
+        let config_json = enrich_download_client_config_json(
+            "sabnzbd",
+            json!({
+                "host": "127.0.0.1",
+                "port": server.address().port().to_string(),
+                "use_ssl": false,
+                "api_key": "test-api-key"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("capability enrichment should succeed");
+
+        let parsed: Value = serde_json::from_str(&config_json).expect("parse enriched config");
+        assert_eq!(
+            parsed.get(scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY),
+            Some(&Value::Bool(true))
+        );
+    }
+
+    #[tokio::test]
+    async fn enrich_download_client_config_json_ignores_gzip_probe_auth_failures() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "status": false,
+                "error": "Authentication required: provide either apikey or ma_username+ma_password"
+            })))
+            .mount(&server)
+            .await;
+
+        let config_json = enrich_download_client_config_json(
+            "sabnzbd",
+            json!({
+                "host": "127.0.0.1",
+                "port": server.address().port().to_string(),
+                "use_ssl": false,
+                "api_key": "test-api-key"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("auth probe failure should not block save");
+
+        let parsed: Value = serde_json::from_str(&config_json).expect("parse config");
+        assert_eq!(
+            parsed.get(scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn enrich_download_client_config_json_ignores_gzip_probe_non_json_responses() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+            .mount(&server)
+            .await;
+
+        let config_json = enrich_download_client_config_json(
+            "sabnzbd",
+            json!({
+                "host": "127.0.0.1",
+                "port": server.address().port().to_string(),
+                "use_ssl": false,
+                "api_key": "test-api-key"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("non-json probe failure should not block save");
+
+        let parsed: Value = serde_json::from_str(&config_json).expect("parse config");
+        assert_eq!(
+            parsed.get(scryer_infrastructure::SABNZBD_GZIP_UPLOAD_SUPPORT_KEY),
+            None
         );
     }
 }

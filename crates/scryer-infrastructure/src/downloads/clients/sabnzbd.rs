@@ -600,7 +600,9 @@ impl SabnzbdDownloadClient {
                         .text("nzbname", nzb_name)
                         .text("priority", queue_priority)
                         .part("nzbfile", nzb_part);
+                    let mut request_builder = self.outbound_http.client().post(&url);
                     form = if let Some(api_key) = auth_api_key {
+                        request_builder = request_builder.query(&[("apikey", api_key.as_str())]);
                         form.text("apikey", api_key)
                     } else if let (Some(username), Some(password)) = (auth_username, auth_password)
                     {
@@ -619,7 +621,7 @@ impl SabnzbdDownloadClient {
                         form = form.text("password", password);
                     }
 
-                    Ok::<_, AppError>(self.outbound_http.client().post(&url).multipart(form))
+                    Ok::<_, AppError>(request_builder.multipart(form))
                 }
             })
             .await

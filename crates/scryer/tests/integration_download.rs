@@ -2674,6 +2674,43 @@ async fn sabnzbd_detect_gzip_support_deletes_remote_probe_submission() {
 }
 
 #[tokio::test]
+async fn sabnzbd_detect_gzip_support_sends_api_key_with_probe_upload() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(query_param("apikey", "test-api-key"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/addurl.json")),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .and(query_param("name", "delete"))
+        .and(query_param("value", "SABnzbd_nzo_abc123"))
+        .and(query_param("del_files", "1"))
+        .and(query_param("apikey", "test-api-key"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/delete_success.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let supports_gzip = new_sabnzbd_client(&server.uri())
+        .detect_gzip_nzb_upload_support()
+        .await
+        .expect("capability probe should succeed");
+
+    assert!(
+        supports_gzip,
+        "accepted probe should mark gzip as supported"
+    );
+}
+
+#[tokio::test]
 async fn sabnzbd_submit_download_retries_plain_nzb_for_sab_compatible_xml_parse_errors() {
     let server = spawn_sab_fallback_mock_server_with_error(
         StatusCode::OK,
