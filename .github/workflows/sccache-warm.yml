@@ -109,8 +109,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
-      SCRYER_CARGO_PROFILE: rc
-      SCRYER_SCCACHE_BUILD_FLAVOR: rc
+      SCRYER_CARGO_PROFILE: release
+      SCRYER_SCCACHE_BUILD_FLAVOR: release
     steps:
       - uses: actions/checkout@v6
 
@@ -148,9 +148,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
@@ -251,8 +252,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
-      SCRYER_CARGO_PROFILE: rc
-      SCRYER_SCCACHE_BUILD_FLAVOR: rc
+      SCRYER_CARGO_PROFILE: release
+      SCRYER_SCCACHE_BUILD_FLAVOR: release
     steps:
       - uses: actions/checkout@v6
 
@@ -285,9 +286,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
@@ -377,8 +379,8 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: ${{ github.workspace }}\.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
-      SCRYER_CARGO_PROFILE: rc
-      SCRYER_SCCACHE_BUILD_FLAVOR: rc
+      SCRYER_CARGO_PROFILE: release
+      SCRYER_SCCACHE_BUILD_FLAVOR: release
     steps:
       - uses: actions/checkout@v6
 
@@ -405,9 +407,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}\.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-

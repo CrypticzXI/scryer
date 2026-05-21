@@ -579,9 +579,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
@@ -639,7 +640,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.linux-sccache-restore.outcome == 'success'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.linux-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -730,9 +731,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
@@ -818,7 +820,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.macos-sccache-restore.outcome == 'success'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.macos-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.sccache
@@ -889,9 +891,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}\.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
+            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
             gha-sccache-v2-${{ matrix.sccache_lane }}-
@@ -1031,7 +1034,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.windows-sccache-restore.outcome == 'success'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.windows-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}\.sccache

@@ -126,7 +126,11 @@ export function SettingsPluginsContainer() {
   const [manualBusy, setManualBusy] = useState(false);
   const [showManualInstall, setShowManualInstall] = useState(false);
 
-  const setPlugins = useCallback((next: RegistryPluginRecord[]) => {
+  const setPlugins = useCallback((
+    next:
+      | RegistryPluginRecord[]
+      | ((current: RegistryPluginRecord[]) => RegistryPluginRecord[]),
+  ) => {
     _setPlugins(next);
   }, []);
   const [mutatingPluginIds, setMutatingPluginIds] = useState<string[]>([]);
@@ -135,6 +139,11 @@ export function SettingsPluginsContainer() {
   const [upgradingAll, setUpgradingAll] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
   const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
+  const pluginProgressRef = useRef<Record<string, PluginInstallProgressRecord>>({});
+
+  useEffect(() => {
+    pluginProgressRef.current = pluginProgress;
+  }, [pluginProgress]);
 
   const beginPluginMutation = useCallback((pluginId: string) => {
     setMutatingPluginIds((current) => (
@@ -165,6 +174,55 @@ export function SettingsPluginsContainer() {
     }
   }, []);
 
+  const clearPluginBusyState = useCallback(
+    (pluginId: string, operationKind?: PluginInstallProgressRecord["operationKind"]) => {
+      setPlugins((current) => current.map((plugin) => {
+        if (plugin.id !== pluginId) {
+          return plugin;
+        }
+        return {
+          ...plugin,
+          installInProgress: false,
+          isInstalled: true,
+          updateAvailable:
+            operationKind === "upgrade" ? false : plugin.updateAvailable,
+          installedVersion:
+            operationKind === "upgrade"
+              ? (plugin.latestVersion ?? plugin.version)
+              : plugin.installedVersion,
+        };
+      }));
+    },
+    [setPlugins],
+  );
+
+  const reconcilePluginOperationState = useCallback((nextPlugins: RegistryPluginRecord[]) => {
+    const nextById = new Map(nextPlugins.map((plugin) => [plugin.id, plugin] as const));
+    const trackedPluginIds = new Set([
+      ...installProgressSubscriptionsRef.current.keys(),
+      ...Object.keys(pluginProgressRef.current),
+    ]);
+
+    for (const pluginId of trackedPluginIds) {
+      const nextPlugin = nextById.get(pluginId);
+      if (nextPlugin?.installInProgress) {
+        continue;
+      }
+
+      stopPluginInstallProgressSubscription(pluginId);
+      clearPluginProgress(pluginId);
+      endPluginMutation(pluginId);
+      setPluginErrors((current) => {
+        if (!(pluginId in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[pluginId];
+        return next;
+      });
+    }
+  }, [clearPluginProgress, endPluginMutation, stopPluginInstallProgressSubscription]);
+
   useEffect(() => {
     const subscriptions = installProgressSubscriptionsRef.current;
     return () => {
@@ -179,14 +237,16 @@ export function SettingsPluginsContainer() {
     try {
       const { data, error } = await client.query(pluginsQuery, {}).toPromise();
       if (error) throw error;
-      setPlugins(data.plugins || []);
+      const nextPlugins = data.plugins || [];
+      setPlugins(nextPlugins);
       setCatalogStatus(data.pluginCatalogStatus || null);
+      reconcilePluginOperationState(nextPlugins);
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
     } finally {
       setInitialLoading(false);
     }
-  }, [client, setGlobalStatus, t, setPlugins]);
+  }, [client, reconcilePluginOperationState, setGlobalStatus, t, setPlugins]);
 
   useEffect(() => {
     void refreshPlugins();
@@ -226,41 +286,47 @@ export function SettingsPluginsContainer() {
             if (snapshot.state === "succeeded" || snapshot.state === "failed") {
               stopPluginInstallProgressSubscription(plugin.id);
               void (async () => {
-                if (snapshot.state === "succeeded") {
-                  setPluginErrors((current) => {
-                    const next = { ...current };
-                    delete next[plugin.id];
-                    return next;
-                  });
-                  setGlobalStatus(
-                    snapshot.operationKind === "upgrade"
-                      ? t("status.pluginUpgraded", {
-                        name: plugin.name,
-                        version: plugin.version,
-                      })
-                      : t("status.pluginInstalled", { name: plugin.name }),
-                  );
-                  await refreshPlugins();
-                  dispatchNavigationBadgesRefresh();
-                } else {
-                  const message = formatPluginInstallError(
-                    plugin,
-                    new Error(snapshot.error ?? snapshot.label),
-                    t,
-                  );
-                  setPluginErrors((current) => ({
-                    ...current,
-                    [plugin.id]: message,
-                  }));
-                  setGlobalStatus(message);
+                try {
+                  clearPluginBusyState(plugin.id, snapshot.operationKind);
+
+                  if (snapshot.state === "succeeded") {
+                    setPluginErrors((current) => {
+                      const next = { ...current };
+                      delete next[plugin.id];
+                      return next;
+                    });
+                    setGlobalStatus(
+                      snapshot.operationKind === "upgrade"
+                        ? t("status.pluginUpgraded", {
+                          name: plugin.name,
+                          version: plugin.version,
+                        })
+                        : t("status.pluginInstalled", { name: plugin.name }),
+                    );
+                    await refreshPlugins();
+                    dispatchNavigationBadgesRefresh();
+                  } else {
+                    const message = formatPluginInstallError(
+                      plugin,
+                      new Error(snapshot.error ?? snapshot.label),
+                      t,
+                    );
+                    setPluginErrors((current) => ({
+                      ...current,
+                      [plugin.id]: message,
+                    }));
+                    setGlobalStatus(message);
+                  }
+                } finally {
+                  clearPluginProgress(plugin.id);
+                  endPluginMutation(plugin.id);
                 }
-                clearPluginProgress(plugin.id);
-                endPluginMutation(plugin.id);
               })();
             }
           },
           error: (error) => {
             stopPluginInstallProgressSubscription(plugin.id);
+            clearPluginBusyState(plugin.id);
             clearPluginProgress(plugin.id);
             endPluginMutation(plugin.id);
             const message = formatPluginInstallError(plugin, error, t);
@@ -272,12 +338,14 @@ export function SettingsPluginsContainer() {
           },
           complete: () => {
             installProgressSubscriptionsRef.current.delete(plugin.id);
+            void refreshPlugins();
           },
         },
       );
       installProgressSubscriptionsRef.current.set(plugin.id, unsubscribe);
     },
     [
+      clearPluginBusyState,
       clearPluginProgress,
       endPluginMutation,
       refreshPlugins,
