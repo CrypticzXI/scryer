@@ -15,6 +15,10 @@ import {
 } from "@/lib/facets/helpers";
 import { useSearchContext } from "@/lib/context/search-context";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
+import {
+  globalSearchConfigureAddId,
+  globalSearchMetadataResultId,
+} from "@/lib/utils/e2e-selectors";
 import { TitlePoster } from "@/components/title-poster";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
@@ -202,7 +206,11 @@ export function MobileSearchOverlay({
       const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
 
       return (
-        <div key={`${facet}-${result.tvdbId}-${result.name}`} className="rounded-lg border border-border bg-card/60 p-3">
+        <div
+          id={globalSearchMetadataResultId(facet, result)}
+          key={`${facet}-${result.tvdbId}-${result.name}`}
+          className="rounded-lg border border-border bg-card/60 p-3"
+        >
           <div className="flex min-h-[44px] items-center gap-3">
             <div className="h-16 w-11 flex-none overflow-hidden rounded-md border border-border bg-muted">
               {posterUrl ? (
@@ -225,6 +233,7 @@ export function MobileSearchOverlay({
               </p>
             </div>
             <Button
+              id={globalSearchConfigureAddId(facet, result)}
               type="button"
               variant={isInCatalog ? "secondary" : "default"}
               className={

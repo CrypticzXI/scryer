@@ -28,7 +28,11 @@ import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { useSearchContext } from "@/lib/context/search-context";
 import { cn } from "@/lib/utils";
 import { buildViewPath } from "@/lib/utils/routing";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import {
+  globalSearchConfigureAddId,
+  globalSearchMetadataResultId,
+  selectorId,
+} from "@/lib/utils/e2e-selectors";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
 
 
@@ -412,7 +416,7 @@ export const RootHeader = React.memo(function RootHeader({
         const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
         return (
           <div
-            id={selectorId("global-search-metadata-result", facet, result.name)}
+            id={globalSearchMetadataResultId(facet, result)}
             key={`${facet}-${result.tvdbId}-${result.name}`}
             className="rounded-lg border border-border bg-card/60 p-3"
           >
@@ -446,7 +450,7 @@ export const RootHeader = React.memo(function RootHeader({
               </div>
               <div className="flex items-center self-center">
                 <Button
-                  id={selectorId("global-search-configure-add", facet, result.name)}
+                  id={globalSearchConfigureAddId(facet, result)}
                   type="button"
                   variant={isInCatalog ? "secondary" : "default"}
                   className={

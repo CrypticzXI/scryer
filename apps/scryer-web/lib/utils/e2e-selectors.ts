@@ -8,6 +8,50 @@ export function selectorToken(value: string | number): string {
   return normalized || "item";
 }
 
+type MetadataSearchSelectorInput = {
+  name: string;
+  imdbId?: string | null;
+  tvdbId?: string | number | null;
+};
+
+export function metadataSearchSelectorParts(
+  result: MetadataSearchSelectorInput,
+): string[] {
+  const imdbId = result.imdbId?.trim();
+  if (imdbId) {
+    return ["imdb", imdbId];
+  }
+
+  const tvdbId = String(result.tvdbId ?? "").trim();
+  if (tvdbId) {
+    return ["tvdb", tvdbId];
+  }
+
+  return ["name", result.name];
+}
+
+export function globalSearchMetadataResultId(
+  facet: string,
+  result: MetadataSearchSelectorInput,
+): string {
+  return selectorId(
+    "global-search-metadata-result",
+    facet,
+    ...metadataSearchSelectorParts(result),
+  );
+}
+
+export function globalSearchConfigureAddId(
+  facet: string,
+  result: MetadataSearchSelectorInput,
+): string {
+  return selectorId(
+    "global-search-configure-add",
+    facet,
+    ...metadataSearchSelectorParts(result),
+  );
+}
+
 export function selectorId(
   ...parts: Array<string | number | false | null | undefined>
 ): string {
