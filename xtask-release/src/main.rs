@@ -2678,69 +2678,6 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
     run_streaming(&mut fmt, prefix)?;
     prefixed_ok(prefix, "cargo fmt passed");
 
-    prefixed_step(
-        prefix,
-        "Running cargo clippy --fix for scryer production binary packages",
-    );
-    let mut clippy_fix = ctx.release_command_in("cargo", &ctx.repo_root);
-    clippy_fix.arg("clippy");
-    add_prod_package_args(&mut clippy_fix);
-    clippy_fix.args([
-        "--fix",
-        "--allow-dirty",
-        "--allow-staged",
-        "--",
-        "-D",
-        "warnings",
-    ]);
-    run_streaming(&mut clippy_fix, prefix)?;
-    prefixed_ok(prefix, "cargo clippy --fix complete");
-
-    prefixed_step(prefix, "Updating Cargo.lock (cargo update)");
-    let mut update = ctx.release_command_in("cargo", &ctx.repo_root);
-    update.arg("update");
-    run_streaming(&mut update, prefix)?;
-    prefixed_ok(prefix, "Cargo.lock updated");
-
-    prefixed_step(prefix, "Running cargo audit");
-    if !command_available("cargo-audit")? {
-        warn("cargo-audit not installed — installing");
-        let mut install = ctx.release_command_in("cargo", &ctx.repo_root);
-        install.args(["install", "--locked", "cargo-audit"]);
-        run_streaming(&mut install, prefix)?;
-    }
-    let ignores = [
-        "RUSTSEC-2023-0071",
-        "RUSTSEC-2026-0006",
-        "RUSTSEC-2026-0020",
-        "RUSTSEC-2026-0021",
-        // Extism currently pins wasmtime 41.x upstream, so these remain release
-        // blockers until the runtime stack moves onto a patched wasmtime line.
-        "RUSTSEC-2026-0085",
-        "RUSTSEC-2026-0086",
-        "RUSTSEC-2026-0087",
-        "RUSTSEC-2026-0088",
-        "RUSTSEC-2026-0089",
-        "RUSTSEC-2026-0091",
-        "RUSTSEC-2026-0092",
-        "RUSTSEC-2026-0093",
-        "RUSTSEC-2026-0094",
-        "RUSTSEC-2026-0095",
-        "RUSTSEC-2026-0096",
-        "RUSTSEC-2026-0114",
-    ];
-    warn(format!(
-        "Ignoring advisories pending upstream fixes: {}",
-        ignores.join(" ")
-    ));
-    let mut audit = ctx.release_command_in("cargo", &ctx.repo_root);
-    audit.arg("audit");
-    for advisory in ignores {
-        audit.args(["--ignore", advisory]);
-    }
-    run_streaming(&mut audit, prefix)?;
-    prefixed_ok(prefix, "cargo audit passed");
-
     if !command_available("cargo-nextest")? {
         warn("cargo-nextest not installed — installing");
         let mut install = ctx.release_command_in("cargo", &ctx.repo_root);
@@ -2750,33 +2687,90 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
 
     prefixed_step(
         prefix,
-        "Running CI clippy and Rust tests for scryer production binary packages in parallel",
+        "Starting Rust tests immediately while other Rust release validations continue",
     );
-    let (clippy_tx, clippy_rx) = mpsc::channel();
     let (nextest_tx, nextest_rx) = mpsc::channel();
-    let clippy_ctx = ctx.clone();
     let nextest_ctx = ctx.clone();
 
-    thread::spawn(move || {
-        let _ = clippy_tx.send(run_scryer_ci_clippy_validation(
-            &clippy_ctx,
-            "[rust-clippy] ",
-        ));
-    });
     thread::spawn(move || {
         let _ = nextest_tx.send(run_scryer_nextest_validation(&nextest_ctx, "[rust-test] "));
     });
 
-    let clippy_result = clippy_rx
-        .recv()
-        .context("CI clippy validation thread ended unexpectedly")?;
+    let mut failures = Vec::new();
+    let release_checks_result: Result<()> = (|| {
+        prefixed_step(
+            prefix,
+            "Running cargo clippy --fix for scryer production binary packages",
+        );
+        let mut clippy_fix = ctx.release_command_in("cargo", &ctx.repo_root);
+        clippy_fix.arg("clippy");
+        add_prod_package_args(&mut clippy_fix);
+        clippy_fix.args([
+            "--fix",
+            "--allow-dirty",
+            "--allow-staged",
+            "--",
+            "-D",
+            "warnings",
+        ]);
+        run_streaming(&mut clippy_fix, prefix)?;
+        prefixed_ok(prefix, "cargo clippy --fix complete");
+
+        prefixed_step(prefix, "Updating Cargo.lock (cargo update)");
+        let mut update = ctx.release_command_in("cargo", &ctx.repo_root);
+        update.arg("update");
+        run_streaming(&mut update, prefix)?;
+        prefixed_ok(prefix, "Cargo.lock updated");
+
+        prefixed_step(prefix, "Running cargo audit");
+        if !command_available("cargo-audit")? {
+            warn("cargo-audit not installed — installing");
+            let mut install = ctx.release_command_in("cargo", &ctx.repo_root);
+            install.args(["install", "--locked", "cargo-audit"]);
+            run_streaming(&mut install, prefix)?;
+        }
+        let ignores = [
+            "RUSTSEC-2023-0071",
+            "RUSTSEC-2026-0006",
+            "RUSTSEC-2026-0020",
+            "RUSTSEC-2026-0021",
+            // Extism currently pins wasmtime 41.x upstream, so these remain release
+            // blockers until the runtime stack moves onto a patched wasmtime line.
+            "RUSTSEC-2026-0085",
+            "RUSTSEC-2026-0086",
+            "RUSTSEC-2026-0087",
+            "RUSTSEC-2026-0088",
+            "RUSTSEC-2026-0089",
+            "RUSTSEC-2026-0091",
+            "RUSTSEC-2026-0092",
+            "RUSTSEC-2026-0093",
+            "RUSTSEC-2026-0094",
+            "RUSTSEC-2026-0095",
+            "RUSTSEC-2026-0096",
+            "RUSTSEC-2026-0114",
+        ];
+        warn(format!(
+            "Ignoring advisories pending upstream fixes: {}",
+            ignores.join(" ")
+        ));
+        let mut audit = ctx.release_command_in("cargo", &ctx.repo_root);
+        audit.arg("audit");
+        for advisory in ignores {
+            audit.args(["--ignore", advisory]);
+        }
+        run_streaming(&mut audit, prefix)?;
+        prefixed_ok(prefix, "cargo audit passed");
+
+        run_scryer_ci_clippy_validation(ctx, "[rust-clippy] ")?;
+        Ok(())
+    })();
+
     let nextest_result = nextest_rx
         .recv()
         .context("Rust test validation thread ended unexpectedly")?;
 
-    let mut failures = Vec::new();
-    if let Err(error) = clippy_result {
-        failures.push(format!("CI clippy validation failed: {error:#}"));
+    if let Err(error) = release_checks_result {
+        failures.push(format!("Rust release validation failed: {error:#}"));
     }
     if let Err(error) = nextest_result {
         failures.push(format!("Rust test validation failed: {error:#}"));
@@ -2788,7 +2782,7 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
         bail!(failures.join("\n\n"));
     }
 
-    prefixed_ok(prefix, "CI clippy and Rust tests passed");
+    prefixed_ok(prefix, "Rust release validations and tests passed");
     Ok(())
 }
 
