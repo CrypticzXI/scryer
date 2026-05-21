@@ -268,6 +268,7 @@ pub struct MediaSettings {
     pub library_path: String,
     pub root_folders: Vec<RootFolderEntry>,
     pub required_audio_languages: Vec<String>,
+    pub folder_template: String,
     pub rename_template: String,
     pub rename_collision_policy: String,
     pub rename_missing_metadata_policy: String,
@@ -285,6 +286,7 @@ pub struct UpdateMediaSettings {
     pub library_path: Option<String>,
     pub root_folders: Option<Vec<RootFolderEntry>>,
     pub required_audio_languages: Option<Vec<String>>,
+    pub folder_template: Option<String>,
     pub rename_template: Option<String>,
     pub rename_collision_policy: Option<String>,
     pub rename_missing_metadata_policy: Option<String>,
@@ -632,6 +634,14 @@ fn default_rename_template(facet: &MediaFacet) -> &'static str {
         MediaFacet::Movie => DEFAULT_RENAME_TEMPLATE_MOVIE,
         MediaFacet::Series => DEFAULT_RENAME_TEMPLATE_SERIES,
         MediaFacet::Anime => DEFAULT_RENAME_TEMPLATE_ANIME,
+    }
+}
+
+fn default_folder_template(facet: &MediaFacet) -> &'static str {
+    match facet {
+        MediaFacet::Movie => DEFAULT_FOLDER_TEMPLATE_MOVIE,
+        MediaFacet::Series => DEFAULT_FOLDER_TEMPLATE_SERIES,
+        MediaFacet::Anime => DEFAULT_FOLDER_TEMPLATE_ANIME,
     }
 }
 
@@ -3166,6 +3176,12 @@ impl AppUseCase {
         let global_rename_template = self
             .read_setting_string_value(rename_template_global_key(&facet), None)
             .await?;
+        let folder_template = crate::normalize_title_folder_template_or_default(
+            self.read_setting_string_value(FOLDER_TEMPLATE_KEY, Some(facet.as_str()))
+                .await?,
+            default_folder_template(&facet),
+            facet.as_str(),
+        );
         let rename_template = scoped_rename_template
             .or(global_rename_template)
             .unwrap_or_else(|| default_rename_template(&facet).to_string());
@@ -3202,6 +3218,7 @@ impl AppUseCase {
             required_audio_languages: self
                 .load_facet_required_audio_languages(facet.as_str())
                 .await?,
+            folder_template,
             rename_template,
             rename_collision_policy,
             rename_missing_metadata_policy,
@@ -3312,6 +3329,23 @@ impl AppUseCase {
                 )
                 .await?,
             );
+        }
+
+        if let Some(folder_template) = normalize_optional_string(input.folder_template) {
+            crate::validate_title_folder_template(&folder_template)?;
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    FOLDER_TEMPLATE_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&folder_template)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(FOLDER_TEMPLATE_KEY.to_string());
         }
 
         if let Some(rename_template) = normalize_optional_string(input.rename_template) {
@@ -3655,6 +3689,7 @@ impl AppUseCase {
                     library_path: None,
                     root_folders: Some(root_folders),
                     required_audio_languages: None,
+                    folder_template: None,
                     rename_template: None,
                     rename_collision_policy: None,
                     rename_missing_metadata_policy: None,

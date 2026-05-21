@@ -4499,12 +4499,16 @@ impl AppUseCase {
             if legacy_folder_path.is_none() {
                 let old_title_name = existing_title.name.trim();
                 if !old_title_name.is_empty()
-                    && let Ok((media_root, _)) =
+                    && let Ok(import_paths) =
                         crate::import_workflow::resolve_import_paths(self, &existing_title).await
                 {
                     legacy_folder_path = Some(
-                        std::path::PathBuf::from(media_root)
-                            .join(old_title_name)
+                        crate::effective_title_folder_path(
+                            &import_paths.media_root,
+                            &existing_title,
+                            &import_paths.folder_template,
+                            None,
+                        )
                             .to_string_lossy()
                             .to_string(),
                     );

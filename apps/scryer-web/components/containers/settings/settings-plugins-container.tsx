@@ -132,6 +132,7 @@ export function SettingsPluginsContainer() {
   const [mutatingPluginIds, setMutatingPluginIds] = useState<string[]>([]);
   const [pluginProgress, setPluginProgress] = useState<Record<string, PluginInstallProgressRecord>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [upgradingAll, setUpgradingAll] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
   const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
 
@@ -417,7 +418,7 @@ export function SettingsPluginsContainer() {
     }
   };
 
-  const upgradePlugin = async (plugin: RegistryPluginRecord) => {
+  const beginPluginUpgrade = async (plugin: RegistryPluginRecord) => {
     beginPluginMutation(plugin.id);
     setPluginErrors((current) => {
       const next = { ...current };
@@ -436,6 +437,7 @@ export function SettingsPluginsContainer() {
         throw new Error("plugin upgrade did not return progress");
       }
       beginLivePluginProgress(plugin, snapshot);
+      return true;
     } catch (error) {
       const message = formatPluginInstallError(plugin, error, t);
       setPluginErrors((current) => ({
@@ -444,8 +446,37 @@ export function SettingsPluginsContainer() {
       }));
       setGlobalStatus(message);
       endPluginMutation(plugin.id);
+      return false;
     } finally {
       // Progress lifecycle owns cleanup after a successful begin.
+    }
+  };
+
+  const upgradePlugin = async (plugin: RegistryPluginRecord) => {
+    await beginPluginUpgrade(plugin);
+  };
+
+  const upgradeAllPlugins = async () => {
+    const upgradable = plugins.filter(
+      (plugin) => plugin.isInstalled && plugin.updateAvailable && !mutatingPluginIds.includes(plugin.id),
+    );
+    if (upgradable.length === 0) {
+      return;
+    }
+
+    setUpgradingAll(true);
+    try {
+      const results = await Promise.all(upgradable.map((plugin) => beginPluginUpgrade(plugin)));
+      const startedCount = results.filter(Boolean).length;
+      if (startedCount > 0) {
+        setGlobalStatus(
+          t("status.pluginsUpgradeQueued", {
+            count: startedCount,
+          }),
+        );
+      }
+    } finally {
+      setUpgradingAll(false);
     }
   };
 
@@ -490,6 +521,7 @@ export function SettingsPluginsContainer() {
         pluginProgress={pluginProgress}
         pluginErrors={pluginErrors}
         refreshing={refreshing}
+        upgradingAll={upgradingAll}
         manualRepoUrl={manualRepoUrl}
         manualPreview={manualPreview}
         manualBusy={manualBusy}
@@ -506,6 +538,7 @@ export function SettingsPluginsContainer() {
         onInspectManualPluginRepo={inspectManualPluginRepo}
         onInstallManualPlugin={installManualPlugin}
         onRefreshRegistry={refreshRegistry}
+        onUpgradeAllPlugins={upgradeAllPlugins}
         onTogglePlugin={togglePlugin}
         onInstallPlugin={installPlugin}
         onUninstallPlugin={uninstallPlugin}

@@ -7094,6 +7094,7 @@ fn empty_update_media_settings_with_roots(
         library_path: None,
         root_folders: Some(root_folders),
         required_audio_languages: None,
+        folder_template: None,
         rename_template: None,
         rename_collision_policy: None,
         rename_missing_metadata_policy: None,
@@ -7112,6 +7113,7 @@ fn empty_update_media_settings() -> UpdateMediaSettings {
         library_path: None,
         root_folders: None,
         required_audio_languages: None,
+        folder_template: None,
         rename_template: None,
         rename_collision_policy: None,
         rename_missing_metadata_policy: None,
@@ -8834,10 +8836,10 @@ async fn title_root_resolution_uses_owning_library_roots() {
     let mut title = make_due_hydration_title("custom-library-title", MediaFacet::Movie, 42);
     title.library_id = kids_library.id.clone();
 
-    let (import_root, _) = crate::import_workflow::resolve_import_paths(&app, &title)
+    let import_paths = crate::import_workflow::resolve_import_paths(&app, &title)
         .await
         .expect("import paths should resolve");
-    assert_eq!(import_root, "/library/kids-movies");
+    assert_eq!(import_paths.media_root, "/library/kids-movies");
 
     let recycle_root = crate::recycle_bin::media_root_for_title(&app, &title).await;
     assert_eq!(recycle_root.as_deref(), Some("/library/kids-movies"));

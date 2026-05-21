@@ -6622,6 +6622,114 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
 }
 
 #[tokio::test]
+async fn library_scan_unmatched_upsert_heals_legacy_id_on_library_path_conflict() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_scan_unmatched_legacy_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let library_scan_unmatched = library_scan_unmatched_store(&services);
+
+    fn unmatched_id(input: &str) -> String {
+        let hash = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, input.as_bytes());
+        let hex = hash
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("library_scan_unmatched:{}", &hex[..24])
+    }
+
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let item_path = "/library/Harbor Pals/Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb";
+    let created_at = "2026-04-07T00:00:00Z".to_string();
+    let legacy_id = unmatched_id(format!("series:{item_path}").as_str());
+    let current_id = unmatched_id(format!("series:{library_id}:{item_path}").as_str());
+
+    let legacy_item = LibraryScanUnmatchedItem {
+        id: legacy_id.clone(),
+        library_id: library_id.clone(),
+        facet: MediaFacet::Series,
+        status: PendingImportStatus::Pending,
+        title_id: Some("title-harbor-pals".to_string()),
+        scan_session_id: "legacy-session".to_string(),
+        scan_root: "/library/Harbor Pals".to_string(),
+        item_path: item_path.to_string(),
+        display_name: "4f8e2c7a91b6d3e0".to_string(),
+        query: "Harbor Pals".to_string(),
+        year_hint: None,
+        reason_code: "legacy_row".to_string(),
+        error_message: None,
+        search_attempts: Vec::new(),
+        created_at: created_at.clone(),
+        updated_at: created_at.clone(),
+    };
+
+    library_scan_unmatched
+        .upsert_library_scan_unmatched_item(&legacy_item)
+        .await
+        .expect("insert legacy unmatched item");
+
+    let refreshed_item = LibraryScanUnmatchedItem {
+        id: current_id.clone(),
+        library_id: library_id.clone(),
+        facet: MediaFacet::Series,
+        status: PendingImportStatus::Pending,
+        title_id: Some("title-harbor-pals".to_string()),
+        scan_session_id: "current-session".to_string(),
+        scan_root: "/library/Harbor Pals".to_string(),
+        item_path: item_path.to_string(),
+        display_name: "4f8e2c7a91b6d3e0".to_string(),
+        query: "Harbor Pals".to_string(),
+        year_hint: None,
+        reason_code: "scan_refresh".to_string(),
+        error_message: None,
+        search_attempts: vec![LibraryScanUnmatchedSearchAttempt {
+            query: "Harbor Pals".to_string(),
+            result_count: 1,
+            top_results: vec!["Harbor Pals".to_string()],
+        }],
+        created_at: "2026-04-08T00:00:00Z".to_string(),
+        updated_at: "2026-04-08T01:00:00Z".to_string(),
+    };
+
+    library_scan_unmatched
+        .upsert_library_scan_unmatched_item(&refreshed_item)
+        .await
+        .expect("upsert current unmatched item over legacy row");
+
+    let count = library_scan_unmatched
+        .count_library_scan_unmatched_items(
+            Some(MediaFacet::Series),
+            Some("/library/Harbor Pals"),
+            Some(PendingImportStatus::Pending),
+        )
+        .await
+        .expect("count unmatched items after heal");
+    assert_eq!(count, 1);
+
+    let healed = library_scan_unmatched
+        .get_library_scan_unmatched_item(&current_id)
+        .await
+        .expect("load healed unmatched item")
+        .expect("healed unmatched item should exist");
+    assert_eq!(healed.id, current_id);
+    assert_eq!(healed.scan_session_id, "current-session");
+    assert_eq!(healed.reason_code, "scan_refresh");
+    assert_eq!(healed.created_at, created_at);
+
+    let legacy_lookup = library_scan_unmatched
+        .get_library_scan_unmatched_item(&legacy_id)
+        .await
+        .expect("load legacy unmatched item after heal");
+    assert!(legacy_lookup.is_none());
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh() {
     let db = std::env::temp_dir().join(format!(
         "scryer_scan_unmatched_status_{}.db",

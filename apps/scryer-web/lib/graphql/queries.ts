@@ -1459,6 +1459,7 @@ const mediaSettingsFieldSelection = `
       isDefault
     }
     requiredAudioLanguages
+    folderTemplate
     renameTemplate
     renameCollisionPolicy
     renameMissingMetadataPolicy

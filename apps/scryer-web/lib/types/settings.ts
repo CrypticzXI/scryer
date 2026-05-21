@@ -60,6 +60,7 @@ export type MediaSettings = {
   libraryPath: string;
   rootFolders: { path: string; isDefault: boolean }[];
   requiredAudioLanguages: string[];
+  folderTemplate: string;
   renameTemplate: string;
   renameCollisionPolicy: string;
   renameMissingMetadataPolicy: string;

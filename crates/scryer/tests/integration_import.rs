@@ -15,7 +15,7 @@ use scryer_application::{
 use scryer_domain::{
     Collection, CompletedDownload, Episode, Id, ImportDecision, ImportSkipReason, MediaFacet, Title,
 };
-use scryer_infrastructure::{FsFileImporter, ImportStore};
+use scryer_infrastructure::{FsFileImporter, ImportStore, SettingDefinitionSeed};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -140,6 +140,49 @@ async fn add_series_title(ctx: &TestContext, id: &str, name: &str, media_root: &
         folder_path: None,
     };
     ctx.titles.create(title).await.expect("add series title")
+}
+
+async fn ensure_folder_template_setting_definition(ctx: &TestContext) {
+    ctx.settings_store
+        .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
+            category: "media".into(),
+            scope: "system".into(),
+            key_name: "folder.template".into(),
+            data_type: "string".into(),
+            default_value_json: "null".into(),
+            is_sensitive: false,
+            validation_json: None,
+        }])
+        .await
+        .expect("seed folder template setting definition");
+}
+
+async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &str) {
+    ensure_folder_template_setting_definition(ctx).await;
+    let actor = ctx.app.find_or_create_default_user().await.unwrap();
+    ctx.app
+        .update_media_settings(
+            &actor,
+            facet,
+            scryer_application::UpdateMediaSettings {
+                library_path: None,
+                root_folders: None,
+                required_audio_languages: None,
+                folder_template: Some(template.to_string()),
+                rename_template: None,
+                rename_collision_policy: None,
+                rename_missing_metadata_policy: None,
+                filler_policy: None,
+                recap_policy: None,
+                monitor_specials: None,
+                inter_season_movies: None,
+                monitor_filler_movies: None,
+                nfo_write_on_import: None,
+                plexmatch_write_on_import: None,
+            },
+        )
+        .await
+        .expect("update folder template");
 }
 
 fn mediainfo_fixture(name: &str) -> PathBuf {
@@ -544,6 +587,49 @@ async fn import_movie_strm_file_is_treated_as_video_artifact() {
     assert_eq!(media_files[0].video_height, Some(1080));
     assert_eq!(media_files[0].video_width, Some(1920));
     assert_eq!(media_files[0].video_codec, None);
+}
+
+#[tokio::test]
+async fn import_movie_rejection_does_not_persist_title_folder_path() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Rejected.Movie.2025.1080p.WEB-DL.sample.mkv",
+    );
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_movie_title(
+        &ctx,
+        "title-movie-reject-folder-path",
+        "Rejected Movie",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+
+    let completed = scryer_completed(
+        "dl-movie-reject-folder-path",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "movie",
+    );
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("import_completed_download");
+
+    assert_ne!(result.decision, ImportDecision::Imported);
+    let updated_title = ctx
+        .titles
+        .get_by_id(&title.id)
+        .await
+        .expect("load title")
+        .expect("title");
+    assert_eq!(updated_title.folder_path, None);
 }
 
 #[cfg(unix)]
@@ -973,6 +1059,62 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
     assert!(imported.acquisition_score.is_some());
     assert!(imported.duration_seconds.is_some());
     assert!(imported.video_codec.is_some());
+}
+
+#[tokio::test]
+async fn manual_import_series_reuses_existing_title_folder_path_even_when_template_changes() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Template.Show.S01E01.1080p.WEB-DL.H264.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_file);
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_series_title(
+        &ctx,
+        "title-manual-series-existing-folder",
+        "Template Show",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let existing_folder = dest_root.path().join("Template Show (2024)");
+    std::fs::create_dir_all(existing_folder.join("Season 01")).expect("create existing folder");
+    ctx.titles
+        .set_folder_path(&title.id, existing_folder.to_string_lossy().as_ref())
+        .await
+        .expect("set folder path");
+    set_folder_template(&ctx, MediaFacet::Series, "{title}").await;
+    let episode = seed_series_episode(&ctx, &title).await;
+    let completed = scryer_completed(
+        "dl-manual-series-existing-folder",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "series",
+    );
+
+    let results = scryer_application::execute_manual_import(
+        &app,
+        &user,
+        &title.id,
+        Some(&completed),
+        vec![scryer_application::ManualImportFileMapping {
+            file_path: source_file.to_string_lossy().to_string(),
+            episode_id: episode.id.clone(),
+            quality: Some("1080P".to_string()),
+        }],
+    )
+    .await
+    .expect("execute manual import");
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success, "manual import should succeed");
+    let dest_path = results[0].dest_path.clone().expect("dest path");
+    assert!(dest_path.contains("Template Show (2024)/Season 01/"));
+    assert!(!dest_path.contains("Template Show/Season 01/"));
 }
 
 #[tokio::test]

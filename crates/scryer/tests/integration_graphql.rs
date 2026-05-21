@@ -104,6 +104,29 @@ async fn set_rename_collision_policy(ctx: &TestContext, scope: &str, policy: &st
     );
 }
 
+async fn set_folder_template(ctx: &TestContext, scope: &str, template: &str) {
+    let body = gql(
+        ctx,
+        r#"
+        mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+          updateMediaSettings(input: $input) {
+            scope
+            folderTemplate
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "scope": scope,
+                "folderTemplate": template
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["updateMediaSettings"]["folderTemplate"], template);
+}
+
 struct FailingMediaFileRepo {
     inner: MediaFileStore,
     fail_file_id: String,
@@ -837,6 +860,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 category: "media".into(),
                 scope: "system".into(),
                 key_name: "rename.template".into(),
+                data_type: "string".into(),
+                default_value_json: "null".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "folder.template".into(),
                 data_type: "string".into(),
                 default_value_json: "null".into(),
                 is_sensitive: false,
@@ -2226,6 +2258,124 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
 }
 
 #[tokio::test]
+async fn apply_media_rename_for_movies_uses_folder_template_and_updates_title_folder_path() {
+    let mut ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    set_folder_template(&ctx, "movie", "{title} ({year})").await;
+    ctx.app = ctx.app.with_test_overrides(|builder| {
+        builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
+    });
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+
+    let title = create_catalog_title(
+        &ctx,
+        "Movie Apply Folder",
+        MediaFacet::Movie,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "94003".to_string(),
+        }],
+        vec![format!(
+            "scryer:root-folder:{}",
+            media_root.path().to_string_lossy()
+        )],
+        true,
+    )
+    .await;
+
+    let old_movie_dir = media_root.path().join("Movie Apply Folder");
+    std::fs::create_dir_all(&old_movie_dir).expect("create old movie dir");
+    let source_path = old_movie_dir.join("Movie.Apply.Folder.2024.1080p.WEB-DL.mkv");
+    std::fs::write(&source_path, b"movie-apply-folder").expect("write movie file");
+
+    let collection = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: scryer_domain::CollectionType::Movie,
+            collection_index: "1".to_string(),
+            label: Some("1080p".to_string()),
+            ordered_path: Some(source_path.to_string_lossy().to_string()),
+            narrative_order: None,
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: None,
+            specials_movies: vec![],
+            interstitial_season_episode: None,
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create movie collection");
+    let file_id = ctx
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: source_path.to_string_lossy().to_string(),
+            size_bytes: 8192,
+            quality_label: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert movie media file");
+
+    let actor = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("default user");
+    let preview = ctx
+        .app
+        .preview_rename_for_title(&actor, &title.id, MediaFacet::Movie)
+        .await
+        .expect("preview rename plan");
+    assert_eq!(preview.renamable, 1);
+
+    let result = ctx
+        .app
+        .apply_rename_for_title(&actor, &title.id, MediaFacet::Movie, &preview.fingerprint)
+        .await
+        .expect("apply rename");
+    assert_eq!(result.applied, 1);
+    assert_eq!(result.failed, 0);
+
+    let new_movie_dir = media_root.path().join("Movie Apply Folder (2024)");
+    let expected_path = new_movie_dir
+        .join("Movie Apply Folder (2024) - 1080p.mkv")
+        .to_string_lossy()
+        .to_string();
+    let updated_title = ctx
+        .titles
+        .get_by_id(&title.id)
+        .await
+        .expect("load title")
+        .expect("title");
+    let updated_collection = ctx
+        .shows
+        .get_collection_by_id(&collection.id)
+        .await
+        .expect("load movie collection")
+        .expect("movie collection");
+    let updated_file = ctx
+        .media_files
+        .get_media_file_by_id(&file_id)
+        .await
+        .expect("load movie media file")
+        .expect("movie media file");
+
+    assert_eq!(
+        updated_title.folder_path.as_deref(),
+        Some(new_movie_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        updated_collection.ordered_path.as_deref(),
+        Some(expected_path.as_str())
+    );
+    assert_eq!(updated_file.file_path, expected_path);
+}
+
+#[tokio::test]
 async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_error_not_replace() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -3365,6 +3515,37 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
 }
 
 #[tokio::test]
+async fn graphql_media_settings_rejects_invalid_folder_template_tokens() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let body = gql(
+        &ctx,
+        r#"
+        mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+          updateMediaSettings(input: $input) {
+            scope
+            folderTemplate
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "scope": "movie",
+            "folderTemplate": "{quality}"
+          }
+        }),
+    )
+    .await;
+
+    let errors = body["errors"]
+        .as_array()
+        .expect("invalid folder template should return graphql errors");
+    assert!(!errors.is_empty());
+    let message = errors[0]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("unsupported folder template token"));
+}
+
+#[tokio::test]
 async fn graphql_typed_media_settings_round_trip() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -3377,6 +3558,7 @@ async fn graphql_typed_media_settings_round_trip() {
             libraryPath
             rootFolders { path isDefault }
             requiredAudioLanguages
+            folderTemplate
             renameTemplate
             renameCollisionPolicy
             renameMissingMetadataPolicy
@@ -3398,6 +3580,7 @@ async fn graphql_typed_media_settings_round_trip() {
               { "path": "/library/anime-archive", "isDefault": false }
             ],
             "requiredAudioLanguages": ["eng", "jpn"],
+            "folderTemplate": "{title} ({year})",
             "renameTemplate": "{title} [{quality}].{ext}",
             "renameCollisionPolicy": "replace_if_better",
             "renameMissingMetadataPolicy": "skip",
@@ -3421,6 +3604,7 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_eq!(updated["rootFolders"][0]["isDefault"], true);
     assert_eq!(updated["requiredAudioLanguages"][0], "eng");
     assert_eq!(updated["requiredAudioLanguages"][1], "jpn");
+    assert_eq!(updated["folderTemplate"], "{title} ({year})");
     assert_eq!(updated["renameTemplate"], "{title} [{quality}].{ext}");
     assert_eq!(updated["renameCollisionPolicy"], "replace_if_better");
     assert_eq!(updated["renameMissingMetadataPolicy"], "skip");
@@ -3441,6 +3625,7 @@ async fn graphql_typed_media_settings_round_trip() {
             libraryPath
             rootFolders { path isDefault }
             requiredAudioLanguages
+            folderTemplate
             renameTemplate
             renameCollisionPolicy
             renameMissingMetadataPolicy
@@ -3465,6 +3650,7 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_eq!(settings["rootFolders"][1]["path"], "/library/anime-archive");
     assert_eq!(settings["requiredAudioLanguages"][0], "eng");
     assert_eq!(settings["requiredAudioLanguages"][1], "jpn");
+    assert_eq!(settings["folderTemplate"], "{title} ({year})");
     assert_eq!(settings["renameTemplate"], "{title} [{quality}].{ext}");
     assert_eq!(settings["renameCollisionPolicy"], "replace_if_better");
     assert_eq!(settings["renameMissingMetadataPolicy"], "skip");

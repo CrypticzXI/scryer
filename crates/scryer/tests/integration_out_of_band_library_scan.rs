@@ -590,6 +590,140 @@ async fn full_rescan_preserves_existing_match_for_loose_series_file() {
 }
 
 #[tokio::test]
+async fn full_scan_uses_release_subfolder_when_series_file_name_is_obfuscated() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("series root");
+    set_media_path(
+        &ctx,
+        "series.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let title_dir = media_root.path().join("Harbor Pals");
+    std::fs::create_dir_all(&title_dir).expect("create title directory");
+    let title = seed_series_title(
+        &ctx,
+        "title-obfuscated-release-dir",
+        "Harbor Pals",
+        MediaFacet::Series,
+        media_root.path(),
+        Some(&title_dir),
+        None,
+    )
+    .await;
+    let season = seed_collection(&ctx, &title, 1).await;
+    let first_episode = seed_episode(&ctx, &title, &season, 1).await;
+
+    let release_dir = title_dir.join("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+    std::fs::create_dir_all(&release_dir).expect("create release directory");
+    let obfuscated_file = release_dir.join("4f8e2c7a91b6d3e0.mkv");
+    write_fake_media_file(&obfuscated_file);
+
+    let actor = admin();
+    set_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
+    ctx
+        .app
+        .scan_library(&actor, MediaFacet::Series)
+        .await
+        .expect("full library scan");
+
+    let pending = ctx
+        .app
+        .pending_imports(
+            &actor,
+            MediaFacet::Series,
+            None,
+            PendingImportStatus::Pending,
+            20,
+            0,
+        )
+        .await
+        .expect("list pending imports after scan");
+    assert_eq!(pending.total, 0);
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list title media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(first_episode.id.as_str())
+    );
+    assert_eq!(PathBuf::from(&media_files[0].file_path), obfuscated_file);
+}
+
+#[tokio::test]
+async fn full_scan_does_not_infer_episode_from_parent_when_release_folder_has_multiple_videos() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+
+    let media_root = tempfile::tempdir().expect("series root");
+    set_media_path(
+        &ctx,
+        "series.path",
+        media_root.path().to_string_lossy().as_ref(),
+    )
+    .await;
+
+    let title_dir = media_root.path().join("Harbor Pals");
+    std::fs::create_dir_all(&title_dir).expect("create title directory");
+    let title = seed_series_title(
+        &ctx,
+        "title-multi-file-release-dir",
+        "Harbor Pals",
+        MediaFacet::Series,
+        media_root.path(),
+        Some(&title_dir),
+        None,
+    )
+    .await;
+    let season = seed_collection(&ctx, &title, 1).await;
+    let _first_episode = seed_episode(&ctx, &title, &season, 1).await;
+    let _second_episode = seed_episode(&ctx, &title, &season, 2).await;
+
+    let release_dir = title_dir.join("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+    std::fs::create_dir_all(&release_dir).expect("create release directory");
+    let first_file = release_dir.join("4f8e2c7a91b6d3e0.mkv");
+    let second_file = release_dir.join("9dbe2170c4aa87f1.mkv");
+    write_fake_media_file(&first_file);
+    write_fake_media_file(&second_file);
+
+    let actor = admin();
+    set_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
+    ctx
+        .app
+        .scan_library(&actor, MediaFacet::Series)
+        .await
+        .expect("full library scan");
+
+    let pending = ctx
+        .app
+        .pending_imports(
+            &actor,
+            MediaFacet::Series,
+            None,
+            PendingImportStatus::Pending,
+            20,
+            0,
+        )
+        .await
+        .expect("list pending imports after scan");
+    assert_eq!(pending.total, 2);
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list title media files");
+    assert!(media_files.is_empty());
+}
+
+#[tokio::test]
 async fn resolve_pending_import_succeeds_for_stale_movie_row_already_bound_to_title() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
