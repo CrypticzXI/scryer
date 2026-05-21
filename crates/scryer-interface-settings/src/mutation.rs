@@ -12,8 +12,7 @@ use scryer_application::{
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error};
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
-    from_media_settings, from_quality_profile_settings, from_service_settings,
-    from_tvdb_scan_operation, from_user,
+    from_media_settings, from_quality_profile_settings, from_service_settings, from_user,
 };
 use scryer_interface_media::types::*;
 
@@ -682,52 +681,10 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
-    async fn queue_tvdb_movies_scan(
-        &self,
-        ctx: &Context<'_>,
-        input: QueueTvdbMoviesScanInput,
-    ) -> GqlResult<TvdbScanOperationPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let source = input.source.trim().to_string();
-        let operation = app
-            .queue_tvdb_movies_scan(&actor, input.limit, &source)
-            .await
-            .map_err(to_gql_error)?;
-
-        Ok(from_tvdb_scan_operation(operation, input.limit, source))
-    }
-
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let user = app
             .authenticate_credentials(&input.username, &input.password)
-            .await
-            .map_err(to_gql_error)?;
-        let user = app
-            .attach_user_authorization(user)
-            .await
-            .map_err(to_gql_error)?;
-        let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
-        let expires_at =
-            (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
-        Ok(LoginPayload {
-            token,
-            user: from_user(user),
-            expires_at,
-        })
-    }
-
-    /// Issue a JWT for the default admin user without credentials.
-    /// Retained for compatibility when authentication is disabled.
-    async fn dev_auto_login(&self, ctx: &Context<'_>) -> GqlResult<LoginPayload> {
-        let auth_runtime = auth_runtime_from_ctx(ctx);
-        if auth_runtime.snapshot().effective_form_login_enabled {
-            return Err(Error::new("authentication is enabled"));
-        }
-        let app = app_from_ctx(ctx)?;
-        let user = app
-            .find_or_create_default_user()
             .await
             .map_err(to_gql_error)?;
         let user = app

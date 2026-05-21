@@ -2,11 +2,10 @@ use async_graphql::{Context, Error, MergedObject, Object, Result as GqlResult};
 
 use chrono::Utc;
 use scryer_application::{
-    DownloadImportFilter, PendingImportCounts, ReleaseDecisionsQuery, SCRYER_VERSION,
-    TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
-    supported_title_history_event_types,
+    DownloadImportFilter, PendingImportCounts, SCRYER_VERSION, TitleHistoryFilter,
+    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
 };
-use scryer_domain::{AppPermission, LibraryPermission, PolicyInput, TitleHistoryEventType};
+use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
 use scryer_interface_settings::SettingsQueries;
 
@@ -15,12 +14,11 @@ use crate::context::{
     current_user_from_ctx, require_app_permission, to_gql_error,
 };
 use crate::mappers::{
-    from_activity_event, from_backup_info, from_collection, from_delete_preview, from_disk_space,
-    from_domain_event, from_download_queue_item, from_episode,
-    from_external_import_monitor_warmup_progress, from_health_check_result, from_job_definition,
-    from_job_run, from_library, from_library_scan_session, from_library_settings,
-    from_media_rename_plan, from_pending_import_connection, from_pending_import_counts,
-    from_pending_release, from_provider_type, from_release_decision,
+    from_activity_event, from_backup_info, from_delete_preview, from_domain_event,
+    from_download_queue_item, from_episode, from_external_import_monitor_warmup_progress,
+    from_job_definition, from_job_run, from_library, from_library_scan_session,
+    from_library_settings, from_media_rename_plan, from_pending_import_connection,
+    from_pending_import_counts, from_pending_release, from_provider_type,
     from_smg_version_compatibility_notice, from_system_health, from_title,
     from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
     from_title_release_blocklist_entry, from_user, from_wanted_item,
@@ -445,32 +443,6 @@ impl CatalogQueries {
         Ok(from_delete_preview(preview))
     }
 
-    async fn collection(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<Option<CollectionPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let collection = app
-            .get_collection(&actor, &id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_collection);
-        Ok(collection)
-    }
-
-    async fn episode(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<EpisodePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let episode = app
-            .get_episode(&actor, &id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_episode);
-        Ok(episode)
-    }
-
     async fn wanted_item(
         &self,
         ctx: &Context<'_>,
@@ -484,37 +456,6 @@ impl CatalogQueries {
             .map_err(to_gql_error)?
             .map(from_wanted_item);
         Ok(item)
-    }
-
-    async fn policy_preview(
-        &self,
-        ctx: &Context<'_>,
-        input: PolicyInputPayload,
-    ) -> GqlResult<PolicyOutputPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-
-        let decision = app
-            .evaluate_policy(
-                &actor,
-                PolicyInput {
-                    title_id: input.title_id,
-                    facet: input.facet.into_domain(),
-                    has_existing_file: input.has_existing_file,
-                    candidate_quality: input.candidate_quality,
-                    requested_mode: scryer_domain::RequestedMode::parse(&input.requested_mode)
-                        .ok_or_else(|| Error::new("invalid requestedMode for policyPreview"))?,
-                    release_title: None,
-                    quality_profile_id: None,
-                    category: None,
-                    tags: vec![],
-                    is_anime: false,
-                },
-            )
-            .await
-            .map_err(to_gql_error)?;
-
-        Ok(crate::mappers::from_policy(decision))
     }
 
     async fn search_releases(
@@ -1123,27 +1064,6 @@ impl SystemQueries {
         Ok(RecycledItemsPayload { items, total_count })
     }
 
-    async fn health_checks(&self, ctx: &Context<'_>) -> GqlResult<Vec<HealthCheckPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let results = app
-            .cached_health_check_results(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        Ok(results
-            .iter()
-            .cloned()
-            .map(from_health_check_result)
-            .collect())
-    }
-
-    async fn disk_space(&self, ctx: &Context<'_>) -> GqlResult<Vec<DiskSpacePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let info = app.disk_space(&actor).await.map_err(to_gql_error)?;
-        Ok(info.into_iter().map(from_disk_space).collect())
-    }
-
     async fn backups(&self, ctx: &Context<'_>) -> GqlResult<Vec<BackupInfoPayload>> {
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
@@ -1160,21 +1080,6 @@ impl SystemQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(releases.into_iter().map(from_pending_release).collect())
-    }
-
-    async fn pending_release(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<Option<PendingReleasePayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let release = app
-            .get_pending_release(&actor, &id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_pending_release);
-        Ok(release)
     }
 
     async fn import_history(
@@ -1308,29 +1213,6 @@ impl AcquisitionQueries {
         Ok(items.into_iter().map(from_cutoff_unmet_item).collect())
     }
 
-    async fn release_decisions(
-        &self,
-        ctx: &Context<'_>,
-        wanted_item_id: Option<String>,
-        title_id: Option<String>,
-        #[graphql(default = 50)] limit: i64,
-    ) -> GqlResult<Vec<ReleaseDecisionPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let decisions = app
-            .list_release_decisions(
-                &actor,
-                ReleaseDecisionsQuery {
-                    wanted_item_id,
-                    title_id,
-                    limit,
-                },
-            )
-            .await
-            .map_err(to_gql_error)?;
-        Ok(decisions.into_iter().map(from_release_decision).collect())
-    }
-
     async fn title_acquisition_diagnostics(
         &self,
         ctx: &Context<'_>,
@@ -1356,14 +1238,6 @@ impl AcquisitionQueries {
             .into_iter()
             .map(crate::mappers::from_rule_set)
             .collect())
-    }
-
-    async fn rule_set(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<RuleSetPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-
-        let rule_set = app.get_rule_set(&actor, &id).await.map_err(to_gql_error)?;
-        Ok(rule_set.map(crate::mappers::from_rule_set))
     }
 
     // ── Post-Processing Scripts ──────────────────────────────────────────

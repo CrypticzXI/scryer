@@ -379,86 +379,6 @@ impl SubscriptionRoot {
         )
     }
 
-    async fn download_queue_state(
-        &self,
-        ctx: &Context<'_>,
-        include_all_activity: Option<bool>,
-        include_history_only: Option<bool>,
-        include_import_activity: Option<bool>,
-        title_id: Option<String>,
-        activity_filter: Option<DownloadActivityFilterValue>,
-    ) -> BoxStream<'static, Vec<DownloadQueueItemPayload>> {
-        let app = match app_from_ctx(ctx) {
-            Ok(app) => app,
-            Err(e) => {
-                tracing::warn!("download_queue_state sub: app_from_ctx failed: {e:?}");
-                return empty_box_stream();
-            }
-        };
-
-        let actor = match actor_from_ctx(ctx) {
-            Ok(actor) => actor,
-            Err(e) => {
-                tracing::warn!("download_queue_state sub: actor_from_ctx failed: {e:?}");
-                return empty_box_stream();
-            }
-        };
-        let receiver = match app.subscribe_download_queue_state(&actor) {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                tracing::warn!("download_queue_state sub: subscribe failed: {error}");
-                return empty_box_stream();
-            }
-        };
-
-        guard_subscription_stream(
-            ctx,
-            download_queue_state_stream_from_snapshots(
-                receiver,
-                include_all_activity.unwrap_or(false),
-                include_history_only.unwrap_or(false),
-                include_import_activity.unwrap_or(false),
-                title_id,
-                activity_filter.unwrap_or(DownloadActivityFilterValue::All),
-            ),
-        )
-    }
-
-    async fn library_scan_progress(
-        &self,
-        ctx: &Context<'_>,
-    ) -> BoxStream<'static, LibraryScanProgressPayload> {
-        let app = match app_from_ctx(ctx) {
-            Ok(app) => app,
-            Err(e) => {
-                tracing::warn!("library_scan_progress: app_from_ctx failed: {e:?}");
-                return empty_box_stream();
-            }
-        };
-
-        let actor = match actor_from_ctx(ctx) {
-            Ok(actor) => actor,
-            Err(e) => {
-                tracing::warn!("library_scan_progress: actor_from_ctx failed: {e:?}");
-                return empty_box_stream();
-            }
-        };
-        tracing::debug!(
-            "library_scan_progress: subscription started for user {}",
-            actor.id
-        );
-
-        let receiver = match app.subscribe_library_scan_progress(&actor).await {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                tracing::warn!("library_scan_progress: subscription setup failed: {error}");
-                return empty_box_stream();
-            }
-        };
-
-        guard_subscription_stream(ctx, library_scan_state_stream_from_domain_events(receiver))
-    }
-
     async fn library_scan_state(
         &self,
         ctx: &Context<'_>,
@@ -517,44 +437,6 @@ impl SubscriptionRoot {
             Ok(receiver) => receiver,
             Err(error) => {
                 tracing::warn!("job_run_events: subscribe failed: {error}");
-                return empty_box_stream();
-            }
-        };
-
-        guard_subscription_stream(
-            ctx,
-            job_run_state_stream_from_domain_events(receiver, initial_runs).await,
-        )
-    }
-
-    async fn job_run_state(&self, ctx: &Context<'_>) -> BoxStream<'static, JobRunPayload> {
-        let app = match app_from_ctx(ctx) {
-            Ok(app) => app,
-            Err(error) => {
-                tracing::warn!("job_run_state: app_from_ctx failed: {error:?}");
-                return empty_box_stream();
-            }
-        };
-
-        let actor = match actor_from_ctx(ctx) {
-            Ok(actor) => actor,
-            Err(error) => {
-                tracing::warn!("job_run_state: actor_from_ctx failed: {error:?}");
-                return empty_box_stream();
-            }
-        };
-        let initial_runs = match app.active_job_runs(&actor).await {
-            Ok(runs) => runs,
-            Err(error) => {
-                tracing::warn!("job_run_state: initial load failed: {error}");
-                return empty_box_stream();
-            }
-        };
-
-        let receiver = match app.subscribe_job_run_state(&actor).await {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                tracing::warn!("job_run_state: subscribe failed: {error}");
                 return empty_box_stream();
             }
         };

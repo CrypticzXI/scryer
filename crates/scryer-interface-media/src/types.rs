@@ -1246,15 +1246,6 @@ pub struct TitleMediaFilePayload {
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct DiskSpacePayload {
-    pub path: String,
-    pub label: String,
-    pub total_bytes: String,
-    pub free_bytes: String,
-    pub used_bytes: String,
-}
-
-#[derive(SimpleObject, Clone)]
 pub struct SystemHealthPayload {
     pub service_ready: bool,
     pub db_path: String,
@@ -1308,15 +1299,6 @@ pub struct UserPayload {
 pub struct UserLibraryPermissionGrantPayload {
     pub library_id: String,
     pub permissions: Vec<LibraryPermissionValue>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct PolicyOutputPayload {
-    pub decision: bool,
-    pub score: f32,
-    pub reason_codes: Vec<String>,
-    pub explanation: String,
-    pub scoring_log: Vec<ScoringEntryPayload>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1953,20 +1935,6 @@ pub struct IgnoreTrackedDownloadInput {
     pub download_client_item_id: String,
 }
 
-#[derive(InputObject)]
-pub struct MarkTrackedDownloadFailedInput {
-    pub client_id: Option<String>,
-    pub client_type: String,
-    pub download_client_item_id: String,
-}
-
-#[derive(InputObject)]
-pub struct RetryTrackedDownloadImportInput {
-    pub client_id: Option<String>,
-    pub client_type: String,
-    pub download_client_item_id: String,
-}
-
 #[derive(OneofObject, Clone)]
 pub enum QueueDownloadScopeInput {
     Episode(String),
@@ -2417,20 +2385,6 @@ pub struct ServiceSettingsPayload {
     pub tls_key_path: String,
 }
 
-#[derive(SimpleObject, Clone)]
-pub struct TvdbScanOperationPayload {
-    pub id: String,
-    pub operation_type: String,
-    pub status: String,
-    pub actor_user_id: Option<String>,
-    pub limit: i64,
-    pub source: String,
-    pub started_at: Option<String>,
-    pub completed_at: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
 #[derive(InputObject, Clone)]
 pub struct ExternalIdInput {
     pub source: String,
@@ -2482,15 +2436,6 @@ pub struct SearchReleasesInput {
     pub season: Option<String>,
     pub episode: Option<String>,
     pub limit: Option<i32>,
-}
-
-#[derive(InputObject)]
-pub struct PolicyInputPayload {
-    pub title_id: String,
-    pub facet: MediaFacetValue,
-    pub has_existing_file: bool,
-    pub candidate_quality: Option<String>,
-    pub requested_mode: String,
 }
 
 #[derive(InputObject)]
@@ -2570,8 +2515,6 @@ pub struct WantedSearchPayload {
 pub enum DownloadQueueActionKindValue {
     QueuedManualImport,
     IgnoredTrackedDownload,
-    MarkedTrackedDownloadFailed,
-    RetriedTrackedDownloadImport,
     AssignedTrackedDownloadTitle,
     Paused,
     Resumed,
@@ -2845,12 +2788,6 @@ pub struct DeleteDelayProfileInput {
 }
 
 #[derive(InputObject)]
-pub struct QueueTvdbMoviesScanInput {
-    pub limit: i64,
-    pub source: String,
-}
-
-#[derive(InputObject)]
 pub struct CreateIndexerConfigInput {
     pub name: String,
     pub provider_type: String,
@@ -3006,61 +2943,6 @@ pub struct FixTitleMatchInput {
     pub tvdb_id: String,
 }
 
-#[derive(InputObject)]
-pub struct CreateCollectionInput {
-    pub title_id: String,
-    pub collection_type: String,
-    pub collection_index: String,
-    pub label: Option<String>,
-    pub ordered_path: Option<String>,
-    pub first_episode_number: Option<String>,
-    pub last_episode_number: Option<String>,
-}
-
-#[derive(InputObject)]
-pub struct CreateEpisodeInput {
-    pub title_id: String,
-    pub collection_id: Option<String>,
-    pub episode_type: String,
-    pub episode_number: Option<String>,
-    pub season_number: Option<String>,
-    pub episode_label: Option<String>,
-    pub title: Option<String>,
-    pub air_date: Option<String>,
-    pub duration_seconds: Option<i64>,
-    pub has_multi_audio: bool,
-    pub has_subtitle: bool,
-}
-
-#[derive(InputObject)]
-pub struct UpdateCollectionInput {
-    pub collection_id: String,
-    pub collection_type: Option<String>,
-    pub collection_index: Option<String>,
-    pub label: Option<String>,
-    pub ordered_path: Option<String>,
-    pub first_episode_number: Option<String>,
-    pub last_episode_number: Option<String>,
-    pub monitored: Option<bool>,
-}
-
-#[derive(InputObject)]
-pub struct UpdateEpisodeInput {
-    pub episode_id: String,
-    pub episode_type: Option<String>,
-    pub episode_number: Option<String>,
-    pub season_number: Option<String>,
-    pub episode_label: Option<String>,
-    pub title: Option<String>,
-    pub air_date: Option<String>,
-    pub duration_seconds: Option<i64>,
-    pub has_multi_audio: Option<bool>,
-    pub has_subtitle: Option<bool>,
-    pub monitored: Option<bool>,
-    pub collection_id: Option<String>,
-    pub overview: Option<String>,
-}
-
 #[derive(InputObject, Clone)]
 pub struct SetCollectionMonitoredInput {
     pub collection_id: String,
@@ -3137,16 +3019,6 @@ pub struct LibrarySettingsInput {
 #[derive(InputObject, Clone)]
 pub struct DeleteLibraryInput {
     pub library_id: String,
-}
-
-#[derive(InputObject)]
-pub struct DeleteCollectionInput {
-    pub collection_id: String,
-}
-
-#[derive(InputObject)]
-pub struct DeleteEpisodeInput {
-    pub episode_id: String,
 }
 
 #[derive(InputObject)]
@@ -3779,13 +3651,6 @@ pub struct BackupInfoPayload {
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct HealthCheckPayload {
-    pub source: String,
-    pub status: String,
-    pub message: String,
-}
-
-#[derive(SimpleObject, Clone)]
 pub struct RssSyncReportPayload {
     pub releases_fetched: i32,
     pub releases_matched: i32,
@@ -3813,19 +3678,6 @@ pub struct PendingReleasePayload {
 #[derive(InputObject)]
 pub struct PendingReleaseActionInput {
     pub id: String,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct HousekeepingReportPayload {
-    pub orphaned_media_files: i32,
-    pub stale_release_decisions: i32,
-    pub stale_release_attempts: i32,
-    pub expired_event_outboxes: i32,
-    pub stale_history_events: i32,
-    pub stale_history_records: i32,
-    pub staged_nzb_artifacts_pruned: i32,
-    pub recycled_purged: i32,
-    pub ran_at: String,
 }
 
 // ── Recycle Bin ────────────────────────────────────────────────────────────

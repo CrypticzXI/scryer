@@ -1222,123 +1222,6 @@ async fn set_title_folder_path(ctx: &TestContext, title_id: &str, path: &std::pa
         .expect("set title folder path");
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct SeriesMonitoringSummary {
-    title_monitored: bool,
-    collection_monitored: bool,
-    episode_monitored: bool,
-    wanted_count: i64,
-}
-
-async fn create_series_monitoring_fixture(
-    ctx: &TestContext,
-    name: &str,
-    tvdb_id: &str,
-) -> (Title, Collection, Episode) {
-    let title = create_catalog_title(
-        ctx,
-        name,
-        MediaFacet::Series,
-        vec![ExternalId {
-            source: "tvdb".to_string(),
-            value: tvdb_id.to_string(),
-        }],
-        vec![],
-        false,
-    )
-    .await;
-
-    let collection = ctx
-        .shows
-        .create_collection(Collection {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_type: scryer_domain::CollectionType::Season,
-            collection_index: "1".to_string(),
-            label: Some("Season 1".to_string()),
-            ordered_path: None,
-            narrative_order: None,
-            first_episode_number: Some("1".to_string()),
-            last_episode_number: Some("1".to_string()),
-            interstitial_movie: None,
-            specials_movies: vec![],
-            interstitial_season_episode: None,
-            monitored: false,
-            created_at: chrono::Utc::now(),
-        })
-        .await
-        .expect("create season collection");
-
-    let episode = ctx
-        .shows
-        .create_episode(Episode {
-            id: Id::new().0,
-            title_id: title.id.clone(),
-            collection_id: Some(collection.id.clone()),
-            episode_type: scryer_domain::EpisodeType::Standard,
-            episode_number: Some("1".to_string()),
-            season_number: Some("1".to_string()),
-            episode_label: Some("S01E01".to_string()),
-            title: Some("Pilot".to_string()),
-            air_date: Some("2024-01-01".to_string()),
-            duration_seconds: Some(1440),
-            has_multi_audio: false,
-            has_subtitle: false,
-            is_filler: false,
-            is_recap: false,
-            absolute_number: Some("1".to_string()),
-            overview: Some("Pilot episode".to_string()),
-            tvdb_id: Some(format!("{tvdb_id}01")),
-            monitored: false,
-            created_at: chrono::Utc::now(),
-        })
-        .await
-        .expect("create episode");
-
-    (title, collection, episode)
-}
-
-async fn series_monitoring_summary(
-    ctx: &TestContext,
-    title_id: &str,
-    collection_id: &str,
-    episode_id: &str,
-) -> SeriesMonitoringSummary {
-    let title = ctx
-        .titles
-        .get_by_id(title_id)
-        .await
-        .expect("load title")
-        .expect("title");
-    let collection = ctx
-        .shows
-        .get_collection_by_id(collection_id)
-        .await
-        .expect("load collection")
-        .expect("collection");
-    let episode = ctx
-        .shows
-        .get_episode_by_id(episode_id)
-        .await
-        .expect("load episode")
-        .expect("episode");
-    let wanted_count = ctx
-        .library_state
-        .count_wanted_items(scryer_application::WantedItemsQuery {
-            title_id: Some(title_id.to_string()),
-            ..scryer_application::WantedItemsQuery::default()
-        })
-        .await
-        .expect("count wanted items");
-
-    SeriesMonitoringSummary {
-        title_monitored: title.monitored,
-        collection_monitored: collection.monitored,
-        episode_monitored: episode.monitored,
-        wanted_count,
-    }
-}
-
 async fn activity_kinds_for_title(ctx: &TestContext, title_id: &str) -> Vec<String> {
     let body = gql(ctx, "{ activityEvents { kind titleId } }", json!({})).await;
     assert_no_errors(&body);
@@ -3305,7 +3188,7 @@ async fn graphql_introspection_query_root_uses_semantic_search_and_browse_fields
     assert!(!names.contains(&"collectionEpisodes"));
     assert!(!names.contains(&"titleMediaFiles"));
     assert!(names.contains(&"wantedItem"));
-    assert!(names.contains(&"pendingRelease"));
+    assert!(!names.contains(&"pendingRelease"));
     assert!(names.contains(&"downloadHistory"));
 }
 
@@ -4534,19 +4417,6 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     assert_no_errors(&me_without_auth);
     assert!(me_without_auth["data"]["me"].is_null());
 
-    let auto_login = gql(
-        &ctx,
-        r#"mutation { devAutoLogin { token user { username } } }"#,
-        json!({}),
-    )
-    .await;
-    assert!(
-        auto_login["errors"]
-            .as_array()
-            .is_some_and(|errors| !errors.is_empty()),
-        "expected devAutoLogin to fail after auth was enabled: {auto_login}"
-    );
-
     let read = schema_exec(
         &ctx,
         r#"
@@ -5381,7 +5251,7 @@ async fn graphql_traverses_core_graph_relationships() {
     let body = gql(
         &ctx,
         r#"
-        query CoreGraph($titleId: String!, $collectionId: String!, $episodeId: String!, $wantedItemId: String!, $pendingReleaseId: String!) {
+        query CoreGraph($titleId: String!, $wantedItemId: String!) {
           title(id: $titleId) {
             id
             downloadQueueItems {
@@ -5433,17 +5303,6 @@ async fn graphql_traverses_core_graph_relationships() {
               title { id }
             }
           }
-          collection(id: $collectionId) {
-            id
-            title { id }
-          }
-          episode(id: $episodeId) {
-            id
-            parentTitle { id }
-            collection { id }
-            wantedItem { id }
-            mediaFiles { id }
-          }
           wantedItem(id: $wantedItemId) {
             id
             title { id }
@@ -5457,20 +5316,11 @@ async fn graphql_traverses_core_graph_relationships() {
             }
             releaseDecisions(limit: 10) { id }
           }
-          pendingRelease(id: $pendingReleaseId) {
-            id
-            status
-            title { id }
-            wantedItem { id }
-          }
         }
         "#,
         json!({
             "titleId": title.id,
-            "collectionId": collection.id,
-            "episodeId": episode.id,
             "wantedItemId": wanted_item.id,
-            "pendingReleaseId": pending_release.id,
         }),
     )
     .await;
@@ -5520,11 +5370,6 @@ async fn graphql_traverses_core_graph_relationships() {
         wanted_item.id
     );
 
-    assert_eq!(body["data"]["collection"]["title"]["id"], title.id);
-    assert_eq!(body["data"]["episode"]["parentTitle"]["id"], title.id);
-    assert_eq!(body["data"]["episode"]["collection"]["id"], collection.id);
-    assert_eq!(body["data"]["episode"]["wantedItem"]["id"], wanted_item.id);
-    assert_eq!(body["data"]["episode"]["mediaFiles"][0]["id"], file_id);
     assert_eq!(body["data"]["wantedItem"]["title"]["id"], title.id);
     assert_eq!(
         body["data"]["wantedItem"]["collection"]["id"],
@@ -5538,13 +5383,6 @@ async fn graphql_traverses_core_graph_relationships() {
     assert_eq!(
         body["data"]["wantedItem"]["releaseDecisions"][0]["id"],
         decision.id
-    );
-    assert_eq!(body["data"]["pendingRelease"]["id"], pending_release.id);
-    assert_eq!(body["data"]["pendingRelease"]["status"], "waiting");
-    assert_eq!(body["data"]["pendingRelease"]["title"]["id"], title.id);
-    assert_eq!(
-        body["data"]["pendingRelease"]["wantedItem"]["id"],
-        wanted_item.id
     );
 }
 
@@ -5693,8 +5531,6 @@ async fn graphql_introspection_exposes_queue_action_payloads() {
     for field_name in [
         "queueManualImport",
         "ignoreTrackedDownload",
-        "markTrackedDownloadFailed",
-        "retryTrackedDownloadImport",
         "assignTrackedDownloadTitle",
         "pauseDownload",
         "resumeDownload",
@@ -7470,224 +7306,6 @@ async fn graphql_set_title_monitored() {
     )
     .await;
     assert_eq!(body["data"]["title"]["monitored"], false);
-}
-
-#[tokio::test]
-async fn graphql_update_collection_monitored_matches_set_collection_monitored_side_effects() {
-    let ctx = TestContext::new().await;
-    let (set_title, set_collection, set_episode) =
-        create_series_monitoring_fixture(&ctx, "Set Collection Flow", "61001").await;
-    let (update_title, update_collection, update_episode) =
-        create_series_monitoring_fixture(&ctx, "Update Collection Flow", "61002").await;
-
-    let set_enable = gql(
-        &ctx,
-        r#"mutation($input: SetCollectionMonitoredInput!) {
-            setCollectionMonitored(input: $input) { id monitored }
-        }"#,
-        json!({
-            "input": {
-                "collectionId": set_collection.id,
-                "monitored": true
-            }
-        }),
-    )
-    .await;
-    assert_no_errors(&set_enable);
-
-    let update_enable = gql(
-        &ctx,
-        r#"mutation($input: UpdateCollectionInput!) {
-            updateCollection(input: $input) { id monitored }
-        }"#,
-        json!({
-            "input": {
-                "collectionId": update_collection.id,
-                "monitored": true
-            }
-        }),
-    )
-    .await;
-    assert_no_errors(&update_enable);
-
-    let set_enabled_summary =
-        series_monitoring_summary(&ctx, &set_title.id, &set_collection.id, &set_episode.id).await;
-    let update_enabled_summary = series_monitoring_summary(
-        &ctx,
-        &update_title.id,
-        &update_collection.id,
-        &update_episode.id,
-    )
-    .await;
-    assert_eq!(set_enabled_summary, update_enabled_summary);
-    assert_eq!(
-        set_enabled_summary,
-        SeriesMonitoringSummary {
-            title_monitored: true,
-            collection_monitored: true,
-            episode_monitored: true,
-            wanted_count: 1,
-        }
-    );
-
-    let set_disable = gql(
-        &ctx,
-        r#"mutation($input: SetCollectionMonitoredInput!) {
-            setCollectionMonitored(input: $input) { id monitored }
-        }"#,
-        json!({
-            "input": {
-                "collectionId": set_collection.id,
-                "monitored": false
-            }
-        }),
-    )
-    .await;
-    assert_no_errors(&set_disable);
-
-    let update_disable = gql(
-        &ctx,
-        r#"mutation($input: UpdateCollectionInput!) {
-            updateCollection(input: $input) { id monitored }
-        }"#,
-        json!({
-            "input": {
-                "collectionId": update_collection.id,
-                "monitored": false
-            }
-        }),
-    )
-    .await;
-    assert_no_errors(&update_disable);
-
-    let set_disabled_summary =
-        series_monitoring_summary(&ctx, &set_title.id, &set_collection.id, &set_episode.id).await;
-    let update_disabled_summary = series_monitoring_summary(
-        &ctx,
-        &update_title.id,
-        &update_collection.id,
-        &update_episode.id,
-    )
-    .await;
-    assert_eq!(set_disabled_summary, update_disabled_summary);
-    assert_eq!(
-        set_disabled_summary,
-        SeriesMonitoringSummary {
-            title_monitored: true,
-            collection_monitored: false,
-            episode_monitored: false,
-            wanted_count: 0,
-        }
-    );
-}
-
-#[tokio::test]
-async fn graphql_update_episode_monitored_matches_set_episode_monitored_side_effects() {
-    let ctx = TestContext::new().await;
-    let (set_title, set_collection, set_episode) =
-        create_series_monitoring_fixture(&ctx, "Set Episode Flow", "62001").await;
-    let (update_title, update_collection, update_episode) =
-        create_series_monitoring_fixture(&ctx, "Update Episode Flow", "62002").await;
-
-    let set_enable = gql(
-        &ctx,
-        r#"mutation($input: SetEpisodeMonitoredInput!) {
-            setEpisodeMonitored(input: $input) { id monitored }
-        }"#,
-        json!({
-            "input": {
-                "episodeId": set_episode.id,
-                "monitored": true
-            }
-        }),
-    )
-    .await;
-    assert_no_errors(&set_enable);
-
-    let update_enable = gql(
-        &ctx,
-        r#"mutation($input: UpdateEpisodeInput!) {
-            updateEpisode(input: $input) { id monitored }
-        }"#,
-        json!({
-            "input": {
-                "episodeId": update_episode.id,
-                "monitored": true
-            }
-        }),
-    )
-    .await;
-    assert_no_errors(&update_enable);
-
-    let set_enabled_summary =
-        series_monitoring_summary(&ctx, &set_title.id, &set_collection.id, &set_episode.id).await;
-    let update_enabled_summary = series_monitoring_summary(
-        &ctx,
-        &update_title.id,
-        &update_collection.id,
-        &update_episode.id,
-    )
-    .await;
-    assert_eq!(set_enabled_summary, update_enabled_summary);
-    assert_eq!(
-        set_enabled_summary,
-        SeriesMonitoringSummary {
-            title_monitored: true,
-            collection_monitored: true,
-            episode_monitored: true,
-            wanted_count: 1,
-        }
-    );
-
-    let set_disable = gql(
-        &ctx,
-        r#"mutation($input: SetEpisodeMonitoredInput!) {
-            setEpisodeMonitored(input: $input) { id monitored }
-        }"#,
-        json!({
-            "input": {
-                "episodeId": set_episode.id,
-                "monitored": false
-            }
-        }),
-    )
-    .await;
-    assert_no_errors(&set_disable);
-
-    let update_disable = gql(
-        &ctx,
-        r#"mutation($input: UpdateEpisodeInput!) {
-            updateEpisode(input: $input) { id monitored }
-        }"#,
-        json!({
-            "input": {
-                "episodeId": update_episode.id,
-                "monitored": false
-            }
-        }),
-    )
-    .await;
-    assert_no_errors(&update_disable);
-
-    let set_disabled_summary =
-        series_monitoring_summary(&ctx, &set_title.id, &set_collection.id, &set_episode.id).await;
-    let update_disabled_summary = series_monitoring_summary(
-        &ctx,
-        &update_title.id,
-        &update_collection.id,
-        &update_episode.id,
-    )
-    .await;
-    assert_eq!(set_disabled_summary, update_disabled_summary);
-    assert_eq!(
-        set_disabled_summary,
-        SeriesMonitoringSummary {
-            title_monitored: true,
-            collection_monitored: true,
-            episode_monitored: false,
-            wanted_count: 0,
-        }
-    );
 }
 
 #[tokio::test]
@@ -10070,32 +9688,6 @@ async fn graphql_create_user() {
     assert_eq!(body["data"]["createUser"]["username"], "testuser");
 }
 
-#[tokio::test]
-async fn graphql_dev_auto_login() {
-    let ctx = TestContext::new().await;
-    let body = gql(
-        &ctx,
-        r#"mutation { devAutoLogin { token user { username appPermissions } } }"#,
-        json!({}),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert!(
-        body["data"]["devAutoLogin"]["token"].is_string(),
-        "should return token"
-    );
-    assert_eq!(body["data"]["devAutoLogin"]["user"]["username"], "admin");
-    assert_eq!(
-        body["data"]["devAutoLogin"]["user"]["appPermissions"],
-        json!([
-            "manageUsers",
-            "managePermissions",
-            "manageSystemSettings",
-            "manageCatalogSettings",
-        ])
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Download queue
 // ---------------------------------------------------------------------------
@@ -10393,8 +9985,13 @@ async fn graphql_download_history_empty() {
 }
 
 #[tokio::test]
-async fn graphql_run_housekeeping_reports_pruned_staged_nzb_artifacts() {
+async fn housekeeping_reports_pruned_staged_nzb_artifacts() {
     let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("default user should initialize");
     let nzb_xml = load_fixture("nzbgeek/nzb_content.xml");
     let staged = ctx
         .staged_nzb_store
@@ -10406,18 +10003,13 @@ async fn graphql_run_housekeeping_reports_pruned_staged_nzb_artifacts() {
         .await
         .expect("staged artifact timestamp should update");
 
-    let body = gql(
-        &ctx,
-        "mutation { runHousekeeping { stagedNzbArtifactsPruned } }",
-        json!({}),
-    )
-    .await;
+    let report = ctx
+        .app
+        .run_housekeeping(&admin)
+        .await
+        .expect("housekeeping should run");
 
-    assert_no_errors(&body);
-    assert_eq!(
-        body["data"]["runHousekeeping"]["stagedNzbArtifactsPruned"],
-        1
-    );
+    assert_eq!(report.staged_nzb_artifacts_pruned, 1);
     assert_eq!(
         ctx.staged_nzb_store.count_staged_artifacts().await.unwrap(),
         0
@@ -10425,10 +10017,11 @@ async fn graphql_run_housekeeping_reports_pruned_staged_nzb_artifacts() {
 }
 
 #[tokio::test]
-async fn graphql_run_housekeeping_respects_configured_history_retention() {
+async fn housekeeping_respects_configured_history_retention() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    ctx.app
+    let admin = ctx
+        .app
         .find_or_create_default_user()
         .await
         .expect("default user should initialize");
@@ -10630,17 +10223,15 @@ async fn graphql_run_housekeeping_respects_configured_history_retention() {
     .await;
     assert_no_errors(&update);
 
-    let body = gql(
-        &ctx,
-        "mutation { runHousekeeping { staleReleaseDecisions staleReleaseAttempts staleHistoryEvents staleHistoryRecords } }",
-        json!({}),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert_eq!(body["data"]["runHousekeeping"]["staleReleaseDecisions"], 1);
-    assert_eq!(body["data"]["runHousekeeping"]["staleReleaseAttempts"], 1);
-    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryEvents"], 1);
-    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryRecords"], 8);
+    let report = ctx
+        .app
+        .run_housekeeping(&admin)
+        .await
+        .expect("housekeeping should run");
+    assert_eq!(report.stale_release_decisions, 1);
+    assert_eq!(report.stale_release_attempts, 1);
+    assert_eq!(report.stale_history_events, 1);
+    assert_eq!(report.stale_history_records, 8);
 
     let remaining_release_decisions: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM release_decisions")
@@ -10690,9 +10281,14 @@ async fn graphql_run_housekeeping_respects_configured_history_retention() {
 }
 
 #[tokio::test]
-async fn graphql_run_housekeeping_skips_history_retention_when_keep_forever_is_enabled() {
+async fn housekeeping_skips_history_retention_when_keep_forever_is_enabled() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("default user should initialize");
     let baseline_domain_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM domain_events")
         .fetch_one(ctx.db.pool())
         .await
@@ -10829,17 +10425,15 @@ async fn graphql_run_housekeeping_skips_history_retention_when_keep_forever_is_e
     .await;
     assert_no_errors(&update);
 
-    let body = gql(
-        &ctx,
-        "mutation { runHousekeeping { staleReleaseDecisions staleReleaseAttempts staleHistoryEvents staleHistoryRecords } }",
-        json!({}),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert_eq!(body["data"]["runHousekeeping"]["staleReleaseDecisions"], 1);
-    assert_eq!(body["data"]["runHousekeeping"]["staleReleaseAttempts"], 1);
-    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryEvents"], 0);
-    assert_eq!(body["data"]["runHousekeeping"]["staleHistoryRecords"], 3);
+    let report = ctx
+        .app
+        .run_housekeeping(&admin)
+        .await
+        .expect("housekeeping should run");
+    assert_eq!(report.stale_release_decisions, 1);
+    assert_eq!(report.stale_release_attempts, 1);
+    assert_eq!(report.stale_history_events, 0);
+    assert_eq!(report.stale_history_records, 3);
 
     let remaining_history_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM history_events")
         .fetch_one(ctx.db.pool())

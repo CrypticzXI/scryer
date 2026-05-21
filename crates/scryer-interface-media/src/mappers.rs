@@ -1,22 +1,22 @@
 use crate::types::*;
 use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
-    ActivityEvent, BackupInfo, DeletePreview, DiskSpaceInfo, DownloadClientRoutingSettingsEntry,
-    FacetScoringPersonaSelection, HealthCheckResult, HousekeepingReport, IgnorePendingImportResult,
-    IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
-    LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaSettings, ParsedEpisodeMetadata,
+    ActivityEvent, BackupInfo, DeletePreview, DownloadClientRoutingSettingsEntry,
+    FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerRoutingSettingsEntry,
+    IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary,
+    LibrarySettings, ManualPluginPreview, MediaSettings, ParsedEpisodeMetadata,
     ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
     PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
     QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
     QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
     RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
     ServiceSettings, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
-    TitleHistoryPage, TitleReleaseBlocklistEntry, WorkflowOperationInfo,
+    TitleHistoryPage, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
     DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, Library, MediaFacet,
-    PluginInstallation, PluginSupportTier, PolicyOutput, RuleSet, SubtitleProviderConfig, Title,
+    PluginInstallation, PluginSupportTier, RuleSet, SubtitleProviderConfig, Title,
     TitleHistoryRecord, User,
 };
 use scryer_rules;
@@ -351,25 +351,6 @@ pub fn from_delete_preview(preview: DeletePreview) -> DeletePreviewPayload {
         typed_confirmation_prompt: preview.typed_confirmation_prompt,
         target_label: preview.target_label,
         sample_paths: preview.sample_paths,
-    }
-}
-
-pub fn from_tvdb_scan_operation(
-    operation: WorkflowOperationInfo,
-    limit: i64,
-    source: String,
-) -> TvdbScanOperationPayload {
-    TvdbScanOperationPayload {
-        id: operation.id,
-        operation_type: operation.operation_type,
-        status: operation.status,
-        actor_user_id: operation.actor_user_id,
-        limit,
-        source,
-        started_at: operation.started_at,
-        completed_at: operation.completed_at,
-        created_at: operation.created_at,
-        updated_at: operation.updated_at,
     }
 }
 
@@ -1474,25 +1455,6 @@ pub fn from_import_record(record: scryer_domain::ImportRecord) -> ImportRecordPa
     }
 }
 
-pub fn from_policy(policy: PolicyOutput) -> PolicyOutputPayload {
-    PolicyOutputPayload {
-        decision: policy.decision,
-        score: policy.score,
-        reason_codes: policy.reason_codes,
-        explanation: policy.explanation,
-        scoring_log: policy
-            .scoring_log
-            .into_iter()
-            .map(|e| ScoringEntryPayload {
-                code: e.code,
-                delta: e.delta,
-                source: e.source,
-                rule_set_name: None,
-            })
-            .collect(),
-    }
-}
-
 pub fn from_wanted_item(item: scryer_application::WantedItem) -> WantedItemPayload {
     WantedItemPayload {
         id: item.id,
@@ -1602,16 +1564,6 @@ pub fn from_title_acquisition_diagnostics(
         mismatch_recovery_eligible_count: value.mismatch_recovery_eligible_count,
         latest_decision_at: value.latest_decision_at,
         latest_wanted_search_at: value.latest_wanted_search_at,
-    }
-}
-
-pub fn from_disk_space(info: DiskSpaceInfo) -> DiskSpacePayload {
-    DiskSpacePayload {
-        path: info.path,
-        label: info.label,
-        total_bytes: info.total_bytes.to_string(),
-        free_bytes: info.free_bytes.to_string(),
-        used_bytes: info.used_bytes.to_string(),
     }
 }
 
@@ -1948,14 +1900,6 @@ pub fn from_backup_info(info: BackupInfo) -> BackupInfoPayload {
     }
 }
 
-pub fn from_health_check_result(result: HealthCheckResult) -> HealthCheckPayload {
-    HealthCheckPayload {
-        source: result.source,
-        status: result.status.as_str().to_string(),
-        message: result.message,
-    }
-}
-
 pub fn from_rss_sync_report(report: RssSyncReport) -> RssSyncReportPayload {
     RssSyncReportPayload {
         releases_fetched: report.releases_fetched as i32,
@@ -2019,20 +1963,6 @@ pub fn from_pp_script_run(
         env_payload_json: r.env_payload_json,
         started_at: r.started_at,
         completed_at: r.completed_at,
-    }
-}
-
-pub fn from_housekeeping_report(report: HousekeepingReport) -> HousekeepingReportPayload {
-    HousekeepingReportPayload {
-        orphaned_media_files: report.orphaned_media_files as i32,
-        stale_release_decisions: report.stale_release_decisions as i32,
-        stale_release_attempts: report.stale_release_attempts as i32,
-        expired_event_outboxes: report.expired_event_outboxes as i32,
-        stale_history_events: report.stale_history_events as i32,
-        stale_history_records: report.stale_history_records as i32,
-        staged_nzb_artifacts_pruned: report.staged_nzb_artifacts_pruned as i32,
-        recycled_purged: report.recycled_purged as i32,
-        ran_at: report.ran_at,
     }
 }
 

@@ -368,40 +368,6 @@ async fn rego_list_rule_sets() {
 }
 
 #[tokio::test]
-async fn rego_get_by_id() {
-    let ctx = TestContext::new().await;
-    let id = create_rule(&ctx, "Fetch Me", SIMPLE_BONUS_REGO).await;
-
-    let body = gql(
-        &ctx,
-        r#"query($id: String!) { ruleSet(id: $id) { id name regoSource } }"#,
-        json!({ "id": id }),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert_eq!(body["data"]["ruleSet"]["name"], "Fetch Me");
-    assert!(
-        body["data"]["ruleSet"]["regoSource"]
-            .as_str()
-            .unwrap()
-            .contains("score_entry")
-    );
-}
-
-#[tokio::test]
-async fn rego_get_nonexistent() {
-    let ctx = TestContext::new().await;
-    let body = gql(
-        &ctx,
-        r#"query($id: String!) { ruleSet(id: $id) { id } }"#,
-        json!({ "id": "nonexistent-id" }),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert!(body["data"]["ruleSet"].is_null());
-}
-
-#[tokio::test]
 async fn rego_update_name() {
     let ctx = TestContext::new().await;
     let id = create_rule(&ctx, "Old Name", SIMPLE_BONUS_REGO).await;

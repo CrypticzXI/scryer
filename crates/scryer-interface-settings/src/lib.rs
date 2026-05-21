@@ -301,35 +301,6 @@ impl SettingsQueries {
         Ok(payloads)
     }
 
-    async fn indexer(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<Option<IndexerConfigPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let config = app
-            .get_indexer_config(&actor, &id)
-            .await
-            .map_err(to_gql_error)?;
-        let mut payload = config.map(|config| {
-            let config_fields = app
-                .indexer_config_fields_for_provider_type(&config.provider_type)
-                .unwrap_or_default();
-            from_indexer_config_with_fields(config, &config_fields)
-        });
-        if let Some(ref mut p) = payload {
-            let stats = app
-                .indexer_query_stats(&actor)
-                .await
-                .map_err(to_gql_error)?;
-            if let Some(s) = stats.iter().find(|s| s.indexer_id == p.id) {
-                p.last_query_at = s.last_query_at.clone();
-            }
-        }
-        Ok(payload)
-    }
-
     async fn root_folders(
         &self,
         ctx: &Context<'_>,
@@ -365,21 +336,6 @@ impl SettingsQueries {
             .into_iter()
             .map(from_download_client_config)
             .collect())
-    }
-
-    async fn download_client_config(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<Option<DownloadClientConfigPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let config = app
-            .get_download_client_config(&actor, &id)
-            .await
-            .map_err(to_gql_error)?
-            .map(from_download_client_config);
-        Ok(config)
     }
 
     async fn subtitle_provider_configs(
@@ -420,21 +376,5 @@ impl SettingsQueries {
             payloads.push(from_user(user));
         }
         Ok(payloads)
-    }
-
-    async fn user(&self, ctx: &Context<'_>, id: String) -> GqlResult<Option<UserPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let user = app.get_user(&actor, &id).await.map_err(to_gql_error)?;
-        match user {
-            Some(user) => {
-                let user = app
-                    .attach_user_authorization(user)
-                    .await
-                    .map_err(to_gql_error)?;
-                Ok(Some(from_user(user)))
-            }
-            None => Ok(None),
-        }
     }
 }

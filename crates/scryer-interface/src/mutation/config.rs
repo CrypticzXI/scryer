@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 use crate::mappers::{
-    from_download_client_config, from_housekeeping_report, from_indexer_config_sync_result,
-    from_indexer_config_with_fields, from_rss_sync_report, from_subtitle_provider_config,
+    from_download_client_config, from_indexer_config_sync_result, from_indexer_config_with_fields,
+    from_rss_sync_report, from_subtitle_provider_config,
 };
 use crate::types::*;
 
@@ -466,13 +466,6 @@ impl ConfigMutations {
             .await
             .map_err(to_gql_error)?;
         Ok(from_indexer_config_sync_result(result))
-    }
-
-    async fn run_housekeeping(&self, ctx: &Context<'_>) -> GqlResult<HousekeepingReportPayload> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let report = app.run_housekeeping(&actor).await.map_err(to_gql_error)?;
-        Ok(from_housekeeping_report(report))
     }
 
     async fn trigger_rss_sync(&self, ctx: &Context<'_>) -> GqlResult<RssSyncReportPayload> {
