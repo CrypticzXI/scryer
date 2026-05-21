@@ -1,6 +1,6 @@
 [package]
 name = "scryer-mediainfo"
-version = "0.15.3"
+version = "0.15.4"
 edition.workspace = true
 
 [dependencies]
