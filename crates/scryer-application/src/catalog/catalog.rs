@@ -4509,8 +4509,8 @@ impl AppUseCase {
                             &import_paths.folder_template,
                             None,
                         )
-                            .to_string_lossy()
-                            .to_string(),
+                        .to_string_lossy()
+                        .to_string(),
                     );
                 }
             }

@@ -124,7 +124,10 @@ async fn set_folder_template(ctx: &TestContext, scope: &str, template: &str) {
     )
     .await;
     assert_no_errors(&body);
-    assert_eq!(body["data"]["updateMediaSettings"]["folderTemplate"], template);
+    assert_eq!(
+        body["data"]["updateMediaSettings"]["folderTemplate"],
+        template
+    );
 }
 
 struct FailingMediaFileRepo {

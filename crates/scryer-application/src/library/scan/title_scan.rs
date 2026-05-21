@@ -72,7 +72,8 @@ fn fill_missing_title_scan_release_metadata(
     fallback: &crate::ParsedReleaseMetadata,
     facet: &scryer_domain::MediaFacet,
 ) {
-    if !parsed_release_has_title_scan_episode_identity(target, facet) && fallback.episode.is_some() {
+    if !parsed_release_has_title_scan_episode_identity(target, facet) && fallback.episode.is_some()
+    {
         target.episode = fallback.episode.clone();
     }
     if target.imdb_id.is_none() {

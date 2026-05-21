@@ -1034,12 +1034,8 @@ fn build_movie_rename_plan_items(
                 .ordered_path
                 .as_deref()
                 .and_then(|path| media_files_by_path.get(path));
-            let mut item = build_movie_rename_plan_item(
-                title,
-                &collection,
-                matched_media_file,
-                options,
-            );
+            let mut item =
+                build_movie_rename_plan_item(title, &collection, matched_media_file, options);
             if item.media_file_id.is_none() {
                 item.media_file_id = matched_media_file.map(|media_file| media_file.id.clone());
             }

@@ -69,7 +69,8 @@ fn render_title_folder_template_trims_empty_year_group() {
 fn configured_title_folder_path_prefers_title_year_over_parsed_release_year() {
     let mut title = test_movie_title("Movie");
     title.year = Some(2024);
-    let path = configured_title_folder_path("/library/movies", &title, "{title} ({year})", Some(2025));
+    let path =
+        configured_title_folder_path("/library/movies", &title, "{title} ({year})", Some(2025));
     assert_eq!(path, std::path::Path::new("/library/movies/Movie (2024)"));
 }
 
@@ -459,7 +460,12 @@ fn movie_rename_items_use_matched_media_file_analysis_instead_of_path_parse() {
         planned_targets: &mut planned_targets,
     };
 
-    let items = build_movie_rename_plan_items(&title, vec![collection], vec![media_file.clone()], &mut options);
+    let items = build_movie_rename_plan_items(
+        &title,
+        vec![collection],
+        vec![media_file.clone()],
+        &mut options,
+    );
 
     assert_eq!(items.len(), 1);
     assert_eq!(
@@ -495,7 +501,8 @@ fn movie_rename_items_use_saved_hydrated_localized_title_name() {
         planned_targets: &mut planned_targets,
     };
 
-    let items = build_movie_rename_plan_items(&title, vec![collection], vec![media_file], &mut options);
+    let items =
+        build_movie_rename_plan_items(&title, vec![collection], vec![media_file], &mut options);
 
     assert_eq!(items.len(), 1);
     assert_eq!(

@@ -624,8 +624,7 @@ async fn full_scan_uses_release_subfolder_when_series_file_name_is_obfuscated() 
 
     let actor = admin();
     set_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
-    ctx
-        .app
+    ctx.app
         .scan_library(&actor, MediaFacet::Series)
         .await
         .expect("full library scan");
@@ -695,8 +694,7 @@ async fn full_scan_does_not_infer_episode_from_parent_when_release_folder_has_mu
 
     let actor = admin();
     set_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;
-    ctx
-        .app
+    ctx.app
         .scan_library(&actor, MediaFacet::Series)
         .await
         .expect("full library scan");
