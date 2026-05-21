@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import type { ViewCategoryId } from "./indexer-category-picker";
 
 const RENAME_COLLISION_POLICY_OPTIONS = [
@@ -24,6 +25,12 @@ const VALID_RENAME_TOKENS = new Set([
   "video_codec", "audio_codec", "audio_channels", "group", "ext",
   "season", "season_order", "episode", "episode_title", "absolute_episode",
 ]);
+const VALID_FOLDER_TOKENS = new Set(["title", "year"]);
+
+const FOLDER_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
+  { token: "title", labelKey: "settings.renameTokenTitle" },
+  { token: "year", labelKey: "settings.renameTokenYear" },
+];
 
 const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "title", labelKey: "settings.renameTokenTitle" },
@@ -101,6 +108,40 @@ function validateRenameTemplate(
   return null;
 }
 
+function validateFolderTemplate(
+  template: string,
+  t: Translate,
+): string | null {
+  if (!template.trim()) {
+    return t("settings.folderValidationEmpty");
+  }
+
+  let i = 0;
+  while (i < template.length) {
+    if (template[i] === "{") {
+      const closeIndex = template.indexOf("}", i + 1);
+      if (closeIndex === -1) {
+        return t("settings.renameValidationUnmatchedOpen");
+      }
+      const inner = template.slice(i + 1, closeIndex);
+      if (inner.includes("{")) {
+        return t("settings.renameValidationUnmatchedOpen");
+      }
+      const tokenName = inner.includes(":") ? inner.split(":")[0] : inner;
+      if (!VALID_FOLDER_TOKENS.has(tokenName)) {
+        return t("settings.folderValidationUnknownToken", { token: tokenName });
+      }
+      i = closeIndex + 1;
+    } else if (template[i] === "}") {
+      return t("settings.renameValidationUnmatchedClose");
+    } else {
+      i++;
+    }
+  }
+
+  return null;
+}
+
 const RENAME_PREVIEW_MOVIE_SAMPLE: Record<string, string> = {
   title: "The Dark Knight", year: "2008", quality: "2160p", edition: "IMAX",
   source: "BluRay", video_codec: "x265", audio_codec: "DTS-HD MA",
@@ -159,10 +200,140 @@ function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string 
   return result;
 }
 
+function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string | null {
+  if (!template.trim()) return null;
+  let result = "";
+  let i = 0;
+  const sampleValues =
+    scopeId === "movie"
+      ? RENAME_PREVIEW_MOVIE_SAMPLE
+      : scopeId === "anime"
+        ? RENAME_PREVIEW_ANIME_SAMPLE
+        : RENAME_PREVIEW_SERIES_SAMPLE;
+  while (i < template.length) {
+    if (template[i] === "{") {
+      const closeIndex = template.indexOf("}", i + 1);
+      if (closeIndex === -1) return null;
+      const inner = template.slice(i + 1, closeIndex);
+      if (inner.includes("{")) return null;
+      const tokenName = inner.includes(":") ? inner.split(":")[0] : inner;
+      if (!VALID_FOLDER_TOKENS.has(tokenName)) return null;
+      result += sampleValues[tokenName] ?? tokenName;
+      i = closeIndex + 1;
+    } else if (template[i] === "}") {
+      return null;
+    } else {
+      result += template[i];
+      i++;
+    }
+  }
+  return result.trim() || null;
+}
+
+type TemplateSegment = {
+  text: string;
+  isToken: boolean;
+};
+
+function splitTemplateSegments(template: string): TemplateSegment[] {
+  if (!template) {
+    return [];
+  }
+
+  const segments: TemplateSegment[] = [];
+  let cursor = 0;
+
+  while (cursor < template.length) {
+    if (template[cursor] === "{") {
+      const closeIndex = template.indexOf("}", cursor + 1);
+      if (closeIndex !== -1) {
+        const inner = template.slice(cursor + 1, closeIndex);
+        if (!inner.includes("{")) {
+          segments.push({
+            text: template.slice(cursor, closeIndex + 1),
+            isToken: true,
+          });
+          cursor = closeIndex + 1;
+          continue;
+        }
+      }
+    }
+
+    const nextTokenStart = template.indexOf("{", cursor);
+    const plainEnd =
+      nextTokenStart === -1
+        ? template.length
+        : nextTokenStart === cursor
+          ? cursor + 1
+          : nextTokenStart;
+    segments.push({
+      text: template.slice(cursor, plainEnd),
+      isToken: false,
+    });
+    cursor = plainEnd;
+  }
+
+  return segments.filter((segment) => segment.text.length > 0);
+}
+
+type HighlightedTemplateInputProps = React.ComponentProps<typeof Input> & {
+  value: string;
+};
+
+const HighlightedTemplateInput = React.forwardRef<HTMLInputElement, HighlightedTemplateInputProps>(
+  ({ className, value, onScroll, ...props }, ref) => {
+    const [scrollLeft, setScrollLeft] = React.useState(0);
+    const segments = React.useMemo(() => splitTemplateSegments(value), [value]);
+    const showOverlay = value.length > 0;
+
+    return (
+      <div className="relative">
+        {showOverlay ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-10 flex items-center overflow-hidden rounded-md px-3 py-1 text-base md:text-sm"
+          >
+            <div
+              className="min-w-full whitespace-pre"
+              style={{ transform: `translateX(-${scrollLeft}px)` }}
+            >
+              {segments.map((segment, index) => (
+                <span
+                  key={`${index}-${segment.text}`}
+                  className={segment.isToken ? "text-emerald-600 dark:text-emerald-400" : "text-foreground"}
+                >
+                  {segment.text}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <Input
+          {...props}
+          ref={ref}
+          value={value}
+          onScroll={(event) => {
+            setScrollLeft(event.currentTarget.scrollLeft);
+            onScroll?.(event);
+          }}
+          className={cn(
+            showOverlay && "text-transparent caret-foreground selection:text-transparent",
+            className,
+          )}
+        />
+      </div>
+    );
+  },
+);
+
+HighlightedTemplateInput.displayName = "HighlightedTemplateInput";
+
 export function RenameSettingsPanel({
   activeQualityScopeId,
   mediaSettingsLoading,
   mediaSettingsSaving,
+  categoryFolderTemplates,
+  handleFolderTemplateChange,
   categoryRenameTemplates,
   handleRenameTemplateChange,
   categoryRenameCollisionPolicies,
@@ -174,6 +345,8 @@ export function RenameSettingsPanel({
   activeQualityScopeId: ViewCategoryId;
   mediaSettingsLoading: boolean;
   mediaSettingsSaving: boolean;
+  categoryFolderTemplates: Record<ViewCategoryId, string>;
+  handleFolderTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   categoryRenameTemplates: Record<ViewCategoryId, string>;
   handleRenameTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   categoryRenameCollisionPolicies: Record<ViewCategoryId, string>;
@@ -183,10 +356,20 @@ export function RenameSettingsPanel({
   updateCategoryMediaProfileSettings: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
 }) {
   const t = useTranslate();
+  const folderTemplateValue = categoryFolderTemplates[activeQualityScopeId];
   const templateValue = categoryRenameTemplates[activeQualityScopeId];
+  const folderValidationError = React.useMemo(
+    () => validateFolderTemplate(folderTemplateValue, t),
+    [folderTemplateValue, t],
+  );
   const renameValidationError = React.useMemo(
     () => validateRenameTemplate(templateValue, t),
     [templateValue, t],
+  );
+
+  const folderPreview = React.useMemo(
+    () => applyFolderTemplate(folderTemplateValue, activeQualityScopeId),
+    [activeQualityScopeId, folderTemplateValue],
   );
 
   const renamePreview = React.useMemo(
@@ -194,7 +377,35 @@ export function RenameSettingsPanel({
     [activeQualityScopeId, templateValue],
   );
 
+  const folderInputRef = React.useRef<HTMLInputElement>(null);
   const templateInputRef = React.useRef<HTMLInputElement>(null);
+
+  const insertFolderToken = React.useCallback(
+    (token: string) => {
+      const input = folderInputRef.current;
+      if (!input) return;
+      const insertion = `{${token}}`;
+      const start = input.selectionStart ?? folderTemplateValue.length;
+      const end = input.selectionEnd ?? start;
+      const next = folderTemplateValue.slice(0, start) + insertion + folderTemplateValue.slice(end);
+
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      if (nativeInputValueSetter) {
+        nativeInputValueSetter.call(input, next);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+
+      requestAnimationFrame(() => {
+        const cursorPos = start + insertion.length;
+        input.setSelectionRange(cursorPos, cursorPos);
+        input.focus();
+      });
+    },
+    [folderTemplateValue],
+  );
 
   const insertToken = React.useCallback(
     (token: string) => {
@@ -227,107 +438,190 @@ export function RenameSettingsPanel({
     <form onSubmit={updateCategoryMediaProfileSettings} className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>{t("settings.renameSectionTitle")}</CardTitle>
+          <CardTitle>{t("settings.renameSection")}</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+        <CardContent className="space-y-4">
+          <section className="space-y-5 rounded-lg border border-border/70 bg-card/40 p-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-card-foreground">
+                {t("settings.folderRenameSectionTitle")}
+              </h3>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+              <div className="space-y-2.5">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.folderTemplateLabel")}
+                </Label>
+                <HighlightedTemplateInput
+                  ref={folderInputRef}
+                  value={folderTemplateValue}
+                  onChange={handleFolderTemplateChange}
+                  placeholder={t("settings.folderTemplatePlaceholder")}
+                  disabled={mediaSettingsLoading}
+                  className={
+                    folderTemplateValue.trim()
+                      ? folderValidationError
+                        ? "border-rose-500/60"
+                        : "border-emerald-500/60"
+                      : undefined
+                  }
+                />
+                {folderValidationError ? (
+                  <p className="text-xs text-rose-400">{folderValidationError}</p>
+                ) : null}
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground/60">
+                  Example
+                </Label>
+                {folderPreview ? (
+                  <div className="rounded border border-border bg-muted px-3 py-1.5">
+                    <p className="break-all font-mono text-sm text-card-foreground">{folderPreview}</p>
+                  </div>
+                ) : (
+                  <div className="rounded border border-dashed border-border bg-card/40 px-3 py-1.5">
+                    <p className="text-sm text-muted-foreground/60">&mdash;</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="space-y-2.5">
-              <Label className="text-sm text-card-foreground">
-                {t("settings.renameTemplateLabel")}
-              </Label>
-              <Input
-                ref={templateInputRef}
-                value={templateValue}
-                onChange={handleRenameTemplateChange}
-                placeholder={t("settings.renameTemplatePlaceholder")}
-                disabled={mediaSettingsLoading}
-                className={
-                  templateValue.trim()
-                    ? renameValidationError
-                      ? "text-rose-400 border-rose-500/60"
-                      : "text-emerald-600 dark:text-emerald-400 border-emerald-500/60"
-                    : undefined
-                }
-              />
-              {renameValidationError ? (
-                <p className="text-xs text-rose-400">{renameValidationError}</p>
-              ) : null}
+              <p className="text-sm font-medium text-card-foreground">
+                {t("settings.folderAvailableTokens")}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {FOLDER_TOKEN_DESCRIPTIONS.map((item) => (
+                  <button
+                    key={item.token}
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 text-xs text-card-foreground transition-colors hover:border-emerald-500 hover:bg-accent hover:text-foreground"
+                    title={t(item.labelKey)}
+                    onClick={() => insertFolderToken(item.token)}
+                  >
+                    <code className="text-emerald-600 dark:text-emerald-400">{`{${item.token}}`}</code>
+                    <span className="leading-none text-muted-foreground">{t(item.labelKey)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-6 rounded-lg border border-border/70 bg-card/40 p-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-card-foreground">
+                {t("settings.renameSectionTitle")}
+              </h3>
             </div>
 
-            <div className="space-y-2">
-              <Label className="text-xs uppercase tracking-wider text-muted-foreground/60">
-                Example
-              </Label>
-              {renamePreview ? (
-                <div className="rounded border border-border bg-muted px-3 py-1.5">
-                  <p className="break-all font-mono text-sm text-card-foreground">{renamePreview}</p>
-                </div>
-              ) : (
-                <div className="rounded border border-dashed border-border bg-card/40 px-3 py-1.5">
-                  <p className="text-sm text-muted-foreground/60">&mdash;</p>
-                </div>
-              )}
-            </div>
-          </div>
+            <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+              <div className="space-y-2.5">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.renameTemplateLabel")}
+                </Label>
+                <HighlightedTemplateInput
+                  ref={templateInputRef}
+                  value={templateValue}
+                  onChange={handleRenameTemplateChange}
+                  placeholder={t("settings.renameTemplatePlaceholder")}
+                  disabled={mediaSettingsLoading}
+                  className={
+                    templateValue.trim()
+                      ? renameValidationError
+                        ? "border-rose-500/60"
+                        : "border-emerald-500/60"
+                      : undefined
+                  }
+                />
+                {renameValidationError ? (
+                  <p className="text-xs text-rose-400">{renameValidationError}</p>
+                ) : null}
+              </div>
 
-          <div className="space-y-2.5">
-            <p className="text-sm font-medium text-card-foreground">
-              {t("settings.renameAvailableTokens")}
+              <div className="space-y-2">
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground/60">
+                  Example
+                </Label>
+                {renamePreview ? (
+                  <div className="rounded border border-border bg-muted px-3 py-1.5">
+                    <p className="break-all font-mono text-sm text-card-foreground">{renamePreview}</p>
+                  </div>
+                ) : (
+                  <div className="rounded border border-dashed border-border bg-card/40 px-3 py-1.5">
+                    <p className="text-sm text-muted-foreground/60">&mdash;</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              <p className="text-sm font-medium text-card-foreground">
+                {t("settings.renameAvailableTokens")}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {getRenameTokenDescriptions(activeQualityScopeId).map((item) => (
+                  <button
+                    key={item.token}
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 text-xs text-card-foreground transition-colors hover:border-emerald-500 hover:bg-accent hover:text-foreground"
+                    title={t(item.labelKey)}
+                    onClick={() => insertToken(item.token)}
+                  >
+                    <code className="text-emerald-600 dark:text-emerald-400">{`{${item.token}}`}</code>
+                    <span className="leading-none text-muted-foreground">{t(item.labelKey)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="space-y-2">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.renameCollisionPolicyLabel")}
+                </Label>
+                <Select value={categoryRenameCollisionPolicies[activeQualityScopeId]} onValueChange={handleRenameCollisionPolicyChange} disabled={mediaSettingsLoading}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {RENAME_COLLISION_POLICY_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{t(option.label)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="space-y-2">
+                <Label className="text-sm text-card-foreground">
+                  {t("settings.renameMissingMetadataPolicyLabel")}
+                </Label>
+                <Select value={categoryRenameMissingMetadataPolicies[activeQualityScopeId]} onValueChange={handleRenameMissingMetadataPolicyChange} disabled={mediaSettingsLoading}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {RENAME_MISSING_METADATA_POLICY_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{t(option.label)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.renamePolicyHelp")}
             </p>
-            <div className="flex flex-wrap gap-1.5">
-              {getRenameTokenDescriptions(activeQualityScopeId).map((item) => (
-                <button
-                  key={item.token}
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 text-xs text-card-foreground transition-colors hover:border-emerald-500 hover:bg-accent hover:text-foreground"
-                  title={t(item.labelKey)}
-                  onClick={() => insertToken(item.token)}
-                >
-                  <code className="text-emerald-600 dark:text-emerald-400">{`{${item.token}}`}</code>
-                  <span className="leading-none text-muted-foreground">{t(item.labelKey)}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="space-y-2">
-              <Label className="text-sm text-card-foreground">
-                {t("settings.renameCollisionPolicyLabel")}
-              </Label>
-              <Select value={categoryRenameCollisionPolicies[activeQualityScopeId]} onValueChange={handleRenameCollisionPolicyChange} disabled={mediaSettingsLoading}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RENAME_COLLISION_POLICY_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{t(option.label)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <label className="space-y-2">
-              <Label className="text-sm text-card-foreground">
-                {t("settings.renameMissingMetadataPolicyLabel")}
-              </Label>
-              <Select value={categoryRenameMissingMetadataPolicies[activeQualityScopeId]} onValueChange={handleRenameMissingMetadataPolicyChange} disabled={mediaSettingsLoading}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RENAME_MISSING_METADATA_POLICY_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{t(option.label)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.renamePolicyHelp")}
-          </p>
+          </section>
 
           <div className="flex justify-end">
-            <Button type="submit" disabled={mediaSettingsSaving || renameValidationError !== null}>
+            <Button
+              type="submit"
+              disabled={
+                mediaSettingsSaving ||
+                folderValidationError !== null ||
+                renameValidationError !== null
+              }
+            >
               {mediaSettingsSaving ? t("label.saving") : t("label.save")}
             </Button>
           </div>

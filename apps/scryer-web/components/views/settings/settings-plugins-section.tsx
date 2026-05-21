@@ -86,6 +86,7 @@ type SettingsPluginsSectionProps = {
   pluginProgress: Partial<Record<string, PluginInstallProgressRecord>>;
   pluginErrors: Partial<Record<string, string>>;
   refreshing: boolean;
+  upgradingAll: boolean;
   manualRepoUrl: string;
   manualPreview: ManualPluginPreviewRecord | null;
   manualBusy: boolean;
@@ -102,6 +103,7 @@ type SettingsPluginsSectionProps = {
   onInspectManualPluginRepo: () => void;
   onInstallManualPlugin: () => void;
   onRefreshRegistry: () => void;
+  onUpgradeAllPlugins: () => void;
   onTogglePlugin: (plugin: RegistryPluginRecord) => void;
   onInstallPlugin: (plugin: RegistryPluginRecord) => void;
   onUninstallPlugin: (plugin: RegistryPluginRecord) => void;
@@ -539,6 +541,7 @@ export function SettingsPluginsSection({
   pluginProgress,
   pluginErrors,
   refreshing,
+  upgradingAll,
   manualRepoUrl,
   manualPreview,
   manualBusy,
@@ -549,6 +552,7 @@ export function SettingsPluginsSection({
   onInspectManualPluginRepo,
   onInstallManualPlugin,
   onRefreshRegistry,
+  onUpgradeAllPlugins,
   onTogglePlugin,
   onInstallPlugin,
   onUninstallPlugin,
@@ -594,6 +598,15 @@ export function SettingsPluginsSection({
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={upgradingAll || remoteActionsBlocked.upgrade || upgradeCount === 0}
+            onClick={onUpgradeAllPlugins}
+          >
+            <ArrowUpCircle className={`mr-2 h-4 w-4 ${upgradingAll ? "animate-spin" : ""}`} />
+            {upgradingAll ? t("settings.pluginsUpdatingAll") : t("settings.pluginsUpdateAll")}
+          </Button>
           <Button
             variant="outline"
             size="sm"

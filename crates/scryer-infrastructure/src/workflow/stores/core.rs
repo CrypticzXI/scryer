@@ -1,15 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
-    DownloadQueueCommandRecord, DownloadQueueCommandRepository, DownloadSourceIdentity,
-    DownloadSubmission, DownloadSubmissionRepository, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorSnapshotRepository,
-    ImportArtifact, ImportArtifactRepository, ImportRepository, JobKey, JobRunRecord,
-    JobRunRepository, JobRunStatus, JobTriggerSource, PendingReleaseStatus, SubmissionScope,
-    SuccessfulGrabCommit, WantedStatus, WorkflowOperationInfo, WorkflowOperationRepository,
+    DownloadQueueCommandRecord, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionRepository, ExternalImportMonitorSnapshotChunk,
+    ExternalImportMonitorSnapshotEntryKind, ImportArtifact, ImportArtifactRepository,
+    ImportRepository, JobKey, JobRunRecord, JobRunStatus, JobTriggerSource, PendingReleaseStatus,
+    SubmissionScope, SuccessfulGrabCommit, WantedStatus, WorkflowOperationInfo,
 };
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventStream, DomainEventType, DownloadQueueCommandAction,
@@ -24,1139 +23,27 @@ use crate::queries::sql_runtime::{
 };
 use crate::types::WorkflowOperationRecord;
 
-const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
-const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id";
-const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, started_at, finished_at, created_at, updated_at";
-const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
+pub(crate) const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
+pub(crate) const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id";
+pub(crate) const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, started_at, finished_at, created_at, updated_at";
+pub(crate) const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
 
 #[derive(Clone)]
-pub struct DomainEventStore {
-    datastore: StoreDatastore,
+pub(crate) struct NewWorkflowOperation {
+    pub(crate) operation_type: String,
+    pub(crate) status: String,
+    pub(crate) job_key: Option<String>,
+    pub(crate) trigger_source: Option<String>,
+    pub(crate) actor_user_id: Option<String>,
+    pub(crate) progress_json: Option<String>,
+    pub(crate) summary_json: Option<String>,
+    pub(crate) summary_text: Option<String>,
+    pub(crate) error_text: Option<String>,
+    pub(crate) started_at: Option<String>,
+    pub(crate) completed_at: Option<String>,
 }
 
-#[derive(Clone)]
-pub struct AcquisitionStore {
-    datastore: StoreDatastore,
-}
-
-#[derive(Clone)]
-pub struct DownloadSubmissionStore {
-    datastore: StoreDatastore,
-}
-
-#[derive(Clone)]
-pub struct ImportStore {
-    datastore: StoreDatastore,
-}
-
-#[derive(Clone)]
-pub struct ExternalImportMonitorStore {
-    datastore: StoreDatastore,
-}
-
-#[derive(Clone)]
-pub struct DownloadQueueCommandStore {
-    datastore: StoreDatastore,
-}
-
-#[derive(Clone)]
-pub struct WorkflowOperationStore {
-    datastore: StoreDatastore,
-}
-
-#[derive(Clone)]
-struct NewWorkflowOperation {
-    operation_type: String,
-    status: String,
-    job_key: Option<String>,
-    trigger_source: Option<String>,
-    actor_user_id: Option<String>,
-    progress_json: Option<String>,
-    summary_json: Option<String>,
-    summary_text: Option<String>,
-    error_text: Option<String>,
-    started_at: Option<String>,
-    completed_at: Option<String>,
-}
-
-macro_rules! impl_store_new {
-    ($store:ident) => {
-        impl $store {
-            pub fn new(datastore: StoreDatastore) -> Self {
-                Self { datastore }
-            }
-        }
-    };
-}
-
-impl_store_new!(DomainEventStore);
-impl_store_new!(AcquisitionStore);
-impl_store_new!(DownloadSubmissionStore);
-impl_store_new!(ImportStore);
-impl_store_new!(ExternalImportMonitorStore);
-impl_store_new!(DownloadQueueCommandStore);
-impl_store_new!(WorkflowOperationStore);
-
-#[async_trait]
-impl DomainEventRepository for DomainEventStore {
-    async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent> {
-        append_domain_events(&self.datastore, vec![event])
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| AppError::Repository("failed to append domain event".into()))
-    }
-
-    async fn append_many(&self, events: Vec<NewDomainEvent>) -> AppResult<Vec<DomainEvent>> {
-        append_domain_events(&self.datastore, events).await
-    }
-
-    async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
-        let (sql, args) = build_domain_event_list_sql(filter);
-        fetch_domain_events(self.datastore.read_exec(), &sql, &args).await
-    }
-
-    async fn count_title_history_page_events(
-        &self,
-        event_types: Option<&[TitleHistoryEventType]>,
-        title_ids: Option<&[String]>,
-        download_id: Option<&str>,
-    ) -> AppResult<i64> {
-        let (where_sql, args) =
-            build_title_history_filter_sql(&self.datastore, event_types, title_ids, download_id);
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            &format!("SELECT COUNT(*) AS count FROM domain_events{where_sql}"),
-            &args,
-        )
-        .await?
-        .ok_or_else(|| AppError::Repository("missing domain event count".into()))?;
-        row.i64("count")
-    }
-
-    async fn list_title_history_page_events(
-        &self,
-        event_types: Option<&[TitleHistoryEventType]>,
-        title_ids: Option<&[String]>,
-        download_id: Option<&str>,
-        limit: usize,
-        offset: usize,
-    ) -> AppResult<Vec<DomainEvent>> {
-        let page_size = if limit == 0 { 50 } else { limit.min(500) };
-        let (where_sql, mut args) =
-            build_title_history_filter_sql(&self.datastore, event_types, title_ids, download_id);
-        args.push(SqlArg::I64(page_size as i64));
-        args.push(SqlArg::I64(offset as i64));
-        fetch_domain_events(
-            self.datastore.read_exec(),
-            &format!(
-                "SELECT {DOMAIN_EVENT_COLUMNS} FROM domain_events{where_sql} ORDER BY sequence DESC LIMIT {{}} OFFSET {{}}"
-            ),
-            &args,
-        )
-        .await
-    }
-
-    async fn list_after_sequence(
-        &self,
-        after_sequence: i64,
-        limit: usize,
-    ) -> AppResult<Vec<DomainEvent>> {
-        let filter = DomainEventFilter {
-            after_sequence: Some(after_sequence),
-            limit,
-            ..DomainEventFilter::default()
-        };
-        self.list(&filter).await
-    }
-
-    async fn delete_for_title_ids(&self, title_ids: &[String]) -> AppResult<u32> {
-        if title_ids.is_empty() {
-            return Ok(0);
-        }
-        let mut args = Vec::with_capacity(title_ids.len());
-        args.extend(title_ids.iter().cloned().map(SqlArg::Text));
-        let rows = execute_write(
-            &self.datastore,
-            "delete_domain_events_for_title_ids",
-            format!(
-                "DELETE FROM domain_events WHERE title_id IN ({})",
-                placeholders(title_ids.len())
-            ),
-            args,
-        )
-        .await?;
-        Ok(rows as u32)
-    }
-
-    async fn get_subscriber_offset(&self, subscriber: &str) -> AppResult<i64> {
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            "SELECT sequence FROM event_subscriber_offsets WHERE subscriber_name = {}",
-            &[SqlArg::Text(subscriber.to_string())],
-        )
-        .await?;
-        Ok(row.map(|row| row.i64("sequence")).transpose()?.unwrap_or(0))
-    }
-
-    async fn set_subscriber_offset(&self, subscriber: &str, sequence: i64) -> AppResult<()> {
-        let subscriber = subscriber.to_string();
-        SqlRuntime::run_in_transaction(&self.datastore, "set_event_subscriber_offset", move |tx| {
-            let subscriber = subscriber.clone();
-            Box::pin(async move {
-                SqlRuntime::execute(
-                    SqlExec::Tx(tx),
-                    "INSERT INTO event_subscriber_offsets (subscriber_name, sequence, updated_at)
-                         VALUES ({}, {}, {})
-                         ON CONFLICT(subscriber_name) DO UPDATE SET
-                            sequence = excluded.sequence,
-                            updated_at = excluded.updated_at",
-                    &[
-                        SqlArg::Text(subscriber),
-                        SqlArg::I64(sequence),
-                        SqlArg::Timestamp(Utc::now()),
-                    ],
-                )
-                .await?;
-                Ok(())
-            })
-        })
-        .await
-    }
-}
-
-#[async_trait]
-impl AcquisitionStateRepository for AcquisitionStore {
-    async fn commit_successful_grab(&self, commit: &SuccessfulGrabCommit) -> AppResult<()> {
-        let commit = commit.clone();
-        SqlRuntime::run_in_transaction(&self.datastore, "commit_successful_grab", move |tx| {
-            let commit = commit.clone();
-            Box::pin(async move { commit_successful_grab_tx(tx, &commit).await })
-        })
-        .await
-    }
-}
-
-#[async_trait]
-impl DownloadSubmissionRepository for DownloadSubmissionStore {
-    async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
-        SqlRuntime::run_in_transaction(&self.datastore, "record_download_submission", move |tx| {
-            let submission = submission.clone();
-            Box::pin(async move { record_download_submission_tx(tx, &submission).await })
-        })
-        .await
-    }
-
-    async fn find_by_client_item_id(
-        &self,
-        identity: &DownloadSourceIdentity,
-    ) -> AppResult<Option<DownloadSubmission>> {
-        let sql = download_submission_select_sql(
-            &self.datastore,
-            "WHERE download_client_type = {} AND download_client_item_id = {} AND download_client_id = {} LIMIT 1",
-        );
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            &sql,
-            &[
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-            ],
-        )
-        .await?;
-        row.map(|row| download_submission_from_row(&row))
-            .transpose()
-    }
-
-    async fn list_for_client_items(
-        &self,
-        client_items: &[DownloadSourceIdentity],
-    ) -> AppResult<Vec<DownloadSubmission>> {
-        let chunks = chunk_download_submission_client_items(client_items);
-        if chunks.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut out = Vec::new();
-        for chunk in chunks {
-            let mut args = Vec::with_capacity(chunk.len() * 3);
-            let clauses = chunk
-                .iter()
-                .map(|identity| {
-                    args.push(SqlArg::Text(identity.client_type.clone()));
-                    args.push(SqlArg::Text(identity.item_id.clone()));
-                    args.push(SqlArg::Text(normalize_download_client_id(
-                        identity.client_id.as_deref(),
-                    )));
-                    "(download_client_type = {} AND download_client_item_id = {} AND download_client_id = {})"
-                })
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            let sql = download_submission_select_sql(&self.datastore, &format!("WHERE {clauses}"));
-            out.extend(fetch_download_submissions(self.datastore.read_exec(), &sql, &args).await?);
-        }
-        Ok(out)
-    }
-
-    async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
-        let sql = download_submission_select_sql(&self.datastore, "WHERE title_id = {}");
-        fetch_download_submissions(
-            self.datastore.read_exec(),
-            &sql,
-            &[SqlArg::Text(title_id.to_string())],
-        )
-        .await
-    }
-
-    async fn find_by_title_and_request_signature(
-        &self,
-        title_id: &str,
-        request_signature: &str,
-    ) -> AppResult<Option<DownloadSubmission>> {
-        let recent_cutoff = Utc::now() - chrono::Duration::seconds(30);
-        let sql = download_submission_select_sql(
-            &self.datastore,
-            "WHERE title_id = {} AND request_signature = {} AND COALESCE(tracked_state, '') = '' AND submitted_at >= {} ORDER BY submitted_at DESC, id DESC LIMIT 1",
-        );
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            &sql,
-            &[
-                SqlArg::Text(title_id.to_string()),
-                SqlArg::Text(request_signature.to_string()),
-                SqlArg::Timestamp(recent_cutoff),
-            ],
-        )
-        .await?;
-        row.map(|row| download_submission_from_row(&row))
-            .transpose()
-    }
-
-    async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
-        let title_id = title_id.to_string();
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "delete_download_submissions_for_title",
-            move |tx| {
-                let title_id = title_id.clone();
-                Box::pin(async move {
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "DELETE FROM download_submission_episode_links
-                         WHERE EXISTS (
-                             SELECT 1
-                               FROM download_submissions
-                              WHERE download_submissions.download_client_id = download_submission_episode_links.download_client_id
-                                AND download_submissions.download_client_type = download_submission_episode_links.download_client_type
-                                AND download_submissions.download_client_item_id = download_submission_episode_links.download_client_item_id
-                                AND download_submissions.title_id = {}
-                         )",
-                        &[SqlArg::Text(title_id.clone())],
-                    )
-                    .await?;
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "DELETE FROM download_submissions WHERE title_id = {}",
-                        &[SqlArg::Text(title_id)],
-                    )
-                    .await?;
-                    Ok(())
-                })
-            },
-        )
-        .await
-    }
-
-    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
-        let identity = identity.clone();
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "delete_download_submission_by_client_item_id",
-            move |tx| {
-                let identity = identity.clone();
-                Box::pin(async move {
-                    let normalized_client_id =
-                        normalize_download_client_id(identity.client_id.as_deref());
-                    let args = [
-                        SqlArg::Text(normalized_client_id.clone()),
-                        SqlArg::Text(identity.client_type.clone()),
-                        SqlArg::Text(identity.item_id.clone()),
-                    ];
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "DELETE FROM download_submission_episode_links
-                         WHERE download_client_id = {}
-                           AND download_client_type = {}
-                           AND download_client_item_id = {}",
-                        &args,
-                    )
-                    .await?;
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "DELETE FROM download_submissions
-                         WHERE download_client_id = {}
-                           AND download_client_type = {}
-                           AND download_client_item_id = {}",
-                        &args,
-                    )
-                    .await?;
-                    Ok(())
-                })
-            },
-        )
-        .await
-    }
-
-    async fn update_tracked_state(
-        &self,
-        identity: &DownloadSourceIdentity,
-        tracked_state: &str,
-    ) -> AppResult<()> {
-        let identity = identity.clone();
-        let tracked_state = tracked_state.to_string();
-        SqlRuntime::run_in_transaction(&self.datastore, "update_tracked_state", move |tx| {
-            let identity = identity.clone();
-            let tracked_state = tracked_state.clone();
-            Box::pin(async move {
-                SqlRuntime::execute(
-                    SqlExec::Tx(tx),
-                    "INSERT INTO download_submissions
-                     (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, episode_id, collection_id, tracked_state, tracked_state_at)
-                     VALUES ({}, '', '', {}, {}, {}, NULL, NULL, NULL, NULL, NULL, NULL, {}, {})
-                     ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
-                     SET tracked_state = excluded.tracked_state,
-                         tracked_state_at = excluded.tracked_state_at",
-                    &[
-                        SqlArg::Text(Id::new().0),
-                        SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                        SqlArg::Text(identity.client_type),
-                        SqlArg::Text(identity.item_id),
-                        SqlArg::Text(tracked_state),
-                        SqlArg::Timestamp(Utc::now()),
-                    ],
-                )
-                .await?;
-                Ok(())
-            })
-        })
-        .await
-    }
-
-    async fn get_tracked_state(
-        &self,
-        identity: &DownloadSourceIdentity,
-    ) -> AppResult<Option<String>> {
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            "SELECT tracked_state FROM download_submissions
-             WHERE download_client_type = {}
-               AND download_client_item_id = {}
-               AND download_client_id = {}
-             LIMIT 1",
-            &[
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-            ],
-        )
-        .await?;
-        row.map(|row| row.opt_text("tracked_state"))
-            .transpose()
-            .map(Option::flatten)
-    }
-}
-
-#[async_trait]
-impl ImportRepository for ImportStore {
-    async fn queue_import_request(
-        &self,
-        source_identity: DownloadSourceIdentity,
-        import_type: String,
-        payload_json: String,
-    ) -> AppResult<String> {
-        queue_import_request(&self.datastore, source_identity, import_type, payload_json).await
-    }
-
-    async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            &format!("SELECT {IMPORT_COLUMNS} FROM imports WHERE id = {{}} LIMIT 1"),
-            &[SqlArg::Text(id.to_string())],
-        )
-        .await?;
-        row.map(|row| import_record_from_row(&row)).transpose()
-    }
-
-    async fn update_import_status(
-        &self,
-        import_id: &str,
-        status: ImportStatus,
-        result_json: Option<String>,
-    ) -> AppResult<()> {
-        let import_id = import_id.to_string();
-        SqlRuntime::run_in_transaction(&self.datastore, "update_import_status", move |tx| {
-            let import_id = import_id.clone();
-            let result_json = result_json.clone();
-            Box::pin(async move {
-                let now = Utc::now();
-                let is_terminal = status.is_terminal();
-                let result_arg = json_arg_for_tx(tx, result_json.as_deref())?;
-                SqlRuntime::execute(
-                    SqlExec::Tx(tx),
-                    "UPDATE imports
-                     SET status = {},
-                         result_json = {},
-                         started_at = CASE WHEN started_at IS NULL THEN {} ELSE started_at END,
-                         finished_at = CASE WHEN {} THEN {} ELSE finished_at END,
-                         updated_at = {}
-                     WHERE id = {}",
-                    &[
-                        SqlArg::Text(status.as_str().to_string()),
-                        result_arg,
-                        SqlArg::Timestamp(now),
-                        SqlArg::Bool(is_terminal),
-                        SqlArg::Timestamp(now),
-                        SqlArg::Timestamp(now),
-                        SqlArg::Text(import_id),
-                    ],
-                )
-                .await?;
-                Ok(())
-            })
-        })
-        .await
-    }
-
-    async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64> {
-        recover_stale_processing_imports(&self.datastore, None, stale_seconds).await
-    }
-
-    async fn recover_stale_processing_imports_for_type(
-        &self,
-        import_type: ImportType,
-        stale_seconds: i64,
-    ) -> AppResult<u64> {
-        recover_stale_processing_imports(&self.datastore, Some(import_type), stale_seconds).await
-    }
-
-    async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
-        fetch_imports(
-            self.datastore.read_exec(),
-            &format!(
-                "SELECT {IMPORT_COLUMNS} FROM imports
-                 WHERE status IN ('queued', 'pending', 'running', 'processing')
-                 ORDER BY created_at ASC"
-            ),
-            &[],
-        )
-        .await
-    }
-
-    async fn list_pending_imports_for_type(
-        &self,
-        import_type: ImportType,
-    ) -> AppResult<Vec<ImportRecord>> {
-        fetch_imports(
-            self.datastore.read_exec(),
-            &format!(
-                "SELECT {IMPORT_COLUMNS} FROM imports
-                 WHERE import_type = {{}}
-                   AND status IN ('queued', 'pending', 'running', 'processing')
-                 ORDER BY created_at ASC"
-            ),
-            &[SqlArg::Text(import_type.as_str().to_string())],
-        )
-        .await
-    }
-
-    async fn list_imports_for_identities(
-        &self,
-        identities: &[DownloadSourceIdentity],
-    ) -> AppResult<Vec<ImportRecord>> {
-        let identities = dedupe_identities(identities);
-        if identities.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut args = Vec::with_capacity(identities.len() * 3);
-        let clauses = identities
-            .iter()
-            .map(|identity| {
-                args.push(SqlArg::Text(normalize_download_client_id(
-                    identity.client_id.as_deref(),
-                )));
-                args.push(SqlArg::Text(identity.client_type.clone()));
-                args.push(SqlArg::Text(identity.item_id.clone()));
-                "(COALESCE(source_client_id, '') = {} AND source_system = {} AND source_ref = {})"
-            })
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        fetch_imports(
-            self.datastore.read_exec(),
-            &format!(
-                "SELECT {IMPORT_COLUMNS} FROM imports WHERE {clauses} ORDER BY updated_at DESC"
-            ),
-            &args,
-        )
-        .await
-    }
-
-    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            "SELECT COUNT(1) AS count
-             FROM imports
-             WHERE COALESCE(source_client_id, '') = {}
-               AND source_system = {}
-               AND source_ref = {}
-               AND status IN ('completed', 'skipped')",
-            &[
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-            ],
-        )
-        .await?
-        .ok_or_else(|| AppError::Repository("missing import count".into()))?;
-        Ok(row.i64("count")? > 0)
-    }
-
-    async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
-        fetch_imports(
-            self.datastore.read_exec(),
-            &format!("SELECT {IMPORT_COLUMNS} FROM imports ORDER BY created_at DESC LIMIT {{}}"),
-            &[SqlArg::I64((limit as i64).clamp(1, 500))],
-        )
-        .await
-    }
-}
-
-#[async_trait]
-impl ImportArtifactRepository for ImportStore {
-    async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()> {
-        SqlRuntime::run_in_transaction(&self.datastore, "insert_import_artifact", move |tx| {
-            let artifact = artifact.clone();
-            Box::pin(async move {
-                SqlRuntime::execute(
-                    SqlExec::Tx(tx),
-                    "INSERT INTO download_import_artifacts
-                     (id, source_client_id, source_system, source_ref, import_id, relative_path, normalized_file_name,
-                      media_kind, title_id, episode_id, season_number, episode_number,
-                      result, reason_code, imported_media_file_id, created_at)
-                     VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-                    &[
-                        SqlArg::Text(artifact.id),
-                        SqlArg::OptText(artifact.source_client_id),
-                        SqlArg::Text(artifact.source_system),
-                        SqlArg::Text(artifact.source_ref),
-                        SqlArg::OptText(artifact.import_id),
-                        SqlArg::OptText(artifact.relative_path),
-                        SqlArg::Text(artifact.normalized_file_name),
-                        SqlArg::Text(artifact.media_kind),
-                        SqlArg::OptText(artifact.title_id),
-                        SqlArg::OptText(artifact.episode_id),
-                        SqlArg::OptI32(artifact.season_number),
-                        SqlArg::OptI32(artifact.episode_number),
-                        SqlArg::Text(artifact.result),
-                        SqlArg::OptText(artifact.reason_code),
-                        SqlArg::OptText(artifact.imported_media_file_id),
-                        SqlArg::Timestamp(artifact.created_at),
-                    ],
-                )
-                .await?;
-                Ok(())
-            })
-        })
-        .await
-    }
-
-    async fn list_by_source_identity(
-        &self,
-        identity: &DownloadSourceIdentity,
-    ) -> AppResult<Vec<ImportArtifact>> {
-        SqlRuntime::fetch_all(
-            self.datastore.read_exec(),
-            "SELECT id, source_client_id, source_system, source_ref, import_id, relative_path,
-                    normalized_file_name, media_kind, title_id, episode_id,
-                    season_number, episode_number, result, reason_code,
-                    imported_media_file_id, created_at
-             FROM download_import_artifacts
-             WHERE COALESCE(source_client_id, '') = {} AND source_system = {} AND source_ref = {}
-             ORDER BY created_at",
-            &[
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-            ],
-        )
-        .await?
-        .into_iter()
-        .map(|row| import_artifact_from_row(&row))
-        .collect()
-    }
-
-    async fn count_by_result_for_source_identity(
-        &self,
-        identity: &DownloadSourceIdentity,
-        result: &str,
-    ) -> AppResult<u64> {
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            "SELECT COUNT(*) AS count FROM download_import_artifacts
-             WHERE COALESCE(source_client_id, '') = {} AND source_system = {} AND source_ref = {} AND result = {}",
-            &[
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-                SqlArg::Text(result.to_string()),
-            ],
-        )
-        .await?
-        .ok_or_else(|| AppError::Repository("missing import artifact count".into()))?;
-        Ok(row.i64("count")? as u64)
-    }
-}
-
-#[async_trait]
-impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
-    async fn append_external_import_monitor_snapshot_chunk(
-        &self,
-        chunk: &ExternalImportMonitorSnapshotChunk,
-    ) -> AppResult<()> {
-        let chunk = chunk.clone();
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "append_external_import_monitor_snapshot_chunk",
-            move |tx| {
-                let chunk = chunk.clone();
-                Box::pin(async move {
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "INSERT INTO external_import_monitor_snapshot_chunks
-                         (facet, entry_kind, chunk_index, payload_ndjson, created_at)
-                         VALUES ({}, {}, {}, {}, {})
-                         ON CONFLICT(facet, entry_kind, chunk_index) DO UPDATE SET
-                             payload_ndjson = excluded.payload_ndjson,
-                             created_at = excluded.created_at",
-                        &[
-                            SqlArg::Text(chunk.facet.as_str().to_string()),
-                            SqlArg::Text(chunk.entry_kind.as_str().to_string()),
-                            SqlArg::I32(chunk.chunk_index),
-                            SqlArg::Text(chunk.payload_ndjson),
-                            SqlArg::Timestamp(parse_datetime_or_now(Some(&chunk.created_at))),
-                        ],
-                    )
-                    .await
-                    .map_err(map_snapshot_chunk_error)?;
-                    Ok(())
-                })
-            },
-        )
-        .await
-    }
-
-    async fn list_external_import_monitor_snapshot_chunk_batch(
-        &self,
-        facet: MediaFacet,
-        entry_kind: ExternalImportMonitorSnapshotEntryKind,
-        after_chunk_index: Option<i32>,
-        limit: i32,
-    ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
-        fetch_snapshot_chunks(
-            self.datastore.read_exec(),
-            "SELECT facet, entry_kind, chunk_index, payload_ndjson, created_at
-             FROM external_import_monitor_snapshot_chunks
-             WHERE facet = {} AND entry_kind = {} AND ({} IS NULL OR chunk_index > {})
-             ORDER BY chunk_index ASC
-             LIMIT {}",
-            &[
-                SqlArg::Text(facet.as_str().to_string()),
-                SqlArg::Text(entry_kind.as_str().to_string()),
-                SqlArg::OptI32(after_chunk_index),
-                SqlArg::OptI32(after_chunk_index),
-                SqlArg::I32(limit),
-            ],
-        )
-        .await
-    }
-
-    async fn delete_external_import_monitor_snapshot_chunks(
-        &self,
-        facet: MediaFacet,
-    ) -> AppResult<()> {
-        execute_write(
-            &self.datastore,
-            "delete_external_import_monitor_snapshot_chunks",
-            "DELETE FROM external_import_monitor_snapshot_chunks WHERE facet = {}".to_string(),
-            vec![SqlArg::Text(facet.as_str().to_string())],
-        )
-        .await
-        .map_err(map_snapshot_chunk_error)?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl DownloadQueueCommandRepository for DownloadQueueCommandStore {
-    async fn queue_delete_command(
-        &self,
-        client_id: Option<&str>,
-        client_type: &str,
-        download_client_item_id: &str,
-        is_history: bool,
-        requested_by_user_id: Option<&str>,
-    ) -> AppResult<DownloadQueueCommandRecord> {
-        let client_id = client_id.map(str::to_string);
-        let client_type = client_type.to_string();
-        let download_client_item_id = download_client_item_id.to_string();
-        let requested_by_user_id = requested_by_user_id.map(str::to_string);
-        SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "queue_delete_download_command",
-            move |tx| {
-                let client_id = client_id.clone();
-                let client_type = client_type.clone();
-                let download_client_item_id = download_client_item_id.clone();
-                let requested_by_user_id = requested_by_user_id.clone();
-                Box::pin(async move {
-                    let id = Id::new().0;
-                    let now = Utc::now();
-                    let normalized_client_id = normalize_download_client_id(client_id.as_deref());
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "INSERT INTO download_queue_commands
-                         (id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at)
-                         VALUES ({}, {}, {}, {}, {}, {}, {}, NULL, {}, NULL, NULL, {}, {})
-                         ON CONFLICT DO NOTHING",
-                        &[
-                            SqlArg::Text(id),
-                            SqlArg::Text(DownloadQueueCommandAction::Delete.as_str().to_string()),
-                            SqlArg::Text(normalized_client_id.clone()),
-                            SqlArg::Text(client_type.clone()),
-                            SqlArg::Text(download_client_item_id.clone()),
-                            SqlArg::Bool(is_history),
-                            SqlArg::Text(DownloadQueueDeleteStatus::Queued.as_str().to_string()),
-                            SqlArg::OptText(requested_by_user_id),
-                            SqlArg::Timestamp(now),
-                            SqlArg::Timestamp(now),
-                        ],
-                    )
-                    .await?;
-                    fetch_optional_delete_command(
-                        SqlExec::Tx(tx),
-                        "WHERE action = {}
-                           AND COALESCE(client_id, '') = {}
-                           AND client_type = {}
-                           AND download_client_item_id = {}
-                           AND is_history = {}
-                           AND status IN ('queued', 'running')
-                         ORDER BY created_at DESC, id DESC
-                         LIMIT 1",
-                        &[
-                            SqlArg::Text(DownloadQueueCommandAction::Delete.as_str().to_string()),
-                            SqlArg::Text(normalized_client_id),
-                            SqlArg::Text(client_type),
-                            SqlArg::Text(download_client_item_id),
-                            SqlArg::Bool(is_history),
-                        ],
-                    )
-                    .await?
-                    .ok_or_else(|| AppError::Repository("failed to load queued delete command".into()))
-                })
-            },
-        )
-        .await
-    }
-
-    async fn recover_stale_running_delete_commands(&self, stale_seconds: i64) -> AppResult<u64> {
-        let now = Utc::now();
-        let cutoff = now - chrono::Duration::seconds(stale_seconds);
-        let rows = execute_write(
-            &self.datastore,
-            "recover_stale_running_delete_download_commands",
-            "UPDATE download_queue_commands
-             SET status = 'queued',
-                 error_text = NULL,
-                 started_at = NULL,
-                 finished_at = NULL,
-                 updated_at = {}
-             WHERE action = 'delete'
-               AND status = 'running'
-               AND updated_at <= {}"
-                .to_string(),
-            vec![SqlArg::Timestamp(now), SqlArg::Timestamp(cutoff)],
-        )
-        .await?;
-        Ok(rows)
-    }
-
-    async fn list_pending_delete_commands(&self) -> AppResult<Vec<DownloadQueueCommandRecord>> {
-        fetch_delete_commands(
-            self.datastore.read_exec(),
-            "WHERE action = 'delete' AND status = 'queued' ORDER BY created_at ASC, id ASC",
-            &[],
-        )
-        .await
-    }
-
-    async fn mark_delete_command_running(&self, id: &str) -> AppResult<()> {
-        update_delete_command_status(
-            &self.datastore,
-            id,
-            DownloadQueueDeleteStatus::Running,
-            None,
-        )
-        .await
-    }
-
-    async fn mark_delete_command_completed(&self, id: &str) -> AppResult<()> {
-        update_delete_command_status(
-            &self.datastore,
-            id,
-            DownloadQueueDeleteStatus::Completed,
-            None,
-        )
-        .await
-    }
-
-    async fn mark_delete_command_failed(
-        &self,
-        id: &str,
-        error_text: Option<&str>,
-    ) -> AppResult<()> {
-        update_delete_command_status(
-            &self.datastore,
-            id,
-            DownloadQueueDeleteStatus::Failed,
-            error_text,
-        )
-        .await
-    }
-
-    async fn list_latest_delete_commands_for_sources(
-        &self,
-        sources: &[(Option<String>, String, String, bool)],
-    ) -> AppResult<Vec<DownloadQueueCommandRecord>> {
-        if sources.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut args = Vec::new();
-        let mut clauses = Vec::with_capacity(sources.len());
-        for (client_id, client_type, download_client_item_id, is_history) in sources {
-            let normalized_client_id = normalize_download_client_id(client_id.as_deref());
-            let client_clause = if normalized_client_id.is_empty() {
-                "COALESCE(client_id, '') = ''".to_string()
-            } else {
-                args.push(SqlArg::Text(normalized_client_id));
-                "(COALESCE(client_id, '') = {} OR COALESCE(client_id, '') = '')".to_string()
-            };
-            args.push(SqlArg::Text(client_type.clone()));
-            args.push(SqlArg::Text(download_client_item_id.clone()));
-            args.push(SqlArg::Bool(*is_history));
-            clauses.push(format!(
-                "({client_clause} AND client_type = {{}} AND download_client_item_id = {{}} AND is_history = {{}})"
-            ));
-        }
-        let rows = fetch_delete_commands(
-            self.datastore.read_exec(),
-            &format!(
-                "WHERE action = 'delete' AND ({}) ORDER BY created_at DESC, id DESC",
-                clauses.join(" OR ")
-            ),
-            &args,
-        )
-        .await?;
-        let mut latest = HashMap::new();
-        for record in rows {
-            let key = (
-                record.client_id.clone().unwrap_or_default(),
-                record.client_type.clone(),
-                record.download_client_item_id.clone(),
-                record.is_history,
-            );
-            latest.entry(key).or_insert(record);
-        }
-        Ok(latest.into_values().collect())
-    }
-
-    async fn prune_terminal_delete_commands_older_than(&self, days: i64) -> AppResult<u32> {
-        let cutoff = Utc::now() - chrono::Duration::days(days);
-        let rows = execute_write(
-            &self.datastore,
-            "prune_terminal_delete_download_commands_older_than",
-            "DELETE FROM download_queue_commands
-             WHERE action = 'delete'
-               AND status IN ('completed', 'failed')
-               AND updated_at < {}"
-                .to_string(),
-            vec![SqlArg::Timestamp(cutoff)],
-        )
-        .await?;
-        Ok(rows as u32)
-    }
-}
-
-#[async_trait]
-impl WorkflowOperationRepository for WorkflowOperationStore {
-    async fn create_workflow_operation(
-        &self,
-        operation_type: String,
-        status: String,
-        actor_user_id: Option<String>,
-        progress_json: Option<String>,
-        started_at: Option<String>,
-        completed_at: Option<String>,
-    ) -> AppResult<WorkflowOperationInfo> {
-        let record = create_workflow_operation(
-            &self.datastore,
-            NewWorkflowOperation {
-                operation_type,
-                status,
-                job_key: None,
-                trigger_source: None,
-                actor_user_id,
-                progress_json,
-                summary_json: None,
-                summary_text: None,
-                error_text: None,
-                started_at,
-                completed_at,
-            },
-        )
-        .await?;
-        Ok(workflow_operation_info(record))
-    }
-}
-
-#[async_trait]
-impl JobRunRepository for WorkflowOperationStore {
-    async fn create_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
-        let record = create_workflow_operation(
-            &self.datastore,
-            NewWorkflowOperation {
-                operation_type: run.operation_type.clone(),
-                status: run.status.as_str().to_string(),
-                job_key: Some(run.job_key.as_str().to_string()),
-                trigger_source: Some(run.trigger_source.as_str().to_string()),
-                actor_user_id: run.actor_user_id.clone(),
-                progress_json: run.progress_json.clone(),
-                summary_json: run.summary_json.clone(),
-                summary_text: run.summary_text.clone(),
-                error_text: run.error_text.clone(),
-                started_at: Some(run.started_at.to_rfc3339()),
-                completed_at: run.completed_at.map(|value| value.to_rfc3339()),
-            },
-        )
-        .await?;
-        job_run_record_from_workflow(record)
-    }
-
-    async fn update_job_run(&self, run: &JobRunRecord) -> AppResult<JobRunRecord> {
-        let id = run.id.clone();
-        let status = run.status.as_str().to_string();
-        let progress_json = run.progress_json.clone();
-        let summary_json = run.summary_json.clone();
-        let summary_text = run.summary_text.clone();
-        let error_text = run.error_text.clone();
-        let completed_at = run.completed_at.map(|value| value.to_rfc3339());
-        let record = SqlRuntime::run_in_transaction(
-            &self.datastore,
-            "update_job_workflow_operation",
-            move |tx| {
-                let id = id.clone();
-                let status = status.clone();
-                let progress_json = progress_json.clone();
-                let summary_json = summary_json.clone();
-                let summary_text = summary_text.clone();
-                let error_text = error_text.clone();
-                let completed_at = completed_at.clone();
-                Box::pin(async move {
-                    let now = Utc::now();
-                    let progress_arg = json_arg_for_tx(tx, progress_json.as_deref())?;
-                    let summary_arg = json_arg_for_tx(tx, summary_json.as_deref())?;
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "UPDATE workflow_operations
-                         SET status = {},
-                             progress_json = {},
-                             summary_json = {},
-                             summary_text = {},
-                             error_text = {},
-                             completed_at = {},
-                             updated_at = {}
-                         WHERE id = {}",
-                        &[
-                            SqlArg::Text(status),
-                            progress_arg,
-                            summary_arg,
-                            SqlArg::OptText(summary_text),
-                            SqlArg::OptText(error_text),
-                            opt_timestamp_arg(completed_at.as_deref()),
-                            SqlArg::Timestamp(now),
-                            SqlArg::Text(id.clone()),
-                        ],
-                    )
-                    .await?;
-                    fetch_optional_workflow_operation(SqlExec::Tx(tx), &id)
-                        .await?
-                        .ok_or_else(|| AppError::NotFound(format!("workflow operation {id}")))
-                })
-            },
-        )
-        .await?;
-        job_run_record_from_workflow(record)
-    }
-
-    async fn get_job_run(&self, run_id: &str) -> AppResult<Option<JobRunRecord>> {
-        fetch_optional_workflow_operation(self.datastore.read_exec(), run_id)
-            .await?
-            .map(job_run_record_from_workflow)
-            .transpose()
-    }
-
-    async fn list_job_runs(
-        &self,
-        job_key: Option<JobKey>,
-        limit: usize,
-    ) -> AppResult<Vec<JobRunRecord>> {
-        let limit = limit as i64;
-        let (sql, args) = if let Some(job_key) = job_key {
-            (
-                "SELECT * FROM workflow_operations WHERE job_key = {} ORDER BY COALESCE(started_at, created_at) DESC LIMIT {}",
-                vec![
-                    SqlArg::Text(job_key.as_str().to_string()),
-                    SqlArg::I64(limit),
-                ],
-            )
-        } else {
-            (
-                "SELECT * FROM workflow_operations WHERE job_key IS NOT NULL ORDER BY COALESCE(started_at, created_at) DESC LIMIT {}",
-                vec![SqlArg::I64(limit)],
-            )
-        };
-        SqlRuntime::fetch_all(self.datastore.read_exec(), sql, &args)
-            .await?
-            .into_iter()
-            .map(|row| workflow_operation_from_row(&row).and_then(job_run_record_from_workflow))
-            .collect()
-    }
-
-    async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
-        SqlRuntime::fetch_all(
-            self.datastore.read_exec(),
-            "SELECT * FROM workflow_operations
-             WHERE job_key IS NOT NULL
-               AND status IN ('queued', 'running', 'discovering')
-             ORDER BY COALESCE(started_at, created_at) ASC",
-            &[],
-        )
-        .await?
-        .into_iter()
-        .map(|row| workflow_operation_from_row(&row).and_then(job_run_record_from_workflow))
-        .collect()
-    }
-}
-
-async fn append_domain_events(
+pub(crate) async fn append_domain_events(
     datastore: &StoreDatastore,
     events: Vec<NewDomainEvent>,
 ) -> AppResult<Vec<DomainEvent>> {
@@ -1201,7 +88,7 @@ async fn append_domain_events(
     .await
 }
 
-async fn commit_successful_grab_tx(
+pub(crate) async fn commit_successful_grab_tx(
     tx: &mut SqlTx<'_>,
     commit: &SuccessfulGrabCommit,
 ) -> AppResult<()> {
@@ -1283,7 +170,7 @@ async fn commit_successful_grab_tx(
     Ok(())
 }
 
-async fn record_download_submission_tx(
+pub(crate) async fn record_download_submission_tx(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
 ) -> AppResult<()> {
@@ -1329,7 +216,7 @@ async fn record_download_submission_tx(
     .await
 }
 
-async fn replace_download_submission_episode_links_tx(
+pub(crate) async fn replace_download_submission_episode_links_tx(
     tx: &mut SqlTx<'_>,
     download_client_id: &str,
     download_client_type: &str,
@@ -1368,7 +255,7 @@ async fn replace_download_submission_episode_links_tx(
     Ok(())
 }
 
-async fn queue_import_request(
+pub(crate) async fn queue_import_request(
     datastore: &StoreDatastore,
     source_identity: DownloadSourceIdentity,
     import_type: String,
@@ -1447,7 +334,7 @@ async fn queue_import_request(
     .await
 }
 
-fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
+pub(crate) fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
     let conflict_clause = match tx {
         SqlTx::Sqlite(_) => "ON CONFLICT DO UPDATE",
         SqlTx::Postgres(_) => {
@@ -1471,7 +358,7 @@ fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
     )
 }
 
-async fn recover_stale_processing_imports(
+pub(crate) async fn recover_stale_processing_imports(
     datastore: &StoreDatastore,
     import_type: Option<ImportType>,
     stale_seconds: i64,
@@ -1509,7 +396,7 @@ async fn recover_stale_processing_imports(
     Ok(rows)
 }
 
-async fn create_workflow_operation(
+pub(crate) async fn create_workflow_operation(
     datastore: &StoreDatastore,
     operation: NewWorkflowOperation,
 ) -> AppResult<WorkflowOperationRecord> {
@@ -1567,7 +454,7 @@ impl SqlArgExt for SqlArg {
     }
 }
 
-fn build_domain_event_list_sql(filter: &DomainEventFilter) -> (String, Vec<SqlArg>) {
+pub(crate) fn build_domain_event_list_sql(filter: &DomainEventFilter) -> (String, Vec<SqlArg>) {
     let limit = if filter.limit == 0 {
         100
     } else {
@@ -1623,7 +510,7 @@ fn build_domain_event_list_sql(filter: &DomainEventFilter) -> (String, Vec<SqlAr
     )
 }
 
-fn build_title_history_filter_sql(
+pub(crate) fn build_title_history_filter_sql(
     datastore: &StoreDatastore,
     event_types: Option<&[TitleHistoryEventType]>,
     title_ids: Option<&[String]>,
@@ -1738,7 +625,7 @@ fn build_title_history_filter_sql(
     (format!(" WHERE {}", clauses.join(" AND ")), args)
 }
 
-const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
+pub(crate) const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::TitleRematched,
     DomainEventType::ReleaseGrabbed,
     DomainEventType::ImportCompleted,
@@ -1749,14 +636,19 @@ const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::MediaFileRenamed,
 ];
 
-fn json_extract(datastore: &StoreDatastore, column: &str, first: &str, second: &str) -> String {
+pub(crate) fn json_extract(
+    datastore: &StoreDatastore,
+    column: &str,
+    first: &str,
+    second: &str,
+) -> String {
     match datastore {
         StoreDatastore::Sqlite { .. } => format!("json_extract({column}, '$.{first}.{second}')"),
         StoreDatastore::Postgres { .. } => format!("{column} #>> '{{{first},{second}}}'"),
     }
 }
 
-fn download_submission_select_sql(datastore: &StoreDatastore, suffix: &str) -> String {
+pub(crate) fn download_submission_select_sql(datastore: &StoreDatastore, suffix: &str) -> String {
     let episode_set = match datastore {
         StoreDatastore::Sqlite { .. } => {
             "(SELECT group_concat(link.episode_id, char(31))
@@ -1778,7 +670,7 @@ fn download_submission_select_sql(datastore: &StoreDatastore, suffix: &str) -> S
     )
 }
 
-async fn fetch_domain_events(
+pub(crate) async fn fetch_domain_events(
     exec: SqlExec<'_, '_>,
     sql: &str,
     args: &[SqlArg],
@@ -1790,7 +682,7 @@ async fn fetch_domain_events(
         .collect()
 }
 
-async fn fetch_domain_event_by_event_id(
+pub(crate) async fn fetch_domain_event_by_event_id(
     exec: SqlExec<'_, '_>,
     event_id: &str,
 ) -> AppResult<Option<DomainEvent>> {
@@ -1804,7 +696,7 @@ async fn fetch_domain_event_by_event_id(
     .transpose()
 }
 
-async fn fetch_download_submissions(
+pub(crate) async fn fetch_download_submissions(
     exec: SqlExec<'_, '_>,
     sql: &str,
     args: &[SqlArg],
@@ -1816,7 +708,7 @@ async fn fetch_download_submissions(
         .collect()
 }
 
-async fn fetch_imports(
+pub(crate) async fn fetch_imports(
     exec: SqlExec<'_, '_>,
     sql: &str,
     args: &[SqlArg],
@@ -1828,7 +720,7 @@ async fn fetch_imports(
         .collect()
 }
 
-async fn fetch_snapshot_chunks(
+pub(crate) async fn fetch_snapshot_chunks(
     exec: SqlExec<'_, '_>,
     sql: &str,
     args: &[SqlArg],
@@ -1841,7 +733,7 @@ async fn fetch_snapshot_chunks(
         .collect()
 }
 
-async fn fetch_delete_commands(
+pub(crate) async fn fetch_delete_commands(
     exec: SqlExec<'_, '_>,
     suffix: &str,
     args: &[SqlArg],
@@ -1857,7 +749,7 @@ async fn fetch_delete_commands(
     .collect()
 }
 
-async fn fetch_optional_delete_command(
+pub(crate) async fn fetch_optional_delete_command(
     exec: SqlExec<'_, '_>,
     suffix: &str,
     args: &[SqlArg],
@@ -1872,7 +764,7 @@ async fn fetch_optional_delete_command(
     .transpose()
 }
 
-async fn fetch_optional_workflow_operation(
+pub(crate) async fn fetch_optional_workflow_operation(
     exec: SqlExec<'_, '_>,
     id: &str,
 ) -> AppResult<Option<WorkflowOperationRecord>> {
@@ -1886,7 +778,7 @@ async fn fetch_optional_workflow_operation(
     .transpose()
 }
 
-fn domain_event_from_row(row: &SqlRow) -> AppResult<DomainEvent> {
+pub(crate) fn domain_event_from_row(row: &SqlRow) -> AppResult<DomainEvent> {
     let stream_kind = row.text("stream_kind")?;
     let payload = serde_json::from_value(json_from_row(row, "payload_json")?).map_err(repo_err)?;
     Ok(DomainEvent {
@@ -1907,7 +799,10 @@ fn domain_event_from_row(row: &SqlRow) -> AppResult<DomainEvent> {
     })
 }
 
-fn stream_from_parts(kind: &str, identifier: Option<String>) -> AppResult<DomainEventStream> {
+pub(crate) fn stream_from_parts(
+    kind: &str,
+    identifier: Option<String>,
+) -> AppResult<DomainEventStream> {
     match kind {
         "global" => Ok(DomainEventStream::Global),
         "title" => identifier
@@ -1932,7 +827,7 @@ fn stream_from_parts(kind: &str, identifier: Option<String>) -> AppResult<Domain
     }
 }
 
-fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSubmission> {
+pub(crate) fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSubmission> {
     let title_id = row.text("title_id")?;
     let episode_id = opt_text_lenient(row, "episode_id")?;
     let collection_id = opt_text_lenient(row, "collection_id")?;
@@ -1968,7 +863,7 @@ fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSubmission> {
     })
 }
 
-fn import_record_from_row(row: &SqlRow) -> AppResult<ImportRecord> {
+pub(crate) fn import_record_from_row(row: &SqlRow) -> AppResult<ImportRecord> {
     let import_type_raw = row.text("import_type")?;
     let status_raw = row.text("status")?;
     Ok(ImportRecord {
@@ -1991,7 +886,7 @@ fn import_record_from_row(row: &SqlRow) -> AppResult<ImportRecord> {
     })
 }
 
-fn import_artifact_from_row(row: &SqlRow) -> AppResult<ImportArtifact> {
+pub(crate) fn import_artifact_from_row(row: &SqlRow) -> AppResult<ImportArtifact> {
     Ok(ImportArtifact {
         id: row.text("id")?,
         source_client_id: row
@@ -2014,7 +909,9 @@ fn import_artifact_from_row(row: &SqlRow) -> AppResult<ImportArtifact> {
     })
 }
 
-fn snapshot_chunk_from_row(row: &SqlRow) -> AppResult<ExternalImportMonitorSnapshotChunk> {
+pub(crate) fn snapshot_chunk_from_row(
+    row: &SqlRow,
+) -> AppResult<ExternalImportMonitorSnapshotChunk> {
     let facet_raw = row.text("facet")?;
     let entry_kind_raw = row.text("entry_kind")?;
     Ok(ExternalImportMonitorSnapshotChunk {
@@ -2034,7 +931,9 @@ fn snapshot_chunk_from_row(row: &SqlRow) -> AppResult<ExternalImportMonitorSnaps
     })
 }
 
-fn download_queue_command_from_row(row: &SqlRow) -> AppResult<DownloadQueueCommandRecord> {
+pub(crate) fn download_queue_command_from_row(
+    row: &SqlRow,
+) -> AppResult<DownloadQueueCommandRecord> {
     let action = row.text("action")?;
     let status = row.text("status")?;
     Ok(DownloadQueueCommandRecord {
@@ -2060,7 +959,7 @@ fn download_queue_command_from_row(row: &SqlRow) -> AppResult<DownloadQueueComma
     })
 }
 
-fn workflow_operation_from_row(row: &SqlRow) -> AppResult<WorkflowOperationRecord> {
+pub(crate) fn workflow_operation_from_row(row: &SqlRow) -> AppResult<WorkflowOperationRecord> {
     Ok(WorkflowOperationRecord {
         id: row.text("id")?,
         operation_type: row.text("operation_type")?,
@@ -2085,7 +984,9 @@ fn workflow_operation_from_row(row: &SqlRow) -> AppResult<WorkflowOperationRecor
     })
 }
 
-fn job_run_record_from_workflow(record: WorkflowOperationRecord) -> AppResult<JobRunRecord> {
+pub(crate) fn job_run_record_from_workflow(
+    record: WorkflowOperationRecord,
+) -> AppResult<JobRunRecord> {
     let job_key = record
         .job_key
         .as_deref()
@@ -2122,7 +1023,7 @@ fn job_run_record_from_workflow(record: WorkflowOperationRecord) -> AppResult<Jo
     })
 }
 
-fn workflow_operation_info(record: WorkflowOperationRecord) -> WorkflowOperationInfo {
+pub(crate) fn workflow_operation_info(record: WorkflowOperationRecord) -> WorkflowOperationInfo {
     WorkflowOperationInfo {
         id: record.id,
         operation_type: record.operation_type,
@@ -2136,7 +1037,7 @@ fn workflow_operation_info(record: WorkflowOperationRecord) -> WorkflowOperation
     }
 }
 
-async fn execute_write(
+pub(crate) async fn execute_write(
     datastore: &StoreDatastore,
     op_name: &'static str,
     sql: String,
@@ -2150,7 +1051,7 @@ async fn execute_write(
     .await
 }
 
-async fn update_delete_command_status(
+pub(crate) async fn update_delete_command_status(
     datastore: &StoreDatastore,
     id: &str,
     status: DownloadQueueDeleteStatus,
@@ -2189,14 +1090,14 @@ async fn update_delete_command_status(
     Ok(())
 }
 
-fn persisted_submission_scope(scope: &SubmissionScope) -> (Option<&str>, Option<&str>) {
+pub(crate) fn persisted_submission_scope(scope: &SubmissionScope) -> (Option<&str>, Option<&str>) {
     (
         scope.persisted_episode_id(),
         scope.persisted_collection_id(),
     )
 }
 
-fn persisted_episode_set_ids(scope: &SubmissionScope) -> &[String] {
+pub(crate) fn persisted_episode_set_ids(scope: &SubmissionScope) -> &[String] {
     match scope {
         SubmissionScope::EpisodeSet { episode_ids } => episode_ids.as_slice(),
         _ => &[],
@@ -2215,7 +1116,9 @@ pub(crate) fn chunk_download_submission_client_items(
         .collect()
 }
 
-fn dedupe_identities(identities: &[DownloadSourceIdentity]) -> Vec<DownloadSourceIdentity> {
+pub(crate) fn dedupe_identities(
+    identities: &[DownloadSourceIdentity],
+) -> Vec<DownloadSourceIdentity> {
     let mut seen = HashSet::with_capacity(identities.len());
     let mut deduped = Vec::with_capacity(identities.len());
     for identity in identities {
@@ -2230,7 +1133,7 @@ fn dedupe_identities(identities: &[DownloadSourceIdentity]) -> Vec<DownloadSourc
     deduped
 }
 
-fn normalize_download_client_id(value: Option<&str>) -> String {
+pub(crate) fn normalize_download_client_id(value: Option<&str>) -> String {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2238,13 +1141,16 @@ fn normalize_download_client_id(value: Option<&str>) -> String {
         .to_string()
 }
 
-fn placeholders(count: usize) -> String {
+pub(crate) fn placeholders(count: usize) -> String {
     std::iter::repeat_n("{}", count)
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn json_arg_for_datastore(datastore: &StoreDatastore, value: Option<&str>) -> AppResult<SqlArg> {
+pub(crate) fn json_arg_for_datastore(
+    datastore: &StoreDatastore,
+    value: Option<&str>,
+) -> AppResult<SqlArg> {
     match datastore {
         StoreDatastore::Sqlite { .. } => Ok(SqlArg::OptText(value.map(str::to_string))),
         StoreDatastore::Postgres { .. } => value
@@ -2254,7 +1160,7 @@ fn json_arg_for_datastore(datastore: &StoreDatastore, value: Option<&str>) -> Ap
     }
 }
 
-fn json_arg_for_tx(tx: &SqlTx<'_>, value: Option<&str>) -> AppResult<SqlArg> {
+pub(crate) fn json_arg_for_tx(tx: &SqlTx<'_>, value: Option<&str>) -> AppResult<SqlArg> {
     match tx {
         SqlTx::Sqlite(_) => Ok(SqlArg::OptText(value.map(str::to_string))),
         SqlTx::Postgres(_) => value
@@ -2264,11 +1170,11 @@ fn json_arg_for_tx(tx: &SqlTx<'_>, value: Option<&str>) -> AppResult<SqlArg> {
     }
 }
 
-fn postgres_json_value(value: &str) -> AppResult<JsonValue> {
+pub(crate) fn postgres_json_value(value: &str) -> AppResult<JsonValue> {
     Ok(serde_json::from_str(value).unwrap_or_else(|_| JsonValue::String(value.to_string())))
 }
 
-fn json_from_row(row: &SqlRow, column: &str) -> AppResult<JsonValue> {
+pub(crate) fn json_from_row(row: &SqlRow, column: &str) -> AppResult<JsonValue> {
     match row {
         SqlRow::Sqlite(row) => {
             let raw: String = row.try_get(column).map_err(repo_err)?;
@@ -2281,7 +1187,7 @@ fn json_from_row(row: &SqlRow, column: &str) -> AppResult<JsonValue> {
     }
 }
 
-fn json_text_from_row(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
+pub(crate) fn json_text_from_row(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
     match row {
         SqlRow::Sqlite(row) => row.try_get(column).map_err(repo_err),
         SqlRow::Postgres(row) => {
@@ -2291,21 +1197,21 @@ fn json_text_from_row(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
     }
 }
 
-fn json_value_as_string(value: JsonValue) -> String {
+pub(crate) fn json_value_as_string(value: JsonValue) -> String {
     match value {
         JsonValue::String(value) => value,
         value => value.to_string(),
     }
 }
 
-fn opt_text_lenient(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
+pub(crate) fn opt_text_lenient(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
     match row {
         SqlRow::Sqlite(row) => Ok(row.try_get::<Option<String>, _>(column).ok().flatten()),
         SqlRow::Postgres(row) => Ok(row.try_get::<Option<String>, _>(column).ok().flatten()),
     }
 }
 
-fn timestamp_string(row: &SqlRow, column: &str) -> AppResult<String> {
+pub(crate) fn timestamp_string(row: &SqlRow, column: &str) -> AppResult<String> {
     match row {
         SqlRow::Sqlite(row) => row.try_get(column).map_err(repo_err),
         SqlRow::Postgres(row) => {
@@ -2315,7 +1221,7 @@ fn timestamp_string(row: &SqlRow, column: &str) -> AppResult<String> {
     }
 }
 
-fn opt_timestamp_string(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
+pub(crate) fn opt_timestamp_string(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
     match row {
         SqlRow::Sqlite(row) => row.try_get(column).map_err(repo_err),
         SqlRow::Postgres(row) => {
@@ -2325,7 +1231,7 @@ fn opt_timestamp_string(row: &SqlRow, column: &str) -> AppResult<Option<String>>
     }
 }
 
-fn opt_timestamp_arg(value: Option<&str>) -> SqlArg {
+pub(crate) fn opt_timestamp_arg(value: Option<&str>) -> SqlArg {
     SqlArg::OptTimestamp(
         value
             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
@@ -2333,14 +1239,14 @@ fn opt_timestamp_arg(value: Option<&str>) -> SqlArg {
     )
 }
 
-fn parse_datetime_or_now(value: Option<&str>) -> DateTime<Utc> {
+pub(crate) fn parse_datetime_or_now(value: Option<&str>) -> DateTime<Utc> {
     value
         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
         .map(|value| value.with_timezone(&Utc))
         .unwrap_or_else(Utc::now)
 }
 
-fn map_snapshot_chunk_error(error: AppError) -> AppError {
+pub(crate) fn map_snapshot_chunk_error(error: AppError) -> AppError {
     let message = error.to_string();
     if message.contains("no such table: external_import_monitor_snapshot_chunks") {
         return AppError::Repository(

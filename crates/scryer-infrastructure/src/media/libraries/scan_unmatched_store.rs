@@ -57,7 +57,8 @@ impl LibraryScanUnmatchedItemRepository for LibraryScanUnmatchedStore {
               query, year_hint, reason_code, error_message, search_attempts_json, status,
               created_at, updated_at)
              VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-             ON CONFLICT(id) DO UPDATE SET
+             ON CONFLICT(library_id, item_path) DO UPDATE SET
+                id = excluded.id,
                 library_id = excluded.library_id,
                 facet = excluded.facet,
                 title_id = excluded.title_id,

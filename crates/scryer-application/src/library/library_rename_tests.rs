@@ -59,6 +59,21 @@ fn render_missing_token_empty() {
 }
 
 #[test]
+fn render_title_folder_template_trims_empty_year_group() {
+    let t = tokens(&[("title", "Movie")]);
+    let result = render_title_folder_template("{title} ({year})", &t);
+    assert_eq!(result, "Movie");
+}
+
+#[test]
+fn configured_title_folder_path_prefers_title_year_over_parsed_release_year() {
+    let mut title = test_movie_title("Movie");
+    title.year = Some(2024);
+    let path = configured_title_folder_path("/library/movies", &title, "{title} ({year})", Some(2025));
+    assert_eq!(path, std::path::Path::new("/library/movies/Movie (2024)"));
+}
+
+#[test]
 fn render_no_tokens_passthrough() {
     let t = BTreeMap::new();
     let result = render_rename_template("plain text no tokens", &t);
@@ -435,16 +450,16 @@ fn movie_rename_items_use_matched_media_file_analysis_instead_of_path_parse() {
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
     let mut planned_targets = std::collections::HashSet::new();
+    let mut options = MovieRenamePlanOptions {
+        media_root: dir.path().to_str().expect("tempdir path"),
+        folder_template: "{title} ({year})",
+        template: "{title} ({year}) [{quality} {video_codec} {audio_codec} {audio_channels}].{ext}",
+        collision_policy: &RenameCollisionPolicy::Skip,
+        missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
+        planned_targets: &mut planned_targets,
+    };
 
-    let items = build_movie_rename_plan_items(
-        &title,
-        vec![collection],
-        vec![media_file.clone()],
-        "{title} ({year}) [{quality} {video_codec} {audio_codec} {audio_channels}].{ext}",
-        &RenameCollisionPolicy::Skip,
-        &RenameMissingMetadataPolicy::FallbackTitle,
-        &mut planned_targets,
-    );
+    let items = build_movie_rename_plan_items(&title, vec![collection], vec![media_file.clone()], &mut options);
 
     assert_eq!(items.len(), 1);
     assert_eq!(
@@ -471,16 +486,16 @@ fn movie_rename_items_use_saved_hydrated_localized_title_name() {
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
     let mut planned_targets = std::collections::HashSet::new();
+    let mut options = MovieRenamePlanOptions {
+        media_root: dir.path().to_str().expect("tempdir path"),
+        folder_template: "{title} ({year})",
+        template: "{title}.{ext}",
+        collision_policy: &RenameCollisionPolicy::Skip,
+        missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
+        planned_targets: &mut planned_targets,
+    };
 
-    let items = build_movie_rename_plan_items(
-        &title,
-        vec![collection],
-        vec![media_file],
-        "{title}.{ext}",
-        &RenameCollisionPolicy::Skip,
-        &RenameMissingMetadataPolicy::FallbackTitle,
-        &mut planned_targets,
-    );
+    let items = build_movie_rename_plan_items(&title, vec![collection], vec![media_file], &mut options);
 
     assert_eq!(items.len(), 1);
     assert_eq!(

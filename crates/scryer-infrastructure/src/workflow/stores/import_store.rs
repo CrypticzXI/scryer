@@ -1,1 +1,272 @@
-pub use super::core::ImportStore;
+use super::*;
+
+use async_trait::async_trait;
+use chrono::Utc;
+use scryer_application::{
+    AppError, AppResult, DownloadSourceIdentity, ImportArtifact, ImportArtifactRepository,
+    ImportRepository,
+};
+use scryer_domain::{Id, ImportRecord, ImportStatus, ImportType};
+
+use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRuntime, StoreDatastore};
+
+#[derive(Clone)]
+pub struct ImportStore {
+    datastore: StoreDatastore,
+}
+
+impl ImportStore {
+    pub fn new(datastore: StoreDatastore) -> Self {
+        Self { datastore }
+    }
+}
+
+#[async_trait]
+impl ImportRepository for ImportStore {
+    async fn queue_import_request(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+    ) -> AppResult<String> {
+        queue_import_request(&self.datastore, source_identity, import_type, payload_json).await
+    }
+
+    async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &format!("SELECT {IMPORT_COLUMNS} FROM imports WHERE id = {{}} LIMIT 1"),
+            &[SqlArg::Text(id.to_string())],
+        )
+        .await?;
+        row.map(|row| import_record_from_row(&row)).transpose()
+    }
+
+    async fn update_import_status(
+        &self,
+        import_id: &str,
+        status: ImportStatus,
+        result_json: Option<String>,
+    ) -> AppResult<()> {
+        let import_id = import_id.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "update_import_status", move |tx| {
+            let import_id = import_id.clone();
+            let result_json = result_json.clone();
+            Box::pin(async move {
+                let now = Utc::now();
+                let is_terminal = status.is_terminal();
+                let result_arg = json_arg_for_tx(tx, result_json.as_deref())?;
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "UPDATE imports
+                     SET status = {},
+                         result_json = {},
+                         started_at = CASE WHEN started_at IS NULL THEN {} ELSE started_at END,
+                         finished_at = CASE WHEN {} THEN {} ELSE finished_at END,
+                         updated_at = {}
+                     WHERE id = {}",
+                    &[
+                        SqlArg::Text(status.as_str().to_string()),
+                        result_arg,
+                        SqlArg::Timestamp(now),
+                        SqlArg::Bool(is_terminal),
+                        SqlArg::Timestamp(now),
+                        SqlArg::Timestamp(now),
+                        SqlArg::Text(import_id),
+                    ],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn recover_stale_processing_imports(&self, stale_seconds: i64) -> AppResult<u64> {
+        recover_stale_processing_imports(&self.datastore, None, stale_seconds).await
+    }
+
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        import_type: ImportType,
+        stale_seconds: i64,
+    ) -> AppResult<u64> {
+        recover_stale_processing_imports(&self.datastore, Some(import_type), stale_seconds).await
+    }
+
+    async fn list_pending_imports(&self) -> AppResult<Vec<ImportRecord>> {
+        fetch_imports(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {IMPORT_COLUMNS} FROM imports
+                 WHERE status IN ('queued', 'pending', 'running', 'processing')
+                 ORDER BY created_at ASC"
+            ),
+            &[],
+        )
+        .await
+    }
+
+    async fn list_pending_imports_for_type(
+        &self,
+        import_type: ImportType,
+    ) -> AppResult<Vec<ImportRecord>> {
+        fetch_imports(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {IMPORT_COLUMNS} FROM imports
+                 WHERE import_type = {{}}
+                   AND status IN ('queued', 'pending', 'running', 'processing')
+                 ORDER BY created_at ASC"
+            ),
+            &[SqlArg::Text(import_type.as_str().to_string())],
+        )
+        .await
+    }
+
+    async fn list_imports_for_identities(
+        &self,
+        identities: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<ImportRecord>> {
+        let identities = dedupe_identities(identities);
+        if identities.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut args = Vec::with_capacity(identities.len() * 3);
+        let clauses = identities
+            .iter()
+            .map(|identity| {
+                args.push(SqlArg::Text(normalize_download_client_id(
+                    identity.client_id.as_deref(),
+                )));
+                args.push(SqlArg::Text(identity.client_type.clone()));
+                args.push(SqlArg::Text(identity.item_id.clone()));
+                "(COALESCE(source_client_id, '') = {} AND source_system = {} AND source_ref = {})"
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        fetch_imports(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {IMPORT_COLUMNS} FROM imports WHERE {clauses} ORDER BY updated_at DESC"
+            ),
+            &args,
+        )
+        .await
+    }
+
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(1) AS count
+             FROM imports
+             WHERE COALESCE(source_client_id, '') = {}
+               AND source_system = {}
+               AND source_ref = {}
+               AND status IN ('completed', 'skipped')",
+            &[
+                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
+                SqlArg::Text(identity.client_type.clone()),
+                SqlArg::Text(identity.item_id.clone()),
+            ],
+        )
+        .await?
+        .ok_or_else(|| AppError::Repository("missing import count".into()))?;
+        Ok(row.i64("count")? > 0)
+    }
+
+    async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
+        fetch_imports(
+            self.datastore.read_exec(),
+            &format!("SELECT {IMPORT_COLUMNS} FROM imports ORDER BY created_at DESC LIMIT {{}}"),
+            &[SqlArg::I64((limit as i64).clamp(1, 500))],
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl ImportArtifactRepository for ImportStore {
+    async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()> {
+        SqlRuntime::run_in_transaction(&self.datastore, "insert_import_artifact", move |tx| {
+            let artifact = artifact.clone();
+            Box::pin(async move {
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "INSERT INTO download_import_artifacts
+                     (id, source_client_id, source_system, source_ref, import_id, relative_path, normalized_file_name,
+                      media_kind, title_id, episode_id, season_number, episode_number,
+                      result, reason_code, imported_media_file_id, created_at)
+                     VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+                    &[
+                        SqlArg::Text(artifact.id),
+                        SqlArg::OptText(artifact.source_client_id),
+                        SqlArg::Text(artifact.source_system),
+                        SqlArg::Text(artifact.source_ref),
+                        SqlArg::OptText(artifact.import_id),
+                        SqlArg::OptText(artifact.relative_path),
+                        SqlArg::Text(artifact.normalized_file_name),
+                        SqlArg::Text(artifact.media_kind),
+                        SqlArg::OptText(artifact.title_id),
+                        SqlArg::OptText(artifact.episode_id),
+                        SqlArg::OptI32(artifact.season_number),
+                        SqlArg::OptI32(artifact.episode_number),
+                        SqlArg::Text(artifact.result),
+                        SqlArg::OptText(artifact.reason_code),
+                        SqlArg::OptText(artifact.imported_media_file_id),
+                        SqlArg::Timestamp(artifact.created_at),
+                    ],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn list_by_source_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Vec<ImportArtifact>> {
+        SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT id, source_client_id, source_system, source_ref, import_id, relative_path,
+                    normalized_file_name, media_kind, title_id, episode_id,
+                    season_number, episode_number, result, reason_code,
+                    imported_media_file_id, created_at
+             FROM download_import_artifacts
+             WHERE COALESCE(source_client_id, '') = {} AND source_system = {} AND source_ref = {}
+             ORDER BY created_at",
+            &[
+                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
+                SqlArg::Text(identity.client_type.clone()),
+                SqlArg::Text(identity.item_id.clone()),
+            ],
+        )
+        .await?
+        .into_iter()
+        .map(|row| import_artifact_from_row(&row))
+        .collect()
+    }
+
+    async fn count_by_result_for_source_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+        result: &str,
+    ) -> AppResult<u64> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(*) AS count FROM download_import_artifacts
+             WHERE COALESCE(source_client_id, '') = {} AND source_system = {} AND source_ref = {} AND result = {}",
+            &[
+                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
+                SqlArg::Text(identity.client_type.clone()),
+                SqlArg::Text(identity.item_id.clone()),
+                SqlArg::Text(result.to_string()),
+            ],
+        )
+        .await?
+        .ok_or_else(|| AppError::Repository("missing import artifact count".into()))?;
+        Ok(row.i64("count")? as u64)
+    }
+}

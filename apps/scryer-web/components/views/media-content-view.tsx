@@ -131,6 +131,10 @@ export function MediaContentView({
     saveCategoryRequiredAudioLanguages: (languages: string[]) => Promise<void> | void;
     categoryPersonaSelections: Record<ViewCategoryId, FacetScoringPersonaSelectionRecord>;
     activeQualityScopeId: ViewCategoryId;
+    categoryFolderTemplates: Record<ViewCategoryId, string>;
+    setCategoryFolderTemplates: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, string>>
+    >;
     categoryRenameTemplates: Record<ViewCategoryId, string>;
     setCategoryRenameTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
@@ -290,6 +294,8 @@ export function MediaContentView({
     saveCategoryRequiredAudioLanguages,
     categoryPersonaSelections,
     activeQualityScopeId,
+    categoryFolderTemplates,
+    setCategoryFolderTemplates,
     categoryRenameTemplates,
     setCategoryRenameTemplates,
     categoryRenameCollisionPolicies,
@@ -470,6 +476,16 @@ export function MediaContentView({
     [activeQualityScopeId, setCategoryRenameTemplates],
   );
 
+  const handleFolderTemplateChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      setCategoryFolderTemplates((previous) => ({
+        ...previous,
+        [activeQualityScopeId]: event.target.value,
+      }));
+    },
+    [activeQualityScopeId, setCategoryFolderTemplates],
+  );
+
   const handleRenameCollisionPolicyChange = React.useCallback(
     (value: string) => {
       setCategoryRenameCollisionPolicies((previous) => ({
@@ -648,6 +664,8 @@ export function MediaContentView({
           activeQualityScopeId={activeQualityScopeId}
           mediaSettingsLoading={mediaSettingsLoading}
           mediaSettingsSaving={mediaSettingsSaving}
+          categoryFolderTemplates={categoryFolderTemplates}
+          handleFolderTemplateChange={handleFolderTemplateChange}
           categoryRenameTemplates={categoryRenameTemplates}
           handleRenameTemplateChange={handleRenameTemplateChange}
           categoryRenameCollisionPolicies={categoryRenameCollisionPolicies}

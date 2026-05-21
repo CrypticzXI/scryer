@@ -23,6 +23,7 @@ import {
   updateTitleMutation,
 } from "@/lib/graphql/mutations";
 import { DEFAULT_MOVIE_LIBRARY_PATH } from "@/lib/constants/settings";
+import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useClient } from "urql";
@@ -740,7 +741,7 @@ export const MovieOverviewContainer = React.memo(function MovieOverviewContainer
         setGlobalStatus(queuedMessage);
         await refreshTitleDetail();
       } catch (err) {
-        setGlobalStatus(err instanceof Error ? err.message : t("status.apiError"));
+        setGlobalStatus(userFacingGraphQlErrorMessage(err, t("status.apiError")));
       }
     },
     [title, client, confirmReplaceConflict, t, setGlobalStatus, refreshTitleDetail],

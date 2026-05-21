@@ -3835,15 +3835,29 @@ pub async fn start_download_queue_poller(
                             if let Some(td) = tracker.find(&id)
                                 && is_new
                             {
-                                tracing::info!(
-                                    id = %td.id,
-                                    state = ?td.state,
-                                    client_state = ?td.client_item.state,
-                                    match_type = ?td.match_type,
-                                    title_id = ?td.title_id,
-                                    client_title_name = %td.client_item.title_name,
-                                    "tracked: new download"
-                                );
+                                if td.state.is_terminal()
+                                    || is_history_download_state(&td.client_item.state)
+                                {
+                                    tracing::debug!(
+                                        id = %td.id,
+                                        state = ?td.state,
+                                        client_state = ?td.client_item.state,
+                                        match_type = ?td.match_type,
+                                        title_id = ?td.title_id,
+                                        client_title_name = %td.client_item.title_name,
+                                        "tracked: new background download"
+                                    )
+                                } else {
+                                    tracing::info!(
+                                        id = %td.id,
+                                        state = ?td.state,
+                                        client_state = ?td.client_item.state,
+                                        match_type = ?td.match_type,
+                                        title_id = ?td.title_id,
+                                        client_title_name = %td.client_item.title_name,
+                                        "tracked: new download"
+                                    )
+                                }
                             }
 
                             if let Some(td) = tracker.find_mut(&id)

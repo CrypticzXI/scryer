@@ -19,8 +19,10 @@ use crate::facet_handler::{RenameFacetSettings, rename_facet_settings};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
-    AppError, AppResult, AppUseCase, CollectionUpdate, DownloadSourceIdentity,
-    ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
+    AppError, AppResult, AppUseCase, CollectionUpdate, DEFAULT_FOLDER_TEMPLATE_ANIME,
+    DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DownloadSourceIdentity,
+    FOLDER_TEMPLATE_KEY, ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile,
+    parse_release_metadata, use_season_folders,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -215,6 +217,7 @@ struct RenameRollbackOutcome {
 
 struct RenamePlanSettings {
     template: String,
+    folder_template: String,
     collision_policy: RenameCollisionPolicy,
     missing_metadata_policy: RenameMissingMetadataPolicy,
 }
@@ -393,6 +396,7 @@ impl AppUseCase {
     ) -> AppResult<RenamePlanSettings> {
         Ok(RenamePlanSettings {
             template: self.read_rename_template(facet_settings).await?,
+            folder_template: self.read_folder_template(facet_settings).await?,
             collision_policy: self.read_collision_policy(facet_settings).await?,
             missing_metadata_policy: self.read_missing_metadata_policy(facet_settings).await?,
         })
@@ -644,6 +648,23 @@ impl AppUseCase {
             return Err(RenamePersistenceFailure { error, state });
         }
 
+        let title = match self.resolve_title_for_rename_item(item).await {
+            Ok(title) => title,
+            Err(error) => return Err(RenamePersistenceFailure { error, state }),
+        };
+        if let Some(title) = title
+            && let Some(folder_path) =
+                infer_title_folder_path_after_rename(&title, &item.current_path, final_path)
+            && let Err(error) = self
+                .services
+                .catalog
+                .titles
+                .set_folder_path(&title.id, &folder_path)
+                .await
+        {
+            return Err(RenamePersistenceFailure { error, state });
+        }
+
         Ok(())
     }
 
@@ -719,6 +740,7 @@ impl AppUseCase {
                 .build_rename_plan_items_for_title(
                     title,
                     &settings.template,
+                    &settings.folder_template,
                     &settings.collision_policy,
                     &settings.missing_metadata_policy,
                     &mut planned_targets,
@@ -741,10 +763,12 @@ impl AppUseCase {
         &self,
         title: &Title,
         template: &str,
+        folder_template: &str,
         collision_policy: &RenameCollisionPolicy,
         missing_metadata_policy: &RenameMissingMetadataPolicy,
         planned_targets: &mut HashSet<String>,
     ) -> AppResult<Vec<RenamePlanItem>> {
+        let import_paths = crate::resolve_import_paths(self, title).await?;
         let collections = self
             .services
             .catalog
@@ -759,15 +783,17 @@ impl AppUseCase {
             .await?;
 
         let items = match title.facet.clone() {
-            MediaFacet::Movie => build_movie_rename_plan_items(
-                title,
-                collections,
-                media_files,
-                template,
-                collision_policy,
-                missing_metadata_policy,
-                planned_targets,
-            ),
+            MediaFacet::Movie => {
+                let mut options = MovieRenamePlanOptions {
+                    media_root: &import_paths.media_root,
+                    folder_template,
+                    template,
+                    collision_policy,
+                    missing_metadata_policy,
+                    planned_targets,
+                };
+                build_movie_rename_plan_items(title, collections, media_files, &mut options)
+            }
             MediaFacet::Series | MediaFacet::Anime => {
                 let episodes = self
                     .services
@@ -781,6 +807,8 @@ impl AppUseCase {
                     collections,
                     episodes,
                     media_files,
+                    &import_paths.media_root,
+                    folder_template,
                     template,
                     collision_policy,
                     missing_metadata_policy,
@@ -885,6 +913,21 @@ impl AppUseCase {
         Ok(facet_settings.default_template.to_string())
     }
 
+    async fn read_folder_template(&self, facet_settings: RenameFacetSettings) -> AppResult<String> {
+        let default_template = match facet_settings.scope_id {
+            "movie" => DEFAULT_FOLDER_TEMPLATE_MOVIE,
+            "series" => DEFAULT_FOLDER_TEMPLATE_SERIES,
+            "anime" => DEFAULT_FOLDER_TEMPLATE_ANIME,
+            _ => DEFAULT_FOLDER_TEMPLATE_MOVIE,
+        };
+        Ok(normalize_title_folder_template_or_default(
+            self.read_setting_string_value(FOLDER_TEMPLATE_KEY, Some(facet_settings.scope_id))
+                .await?,
+            default_template,
+            facet_settings.scope_id,
+        ))
+    }
+
     async fn read_collision_policy(
         &self,
         facet_settings: RenameFacetSettings,
@@ -972,10 +1015,7 @@ fn build_movie_rename_plan_items(
     title: &Title,
     mut collections: Vec<Collection>,
     media_files: Vec<TitleMediaFile>,
-    template: &str,
-    collision_policy: &RenameCollisionPolicy,
-    missing_metadata_policy: &RenameMissingMetadataPolicy,
-    planned_targets: &mut HashSet<String>,
+    options: &mut MovieRenamePlanOptions<'_>,
 ) -> Vec<RenamePlanItem> {
     collections.sort_by(|left, right| left.id.cmp(&right.id));
     let media_files_by_path = media_files.into_iter().fold(
@@ -998,10 +1038,7 @@ fn build_movie_rename_plan_items(
                 title,
                 &collection,
                 matched_media_file,
-                template,
-                collision_policy,
-                missing_metadata_policy,
-                planned_targets,
+                options,
             );
             if item.media_file_id.is_none() {
                 item.media_file_id = matched_media_file.map(|media_file| media_file.id.clone());
@@ -1011,7 +1048,16 @@ fn build_movie_rename_plan_items(
         .collect()
 }
 
-pub fn render_rename_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
+struct MovieRenamePlanOptions<'a> {
+    media_root: &'a str,
+    folder_template: &'a str,
+    template: &'a str,
+    collision_policy: &'a RenameCollisionPolicy,
+    missing_metadata_policy: &'a RenameMissingMetadataPolicy,
+    planned_targets: &'a mut HashSet<String>,
+}
+
+fn render_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> String {
     let mut out = String::new();
     let chars: Vec<char> = template.chars().collect();
     let mut cursor = 0usize;
@@ -1036,7 +1082,233 @@ pub fn render_rename_template(template: &str, tokens: &BTreeMap<String, String>)
         cursor += 1;
     }
 
-    sanitize_filesystem_component(&out)
+    out
+}
+
+pub fn render_rename_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
+    sanitize_filesystem_component(&render_template_tokens(template, tokens))
+}
+
+pub fn render_title_folder_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
+    let raw = render_template_tokens(template, tokens);
+    let cleaned = strip_empty_folder_template_groups(&raw);
+    sanitize_filesystem_component(cleaned.trim())
+}
+
+pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
+    let trimmed = template.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(
+            "folder template is required".to_string(),
+        ));
+    }
+
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut cursor = 0usize;
+    let mut saw_token = false;
+
+    while cursor < chars.len() {
+        let ch = chars[cursor];
+        if ch == '}' {
+            return Err(AppError::Validation(
+                "folder template contains an unmatched '}'".to_string(),
+            ));
+        }
+        if ch != '{' {
+            cursor += 1;
+            continue;
+        }
+
+        let Some(end) = chars[cursor + 1..].iter().position(|value| *value == '}') else {
+            return Err(AppError::Validation(
+                "folder template contains an unmatched '{'".to_string(),
+            ));
+        };
+        let end_index = cursor + 1 + end;
+        let token_spec: String = chars[cursor + 1..end_index].iter().collect();
+        if token_spec.contains('{') {
+            return Err(AppError::Validation(
+                "folder template contains an unmatched '{'".to_string(),
+            ));
+        }
+        let token_name = token_spec.trim().to_ascii_lowercase();
+        if !matches!(token_name.as_str(), "title" | "year") {
+            return Err(AppError::Validation(format!(
+                "unsupported folder template token: {{{}}}",
+                token_spec.trim()
+            )));
+        }
+        saw_token = true;
+        cursor = end_index + 1;
+    }
+
+    if !saw_token {
+        return Err(AppError::Validation(
+            "folder template must include at least one supported token".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn normalize_title_folder_template_or_default(
+    raw: Option<String>,
+    default_template: &str,
+    scope: &str,
+) -> String {
+    let Some(template) = raw
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return default_template.to_string();
+    };
+
+    match validate_title_folder_template(&template) {
+        Ok(()) => template,
+        Err(error) => {
+            warn!(
+                error = %error,
+                scope,
+                template = %template,
+                "invalid stored folder template; using default"
+            );
+            default_template.to_string()
+        }
+    }
+}
+
+fn strip_empty_folder_template_groups(raw: &str) -> String {
+    let mut cleaned = raw.to_string();
+    loop {
+        let updated = cleaned
+            .replace("()", " ")
+            .replace("[]", " ")
+            .replace("{}", " ");
+        if updated == cleaned {
+            return updated;
+        }
+        cleaned = updated;
+    }
+}
+
+pub(crate) fn build_title_folder_tokens(
+    title: &Title,
+    _parsed_year: Option<i32>,
+) -> BTreeMap<String, String> {
+    let (title_token, title_year_hint) = split_title_and_year_hint(&title.name);
+    let resolved_year = title_year_hint
+        .or_else(|| title.year.map(|value| value.to_string()))
+        .unwrap_or_default();
+    BTreeMap::from([
+        ("title".to_string(), title_token),
+        ("year".to_string(), resolved_year),
+    ])
+}
+
+pub(crate) fn configured_title_folder_path(
+    media_root: &str,
+    title: &Title,
+    folder_template: &str,
+    parsed_year: Option<i32>,
+) -> PathBuf {
+    let tokens = build_title_folder_tokens(title, parsed_year);
+    let folder_name = render_title_folder_template(folder_template, &tokens);
+    PathBuf::from(media_root).join(if folder_name.is_empty() {
+        tokens
+            .get("title")
+            .cloned()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "untitled".to_string())
+    } else {
+        folder_name
+    })
+}
+
+pub(crate) fn effective_title_folder_path(
+    media_root: &str,
+    title: &Title,
+    folder_template: &str,
+    parsed_year: Option<i32>,
+) -> PathBuf {
+    title
+        .folder_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(stored_path_to_path_buf)
+        .unwrap_or_else(|| {
+            configured_title_folder_path(media_root, title, folder_template, parsed_year)
+        })
+}
+
+pub(crate) fn title_folder_path_for_renamed_file(
+    title: &Title,
+    current_file: &Path,
+    media_root: &str,
+    folder_template: &str,
+) -> PathBuf {
+    let desired_root = configured_title_folder_path(media_root, title, folder_template, title.year);
+    let current_parent = current_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let Some(existing_root) = title
+        .folder_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return desired_root;
+    };
+    let Ok(relative_parent) = current_parent.strip_prefix(&existing_root) else {
+        return desired_root;
+    };
+    if relative_parent.as_os_str().is_empty() {
+        desired_root
+    } else {
+        desired_root.join(relative_parent)
+    }
+}
+
+fn infer_title_folder_path_after_rename(
+    title: &Title,
+    current_path: &str,
+    final_path: &str,
+) -> Option<String> {
+    let final_parent = Path::new(final_path).parent()?;
+    if let Some(existing_root) = title
+        .folder_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        let current_parent = Path::new(current_path).parent()?;
+        if let Ok(relative_parent) = current_parent.strip_prefix(&existing_root) {
+            let mut new_root = final_parent.to_path_buf();
+            for _ in relative_parent.components() {
+                new_root = new_root.parent()?.to_path_buf();
+            }
+            return Some(path_to_stored_string(&new_root));
+        }
+    }
+
+    infer_title_folder_path_from_final_path(title, final_parent)
+        .map(|path| path_to_stored_string(&path))
+}
+
+fn infer_title_folder_path_from_final_path(title: &Title, final_parent: &Path) -> Option<PathBuf> {
+    if use_season_folders(title)
+        && final_parent
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.starts_with("Season "))
+    {
+        return final_parent.parent().map(Path::to_path_buf);
+    }
+
+    Some(final_parent.to_path_buf())
 }
 
 pub fn build_rename_plan_fingerprint(
@@ -1348,16 +1620,12 @@ fn resolve_rendered_rename_filename(
 fn finalize_rename_plan_item(
     source: &RenamePlanSource,
     item_ids: RenamePlanItemIds,
+    target_parent: PathBuf,
     rendered: String,
     collision_policy: &RenameCollisionPolicy,
     planned_targets: &mut HashSet<String>,
 ) -> RenamePlanItem {
-    let parent = source
-        .current_file
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let proposed_path_str = path_to_stored_string(parent.join(&rendered));
+    let proposed_path_str = path_to_stored_string(target_parent.join(&rendered));
 
     if proposed_path_str == source.current_path {
         return source.build_item(
@@ -1420,6 +1688,8 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
     mut collections: Vec<Collection>,
     episodes: Vec<Episode>,
     media_files: Vec<TitleMediaFile>,
+    media_root: &str,
+    folder_template: &str,
     template: &str,
     collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
@@ -1454,6 +1724,8 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
                 &collections_by_id,
                 &episodes_by_id,
                 source,
+                media_root,
+                folder_template,
                 template,
                 collision_policy,
                 missing_metadata_policy,
@@ -1505,6 +1777,8 @@ fn build_series_media_file_rename_plan_item(
     collections_by_id: &HashMap<String, Collection>,
     episodes_by_id: &HashMap<String, Episode>,
     source: GroupedTitleMediaFile,
+    media_root: &str,
+    folder_template: &str,
     template: &str,
     collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
@@ -1536,12 +1810,13 @@ fn build_series_media_file_rename_plan_item(
         &parsed,
     );
     let (title_token, year_token) = split_title_and_year_hint(&title.name);
+    let fallback_year = title.year.map(|value| value.to_string());
     let extension = source_file.extension.clone();
     let common = resolve_rename_common_metadata(
         Some(&source.file),
         &parsed,
         &title_token,
-        year_token.as_deref(),
+        year_token.as_deref().or(fallback_year.as_deref()),
         &extension,
     );
 
@@ -1577,10 +1852,17 @@ fn build_series_media_file_rename_plan_item(
         Ok(rendered) => rendered,
         Err(item) => return *item,
     };
+    let target_parent = title_folder_path_for_renamed_file(
+        title,
+        &source_file.current_file,
+        media_root,
+        folder_template,
+    );
 
     finalize_rename_plan_item(
         &source_file,
         item_ids,
+        target_parent,
         rendered,
         collision_policy,
         planned_targets,
@@ -1917,14 +2199,11 @@ pub(crate) fn build_rename_plan_from_items(
     }
 }
 
-pub(crate) fn build_movie_rename_plan_item(
+fn build_movie_rename_plan_item(
     title: &Title,
     collection: &Collection,
     media_file: Option<&TitleMediaFile>,
-    template: &str,
-    collision_policy: &RenameCollisionPolicy,
-    missing_metadata_policy: &RenameMissingMetadataPolicy,
-    planned_targets: &mut HashSet<String>,
+    options: &mut MovieRenamePlanOptions<'_>,
 ) -> RenamePlanItem {
     let item_ids = RenamePlanItemIds {
         collection_id: Some(collection.id.clone()),
@@ -1942,12 +2221,13 @@ pub(crate) fn build_movie_rename_plan_item(
         .unwrap_or_default();
     let parsed = parse_release_metadata(current_stem);
     let (title_token, year_token) = split_title_and_year_hint(&title.name);
+    let fallback_year = title.year.map(|value| value.to_string());
     let extension = source_file.extension.clone();
     let mut common = resolve_rename_common_metadata(
         media_file,
         &parsed,
         &title_token,
-        year_token.as_deref(),
+        year_token.as_deref().or(fallback_year.as_deref()),
         &extension,
     );
     if common.common.quality.is_empty() {
@@ -1965,25 +2245,32 @@ pub(crate) fn build_movie_rename_plan_item(
     let rendered = match resolve_rendered_rename_filename(
         &source_file,
         item_ids.clone(),
-        template,
+        options.template,
         &tokens,
         &title_token,
-        missing_metadata_policy,
+        options.missing_metadata_policy,
     ) {
         Ok(rendered) => rendered,
         Err(item) => return *item,
     };
+    let target_parent = title_folder_path_for_renamed_file(
+        title,
+        &source_file.current_file,
+        options.media_root,
+        options.folder_template,
+    );
 
     finalize_rename_plan_item(
         &source_file,
         item_ids,
+        target_parent,
         rendered,
-        collision_policy,
-        planned_targets,
+        options.collision_policy,
+        options.planned_targets,
     )
 }
 
-fn split_title_and_year_hint(raw_title: &str) -> (String, Option<String>) {
+pub(crate) fn split_title_and_year_hint(raw_title: &str) -> (String, Option<String>) {
     let trimmed = raw_title.trim();
     for (open, close) in [('(', ')'), ('[', ']')] {
         if let Some(close_pos) = trimmed.rfind(close)

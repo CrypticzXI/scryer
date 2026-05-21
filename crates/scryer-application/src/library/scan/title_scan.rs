@@ -1,6 +1,160 @@
 use super::*;
 use crate::library_scan_unmatched::build_title_bound_unmatched_scan_item;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
+use scryer_domain::VIDEO_EXTENSIONS;
+
+fn parsed_release_has_title_scan_episode_identity(
+    parsed: &crate::ParsedReleaseMetadata,
+    facet: &scryer_domain::MediaFacet,
+) -> bool {
+    matches!(
+        parsed.episode.as_ref(),
+        Some(ep)
+            if !ep.episode_numbers.is_empty()
+                || ep.air_date.is_some()
+                || !ep.special_absolute_episode_numbers.is_empty()
+                || (ep.absolute_episode.is_some()
+                    && *facet == scryer_domain::MediaFacet::Anime)
+    )
+}
+
+fn parse_release_from_immediate_parent_for_title_scan(
+    source_path: &std::path::Path,
+    parse_context: &crate::ReleaseParseContext,
+) -> Option<crate::ParsedReleaseMetadata> {
+    source_path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| crate::parse_release_metadata_for_target(name.as_str(), parse_context))
+}
+
+async fn immediate_parent_has_single_video_file(source_path: &std::path::Path) -> bool {
+    let Some(parent) = source_path.parent() else {
+        return false;
+    };
+
+    let mut entries = match tokio::fs::read_dir(parent).await {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    let mut video_count = 0usize;
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type().await else {
+            return false;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if VIDEO_EXTENSIONS
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(extension))
+        {
+            video_count += 1;
+            if video_count > 1 {
+                return false;
+            }
+        }
+    }
+
+    video_count == 1
+}
+
+fn fill_missing_title_scan_release_metadata(
+    target: &mut crate::ParsedReleaseMetadata,
+    fallback: &crate::ParsedReleaseMetadata,
+    facet: &scryer_domain::MediaFacet,
+) {
+    if !parsed_release_has_title_scan_episode_identity(target, facet) && fallback.episode.is_some() {
+        target.episode = fallback.episode.clone();
+    }
+    if target.imdb_id.is_none() {
+        target.imdb_id = fallback.imdb_id.clone();
+    }
+    if target.tmdb_id.is_none() {
+        target.tmdb_id = fallback.tmdb_id.clone();
+    }
+    if target.year.is_none() {
+        target.year = fallback.year;
+    }
+    if target.quality.is_none() {
+        target.quality = fallback.quality.clone();
+    }
+    if target.source.is_none() {
+        target.source = fallback.source.clone();
+    }
+    if target.video_codec.is_none() {
+        target.video_codec = fallback.video_codec.clone();
+    }
+    if target.video_encoding.is_none() {
+        target.video_encoding = fallback.video_encoding.clone();
+    }
+    if target.audio.is_none() {
+        target.audio = fallback.audio.clone();
+    }
+    if target.audio_channels.is_none() {
+        target.audio_channels = fallback.audio_channels.clone();
+    }
+    if target.release_group.is_none() {
+        target.release_group = fallback.release_group.clone();
+    }
+    if target.streaming_service.is_none() {
+        target.streaming_service = fallback.streaming_service.clone();
+    }
+    if target.edition.is_none() {
+        target.edition = fallback.edition.clone();
+    }
+    if target.normalized_title.trim().is_empty() && !fallback.normalized_title.trim().is_empty() {
+        target.normalized_title = fallback.normalized_title.clone();
+    }
+    if target.normalized_title_variants.is_empty() && !fallback.normalized_title_variants.is_empty()
+    {
+        target.normalized_title_variants = fallback.normalized_title_variants.clone();
+    }
+}
+
+async fn parse_title_scan_release_metadata(
+    source_path: &std::path::Path,
+    display_name: &str,
+    facet: &scryer_domain::MediaFacet,
+    parse_context: &crate::ReleaseParseContext,
+) -> crate::ParsedReleaseMetadata {
+    let mut parsed = crate::parse_release_metadata_for_target(
+        source_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(display_name),
+        parse_context,
+    );
+    if parsed_release_has_title_scan_episode_identity(&parsed, facet) {
+        return parsed;
+    }
+
+    let Some(parent_release) =
+        parse_release_from_immediate_parent_for_title_scan(source_path, parse_context)
+    else {
+        return parsed;
+    };
+    let Some(parent_episode) = parent_release.episode.as_ref() else {
+        return parsed;
+    };
+    if parent_episode.full_season
+        || !parsed_release_has_title_scan_episode_identity(&parent_release, facet)
+        || !immediate_parent_has_single_video_file(source_path).await
+    {
+        return parsed;
+    }
+
+    fill_missing_title_scan_release_metadata(&mut parsed, &parent_release, facet);
+    parsed
+}
 
 fn hydration_source_for_scan_mode(
     mode: LibraryScanMode,
@@ -50,8 +204,8 @@ async fn discover_movie_title_files(
     app: &AppUseCase,
     title: &Title,
 ) -> AppResult<Vec<LibraryFile>> {
-    let (media_root, _) = crate::import_workflow::resolve_import_paths(app, title).await?;
-    let media_root_path = PathBuf::from(&media_root);
+    let import_paths = crate::import_workflow::resolve_import_paths(app, title).await?;
+    let media_root_path = PathBuf::from(&import_paths.media_root);
     let collections = app
         .services
         .catalog
@@ -124,7 +278,14 @@ async fn discover_movie_title_files(
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(stored_path_to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(&media_root).join(&title.name));
+        .unwrap_or_else(|| {
+            crate::effective_title_folder_path(
+                &import_paths.media_root,
+                title,
+                &import_paths.folder_template,
+                None,
+            )
+        });
     if default_candidate_path != media_root_path
         && seen_candidate_paths.insert(path_to_stored_string(&default_candidate_path))
     {
@@ -792,14 +953,13 @@ impl AppUseCase {
             ));
         }
 
-        let (media_root, _) = crate::import_workflow::resolve_import_paths(self, &title).await?;
-        let title_dir = title
-            .folder_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(stored_path_to_path_buf)
-            .unwrap_or_else(|| PathBuf::from(&media_root).join(&title.name));
+        let import_paths = crate::import_workflow::resolve_import_paths(self, &title).await?;
+        let title_dir = crate::effective_title_folder_path(
+            &import_paths.media_root,
+            &title,
+            &import_paths.folder_template,
+            None,
+        );
         let title_dir_str = path_to_stored_string(&title_dir);
         debug!(
             title_id = %title.id,
@@ -928,13 +1088,13 @@ impl AppUseCase {
                 summary.scanned += 1;
 
                 let source_path = stored_path_to_path_buf(&file.path);
-                let parsed = crate::parse_release_metadata_for_target(
-                    source_path
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .unwrap_or(file.display_name.as_str()),
+                let parsed = parse_title_scan_release_metadata(
+                    &source_path,
+                    file.display_name.as_str(),
+                    &title.facet,
                     &parse_context,
-                );
+                )
+                .await;
 
                 let ep_meta = match parsed.episode.as_ref() {
                     Some(ep) if !ep.episode_numbers.is_empty() => ep,

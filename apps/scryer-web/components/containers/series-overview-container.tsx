@@ -22,6 +22,7 @@ import {
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import type { Release } from "@/lib/types";
 import { DEFAULT_SERIES_LIBRARY_PATH } from "@/lib/constants/settings";
+import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { useClient } from "urql";
@@ -923,7 +924,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setGlobalStatus(t("status.queuedLatest", { name: title.name }));
         await refreshTitleDetail();
       } catch (error: unknown) {
-        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
       }
     },
     [refreshTitleDetail, client, confirmReplaceConflict, title, t, setGlobalStatus],
@@ -1025,7 +1026,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setGlobalStatus(t("status.queuedLatest", { name: title.name }));
         await refreshTitleDetail();
       } catch (error: unknown) {
-        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
       }
     },
     [client, confirmReplaceConflict, title, refreshTitleDetail, setGlobalStatus, t],

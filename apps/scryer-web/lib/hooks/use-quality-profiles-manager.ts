@@ -8,6 +8,10 @@ import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import {
+  commitQualityProfileDraftToEntries,
+  hasDuplicateQualityProfileName,
+} from "@/lib/utils/quality-profile-draft-commit";
+import {
   buildQualityProfileTemplate,
   buildDefaultCategoryPersonaSelections,
   coerceProfileSetting,
@@ -15,13 +19,11 @@ import {
   dedupeOrdered,
   isValidProfileSelection,
   normalizeProfileId,
-  normalizeProfileIdFromName,
   normalizeQualityProfilesForUi,
   parseQualityProfileCatalog,
   qualityProfileSettingsToCatalogText,
   qualityProfileSettingsToCategoryOverrides,
   qualityProfileSettingsToCategoryPersonaSelections,
-  qualityProfileCatalogEntryFromDraft,
   qualityProfileEntryToMutationInput,
   resolveQualityProfileCatalogState,
   sortStringByNumericDesc,
@@ -169,7 +171,6 @@ export function useQualityProfilesManager(
   const [qualityProfileDraft, setQualityProfileDraft] = React.useState<QualityProfileDraft>(() =>
     toQualityProfileDraft(null, "default", "4K"),
   );
-  const [qualityProfileDraftOriginalName, setQualityProfileDraftOriginalName] = React.useState("");
   const [globalQualityProfileId, setGlobalQualityProfileId] = React.useState("default");
   const [globalScoringPersona, setGlobalScoringPersona] =
     React.useState<ScoringPersonaId>("Balanced");
@@ -326,7 +327,6 @@ export function useQualityProfilesManager(
       setQualityProfiles(resolvedProfiles);
       setSelectedQualityProfileId(nextDraftId);
       setQualityProfileDraft(nextDefaultDraft);
-      setQualityProfileDraftOriginalName(nextDefaultDraft.name);
       setGlobalQualityProfileId(validGlobalProfile);
       setGlobalScoringPersona(payload?.globalScoringPersona ?? "Balanced");
 
@@ -423,7 +423,6 @@ export function useQualityProfilesManager(
       setSelectedQualityProfileId(profileId);
       const nextDraft = toQualityProfileDraft(selectedEntry, profileId, profileId);
       setQualityProfileDraft(nextDraft);
-      setQualityProfileDraftOriginalName(nextDraft.name);
       setQualityProfileParseError("");
     },
     [qualityProfileCatalogEntries],
@@ -437,7 +436,6 @@ export function useQualityProfilesManager(
     const nextDraft = buildQualityProfileTemplate(nextProfileId, "");
     setSelectedQualityProfileId(nextProfileId);
     setQualityProfileDraft(nextDraft);
-    setQualityProfileDraftOriginalName("");
     setQualityProfileParseError("");
   }, [qualityProfileCatalogEntries]);
 
@@ -463,7 +461,6 @@ export function useQualityProfilesManager(
 
   const commitQualityProfileDraftToCatalog = React.useCallback((): CommittedQualityProfileDraft | null => {
     const sourceEntries = qualityProfileCatalogEntries;
-    const nextIdFromDraft = qualityProfileDraft.id;
     const nextName = qualityProfileDraft.name.trim();
     if (!nextName) {
       setQualityProfileParseError(t("settings.qualityProfileNameRequired"));
@@ -471,51 +468,34 @@ export function useQualityProfilesManager(
       return null;
     }
 
-    const originalName = qualityProfileDraftOriginalName.trim();
-    const hasNameChange = Boolean(originalName) && originalName !== nextName;
-    const normalizedNextName = nextName.toLocaleLowerCase();
-    const hasDuplicateName = sourceEntries.some(
-      (entry) =>
-        entry.id !== nextIdFromDraft &&
-        entry.name.trim().toLocaleLowerCase() === normalizedNextName,
-    );
-    if (hasDuplicateName) {
+    if (hasDuplicateQualityProfileName(sourceEntries, nextName, qualityProfileDraft.id)) {
       setQualityProfileParseError(t("settings.qualityProfileNameDuplicate"));
       setGlobalStatus(t("settings.qualityProfileNameDuplicate"));
       return null;
     }
-    const existingIds = sourceEntries.map((entry) => entry.id.trim()).filter((entryId) => entryId.length > 0);
-    const shouldCreateNewProfile =
-      hasNameChange || !sourceEntries.some((entry) => entry.id === nextIdFromDraft);
 
-    const nextDraft: QualityProfileDraft = {
+    const committed = commitQualityProfileDraftToEntries(sourceEntries, {
       ...qualityProfileDraft,
       name: nextName,
-      id: hasNameChange
-        ? createUniqueProfileId(normalizeProfileIdFromName(nextName), existingIds)
-        : nextIdFromDraft,
-    };
-    const nextDraftEntry = qualityProfileCatalogEntryFromDraft(nextDraft);
-    const nextEntries = shouldCreateNewProfile
-      ? [...sourceEntries, nextDraftEntry]
-      : sourceEntries.map((entry) => (entry.id === nextIdFromDraft ? nextDraftEntry : entry));
-    const normalized = normalizeQualityProfilesForUi(JSON.stringify(nextEntries));
+    });
+    const normalized = normalizeQualityProfilesForUi(JSON.stringify(committed.catalogEntries));
 
-    setQualityProfileCatalogEntriesState(nextEntries);
+    setQualityProfileCatalogEntriesState(committed.catalogEntries);
     setQualityProfiles(parseQualityProfileCatalog(normalized));
-    setSelectedQualityProfileId(nextDraft.id);
-    setQualityProfileDraft(nextDraft);
-    setQualityProfileDraftOriginalName(nextDraft.name);
+    setSelectedQualityProfileId(committed.draftEntry.id);
+    setQualityProfileDraft(
+      toQualityProfileDraft(
+        committed.draftEntry,
+        committed.draftEntry.id,
+        committed.draftEntry.name,
+      ),
+    );
     setQualityProfileParseError("");
 
-    return {
-      catalogEntries: nextEntries,
-      draftEntry: nextDraftEntry,
-    };
+    return committed;
   }, [
     qualityProfileCatalogEntries,
     qualityProfileDraft,
-    qualityProfileDraftOriginalName,
     setGlobalStatus,
     t,
   ]);

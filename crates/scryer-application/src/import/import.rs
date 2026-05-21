@@ -16,7 +16,7 @@ use crate::{
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
     parse_download_client_remote_path_mappings, parse_release_metadata,
     polling_worker::PollingWorker,
-    render_rename_template, sanitize_filesystem_component,
+    effective_title_folder_path, render_rename_template, sanitize_filesystem_component,
 };
 use chrono::{DateTime, Utc};
 use scryer_domain::{
@@ -1307,7 +1307,11 @@ async fn import_movie_download(
         .map(|m| m.len() as i64)
         .unwrap_or(0);
 
-    let (media_root, rename_template) = resolve_import_paths(app, title).await?;
+    let ImportPathSettings {
+        media_root,
+        rename_template,
+        folder_template,
+    } = resolve_import_paths(app, title).await?;
 
     let parsed = build_augmented_movie_import_metadata(&source_video, completed);
     let existing_files = app
@@ -1393,23 +1397,12 @@ async fn import_movie_download(
     let tokens = build_rename_tokens(title, &prepared.parsed, &ext);
     let rendered_filename = render_rename_template(&rename_template, &tokens);
 
-    let year_str = prepared
-        .parsed
-        .year
-        .or(title.year)
-        .map(|y| format!(" ({})", y))
-        .unwrap_or_default();
-    let title_folder = sanitized_title_folder_component(&format!("{}{}", title.name, year_str));
-    let full_folder_path = PathBuf::from(&media_root).join(&title_folder);
-
-    if title.folder_path.is_none() {
-        let _ = app
-            .services
-            .catalog
-            .titles
-            .set_folder_path(&title.id, &path_to_stored_string(&full_folder_path))
-            .await;
-    }
+    let full_folder_path = effective_title_folder_path(
+        &media_root,
+        title,
+        &folder_template,
+        prepared.parsed.year,
+    );
 
     let dest_path = full_folder_path.join(&rendered_filename);
     let check_ctx = crate::import_checks::ImportCheckContext {
@@ -1546,6 +1539,7 @@ async fn import_movie_download(
                             new_score = outcome.new_score,
                             "movie file upgraded"
                         );
+                        persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
                         mark_wanted_completed(app, &title.id, None, None).await;
                         let result_json = serde_json::to_string(&result).ok();
                         app.update_import_status_and_notify(
@@ -1614,6 +1608,7 @@ async fn import_movie_download(
         .file_importer
         .import_file(&source_video, &dest_path)
         .await?;
+    persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
 
     let nfo_enabled = app
         .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
@@ -1876,7 +1871,11 @@ async fn import_interstitial_movie_download(
         .map(|m| m.len() as i64)
         .unwrap_or(0);
 
-    let (media_root, _rename_template) = resolve_import_paths(app, title).await?;
+    let ImportPathSettings {
+        media_root,
+        rename_template: _rename_template,
+        folder_template,
+    } = resolve_import_paths(app, title).await?;
 
     let parsed = build_augmented_movie_import_metadata(&source_video, completed);
 
@@ -1899,10 +1898,10 @@ async fn import_interstitial_movie_download(
     ));
 
     // Build destination: <media_root>/<title folder>/Season 00/<filename>
-    let year_str = title.year.map(|y| format!(" ({})", y)).unwrap_or_default();
-    let title_folder = sanitized_title_folder_component(&format!("{}{}", title.name, year_str));
-    let dest_path = PathBuf::from(&media_root)
-        .join(&title_folder)
+    let full_folder_path =
+        effective_title_folder_path(&media_root, title, &folder_template, None);
+
+    let dest_path = full_folder_path
         .join("Season 00")
         .join(&rendered_filename);
 
@@ -2056,6 +2055,7 @@ async fn import_interstitial_movie_download(
                             new_score = outcome.new_score,
                             "interstitial movie file upgraded"
                         );
+                        persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
                         mark_wanted_completed_for_collection(app, &title.id, collection_id).await;
                         let result = ImportResult {
                             import_id: import_id.to_string(),
@@ -2189,6 +2189,7 @@ async fn import_interstitial_movie_download(
         .file_importer
         .import_file(&source_video, &dest_path)
         .await?;
+    persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
 
     let acq_score = crate::post_download_gate::compute_acquisition_score(
         app,
@@ -2438,18 +2439,13 @@ async fn import_series_download(
     video_files: &[PathBuf],
     started_at: chrono::DateTime<Utc>,
 ) -> AppResult<ImportResult> {
-    let (media_root, rename_template) = resolve_import_paths(app, title).await?;
-    let title_folder = sanitized_title_folder_component(&title.name);
-    let full_folder_path = PathBuf::from(&media_root).join(&title_folder);
-
-    if title.folder_path.is_none() {
-        let _ = app
-            .services
-            .catalog
-            .titles
-            .set_folder_path(&title.id, &path_to_stored_string(&full_folder_path))
-            .await;
-    }
+    let ImportPathSettings {
+        media_root,
+        rename_template,
+        folder_template,
+    } = resolve_import_paths(app, title).await?;
+    let full_folder_path =
+        effective_title_folder_path(&media_root, title, &folder_template, None);
 
     let quality_profile = resolve_import_quality_profile(app, title).await;
 
@@ -2472,9 +2468,8 @@ async fn import_series_download(
             actor,
             title,
             import_id,
-            &media_root,
             &rename_template,
-            &title_folder,
+            &full_folder_path,
             completed,
             source_video,
             video_files.len() > 1,
@@ -2512,7 +2507,8 @@ async fn import_series_download(
     }
 
     if imported_count > 0 {
-        write_series_sidecars(app, title, &media_root, &title_folder, nfo_enabled).await;
+        persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
+        write_series_sidecars(app, title, &full_folder_path, nfo_enabled).await;
     }
 
     let (decision, status, skip_reason) = if imported_count > 0 {
@@ -2785,9 +2781,8 @@ async fn import_single_episode_file(
     actor: &User,
     title: &scryer_domain::Title,
     import_id: &str,
-    media_root: &str,
     rename_template: &str,
-    title_folder: &str,
+    title_folder_path: &Path,
     completed: &CompletedDownload,
     source_video: &Path,
     other_video_files: bool,
@@ -2845,9 +2840,8 @@ async fn import_single_episode_file(
         app,
         actor,
         title,
-        media_root,
         rename_template,
-        title_folder,
+        title_folder_path,
         source_video,
         &parsed,
         &target_episodes,
@@ -2984,9 +2978,8 @@ async fn execute_resolved_episode_import(
     app: &AppUseCase,
     actor: &User,
     title: &scryer_domain::Title,
-    media_root: &str,
     rename_template: &str,
-    title_folder: &str,
+    title_folder_path: &Path,
     source_video: &Path,
     parsed: &crate::ParsedReleaseMetadata,
     target_episodes: &[scryer_domain::Episode],
@@ -3088,8 +3081,7 @@ async fn execute_resolved_episode_import(
         title,
         &effective_parsed,
         &ext,
-        media_root,
-        title_folder,
+        title_folder_path,
         rename_template,
         rename_season,
         rename_episode_number,
@@ -3143,8 +3135,9 @@ async fn execute_resolved_episode_import(
                 });
             }
         };
+        let recycle_root = title_folder_path.parent().and_then(|path| path.to_str());
         let recycle_config =
-            crate::recycle_bin::resolve_recycle_config(app, Some(media_root)).await;
+            crate::recycle_bin::resolve_recycle_config(app, recycle_root).await;
 
         match crate::upgrade::execute_upgrade(
             app,
@@ -3298,11 +3291,17 @@ async fn execute_resolved_episode_import(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+pub(crate) struct ImportPathSettings {
+    pub(crate) media_root: String,
+    pub(crate) rename_template: String,
+    pub(crate) folder_template: String,
+}
+
 /// Resolve media root path and rename template for a title's facet.
 pub(crate) async fn resolve_import_paths(
     app: &AppUseCase,
     title: &scryer_domain::Title,
-) -> AppResult<(String, String)> {
+) -> AppResult<ImportPathSettings> {
     let rename_settings = crate::facet_handler::rename_facet_settings(&title.facet);
     let default_root = app.default_media_root_for_title(title).await?;
     let media_root = title
@@ -3320,8 +3319,50 @@ pub(crate) async fn resolve_import_paths(
         )
         .await?
         .unwrap_or_else(|| rename_settings.default_template.to_string());
+    let folder_template = app
+        .read_setting_string_value_for_scope(
+            super::SETTINGS_SCOPE_SYSTEM,
+            super::FOLDER_TEMPLATE_KEY,
+            Some(title.facet.as_str()),
+        )
+        .await?;
+    let default_folder_template = match title.facet {
+        MediaFacet::Movie => super::DEFAULT_FOLDER_TEMPLATE_MOVIE,
+        MediaFacet::Series => super::DEFAULT_FOLDER_TEMPLATE_SERIES,
+        MediaFacet::Anime => super::DEFAULT_FOLDER_TEMPLATE_ANIME,
+    };
+    let folder_template = crate::normalize_title_folder_template_or_default(
+        folder_template,
+        default_folder_template,
+        title.facet.as_str(),
+    );
 
-    Ok((media_root, rename_template))
+    Ok(ImportPathSettings {
+        media_root,
+        rename_template,
+        folder_template,
+    })
+}
+
+async fn persist_title_folder_path_if_missing(
+    app: &AppUseCase,
+    title: &Title,
+    folder_path: &Path,
+) {
+    let has_folder_path = title
+        .folder_path
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    if has_folder_path {
+        return;
+    }
+    let _ = app
+        .services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, &path_to_stored_string(folder_path))
+        .await;
 }
 
 /// Compute the destination path for an episode import using the canonical
@@ -3340,8 +3381,7 @@ pub(crate) fn episode_import_dest_path(
     title: &scryer_domain::Title,
     parsed: &crate::ParsedReleaseMetadata,
     ext: &str,
-    media_root: &str,
-    title_folder: &str,
+    title_folder_path: &Path,
     rename_template: &str,
     season_num: u32,
     ep_num_str: &str,
@@ -3367,12 +3407,9 @@ pub(crate) fn episode_import_dest_path(
     let rendered = render_rename_template(rename_template, &tokens);
     if use_season_folders(title) {
         let season_folder = format!("Season {:02}", season_num);
-        PathBuf::from(media_root)
-            .join(title_folder)
-            .join(&season_folder)
-            .join(&rendered)
+        title_folder_path.join(&season_folder).join(&rendered)
     } else {
-        PathBuf::from(media_root).join(title_folder).join(&rendered)
+        title_folder_path.join(&rendered)
     }
 }
 
@@ -3390,6 +3427,7 @@ pub(crate) fn use_season_folders(title: &scryer_domain::Title) -> bool {
         .unwrap_or(true)
 }
 
+#[cfg(test)]
 fn sanitized_title_folder_component(raw: &str) -> String {
     let sanitized = sanitize_filesystem_component(raw);
     if sanitized.is_empty() {
@@ -3818,14 +3856,11 @@ async fn resolve_manual_import_coverage_episodes(
 async fn write_series_sidecars(
     app: &AppUseCase,
     title: &scryer_domain::Title,
-    media_root: &str,
-    title_folder: &str,
+    title_folder_path: &Path,
     nfo_enabled: bool,
 ) {
     if nfo_enabled {
-        let tvshow_nfo_path = PathBuf::from(media_root)
-            .join(title_folder)
-            .join("tvshow.nfo");
+        let tvshow_nfo_path = title_folder_path.join("tvshow.nfo");
         if !tvshow_nfo_path.exists() {
             if let Some(parent) = tvshow_nfo_path.parent() {
                 let _ = tokio::fs::create_dir_all(parent).await;
@@ -3856,9 +3891,7 @@ async fn write_series_sidecars(
         }
     };
     if plexmatch_enabled {
-        let plexmatch_path = PathBuf::from(media_root)
-            .join(title_folder)
-            .join(".plexmatch");
+        let plexmatch_path = title_folder_path.join(".plexmatch");
         if !plexmatch_path.exists() {
             if let Some(parent) = plexmatch_path.parent() {
                 let _ = tokio::fs::create_dir_all(parent).await;
@@ -4760,11 +4793,17 @@ pub async fn execute_manual_import(
     )
     .await?;
 
-    let (media_root, rename_template) = resolve_import_paths(app, &title).await?;
-    let title_folder = sanitized_title_folder_component(&title.name);
+    let ImportPathSettings {
+        media_root,
+        rename_template,
+        folder_template,
+    } = resolve_import_paths(app, &title).await?;
+    let full_folder_path =
+        effective_title_folder_path(&media_root, &title, &folder_template, None);
     let quality_profile = resolve_import_quality_profile(app, &title).await;
 
     let mut results = Vec::new();
+    let mut imported_any = false;
 
     for mapping in &files {
         let source = stored_path_to_path_buf(&mapping.file_path);
@@ -4840,9 +4879,8 @@ pub async fn execute_manual_import(
             app,
             actor,
             &title,
-            &media_root,
             &rename_template,
-            &title_folder,
+            &full_folder_path,
             &source,
             &parsed,
             std::slice::from_ref(&episode),
@@ -4857,6 +4895,7 @@ pub async fn execute_manual_import(
         .await
         {
             Ok(EpisodeImportOutcome::Imported { dest_path, .. }) => {
+                imported_any = true;
                 results.push(ManualImportFileResult {
                     file_path: mapping.file_path.clone(),
                     episode_id: mapping.episode_id.clone(),
@@ -4904,6 +4943,10 @@ pub async fn execute_manual_import(
                 });
             }
         }
+    }
+
+    if imported_any {
+        persist_title_folder_path_if_missing(app, &title, &full_folder_path).await;
     }
 
     let imported_updates: Vec<NotificationMediaUpdate> = results

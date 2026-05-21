@@ -38,6 +38,11 @@ import {
   qualityProfileSettingsToCategoryPersonaSelections,
   resolveQualityProfileCatalogState,
 } from "@/lib/utils/quality-profiles";
+import {
+  facetScopedMediaSettingsScopeId,
+  updateFacetScopedStringArrayRecord,
+  updateFacetScopedStringRecord,
+} from "@/lib/utils/media-settings-scope";
 import type { RootFolderOption } from "@/lib/types/titles";
 import type {
   QualityProfileSettingsPayload,
@@ -70,6 +75,10 @@ export type UseMediaSettingsResult = {
   categoryRequiredAudioLanguages: Record<ViewCategoryId, string[]>;
   saveCategoryRequiredAudioLanguages: (languages: string[]) => Promise<void> | void;
   categoryPersonaSelections: Record<ViewCategoryId, FacetScoringPersonaSelectionRecord>;
+  categoryFolderTemplates: Record<ViewCategoryId, string>;
+  setCategoryFolderTemplates: React.Dispatch<
+    React.SetStateAction<Record<ViewCategoryId, string>>
+  >;
   categoryRenameTemplates: Record<ViewCategoryId, string>;
   setCategoryRenameTemplates: React.Dispatch<
     React.SetStateAction<Record<ViewCategoryId, string>>
@@ -137,6 +146,7 @@ const ALLOWED_RENAME_MISSING_METADATA_POLICIES = new Set([
 const ALLOWED_FILLER_POLICIES = new Set(["download_all", "skip_filler"]);
 const DEFAULT_RECAP_POLICY = "download_all";
 const ALLOWED_RECAP_POLICIES = new Set(["download_all", "skip_recap"]);
+const DEFAULT_FOLDER_TEMPLATE = "{title} ({year})";
 const DEFAULT_RENAME_TEMPLATE =
   "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}";
 const DEFAULT_CATEGORY_REQUIRED_AUDIO_LANGUAGES: Record<ViewCategoryId, string[]> = {
@@ -193,6 +203,13 @@ export function useMediaSettings({
     React.useState<Record<ViewCategoryId, FacetScoringPersonaSelectionRecord>>({
       ...buildDefaultCategoryPersonaSelections(),
     });
+  const [categoryFolderTemplates, setCategoryFolderTemplates] = React.useState<
+    Record<ViewCategoryId, string>
+  >({
+    movie: DEFAULT_FOLDER_TEMPLATE,
+    series: DEFAULT_FOLDER_TEMPLATE,
+    anime: DEFAULT_FOLDER_TEMPLATE,
+  });
   const [categoryRenameTemplates, setCategoryRenameTemplates] = React.useState<
     Record<ViewCategoryId, string>
   >({
@@ -504,42 +521,52 @@ export function useMediaSettings({
       );
 
       if (mediaSettings) {
+        const mediaSettingsScopeId = facetScopedMediaSettingsScopeId(mediaSettings);
         setCategoryRequiredAudioLanguages((previous) => {
           const nextLanguages = mediaSettings.requiredAudioLanguages ?? [];
-          const currentLanguages = previous[activeQualityScopeId] ?? [];
-          const same =
-            currentLanguages.length === nextLanguages.length &&
-            currentLanguages.every((value, index) => value === nextLanguages[index]);
-          return same
-            ? previous
-            : { ...previous, [activeQualityScopeId]: nextLanguages };
+          return updateFacetScopedStringArrayRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextLanguages,
+          );
+        });
+        setCategoryFolderTemplates((previous) => {
+          const nextTemplate = mediaSettings.folderTemplate || DEFAULT_FOLDER_TEMPLATE;
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextTemplate,
+          );
         });
         setCategoryRenameTemplates((previous) => {
           const nextTemplate = mediaSettings.renameTemplate || DEFAULT_RENAME_TEMPLATE;
-          if (previous[activeQualityScopeId] === nextTemplate) {
-            return previous;
-          }
-          return { ...previous, [activeQualityScopeId]: nextTemplate };
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextTemplate,
+          );
         });
 
         setCategoryRenameCollisionPolicies((previous) => {
           const nextPolicy = normalizeRenameCollisionPolicy(
             mediaSettings.renameCollisionPolicy,
           );
-          if (previous[activeQualityScopeId] === nextPolicy) {
-            return previous;
-          }
-          return { ...previous, [activeQualityScopeId]: nextPolicy };
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextPolicy,
+          );
         });
 
         setCategoryRenameMissingMetadataPolicies((previous) => {
           const nextPolicy = normalizeRenameMissingMetadataPolicy(
             mediaSettings.renameMissingMetadataPolicy,
           );
-          if (previous[activeQualityScopeId] === nextPolicy) {
-            return previous;
-          }
-          return { ...previous, [activeQualityScopeId]: nextPolicy };
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextPolicy,
+          );
         });
 
         if (mediaSettings.scope === "anime") {
@@ -577,17 +604,21 @@ export function useMediaSettings({
 
         setNfoWriteOnImport((previous) => {
           const nextValue = mediaSettings.nfoWriteOnImport ? "true" : "false";
-          return previous[activeQualityScopeId] === nextValue
-            ? previous
-            : { ...previous, [activeQualityScopeId]: nextValue };
+          return updateFacetScopedStringRecord(
+            previous,
+            mediaSettingsScopeId,
+            nextValue,
+          );
         });
 
         if (mediaSettings.plexmatchWriteOnImport !== null) {
           setPlexmatchWriteOnImport((previous) => {
             const nextValue = mediaSettings.plexmatchWriteOnImport ? "true" : "false";
-            return previous[activeQualityScopeId] === nextValue
-              ? previous
-              : { ...previous, [activeQualityScopeId]: nextValue };
+            return updateFacetScopedStringRecord(
+              previous,
+              mediaSettingsScopeId,
+              nextValue,
+            );
           });
         }
       }
@@ -851,6 +882,8 @@ export function useMediaSettings({
   const updateCategoryMediaProfileSettings = React.useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      const folderTemplate =
+        categoryFolderTemplates[activeQualityScopeId].trim();
       const renameTemplate =
         categoryRenameTemplates[activeQualityScopeId].trim();
       const renameCollisionPolicy = normalizeRenameCollisionPolicy(
@@ -860,6 +893,10 @@ export function useMediaSettings({
         categoryRenameMissingMetadataPolicies[activeQualityScopeId],
       );
 
+      if (!folderTemplate) {
+        setGlobalStatus(t("settings.folderTemplateRequired"));
+        return;
+      }
       if (!renameTemplate) {
         setGlobalStatus(t("settings.renameTemplateRequired"));
         return;
@@ -874,6 +911,7 @@ export function useMediaSettings({
               scope: activeQualityScopeId,
               requiredAudioLanguages:
                 categoryRequiredAudioLanguages[activeQualityScopeId] ?? [],
+              folderTemplate,
               renameTemplate,
               renameCollisionPolicy,
               renameMissingMetadataPolicy,
@@ -922,6 +960,7 @@ export function useMediaSettings({
     [
       activeQualityScopeId,
       categoryFillerPolicies,
+      categoryFolderTemplates,
       categoryRequiredAudioLanguages,
       categoryRecapPolicies,
       categoryInterSeasonMovies,
@@ -1055,6 +1094,8 @@ export function useMediaSettings({
     categoryRequiredAudioLanguages,
     saveCategoryRequiredAudioLanguages,
     categoryPersonaSelections,
+    categoryFolderTemplates,
+    setCategoryFolderTemplates,
     categoryRenameTemplates,
     setCategoryRenameTemplates,
     categoryRenameCollisionPolicies,

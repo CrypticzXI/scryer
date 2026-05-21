@@ -43,10 +43,10 @@ pub fn rename_facet_settings(facet: &MediaFacet) -> RenameFacetSettings {
             default_template: "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
         },
         MediaFacet::Anime => RenameFacetSettings {
-            scope_id: "series",
+            scope_id: "anime",
             template_key: "rename.template.anime.global",
-            collision_policy_key: "rename.collision_policy.series.global",
-            missing_metadata_policy_key: "rename.missing_metadata_policy.series.global",
+            collision_policy_key: "rename.collision_policy.anime.global",
+            missing_metadata_policy_key: "rename.missing_metadata_policy.anime.global",
             default_template: "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}",
         },
     }
@@ -283,6 +283,36 @@ mod tests {
                 source: "anidb".to_string(),
                 value: "15146".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn rename_facet_settings_for_anime_use_anime_scope_and_keys() {
+        let settings = rename_facet_settings(&MediaFacet::Anime);
+        assert_eq!(settings.scope_id, "anime");
+        assert_eq!(settings.template_key, "rename.template.anime.global");
+        assert_eq!(
+            settings.collision_policy_key,
+            "rename.collision_policy.anime.global"
+        );
+        assert_eq!(
+            settings.missing_metadata_policy_key,
+            "rename.missing_metadata_policy.anime.global"
+        );
+    }
+
+    #[test]
+    fn rename_facet_settings_for_series_remain_series_owned() {
+        let settings = rename_facet_settings(&MediaFacet::Series);
+        assert_eq!(settings.scope_id, "series");
+        assert_eq!(settings.template_key, "rename.template.series.global");
+        assert_eq!(
+            settings.collision_policy_key,
+            "rename.collision_policy.series.global"
+        );
+        assert_eq!(
+            settings.missing_metadata_policy_key,
+            "rename.missing_metadata_policy.series.global"
         );
     }
 }

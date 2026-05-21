@@ -8,6 +8,7 @@ import type { Release } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
+import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import {
@@ -430,7 +431,7 @@ export function SeriesOverviewView({
           await onTitleChanged?.();
         })
         .catch((error: unknown) => {
-          setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+          setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
         });
     },
     [onTitleChanged, client, confirmReplaceConflict, setGlobalStatus, t, title],
@@ -455,7 +456,7 @@ export function SeriesOverviewView({
       dispatchEpisodePanel({ type: "SET_AUTO_SEARCH_LOADING", episodeId, loading: true });
       Promise.resolve(onAutoSearchEpisode(episode))
         .catch((error: unknown) => {
-          setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+          setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
         })
         .finally(() => {
           dispatchEpisodePanel({ type: "SET_AUTO_SEARCH_LOADING", episodeId, loading: false });
@@ -560,7 +561,7 @@ export function SeriesOverviewView({
           await onTitleChanged?.();
         })
         .catch((error: unknown) => {
-          setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+          setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
         });
     },
     [client, confirmReplaceConflict, onTitleChanged, setGlobalStatus, t, title],
@@ -585,7 +586,7 @@ export function SeriesOverviewView({
       }));
       Promise.resolve(onAutoSearchInterstitialMovie(collection))
         .catch((error: unknown) => {
-          setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+          setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
         })
         .finally(() => {
           setAutoSearchInterstitialMovieLoadingByCollection((prev) => ({
