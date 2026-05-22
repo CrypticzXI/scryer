@@ -572,37 +572,15 @@ jobs:
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
-      - name: Resolve sccache lane metadata
-        id: linux-sccache-metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          version_line="$(python3 - <<'PY'
-          import pathlib
-          import re
-
-          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
-          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
-          if not match:
-              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
-          print(f"{match.group(1)}.{match.group(2)}.x")
-          PY
-          )"
-          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
-          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
-
       - name: Restore sccache directory
         id: linux-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.linux-sccache-metadata.outputs.version_line }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-
+            gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
+            gha-sccache-v4-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -724,37 +702,15 @@ jobs:
           toolchain: "1.95.0"
           targets: ${{ matrix.target }}
 
-      - name: Resolve sccache lane metadata
-        id: macos-sccache-metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          version_line="$(python3 - <<'PY'
-          import pathlib
-          import re
-
-          cargo_toml = pathlib.Path("crates/scryer/Cargo.toml").read_text()
-          match = re.search(r'^version = "(\d+)\.(\d+)\.\d+"$', cargo_toml, re.MULTILINE)
-          if not match:
-              raise SystemExit("failed to resolve crates/scryer/Cargo.toml version")
-          print(f"{match.group(1)}.{match.group(2)}.x")
-          PY
-          )"
-          echo "SCRYER_SCCACHE_VERSION_LINE=${version_line}" >> "$GITHUB_ENV"
-          echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
-
       - name: Restore sccache directory
         id: macos-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.macos-sccache-metadata.outputs.version_line }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-
+            gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
+            gha-sccache-v4-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -908,32 +864,15 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
 
-      - name: Resolve sccache lane metadata
-        id: windows-sccache-metadata
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $cargoToml = Get-Content crates/scryer/Cargo.toml -Raw
-          $match = [regex]::Match($cargoToml, '(?m)^version = "(?<major>\d+)\.(?<minor>\d+)\.\d+"\r?$')
-          if (-not $match.Success) {
-            throw "failed to resolve crates/scryer/Cargo.toml version"
-          }
-          $versionLine = "$($match.Groups['major'].Value).$($match.Groups['minor'].Value).x"
-          "SCRYER_SCCACHE_VERSION_LINE=$versionLine" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "version_line=$versionLine" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
       - name: Restore sccache directory
         id: windows-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}\.sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-${{ github.run_id }}
+          key: gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-${{ matrix.sccache_writer_id }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ steps.windows-sccache-metadata.outputs.version_line }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-
+            gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
+            gha-sccache-v4-${{ matrix.sccache_lane }}-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
