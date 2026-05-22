@@ -240,8 +240,8 @@ impl SabnzbdDownloadClient {
         Ok((nzb_path, nzb_len))
     }
 
-    fn api_url(&self) -> String {
-        build_sab_api_url(&self.base_url)
+    fn api_urls(&self) -> Vec<String> {
+        build_sab_api_urls(&self.base_url)
     }
 
     async fn api_get(&self, params: &[(&str, &str)]) -> AppResult<Value> {
@@ -263,7 +263,10 @@ impl SabnzbdDownloadClient {
         params: &[(&str, &str)],
         policy: RequestPolicy,
     ) -> AppResult<Value> {
-        let url = self.api_url();
+        let urls = self.api_urls();
+        let request_mode = params
+            .iter()
+            .find_map(|(key, value)| (*key == "mode").then_some(*value));
         let mut form_or_query = vec![("output".to_string(), "json".to_string())];
         form_or_query.extend(
             params
@@ -271,66 +274,67 @@ impl SabnzbdDownloadClient {
                 .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
         );
 
-        let response = match self.api_auth()? {
-            SabApiAuth::ApiKey(api_key) => {
-                form_or_query.push(("apikey".to_string(), api_key));
-                self.outbound_http
-                    .send(policy, || {
-                        self.outbound_http.client().get(&url).query(&form_or_query)
-                    })
-                    .await
+        let auth = self.api_auth()?;
+        let mut last_retryable_error = None;
+        for (index, url) in urls.iter().enumerate() {
+            let response = match &auth {
+                SabApiAuth::ApiKey(api_key) => {
+                    let mut form_or_query = form_or_query.clone();
+                    form_or_query.push(("apikey".to_string(), api_key.clone()));
+                    self.outbound_http
+                        .send(policy.clone(), || {
+                            self.outbound_http.client().get(url).query(&form_or_query)
+                        })
+                        .await
+                }
+                SabApiAuth::Credentials { username, password } => {
+                    let mut form_or_query = form_or_query.clone();
+                    form_or_query.push(("ma_username".to_string(), username.clone()));
+                    form_or_query.push(("ma_password".to_string(), password.clone()));
+                    let encoded_form = url::form_urlencoded::Serializer::new(String::new())
+                        .extend_pairs(
+                            form_or_query
+                                .iter()
+                                .map(|(key, value)| (key.as_str(), value.as_str())),
+                        )
+                        .finish();
+                    self.outbound_http
+                        .send(policy.clone(), || {
+                            self.outbound_http
+                                .client()
+                                .post(url)
+                                .header("Content-Type", "application/x-www-form-urlencoded")
+                                .body(encoded_form.clone())
+                        })
+                        .await
+                }
             }
-            SabApiAuth::Credentials { username, password } => {
-                form_or_query.push(("ma_username".to_string(), username));
-                form_or_query.push(("ma_password".to_string(), password));
-                let encoded_form = url::form_urlencoded::Serializer::new(String::new())
-                    .extend_pairs(
-                        form_or_query
-                            .iter()
-                            .map(|(key, value)| (key.as_str(), value.as_str())),
-                    )
-                    .finish();
-                self.outbound_http
-                    .send(policy, || {
-                        self.outbound_http
-                            .client()
-                            .post(&url)
-                            .header("Content-Type", "application/x-www-form-urlencoded")
-                            .body(encoded_form.clone())
-                    })
-                    .await
+            .map_err(|error| map_sabnzbd_outbound_error("sabnzbd api call", error))?;
+
+            let status = response.status();
+            let body = response.text().await.map_err(|err| {
+                AppError::Repository(format!("sabnzbd response read failed: {err}"))
+            })?;
+
+            match evaluate_sab_api_response("sabnzbd api", request_mode, status, &body) {
+                SabApiResponseEvaluation::Success(json) => return Ok(json),
+                SabApiResponseEvaluation::Retry(error) if index + 1 < urls.len() => {
+                    debug!(
+                        request_mode,
+                        url,
+                        error = %error,
+                        "retrying sab-compatible endpoint with alternate api path"
+                    );
+                    last_retryable_error = Some(error);
+                }
+                SabApiResponseEvaluation::Retry(error) | SabApiResponseEvaluation::Failure(error) => {
+                    return Err(error);
+                }
             }
         }
-        .map_err(|error| map_sabnzbd_outbound_error("sabnzbd api call", error))?;
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|err| AppError::Repository(format!("sabnzbd response read failed: {err}")))?;
-
-        if !status.is_success() {
-            return Err(map_sabnzbd_response_error(
-                "sabnzbd api",
-                status,
-                body.as_str(),
-            ));
-        }
-
-        let json: Value = serde_json::from_str(&body).map_err(|err| {
-            AppError::Repository(format!("sabnzbd returned non-json response: {err}"))
-        })?;
-
-        if sab_api_status_is_false(&json) {
-            let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
-            return Err(map_sabnzbd_api_error(
-                "sabnzbd api",
-                Some(status),
-                error_msg,
-            ));
-        }
-
-        Ok(json)
+        Err(last_retryable_error.unwrap_or_else(|| {
+            AppError::Repository("sabnzbd api call did not return a usable response".to_string())
+        }))
     }
 
     async fn history_slots_page(&self, start: usize, limit: usize) -> AppResult<Vec<Value>> {
@@ -564,55 +568,12 @@ impl SabnzbdDownloadClient {
     }
 
     pub async fn test_connection(&self) -> AppResult<String> {
-        let url = self.api_url();
-        let response = self
-            .outbound_http
-            .send(self.read_policy("sabnzbd_test_connection"), || {
-                self.outbound_http
-                    .client()
-                    .get(&url)
-                    .query(&[("mode", "version"), ("output", "json")])
-            })
-            .await
-            .map_err(|error| map_sabnzbd_outbound_error("sabnzbd test call", error))?;
-
-        let status = response.status();
-        let body = response.text().await.map_err(|err| {
-            AppError::Repository(format!("sabnzbd test response read failed: {err}"))
-        })?;
-        let json = if status.is_success() {
-            let json: Value = serde_json::from_str(&body).map_err(|err| {
-                AppError::Repository(format!(
-                    "sabnzbd test call returned non-json response: {err}"
-                ))
-            })?;
-            if sab_api_status_is_false(&json) {
-                let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
-                if is_sab_auth_error_message(error_msg) {
-                    self.api_get(&[("mode", "version")])
-                        .await
-                        .map_err(map_sabnzbd_auth_validation_error)?
-                } else {
-                    return Err(map_sabnzbd_api_error(
-                        "sabnzbd test call",
-                        Some(status),
-                        error_msg,
-                    ));
-                }
-            } else {
-                json
-            }
-        } else if is_sab_auth_error_message(&extract_sab_error_detail(&body)) {
-            self.api_get(&[("mode", "version")])
-                .await
-                .map_err(map_sabnzbd_auth_validation_error)?
-        } else {
-            return Err(map_sabnzbd_response_error(
-                "sabnzbd test call",
-                status,
-                body.as_str(),
-            ));
-        };
+        let json = self
+            .api_get_with_policy(
+                &[("mode", "version")],
+                self.read_policy("sabnzbd_test_connection"),
+            )
+            .await?;
 
         let version = json
             .get("version")
@@ -666,7 +627,6 @@ impl DownloadClient for SabnzbdDownloadClient {
         let mut transient_nzb_path: Option<PathBuf> = None;
 
         let result: AppResult<DownloadGrabResult> = async {
-            let url = self.api_url();
             let cat = request
                 .category
                 .as_deref()
@@ -694,66 +654,64 @@ impl DownloadClient for SabnzbdDownloadClient {
                 format!("{nzb_name}.nzb")
             };
 
-            let (status, body) = self
-                .post_addfile_request(SabAddfileRequest {
-                    url: &url,
-                    nzb_name: &nzb_name_owned,
-                    queue_priority: &queue_priority,
-                    upload_payload: SabAddfilePayload::File {
-                        path: nzb_path,
-                        len: nzb_len,
-                    },
-                    upload_filename: &plain_nzb_filename,
-                    upload_mime: "application/x-nzb",
-                    cat: cat.as_deref(),
-                    password: password.as_deref(),
+            let urls = self.api_urls();
+            let mut addfile_json = None;
+            let mut last_retryable_error = None;
+            for (index, url) in urls.iter().enumerate() {
+                let (status, body) = self
+                    .post_addfile_request(SabAddfileRequest {
+                        url,
+                        nzb_name: &nzb_name_owned,
+                        queue_priority: &queue_priority,
+                        upload_payload: SabAddfilePayload::File {
+                            path: nzb_path.clone(),
+                            len: nzb_len,
+                        },
+                        upload_filename: &plain_nzb_filename,
+                        upload_mime: "application/x-nzb",
+                        cat: cat.as_deref(),
+                        password: password.as_deref(),
+                    })
+                    .await
+                    .map_err(|error| {
+                        debug!(
+                            request_mode = "addfile",
+                            auth_strategy = self.api_auth_strategy_label(),
+                            title = title.name.as_str(),
+                            error = %error,
+                            "sabnzbd enqueue request failed before response"
+                        );
+                        error
+                    })?;
+
+                match evaluate_sab_api_response("sabnzbd addfile", Some("addfile"), status, &body) {
+                    SabApiResponseEvaluation::Success(json) => {
+                        addfile_json = Some(json);
+                        break;
+                    }
+                    SabApiResponseEvaluation::Retry(error) if index + 1 < urls.len() => {
+                        debug!(
+                            request_mode = "addfile",
+                            auth_strategy = self.api_auth_strategy_label(),
+                            title = title.name.as_str(),
+                            url,
+                            error = %error,
+                            "retrying sab-compatible enqueue with alternate api path"
+                        );
+                        last_retryable_error = Some(error);
+                    }
+                    SabApiResponseEvaluation::Retry(error)
+                    | SabApiResponseEvaluation::Failure(error) => return Err(error),
+                }
+            }
+
+            let json = addfile_json.ok_or_else(|| {
+                last_retryable_error.unwrap_or_else(|| {
+                    AppError::Repository(
+                        "sabnzbd addfile did not return a usable response".to_string(),
+                    )
                 })
-                .await
-                .map_err(|error| {
-                    debug!(
-                        request_mode = "addfile",
-                        auth_strategy = self.api_auth_strategy_label(),
-                        title = title.name.as_str(),
-                        error = %error,
-                        "sabnzbd enqueue request failed before response"
-                    );
-                    error
-                })?;
-
-            if !status.is_success() {
-                debug!(
-                    request_mode = "addfile",
-                    auth_strategy = self.api_auth_strategy_label(),
-                    title = title.name.as_str(),
-                    status = %status,
-                    "sabnzbd enqueue returned non-success status"
-                );
-                return Err(map_sabnzbd_response_error(
-                    "sabnzbd addfile",
-                    status,
-                    body.as_str(),
-                ));
-            }
-
-            let json: Value = serde_json::from_str(&body).map_err(|err| {
-                AppError::Repository(format!("sabnzbd addfile returned non-json response: {err}"))
             })?;
-
-            if sab_api_status_is_false(&json) {
-                let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
-                debug!(
-                    request_mode = "addfile",
-                    auth_strategy = self.api_auth_strategy_label(),
-                    title = title.name.as_str(),
-                    error = error_msg,
-                    "sabnzbd enqueue rejected request"
-                );
-                return Err(map_sabnzbd_api_error(
-                    "sabnzbd addfile",
-                    Some(status),
-                    error_msg,
-                ));
-            }
 
             let nzo_id = sab_addfile_nzo_id(&json)
                 .map(str::to_string)
@@ -1270,7 +1228,67 @@ fn map_sabnzbd_api_error(operation: &str, status: Option<StatusCode>, detail: &s
     AppError::Repository(format!("{operation} error: {detail}"))
 }
 
-fn build_sab_api_url(base_url: &str) -> String {
+enum SabApiResponseEvaluation {
+    Success(Value),
+    Retry(AppError),
+    Failure(AppError),
+}
+
+fn evaluate_sab_api_response(
+    operation: &str,
+    request_mode: Option<&str>,
+    status: StatusCode,
+    body: &str,
+) -> SabApiResponseEvaluation {
+    if !status.is_success() {
+        let detail = extract_sab_error_detail(body);
+        let error = map_sabnzbd_response_error(operation, status, body);
+        return if status == StatusCode::UNAUTHORIZED
+            || status == StatusCode::FORBIDDEN
+            || is_sab_auth_error_message(&detail)
+        {
+            SabApiResponseEvaluation::Failure(error)
+        } else {
+            SabApiResponseEvaluation::Retry(error)
+        };
+    }
+
+    let json: Value = match serde_json::from_str(body) {
+        Ok(json) => json,
+        Err(err) => {
+            return SabApiResponseEvaluation::Retry(AppError::Repository(format!(
+                "{operation} returned non-json response: {err}"
+            )));
+        }
+    };
+
+    if !sab_api_mode_matches_response(request_mode, &json) {
+        return SabApiResponseEvaluation::Retry(AppError::Repository(format!(
+            "{operation} returned unexpected response shape for mode '{}'",
+            request_mode.unwrap_or("unknown")
+        )));
+    }
+
+    if sab_api_status_is_false(&json) {
+        let error_msg = sab_api_error_message(&json).unwrap_or("unknown error");
+        return SabApiResponseEvaluation::Failure(map_sabnzbd_api_error(
+            operation,
+            Some(status),
+            error_msg,
+        ));
+    }
+
+    SabApiResponseEvaluation::Success(json)
+}
+
+fn build_sab_api_urls(base_url: &str) -> Vec<String> {
+    dedupe_strings(vec![
+        build_sab_api_url_with_suffix(base_url, &["api"]),
+        build_sab_api_url_with_suffix(base_url, &["sabnzbd", "api"]),
+    ])
+}
+
+fn build_sab_api_url_with_suffix(base_url: &str, suffix: &[&str]) -> String {
     let fallback = || format!("{}/api", base_url.trim_end_matches('/'));
     let Ok(mut url) = Url::parse(base_url) else {
         return fallback();
@@ -1281,8 +1299,18 @@ fn build_sab_api_url(base_url: &str) -> String {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
-    if path_segments.last().copied() != Some("api") {
-        path_segments.push("api");
+    let suffix_segments = suffix
+        .iter()
+        .copied()
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if path_segments
+        .as_slice()
+        .ends_with(suffix_segments.as_slice())
+    {
+        // Already normalized.
+    } else {
+        path_segments.extend(suffix_segments);
     }
     let normalized_path = if path_segments.is_empty() {
         "/api".to_string()
@@ -1293,6 +1321,30 @@ fn build_sab_api_url(base_url: &str) -> String {
     url.set_query(None);
     url.set_fragment(None);
     url.to_string().trim_end_matches('/').to_string()
+}
+
+fn sab_api_mode_matches_response(request_mode: Option<&str>, json: &Value) -> bool {
+    match request_mode {
+        Some("version") => json.get("version").is_some() || sab_api_status_is_false(json),
+        Some("queue") => {
+            json.get("queue").is_some()
+                || json.get("slots").is_some()
+                || sab_api_status_is_false(json)
+        }
+        Some("history") => {
+            json.get("history").is_some()
+                || json.get("slots").is_some()
+                || sab_api_status_is_false(json)
+        }
+        Some("get_config") => json.get("config").is_some() || sab_api_status_is_false(json),
+        Some("fullstatus") => json.get("status").is_some() || sab_api_status_is_false(json),
+        Some("addfile") => {
+            json.get("nzo_ids").is_some()
+                || json.get("status").is_some()
+                || sab_api_status_is_false(json)
+        }
+        _ => true,
+    }
 }
 
 fn slots_from_api_section(section: &Value) -> Option<&Vec<Value>> {
@@ -1512,4 +1564,54 @@ fn is_localhost_base_url(base_url: &str) -> Option<bool> {
         host,
         "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" | "host.docker.internal"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SabApiResponseEvaluation, build_sab_api_urls, evaluate_sab_api_response,
+        sab_api_mode_matches_response,
+    };
+    use reqwest::StatusCode;
+    use serde_json::json;
+
+    #[test]
+    fn build_sab_api_urls_includes_sabnzbd_compatibility_path() {
+        assert_eq!(
+            build_sab_api_urls("http://altmount:8080"),
+            vec![
+                "http://altmount:8080/api".to_string(),
+                "http://altmount:8080/sabnzbd/api".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_sab_api_urls_preserves_existing_prefix() {
+        assert_eq!(
+            build_sab_api_urls("http://example.test/altmount"),
+            vec![
+                "http://example.test/altmount/api".to_string(),
+                "http://example.test/altmount/sabnzbd/api".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn sab_api_mode_match_rejects_non_sab_version_shape() {
+        let json = json!({"data": {"api_key": "abc123"}});
+        assert!(!sab_api_mode_matches_response(Some("version"), &json));
+    }
+
+    #[test]
+    fn evaluate_sab_api_response_marks_non_sab_shape_retryable() {
+        let outcome = evaluate_sab_api_response(
+            "sabnzbd api",
+            Some("queue"),
+            StatusCode::OK,
+            r#"{"data":{"api_key":"abc123"}}"#,
+        );
+
+        assert!(matches!(outcome, SabApiResponseEvaluation::Retry(_)));
+    }
 }

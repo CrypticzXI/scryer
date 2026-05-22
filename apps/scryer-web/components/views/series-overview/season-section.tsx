@@ -38,7 +38,12 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
-import { selectorId } from "@/lib/utils/dom-ids";
+import {
+  selectorId,
+  seriesOverviewEpisodeAutoSearchId,
+  seriesOverviewEpisodeInteractiveSearchId,
+  seriesOverviewEpisodeRowId,
+} from "@/lib/utils/dom-ids";
 import {
   EpisodeProgressBar,
   getCollectionEpisodeProgressPresentation,
@@ -644,7 +649,12 @@ const EpisodeRow = React.memo(function EpisodeRow({
   return (
     <React.Fragment>
       <TableRow
-        id={selectorId("series-overview-episode", episode.id)}
+        id={seriesOverviewEpisodeRowId(
+          facet,
+          episode.seasonNumber,
+          episode.episodeNumber,
+          episode.absoluteNumber,
+        )}
         data-episode-id={episode.id}
         className={`cv-auto-row-sm${episode.monitored ? "" : " opacity-50"}`}
       >
@@ -717,7 +727,12 @@ const EpisodeRow = React.memo(function EpisodeRow({
                   <TooltipTrigger asChild>
                     <span>
                       <EpisodeTableActionButton
-                        id={selectorId("series-overview-episode-auto-search", episode.id)}
+                        id={seriesOverviewEpisodeAutoSearchId(
+                          facet,
+                          episode.seasonNumber,
+                          episode.episodeNumber,
+                          episode.absoluteNumber,
+                        )}
                         tone="auto"
                         onClick={handleAutoSearchClick}
                         disabled={autoSearching}
@@ -742,7 +757,12 @@ const EpisodeRow = React.memo(function EpisodeRow({
                   <TooltipTrigger asChild>
                     <span>
                       <EpisodeTableActionButton
-                        id={selectorId("series-overview-episode-interactive-search", episode.id)}
+                        id={seriesOverviewEpisodeInteractiveSearchId(
+                          facet,
+                          episode.seasonNumber,
+                          episode.episodeNumber,
+                          episode.absoluteNumber,
+                        )}
                         tone="search"
                         onClick={handleToggleEpisodeSearch}
                         label={t("label.search")}

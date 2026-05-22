@@ -38,6 +38,7 @@ import type { Release, TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { cn } from "@/lib/utils";
 import {
+  titleOverviewOpenButtonId,
   titleOverviewRowId,
   titleOverviewSearchButtonId,
 } from "@/lib/utils/dom-ids";
@@ -407,6 +408,7 @@ export function CompactTitleTable({
           </TableCell>
           <TableCell className="align-middle overflow-hidden py-1.5">
             <button
+              id={titleOverviewOpenButtonId(item.id)}
               type="button"
               onClick={() => handleOpenOverview(item)}
               data-ui="title-name"
