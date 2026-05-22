@@ -974,12 +974,6 @@ jobs:
           $dir = (Get-ChildItem C:\nasm -Directory | Select-Object -First 1).FullName
           $dir | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
-      - name: Install Ninja
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          choco install ninja --yes --no-progress
-
       - name: Exclude build dir from Windows Defender
         shell: pwsh
         run: Add-MpPreference -ExclusionPath "${{ github.workspace }}"
@@ -1005,13 +999,6 @@ jobs:
           if ($env:USE_CLANG_CL -eq "true") {
             $env:CC = "clang-cl"
             $env:CXX = "clang-cl"
-            $env:CMAKE_C_COMPILER = "clang-cl"
-            $env:CMAKE_CXX_COMPILER = "clang-cl"
-            $env:AR = "llvm-lib"
-          } else {
-            $env:CMAKE_C_COMPILER = "cl"
-            $env:CMAKE_CXX_COMPILER = "cl"
-            $env:AR = "lib"
           }
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
