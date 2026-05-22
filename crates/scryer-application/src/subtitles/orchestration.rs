@@ -910,8 +910,9 @@ fn release_title_candidates(parsed: &ParsedReleaseMetadata) -> Vec<String> {
 fn release_audio_codec(parsed: &ParsedReleaseMetadata) -> Option<String> {
     parsed
         .audio
-        .clone()
-        .or_else(|| parsed.audio_codecs.first().cloned())
+        .as_ref()
+        .or_else(|| parsed.audio_codecs.first())
+        .map(ToString::to_string)
 }
 
 fn parsed_episode_context(parsed: &ParsedReleaseMetadata) -> SubtitleEpisodeContext {
@@ -1168,7 +1169,7 @@ fn build_subtitle_query(
             .and_then(|release| release.release_group.clone())
             .or_else(|| media_file.release_group.clone()),
         source: preferred_release
-            .and_then(|release| release.source.clone())
+            .and_then(|release| release.source.as_ref().map(ToString::to_string))
             .or_else(|| media_file.source_type.clone()),
         video_codec: preferred_release
             .and_then(|release| release.video_codec.as_ref().map(ToString::to_string))
@@ -1884,7 +1885,10 @@ mod tests {
         assert_eq!(query.media_kind, SubtitleMediaKind::Episode);
         assert_eq!(query.title_candidates, release_title_candidates(&parsed));
         assert_eq!(query.release_group, parsed.release_group);
-        assert_eq!(query.source, parsed.source);
+        assert_eq!(
+            query.source,
+            parsed.source.as_ref().map(ToString::to_string)
+        );
         assert_eq!(
             query.video_codec,
             parsed.video_codec.as_ref().map(ToString::to_string)
@@ -1916,7 +1920,10 @@ mod tests {
 
         assert_eq!(query.title_candidates, release_title_candidates(&parsed));
         assert_eq!(query.release_group, parsed.release_group);
-        assert_eq!(query.source, parsed.source);
+        assert_eq!(
+            query.source,
+            parsed.source.as_ref().map(ToString::to_string)
+        );
         assert_eq!(
             query.video_codec,
             parsed.video_codec.as_ref().map(ToString::to_string)

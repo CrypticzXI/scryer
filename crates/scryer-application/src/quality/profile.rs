@@ -1,5 +1,5 @@
 use crate::release_group_db::apply_release_group_scoring_with_context;
-use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
+use crate::release_parser::{AudioCodec, ParsedReleaseMetadata, ReleaseSource, VideoCodec};
 use crate::scoring_weights::{
     ScoringOverrides, ScoringPersona, ScoringWeights, audio_weight_for_codec,
 };
@@ -19,12 +19,12 @@ pub struct QualityProfileCriteria {
     pub quality_tiers: Vec<String>,
     pub archival_quality: Option<String>,
     pub allow_unknown_quality: bool,
-    pub source_allowlist: Vec<String>,
-    pub source_blocklist: Vec<String>,
+    pub source_allowlist: Vec<ReleaseSource>,
+    pub source_blocklist: Vec<ReleaseSource>,
     pub video_codec_allowlist: Vec<VideoCodec>,
     pub video_codec_blocklist: Vec<VideoCodec>,
-    pub audio_codec_allowlist: Vec<String>,
-    pub audio_codec_blocklist: Vec<String>,
+    pub audio_codec_allowlist: Vec<AudioCodec>,
+    pub audio_codec_blocklist: Vec<AudioCodec>,
     pub atmos_preferred: bool,
     pub dolby_vision_allowed: bool,
     pub detected_hdr_allowed: bool,
@@ -279,8 +279,14 @@ fn quality_profile_from_raw(raw: RawQualityProfile) -> Result<QualityProfile, se
             quality_tiers,
             archival_quality,
             allow_unknown_quality: criteria.allow_unknown_quality,
-            source_allowlist: normalize_list(criteria.source_allowlist),
-            source_blocklist: normalize_list(criteria.source_blocklist),
+            source_allowlist: normalize_source_list(
+                criteria.source_allowlist,
+                "criteria.source_allowlist",
+            )?,
+            source_blocklist: normalize_source_list(
+                criteria.source_blocklist,
+                "criteria.source_blocklist",
+            )?,
             video_codec_allowlist: normalize_codec_list(
                 criteria.video_codec_allowlist,
                 "criteria.video_codec_allowlist",
@@ -289,8 +295,14 @@ fn quality_profile_from_raw(raw: RawQualityProfile) -> Result<QualityProfile, se
                 criteria.video_codec_blocklist,
                 "criteria.video_codec_blocklist",
             )?,
-            audio_codec_allowlist: normalize_list(criteria.audio_codec_allowlist),
-            audio_codec_blocklist: normalize_list(criteria.audio_codec_blocklist),
+            audio_codec_allowlist: normalize_audio_codec_list(
+                criteria.audio_codec_allowlist,
+                "criteria.audio_codec_allowlist",
+            )?,
+            audio_codec_blocklist: normalize_audio_codec_list(
+                criteria.audio_codec_blocklist,
+                "criteria.audio_codec_blocklist",
+            )?,
             atmos_preferred: criteria.atmos_preferred,
             dolby_vision_allowed: criteria.dolby_vision_allowed,
             detected_hdr_allowed: criteria.detected_hdr_allowed,
@@ -397,6 +409,20 @@ fn invalid_profile_codec(field: &str, value: &str) -> serde_json::Error {
     ))
 }
 
+fn normalize_source_list(
+    values: Vec<String>,
+    field: &str,
+) -> Result<Vec<ReleaseSource>, serde_json::Error> {
+    values
+        .into_iter()
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            ReleaseSource::parse(trimmed.as_str())
+                .ok_or_else(|| invalid_profile_codec(field, trimmed.as_str()))
+        })
+        .collect()
+}
+
 fn normalize_codec_list(
     values: Vec<String>,
     field: &str,
@@ -411,61 +437,48 @@ fn normalize_codec_list(
         .collect()
 }
 
-fn is_in_list(candidate: &str, list: &[String]) -> bool {
-    list.iter().any(|value| value == candidate)
+fn normalize_audio_codec_list(
+    values: Vec<String>,
+    field: &str,
+) -> Result<Vec<AudioCodec>, serde_json::Error> {
+    values
+        .into_iter()
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            AudioCodec::parse(trimmed.as_str())
+                .ok_or_else(|| invalid_profile_codec(field, trimmed.as_str()))
+        })
+        .collect()
 }
 
-fn normalize_source(raw: Option<&str>) -> Option<String> {
-    raw.map(
-        |value| match value.to_ascii_uppercase().replace('-', "") as String {
-            source if source == "WEBRIP" => "WEBRIP".to_string(),
-            source if source == "WEBDL" || source == "WEB" || source == "WEB_DL" => {
-                "WEB-DL".to_string()
-            }
-            source if source == "BRDISK" || source == "BDISO" || source == "BDMV" => {
-                "BLURAY".to_string()
-            }
-            source
-                if source == "BLURAY" || source == "BLU" || source == "BD" || source == "UHD" =>
-            {
-                "BLURAY".to_string()
-            }
-            source if source == "RAWHD" => "HDTV".to_string(),
-            source => source,
-        },
-    )
-}
-
-fn normalize_codec(raw: Option<&str>) -> Option<String> {
-    raw.map(|value| {
-        let value = value.trim();
-        match value.to_ascii_uppercase().as_str() {
-            "AVC" | "AVC1" | "H264" | "H.264" | "X264" => "H.264".to_string(),
-            "HEVC" | "HEV1" | "H265" | "H.265" | "HVC1" | "X265" => "H.265".to_string(),
-            "AV1" | "AV01" => "AV1".to_string(),
-            _ => value.to_string(),
-        }
-    })
-}
-
-fn normalized_audio_codecs(release: &ParsedReleaseMetadata) -> Vec<String> {
-    let mut codecs = Vec::<String>::new();
+fn normalized_audio_codecs(release: &ParsedReleaseMetadata) -> Vec<AudioCodec> {
+    let mut codecs = Vec::<AudioCodec>::new();
 
     for codec in &release.audio_codecs {
-        if let Some(normalized) = normalize_codec(Some(codec.as_str()))
-            && !codecs.iter().any(|existing| existing == &normalized)
-        {
-            codecs.push(normalized);
+        if !codecs.iter().any(|existing| existing == codec) {
+            codecs.push(*codec);
         }
     }
 
     if codecs.is_empty()
-        && let Some(normalized) = normalize_codec(release.audio.as_deref())
+        && let Some(normalized) = release.audio
     {
         codecs.push(normalized);
     }
 
     codecs
+}
+
+#[cfg(test)]
+fn normalize_source(raw: Option<&str>) -> Option<String> {
+    raw.and_then(ReleaseSource::parse)
+        .map(|source| source.to_string())
+}
+
+#[cfg(test)]
+fn normalize_codec(raw: Option<&str>) -> Option<String> {
+    raw.and_then(VideoCodec::parse)
+        .map(|codec| codec.to_string())
 }
 
 pub(crate) fn normalize_quality_tier(raw: Option<&str>) -> Option<String> {
@@ -608,26 +621,32 @@ pub fn evaluate_against_profile_for_category(
     }
 
     // ── Source ───────────────────────────────────────────────────────────────
-    match normalize_source(release.source.as_deref()) {
+    match release.source {
         Some(source) => {
             let explicitly_allowed =
-                !c.source_allowlist.is_empty() && is_in_list(&source, &c.source_allowlist);
+                !c.source_allowlist.is_empty() && c.source_allowlist.contains(&source);
             if matches!(
-                source.as_str(),
-                "CAM" | "TELESYNC" | "TELECINE" | "DVDSCR" | "WORKPRINT" | "REGIONAL"
+                source,
+                ReleaseSource::Cam
+                    | ReleaseSource::Telesync
+                    | ReleaseSource::Telecine
+                    | ReleaseSource::DvdScr
+                    | ReleaseSource::Workprint
             ) && !explicitly_allowed
             {
                 d.log("source_low_quality_theatrical", BLOCK_SCORE);
-            } else if !c.source_blocklist.is_empty() && is_in_list(&source, &c.source_blocklist) {
+            } else if !c.source_blocklist.is_empty() && c.source_blocklist.contains(&source) {
                 d.log("source_in_profile_blocklist", BLOCK_SCORE);
-            } else if !c.source_allowlist.is_empty() && !is_in_list(&source, &c.source_allowlist) {
+            } else if !c.source_allowlist.is_empty() && !c.source_allowlist.contains(&source) {
                 d.log("source_not_in_profile_allowlist", BLOCK_SCORE);
             } else {
-                let (code, delta) = match source.as_str() {
-                    "BLURAY" => ("source_bluray", weights.source_bluray),
-                    "WEB-DL" => ("source_webdl", weights.source_webdl),
-                    "WEBRIP" => ("source_webrip", weights.source_webrip),
-                    "HDTV" => ("source_hdtv", weights.source_hdtv),
+                let (code, delta) = match source {
+                    ReleaseSource::BluRay | ReleaseSource::BrDisk => {
+                        ("source_bluray", weights.source_bluray)
+                    }
+                    ReleaseSource::WebDl => ("source_webdl", weights.source_webdl),
+                    ReleaseSource::WebRip => ("source_webrip", weights.source_webrip),
+                    ReleaseSource::Hdtv => ("source_hdtv", weights.source_hdtv),
                     _ => ("source_other", 0),
                 };
                 if delta != 0 {
@@ -673,11 +692,11 @@ pub fn evaluate_against_profile_for_category(
         let has_allowlist_match = !c.audio_codec_allowlist.is_empty()
             && audio_codecs
                 .iter()
-                .any(|codec| is_in_list(codec, &c.audio_codec_allowlist));
+                .any(|codec| c.audio_codec_allowlist.contains(codec));
         let all_blocklisted = !c.audio_codec_blocklist.is_empty()
             && audio_codecs
                 .iter()
-                .all(|codec| is_in_list(codec, &c.audio_codec_blocklist));
+                .all(|codec| c.audio_codec_blocklist.contains(codec));
 
         if all_blocklisted {
             d.log("audio_codec_in_profile_blocklist", BLOCK_SCORE);
@@ -696,10 +715,12 @@ pub fn evaluate_against_profile_for_category(
                 let bonus = (60_i32 - best_idx as i32 * 15).max(0);
                 d.log(&format!("audio_codec_preferred_{best_idx}"), bonus);
             }
+        } else if !c.audio_codec_allowlist.is_empty() {
+            d.log("audio_codec_not_in_profile_allowlist", BLOCK_SCORE);
         } else {
             let best_delta = audio_codecs
                 .iter()
-                .map(|codec| audio_weight_for_codec(weights, codec, release.is_atmos))
+                .map(|codec| audio_weight_for_codec(weights, codec.as_str(), release.is_atmos))
                 .max()
                 .unwrap_or(0);
             if best_delta > 0 {
@@ -873,7 +894,7 @@ pub fn evaluate_against_profile_for_category(
         let (code, delta) = apply_release_group_scoring_with_context(
             weights,
             release.release_group.as_deref(),
-            release.source.as_deref(),
+            release.source.as_ref().map(ReleaseSource::as_str),
             release.quality.as_deref(),
             release.is_remux,
             category_hint,
@@ -1020,13 +1041,13 @@ fn codec_efficiency_factor(codec: Option<&VideoCodec>) -> f64 {
 /// Source-type multiplier applied to the expected bitrate.  Bluray encodes are
 /// larger than WEB-DL; remuxes larger still.
 fn source_size_factor(
-    source: Option<&str>,
+    source: Option<&ReleaseSource>,
     is_remux: bool,
     is_bd_disk: bool,
     is_anime: bool,
 ) -> f64 {
     let mut factor = 1.0;
-    if matches!(source, Some("BLURAY")) {
+    if matches!(source, Some(ReleaseSource::BluRay | ReleaseSource::BrDisk)) {
         factor *= 1.35;
     }
     if is_remux && !is_anime {
@@ -1035,7 +1056,7 @@ fn source_size_factor(
     if is_bd_disk {
         factor *= 1.8;
     }
-    if matches!(source, Some("WEB-DL") | Some("WEBRIP")) {
+    if matches!(source, Some(ReleaseSource::WebDl | ReleaseSource::WebRip)) {
         factor *= 0.8;
     }
     factor
@@ -1118,14 +1139,13 @@ pub fn apply_size_scoring_for_category(
     let size_gib = (raw_size_bytes as f64) / GIB;
 
     let quality = normalize_quality_tier(release.quality.as_deref());
-    let source = normalize_source(release.source.as_deref());
     let media_category = normalize_media_size_category(category_hint);
     let is_anime = media_category == MediaSizeCategory::Anime;
 
     let bitrate = expected_bitrate_mbps(quality.as_deref(), media_category);
     let codec_factor = codec_efficiency_factor(release.video_codec.as_ref());
     let source_factor = source_size_factor(
-        source.as_deref(),
+        release.source.as_ref(),
         release.is_remux,
         release.is_bd_disk,
         is_anime,
@@ -1385,6 +1405,32 @@ mod tests {
         let release = parse_release_metadata("Movie.2024.2160p.BluRay.DTS-HD.TrueHD.7.1.H.265");
         let result = evaluate_against_profile(&profile, &release, false, &w);
         assert!(result.allowed);
+    }
+
+    #[test]
+    fn profile_blocks_audio_when_no_codec_is_allowlisted() {
+        let profile = QualityProfile::parse(
+            r#"{
+                "id":"audio-allowlist",
+                "name":"Audio allowlist",
+                "criteria": {
+                    "allow_unknown_quality":true,
+                    "audio_codec_allowlist":["TRUEHD"],
+                    "allow_upgrades":true
+                }
+            }"#,
+        )
+        .expect("profile must parse");
+
+        let w = balanced_weights();
+        let release = parse_release_metadata("Movie.2024.2160p.WEB-DL.AAC.2.0.H.265");
+        let result = evaluate_against_profile(&profile, &release, false, &w);
+        assert!(!result.allowed);
+        assert!(
+            result
+                .block_codes
+                .contains(&"audio_codec_not_in_profile_allowlist".to_string())
+        );
     }
 
     #[test]

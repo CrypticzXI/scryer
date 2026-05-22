@@ -151,6 +151,20 @@ fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
             .filter(|codec| seen.insert(codec.to_string()))
             .collect::<Vec<_>>()
     };
+    let normalize_source_list = |values: Vec<scryer_application::ReleaseSource>| {
+        let mut seen = std::collections::HashSet::new();
+        values
+            .into_iter()
+            .filter(|source| seen.insert(source.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let normalize_audio_codec_list = |values: Vec<scryer_application::AudioCodec>| {
+        let mut seen = std::collections::HashSet::new();
+        values
+            .into_iter()
+            .filter(|codec| seen.insert(codec.to_string()))
+            .collect::<Vec<_>>()
+    };
 
     let criteria = profile.criteria;
     let mut facet_persona_overrides = std::collections::HashMap::new();
@@ -170,12 +184,12 @@ fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
                 .map(|value| value.trim().to_ascii_uppercase())
                 .filter(|value| !value.is_empty()),
             allow_unknown_quality: criteria.allow_unknown_quality,
-            source_allowlist: normalize_list(criteria.source_allowlist),
-            source_blocklist: normalize_list(criteria.source_blocklist),
+            source_allowlist: normalize_source_list(criteria.source_allowlist),
+            source_blocklist: normalize_source_list(criteria.source_blocklist),
             video_codec_allowlist: normalize_video_codec_list(criteria.video_codec_allowlist),
             video_codec_blocklist: normalize_video_codec_list(criteria.video_codec_blocklist),
-            audio_codec_allowlist: normalize_list(criteria.audio_codec_allowlist),
-            audio_codec_blocklist: normalize_list(criteria.audio_codec_blocklist),
+            audio_codec_allowlist: normalize_audio_codec_list(criteria.audio_codec_allowlist),
+            audio_codec_blocklist: normalize_audio_codec_list(criteria.audio_codec_blocklist),
             atmos_preferred: criteria.atmos_preferred,
             dolby_vision_allowed: criteria.dolby_vision_allowed,
             detected_hdr_allowed: criteria.detected_hdr_allowed,
@@ -201,6 +215,10 @@ fn quality_profile_from_input(
     existing: Option<&QualityProfile>,
 ) -> GqlResult<QualityProfile> {
     let criteria = input.criteria;
+    let source_allowlist =
+        parse_source_values(criteria.source_allowlist, "criteria.source_allowlist")?;
+    let source_blocklist =
+        parse_source_values(criteria.source_blocklist, "criteria.source_blocklist")?;
     let video_codec_allowlist = parse_video_codec_values(
         criteria.video_codec_allowlist,
         "criteria.video_codec_allowlist",
@@ -208,6 +226,14 @@ fn quality_profile_from_input(
     let video_codec_blocklist = parse_video_codec_values(
         criteria.video_codec_blocklist,
         "criteria.video_codec_blocklist",
+    )?;
+    let audio_codec_allowlist = parse_audio_codec_values(
+        criteria.audio_codec_allowlist,
+        "criteria.audio_codec_allowlist",
+    )?;
+    let audio_codec_blocklist = parse_audio_codec_values(
+        criteria.audio_codec_blocklist,
+        "criteria.audio_codec_blocklist",
     )?;
 
     let profile = normalize_quality_profile(QualityProfile {
@@ -217,12 +243,12 @@ fn quality_profile_from_input(
             quality_tiers: criteria.quality_tiers,
             archival_quality: criteria.archival_quality,
             allow_unknown_quality: criteria.allow_unknown_quality,
-            source_allowlist: criteria.source_allowlist,
-            source_blocklist: criteria.source_blocklist,
+            source_allowlist,
+            source_blocklist,
             video_codec_allowlist,
             video_codec_blocklist,
-            audio_codec_allowlist: criteria.audio_codec_allowlist,
-            audio_codec_blocklist: criteria.audio_codec_blocklist,
+            audio_codec_allowlist,
+            audio_codec_blocklist,
             atmos_preferred: existing
                 .map(|profile| profile.criteria.atmos_preferred)
                 .unwrap_or(false),
@@ -265,6 +291,36 @@ fn parse_video_codec_values(
         .map(|value| {
             let trimmed = value.trim().to_string();
             scryer_application::VideoCodec::parse(trimmed.as_str()).ok_or_else(|| {
+                async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
+            })
+        })
+        .collect()
+}
+
+fn parse_source_values(
+    values: Vec<String>,
+    field: &str,
+) -> GqlResult<Vec<scryer_application::ReleaseSource>> {
+    values
+        .into_iter()
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            scryer_application::ReleaseSource::parse(trimmed.as_str()).ok_or_else(|| {
+                async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
+            })
+        })
+        .collect()
+}
+
+fn parse_audio_codec_values(
+    values: Vec<String>,
+    field: &str,
+) -> GqlResult<Vec<scryer_application::AudioCodec>> {
+    values
+        .into_iter()
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            scryer_application::AudioCodec::parse(trimmed.as_str()).ok_or_else(|| {
                 async_graphql::Error::new(format!("invalid value {trimmed:?} for {field}"))
             })
         })

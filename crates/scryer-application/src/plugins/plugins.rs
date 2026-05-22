@@ -17,7 +17,7 @@ use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, timeout_reqwest_client,
 };
 use scryer_plugin_sdk::{
-    PluginDescriptor, SDK_VERSION, host_version_matches_constraint,
+    PluginDescriptor, SDK_VERSION, effective_host_sdk_constraint, host_version_matches_constraint,
     plugin_descriptor_sdk_constraint, sdk_constraint_or_legacy,
     validate_plugin_descriptor_host_permissions, validate_plugin_descriptor_sdk_contract,
     validate_sdk_contract,
@@ -269,12 +269,13 @@ fn parse_child_release_sdk_req(
     plugin_id: &str,
     release: &ChildCatalogRelease,
 ) -> Option<semver::VersionReq> {
-    semver::VersionReq::parse(release.sdk_constraint.trim()).map_or_else(
+    let constraint = effective_host_sdk_constraint(None, &release.sdk_constraint);
+    semver::VersionReq::parse(constraint.trim()).map_or_else(
         |error| {
             warn!(
                 plugin_id,
                 version = release.version.as_str(),
-                sdk_constraint = release.sdk_constraint.as_str(),
+                sdk_constraint = constraint.as_str(),
                 error = %error,
                 "skipping plugin release with invalid sdk_constraint"
             );
@@ -295,7 +296,8 @@ fn downloaded_plugin_release_is_host_compatible(
     plugin_id: &str,
     release: &DownloadedPluginReleaseContract,
 ) -> bool {
-    let constraint = normalized_release_sdk_constraint(release);
+    let constraint =
+        effective_host_sdk_constraint(release.sdk_version.as_deref(), &release.sdk_constraint);
     let sdk_req = semver::VersionReq::parse(constraint.trim()).map_or_else(
         |error| {
             warn!(
@@ -3520,6 +3522,122 @@ impl AppUseCase {
 // so they should not be auto-created during reconciliation.
 fn should_skip_auto_created_indexer_config(provider_type: &str) -> bool {
     provider_type.eq_ignore_ascii_case("nzbgeek") || provider_type.eq_ignore_ascii_case("dognzb")
+}
+
+#[cfg(test)]
+mod sdk_compatibility_tests {
+    use super::*;
+
+    fn current_sdk_minor_line_constraint() -> String {
+        let sdk_version = semver::Version::parse(SDK_VERSION).expect("valid SDK_VERSION");
+        format!(
+            ">={}.{}.0, <{}.{}.0",
+            sdk_version.major,
+            sdk_version.minor,
+            sdk_version.major,
+            sdk_version.minor + 1
+        )
+    }
+
+    #[test]
+    fn downloaded_plugin_release_host_compatibility_accepts_legacy_minor_line_constraint() {
+        let release = DownloadedPluginReleaseContract {
+            version: "0.2.0".to_string(),
+            sdk_version: Some("1.5.0".to_string()),
+            sdk_constraint: ">=1.5.0, <1.6.0".to_string(),
+            scryer_constraint: None,
+        };
+
+        assert!(downloaded_plugin_release_is_host_compatible(
+            "jellyfin", &release
+        ));
+    }
+
+    #[test]
+    fn downloaded_plugin_release_preserves_explicit_minor_line_override() {
+        let release = DownloadedPluginReleaseContract {
+            version: "0.2.0".to_string(),
+            sdk_version: Some(SDK_VERSION.to_string()),
+            sdk_constraint: current_sdk_minor_line_constraint(),
+            scryer_constraint: None,
+        };
+
+        assert_eq!(
+            normalized_release_sdk_constraint(&release),
+            current_sdk_minor_line_constraint()
+        );
+        assert!(downloaded_plugin_release_is_host_compatible(
+            "jellyfin", &release
+        ));
+    }
+
+    #[test]
+    fn installation_sdk_contract_is_host_compatible_accepts_legacy_minor_line_constraint() {
+        let installation = PluginInstallation {
+            id: "install-1".to_string(),
+            plugin_id: "jellyfin".to_string(),
+            name: "Jellyfin".to_string(),
+            description: "Jellyfin notifications".to_string(),
+            version: "0.2.0".to_string(),
+            sdk_version: "1.5.0".to_string(),
+            sdk_constraint: ">=1.5.0, <1.6.0".to_string(),
+            scryer_constraint: None,
+            plugin_type: "notification".to_string(),
+            provider_type: "jellyfin".to_string(),
+            source_kind: PluginSourceKind::Downloaded,
+            is_enabled: true,
+            is_builtin: false,
+            wasm_encoding: PluginWasmEncoding::Identity,
+            wasm_digest_algo: None,
+            source_url: None,
+            support_tier: PluginSupportTier::Official,
+            publisher: None,
+            docs_url: None,
+            source_repo: None,
+            manifest_url: None,
+            wasm_digest: None,
+            artifact_digest: None,
+            descriptor_json: None,
+            installed_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        assert!(installation_sdk_contract_is_host_compatible(&installation));
+    }
+
+    #[test]
+    fn latest_compatible_child_release_accepts_legacy_minor_line_constraint() {
+        let catalog = ChildCatalog {
+            schema_version: "scryer.plugin.child_catalog.v2".to_string(),
+            id: "email".to_string(),
+            name: "Email".to_string(),
+            description: "Email notifications".to_string(),
+            plugin_type: "notification".to_string(),
+            provider_type: "email".to_string(),
+            publisher: "scryer".to_string(),
+            support_tier: PluginSupportTier::Official,
+            docs_url: "https://github.com/scryer-media/scryer-plugins".to_string(),
+            source_repo: "https://github.com/scryer-media/scryer-plugins".to_string(),
+            releases: vec![
+                ChildCatalogRelease {
+                    version: "0.1.0".to_string(),
+                    sdk_constraint: ">=1.5.0, <1.6.0".to_string(),
+                    artifact_manifest_url: "https://example.invalid/email-v0.1.0.manifest.json"
+                        .to_string(),
+                },
+                ChildCatalogRelease {
+                    version: "0.2.0".to_string(),
+                    sdk_constraint: ">=999.0.0".to_string(),
+                    artifact_manifest_url: "https://example.invalid/email-v0.2.0.manifest.json"
+                        .to_string(),
+                },
+            ],
+        };
+
+        let selected = latest_compatible_child_release(&catalog).expect("compatible release");
+
+        assert_eq!(selected.version, "0.1.0");
+    }
 }
 
 #[cfg(test)]

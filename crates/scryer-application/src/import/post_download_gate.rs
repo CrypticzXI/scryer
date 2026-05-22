@@ -5,6 +5,7 @@ use chrono::Utc;
 
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
+use crate::release_parser::AudioCodec;
 use crate::{
     AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, WantedSearchTransition,
     normalize_release_attempt_hint, normalize_release_attempt_title,
@@ -609,14 +610,15 @@ pub(crate) fn rescore_from_mediainfo(
 
     // Override audio: iterate all streams to find best codec and max channels.
     if let Some(ref normalized) = resolved.audio_codec
-        && merged.audio.as_deref() != Some(normalized.as_str())
+        && let Some(codec) = AudioCodec::parse(normalized)
+        && merged.audio.as_ref() != Some(&codec)
     {
         changes.push(format!(
             "audio: {} → {}",
-            merged.audio.as_deref().unwrap_or("?"),
+            merged.audio.as_ref().map(AudioCodec::as_str).unwrap_or("?"),
             normalized
         ));
-        merged.audio = Some(normalized.clone());
+        merged.audio = Some(codec);
     }
 
     if let Some(ref ch_str) = resolved.audio_channels

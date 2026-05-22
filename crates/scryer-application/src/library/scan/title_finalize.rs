@@ -83,10 +83,10 @@ async fn persist_or_reuse_scanned_media_file(
         quality_label: parsed.quality.clone(),
         scene_name: Some(parsed.raw_title.clone()),
         release_group: parsed.release_group.clone(),
-        source_type: parsed.source.clone(),
+        source_type: parsed.source.as_ref().map(ToString::to_string),
         resolution: parsed.quality.clone(),
         video_codec_parsed: parsed.video_codec.clone(),
-        audio_codec_parsed: parsed.audio.clone(),
+        audio_codec_parsed: parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: parsed.audio_channels.clone(),
         ..Default::default()
     };

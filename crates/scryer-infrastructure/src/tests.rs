@@ -1826,6 +1826,197 @@ async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
     }
 }
 
+#[tokio::test]
+async fn release_metadata_enum_canonicalization_migration_normalizes_legacy_values() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite should open");
+
+    sqlx::query(
+        "CREATE TABLE media_files (
+            id TEXT PRIMARY KEY,
+            source_type TEXT,
+            video_codec TEXT,
+            video_codec_parsed TEXT,
+            audio_codec_parsed TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("media_files fixture table should be created");
+
+    for statement in [
+        "CREATE TABLE quality_profile_source_allowlist (
+            profile_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (profile_id, source)
+        )",
+        "CREATE TABLE quality_profile_source_blocklist (
+            profile_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (profile_id, source)
+        )",
+        "CREATE TABLE quality_profile_audio_codec_allowlist (
+            profile_id TEXT NOT NULL,
+            codec TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (profile_id, codec)
+        )",
+        "CREATE TABLE quality_profile_audio_codec_blocklist (
+            profile_id TEXT NOT NULL,
+            codec TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (profile_id, codec)
+        )",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect("quality profile fixture table should be created");
+    }
+
+    sqlx::query(
+        "INSERT INTO media_files
+            (id, source_type, video_codec, video_codec_parsed, audio_codec_parsed)
+         VALUES
+            ('known', 'webdl', 'x264', 'HEVC', 'DTS-HD MA'),
+            ('unknown', 'mystery-source', 'mystery-video', 'mystery-parsed', 'mystery-audio')",
+    )
+    .execute(&pool)
+    .await
+    .expect("media file fixture rows should be inserted");
+
+    sqlx::query(
+        "INSERT INTO quality_profile_source_allowlist(profile_id, source, created_at)
+         VALUES
+            ('p1', 'webdl', '2026-01-01T00:00:00Z'),
+            ('p1', 'WEB-DL', '2026-01-02T00:00:00Z'),
+            ('p1', 'not-a-source', '2026-01-03T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("source allowlist fixture rows should be inserted");
+
+    sqlx::query(
+        "INSERT INTO quality_profile_source_blocklist(profile_id, source, created_at)
+         VALUES
+            ('p1', 'bdmv', '2026-01-01T00:00:00Z'),
+            ('p1', 'BRDISK', '2026-01-02T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("source blocklist fixture rows should be inserted");
+
+    sqlx::query(
+        "INSERT INTO quality_profile_audio_codec_allowlist(profile_id, codec, created_at)
+         VALUES
+            ('p1', 'DTS-HD MA', '2026-01-01T00:00:00Z'),
+            ('p1', 'DTSMA', '2026-01-02T00:00:00Z'),
+            ('p1', 'not-a-codec', '2026-01-03T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("audio allowlist fixture rows should be inserted");
+
+    sqlx::query(
+        "INSERT INTO quality_profile_audio_codec_blocklist(profile_id, codec, created_at)
+         VALUES
+            ('p1', 'DD+', '2026-01-01T00:00:00Z'),
+            ('p1', 'DDP', '2026-01-02T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("audio blocklist fixture rows should be inserted");
+
+    run_embedded_migration(
+        &pool,
+        include_str!(
+            "../../scryer/src/db/migrations/0125_release_metadata_enum_canonicalization.sql"
+        ),
+    )
+    .await;
+
+    let known_media: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT source_type, video_codec, video_codec_parsed, audio_codec_parsed
+               FROM media_files
+              WHERE id = 'known'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("known media row should remain");
+    assert_eq!(
+        known_media,
+        (
+            Some("WEB-DL".to_string()),
+            Some("H.264".to_string()),
+            Some("H.265".to_string()),
+            Some("DTSMA".to_string())
+        )
+    );
+
+    let unknown_media: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT source_type, video_codec, video_codec_parsed, audio_codec_parsed
+               FROM media_files
+              WHERE id = 'unknown'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("unknown media row should remain");
+    assert_eq!(
+        unknown_media,
+        (
+            Some("mystery-source".to_string()),
+            Some("mystery-video".to_string()),
+            Some("mystery-parsed".to_string()),
+            Some("mystery-audio".to_string())
+        )
+    );
+
+    let source_allowlist: Vec<String> =
+        sqlx::query_scalar("SELECT source FROM quality_profile_source_allowlist ORDER BY source")
+            .fetch_all(&pool)
+            .await
+            .expect("source allowlist should query");
+    assert_eq!(source_allowlist, vec!["WEB-DL".to_string()]);
+
+    let source_blocklist: Vec<String> =
+        sqlx::query_scalar("SELECT source FROM quality_profile_source_blocklist ORDER BY source")
+            .fetch_all(&pool)
+            .await
+            .expect("source blocklist should query");
+    assert_eq!(source_blocklist, vec!["BRDISK".to_string()]);
+
+    let audio_allowlist: Vec<String> = sqlx::query_scalar(
+        "SELECT codec FROM quality_profile_audio_codec_allowlist ORDER BY codec",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("audio allowlist should query");
+    assert_eq!(audio_allowlist, vec!["DTSMA".to_string()]);
+
+    let audio_blocklist: Vec<String> = sqlx::query_scalar(
+        "SELECT codec FROM quality_profile_audio_codec_blocklist ORDER BY codec",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("audio blocklist should query");
+    assert_eq!(audio_blocklist, vec!["DDP".to_string()]);
+}
+
 #[test]
 fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_table() {
     let keys = crate::migrations::list_embedded_migration_keys();

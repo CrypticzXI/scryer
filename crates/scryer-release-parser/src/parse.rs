@@ -14,9 +14,10 @@ use crate::lex::{
     normalize_token,
 };
 use crate::model::{
-    CandidateZones, MetadataAst, ParseDisposition, ParseFamily, ParseReason, ParsedEpisodeMetadata,
-    ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata, ParsedSpecialKind,
-    ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate, TitleSegment, TitleSegmentKind,
+    AudioCodec, CandidateZones, ExternalIdSource, MetadataAst, ParseDisposition, ParseFamily,
+    ParseReason, ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedExternalId,
+    ParsedReleaseMetadata, ParsedSpecialKind, ReleaseIdentity, ReleaseParseAnalysis,
+    ReleaseParseCandidate, ReleaseSource, StreamingService, TitleSegment, TitleSegmentKind,
     TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
 
@@ -94,10 +95,18 @@ pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis
             }
             ParseDisposition::Unparseable => {
                 if let Some(normalized_source) = normalize_source_for_service(
-                    best_candidate.projected.source.as_deref(),
-                    best_candidate.projected.streaming_service.as_deref(),
+                    best_candidate
+                        .projected
+                        .source
+                        .as_ref()
+                        .map(ReleaseSource::as_str),
+                    best_candidate
+                        .projected
+                        .streaming_service
+                        .as_ref()
+                        .map(StreamingService::as_str),
                 ) {
-                    best_candidate.projected.source = Some(normalized_source);
+                    best_candidate.projected.source = ReleaseSource::parse(&normalized_source);
                     best_candidate
                         .projected
                         .parse_hints
@@ -2820,15 +2829,15 @@ fn build_candidate(
     let external_ids = state.metadata.external_ids.clone();
     let imdb_id = external_ids
         .iter()
-        .find(|value| value.source == "imdb")
+        .find(|value| value.source == ExternalIdSource::Imdb)
         .map(|value| value.value.clone());
     let tmdb_id = external_ids
         .iter()
-        .find(|value| value.source == "tmdb")
+        .find(|value| value.source == ExternalIdSource::Tmdb)
         .map(|value| value.value.clone());
     let tvdb_id = external_ids
         .iter()
-        .find(|value| value.source == "tvdb")
+        .find(|value| value.source == ExternalIdSource::Tvdb)
         .map(|value| value.value.clone());
     let unconsumed_tokens = tokens
         .iter()
@@ -2857,18 +2866,27 @@ fn build_candidate(
         tvdb_id,
         year: state.metadata.year,
         quality: state.metadata.quality.clone(),
-        source: state.metadata.source.clone(),
+        source: state
+            .metadata
+            .source
+            .as_deref()
+            .and_then(ReleaseSource::parse),
         video_codec: state
             .metadata
             .video_codec
             .as_deref()
             .and_then(VideoCodec::parse),
         video_encoding: None,
-        audio: state.metadata.audio_codec.clone(),
+        audio: state
+            .metadata
+            .audio_codec
+            .as_deref()
+            .and_then(AudioCodec::parse),
         audio_codecs: state
             .metadata
             .audio_codec
-            .clone()
+            .as_deref()
+            .and_then(AudioCodec::parse)
             .into_iter()
             .collect::<Vec<_>>(),
         audio_channels: state.metadata.audio_channels.clone(),
@@ -2889,7 +2907,11 @@ fn build_candidate(
         is_hardcoded_subs: false,
         is_uncensored: false,
         is_dubs_only: false,
-        streaming_service: state.metadata.streaming_service.clone(),
+        streaming_service: state
+            .metadata
+            .streaming_service
+            .as_deref()
+            .and_then(StreamingService::parse),
         edition: (!is_remux)
             .then(|| state.metadata.edition.clone())
             .flatten(),
@@ -5028,10 +5050,7 @@ fn parse_external_id_at(tokens: &[Token], index: usize) -> Option<(ParsedExterna
     let next = tokens.get(index + 1)?;
     let value = external_id_value_for_source(source, next.normalized.as_str())?;
     Some((
-        ParsedExternalId {
-            source: source.to_string(),
-            value,
-        },
+        ParsedExternalId { source, value },
         TokenRange {
             start_token: index,
             end_token: index + 2,
@@ -5042,21 +5061,19 @@ fn parse_external_id_at(tokens: &[Token], index: usize) -> Option<(ParsedExterna
 fn parse_external_id_token(token: &str) -> Option<ParsedExternalId> {
     if let Some(value) = parse_imdb_id(token) {
         return Some(ParsedExternalId {
-            source: "imdb".to_string(),
+            source: ExternalIdSource::Imdb,
             value,
         });
     }
-    for source in ["tmdb", "tvdb"] {
-        for prefix in [
-            source.to_ascii_uppercase(),
-            format!("{}ID", source.to_ascii_uppercase()),
-        ] {
+    for source in [ExternalIdSource::Tmdb, ExternalIdSource::Tvdb] {
+        let source_label = source.as_str().to_ascii_uppercase();
+        for prefix in [source_label.clone(), format!("{source_label}ID")] {
             let Some(value) = token.strip_prefix(prefix.as_str()) else {
                 continue;
             };
             if !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()) {
                 return Some(ParsedExternalId {
-                    source: source.to_string(),
+                    source,
                     value: value.to_string(),
                 });
             }
@@ -5069,33 +5086,36 @@ fn is_external_id_label(token: &str) -> bool {
     external_id_source_from_label(token).is_some()
 }
 
-fn external_id_source_from_label(token: &str) -> Option<&'static str> {
+fn external_id_source_from_label(token: &str) -> Option<ExternalIdSource> {
     match token {
-        "IMDB" | "IMDBID" => Some("imdb"),
-        "TMDB" | "TMDBID" => Some("tmdb"),
-        "TVDB" | "TVDBID" => Some("tvdb"),
+        "IMDB" | "IMDBID" => Some(ExternalIdSource::Imdb),
+        "TMDB" | "TMDBID" => Some(ExternalIdSource::Tmdb),
+        "TVDB" | "TVDBID" => Some(ExternalIdSource::Tvdb),
         _ => None,
     }
 }
 
-fn external_id_value_for_source(source: &str, token: &str) -> Option<String> {
+fn external_id_value_for_source(source: ExternalIdSource, token: &str) -> Option<String> {
     match source {
-        "imdb" => parse_imdb_id(token).or_else(|| {
+        ExternalIdSource::Imdb => parse_imdb_id(token).or_else(|| {
             token
                 .chars()
                 .all(|ch| ch.is_ascii_digit())
                 .then(|| format!("tt{token}"))
         }),
-        "tmdb" | "tvdb" => (!token.is_empty() && token.chars().all(|ch| ch.is_ascii_digit()))
-            .then(|| token.to_string()),
-        _ => None,
+        ExternalIdSource::Tmdb | ExternalIdSource::Tvdb => (!token.is_empty()
+            && token.chars().all(|ch| ch.is_ascii_digit()))
+        .then(|| token.to_string()),
+        ExternalIdSource::AniDb
+        | ExternalIdSource::AniDbEpisode
+        | ExternalIdSource::AniList
+        | ExternalIdSource::Mal => None,
     }
 }
 
 fn push_unique_external_id(ids: &mut Vec<ParsedExternalId>, id: ParsedExternalId) {
     if !ids.iter().any(|existing| {
-        existing.source.eq_ignore_ascii_case(&id.source)
-            && existing.value.eq_ignore_ascii_case(&id.value)
+        existing.source == id.source && existing.value.eq_ignore_ascii_case(&id.value)
     }) {
         ids.push(id);
     }

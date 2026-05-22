@@ -1519,7 +1519,7 @@ fn resolve_rename_common_metadata(
         .unwrap_or_default();
     let source = media_file
         .and_then(|file| non_empty_owned(file.source_type.clone()))
-        .or_else(|| parsed_current.source.clone())
+        .or_else(|| parsed_current.source.as_ref().map(ToString::to_string))
         .unwrap_or_default();
     let video_codec = analyzed
         .video_codec
@@ -1541,7 +1541,7 @@ fn resolve_rename_common_metadata(
     let audio_codec = analyzed
         .audio_codec
         .or_else(|| media_file.and_then(|file| non_empty_owned(file.audio_codec_parsed.clone())))
-        .or_else(|| parsed_current.audio.clone())
+        .or_else(|| parsed_current.audio.as_ref().map(ToString::to_string))
         .unwrap_or_default();
     let audio_channels = analyzed
         .audio_channels

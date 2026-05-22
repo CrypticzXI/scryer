@@ -456,7 +456,10 @@ fn map_candidate_to_match(
         ) {
             matches.insert("release_group".to_string());
         }
-        if source_matches(query.source.as_deref(), parsed_release.source.as_deref()) {
+        if source_matches(
+            query.source.as_deref(),
+            parsed_release.source.as_ref().map(|source| source.as_str()),
+        ) {
             matches.insert("source".to_string());
         }
         if resolution_matches(
@@ -784,8 +787,8 @@ fn audio_codec_matches(left: Option<&str>, parsed: &ParsedReleaseMetadata) -> bo
     };
     let wanted = normalize_audio_codec(left);
 
-    if let Some(audio) = parsed.audio.as_deref()
-        && normalize_audio_codec(audio) == wanted
+    if let Some(audio) = parsed.audio.as_ref()
+        && normalize_audio_codec(audio.as_str()) == wanted
     {
         return true;
     }
@@ -793,7 +796,7 @@ fn audio_codec_matches(left: Option<&str>, parsed: &ParsedReleaseMetadata) -> bo
     parsed
         .audio_codecs
         .iter()
-        .any(|codec| normalize_audio_codec(codec) == wanted)
+        .any(|codec| normalize_audio_codec(codec.as_str()) == wanted)
 }
 
 fn guest_input_path(input_path: &Path) -> AppResult<PathBuf> {

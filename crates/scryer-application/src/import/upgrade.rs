@@ -126,12 +126,12 @@ pub(crate) async fn execute_upgrade(
             .or_else(|| prepared.parsed.quality.clone()),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: prepared.parsed.release_group.clone(),
-        source_type: prepared.parsed.source.clone(),
+        source_type: prepared.parsed.source.as_ref().map(ToString::to_string),
         resolution: stored_quality_label
             .map(str::to_string)
             .or_else(|| prepared.parsed.quality.clone()),
         video_codec_parsed: prepared.parsed.video_codec.clone(),
-        audio_codec_parsed: prepared.parsed.audio.clone(),
+        audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(source_path_string),
         acquisition_score: Some(final_score),

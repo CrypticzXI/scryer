@@ -37,7 +37,7 @@ pub use notification::{
 pub const SDK_VERSION: &str = "1.6.0";
 
 pub fn current_sdk_constraint() -> String {
-    sdk_minor_line_constraint(SDK_VERSION).unwrap_or_else(|| legacy_sdk_constraint(SDK_VERSION))
+    legacy_sdk_constraint(SDK_VERSION)
 }
 
 pub fn sdk_constraint_or_legacy(sdk_version: &str, sdk_constraint: &str) -> String {
@@ -47,6 +47,28 @@ pub fn sdk_constraint_or_legacy(sdk_version: &str, sdk_constraint: &str) -> Stri
     }
 
     legacy_sdk_constraint(sdk_version)
+}
+
+pub fn effective_host_sdk_constraint(sdk_version: Option<&str>, sdk_constraint: &str) -> String {
+    let explicit = sdk_constraint.trim();
+    if explicit.is_empty() {
+        return sdk_version.map_or_else(|| ">=0.0.0".to_string(), legacy_sdk_constraint);
+    }
+
+    if let Some(sdk_version) = sdk_version {
+        if sdk_minor_line_constraint(sdk_version)
+            .as_deref()
+            .is_some_and(|minor_line| {
+                normalize_constraint_literal(explicit) == normalize_constraint_literal(minor_line)
+            })
+        {
+            return legacy_sdk_constraint(sdk_version);
+        }
+    } else if let Some(abi_line) = abi_major_constraint_from_generated_minor_line(explicit) {
+        return abi_line;
+    }
+
+    explicit.to_string()
 }
 
 pub fn plugin_descriptor_sdk_constraint(descriptor: &PluginDescriptor) -> String {
@@ -74,17 +96,21 @@ pub fn validate_sdk_contract(
         .map_err(|error| format!("invalid host sdk_version {host_sdk_version}: {error}"))?;
     let descriptor_version = Version::parse(sdk_version.trim())
         .map_err(|error| format!("{subject}: invalid sdk_version {sdk_version}: {error}"))?;
-    let constraint = sdk_constraint_or_legacy(sdk_version, sdk_constraint);
-    let req = VersionReq::parse(constraint.trim())
-        .map_err(|error| format!("{subject}: invalid sdk_constraint {constraint}: {error}"))?;
-    if !req.matches(&descriptor_version) {
+    let descriptor_constraint = sdk_constraint_or_legacy(sdk_version, sdk_constraint);
+    let descriptor_req = VersionReq::parse(descriptor_constraint.trim()).map_err(|error| {
+        format!("{subject}: invalid sdk_constraint {descriptor_constraint}: {error}")
+    })?;
+    if !descriptor_req.matches(&descriptor_version) {
         return Err(format!(
-            "{subject}: sdk_version {sdk_version} does not satisfy sdk_constraint {constraint}"
+            "{subject}: sdk_version {sdk_version} does not satisfy sdk_constraint {descriptor_constraint}"
         ));
     }
-    if !req.matches(&host_version) {
+    let host_constraint = effective_host_sdk_constraint(Some(sdk_version), sdk_constraint);
+    let host_req = VersionReq::parse(host_constraint.trim())
+        .map_err(|error| format!("{subject}: invalid sdk_constraint {host_constraint}: {error}"))?;
+    if !host_req.matches(&host_version) {
         return Err(format!(
-            "{subject}: host sdk_version {host_sdk_version} does not satisfy sdk_constraint {constraint}"
+            "{subject}: host sdk_version {host_sdk_version} does not satisfy sdk_constraint {host_constraint}"
         ));
     }
     Ok(())
@@ -211,6 +237,40 @@ fn sdk_minor_line_constraint(version: &str) -> Option<String> {
         version.major,
         version.minor + 1
     ))
+}
+
+fn normalize_constraint_literal(raw: &str) -> String {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn abi_major_constraint_from_generated_minor_line(constraint: &str) -> Option<String> {
+    let normalized = normalize_constraint_literal(constraint);
+    let mut parts = normalized.split(", ");
+    let lower = parts.next()?.strip_prefix(">=")?.trim();
+    let upper = parts.next()?.strip_prefix('<')?.trim();
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let lower = Version::parse(lower).ok()?;
+    let upper = Version::parse(upper).ok()?;
+    if !lower.pre.is_empty()
+        || !lower.build.is_empty()
+        || !upper.pre.is_empty()
+        || !upper.build.is_empty()
+        || lower.patch != 0
+        || upper.patch != 0
+        || lower.major != upper.major
+        || upper.minor != lower.minor + 1
+    {
+        return None;
+    }
+
+    Some(legacy_sdk_constraint(&lower.to_string()))
 }
 
 pub const EXPORT_DESCRIBE: &str = "scryer_describe";
@@ -2084,6 +2144,37 @@ mod tests {
     use crate::torrent::{
         choose_source_kind, decode_torrent_bytes, normalize_info_hash_pair, seed_seconds_to_minutes,
     };
+
+    #[test]
+    fn current_sdk_constraint_uses_abi_major_line() {
+        assert_eq!(current_sdk_constraint(), ">=1.0.0, <2.0.0");
+    }
+
+    #[test]
+    fn effective_host_sdk_constraint_widens_legacy_minor_line() {
+        assert_eq!(
+            effective_host_sdk_constraint(Some("1.5.0"), ">=1.5.0, <1.6.0"),
+            ">=1.0.0, <2.0.0"
+        );
+        assert_eq!(
+            effective_host_sdk_constraint(None, ">=1.5.0, <1.6.0"),
+            ">=1.0.0, <2.0.0"
+        );
+    }
+
+    #[test]
+    fn effective_host_sdk_constraint_keeps_non_generated_explicit_pin() {
+        assert_eq!(
+            effective_host_sdk_constraint(Some("1.5.0"), ">=1.5.0, <1.5.2"),
+            ">=1.5.0, <1.5.2"
+        );
+    }
+
+    #[test]
+    fn validate_sdk_contract_accepts_legacy_minor_line_plugin_on_current_host() {
+        validate_sdk_contract("legacy-plugin", "1.5.0", ">=1.5.0, <1.6.0", SDK_VERSION)
+            .expect("legacy minor-line plugin should stay compatible on ABI 1");
+    }
 
     #[test]
     fn tagged_descriptor_round_trips() {

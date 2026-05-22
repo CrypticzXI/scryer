@@ -136,8 +136,16 @@ pub fn from_quality_profile_criteria(
         quality_tiers: criteria.quality_tiers,
         archival_quality: criteria.archival_quality,
         allow_unknown_quality: criteria.allow_unknown_quality,
-        source_allowlist: criteria.source_allowlist,
-        source_blocklist: criteria.source_blocklist,
+        source_allowlist: criteria
+            .source_allowlist
+            .into_iter()
+            .map(|source| source.to_string())
+            .collect(),
+        source_blocklist: criteria
+            .source_blocklist
+            .into_iter()
+            .map(|source| source.to_string())
+            .collect(),
         video_codec_allowlist: criteria
             .video_codec_allowlist
             .into_iter()
@@ -148,8 +156,16 @@ pub fn from_quality_profile_criteria(
             .into_iter()
             .map(|codec| codec.to_string())
             .collect(),
-        audio_codec_allowlist: criteria.audio_codec_allowlist,
-        audio_codec_blocklist: criteria.audio_codec_blocklist,
+        audio_codec_allowlist: criteria
+            .audio_codec_allowlist
+            .into_iter()
+            .map(|codec| codec.to_string())
+            .collect(),
+        audio_codec_blocklist: criteria
+            .audio_codec_blocklist
+            .into_iter()
+            .map(|codec| codec.to_string())
+            .collect(),
         dolby_vision_allowed: criteria.dolby_vision_allowed,
         detected_hdr_allowed: criteria.detected_hdr_allowed,
         prefer_remux: criteria.prefer_remux,
@@ -490,10 +506,10 @@ pub fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleasePayloa
         languages_subtitles: result.languages_subtitles,
         year: result.year,
         quality: result.quality,
-        source: result.source,
+        source: result.source.map(|source| source.to_string()),
         video_codec: result.video_codec.map(|codec| codec.to_string()),
         video_encoding: result.video_encoding,
-        audio: result.audio,
+        audio: result.audio.map(|codec| codec.to_string()),
         audio_channels: result.audio_channels,
         is_dual_audio: result.is_dual_audio,
         is_atmos: result.is_atmos,

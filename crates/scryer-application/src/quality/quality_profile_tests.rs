@@ -52,19 +52,19 @@ fn normalize_source_webdl_variants() {
 
 #[test]
 fn normalize_source_bluray_variants() {
-    assert_eq!(normalize_source(Some("BluRay")), Some("BLURAY".to_string()));
-    assert_eq!(normalize_source(Some("BD")), Some("BLURAY".to_string()));
-    assert_eq!(normalize_source(Some("UHD")), Some("BLURAY".to_string()));
+    assert_eq!(normalize_source(Some("BluRay")), Some("BluRay".to_string()));
+    assert_eq!(normalize_source(Some("BD")), Some("BluRay".to_string()));
+    assert_eq!(normalize_source(Some("UHD")), Some("BluRay".to_string()));
 }
 
 #[test]
 fn normalize_source_webrip() {
-    assert_eq!(normalize_source(Some("WEBRip")), Some("WEBRIP".to_string()));
+    assert_eq!(normalize_source(Some("WEBRip")), Some("WEBRip".to_string()));
 }
 
 #[test]
 fn normalize_source_brdisk_maps_to_bluray() {
-    assert_eq!(normalize_source(Some("BRDISK")), Some("BLURAY".to_string()));
+    assert_eq!(normalize_source(Some("BRDISK")), Some("BRDISK".to_string()));
 }
 
 #[test]

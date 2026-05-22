@@ -94,7 +94,6 @@ pub use plugins::plugins::RUNTIME_PLUGIN_LOAD_CONCURRENCY;
 pub use plugins::plugins::decode_persisted_plugin_wasm_payload;
 pub use plugins::plugins::load_runtime_plugin_from_persisted_installation_payload;
 pub use quality::release_dedup;
-pub use quality::release_parser::VideoCodec;
 pub use services::{
     PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,
     PluginInstallState,
@@ -308,8 +307,9 @@ pub use ports::{
     WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
-    ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind,
-    ReleaseParseAnalysis, ReleaseParseContext, TargetedReleaseParseAnalysis,
+    AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
+    ParsedReleaseMetadata, ParsedSpecialKind, ReleaseParseAnalysis, ReleaseParseContext,
+    ReleaseSource, StreamingService, TargetedReleaseParseAnalysis, VideoCodec,
     analyze_release_against_targets, analyze_release_for_target, best_parse_for_target,
     build_candidate_bank_contexts, build_release_parse_context,
     build_release_parse_context_for_title, parse_release_metadata,

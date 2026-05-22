@@ -317,7 +317,10 @@ fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_f
 
     assert_eq!(parsed.year, Some(2012));
     assert_eq!(parsed.quality.as_deref(), Some("1080p"));
-    assert_eq!(parsed.source.as_deref(), Some("BluRay"));
+    assert_eq!(
+        parsed.source.as_ref().map(|source| source.as_str()),
+        Some("BluRay")
+    );
 }
 
 #[test]
@@ -335,7 +338,10 @@ fn build_augmented_movie_import_metadata_uses_immediate_parent_for_obfuscated_fi
     assert_eq!(parsed.normalized_title, "PAPER LANTERN");
     assert_eq!(parsed.year, Some(2012));
     assert_eq!(parsed.quality.as_deref(), Some("1080p"));
-    assert_eq!(parsed.source.as_deref(), Some("BluRay"));
+    assert_eq!(
+        parsed.source.as_ref().map(|source| source.as_str()),
+        Some("BluRay")
+    );
 }
 
 #[test]

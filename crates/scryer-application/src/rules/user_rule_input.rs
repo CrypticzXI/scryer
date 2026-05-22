@@ -55,10 +55,14 @@ pub(crate) fn build_rule_input(
         release: ReleaseDoc {
             raw_title: parsed.raw_title.clone(),
             quality: parsed.quality.clone(),
-            source: parsed.source.clone(),
+            source: parsed.source.as_ref().map(ToString::to_string),
             video_codec: parsed.video_codec.as_ref().map(ToString::to_string),
-            audio: parsed.audio.clone(),
-            audio_codecs: parsed.audio_codecs.clone(),
+            audio: parsed.audio.as_ref().map(ToString::to_string),
+            audio_codecs: parsed
+                .audio_codecs
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             audio_channels: parsed.audio_channels.clone(),
             languages_audio,
             languages_subtitles: parsed.languages_subtitles.clone(),
@@ -81,7 +85,7 @@ pub(crate) fn build_rule_input(
             has_release_group,
             is_obfuscated,
             is_retagged,
-            streaming_service: parsed.streaming_service.clone(),
+            streaming_service: parsed.streaming_service.as_ref().map(ToString::to_string),
             edition: parsed.edition.clone(),
             anime_version: parsed.anime_version,
             episode_release_type,
@@ -105,8 +109,18 @@ pub(crate) fn build_rule_input(
             quality_tiers: profile.criteria.quality_tiers.clone(),
             archival_quality: profile.criteria.archival_quality.clone(),
             allow_unknown_quality: profile.criteria.allow_unknown_quality,
-            source_allowlist: profile.criteria.source_allowlist.clone(),
-            source_blocklist: profile.criteria.source_blocklist.clone(),
+            source_allowlist: profile
+                .criteria
+                .source_allowlist
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            source_blocklist: profile
+                .criteria
+                .source_blocklist
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             video_codec_allowlist: profile
                 .criteria
                 .video_codec_allowlist
@@ -119,8 +133,18 @@ pub(crate) fn build_rule_input(
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
-            audio_codec_allowlist: profile.criteria.audio_codec_allowlist.clone(),
-            audio_codec_blocklist: profile.criteria.audio_codec_blocklist.clone(),
+            audio_codec_allowlist: profile
+                .criteria
+                .audio_codec_allowlist
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            audio_codec_blocklist: profile
+                .criteria
+                .audio_codec_blocklist
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             atmos_preferred: profile.criteria.atmos_preferred,
             dolby_vision_allowed: profile.criteria.dolby_vision_allowed,
             detected_hdr_allowed: profile.criteria.detected_hdr_allowed,

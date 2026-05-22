@@ -95,13 +95,97 @@ impl ParsedEpisodeMetadata {
 }
 
 /// Parsed external id projected from raw metadata tokens.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ParsedExternalId {
-    pub source: String,
+    pub source: ExternalIdSource,
     pub value: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReleaseSource {
+    WebDl,
+    WebRip,
+    BluRay,
+    BrDisk,
+    Dvd,
+    Hdtv,
+    Cam,
+    Telesync,
+    Telecine,
+    DvdScr,
+    Workprint,
+}
+
+impl ReleaseSource {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::WebDl => "WEB-DL",
+            Self::WebRip => "WEBRip",
+            Self::BluRay => "BluRay",
+            Self::BrDisk => "BRDISK",
+            Self::Dvd => "DVD",
+            Self::Hdtv => "HDTV",
+            Self::Cam => "CAM",
+            Self::Telesync => "TELESYNC",
+            Self::Telecine => "TELECINE",
+            Self::DvdScr => "DVDSCR",
+            Self::Workprint => "WORKPRINT",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let value = raw
+            .trim()
+            .to_ascii_uppercase()
+            .replace(['-', '_', '.', ' '], "");
+        match value.as_str() {
+            "WEBDL" | "WEB" => Some(Self::WebDl),
+            "WEBRIP" | "WEBRI" => Some(Self::WebRip),
+            "BLURAY" | "BLU" | "BD" | "UHD" | "BDRIP" | "BRRIP" | "BDREMUX" | "BDRIO" => {
+                Some(Self::BluRay)
+            }
+            "BRDISK" | "BDMV" | "BDISO" | "BD25" | "BD50" | "BD66" | "BD100" => Some(Self::BrDisk),
+            "DVD" | "DVDRIP" => Some(Self::Dvd),
+            "HDTV" | "RAWHD" => Some(Self::Hdtv),
+            "CAM" | "HQCAM" => Some(Self::Cam),
+            "TELESYNC" | "TS" => Some(Self::Telesync),
+            "TELECINE" | "TC" => Some(Self::Telecine),
+            "DVDSCR" | "DVDSCREENER" => Some(Self::DvdScr),
+            "WORKPRINT" | "WP" => Some(Self::Workprint),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ReleaseSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for ReleaseSource {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ReleaseSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown release source label: {raw}")))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VideoCodec {
     H264,
     H265,
@@ -177,9 +261,274 @@ impl<'de> Deserialize<'de> for VideoCodec {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AudioCodec {
+    Ddp,
+    Eac3,
+    Ac3,
+    Aac,
+    TrueHd,
+    DtsMa,
+    DtsX,
+    DtsHd,
+    Dts,
+    Flac,
+    Opus,
+    Vorbis,
+    Mp3,
+    Pcm,
+}
+
+impl AudioCodec {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Ddp => "DDP",
+            Self::Eac3 => "EAC3",
+            Self::Ac3 => "AC3",
+            Self::Aac => "AAC",
+            Self::TrueHd => "TRUEHD",
+            Self::DtsMa => "DTSMA",
+            Self::DtsX => "DTSX",
+            Self::DtsHd => "DTSHD",
+            Self::Dts => "DTS",
+            Self::Flac => "FLAC",
+            Self::Opus => "OPUS",
+            Self::Vorbis => "VORBIS",
+            Self::Mp3 => "MP3",
+            Self::Pcm => "PCM",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let value = raw.trim().to_ascii_uppercase();
+        if matches!(
+            value.as_str(),
+            "DD+" | "DD PLUS" | "DOLBY DIGITAL+" | "DOLBYDIGITAL+"
+        ) {
+            return Some(Self::Ddp);
+        }
+        let compact = value.replace(['-', '_', '.', ' ', ':', '+'], "");
+        match compact.as_str() {
+            "DDP" | "DDPLUS" | "DOLBYDIGITALPLUS" => Some(Self::Ddp),
+            "EAC3" | "EAC" | "EC3" => Some(Self::Eac3),
+            "AC3" | "DD" | "DOLBYDIGITAL" => Some(Self::Ac3),
+            "AAC" | "AACLC" | "HEAAC" => Some(Self::Aac),
+            "TRUEHD" | "DOLBYTRUEHD" => Some(Self::TrueHd),
+            "DTSMA" | "DTSHDMA" | "DTSHDMASTER" | "DTSHDMASTERAUDIO" => Some(Self::DtsMa),
+            "DTSX" => Some(Self::DtsX),
+            "DTSHD" => Some(Self::DtsHd),
+            "DTS" => Some(Self::Dts),
+            "FLAC" => Some(Self::Flac),
+            "OPUS" => Some(Self::Opus),
+            "VORBIS" => Some(Self::Vorbis),
+            "MP3" | "MPEG3" | "MPEGAUDIOLAYER3" => Some(Self::Mp3),
+            "PCM" | "LPCM" => Some(Self::Pcm),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for AudioCodec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for AudioCodec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AudioCodec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown audio codec label: {raw}")))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StreamingService {
+    Amazon,
+    Netflix,
+    AppleTvPlus,
+    DisneyPlus,
+    HboMax,
+    ParamountPlus,
+    Peacock,
+    Hulu,
+    Crunchyroll,
+    Funimation,
+    Hidive,
+    Stan,
+    Itunes,
+    Bilibili,
+    Hotstar,
+    BbcIplayer,
+    Youtube,
+}
+
+impl StreamingService {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Amazon => "Amazon",
+            Self::Netflix => "Netflix",
+            Self::AppleTvPlus => "Apple TV+",
+            Self::DisneyPlus => "Disney+",
+            Self::HboMax => "HBO Max",
+            Self::ParamountPlus => "Paramount+",
+            Self::Peacock => "Peacock",
+            Self::Hulu => "Hulu",
+            Self::Crunchyroll => "Crunchyroll",
+            Self::Funimation => "Funimation",
+            Self::Hidive => "HIDIVE",
+            Self::Stan => "Stan",
+            Self::Itunes => "iTunes",
+            Self::Bilibili => "Bilibili",
+            Self::Hotstar => "Hotstar",
+            Self::BbcIplayer => "BBC iPlayer",
+            Self::Youtube => "YouTube",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let value = raw
+            .trim()
+            .to_ascii_uppercase()
+            .replace(['-', '_', '.', ' ', '+'], "");
+        match value.as_str() {
+            "AMZN" | "AMAZON" | "AMAZONPRIME" | "PRIMEVIDEO" => Some(Self::Amazon),
+            "NF" | "NETFLIX" => Some(Self::Netflix),
+            "ATVP" | "APTV" | "APPLETV" | "APPLETVPLUS" => Some(Self::AppleTvPlus),
+            "DSNP" | "DNSP" | "DISNEY" | "DISNEYPLUS" => Some(Self::DisneyPlus),
+            "MAX" | "HMAX" | "HBO" | "HBOMAX" => Some(Self::HboMax),
+            "PMTP" | "PARAMOUNT" | "PARAMOUNTPLUS" => Some(Self::ParamountPlus),
+            "PCOK" | "PEACOCK" => Some(Self::Peacock),
+            "HULU" => Some(Self::Hulu),
+            "CR" | "CRUNCHYROLL" => Some(Self::Crunchyroll),
+            "FUNI" | "FUNIMATION" => Some(Self::Funimation),
+            "HIDIVE" => Some(Self::Hidive),
+            "STAN" => Some(Self::Stan),
+            "ITUNES" => Some(Self::Itunes),
+            "BILI" | "BILIBILI" => Some(Self::Bilibili),
+            "HOTSTAR" => Some(Self::Hotstar),
+            "BBC" | "BBCI" | "IPLAYER" | "BBCIPLAYER" => Some(Self::BbcIplayer),
+            "YOUTUBE" => Some(Self::Youtube),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for StreamingService {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for StreamingService {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamingService {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!("unknown streaming service label: {raw}"))
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExternalIdSource {
+    Imdb,
+    Tmdb,
+    Tvdb,
+    AniDb,
+    AniDbEpisode,
+    AniList,
+    Mal,
+}
+
+impl ExternalIdSource {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Imdb => "imdb",
+            Self::Tmdb => "tmdb",
+            Self::Tvdb => "tvdb",
+            Self::AniDb => "anidb",
+            Self::AniDbEpisode => "anidb_episode",
+            Self::AniList => "anilist",
+            Self::Mal => "mal",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let value = raw.trim().to_ascii_lowercase();
+        let compact = value.replace(['-', '_', '.', ' '], "");
+        match compact.as_str() {
+            "imdb" | "imdbid" => Some(Self::Imdb),
+            "tmdb" | "tmdbid" => Some(Self::Tmdb),
+            "tvdb" | "tvdbid" => Some(Self::Tvdb),
+            "anidb" | "anidbid" => Some(Self::AniDb),
+            "anidbepisode" | "anidbepisodeid" => Some(Self::AniDbEpisode),
+            "anilist" | "anilistid" => Some(Self::AniList),
+            "mal" | "malid" => Some(Self::Mal),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ExternalIdSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for ExternalIdSource {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ExternalIdSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!("unknown external id source label: {raw}"))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::VideoCodec;
+    use super::{AudioCodec, ExternalIdSource, ReleaseSource, StreamingService, VideoCodec};
 
     #[test]
     fn video_codec_serializes_to_canonical_label() {
@@ -199,6 +548,38 @@ mod tests {
     fn video_codec_rejects_unknown_label() {
         assert!(VideoCodec::parse("some-weird-codec").is_none());
         assert!(serde_json::from_str::<VideoCodec>("\"some-weird-codec\"").is_err());
+    }
+
+    #[test]
+    fn strict_metadata_enums_serialize_to_canonical_labels() {
+        assert_eq!(
+            serde_json::to_string(&ReleaseSource::parse("bluray").expect("parse source"))
+                .expect("serialize source"),
+            "\"BluRay\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AudioCodec::parse("DD+").expect("parse audio"))
+                .expect("serialize audio"),
+            "\"DDP\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StreamingService::parse("ATVP").expect("parse service"))
+                .expect("serialize service"),
+            "\"Apple TV+\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ExternalIdSource::parse("IMDBID").expect("parse id source"))
+                .expect("serialize id source"),
+            "\"imdb\""
+        );
+    }
+
+    #[test]
+    fn strict_metadata_enums_reject_unknown_labels() {
+        assert!(serde_json::from_str::<ReleaseSource>("\"laserdisc\"").is_err());
+        assert!(serde_json::from_str::<AudioCodec>("\"some-audio-codec\"").is_err());
+        assert!(serde_json::from_str::<StreamingService>("\"some-service\"").is_err());
+        assert!(serde_json::from_str::<ExternalIdSource>("\"some-id-source\"").is_err());
     }
 }
 
@@ -227,11 +608,11 @@ pub struct ParsedReleaseMetadata {
     pub tvdb_id: Option<String>,
     pub year: Option<i32>,
     pub quality: Option<String>,
-    pub source: Option<String>,
+    pub source: Option<ReleaseSource>,
     pub video_codec: Option<VideoCodec>,
     pub video_encoding: Option<String>,
-    pub audio: Option<String>,
-    pub audio_codecs: Vec<String>,
+    pub audio: Option<AudioCodec>,
+    pub audio_codecs: Vec<AudioCodec>,
     pub audio_channels: Option<String>,
     pub is_dual_audio: bool,
     pub is_atmos: bool,
@@ -250,7 +631,7 @@ pub struct ParsedReleaseMetadata {
     pub is_hardcoded_subs: bool,
     pub is_uncensored: bool,
     pub is_dubs_only: bool,
-    pub streaming_service: Option<String>,
+    pub streaming_service: Option<StreamingService>,
     pub edition: Option<String>,
     pub anime_version: Option<u32>,
     pub episode: Option<ParsedEpisodeMetadata>,

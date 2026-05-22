@@ -1640,10 +1640,10 @@ async fn import_movie_download(
         quality_label: prepared.parsed.quality.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: prepared.parsed.release_group.clone(),
-        source_type: prepared.parsed.source.clone(),
+        source_type: prepared.parsed.source.as_ref().map(ToString::to_string),
         resolution: prepared.parsed.quality.clone(),
         video_codec_parsed: prepared.parsed.video_codec.clone(),
-        audio_codec_parsed: prepared.parsed.audio.clone(),
+        audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(path_to_stored_string(source_video.clone())),
         acquisition_score: Some(acq_score),
@@ -2207,10 +2207,10 @@ async fn import_interstitial_movie_download(
             quality_label: prepared.parsed.quality.clone(),
             scene_name: Some(prepared.parsed.raw_title.clone()),
             release_group: prepared.parsed.release_group.clone(),
-            source_type: prepared.parsed.source.clone(),
+            source_type: prepared.parsed.source.as_ref().map(ToString::to_string),
             resolution: prepared.parsed.quality.clone(),
             video_codec_parsed: prepared.parsed.video_codec.clone(),
-            audio_codec_parsed: prepared.parsed.audio.clone(),
+            audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
             audio_channels_parsed: prepared.parsed.audio_channels.clone(),
             original_file_path: Some(path_to_stored_string(&source_video)),
             acquisition_score: Some(acq_score),
@@ -3214,10 +3214,10 @@ async fn execute_resolved_episode_import(
         quality_label: effective_quality_label.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: prepared.parsed.release_group.clone(),
-        source_type: prepared.parsed.source.clone(),
+        source_type: prepared.parsed.source.as_ref().map(ToString::to_string),
         resolution: effective_quality_label,
         video_codec_parsed: prepared.parsed.video_codec.clone(),
-        audio_codec_parsed: prepared.parsed.audio.clone(),
+        audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(path_to_stored_string(source_video)),
         acquisition_score: Some(acq_score),
@@ -3448,7 +3448,11 @@ pub(crate) fn build_rename_tokens(
     );
     tokens.insert(
         "source".to_string(),
-        parsed.source.clone().unwrap_or_default(),
+        parsed
+            .source
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
     );
     tokens.insert(
         "video_codec".to_string(),
@@ -3460,7 +3464,11 @@ pub(crate) fn build_rename_tokens(
     );
     tokens.insert(
         "audio".to_string(),
-        parsed.audio.clone().unwrap_or_default(),
+        parsed
+            .audio
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
     );
     tokens.insert(
         "release_group".to_string(),
