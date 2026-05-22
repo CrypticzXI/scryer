@@ -843,7 +843,7 @@ jobs:
             artifact_name: scryer-windows-x86_64-portable
             release_profile: release-windows-portable
             install_nasm: true
-            use_clang_cl: true
+            use_clang_cl: false
             use_lld_link: true
           - arch: arm64
             runner: windows-11-arm

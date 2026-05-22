@@ -10303,7 +10303,8 @@ async fn housekeeping_respects_configured_history_retention() {
         json!({
           "input": {
             "keepHistoryForever": false,
-            "historyRetentionDays": 30
+            "historyRetentionDays": 30,
+            "pluginHttpCaBundlePem": ""
           }
         }),
     )
@@ -10505,7 +10506,8 @@ async fn housekeeping_skips_history_retention_when_keep_forever_is_enabled() {
         json!({
           "input": {
             "keepHistoryForever": true,
-            "historyRetentionDays": 180
+            "historyRetentionDays": 180,
+            "pluginHttpCaBundlePem": ""
           }
         }),
     )

@@ -6,9 +6,9 @@ use super::catalog::{
     plugin_manifest_asset_url, verify_digest, verify_signed_blob, verify_split_digest,
 };
 use super::*;
-use base64::Engine as _;
 use crate::ProviderCatalogFamily;
 use crate::ports::RuntimePluginLoad;
+use base64::Engine as _;
 use chrono::Utc;
 use scryer_domain::{
     PersistedPluginWasmPayload, PluginSourceKind, PluginSupportTier, PluginWasmEncoding,
@@ -2915,22 +2915,26 @@ impl AppUseCase {
             .plugin_installations
             .get_plugin_installation(&plugin_id)
             .await?;
-        if existing.as_ref().is_some_and(|installation| installation.is_builtin) {
+        if existing
+            .as_ref()
+            .is_some_and(|installation| installation.is_builtin)
+        {
             return Err(AppError::Validation(format!(
                 "plugin '{}' is a bundled plugin; uninstall any downloaded override before uploading a local build",
                 plugin_id
             )));
         }
 
-        let compressed_wasm_bytes = compress_zstd(wasm_bytes.clone(), SQLITE_PLUGIN_WASM_ZSTD_LEVEL)
-            .await?;
+        let compressed_wasm_bytes =
+            compress_zstd(wasm_bytes.clone(), SQLITE_PLUGIN_WASM_ZSTD_LEVEL).await?;
         let (wasm_digest_algo, wasm_digest) = parse_digest_string(&blake3_digest(&wasm_bytes))?;
         let descriptor_json = Some(persisted_plugin_descriptor_json(&descriptor)?);
         let plugin_type = descriptor.plugin_type().to_string();
         let provider_type = normalize_provider_key(descriptor.provider_type());
         let sdk_constraint = plugin_descriptor_sdk_constraint(&descriptor);
         let now = Utc::now();
-        let runtime_plugin = runtime_plugin_load_from_validated(descriptor.clone(), wasm_bytes, false);
+        let runtime_plugin =
+            runtime_plugin_load_from_validated(descriptor.clone(), wasm_bytes, false);
 
         let result = match existing {
             Some(mut installation) => {

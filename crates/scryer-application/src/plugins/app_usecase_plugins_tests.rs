@@ -3030,12 +3030,8 @@ async fn install_uploaded_plugin_accepts_raw_wasm_payload() {
     );
     let h = bootstrap_plugins(Some(provider));
     let wasm_bytes = vec![0x00, 0x61, 0x73, 0x6d];
-    let descriptor = make_runtime_plugin_load(
-        "manual-local-plugin",
-        "indexer",
-        "manual-local",
-    )
-    .descriptor;
+    let descriptor =
+        make_runtime_plugin_load("manual-local-plugin", "indexer", "manual-local").descriptor;
     h.plugin_descriptor_loader
         .register(&wasm_bytes, descriptor.clone());
 
@@ -3054,9 +3050,11 @@ async fn install_uploaded_plugin_accepts_raw_wasm_payload() {
     assert_eq!(installation.source_kind, PluginSourceKind::Manual);
     assert_eq!(installation.support_tier, PluginSupportTier::Unverified);
     assert_eq!(installation.source_url, None);
-    assert!(installation
-        .description
-        .contains("manual-local-plugin.wasm"));
+    assert!(
+        installation
+            .description
+            .contains("manual-local-plugin.wasm")
+    );
 
     let payload = h
         .plugin_repo
@@ -3097,12 +3095,8 @@ async fn install_uploaded_plugin_accepts_wasm_zstd_and_replaces_existing_install
         .push(existing.clone());
 
     let wasm_bytes = vec![0x01, 0x02, 0x03, 0x04];
-    let mut descriptor = make_runtime_plugin_load(
-        "manual-local-plugin",
-        "indexer",
-        "manual-local",
-    )
-    .descriptor;
+    let mut descriptor =
+        make_runtime_plugin_load("manual-local-plugin", "indexer", "manual-local").descriptor;
     descriptor.version = "0.2.0".to_string();
     h.plugin_descriptor_loader
         .register(&wasm_bytes, descriptor.clone());
@@ -3148,12 +3142,8 @@ async fn install_uploaded_plugin_requires_risk_acknowledgement() {
     );
     let h = bootstrap_plugins(Some(provider));
     let wasm_bytes = vec![0x05, 0x06, 0x07, 0x08];
-    let descriptor = make_runtime_plugin_load(
-        "manual-local-plugin",
-        "indexer",
-        "manual-local",
-    )
-    .descriptor;
+    let descriptor =
+        make_runtime_plugin_load("manual-local-plugin", "indexer", "manual-local").descriptor;
     h.plugin_descriptor_loader
         .register(&wasm_bytes, descriptor.clone());
 
@@ -3169,9 +3159,7 @@ async fn install_uploaded_plugin_requires_risk_acknowledgement() {
         .unwrap_err();
 
     assert!(matches!(err, AppError::Validation(_)));
-    assert!(err
-        .to_string()
-        .contains("risk acknowledgement"));
+    assert!(err.to_string().contains("risk acknowledgement"));
 }
 
 // ── seed_builtin_plugins ─────────────────────────────────────────────────────

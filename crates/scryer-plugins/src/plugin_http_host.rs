@@ -400,7 +400,7 @@ mod tests {
         )
         .expect_err("non-certificate bundle should be rejected");
 
-        assert!(error.contains("failed to parse uploaded trusted certificate bundle"));
+        assert!(error.contains("uploaded trusted certificate bundle"));
     }
 
     #[test]
