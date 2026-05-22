@@ -505,6 +505,7 @@ jobs:
             sccache_writer_id: scryer-linux-x86_64-portable
             artifact_name: scryer-linux-x86_64-portable
             release_profile: release
+            install_nasm: true
             extra_rustflags: ""
           - arch: x86_64
             variant: haswell
@@ -514,6 +515,7 @@ jobs:
             sccache_writer_id: scryer-linux-x86_64-haswell
             artifact_name: scryer-linux-x86_64-haswell
             release_profile: release
+            install_nasm: true
             extra_rustflags: "-C target-cpu=haswell"
           - arch: arm64
             variant: portable
@@ -523,6 +525,7 @@ jobs:
             sccache_writer_id: scryer-linux-arm64-portable
             artifact_name: scryer-linux-arm64-portable
             release_profile: release
+            install_nasm: false
             extra_rustflags: ""
           - arch: arm64
             variant: optimized
@@ -532,6 +535,7 @@ jobs:
             sccache_writer_id: scryer-linux-arm64-optimized
             artifact_name: scryer-linux-arm64-optimized
             release_profile: release
+            install_nasm: false
             extra_rustflags: "-C target-feature=+aes,+crc,+dotprod,+fp16,+lse,+neon,+rdm,+sha2 --cfg aes_armv8"
     env:
       CARGO_HOME: /home/runner/.cargo
@@ -554,7 +558,14 @@ jobs:
           toolchain: "1.95.0"
 
       - name: Install system dependencies
-        run: sudo apt-get install -y --no-install-recommends musl-tools mold nasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(musl-tools mold)
+          if [[ "${{ matrix.install_nasm }}" == "true" ]]; then
+            packages+=(nasm)
+          fi
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}
@@ -667,6 +678,7 @@ jobs:
             sccache_writer_id: scryer-darwin-arm64-portable
             artifact_name: scryer-darwin-arm64-portable
             release_profile: release-lean
+            install_nasm: false
             extra_rustflags: ""
           - arch: arm64
             variant: apple-m1
@@ -676,6 +688,7 @@ jobs:
             sccache_writer_id: scryer-darwin-arm64-apple-m1
             artifact_name: scryer-darwin-arm64-apple-m1
             release_profile: release
+            install_nasm: false
             extra_rustflags: "-C target-cpu=apple-m1 --cfg aes_armv8 --cfg chacha20_force_neon"
           - arch: x86_64
             variant: portable
@@ -685,6 +698,7 @@ jobs:
             sccache_writer_id: scryer-darwin-x86_64-portable
             artifact_name: scryer-darwin-x86_64-portable
             release_profile: release-lean
+            install_nasm: true
             extra_rustflags: ""
     env:
       CARGO_INCREMENTAL: "0"
@@ -748,6 +762,7 @@ jobs:
           path: scryer-web-out
 
       - name: Install system dependencies
+        if: ${{ matrix.install_nasm }}
         run: brew install nasm
 
       - name: Prime sccache server
@@ -855,7 +870,7 @@ jobs:
             release_profile: release-lean
             install_nasm: false
             use_clang_cl: true
-            use_lld_link: false
+            use_lld_link: true
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
@@ -927,6 +942,12 @@ jobs:
           $dir = (Get-ChildItem C:\nasm -Directory | Select-Object -First 1).FullName
           $dir | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
+      - name: Install Ninja
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install ninja --yes --no-progress
+
       - name: Exclude build dir from Windows Defender
         shell: pwsh
         run: Add-MpPreference -ExclusionPath "${{ github.workspace }}"
@@ -949,12 +970,23 @@ jobs:
           $env:SCRYER_SMG_REGISTRATION_SECRET = "${{ secrets.SMG_REGISTRATION_SECRET }}"
           $env:SCRYER_SMG_GRAPHQL_URL = "https://smg.scryer.media/graphql"
           $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=."
+          $env:CMAKE_GENERATOR = "Ninja"
           if ($env:USE_CLANG_CL -eq "true") {
-            $env:CC = "clang-cl"
-            $env:CXX = "clang-cl"
+            $env:CC = "sccache clang-cl"
+            $env:CXX = "sccache clang-cl"
             $env:CMAKE_C_COMPILER = "clang-cl"
             $env:CMAKE_CXX_COMPILER = "clang-cl"
+            $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
+            $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
             $env:AR = "llvm-lib"
+          } else {
+            $env:CC = "sccache cl"
+            $env:CXX = "sccache cl"
+            $env:CMAKE_C_COMPILER = "cl"
+            $env:CMAKE_CXX_COMPILER = "cl"
+            $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
+            $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
+            $env:AR = "lib"
           }
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"

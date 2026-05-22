@@ -74,11 +74,6 @@ inherits = "release"
 opt-level = "z"
 lto = "thin"
 
-[profile.release-balanced]
-inherits = "release"
-opt-level = 2
-lto = false
-
 [profile.release-lean]
 inherits = "release"
 opt-level = 2
@@ -91,90 +86,6 @@ panic = "abort"
 inherits = "release"
 lto = "thin"
 codegen-units = 16
-
-[profile.release-balanced.package.alass-core]
-opt-level = 3
-
-[profile.release-balanced.package.argon2]
-opt-level = 3
-
-[profile.release-balanced.package.aws-lc-rs]
-opt-level = 3
-
-[profile.release-balanced.package.aws-lc-sys]
-opt-level = 3
-
-[profile.release-balanced.package.blake3]
-opt-level = 3
-
-[profile.release-balanced.package.brotli]
-opt-level = 3
-
-[profile.release-balanced.package.brotli-decompressor]
-opt-level = 3
-
-[profile.release-balanced.package.crc32fast]
-opt-level = 3
-
-[profile.release-balanced.package.fast_image_resize]
-opt-level = 3
-
-[profile.release-balanced.package.flate2]
-opt-level = 3
-
-[profile.release-balanced.package.image]
-opt-level = 3
-
-[profile.release-balanced.package.lzma-rs]
-opt-level = 3
-
-[profile.release-balanced.package.miniz_oxide]
-opt-level = 3
-
-[profile.release-balanced.package.ml-dsa]
-opt-level = 3
-
-[profile.release-balanced.package.ravif]
-opt-level = 3
-
-[profile.release-balanced.package.rav1e]
-opt-level = 3
-
-[profile.release-balanced.package.ring]
-opt-level = 3
-
-[profile.release-balanced.package.rustls]
-opt-level = 3
-
-[profile.release-balanced.package.rustls-webpki]
-opt-level = 3
-
-[profile.release-balanced.package.sevenz-rust2]
-opt-level = 3
-
-[profile.release-balanced.package.sha2]
-opt-level = 3
-
-[profile.release-balanced.package.symphonia]
-opt-level = 3
-
-[profile.release-balanced.package.weaver-rar]
-opt-level = 3
-
-[profile.release-balanced.package.zip]
-opt-level = 3
-
-[profile.release-balanced.package.zlib-rs]
-opt-level = 3
-
-[profile.release-balanced.package.zstd]
-opt-level = 3
-
-[profile.release-balanced.package.zstd-safe]
-opt-level = 3
-
-[profile.release-balanced.package.zstd-sys]
-opt-level = 3
 
 [profile.release-lean.package.scryer-interface]
 opt-level = 2

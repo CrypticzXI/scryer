@@ -70,6 +70,9 @@ export const RootHeader = React.memo(function RootHeader({
     globalSearchInputRef,
     isMetadataSearchResultInCatalog,
     catalogQualityProfileOptions,
+    catalogConfigLoading,
+    ensureCatalogConfigReady,
+    isCatalogConfigReady,
     rootFoldersByFacet,
     librariesByFacet,
     catalogSearchResults,
@@ -123,6 +126,17 @@ export const RootHeader = React.memo(function RootHeader({
     result: MetadataTvdbSearchItem;
     facet: Facet;
   } | null>(null);
+  const isAddDialogConfigReady = addDialogTarget
+    ? isCatalogConfigReady(addDialogTarget.facet)
+    : true;
+
+  const handleOpenAddDialog = React.useCallback(
+    (result: MetadataTvdbSearchItem, facet: Facet) => {
+      setAddDialogTarget({ result, facet });
+      void ensureCatalogConfigReady(facet);
+    },
+    [ensureCatalogConfigReady],
+  );
 
   const handleAddDialogSubmit = React.useCallback(
     async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogAddOptions) => {
@@ -458,7 +472,7 @@ export const RootHeader = React.memo(function RootHeader({
                       ? "h-10 w-10 bg-accent text-card-foreground px-0"
                       : "h-10 w-10 bg-emerald-500 text-foreground hover:bg-emerald-600 px-0"
                   }
-                  onClick={() => setAddDialogTarget({ result, facet })}
+                  onClick={() => handleOpenAddDialog(result, facet)}
                   disabled={isInCatalog}
                   aria-label={isInCatalog ? t("search.alreadyCataloged") : t("search.configureAdd")}
                   title={isInCatalog ? t("search.alreadyCataloged") : t("search.configureAdd")}
@@ -471,7 +485,7 @@ export const RootHeader = React.memo(function RootHeader({
         );
       });
     },
-    [isMetadataSearchResultInCatalog, t],
+    [handleOpenAddDialog, isMetadataSearchResultInCatalog, t],
   );
 
   return (
@@ -691,6 +705,7 @@ export const RootHeader = React.memo(function RootHeader({
         result={addDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
         facet={addDialogTarget?.facet ?? "series"}
         catalogQualityProfileOptions={catalogQualityProfileOptions}
+        catalogConfigLoading={Boolean(addDialogTarget) && catalogConfigLoading && !isAddDialogConfigReady}
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
         rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
         libraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}

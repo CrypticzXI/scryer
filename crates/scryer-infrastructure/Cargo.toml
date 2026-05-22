@@ -39,15 +39,20 @@ futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 url = "2"
 image = { version = "0.25", default-features = false, features = ["avif", "jpeg", "png", "webp"], optional = true }
-ravif = { version = "0.13", features = ["threading"], optional = true }
 fast_image_resize = { version = "6", optional = true }
 kamadak-exif = { version = "0.6", optional = true }
 filetime = "0.2"
+
+[target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
+ravif = { version = "0.13", default-features = false, features = ["threading"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { workspace = true }
 security-framework-sys = { workspace = true }
 # security-framework-sys is v2 (re-exported by security-framework v3)
+
+[target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
+ravif = { version = "0.13", features = ["threading"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring-core = { workspace = true }

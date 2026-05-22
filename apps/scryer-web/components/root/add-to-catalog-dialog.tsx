@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -36,6 +37,7 @@ type AddToCatalogDialogProps = {
   result: MetadataTvdbSearchItem;
   facet: Facet;
   catalogQualityProfileOptions: CatalogQualityProfileOption[];
+  catalogConfigLoading: boolean;
   defaultQualityProfileId: string;
   rootFolders: RootFolderOption[];
   libraries: LibraryRecord[];
@@ -89,6 +91,7 @@ export function AddToCatalogDialog({
   result,
   facet,
   catalogQualityProfileOptions,
+  catalogConfigLoading,
   defaultQualityProfileId,
   rootFolders,
   libraries,
@@ -128,6 +131,8 @@ export function AddToCatalogDialog({
       isDefault: root.isDefault,
     })) ?? rootFolders;
   const libraryRequired = libraries.length > 0;
+  const qualityProfileSelectionDisabled =
+    isSubmitting || catalogConfigLoading || catalogQualityProfileOptions.length === 0;
 
   const handleSubmit = React.useCallback(async () => {
     const qpId = (draft.qualityProfileId || defaultQualityProfileId).trim();
@@ -249,10 +254,14 @@ export function AddToCatalogDialog({
             <Select
               value={catalogQualityProfileOptions.length > 0 ? qualityProfileValue : ""}
               onValueChange={(v) => update({ qualityProfileId: v })}
-              disabled={isSubmitting || catalogQualityProfileOptions.length === 0}
+              disabled={qualityProfileSelectionDisabled}
             >
-              <SelectTrigger id="add-to-catalog-quality-profile" className="h-9 w-full">
-                <SelectValue />
+              <SelectTrigger
+                id="add-to-catalog-quality-profile"
+                className="h-9 w-full"
+                aria-busy={catalogConfigLoading}
+              >
+                <SelectValue placeholder={catalogConfigLoading ? t("label.loading") : undefined} />
               </SelectTrigger>
               <SelectContent>
                 {catalogQualityProfileOptions.length === 0 ? (
@@ -365,6 +374,16 @@ export function AddToCatalogDialog({
           )}
         </div>
 
+        {catalogConfigLoading ? (
+          <div
+            id="add-to-catalog-config-loading"
+            className="flex items-center gap-2 rounded-md border border-dashed border-border/80 bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+          >
+            <Loader2 className="h-4 w-4 animate-spin text-emerald-500" />
+            <span>{t("label.loading")}</span>
+          </div>
+        ) : null}
+
         <DialogFooter>
           <Button
             id="add-to-catalog-cancel"
@@ -379,7 +398,12 @@ export function AddToCatalogDialog({
             id="add-to-catalog-submit"
             type="button"
             onClick={() => void handleSubmit()}
-            disabled={isSubmitting || !qualityProfileValue || (libraryRequired && !selectedLibrary)}
+            disabled={
+              isSubmitting ||
+              catalogConfigLoading ||
+              !qualityProfileValue ||
+              (libraryRequired && !selectedLibrary)
+            }
             className="bg-emerald-600 text-foreground hover:bg-emerald-500"
           >
             {isSubmitting ? t("search.adding") : t("title.addToCatalog")}

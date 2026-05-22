@@ -220,6 +220,9 @@ export interface UseGlobalSearchResult {
   closeGlobalSearchPanel: () => void;
   resetGlobalSearch: () => void;
   catalogQualityProfileOptions: CatalogQualityProfileOption[];
+  catalogConfigLoading: boolean;
+  ensureCatalogConfigReady: (facet: Facet) => Promise<void>;
+  isCatalogConfigReady: (facet: Facet) => boolean;
   resolveDefaultQualityProfileIdForFacet: (facet: Facet) => string;
   animeCatalogDefaults: AnimeCatalogDefaults;
   addMetadataSearchResultToCatalog: (
@@ -323,6 +326,7 @@ export function useGlobalSearch({
     () => Object.fromEntries(FACET_REGISTRY.map((f) => [f.scopeId, QUALITY_PROFILE_INHERIT_VALUE])) as Record<ViewCategoryId, string>,
   );
   const [isGlobalSearchPanelOpen, setIsGlobalSearchPanelOpen] = useState(false);
+  const [catalogConfigLoading, setCatalogConfigLoading] = useState(false);
   const [rootFoldersByFacet, setRootFoldersByFacet] = useState<Record<Facet, RootFolderOption[]>>(
     () => ({ movie: [], series: [], anime: [] }),
   );
@@ -333,6 +337,7 @@ export function useGlobalSearch({
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const pendingCatalogAddKeysRef = useRef<Set<string>>(new Set());
+  const catalogConfigRefreshPromiseRef = useRef<Promise<void> | null>(null);
 
   const cancelAutocomplete = useCallback(() => {
     autocompleteRequestId.current += 1;
@@ -381,93 +386,125 @@ export function useGlobalSearch({
     ],
   );
 
+  const isCatalogConfigReady = useCallback(
+    (facet: Facet) =>
+      catalogQualityProfileOptions.length > 0 &&
+      (librariesByFacet[facet].length > 0 || rootFoldersByFacet[facet].length > 0),
+    [catalogQualityProfileOptions, librariesByFacet, rootFoldersByFacet],
+  );
+
   const refreshCatalogQualityProfileState = useCallback(async () => {
-    try {
-      const { data, error } = await client.query(globalSearchInitQuery, {}).toPromise();
-      if (error) throw error;
-
-      const parsedProfiles = (data.qualityProfileSettings?.profiles ?? []).map(
-        (profile: { id: string; name: string }) => ({
-          id: profile.id.trim(),
-          name: profile.name.trim() || profile.id.trim(),
-        }),
-      );
-
-      setCatalogQualityProfileOptions((previous) =>
-        previous.length === parsedProfiles.length &&
-        previous.every(
-          (item, index) =>
-            item.id === parsedProfiles[index]?.id &&
-            item.name === parsedProfiles[index]?.name,
-        )
-          ? previous
-          : parsedProfiles,
-      );
-
-      const nextGlobalProfileId = coerceProfileSetting(
-        data.qualityProfileSettings?.globalProfileId ?? "",
-      );
-      setGlobalQualityProfileId((previous) =>
-        previous === nextGlobalProfileId ? previous : nextGlobalProfileId,
-      );
-
-      const nextOverrides: Record<ViewCategoryId, string> =
-        qualityProfileSettingsToCategoryOverrides(data.qualityProfileSettings);
-      setCategoryQualityProfileOverrides((previous) =>
-        previous.movie === nextOverrides.movie &&
-        previous.series === nextOverrides.series &&
-        previous.anime === nextOverrides.anime
-          ? previous
-          : nextOverrides,
-      );
-
-      const nextAnimeDefaults: AnimeCatalogDefaults = {
-        monitorSpecials: data.animeSettings?.monitorSpecials ?? false,
-        interSeasonMovies: data.animeSettings?.interSeasonMovies ?? true,
-      };
-      setAnimeCatalogDefaults((previous) =>
-        previous.monitorSpecials === nextAnimeDefaults.monitorSpecials &&
-        previous.interSeasonMovies === nextAnimeDefaults.interSeasonMovies
-          ? previous
-          : nextAnimeDefaults,
-      );
-
-      const nextRootFolders: Record<Facet, RootFolderOption[]> = {
-        movie: data.movieSettings?.rootFolders ?? [],
-        series: data.seriesSettings?.rootFolders ?? [],
-        anime: data.animeSettings?.rootFolders ?? [],
-      };
-      setRootFoldersByFacet((previous) => {
-        const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
-          const prev = previous[f];
-          const next = nextRootFolders[f];
-          return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
-        });
-        return same ? previous : nextRootFolders;
-      });
-
-      const nextLibrariesByFacet = (data.manageableLibraries ?? []).reduce(
-        (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
-          acc[library.facet]?.push(library);
-          return acc;
-        },
-        { movie: [], series: [], anime: [] },
-      );
-      setLibrariesByFacet((previous) => {
-        const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
-          const prev = previous[f];
-          const next = nextLibrariesByFacet[f];
-          return prev.length === next.length && prev.every((entry, index) => {
-            const candidate = next[index];
-            return candidate && entry.id === candidate.id && entry.name === candidate.name && entry.slug === candidate.slug && entry.roots.length === candidate.roots.length;
-          });
-        });
-        return same ? previous : nextLibrariesByFacet;
-      });
-    } catch {
-      // ignore settings fetch failures here; search remains functional
+    if (catalogConfigRefreshPromiseRef.current) {
+      return catalogConfigRefreshPromiseRef.current;
     }
+
+    const refreshPromise = (async () => {
+      setCatalogConfigLoading(true);
+      try {
+        const { data, error } = await client
+          .query(globalSearchInitQuery, {}, { requestPolicy: "network-only" })
+          .toPromise();
+        if (error) throw error;
+
+        const parsedProfiles = (data.qualityProfileSettings?.profiles ?? []).map(
+          (profile: { id: string; name: string }) => ({
+            id: profile.id.trim(),
+            name: profile.name.trim() || profile.id.trim(),
+          }),
+        );
+
+        setCatalogQualityProfileOptions((previous) =>
+          previous.length === parsedProfiles.length &&
+          previous.every(
+            (item, index) =>
+              item.id === parsedProfiles[index]?.id &&
+              item.name === parsedProfiles[index]?.name,
+          )
+            ? previous
+            : parsedProfiles,
+        );
+
+        const nextGlobalProfileId = coerceProfileSetting(
+          data.qualityProfileSettings?.globalProfileId ?? "",
+        );
+        setGlobalQualityProfileId((previous) =>
+          previous === nextGlobalProfileId ? previous : nextGlobalProfileId,
+        );
+
+        const nextOverrides: Record<ViewCategoryId, string> =
+          qualityProfileSettingsToCategoryOverrides(data.qualityProfileSettings);
+        setCategoryQualityProfileOverrides((previous) =>
+          previous.movie === nextOverrides.movie &&
+          previous.series === nextOverrides.series &&
+          previous.anime === nextOverrides.anime
+            ? previous
+            : nextOverrides,
+        );
+
+        const nextAnimeDefaults: AnimeCatalogDefaults = {
+          monitorSpecials: data.animeSettings?.monitorSpecials ?? false,
+          interSeasonMovies: data.animeSettings?.interSeasonMovies ?? true,
+        };
+        setAnimeCatalogDefaults((previous) =>
+          previous.monitorSpecials === nextAnimeDefaults.monitorSpecials &&
+          previous.interSeasonMovies === nextAnimeDefaults.interSeasonMovies
+            ? previous
+            : nextAnimeDefaults,
+        );
+
+        const nextRootFolders: Record<Facet, RootFolderOption[]> = {
+          movie: data.movieSettings?.rootFolders ?? [],
+          series: data.seriesSettings?.rootFolders ?? [],
+          anime: data.animeSettings?.rootFolders ?? [],
+        };
+        setRootFoldersByFacet((previous) => {
+          const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
+            const prev = previous[f];
+            const next = nextRootFolders[f];
+            return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
+          });
+          return same ? previous : nextRootFolders;
+        });
+
+        const nextLibrariesByFacet = (data.manageableLibraries ?? []).reduce(
+          (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
+            acc[library.facet]?.push(library);
+            return acc;
+          },
+          { movie: [], series: [], anime: [] },
+        );
+        setLibrariesByFacet((previous) => {
+          const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
+            const prev = previous[f];
+            const next = nextLibrariesByFacet[f];
+            return prev.length === next.length && prev.every((entry, index) => {
+              const candidate = next[index];
+              return candidate && entry.id === candidate.id && entry.name === candidate.name && entry.slug === candidate.slug && entry.roots.length === candidate.roots.length;
+            });
+          });
+          return same ? previous : nextLibrariesByFacet;
+        });
+      } catch {
+        // ignore settings fetch failures here; search remains functional
+      } finally {
+        setCatalogConfigLoading(false);
+        catalogConfigRefreshPromiseRef.current = null;
+      }
+    })();
+
+    catalogConfigRefreshPromiseRef.current = refreshPromise;
+    return refreshPromise;
   }, [client]);
+
+  const ensureCatalogConfigReady = useCallback(
+    async (facet: Facet) => {
+      if (isCatalogConfigReady(facet)) {
+        return;
+      }
+      await refreshCatalogQualityProfileState();
+    },
+    [isCatalogConfigReady, refreshCatalogQualityProfileState],
+  );
 
   useEffect(() => {
     void refreshCatalogQualityProfileState();
@@ -1032,6 +1069,9 @@ export function useGlobalSearch({
     closeGlobalSearchPanel,
     resetGlobalSearch,
     catalogQualityProfileOptions,
+    catalogConfigLoading,
+    ensureCatalogConfigReady,
+    isCatalogConfigReady,
     resolveDefaultQualityProfileIdForFacet,
     animeCatalogDefaults,
     addMetadataSearchResultToCatalog,

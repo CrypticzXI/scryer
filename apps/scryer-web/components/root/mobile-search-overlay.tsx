@@ -119,6 +119,9 @@ export function MobileSearchOverlay({
 
 
   const {
+    catalogConfigLoading,
+    ensureCatalogConfigReady,
+    isCatalogConfigReady,
     resolveDefaultQualityProfileIdForFacet,
     addMetadataSearchResultToCatalog,
     isMetadataSearchResultInCatalog,
@@ -128,6 +131,17 @@ export function MobileSearchOverlay({
     setGlobalSearch,
     resetGlobalSearch,
   } = searchState;
+  const isAddDialogConfigReady = addDialogTarget
+    ? isCatalogConfigReady(addDialogTarget.facet)
+    : true;
+
+  const handleOpenAddDialog = React.useCallback(
+    (result: MetadataTvdbSearchItem, facet: Facet) => {
+      setAddDialogTarget({ result, facet });
+      void ensureCatalogConfigReady(facet);
+    },
+    [ensureCatalogConfigReady],
+  );
 
   const handleAddDialogSubmit = React.useCallback(
     async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogAddOptions) => {
@@ -241,7 +255,7 @@ export function MobileSearchOverlay({
                   ? "h-10 w-10 flex-none bg-accent text-card-foreground px-0"
                   : "h-10 w-10 flex-none bg-emerald-500 text-foreground hover:bg-emerald-600 px-0"
               }
-              onClick={() => setAddDialogTarget({ result, facet })}
+              onClick={() => handleOpenAddDialog(result, facet)}
               disabled={isInCatalog}
               aria-label={isInCatalog ? t("search.alreadyCataloged") : t("search.configureAdd")}
             >
@@ -255,7 +269,7 @@ export function MobileSearchOverlay({
         </div>
       );
     },
-    [isMetadataSearchResultInCatalog, t],
+    [handleOpenAddDialog, isMetadataSearchResultInCatalog, t],
   );
 
   const renderMetadataSection = (
@@ -383,6 +397,7 @@ export function MobileSearchOverlay({
         result={addDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
         facet={addDialogTarget?.facet ?? "series"}
         catalogQualityProfileOptions={catalogQualityProfileOptions}
+        catalogConfigLoading={Boolean(addDialogTarget) && catalogConfigLoading && !isAddDialogConfigReady}
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
         rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
         libraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}

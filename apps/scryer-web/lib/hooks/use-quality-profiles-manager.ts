@@ -382,7 +382,9 @@ export function useQualityProfilesManager(
   const refreshQualityProfiles = React.useCallback(async () => {
     setMediaSettingsLoading(true);
     try {
-      const { data, error } = await client.query(qualityProfilesInitQuery, {}).toPromise();
+      const { data, error } = await client
+        .query(qualityProfilesInitQuery, {}, { requestPolicy: "network-only" })
+        .toPromise();
       if (error) throw error;
 
       setDownloadClients(data.downloadClientConfigs || []);
