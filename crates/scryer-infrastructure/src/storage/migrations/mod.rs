@@ -528,7 +528,7 @@ async fn apply_baseline(
         .map_err(|error| AppError::Repository(error.to_string()))?;
 
     if !sql.trim().is_empty() {
-        sqlx::raw_sql(&sql)
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
             .execute(&mut *tx)
             .await
             .map_err(|error| AppError::Repository(error.to_string()))?;
@@ -610,7 +610,7 @@ async fn apply_single_migration(
                 if sql.trim().is_empty() {
                     continue;
                 }
-                sqlx::raw_sql(&sql)
+                sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
                     .execute(&mut *tx)
                     .await
                     .map_err(|error| {

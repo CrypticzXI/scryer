@@ -170,7 +170,7 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
     let restore_result = async {
         for table in export_tables.iter().rev() {
             let sql = format!("DELETE FROM {}", quote_identifier(table));
-            sqlx::query(&sql)
+            sqlx::query(sqlx::AssertSqlSafe(&*sql))
                 .execute(&mut *conn)
                 .await
                 .map_err(|error| {
@@ -216,7 +216,7 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
 
     for (table, expected_rows) in &payload.manifest().row_counts {
         let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
-        let actual_rows: i64 = sqlx::query_scalar(&sql)
+        let actual_rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
             .fetch_one(&mut *conn)
             .await
             .map_err(|error| {
@@ -310,7 +310,7 @@ async fn ordered_export_tables(pool: &sqlx::SqlitePool) -> AppResult<Vec<String>
 
     for table in &export_tables {
         let pragma = format!("PRAGMA foreign_key_list({})", quote_identifier(table));
-        let rows = sqlx::query(&pragma)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(&*pragma))
             .fetch_all(pool)
             .await
             .map_err(|error| {
@@ -399,7 +399,7 @@ async fn export_table_part(
     let mut offset = 0_i64;
     let paged_sql = format!("{sql} LIMIT ? OFFSET ?");
     loop {
-        let rows = sqlx::query(&paged_sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(&*paged_sql))
             .bind(EXPORT_BATCH_SIZE)
             .bind(offset)
             .fetch_all(&mut *conn)
@@ -440,7 +440,7 @@ async fn table_row_order_clause(
     table: &str,
 ) -> AppResult<String> {
     let pragma = format!("PRAGMA table_info({})", quote_identifier(table));
-    let rows = sqlx::query(&pragma)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(&*pragma))
         .fetch_all(&mut *executor)
         .await
         .map_err(|error| {
@@ -600,7 +600,7 @@ async fn import_table_part(
                 .join(", ")
         );
 
-        let mut query = sqlx::query(&insert_sql);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(&*insert_sql));
         for column in &columns {
             let value = object.get(&column.name).unwrap_or(&JsonValue::Null);
             query = bind_json_value(query, value)?;
@@ -620,7 +620,7 @@ async fn table_columns(
     table: &str,
 ) -> AppResult<Vec<ImportColumnRule>> {
     let pragma = format!("PRAGMA table_info({})", quote_identifier(table));
-    let table_rows = sqlx::query(&pragma)
+    let table_rows = sqlx::query(sqlx::AssertSqlSafe(&*pragma))
         .fetch_all(&mut **conn)
         .await
         .map_err(|error| {
@@ -630,7 +630,7 @@ async fn table_columns(
         })?;
 
     let fk_pragma = format!("PRAGMA foreign_key_list({})", quote_identifier(table));
-    let foreign_key_rows = sqlx::query(&fk_pragma)
+    let foreign_key_rows = sqlx::query(sqlx::AssertSqlSafe(&*fk_pragma))
         .fetch_all(&mut **conn)
         .await
         .map_err(|error| {
@@ -731,9 +731,9 @@ fn format_foreign_key_violations(violations: &[SqliteForeignKeyViolation]) -> St
 }
 
 fn bind_json_value<'q>(
-    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>,
     value: &JsonValue,
-) -> AppResult<sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
+) -> AppResult<sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>> {
     Ok(match value {
         JsonValue::Null => query.bind(None::<String>),
         JsonValue::Bool(value) => query.bind(if *value { 1_i64 } else { 0_i64 }),

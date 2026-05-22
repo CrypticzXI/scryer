@@ -586,6 +586,10 @@ export function SettingsDownloadClientsSection({
                   <SelectContent>
                     {downloadClientTypeOptions.map((option) => (
                       <SelectItem
+                        id={selectorId(
+                          "settings-download-client-type-option",
+                          option.value,
+                        )}
                         key={option.value}
                         value={option.value}
                         textValue={option.label}

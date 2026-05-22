@@ -239,7 +239,7 @@ pub(crate) fn build_title_search_plan(
 }
 
 pub(crate) fn push_ranked_title_matches_cte(
-    builder: &mut QueryBuilder<'_, Sqlite>,
+    builder: &mut QueryBuilder<Sqlite>,
     plan: &TitleSearchPlan,
 ) {
     builder.push("WITH direct_title_matches(title_id, rank) AS (");
@@ -304,7 +304,7 @@ fn required_typo_token_matches(token_count: usize) -> i64 {
 }
 
 fn push_direct_match_select(
-    builder: &mut QueryBuilder<'_, Sqlite>,
+    builder: &mut QueryBuilder<Sqlite>,
     plan: &TitleSearchPlan,
     lane: DirectLane,
     pattern: String,
@@ -329,7 +329,7 @@ fn push_direct_match_select(
     builder.push(" GROUP BY title_id");
 }
 
-fn push_typo_token_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleSearchPlan) {
+fn push_typo_token_matches(builder: &mut QueryBuilder<Sqlite>, plan: &TitleSearchPlan) {
     if plan.query_tokens.is_empty() || plan.normalized_query.chars().count() < 4 {
         builder.push("SELECT NULL, NULL, NULL, NULL WHERE 0");
         return;
@@ -345,7 +345,7 @@ fn push_typo_token_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleS
     );
 }
 
-fn push_typo_candidate_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &TitleSearchPlan) {
+fn push_typo_candidate_matches(builder: &mut QueryBuilder<Sqlite>, plan: &TitleSearchPlan) {
     if plan.query_tokens.is_empty() {
         builder.push("SELECT NULL, NULL, NULL, NULL WHERE 0");
         return;
@@ -366,7 +366,7 @@ fn push_typo_candidate_matches(builder: &mut QueryBuilder<'_, Sqlite>, plan: &Ti
 }
 
 fn push_spellfix_token_candidate_select(
-    builder: &mut QueryBuilder<'_, Sqlite>,
+    builder: &mut QueryBuilder<Sqlite>,
     plan: &TitleSearchPlan,
     query_token: &str,
     facet: &MediaFacet,
@@ -411,7 +411,7 @@ fn push_spellfix_token_candidate_select(
 }
 
 fn push_edit_distance_token_candidate_select(
-    builder: &mut QueryBuilder<'_, Sqlite>,
+    builder: &mut QueryBuilder<Sqlite>,
     plan: &TitleSearchPlan,
     query_token: &str,
     facet: &MediaFacet,
@@ -453,7 +453,7 @@ fn push_edit_distance_token_candidate_select(
     builder.push(" GROUP BY terms.title_id");
 }
 
-fn push_facet_filter(builder: &mut QueryBuilder<'_, Sqlite>, facets: &[MediaFacet]) {
+fn push_facet_filter(builder: &mut QueryBuilder<Sqlite>, facets: &[MediaFacet]) {
     if facets.len() == 3 {
         return;
     }

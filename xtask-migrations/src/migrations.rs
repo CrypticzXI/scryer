@@ -445,10 +445,13 @@ impl DockerPostgresContainer {
                     self.admin_database_url()
                 )
             })?;
-        sqlx::query(&format!("CREATE DATABASE {}", quote_pg_ident(database)))
-            .execute(&admin_pool)
-            .await
-            .with_context(|| format!("failed to create Docker PostgreSQL database {database}"))?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE {}",
+            quote_pg_ident(database)
+        )))
+        .execute(&admin_pool)
+        .await
+        .with_context(|| format!("failed to create Docker PostgreSQL database {database}"))?;
         admin_pool.close().await;
 
         PgPoolOptions::new()
@@ -628,7 +631,7 @@ async fn canonical_database_dump(pool: &sqlx::SqlitePool) -> Result<String> {
             quote_ident(&table),
             build_order_clause(&table, &columns)
         );
-        let rows = sqlx::query(&select_sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(&*select_sql))
             .fetch_all(pool)
             .await
             .with_context(|| format!("failed to dump rows from {table}"))?;
@@ -725,7 +728,7 @@ fn is_virtual_shadow_table(virtual_tables: &HashSet<String>, table_name: &str) -
 
 async fn table_columns(pool: &sqlx::SqlitePool, table: &str) -> Result<Vec<TableColumn>> {
     let pragma_sql = format!("PRAGMA table_info({})", quote_sql_string(table));
-    let rows = sqlx::query(&pragma_sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(&*pragma_sql))
         .fetch_all(pool)
         .await
         .with_context(|| format!("failed to load table info for {table}"))?;

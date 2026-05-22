@@ -1759,7 +1759,7 @@ mod tests {
                         AppError::Repository(format!("failed to connect to postgres: {error}"))
                     })?;
                     let schema = next_backup_matrix_schema_name();
-                    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+                    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
                         .execute(&admin_pool)
                         .await
                         .map_err(|error| {
@@ -1926,7 +1926,7 @@ mod tests {
                         AppError::Repository(format!("failed to connect to postgres: {error}"))
                     })?;
                     let schema = next_backup_matrix_schema_name();
-                    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+                    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
                         .execute(&admin_pool)
                         .await
                         .map_err(|error| {
@@ -2128,7 +2128,7 @@ mod tests {
         schema: Option<String>,
     ) -> AppResult<()> {
         if let (Some(admin_pool), Some(schema)) = (admin_pool, schema) {
-            let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
                 .execute(&admin_pool)
                 .await
                 .map(|_| ())

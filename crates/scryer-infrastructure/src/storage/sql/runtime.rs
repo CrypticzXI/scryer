@@ -121,13 +121,13 @@ impl SqlRuntime {
         match exec {
             SqlExec::Target(SqlTarget::Sqlite(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
-                let query = bind_sqlite(sqlx::query(&sql), args);
+                let query = bind_sqlite(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                 let result = query.execute(pool).await.map_err(repo_err)?;
                 Ok(result.rows_affected())
             }
             SqlExec::Target(SqlTarget::Postgres(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
-                let query = bind_postgres(sqlx::query(&sql), args);
+                let query = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                 let result = query.execute(pool).await.map_err(repo_err)?;
                 Ok(result.rows_affected())
             }
@@ -143,7 +143,7 @@ impl SqlRuntime {
         match exec {
             SqlExec::Target(SqlTarget::Sqlite(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
-                let query = bind_sqlite(sqlx::query(&sql), args);
+                let query = bind_sqlite(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                 query
                     .fetch_optional(pool)
                     .await
@@ -152,7 +152,7 @@ impl SqlRuntime {
             }
             SqlExec::Target(SqlTarget::Postgres(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
-                let query = bind_postgres(sqlx::query(&sql), args);
+                let query = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                 query
                     .fetch_optional(pool)
                     .await
@@ -162,7 +162,7 @@ impl SqlRuntime {
             SqlExec::Tx(tx) => match tx {
                 SqlTx::Sqlite(tx) => {
                     let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
-                    let query = bind_sqlite(sqlx::query(&sql), args);
+                    let query = bind_sqlite(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                     query
                         .fetch_optional(&mut **tx)
                         .await
@@ -171,7 +171,7 @@ impl SqlRuntime {
                 }
                 SqlTx::Postgres(tx) => {
                     let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
-                    let query = bind_postgres(sqlx::query(&sql), args);
+                    let query = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                     query
                         .fetch_optional(&mut **tx)
                         .await
@@ -190,7 +190,7 @@ impl SqlRuntime {
         match exec {
             SqlExec::Target(SqlTarget::Sqlite(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
-                let query = bind_sqlite(sqlx::query(&sql), args);
+                let query = bind_sqlite(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                 query
                     .fetch_all(pool)
                     .await
@@ -199,7 +199,7 @@ impl SqlRuntime {
             }
             SqlExec::Target(SqlTarget::Postgres(pool)) => {
                 let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
-                let query = bind_postgres(sqlx::query(&sql), args);
+                let query = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                 query
                     .fetch_all(pool)
                     .await
@@ -209,7 +209,7 @@ impl SqlRuntime {
             SqlExec::Tx(tx) => match tx {
                 SqlTx::Sqlite(tx) => {
                     let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
-                    let query = bind_sqlite(sqlx::query(&sql), args);
+                    let query = bind_sqlite(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                     query
                         .fetch_all(&mut **tx)
                         .await
@@ -218,7 +218,7 @@ impl SqlRuntime {
                 }
                 SqlTx::Postgres(tx) => {
                     let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
-                    let query = bind_postgres(sqlx::query(&sql), args);
+                    let query = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                     query
                         .fetch_all(&mut **tx)
                         .await
@@ -274,13 +274,13 @@ impl<'db> SqlTx<'db> {
         match self {
             SqlTx::Sqlite(tx) => {
                 let sql = render_sql(template, PlaceholderDialect::Sqlite, args.len())?;
-                let query = bind_sqlite(sqlx::query(&sql), args);
+                let query = bind_sqlite(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                 let result = query.execute(&mut **tx).await.map_err(repo_err)?;
                 Ok(result.rows_affected())
             }
             SqlTx::Postgres(tx) => {
                 let sql = render_sql(template, PlaceholderDialect::Postgres, args.len())?;
-                let query = bind_postgres(sqlx::query(&sql), args);
+                let query = bind_postgres(sqlx::query(sqlx::AssertSqlSafe(&*sql)), args);
                 let result = query.execute(&mut **tx).await.map_err(repo_err)?;
                 Ok(result.rows_affected())
             }
@@ -421,7 +421,7 @@ impl SqlRow {
     }
 }
 
-type SqliteQuery<'q> = Query<'q, Sqlite, SqliteArguments<'q>>;
+type SqliteQuery<'q> = Query<'q, Sqlite, SqliteArguments>;
 type PostgresQuery<'q> = Query<'q, Postgres, PgArguments>;
 
 fn bind_sqlite<'q>(mut query: SqliteQuery<'q>, values: &'q [SqlArg]) -> SqliteQuery<'q> {

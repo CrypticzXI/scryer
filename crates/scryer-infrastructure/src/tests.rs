@@ -1819,7 +1819,7 @@ async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
         .map(str::trim)
         .filter(|statement| !statement.is_empty())
     {
-        sqlx::query(statement)
+        sqlx::query(sqlx::AssertSqlSafe(statement.to_owned()))
             .execute(pool)
             .await
             .expect("migration statement should succeed");

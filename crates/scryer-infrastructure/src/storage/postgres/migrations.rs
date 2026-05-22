@@ -334,7 +334,7 @@ async fn apply_postgres_baseline(
         .text(payload_bytes)
         .map_err(AppError::Repository)?;
 
-    sqlx::raw_sql(baseline_sql)
+    sqlx::raw_sql(sqlx::AssertSqlSafe(baseline_sql.to_owned()))
         .execute(&mut *tx)
         .await
         .map_err(|error| AppError::Repository(error.to_string()))?;
@@ -408,7 +408,7 @@ async fn apply_single_migration(
                 if sql.trim().is_empty() {
                     continue;
                 }
-                sqlx::raw_sql(&sql)
+                sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
                     .execute(&mut *tx)
                     .await
                     .map_err(|error| {

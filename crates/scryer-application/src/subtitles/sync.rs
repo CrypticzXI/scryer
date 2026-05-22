@@ -416,16 +416,15 @@ async fn extract_audio_speech_spans(video_path: &Path) -> AppResult<Vec<TimeSpan
 struct SelectedAudioTrack {
     id: u32,
     sample_rate: u32,
-    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
 }
 
 /// Decode a usable audio track and produce speech spans via adaptive energy VAD.
 fn decode_audio_to_speech_spans(path: &Path) -> AppResult<Vec<TimeSpan>> {
-    use symphonia::core::audio::SampleBuffer;
     use symphonia::core::formats::FormatOptions;
+    use symphonia::core::formats::probe::Hint;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
 
     let file = std::fs::File::open(path).map_err(|e| {
         AppError::Repository(format!("cannot open video for audio extraction: {e}"))
@@ -438,25 +437,27 @@ fn decode_audio_to_speech_spans(path: &Path) -> AppResult<Vec<TimeSpan>> {
     }
 
     let probed = symphonia::default::get_probe()
-        .format(
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| AppError::Repository(format!("audio probe failed: {e}")))?;
 
-    let mut format = probed.format;
+    let mut format = probed;
     let SelectedAudioTrack {
         id: track_id,
         sample_rate,
         mut decoder,
     } = select_audio_track(format.as_mut())?;
     let mut detector = SpeechSpanDetector::new(sample_rate);
+    let mut decoded_samples = Vec::<i16>::new();
 
     loop {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
@@ -465,7 +466,7 @@ fn decode_audio_to_speech_spans(path: &Path) -> AppResult<Vec<TimeSpan>> {
             Err(_) => break,
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
@@ -474,13 +475,9 @@ fn decode_audio_to_speech_spans(path: &Path) -> AppResult<Vec<TimeSpan>> {
             Err(_) => continue,
         };
 
-        let spec = *decoded.spec();
-        let num_frames = decoded.frames();
-        let channels = spec.channels.count().max(1);
-
-        let mut sample_buf = SampleBuffer::<i16>::new(num_frames as u64, spec);
-        sample_buf.copy_interleaved_ref(decoded);
-        detector.push_interleaved_i16(sample_buf.samples(), channels);
+        let channels = decoded.spec().channels().count().max(1);
+        decoded.copy_to_vec_interleaved(&mut decoded_samples);
+        detector.push_interleaved_i16(&decoded_samples, channels);
     }
 
     Ok(detector.finish())
@@ -489,26 +486,35 @@ fn decode_audio_to_speech_spans(path: &Path) -> AppResult<Vec<TimeSpan>> {
 fn select_audio_track(
     format: &mut dyn symphonia::core::formats::FormatReader,
 ) -> AppResult<SelectedAudioTrack> {
-    use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+    use symphonia::core::codecs::audio::{AudioDecoderOptions, CODEC_ID_NULL_AUDIO};
+    use symphonia::core::formats::TrackType;
 
-    let default_track_id = format.default_track().map(|track| track.id);
+    let default_track_id = format.default_track(TrackType::Audio).map(|track| track.id);
     let mut best_track: Option<(i32, SelectedAudioTrack)> = None;
 
     for track in format.tracks() {
-        if track.codec_params.codec == CODEC_TYPE_NULL {
-            continue;
-        }
-
-        let Ok(decoder) =
-            symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())
+        let Some(audio_params) = track
+            .codec_params
+            .as_ref()
+            .and_then(|params| params.audio())
         else {
             continue;
         };
 
-        let sample_rate = track.codec_params.sample_rate.unwrap_or(44_100);
-        let channel_count = track
-            .codec_params
+        if audio_params.codec == CODEC_ID_NULL_AUDIO {
+            continue;
+        };
+
+        let Ok(decoder) = symphonia::default::get_codecs()
+            .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
+        else {
+            continue;
+        };
+
+        let sample_rate = audio_params.sample_rate.unwrap_or(44_100);
+        let channel_count = audio_params
             .channels
+            .as_ref()
             .map(|channels| channels.count())
             .unwrap_or(1);
         let priority = track_selection_priority(track, default_track_id)
@@ -540,7 +546,13 @@ fn track_selection_priority(
     if Some(track.id) == default_track_id {
         priority += 10_000;
     }
-    if track.codec_params.sample_rate.is_some() {
+    if track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .and_then(|params| params.sample_rate)
+        .is_some()
+    {
         priority += 1_000;
     }
     if track.language.is_some() {

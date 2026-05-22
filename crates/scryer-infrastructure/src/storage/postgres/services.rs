@@ -139,7 +139,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -327,7 +327,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -358,7 +358,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -434,7 +434,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -465,7 +465,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -537,7 +537,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -567,7 +567,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -682,7 +682,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -713,7 +713,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -741,7 +741,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -769,7 +769,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -810,7 +810,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -840,7 +840,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -937,7 +937,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -967,7 +967,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -1034,7 +1034,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -1065,7 +1065,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -1137,7 +1137,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;
@@ -1165,7 +1165,7 @@ mod tests {
         })?;
         let schema = next_test_schema_name();
 
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin_pool)
             .await
             .map_err(|error| {
@@ -1223,7 +1223,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin_pool)
             .await;
         admin_pool.close().await;

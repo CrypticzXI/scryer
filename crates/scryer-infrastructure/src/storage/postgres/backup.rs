@@ -192,9 +192,12 @@ async fn restore_bundle_parts_into_postgres_pool(
 
     for table in export_tables.iter().rev() {
         let sql = format!("DELETE FROM {}", quote_identifier(table));
-        sqlx::query(&sql).execute(&mut *tx).await.map_err(|error| {
-            AppError::Repository(format!("failed to clear restore table {table}: {error}"))
-        })?;
+        sqlx::query(sqlx::AssertSqlSafe(&*sql))
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to clear restore table {table}: {error}"))
+            })?;
     }
 
     for table in &export_tables {
@@ -211,15 +214,14 @@ async fn restore_bundle_parts_into_postgres_pool(
 
     for (table, expected_rows) in row_counts {
         let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
-        let actual_rows: i64 =
-            sqlx::query_scalar(&sql)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|error| {
-                    AppError::Repository(format!(
-                        "failed to validate restored table {table}: {error}"
-                    ))
-                })?;
+        let actual_rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to validate restored table {table}: {error}"
+                ))
+            })?;
         if actual_rows as u64 != *expected_rows {
             return Err(AppError::Validation(format!(
                 "restored table {table} row count mismatch: expected {expected_rows}, got {actual_rows}"
@@ -385,7 +387,7 @@ async fn export_table_part(
     let mut count = 0_u64;
     let mut offset = 0_i64;
     loop {
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(&*sql))
             .bind(EXPORT_BATCH_SIZE)
             .bind(offset)
             .fetch_all(&mut **tx)
@@ -648,7 +650,7 @@ async fn import_table_part(
                 .join(", ")
         );
 
-        let mut query = sqlx::query(&insert_sql);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(&*insert_sql));
         for column in &columns {
             let value = object.get(&column.name).unwrap_or(&JsonValue::Null);
             query = bind_pg_value(query, column, value)?;
@@ -858,7 +860,7 @@ async fn repair_sequences(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> App
                 COALESCE((SELECT MAX({column_name}) FROM {table_name}), 0) > 0
              )"
         );
-        sqlx::query(&sql)
+        sqlx::query(sqlx::AssertSqlSafe(&*sql))
             .bind(qualified)
             .execute(&mut **tx)
             .await

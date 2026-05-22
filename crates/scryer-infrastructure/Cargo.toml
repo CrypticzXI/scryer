@@ -23,7 +23,7 @@ chrono = { workspace = true }
 quick-xml = { workspace = true }
 blake3 = "1"
 sha2 = "0.10"
-libsqlite3-sys = { version = "0.30.1", default-features = false, features = ["bundled"] }
+libsqlite3-sys = { version = "0.37.0", default-features = false, features = ["bundled"] }
 unicode-normalization = "0.1"
 zstd = "0.13"
 flate2 = "1"
