@@ -30,6 +30,11 @@ import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import {
+  titleOverviewOpenButtonId,
+  titleOverviewRowId,
+  titleOverviewSearchButtonId,
+} from "@/lib/utils/dom-ids";
+import {
   bytesToReadable,
   defaultSortDirectionForTitleKey,
   resolveOverviewTargetView,
@@ -324,7 +329,11 @@ export function TitleTable({
 
     return (
       <React.Fragment key={item.id}>
-        <TableRow data-ui="title-table-row" className="h-28">
+        <TableRow
+          id={titleOverviewRowId(item.id)}
+          data-ui="title-table-row"
+          className="h-28"
+        >
           <TableCell className="align-middle">
             <button
               type="button"
@@ -350,6 +359,7 @@ export function TitleTable({
           </TableCell>
           <TableCell className="align-middle overflow-hidden">
             <button
+              id={titleOverviewOpenButtonId(item.id)}
               type="button"
               onClick={() => handleOpenOverview(item)}
               data-ui="title-name"
@@ -391,6 +401,7 @@ export function TitleTable({
                   <TooltipTrigger asChild>
                     <span>
                       <TitleTableActionButton
+                        id={titleOverviewSearchButtonId(item.id)}
                         tone="auto"
                         label={t("label.search")}
                         showTitleAttribute={false}

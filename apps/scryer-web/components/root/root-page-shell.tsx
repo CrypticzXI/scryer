@@ -481,15 +481,20 @@ function MainContent({
 
 export default function HomePage() {
   const { serviceRestarting, setServiceRestarting } = useBackendRestarting();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, effectiveFormLoginEnabled } = useAuth();
   const navigate = useNavigate();
   const [setupChecked, setSetupChecked] = useState(false);
 
   useEffect(() => {
-    if (!serviceRestarting && !authLoading && !user) {
+    if (
+      !serviceRestarting &&
+      !authLoading &&
+      !user &&
+      effectiveFormLoginEnabled === true
+    ) {
       navigate("/login", { replace: true });
     }
-  }, [authLoading, user, navigate, serviceRestarting]);
+  }, [authLoading, effectiveFormLoginEnabled, user, navigate, serviceRestarting]);
 
   // Check if setup wizard needs to run (first-run detection).
   useEffect(() => {
@@ -527,6 +532,13 @@ export default function HomePage() {
   }
 
   if (!user) {
+    if (effectiveFormLoginEnabled !== true) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
+          <Loader2 className="h-6 w-6 animate-spin text-emerald-700 dark:text-emerald-300" />
+        </div>
+      );
+    }
     return null;
   }
 

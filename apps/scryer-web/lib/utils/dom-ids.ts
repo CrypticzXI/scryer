@@ -41,6 +41,74 @@ export function globalSearchMetadataResultId(
   );
 }
 
+export function titleOverviewRowId(titleId: string): string {
+  return selectorId("title-overview-row", titleId);
+}
+
+export function titleOverviewSearchButtonId(titleId: string): string {
+  return selectorId("title-overview-search", titleId);
+}
+
+export function titleOverviewOpenButtonId(titleId: string): string {
+  return selectorId("title-overview-open", titleId);
+}
+
+function normalizedEpisodeSelectorKey(
+  facet: string,
+  seasonNumber: string | number | null | undefined,
+  episodeNumber: string | number | null | undefined,
+  absoluteNumber: string | number | null | undefined,
+): string {
+  const season = Number.parseInt(String(seasonNumber ?? "").trim(), 10);
+  const episode = Number.parseInt(String(episodeNumber ?? "").trim(), 10);
+  if (Number.isFinite(season) && season > 0 && Number.isFinite(episode) && episode > 0) {
+    return selectorId(facet, `s${String(season).padStart(2, "0")}e${String(episode).padStart(2, "0")}`);
+  }
+
+  const absolute = Number.parseInt(String(absoluteNumber ?? "").trim(), 10);
+  if (Number.isFinite(absolute) && absolute > 0) {
+    return selectorId(facet, `abs${String(absolute).padStart(3, "0")}`);
+  }
+
+  return selectorId(facet, "episode");
+}
+
+export function seriesOverviewEpisodeRowId(
+  facet: string,
+  seasonNumber: string | number | null | undefined,
+  episodeNumber: string | number | null | undefined,
+  absoluteNumber: string | number | null | undefined,
+): string {
+  return selectorId(
+    "series-overview-episode",
+    normalizedEpisodeSelectorKey(facet, seasonNumber, episodeNumber, absoluteNumber),
+  );
+}
+
+export function seriesOverviewEpisodeAutoSearchId(
+  facet: string,
+  seasonNumber: string | number | null | undefined,
+  episodeNumber: string | number | null | undefined,
+  absoluteNumber: string | number | null | undefined,
+): string {
+  return selectorId(
+    "series-overview-episode-auto-search",
+    normalizedEpisodeSelectorKey(facet, seasonNumber, episodeNumber, absoluteNumber),
+  );
+}
+
+export function seriesOverviewEpisodeInteractiveSearchId(
+  facet: string,
+  seasonNumber: string | number | null | undefined,
+  episodeNumber: string | number | null | undefined,
+  absoluteNumber: string | number | null | undefined,
+): string {
+  return selectorId(
+    "series-overview-episode-interactive-search",
+    normalizedEpisodeSelectorKey(facet, seasonNumber, episodeNumber, absoluteNumber),
+  );
+}
+
 export function globalSearchConfigureAddId(
   facet: string,
   result: MetadataSearchSelectorInput,
