@@ -469,12 +469,21 @@ impl SabnzbdDownloadClient {
                             .outbound_http
                             .client()
                             .post(&url)
-                            .query(&[("apikey", api_key.as_str())]),
+                            .query(&[
+                                ("mode", "addfile"),
+                                ("output", "json"),
+                                ("apikey", api_key.as_str()),
+                            ]),
                         SabApiAuth::Credentials { username, password } => {
                             form = form
-                                .text("ma_username", username)
-                                .text("ma_password", password);
-                            self.outbound_http.client().post(&url)
+                                .text("ma_username", username.clone())
+                                .text("ma_password", password.clone());
+                            self.outbound_http.client().post(&url).query(&[
+                                ("mode", "addfile"),
+                                ("output", "json"),
+                                ("ma_username", username.as_str()),
+                                ("ma_password", password.as_str()),
+                            ])
                         }
                     };
 

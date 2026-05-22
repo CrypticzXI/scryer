@@ -38,7 +38,7 @@ import type { Release, TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { cn } from "@/lib/utils";
 import {
-  titleOverviewOpenButtonId,
+    titleOverviewOpenButtonId,
   titleOverviewRowId,
   titleOverviewSearchButtonId,
 } from "@/lib/utils/dom-ids";
