@@ -209,7 +209,7 @@ export function SeriesOverviewView({
   onDeleteFile,
   onOpenFixMatch,
 }: Props) {
-  const emptyEpisodes = React.useRef<CollectionEpisode[]>([]).current;
+  const emptyEpisodes = React.useMemo<CollectionEpisode[]>(() => [], []);
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();

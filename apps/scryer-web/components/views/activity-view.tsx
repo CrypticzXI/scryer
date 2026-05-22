@@ -1016,7 +1016,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         return (
           canIgnoreImportItem(item) &&
           !rowActionBusy[rowId] &&
-          !rowActionBusyRef.current[rowId] &&
           actionLoadingId !== rowId
         );
       }),
@@ -1029,7 +1028,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         return (
           canDeleteImportItem(item) &&
           !rowActionBusy[rowId] &&
-          !rowActionBusyRef.current[rowId] &&
           actionLoadingId !== rowId
         );
       }),
@@ -1187,8 +1185,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           queueItem.clientName || queueItem.clientType,
         );
         const isActionLoading = actionLoadingId === rowId;
-        const isRowBusy =
-          rowActionBusy[rowId] ?? rowActionBusyRef.current[rowId] ?? false;
+        const isRowBusy = rowActionBusy[rowId] ?? false;
         const isManualImportPending = row.displayStateKey === "importing";
         const isDeletePending = row.displayStateKey === "removing";
         const isRowBlocked =
@@ -1280,9 +1277,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[rowId] ||
-                      isActionLoading ||
-                      isRowBlocked
+                      isActionLoading || isRowBlocked
                     ) {
                       return;
                     }
@@ -1307,9 +1302,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[rowId] ||
-                      isActionLoading ||
-                      isRowBlocked
+                      isActionLoading || isRowBlocked
                     ) {
                       return;
                     }
@@ -1335,9 +1328,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[rowId] ||
-                      isActionLoading ||
-                      isRowBlocked
+                      isActionLoading || isRowBlocked
                     ) {
                       return;
                     }
@@ -1369,9 +1360,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[rowId] ||
-                      isActionLoading ||
-                      isRowBlocked
+                      isActionLoading || isRowBlocked
                     ) {
                       return;
                     }
@@ -1402,9 +1391,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   disabled={isRowFullyBusy}
                   onClick={() => {
                     if (
-                      rowActionBusyRef.current[rowId] ||
-                      isActionLoading ||
-                      isRowBlocked
+                      isActionLoading || isRowBlocked
                     ) {
                       return;
                     }
@@ -1430,9 +1417,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                 disabled={isRowFullyBusy}
                 onClick={() => {
                   if (
-                    rowActionBusyRef.current[rowId] ||
-                    isActionLoading ||
-                    isRowBlocked
+                    isActionLoading || isRowBlocked
                   ) {
                     return;
                   }
@@ -1469,10 +1454,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
           queueItem.clientName || queueItem.clientType,
         );
         const isActionLoading = actionLoadingId === rowId;
-        const isRowBusy =
-          rowActionBusy[rowId] ??
-          rowActionBusyRef.current[rowId] ??
-          false;
+        const isRowBusy = rowActionBusy[rowId] ?? false;
         const isManualImportPending = row.displayStateKey === "importing";
         const isDeletePending = row.displayStateKey === "removing";
         const isRowBlocked =
@@ -1557,9 +1539,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       aria-label={t("queue.pause")}
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[rowId] ||
-                          isActionLoading ||
-                          isRowBlocked
+                          isActionLoading || isRowBlocked
                         ) {
                           return;
                         }
@@ -1585,9 +1565,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       aria-label={t("queue.resume")}
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[rowId] ||
-                          isActionLoading ||
-                          isRowBlocked
+                          isActionLoading || isRowBlocked
                         ) {
                           return;
                         }
@@ -1622,9 +1600,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       }
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[rowId] ||
-                          isActionLoading ||
-                          isRowBlocked
+                          isActionLoading || isRowBlocked
                         ) {
                           return;
                         }
@@ -1661,9 +1637,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       }
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[rowId] ||
-                          isActionLoading ||
-                          isRowBlocked
+                          isActionLoading || isRowBlocked
                         ) {
                           return;
                         }
@@ -1691,9 +1665,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       aria-label={t("queue.ignore")}
                       onClick={() => {
                         if (
-                          rowActionBusyRef.current[rowId] ||
-                          isActionLoading ||
-                          isRowBlocked
+                          isActionLoading || isRowBlocked
                         ) {
                           return;
                         }
@@ -1720,9 +1692,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                     aria-label={t("label.delete")}
                     onClick={() => {
                       if (
-                        rowActionBusyRef.current[rowId] ||
-                        isActionLoading ||
-                        isRowBlocked
+                        isActionLoading || isRowBlocked
                       ) {
                         return;
                       }

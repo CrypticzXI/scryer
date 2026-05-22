@@ -624,7 +624,6 @@ export function useMediaSettings({
       }
     },
     [
-      activeQualityScopeId,
       normalizeQualityProfiles,
       normalizeRenameCollisionPolicy,
       normalizeRenameMissingMetadataPolicy,

@@ -21,8 +21,11 @@ export type TrustedCertificateUploadErrorCode =
   | "pem_bundle_invalid_certificate";
 
 export class TrustedCertificateUploadError extends Error {
-  constructor(readonly code: TrustedCertificateUploadErrorCode) {
+  readonly code: TrustedCertificateUploadErrorCode;
+
+  constructor(code: TrustedCertificateUploadErrorCode) {
     super(code);
+    this.code = code;
   }
 }
 
@@ -142,7 +145,7 @@ function derBytesToPem(bytes: Uint8Array): string {
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   if (globalThis.crypto?.subtle) {
     try {
-      const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+      const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes.slice());
       return bytesToHex(new Uint8Array(digest));
     } catch {
       // Fall back for non-secure contexts such as browser-led local dev and e2e.

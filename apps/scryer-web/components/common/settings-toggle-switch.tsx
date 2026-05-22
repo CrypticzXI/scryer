@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 
 type SettingsToggleSwitchProps = {
+  id?: string;
   checked: boolean;
   disabled?: boolean;
   onChange: (nextValue: boolean) => void;
@@ -25,6 +26,7 @@ const sizeClasses = {
 } as const;
 
 export function SettingsToggleSwitch({
+  id,
   checked,
   disabled,
   onChange,
@@ -36,6 +38,7 @@ export function SettingsToggleSwitch({
 
   return (
     <button
+      id={id}
       type="button"
       role="switch"
       aria-checked={checked}

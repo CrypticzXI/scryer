@@ -62,7 +62,10 @@ export function useDownloadImport({
   const [importTotalCount, setImportTotalCount] = useState(0);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
   const importItemCountRef = useRef(0);
-  importItemCountRef.current = importItems.length;
+
+  useEffect(() => {
+    importItemCountRef.current = importItems.length;
+  }, [importItems.length]);
 
   const fetchImportPage = useCallback(
     async (limit: number, offset: number): Promise<DownloadImportPage> => {

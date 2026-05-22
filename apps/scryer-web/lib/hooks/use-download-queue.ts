@@ -52,14 +52,20 @@ export function useDownloadQueue({
   const scopeKey = `${includeAllActivity ? 1 : 0}:${includeHistoryOnly ? 1 : 0}:${includeImportActivity ? 1 : 0}:${titleId ?? "all"}:${activityFilter}`;
   const activeScopeKeyRef = useRef(scopeKey);
   const lastReportedErrorRef = useRef<string | null>(null);
-  activeScopeKeyRef.current = scopeKey;
 
   // Track whether the initial HTTP query has completed so the WS subscription
   // doesn't race with it and overwrite the authoritative query data.
   const [initialFetchDone, setInitialFetchDone] = useState(false);
   const initialFetchDoneRef = useRef(false);
+
+  useEffect(() => {
+    activeScopeKeyRef.current = scopeKey;
+  }, [scopeKey]);
+
   // Keep ref in sync for use in refreshQueue without adding it as a dep
-  initialFetchDoneRef.current = initialFetchDone;
+  useEffect(() => {
+    initialFetchDoneRef.current = initialFetchDone;
+  }, [initialFetchDone]);
 
   // --- WS subscription via graphql-ws ---
   // Deferred-cleanup pattern to survive React StrictMode's fake unmount/remount.

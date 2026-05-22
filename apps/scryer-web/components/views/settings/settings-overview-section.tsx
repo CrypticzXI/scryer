@@ -43,8 +43,11 @@ export function SettingsOverviewSection({
   const [trustedCertUploadError, setTrustedCertUploadError] = React.useState<string | null>(null);
   const [trustedCertUploading, setTrustedCertUploading] = React.useState(false);
   const trustedCertInputRef = React.useRef<HTMLInputElement | null>(null);
-  const updateGeneralSettings = (patch: Partial<GeneralSettings>) =>
-    onGeneralSettingsChange({ ...generalSettings, ...patch });
+  const updateGeneralSettings = React.useCallback(
+    (patch: Partial<GeneralSettings>) =>
+      onGeneralSettingsChange({ ...generalSettings, ...patch }),
+    [generalSettings, onGeneralSettingsChange],
+  );
   const applyTrustedCertificateEntries = React.useCallback(
     (entries: TrustedCertificateEntry[]) => {
       updateGeneralSettings({
@@ -52,7 +55,7 @@ export function SettingsOverviewSection({
         pluginHttpCaBundlePem: bundlePemFromTrustedCertificateEntries(entries),
       });
     },
-    [generalSettings, onGeneralSettingsChange],
+    [updateGeneralSettings],
   );
   const mapTrustedCertUploadError = React.useCallback(
     (error: unknown) => {

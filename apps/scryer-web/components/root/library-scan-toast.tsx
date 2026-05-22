@@ -175,6 +175,9 @@ export function LibraryScanToast({
   const [cancelPending, setCancelPending] = React.useState(false);
   const [nowMs, setNowMs] = React.useState(() => Date.now());
   const [smoothedEtaSeconds, setSmoothedEtaSeconds] = React.useState<number | null>(null);
+  const [mediaAnalysisStartedAtMs, setMediaAnalysisStartedAtMs] = React.useState<number | null>(
+    null,
+  );
   const mediaAnalysisStartedAtRef = React.useRef<number | null>(null);
   const etaSamplesRef = React.useRef<EtaSample[]>([]);
   const etaSmoothingAtRef = React.useRef<number | null>(null);
@@ -205,6 +208,7 @@ export function LibraryScanToast({
   React.useEffect(() => {
     if (!mediaAnalysisActive) {
       mediaAnalysisStartedAtRef.current = null;
+      setMediaAnalysisStartedAtMs(null);
       etaSamplesRef.current = [];
       etaSmoothingAtRef.current = null;
       setSmoothedEtaSeconds(null);
@@ -213,6 +217,7 @@ export function LibraryScanToast({
     if (mediaAnalysisStartedAtRef.current == null) {
       mediaAnalysisStartedAtRef.current = Date.parse(session.updatedAt) || Date.now();
     }
+    setMediaAnalysisStartedAtMs(mediaAnalysisStartedAtRef.current);
   }, [mediaAnalysisActive, session.sessionId, session.updatedAt]);
 
   React.useEffect(() => {
@@ -274,9 +279,9 @@ export function LibraryScanToast({
     };
   }, [mediaAnalysisActive]);
 
-  const mediaAnalysisElapsedMs = mediaAnalysisStartedAtRef.current == null
+  const mediaAnalysisElapsedMs = mediaAnalysisStartedAtMs == null
     ? 0
-    : Math.max(0, nowMs - mediaAnalysisStartedAtRef.current);
+    : Math.max(0, nowMs - mediaAnalysisStartedAtMs);
   const shouldShowEta =
     showCancel &&
     mediaAnalysisActive &&

@@ -73,7 +73,9 @@ export default function RegoEditor({
       ? `${Math.min(Math.max(lineCount, minLines), maxLines) * lineHeightPx}px`
       : height;
 
-  onChangeRef.current = onChange;
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
     if (!containerRef.current) return;

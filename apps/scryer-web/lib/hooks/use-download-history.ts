@@ -58,13 +58,25 @@ export function useDownloadHistory({
   const sortKey = `${sort.key}:${sort.direction}`;
   const sourceKey = scryerSubmittedOnly ? "scryer" : "all";
   const pageRef = useRef(page);
-  pageRef.current = page;
   const filtersRef = useRef(filters);
-  filtersRef.current = filters;
   const clientIdsRef = useRef(clientIds);
-  clientIdsRef.current = clientIds;
   const sortRef = useRef(sort);
-  sortRef.current = sort;
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
+
+  useEffect(() => {
+    clientIdsRef.current = clientIds;
+  }, [clientIds]);
+
+  useEffect(() => {
+    sortRef.current = sort;
+  }, [sort]);
 
   const fetchHistoryPage = useCallback(
     async (pageNumber: number): Promise<DownloadHistoryPage> => {
