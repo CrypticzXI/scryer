@@ -783,11 +783,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          packages=(llvm)
+          packages=()
           if [[ "${{ matrix.install_nasm }}" == "true" ]]; then
             packages+=(nasm)
           fi
-          brew install "${packages[@]}"
+          if [[ "${#packages[@]}" -gt 0 ]]; then
+            brew install "${packages[@]}"
+          fi
 
       - name: Prime sccache server
         shell: bash
