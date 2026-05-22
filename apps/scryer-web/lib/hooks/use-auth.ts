@@ -38,6 +38,37 @@ function clearPersistedAuthToken() {
   currentToken = null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object";
+}
+
+function isRateLimitedError(error: unknown): boolean {
+  if (!isRecord(error) || !Array.isArray(error.graphQLErrors)) {
+    return false;
+  }
+
+  return error.graphQLErrors.some((entry) => {
+    if (!isRecord(entry)) {
+      return false;
+    }
+
+    const extensions = isRecord(entry.extensions) ? entry.extensions : null;
+    if (extensions?.code === "RATE_LIMITED") {
+      return true;
+    }
+
+    return (
+      typeof entry.message === "string" &&
+      entry.message.trim().toLowerCase() === "api rate limit exceeded"
+    );
+  });
+}
+
+async function waitForRateLimitWindow(attempt: number) {
+  const delayMs = [250, 500, 1_000][Math.min(attempt, 2)];
+  await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+}
+
 function applyAuthenticatedSession(
   token: string,
   user: AuthUser | null,
@@ -87,6 +118,23 @@ export function useAuth(): AuthState {
     initialized.current = true;
 
     (async () => {
+      const queryWithRateLimitRetry = async <TData>(
+        query: string,
+      ): Promise<TData | null> => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const { data, error } = await backendClient.query(query, {}).toPromise();
+          if (!error) {
+            return (data as TData | null) ?? null;
+          }
+          if (!isRateLimitedError(error) || attempt === 2) {
+            throw error;
+          }
+          await waitForRateLimitWindow(attempt);
+        }
+
+        return null;
+      };
+
       const loadUserFromBypass = async (options?: { clearToken?: boolean }) => {
         if (options?.clearToken) {
           clearPersistedAuthToken();
@@ -94,8 +142,7 @@ export function useAuth(): AuthState {
         }
 
         try {
-          const { data, error } = await backendClient.query(meQuery, {}).toPromise();
-          if (error) throw error;
+          const data = await queryWithRateLimitRetry<{ me?: AuthUser | null }>(meQuery);
           return data?.me ?? null;
         } catch {
           return null;
@@ -105,8 +152,9 @@ export function useAuth(): AuthState {
       let runtimeState: AuthRuntimeState | null = null;
 
       try {
-        const { data, error } = await backendClient.query(authRuntimeStateQuery, {}).toPromise();
-        if (error) throw error;
+        const data = await queryWithRateLimitRetry<{ authRuntimeState?: AuthRuntimeState | null }>(
+          authRuntimeStateQuery,
+        );
         runtimeState = data?.authRuntimeState ?? null;
         setEffectiveFormLoginEnabled(
           typeof runtimeState?.effectiveFormLoginEnabled === "boolean"

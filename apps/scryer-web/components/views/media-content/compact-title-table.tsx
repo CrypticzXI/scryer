@@ -38,6 +38,10 @@ import type { Release, TitleRecord } from "@/lib/types";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { cn } from "@/lib/utils";
 import {
+  titleOverviewRowId,
+  titleOverviewSearchButtonId,
+} from "@/lib/utils/dom-ids";
+import {
   bytesToReadable,
   defaultSortDirectionForTitleKey,
   resolveDisplayedQualityLabel,
@@ -387,7 +391,11 @@ export function CompactTitleTable({
 
     return (
       <React.Fragment key={item.id}>
-        <TableRow data-ui="compact-title-table-row" className="h-12">
+        <TableRow
+          id={titleOverviewRowId(item.id)}
+          data-ui="compact-title-table-row"
+          className="h-12"
+        >
           <TableCell className="align-middle">
             <Checkbox
               checked={selectedTitleIds.has(item.id)}
@@ -451,6 +459,7 @@ export function CompactTitleTable({
                   <TooltipTrigger asChild>
                     <span>
                       <TitleTableActionButton
+                        id={titleOverviewSearchButtonId(item.id)}
                         tone="auto"
                         label={t("label.search")}
                         showTitleAttribute={false}

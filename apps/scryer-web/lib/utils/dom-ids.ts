@@ -41,6 +41,14 @@ export function globalSearchMetadataResultId(
   );
 }
 
+export function titleOverviewRowId(titleId: string): string {
+  return selectorId("title-overview-row", titleId);
+}
+
+export function titleOverviewSearchButtonId(titleId: string): string {
+  return selectorId("title-overview-search", titleId);
+}
+
 export function globalSearchConfigureAddId(
   facet: string,
   result: MetadataSearchSelectorInput,
