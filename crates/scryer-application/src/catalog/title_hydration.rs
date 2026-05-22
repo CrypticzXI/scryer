@@ -141,7 +141,7 @@ pub async fn start_background_title_hydration_loop(
             continue;
         }
 
-        info!(
+        debug!(
             hydration_source = HydrationSource::BackgroundDue.as_str(),
             count = targets.len(),
             "title hydration loop: processing batch"

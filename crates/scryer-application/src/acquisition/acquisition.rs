@@ -1205,7 +1205,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         return;
     }
 
-    info!(
+    debug!(
         count = grabbed_items.len(),
         "check_grabbed_for_failures: checking grabbed wanted items against download client"
     );
@@ -1246,7 +1246,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
                 }
             };
 
-            info!(
+            trace!(
                 title_id = item.title_id.as_str(),
                 release = release_title.as_str(),
                 submission_count = fetched.len(),
@@ -1818,7 +1818,7 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
         return;
     }
 
-    info!(count = due_items.len(), "processing due wanted items");
+    debug!(count = due_items.len(), "processing due wanted items");
 
     // Track URLs already submitted this cycle to avoid sending the same NZB
     // multiple times (e.g. a season pack matching several episode wanted items).
@@ -3052,20 +3052,20 @@ async fn process_single_wanted_item(
             "background acquisition: no suitable candidates found after skipping blocklisted or active releases"
         );
     } else if had_allowed_candidate {
-        info!(
+        debug!(
             title_id = title.id.as_str(),
             title_name = title.name.as_str(),
             "background acquisition: all allowed candidates were already active or had negative scores"
         );
     } else if had_quality_allowed_candidate && skipped_for_title_mismatch {
-        info!(
+        debug!(
             title_id = title.id.as_str(),
             title_name = title.name.as_str(),
             result_count = results.len(),
             "background acquisition: quality-allowed candidates were rejected by title matching"
         );
     } else {
-        info!(
+        debug!(
             title_id = title.id.as_str(),
             title_name = title.name.as_str(),
             result_count = results.len(),

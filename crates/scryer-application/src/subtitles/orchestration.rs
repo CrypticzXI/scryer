@@ -1705,7 +1705,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
         }
     }
 
-    info!(searched, downloaded, "subtitle search cycle completed");
+    debug!(searched, downloaded, "subtitle search cycle completed");
     Ok(())
 }
 
