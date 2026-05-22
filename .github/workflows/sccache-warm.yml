@@ -359,9 +359,10 @@ jobs:
             sccache_lane: scryer-windows-x86_64-msvc
             sccache_writer_id: scryer-windows-x86_64-portable
             artifact_name: scryer-windows-x86_64-portable
-            release_profile: release
+            release_profile: release-windows-portable
             install_nasm: true
-            use_clang_cl: false
+            use_clang_cl: true
+            use_lld_link: true
           - arch: arm64
             runner: windows-11-arm
             toolchain: 1.95.0-aarch64-pc-windows-msvc
@@ -372,6 +373,7 @@ jobs:
             release_profile: release-lean
             install_nasm: false
             use_clang_cl: true
+            use_lld_link: false
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
@@ -456,6 +458,7 @@ jobs:
         shell: pwsh
         env:
           USE_CLANG_CL: ${{ matrix.use_clang_cl }}
+          USE_LLD_LINK: ${{ matrix.use_lld_link }}
         run: |
           $ErrorActionPreference = "Stop"
           $env:SCRYER_EMBED_UI_DIR = Join-Path $env:GITHUB_WORKSPACE 'scryer-web-out'
@@ -464,6 +467,13 @@ jobs:
           $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=."
           if ($env:USE_CLANG_CL -eq "true") {
             $env:CC = "clang-cl"
+            $env:CXX = "clang-cl"
+            $env:CMAKE_C_COMPILER = "clang-cl"
+            $env:CMAKE_CXX_COMPILER = "clang-cl"
+            $env:AR = "llvm-lib"
+          }
+          if ($env:USE_LLD_LINK -eq "true") {
+            $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
           }
           cargo build -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }}
           if ($LASTEXITCODE -ne 0) {

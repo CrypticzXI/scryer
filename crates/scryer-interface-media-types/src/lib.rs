@@ -2788,6 +2788,13 @@ pub struct ManualPluginRepoInput {
 }
 
 #[derive(InputObject)]
+pub struct ManualPluginUploadInput {
+    pub file_name: String,
+    pub wasm_base64: String,
+    pub acknowledge_risk: bool,
+}
+
+#[derive(InputObject)]
 pub struct UninstallPluginInput {
     pub plugin_id: String,
 }

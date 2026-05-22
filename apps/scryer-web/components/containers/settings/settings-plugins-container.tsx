@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   SettingsPluginsSection,
   type PluginInstallProgressRecord,
@@ -16,6 +17,7 @@ import {
   refreshPluginCatalogMutation,
   inspectManualPluginRepoMutation,
   installManualPluginMutation,
+  installUploadedPluginMutation,
   uninstallPluginMutation,
   togglePluginMutation,
 } from "@/lib/graphql/mutations";
@@ -113,6 +115,25 @@ function formatPluginInstallError(
   return t("status.failedToUpdate");
 }
 
+function manualPluginFileIsSupported(fileName: string): boolean {
+  const normalized = fileName.trim().toLowerCase();
+  return normalized.endsWith(".wasm") || normalized.endsWith(".wasm.zst");
+}
+
+function encodeBytesBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function readFileAsBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  return encodeBytesBase64(new Uint8Array(buffer));
+}
+
 export function SettingsPluginsContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -124,6 +145,9 @@ export function SettingsPluginsContainer() {
   const [manualRepoUrl, setManualRepoUrl] = useState("");
   const [manualPreview, setManualPreview] = useState<ManualPluginPreviewRecord | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
+  const [manualPluginFile, setManualPluginFile] = useState<File | null>(null);
+  const [pendingManualUpload, setPendingManualUpload] = useState(false);
+  const [manualUploadRiskAccepted, setManualUploadRiskAccepted] = useState(false);
   const [showManualInstall, setShowManualInstall] = useState(false);
 
   const setPlugins = useCallback((
@@ -433,6 +457,33 @@ export function SettingsPluginsContainer() {
     setPendingUninstall(plugin);
   };
 
+  const onManualPluginFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = "";
+    setManualUploadRiskAccepted(false);
+    setPendingManualUpload(false);
+    setPluginErrors((current) => {
+      const next = { ...current };
+      delete next.__manualUpload;
+      return next;
+    });
+
+    if (!file) {
+      setManualPluginFile(null);
+      return;
+    }
+
+    if (!manualPluginFileIsSupported(file.name)) {
+      setManualPluginFile(null);
+      const message = t("settings.pluginManualFileUnsupported");
+      setPluginErrors((current) => ({ ...current, __manualUpload: message }));
+      setGlobalStatus(message);
+      return;
+    }
+
+    setManualPluginFile(file);
+  }, [setGlobalStatus, t]);
+
   const inspectManualPluginRepo = async () => {
     if (!manualRepoUrl.trim()) return;
     setManualBusy(true);
@@ -457,6 +508,64 @@ export function SettingsPluginsContainer() {
       setManualBusy(false);
     }
   };
+
+  const requestInstallUploadedPlugin = useCallback(() => {
+    if (!manualPluginFile) {
+      return;
+    }
+    setManualUploadRiskAccepted(false);
+    setPendingManualUpload(true);
+    setPluginErrors((current) => {
+      const next = { ...current };
+      delete next.__manualUpload;
+      return next;
+    });
+  }, [manualPluginFile]);
+
+  const installUploadedPlugin = useCallback(async () => {
+    if (!manualPluginFile) {
+      return;
+    }
+    setManualBusy(true);
+    try {
+      const wasmBase64 = await readFileAsBase64(manualPluginFile);
+      const { data, error } = await client
+        .mutation(installUploadedPluginMutation, {
+          input: {
+            fileName: manualPluginFile.name,
+            wasmBase64,
+            acknowledgeRisk: true,
+          },
+        })
+        .toPromise();
+      if (error) throw error;
+      const installation = data?.installUploadedPlugin;
+      if (!installation) {
+        throw new Error("manual plugin upload did not return an installation");
+      }
+
+      setGlobalStatus(t("status.pluginInstalled", { name: installation.name }));
+      setManualPluginFile(null);
+      setManualPreview(null);
+      setManualRepoUrl("");
+      setPendingManualUpload(false);
+      setManualUploadRiskAccepted(false);
+      setShowManualInstall(false);
+      setPluginErrors((current) => {
+        const next = { ...current };
+        delete next.__manualUpload;
+        return next;
+      });
+      await refreshPlugins();
+      dispatchNavigationBadgesRefresh();
+    } catch (error) {
+      const message = extractPluginMutationErrorMessage(error) ?? t("status.failedToUpdate");
+      setPluginErrors((current) => ({ ...current, __manualUpload: message }));
+      setGlobalStatus(message);
+    } finally {
+      setManualBusy(false);
+    }
+  }, [client, manualPluginFile, refreshPlugins, setGlobalStatus, t]);
 
   const installManualPlugin = async () => {
     const preview = manualPreview;
@@ -591,6 +700,7 @@ export function SettingsPluginsContainer() {
         refreshing={refreshing}
         upgradingAll={upgradingAll}
         manualRepoUrl={manualRepoUrl}
+        manualFileName={manualPluginFile?.name ?? null}
         manualPreview={manualPreview}
         manualBusy={manualBusy}
         showManualInstall={showManualInstall}
@@ -603,7 +713,9 @@ export function SettingsPluginsContainer() {
         }}
         onManualRepoUrlChange={setManualRepoUrl}
         onToggleManualInstall={() => setShowManualInstall((current) => !current)}
+        onManualPluginFileChange={onManualPluginFileChange}
         onInspectManualPluginRepo={inspectManualPluginRepo}
+        onRequestInstallUploadedPlugin={requestInstallUploadedPlugin}
         onInstallManualPlugin={installManualPlugin}
         onRefreshRegistry={refreshRegistry}
         onUpgradeAllPlugins={upgradeAllPlugins}
@@ -636,6 +748,35 @@ export function SettingsPluginsContainer() {
         onConfirm={confirmUninstall}
         onCancel={() => setPendingUninstall(null)}
       />
+      <ConfirmDialog
+        open={pendingManualUpload}
+        title={t("settings.pluginManualUploadConfirmTitle")}
+        description={t("settings.pluginManualUploadConfirmDescription")}
+        confirmLabel={t("settings.pluginManualUploadConfirmAction")}
+        cancelLabel={t("label.cancel")}
+        contentId="settings-plugins-manual-upload-confirm"
+        confirmButtonId="settings-plugins-manual-upload-confirm-action"
+        cancelButtonId="settings-plugins-manual-upload-confirm-cancel"
+        isBusy={manualBusy}
+        confirmDisabled={!manualUploadRiskAccepted}
+        onConfirm={installUploadedPlugin}
+        onCancel={() => {
+          setPendingManualUpload(false);
+          setManualUploadRiskAccepted(false);
+        }}
+      >
+        <label
+          htmlFor="settings-plugins-manual-upload-risk-checkbox"
+          className="flex cursor-pointer items-start gap-3 text-sm"
+        >
+          <Checkbox
+            id="settings-plugins-manual-upload-risk-checkbox"
+            checked={manualUploadRiskAccepted}
+            onCheckedChange={(checked) => setManualUploadRiskAccepted(!!checked)}
+          />
+          <span>{t("settings.pluginManualUploadConfirmCheckbox")}</span>
+        </label>
+      </ConfirmDialog>
     </>
   );
 }

@@ -1480,6 +1480,24 @@ const en: LocaleDictionary = {
   "settings.pluginSource": "Source",
   "settings.pluginDocs": "Docs",
   "settings.pluginInstallManually": "Install Manually",
+  "settings.pluginManualUploadTitle": "Local file upload",
+  "settings.pluginManualUploadHelp":
+    "Upload a local plugin build for fast iteration. Scryer accepts raw .wasm files and .wasm.zst bundles.",
+  "settings.pluginManualUploadSelect": "Choose plugin file",
+  "settings.pluginManualUploadInstall": "Review and install file",
+  "settings.pluginManualUploadNoFile": "No plugin file selected.",
+  "settings.pluginManualUploadFormats": "Accepted formats: .wasm and .wasm.zst",
+  "settings.pluginManualFileUnsupported":
+    "Manual plugin upload must be a .wasm or .wasm.zst file.",
+  "settings.pluginManualUploadConfirmTitle": "Install local plugin file?",
+  "settings.pluginManualUploadConfirmDescription":
+    "You are about to run unverified local plugin code inside Scryer. Only install files you built yourself or explicitly trust.",
+  "settings.pluginManualUploadConfirmCheckbox":
+    "I understand this plugin will run custom code with the permissions declared by its manifest.",
+  "settings.pluginManualUploadConfirmAction": "Install local plugin",
+  "settings.pluginManualRepoTitle": "GitHub repo install",
+  "settings.pluginManualRepoHelp":
+    "Install an unverified plugin directly from a GitHub plugin repository that publishes the Scryer plugin catalog format.",
   "settings.pluginManualRepoUrl": "GitHub plugin repo",
   "settings.pluginInspectManual": "Inspect Repo",
   "settings.pluginOverride": "Override",

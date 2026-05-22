@@ -718,6 +718,44 @@ impl IndexerPluginProvider for MockPluginProvider {
     }
 }
 
+struct MockPluginDescriptorLoader {
+    descriptors: StdArc<StdMutex<HashMap<Vec<u8>, scryer_plugin_sdk::PluginDescriptor>>>,
+}
+
+impl MockPluginDescriptorLoader {
+    fn new() -> Self {
+        Self {
+            descriptors: StdArc::new(StdMutex::new(HashMap::new())),
+        }
+    }
+
+    fn register(&self, wasm_bytes: &[u8], descriptor: scryer_plugin_sdk::PluginDescriptor) {
+        self.descriptors
+            .lock()
+            .expect("plugin descriptor loader lock")
+            .insert(wasm_bytes.to_vec(), descriptor);
+    }
+}
+
+impl PluginDescriptorLoader for MockPluginDescriptorLoader {
+    fn load_descriptor_from_wasm_bytes(
+        &self,
+        wasm_bytes: &[u8],
+    ) -> AppResult<scryer_plugin_sdk::PluginDescriptor> {
+        self.descriptors
+            .lock()
+            .expect("plugin descriptor loader lock")
+            .get(wasm_bytes)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "mock plugin descriptor loader is missing a descriptor for uploaded bytes"
+                        .to_string(),
+                )
+            })
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn admin() -> User {
@@ -1070,6 +1108,7 @@ struct TestHarness {
     plugin_repo: Arc<MockPluginInstallationRepo>,
     indexer_config_repo: Arc<MockIndexerConfigRepo>,
     plugin_provider: Option<Arc<MockPluginProvider>>,
+    plugin_descriptor_loader: Arc<MockPluginDescriptorLoader>,
 }
 
 fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
@@ -1079,6 +1118,7 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
 
     let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
     let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
+    let plugin_descriptor_loader = Arc::new(MockPluginDescriptorLoader::new());
 
     let mut services = AppServices::builder(
         Arc::new(NullTitleRepository),
@@ -1093,7 +1133,8 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
         Arc::new(NullQualityProfileRepository),
         String::new(),
     )
-    .with_plugin_installations(plugin_repo.clone());
+    .with_plugin_installations(plugin_repo.clone())
+    .with_plugin_descriptor_loader(plugin_descriptor_loader.clone());
     let plugin_provider = provider.map(Arc::new);
     if let Some(provider) = &plugin_provider {
         services = services.with_plugin_provider(provider.clone());
@@ -1116,6 +1157,7 @@ fn bootstrap_plugins(provider: Option<MockPluginProvider>) -> TestHarness {
         plugin_repo,
         indexer_config_repo,
         plugin_provider,
+        plugin_descriptor_loader,
     }
 }
 
@@ -1129,6 +1171,7 @@ fn bootstrap_plugins_with_subtitles(
 
     let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
     let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
+    let plugin_descriptor_loader = Arc::new(MockPluginDescriptorLoader::new());
 
     let mut services = AppServices::builder(
         Arc::new(NullTitleRepository),
@@ -1143,7 +1186,8 @@ fn bootstrap_plugins_with_subtitles(
         Arc::new(NullQualityProfileRepository),
         String::new(),
     )
-    .with_plugin_installations(plugin_repo.clone());
+    .with_plugin_installations(plugin_repo.clone())
+    .with_plugin_descriptor_loader(plugin_descriptor_loader.clone());
     let plugin_provider = provider.map(Arc::new);
     if let Some(provider) = &plugin_provider {
         services = services.with_plugin_provider(provider.clone());
@@ -1168,6 +1212,7 @@ fn bootstrap_plugins_with_subtitles(
         plugin_repo,
         indexer_config_repo,
         plugin_provider,
+        plugin_descriptor_loader,
     }
 }
 
@@ -1183,6 +1228,7 @@ fn bootstrap_plugins_with_runtime_providers(
 
     let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
     let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
+    let plugin_descriptor_loader = Arc::new(MockPluginDescriptorLoader::new());
 
     let mut services = AppServices::builder(
         Arc::new(NullTitleRepository),
@@ -1197,7 +1243,8 @@ fn bootstrap_plugins_with_runtime_providers(
         Arc::new(NullQualityProfileRepository),
         String::new(),
     )
-    .with_plugin_installations(plugin_repo.clone());
+    .with_plugin_installations(plugin_repo.clone())
+    .with_plugin_descriptor_loader(plugin_descriptor_loader.clone());
     let plugin_provider = provider.map(Arc::new);
     if let Some(provider) = &plugin_provider {
         services = services.with_plugin_provider(provider.clone());
@@ -1228,6 +1275,7 @@ fn bootstrap_plugins_with_runtime_providers(
         plugin_repo,
         indexer_config_repo,
         plugin_provider,
+        plugin_descriptor_loader,
     }
 }
 
@@ -2971,6 +3019,159 @@ async fn upgrade_rejects_incompatible_sdk_line() {
         .await
         .unwrap_err();
     assert_not_available_from_catalog(err, "torrent-rss");
+}
+
+#[tokio::test]
+async fn install_uploaded_plugin_accepts_raw_wasm_payload() {
+    let provider = MockPluginProvider::new().with_provider(
+        "manual-local",
+        "Manual Local",
+        Some("https://example.com"),
+    );
+    let h = bootstrap_plugins(Some(provider));
+    let wasm_bytes = vec![0x00, 0x61, 0x73, 0x6d];
+    let descriptor = make_runtime_plugin_load(
+        "manual-local-plugin",
+        "indexer",
+        "manual-local",
+    )
+    .descriptor;
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, descriptor.clone());
+
+    let installation = h
+        .app
+        .install_uploaded_plugin(
+            &config_admin(),
+            "manual-local-plugin.wasm",
+            &base64::engine::general_purpose::STANDARD.encode(&wasm_bytes),
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(installation.plugin_id, "manual-local-plugin");
+    assert_eq!(installation.source_kind, PluginSourceKind::Manual);
+    assert_eq!(installation.support_tier, PluginSupportTier::Unverified);
+    assert_eq!(installation.source_url, None);
+    assert!(installation
+        .description
+        .contains("manual-local-plugin.wasm"));
+
+    let payload = h
+        .plugin_repo
+        .get_plugin_installation_wasm_payload(&installation.plugin_id)
+        .await
+        .unwrap()
+        .expect("persisted plugin payload");
+    assert_eq!(payload.encoding, PluginWasmEncoding::Zstd);
+    assert_eq!(
+        decode_persisted_plugin_wasm_payload(&installation, &payload)
+            .await
+            .unwrap(),
+        wasm_bytes,
+    );
+    assert_eq!(
+        h.plugin_provider
+            .as_ref()
+            .expect("plugin provider")
+            .upsert_count
+            .load(Ordering::Relaxed),
+        1,
+    );
+}
+
+#[tokio::test]
+async fn install_uploaded_plugin_accepts_wasm_zstd_and_replaces_existing_installation() {
+    let provider = MockPluginProvider::new().with_provider(
+        "manual-local",
+        "Manual Local",
+        Some("https://example.com"),
+    );
+    let h = bootstrap_plugins(Some(provider));
+    let existing = make_installation("manual-local-plugin", "0.1.0", false, true);
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(existing.clone());
+
+    let wasm_bytes = vec![0x01, 0x02, 0x03, 0x04];
+    let mut descriptor = make_runtime_plugin_load(
+        "manual-local-plugin",
+        "indexer",
+        "manual-local",
+    )
+    .descriptor;
+    descriptor.version = "0.2.0".to_string();
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, descriptor.clone());
+    let compressed = compress_zstd(wasm_bytes.clone(), SQLITE_PLUGIN_WASM_ZSTD_LEVEL)
+        .await
+        .unwrap();
+
+    let installation = h
+        .app
+        .install_uploaded_plugin(
+            &config_admin(),
+            "manual-local-plugin.wasm.zst",
+            &base64::engine::general_purpose::STANDARD.encode(compressed),
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(installation.id, existing.id);
+    assert_eq!(installation.version, "0.2.0");
+    assert_eq!(installation.source_kind, PluginSourceKind::Manual);
+
+    let payload = h
+        .plugin_repo
+        .get_plugin_installation_wasm_payload(&installation.plugin_id)
+        .await
+        .unwrap()
+        .expect("persisted plugin payload");
+    assert_eq!(
+        decode_persisted_plugin_wasm_payload(&installation, &payload)
+            .await
+            .unwrap(),
+        wasm_bytes,
+    );
+}
+
+#[tokio::test]
+async fn install_uploaded_plugin_requires_risk_acknowledgement() {
+    let provider = MockPluginProvider::new().with_provider(
+        "manual-local",
+        "Manual Local",
+        Some("https://example.com"),
+    );
+    let h = bootstrap_plugins(Some(provider));
+    let wasm_bytes = vec![0x05, 0x06, 0x07, 0x08];
+    let descriptor = make_runtime_plugin_load(
+        "manual-local-plugin",
+        "indexer",
+        "manual-local",
+    )
+    .descriptor;
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, descriptor.clone());
+
+    let err = h
+        .app
+        .install_uploaded_plugin(
+            &config_admin(),
+            "manual-local-plugin.wasm",
+            &base64::engine::general_purpose::STANDARD.encode(wasm_bytes),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::Validation(_)));
+    assert!(err
+        .to_string()
+        .contains("risk acknowledgement"));
 }
 
 // ── seed_builtin_plugins ─────────────────────────────────────────────────────

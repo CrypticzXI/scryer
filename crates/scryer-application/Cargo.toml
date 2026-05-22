@@ -28,11 +28,11 @@ runtime-media-analysis = [
     "dep:whatlang",
 ]
 runtime-plugin-trust = [
-    "dep:base64",
     "dep:rustls-pki-types",
     "dep:rustls-webpki",
     "dep:sigstore",
     "dep:x509-cert",
+    "dep:zstd",
 ]
 
 [dependencies]
@@ -58,6 +58,7 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 semver = { workspace = true }
 metrics = { workspace = true }
+base64 = "0.22"
 weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.4.3", default-features = false, optional = true }
 sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"], optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
@@ -76,7 +77,6 @@ regex = "1"
 blake3 = "1"
 const-oid = "0.9"
 sigstore = { version = "0.13", default-features = false, features = ["cosign", "sigstore-trust-root", "rustls-tls"], optional = true }
-base64 = { version = "0.22", optional = true }
 rustls-pki-types = { version = "1", optional = true }
 rustls-webpki = { version = "0.103", optional = true }
 x509-cert = { version = "0.2", optional = true }

@@ -1196,6 +1196,33 @@ export const installManualPluginMutation = `mutation InstallManualPlugin($input:
   }
 }`;
 
+export const installUploadedPluginMutation = `mutation InstallUploadedPlugin($input: ManualPluginUploadInput!) {
+  installUploadedPlugin(input: $input) {
+    id
+    pluginId
+    name
+    description
+    version
+    sdkVersion
+    sdkConstraint
+    pluginType
+    providerType
+    isEnabled
+    isBuiltin
+    sourceKind
+    sourceUrl
+    publisher
+    supportTier
+    docsUrl
+    sourceRepo
+    manifestUrl
+    wasmDigest
+    artifactDigest
+    installedAt
+    updatedAt
+  }
+}`;
+
 // ── Recycle Bin ─────────────────────────────────────────────────────────
 
 export const restoreRecycledItemMutation = `mutation RestoreRecycledItem($id: String!) {

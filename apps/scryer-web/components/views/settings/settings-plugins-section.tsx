@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { ArrowUpCircle, Download, ExternalLink, Loader2, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
+import { useState, useMemo, useRef } from "react";
+import { ArrowUpCircle, Download, ExternalLink, Loader2, Power, PowerOff, RefreshCw, Trash2, Upload } from "lucide-react";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -89,6 +89,7 @@ type SettingsPluginsSectionProps = {
   refreshing: boolean;
   upgradingAll: boolean;
   manualRepoUrl: string;
+  manualFileName: string | null;
   manualPreview: ManualPluginPreviewRecord | null;
   manualBusy: boolean;
   showManualInstall: boolean;
@@ -101,7 +102,9 @@ type SettingsPluginsSectionProps = {
   };
   onManualRepoUrlChange: (value: string) => void;
   onToggleManualInstall: () => void;
+  onManualPluginFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onInspectManualPluginRepo: () => void;
+  onRequestInstallUploadedPlugin: () => void;
   onInstallManualPlugin: () => void;
   onRefreshRegistry: () => void;
   onUpgradeAllPlugins: () => void;
@@ -555,13 +558,16 @@ export function SettingsPluginsSection({
   refreshing,
   upgradingAll,
   manualRepoUrl,
+  manualFileName,
   manualPreview,
   manualBusy,
   showManualInstall,
   remoteActionsBlocked,
   onManualRepoUrlChange,
   onToggleManualInstall,
+  onManualPluginFileChange,
   onInspectManualPluginRepo,
+  onRequestInstallUploadedPlugin,
   onInstallManualPlugin,
   onRefreshRegistry,
   onUpgradeAllPlugins,
@@ -575,6 +581,7 @@ export function SettingsPluginsSection({
     category: "all",
     officialOnly: false,
   });
+  const manualPluginFileInputRef = useRef<HTMLInputElement | null>(null);
   const [availableFilters, setAvailableFilters] = useState<FilterState>({
     category: "all",
     officialOnly: false,
@@ -611,6 +618,7 @@ export function SettingsPluginsSection({
         </div>
         <div className="flex items-center gap-2">
           <Button
+            id="settings-plugins-upgrade-all"
             variant="outline"
             size="sm"
             disabled={upgradingAll || remoteActionsBlocked.upgrade || upgradeCount === 0}
@@ -620,14 +628,15 @@ export function SettingsPluginsSection({
             {upgradingAll ? t("settings.pluginsUpdatingAll") : t("settings.pluginsUpdateAll")}
           </Button>
           <Button
+            id="settings-plugins-manual-toggle"
             variant="outline"
             size="sm"
-            disabled={remoteActionsBlocked.installManual || remoteActionsBlocked.inspectManual}
             onClick={onToggleManualInstall}
           >
             {t("settings.pluginInstallManually")}
           </Button>
           <Button
+            id="settings-plugins-refresh"
             variant="outline"
             size="sm"
             disabled={refreshing || remoteActionsBlocked.refresh}
@@ -656,23 +665,83 @@ export function SettingsPluginsSection({
 
       {!initialLoading && showManualInstall && (
         <div className="rounded-xl border border-border bg-card/60 p-4">
-          <div className="flex flex-col gap-3 md:flex-row md:items-end">
-            <label className="flex-1 space-y-1 text-sm">
-              <span className="font-medium">{t("settings.pluginManualRepoUrl")}</span>
+          <div className="space-y-5">
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <h3 className="text-sm font-medium">{t("settings.pluginManualUploadTitle")}</h3>
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.pluginManualUploadHelp")}
+                </p>
+              </div>
               <input
-                value={manualRepoUrl}
-                onChange={(event) => onManualRepoUrlChange(event.target.value)}
-                placeholder="https://github.com/example/scryer-plugin-example"
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                id="settings-plugins-manual-file-input"
+                ref={manualPluginFileInputRef}
+                type="file"
+                accept=".wasm,.zst"
+                className="hidden"
+                onChange={onManualPluginFileChange}
               />
-            </label>
-            <Button
-              type="button"
-              disabled={manualBusy || remoteActionsBlocked.inspectManual || !manualRepoUrl.trim()}
-              onClick={onInspectManualPluginRepo}
-            >
-              {manualBusy ? t("label.loading") : t("settings.pluginInspectManual")}
-            </Button>
+              <div className="flex flex-col gap-3 md:flex-row md:items-center">
+                <Button
+                  id="settings-plugins-manual-file-select"
+                  type="button"
+                  variant="outline"
+                  onClick={() => manualPluginFileInputRef.current?.click()}
+                  disabled={manualBusy}
+                >
+                  <Upload className="mr-2 h-4 w-4" />
+                  {t("settings.pluginManualUploadSelect")}
+                </Button>
+                <Button
+                  id="settings-plugins-manual-file-install"
+                  type="button"
+                  disabled={manualBusy || !manualFileName}
+                  onClick={onRequestInstallUploadedPlugin}
+                >
+                  {manualBusy ? t("label.loading") : t("settings.pluginManualUploadInstall")}
+                </Button>
+              </div>
+              <div className="space-y-1 text-sm text-muted-foreground">
+                <p id="settings-plugins-manual-file-name">
+                  {manualFileName ?? t("settings.pluginManualUploadNoFile")}
+                </p>
+                <p>{t("settings.pluginManualUploadFormats")}</p>
+              </div>
+              {pluginErrors.__manualUpload && (
+                <p className="text-sm text-destructive">{pluginErrors.__manualUpload}</p>
+              )}
+            </div>
+
+            <div className="border-t border-border pt-5">
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-medium">{t("settings.pluginManualRepoTitle")}</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {t("settings.pluginManualRepoHelp")}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                  <label className="flex-1 space-y-1 text-sm">
+                    <span className="font-medium">{t("settings.pluginManualRepoUrl")}</span>
+                    <input
+                      id="settings-plugins-manual-repo-url"
+                      value={manualRepoUrl}
+                      onChange={(event) => onManualRepoUrlChange(event.target.value)}
+                      placeholder="https://github.com/example/scryer-plugin-example"
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    />
+                  </label>
+                  <Button
+                    id="settings-plugins-manual-repo-inspect"
+                    type="button"
+                    disabled={manualBusy || remoteActionsBlocked.inspectManual || !manualRepoUrl.trim()}
+                    onClick={onInspectManualPluginRepo}
+                  >
+                    {manualBusy ? t("label.loading") : t("settings.pluginInspectManual")}
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
           {pluginErrors.__manual && (
             <p className="mt-2 text-sm text-destructive">{pluginErrors.__manual}</p>
@@ -689,6 +758,7 @@ export function SettingsPluginsSection({
                 </div>
               </div>
               <Button
+                id="settings-plugins-manual-repo-install"
                 type="button"
                 disabled={manualBusy || remoteActionsBlocked.installManual}
                 onClick={onInstallManualPlugin}

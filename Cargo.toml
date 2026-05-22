@@ -87,6 +87,11 @@ codegen-units = 16
 strip = true
 panic = "abort"
 
+[profile.release-windows-portable]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 [profile.release-balanced.package.alass-core]
 opt-level = 3
 

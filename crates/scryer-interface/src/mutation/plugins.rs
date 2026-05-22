@@ -148,4 +148,23 @@ impl PluginMutations {
             .map_err(to_gql_error)?;
         Ok(from_plugin_installation(installation))
     }
+
+    async fn install_uploaded_plugin(
+        &self,
+        ctx: &Context<'_>,
+        input: ManualPluginUploadInput,
+    ) -> GqlResult<PluginInstallationPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let installation = app
+            .install_uploaded_plugin(
+                &actor,
+                &input.file_name,
+                &input.wasm_base64,
+                input.acknowledge_risk,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_plugin_installation(installation))
+    }
 }

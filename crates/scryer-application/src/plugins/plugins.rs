@@ -6,6 +6,7 @@ use super::catalog::{
     plugin_manifest_asset_url, verify_digest, verify_signed_blob, verify_split_digest,
 };
 use super::*;
+use base64::Engine as _;
 use crate::ProviderCatalogFamily;
 use crate::ports::RuntimePluginLoad;
 use chrono::Utc;
@@ -741,6 +742,19 @@ fn source_kind_label(source_kind: PluginSourceKind) -> String {
         PluginSourceKind::Downloaded => "downloaded".to_string(),
         PluginSourceKind::Manual => "manual".to_string(),
     }
+}
+
+fn uploaded_plugin_file_is_zstd(file_name: &str) -> AppResult<bool> {
+    let normalized = file_name.trim().to_ascii_lowercase();
+    if normalized.ends_with(".wasm.zst") {
+        return Ok(true);
+    }
+    if normalized.ends_with(".wasm") {
+        return Ok(false);
+    }
+    Err(AppError::Validation(
+        "manual plugin upload must be a .wasm or .wasm.zst file".to_string(),
+    ))
 }
 
 #[derive(Debug)]
@@ -2835,6 +2849,191 @@ impl AppUseCase {
         .await?;
         let reporter = PluginInstallProgressReporter::new(self, &actor.id, &resolved.child.id);
         self.install_catalog_plugin(resolved, &reporter).await
+    }
+
+    pub async fn install_uploaded_plugin(
+        &self,
+        actor: &User,
+        file_name: &str,
+        wasm_base64: &str,
+        acknowledge_risk: bool,
+    ) -> AppResult<PluginInstallation> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        if !acknowledge_risk {
+            return Err(AppError::Validation(
+                "manual plugin upload requires explicit risk acknowledgement".to_string(),
+            ));
+        }
+
+        let file_name = file_name.trim();
+        if file_name.is_empty() {
+            return Err(AppError::Validation(
+                "manual plugin upload file name is required".to_string(),
+            ));
+        }
+        let uploaded_is_zstd = uploaded_plugin_file_is_zstd(file_name)?;
+        let uploaded_bytes = base64::engine::general_purpose::STANDARD
+            .decode(wasm_base64.trim())
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "manual plugin upload payload is not valid base64: {error}"
+                ))
+            })?;
+        let wasm_bytes = if uploaded_is_zstd {
+            decompress_zstd(uploaded_bytes).await?
+        } else {
+            uploaded_bytes
+        };
+        let descriptor = self
+            .services
+            .customization
+            .plugin_descriptor_loader
+            .load_descriptor_from_wasm_bytes(&wasm_bytes)?;
+        validate_plugin_descriptor_sdk_contract(&descriptor, SDK_VERSION)
+            .map_err(AppError::Validation)?;
+        validate_plugin_descriptor_host_permissions(&descriptor).map_err(AppError::Validation)?;
+
+        let plugin_id = descriptor.id.clone();
+        if is_reserved_first_party_provider(descriptor.provider_type()) {
+            return Err(AppError::Validation(format!(
+                "provider type '{}' is reserved for first-party code",
+                descriptor.provider_type()
+            )));
+        }
+
+        let _operation_guard = self
+            .runtime
+            .plugins
+            .plugin_operation_guards
+            .acquire(&plugin_id)
+            .await;
+        let existing = self
+            .services
+            .customization
+            .plugin_installations
+            .get_plugin_installation(&plugin_id)
+            .await?;
+        if existing.as_ref().is_some_and(|installation| installation.is_builtin) {
+            return Err(AppError::Validation(format!(
+                "plugin '{}' is a bundled plugin; uninstall any downloaded override before uploading a local build",
+                plugin_id
+            )));
+        }
+
+        let compressed_wasm_bytes = compress_zstd(wasm_bytes.clone(), SQLITE_PLUGIN_WASM_ZSTD_LEVEL)
+            .await?;
+        let (wasm_digest_algo, wasm_digest) = parse_digest_string(&blake3_digest(&wasm_bytes))?;
+        let descriptor_json = Some(persisted_plugin_descriptor_json(&descriptor)?);
+        let plugin_type = descriptor.plugin_type().to_string();
+        let provider_type = normalize_provider_key(descriptor.provider_type());
+        let sdk_constraint = plugin_descriptor_sdk_constraint(&descriptor);
+        let now = Utc::now();
+        let runtime_plugin = runtime_plugin_load_from_validated(descriptor.clone(), wasm_bytes, false);
+
+        let result = match existing {
+            Some(mut installation) => {
+                let previous_plugin_type = installation.plugin_type.clone();
+                let previous_provider_type = installation.provider_type.clone();
+                let runtime_touched = installation.is_enabled;
+                installation.name = descriptor.name.clone();
+                installation.description =
+                    format!("Manually uploaded plugin from local file '{file_name}'");
+                installation.version = descriptor.version.clone();
+                installation.sdk_version = descriptor.sdk_version.clone();
+                installation.sdk_constraint = sdk_constraint;
+                installation.scryer_constraint = None;
+                installation.plugin_type = plugin_type.clone();
+                installation.provider_type = provider_type.clone();
+                installation.source_kind = PluginSourceKind::Manual;
+                installation.wasm_encoding = PluginWasmEncoding::Zstd;
+                installation.wasm_digest_algo = Some(wasm_digest_algo.clone());
+                installation.source_url = None;
+                installation.support_tier = PluginSupportTier::Unverified;
+                installation.publisher = None;
+                installation.docs_url = None;
+                installation.source_repo = None;
+                installation.manifest_url = None;
+                installation.wasm_digest = Some(wasm_digest.clone());
+                installation.artifact_digest = None;
+                installation.descriptor_json = descriptor_json;
+                installation.updated_at = now;
+
+                let updated = self
+                    .services
+                    .customization
+                    .plugin_installations
+                    .update_plugin_installation(
+                        &installation,
+                        Some(compressed_wasm_bytes.as_slice()),
+                    )
+                    .await?;
+
+                if runtime_touched {
+                    let mut previous_runtime_installation = updated.clone();
+                    previous_runtime_installation.plugin_type = previous_plugin_type.clone();
+                    previous_runtime_installation.provider_type = previous_provider_type.clone();
+                    self.apply_runtime_plugin_replace(
+                        &previous_runtime_installation,
+                        &updated,
+                        runtime_plugin,
+                    )?;
+                }
+                self.finalize_runtime_plugin_mutation_for_types(
+                    [previous_plugin_type.as_str(), updated.plugin_type.as_str()],
+                    runtime_touched,
+                )
+                .await?;
+                updated
+            }
+            None => {
+                let installation = PluginInstallation {
+                    id: Id::new().0,
+                    plugin_id,
+                    name: descriptor.name.clone(),
+                    description: format!("Manually uploaded plugin from local file '{file_name}'"),
+                    version: descriptor.version.clone(),
+                    sdk_version: descriptor.sdk_version.clone(),
+                    sdk_constraint,
+                    scryer_constraint: None,
+                    plugin_type,
+                    provider_type,
+                    source_kind: PluginSourceKind::Manual,
+                    is_enabled: true,
+                    is_builtin: false,
+                    wasm_encoding: PluginWasmEncoding::Zstd,
+                    wasm_digest_algo: Some(wasm_digest_algo),
+                    source_url: None,
+                    support_tier: PluginSupportTier::Unverified,
+                    publisher: None,
+                    docs_url: None,
+                    source_repo: None,
+                    manifest_url: None,
+                    wasm_digest: Some(wasm_digest),
+                    artifact_digest: None,
+                    descriptor_json,
+                    installed_at: now,
+                    updated_at: now,
+                };
+
+                let created = self
+                    .services
+                    .customization
+                    .plugin_installations
+                    .create_plugin_installation(
+                        &installation,
+                        Some(compressed_wasm_bytes.as_slice()),
+                    )
+                    .await?;
+                self.apply_runtime_plugin_upsert(&created, runtime_plugin)?;
+                self.finalize_runtime_plugin_mutation(&created.plugin_type, true)
+                    .await?;
+                created
+            }
+        };
+
+        Ok(result)
     }
 
     async fn validate_catalog_install_request(&self, plugin_id: &str) -> AppResult<()> {
