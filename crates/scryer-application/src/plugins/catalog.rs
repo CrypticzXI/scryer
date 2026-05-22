@@ -1,23 +1,36 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
+};
+
+#[cfg(feature = "runtime-plugin-trust")]
+use std::{
+    collections::BTreeMap,
     sync::{Arc, OnceLock},
     time::Duration,
 };
 
+#[cfg(feature = "runtime-plugin-trust")]
 use base64::Engine;
+#[cfg(feature = "runtime-plugin-trust")]
 use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
+#[cfg(feature = "runtime-plugin-trust")]
 use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "runtime-plugin-trust")]
 use sigstore::{
     cosign::{CosignCapabilities, bundle::SignedArtifactBundle},
     crypto::{CosignVerificationKey, SigningScheme},
     trust::{TrustRoot, sigstore::SigstoreTrustRoot},
 };
+#[cfg(feature = "runtime-plugin-trust")]
 use tokio::sync::Semaphore;
+#[cfg(feature = "runtime-plugin-trust")]
 use tracing::debug;
 use url::Url;
+#[cfg(feature = "runtime-plugin-trust")]
 use webpki::{EndEntityCert, KeyUsage};
+#[cfg(feature = "runtime-plugin-trust")]
 use x509_cert::{
     Certificate,
     der::{DecodePem, Encode},
@@ -36,16 +49,24 @@ const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "scryer.plugin.v1";
 const PLUGIN_ARTIFACT_NAME: &str = "plugin.wasm.zst";
 const PLUGIN_MANIFEST_NAME: &str = "plugin.manifest.json";
 const ZSTD_COMPRESSION_LABEL: &str = "zstd";
+#[cfg(feature = "runtime-plugin-trust")]
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
+#[cfg(feature = "runtime-plugin-trust")]
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
+#[cfg(feature = "runtime-plugin-trust")]
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
+#[cfg(feature = "runtime-plugin-trust")]
 type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
+#[cfg(feature = "runtime-plugin-trust")]
 type FulcioTrustAnchors = Vec<TrustAnchor<'static>>;
 
+#[cfg(feature = "runtime-plugin-trust")]
 static REKOR_VERIFICATION_KEYS: OnceLock<Result<Arc<RekorVerificationKeys>, String>> =
     OnceLock::new();
+#[cfg(feature = "runtime-plugin-trust")]
 static FULCIO_TRUST_ANCHORS: OnceLock<Result<Arc<FulcioTrustAnchors>, String>> = OnceLock::new();
 
+#[cfg(feature = "runtime-plugin-trust")]
 static VERIFY_LIMIT: OnceLock<Semaphore> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -256,6 +277,7 @@ pub fn parse_and_validate_release_manifest(
     Ok(manifest)
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 pub async fn verify_signed_blob(
     raw: Vec<u8>,
     bundle_raw: Vec<u8>,
@@ -275,6 +297,18 @@ pub async fn verify_signed_blob(
     result
 }
 
+#[cfg(not(feature = "runtime-plugin-trust"))]
+pub async fn verify_signed_blob(
+    _raw: Vec<u8>,
+    _bundle_raw: Vec<u8>,
+    _required_signer: RequiredSigner,
+) -> AppResult<()> {
+    Err(AppError::Validation(
+        "plugin signature verification is not compiled into this target".to_string(),
+    ))
+}
+
+#[cfg(feature = "runtime-plugin-trust")]
 pub async fn decompress_zstd(compressed: Vec<u8>) -> AppResult<Vec<u8>> {
     tokio::task::spawn_blocking(move || {
         zstd::decode_all(compressed.as_slice())
@@ -284,6 +318,14 @@ pub async fn decompress_zstd(compressed: Vec<u8>) -> AppResult<Vec<u8>> {
     .map_err(|e| AppError::Repository(format!("zstd decompression panicked: {e}")))?
 }
 
+#[cfg(not(feature = "runtime-plugin-trust"))]
+pub async fn decompress_zstd(_compressed: Vec<u8>) -> AppResult<Vec<u8>> {
+    Err(AppError::Validation(
+        "plugin zstd decompression is not compiled into this target".to_string(),
+    ))
+}
+
+#[cfg(feature = "runtime-plugin-trust")]
 pub async fn compress_zstd(bytes: Vec<u8>, level: i32) -> AppResult<Vec<u8>> {
     tokio::task::spawn_blocking(move || {
         zstd::encode_all(bytes.as_slice(), level)
@@ -291,6 +333,13 @@ pub async fn compress_zstd(bytes: Vec<u8>, level: i32) -> AppResult<Vec<u8>> {
     })
     .await
     .map_err(|e| AppError::Repository(format!("zstd compression panicked: {e}")))?
+}
+
+#[cfg(not(feature = "runtime-plugin-trust"))]
+pub async fn compress_zstd(_bytes: Vec<u8>, _level: i32) -> AppResult<Vec<u8>> {
+    Err(AppError::Validation(
+        "plugin zstd compression is not compiled into this target".to_string(),
+    ))
 }
 
 pub fn blake3_digest(bytes: &[u8]) -> String {
@@ -585,6 +634,7 @@ fn validate_release_manifest(
     Ok(())
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn verify_signed_blob_blocking(
     raw: &[u8],
     bundle_raw: &[u8],
@@ -613,6 +663,7 @@ fn verify_signed_blob_blocking(
     Ok(())
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn verify_fulcio_certificate_chain(cert_pem: &str, bundle: &SignedArtifactBundle) -> AppResult<()> {
     let cert = Certificate::from_pem(cert_pem.as_bytes())
         .map_err(|e| AppError::Validation(format!("failed to parse Sigstore certificate: {e}")))?;
@@ -644,6 +695,7 @@ fn verify_fulcio_certificate_chain(cert_pem: &str, bundle: &SignedArtifactBundle
     Ok(())
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn rekor_integrated_time(integrated_time: i64) -> AppResult<UnixTime> {
     let integrated_time = u64::try_from(integrated_time)
         .map_err(|_| AppError::Validation("Sigstore Rekor integrated time is negative".into()))?;
@@ -652,6 +704,7 @@ fn rekor_integrated_time(integrated_time: i64) -> AppResult<UnixTime> {
     )))
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn cached_rekor_verification_keys() -> AppResult<Arc<RekorVerificationKeys>> {
     REKOR_VERIFICATION_KEYS
         .get_or_init(|| {
@@ -669,6 +722,7 @@ fn cached_rekor_verification_keys() -> AppResult<Arc<RekorVerificationKeys>> {
         .map_err(AppError::Repository)
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn cached_fulcio_trust_anchors() -> AppResult<Arc<FulcioTrustAnchors>> {
     FULCIO_TRUST_ANCHORS
         .get_or_init(|| {
@@ -695,6 +749,7 @@ fn cached_fulcio_trust_anchors() -> AppResult<Arc<FulcioTrustAnchors>> {
         .map_err(AppError::Repository)
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn parse_rekor_verification_keys(
     keys: std::collections::BTreeMap<String, &[u8]>,
 ) -> AppResult<RekorVerificationKeys> {
@@ -718,6 +773,7 @@ fn parse_rekor_verification_keys(
     Ok(parsed)
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn verify_signer_identity(cert_pem: &str, required_signer: &RequiredSigner) -> AppResult<()> {
     let cert = Certificate::from_pem(cert_pem.as_bytes())
         .map_err(|e| AppError::Validation(format!("failed to parse Sigstore certificate: {e}")))?;
@@ -752,6 +808,7 @@ fn verify_signer_identity(cert_pem: &str, required_signer: &RequiredSigner) -> A
     Ok(())
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn normalize_sigstore_bundle(bundle_text: &str) -> AppResult<String> {
     let Ok(bundle_json) = serde_json::from_str::<serde_json::Value>(bundle_text) else {
         return Ok(bundle_text.to_string());
@@ -816,6 +873,7 @@ fn normalize_sigstore_bundle(bundle_text: &str) -> AppResult<String> {
     .map_err(|e| AppError::Validation(format!("failed to normalize Sigstore bundle: {e}")))
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn sigstore_bundle_value<'a>(
     value: &'a serde_json::Value,
     path: &[&str],
@@ -824,6 +882,7 @@ fn sigstore_bundle_value<'a>(
         .try_fold(value, |current, segment| current.get(*segment))
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn sigstore_bundle_string_field<'a>(
     value: &'a serde_json::Value,
     path: &[&str],
@@ -834,6 +893,7 @@ fn sigstore_bundle_string_field<'a>(
         .ok_or_else(|| AppError::Validation(format!("Sigstore bundle missing {label}")))
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn sigstore_bundle_i64_field(
     value: &serde_json::Value,
     path: &[&str],
@@ -859,6 +919,7 @@ fn sigstore_bundle_i64_field(
     })
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn normalize_rekor_log_id(key_id: &str) -> String {
     if key_id.len().is_multiple_of(2) && key_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return key_id.to_ascii_lowercase();
@@ -878,6 +939,7 @@ fn normalize_rekor_log_id(key_id: &str) -> String {
     }
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn normalize_bundle_cert(cert: &str) -> AppResult<String> {
     if cert.contains("-----BEGIN CERTIFICATE-----") {
         return Ok(cert.to_string());
@@ -893,6 +955,7 @@ fn normalize_bundle_cert(cert: &str) -> AppResult<String> {
     Ok(pem_encode_certificate(&decoded))
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn pem_encode_certificate(der: &[u8]) -> String {
     let base64 = base64::engine::general_purpose::STANDARD.encode(der);
     let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
@@ -904,6 +967,7 @@ fn pem_encode_certificate(der: &[u8]) -> String {
     pem
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn cert_extension_utf8(cert: &Certificate, oid: &str) -> AppResult<Option<String>> {
     let Some(extensions) = cert.tbs_certificate.extensions.as_ref() else {
         return Ok(None);
@@ -921,6 +985,7 @@ fn cert_extension_utf8(cert: &Certificate, oid: &str) -> AppResult<Option<String
         .transpose()
 }
 
+#[cfg(feature = "runtime-plugin-trust")]
 fn cert_subject_uri(cert: &Certificate) -> AppResult<Option<String>> {
     let san = cert
         .tbs_certificate
@@ -1090,6 +1155,7 @@ mod tests {
         assert!(err.to_string().contains("duplicate release version"));
     }
 
+    #[cfg(feature = "runtime-plugin-trust")]
     #[test]
     fn normalize_bundle_cert_wraps_base64_der_as_pem() {
         let der_base64 =
@@ -1100,6 +1166,7 @@ mod tests {
         assert!(pem.ends_with("-----END CERTIFICATE-----\n"));
     }
 
+    #[cfg(feature = "runtime-plugin-trust")]
     #[test]
     fn normalize_sigstore_bundle_rewrites_v03_payloads() {
         let der_base64 = base64::engine::general_purpose::STANDARD.encode([1_u8, 2, 3, 4]);
@@ -1144,6 +1211,7 @@ mod tests {
         assert_eq!(parsed.rekor_bundle.payload.body, "body==");
     }
 
+    #[cfg(feature = "runtime-plugin-trust")]
     #[tokio::test]
     async fn sigstore_trust_root_rekor_keys_parse_as_der() {
         let trust_root = SigstoreTrustRoot::new(None)

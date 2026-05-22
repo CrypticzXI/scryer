@@ -1451,9 +1451,10 @@ impl LibraryRepository for NullLibraryRepository {
 #[cfg(test)]
 pub mod test_nulls {
     use crate::{
-        AppError, AppResult, CollectionUpdate, CreateTitleOutcome, DownloadClient,
-        DownloadClientAddRequest, DownloadClientConfigRepository, DownloadClientConfigUpdate,
-        DownloadGrabResult, EpisodeUpdate, IndexerClient, IndexerRoutingPlan,
+        AppError, AppResult, BuiltinDownloadClientConnectionTester, CollectionUpdate,
+        CreateTitleOutcome, DownloadClient, DownloadClientAddRequest,
+        DownloadClientConfigRepository, DownloadClientConfigUpdate, DownloadGrabResult,
+        EpisodeUpdate, IndexerClient, IndexerRoutingPlan,
         IndexerSearchResponse, PendingTitleHydration, PrimaryCollectionSummary, QualityProfile,
         QualityProfileRepository, ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome,
         ReleaseDownloadFailureSignature, ScopedExternalId, SearchMode, ShowRepository,

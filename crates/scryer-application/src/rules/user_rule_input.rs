@@ -246,6 +246,7 @@ pub(crate) fn build_search_rule_input(
     )
 }
 
+#[cfg(feature = "runtime-media-analysis")]
 pub(crate) fn build_file_doc(analysis: &scryer_mediainfo::MediaAnalysis) -> scryer_rules::FileDoc {
     let audio_languages = crate::normalize_detected_audio_languages(
         analysis.audio_languages.iter().map(String::as_str),
@@ -458,6 +459,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "runtime-media-analysis")]
     #[test]
     fn build_rule_input_populates_post_download_file_doc() {
         let analysis = scryer_mediainfo::analyze_file(

@@ -69,11 +69,318 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+[profile.release-launcher]
+inherits = "release"
+opt-level = "z"
+lto = "thin"
+
+[profile.release-balanced]
+inherits = "release"
+opt-level = 2
+lto = false
+
+[profile.release-lean]
+inherits = "release"
+opt-level = 2
+lto = false
+codegen-units = 16
+strip = true
+panic = "abort"
+
+[profile.release-balanced.package.alass-core]
+opt-level = 3
+
+[profile.release-balanced.package.argon2]
+opt-level = 3
+
+[profile.release-balanced.package.aws-lc-rs]
+opt-level = 3
+
+[profile.release-balanced.package.aws-lc-sys]
+opt-level = 3
+
+[profile.release-balanced.package.blake3]
+opt-level = 3
+
+[profile.release-balanced.package.brotli]
+opt-level = 3
+
+[profile.release-balanced.package.brotli-decompressor]
+opt-level = 3
+
+[profile.release-balanced.package.crc32fast]
+opt-level = 3
+
+[profile.release-balanced.package.fast_image_resize]
+opt-level = 3
+
+[profile.release-balanced.package.flate2]
+opt-level = 3
+
+[profile.release-balanced.package.image]
+opt-level = 3
+
+[profile.release-balanced.package.lzma-rs]
+opt-level = 3
+
+[profile.release-balanced.package.miniz_oxide]
+opt-level = 3
+
+[profile.release-balanced.package.ml-dsa]
+opt-level = 3
+
+[profile.release-balanced.package.ravif]
+opt-level = 3
+
+[profile.release-balanced.package.rav1e]
+opt-level = 3
+
+[profile.release-balanced.package.ring]
+opt-level = 3
+
+[profile.release-balanced.package.rustls]
+opt-level = 3
+
+[profile.release-balanced.package.rustls-webpki]
+opt-level = 3
+
+[profile.release-balanced.package.sevenz-rust2]
+opt-level = 3
+
+[profile.release-balanced.package.sha2]
+opt-level = 3
+
+[profile.release-balanced.package.symphonia]
+opt-level = 3
+
+[profile.release-balanced.package.weaver-rar]
+opt-level = 3
+
+[profile.release-balanced.package.zip]
+opt-level = 3
+
+[profile.release-balanced.package.zlib-rs]
+opt-level = 3
+
+[profile.release-balanced.package.zstd]
+opt-level = 3
+
+[profile.release-balanced.package.zstd-safe]
+opt-level = 3
+
+[profile.release-balanced.package.zstd-sys]
+opt-level = 3
+
+[profile.release-lean.package.scryer-interface]
+opt-level = 2
+
+[profile.release-lean.package.scryer-interface-core]
+opt-level = 2
+
+[profile.release-lean.package.scryer-interface-media]
+opt-level = 2
+
+[profile.release-lean.package.scryer-interface-media-types]
+opt-level = 2
+
+[profile.release-lean.package.scryer-interface-metadata]
+opt-level = 2
+
+[profile.release-lean.package.scryer-interface-settings]
+opt-level = 2
+
+[profile.release-lean.package.alass-core]
+opt-level = 3
+
+[profile.release-lean.package.argon2]
+opt-level = 3
+
+[profile.release-lean.package.aws-lc-rs]
+opt-level = 3
+
+[profile.release-lean.package.aws-lc-sys]
+opt-level = 3
+
+[profile.release-lean.package.blake3]
+opt-level = 3
+
+[profile.release-lean.package.brotli]
+opt-level = 3
+
+[profile.release-lean.package.brotli-decompressor]
+opt-level = 3
+
+[profile.release-lean.package.crc32fast]
+opt-level = 3
+
+[profile.release-lean.package.fast_image_resize]
+opt-level = 3
+
+[profile.release-lean.package.flate2]
+opt-level = 3
+
+[profile.release-lean.package.image]
+opt-level = 3
+
+[profile.release-lean.package.lzma-rs]
+opt-level = 3
+
+[profile.release-lean.package.miniz_oxide]
+opt-level = 3
+
+[profile.release-lean.package.ml-dsa]
+opt-level = 3
+
+[profile.release-lean.package.ravif]
+opt-level = 3
+
+[profile.release-lean.package.rav1e]
+opt-level = 3
+
+[profile.release-lean.package.ring]
+opt-level = 3
+
+[profile.release-lean.package.rustls]
+opt-level = 3
+
+[profile.release-lean.package.rustls-webpki]
+opt-level = 3
+
+[profile.release-lean.package.sevenz-rust2]
+opt-level = 3
+
+[profile.release-lean.package.sha2]
+opt-level = 3
+
+[profile.release-lean.package.symphonia]
+opt-level = 3
+
+[profile.release-lean.package.weaver-rar]
+opt-level = 3
+
+[profile.release-lean.package.zip]
+opt-level = 3
+
+[profile.release-lean.package.zlib-rs]
+opt-level = 3
+
+[profile.release-lean.package.zstd]
+opt-level = 3
+
+[profile.release-lean.package.zstd-safe]
+opt-level = 3
+
+[profile.release-lean.package.zstd-sys]
+opt-level = 3
+
 [profile.rc]
 inherits = "release"
+opt-level = 2
 lto = false
 codegen-units = 16
 strip = false
+
+[profile.rc.package.scryer-interface]
+opt-level = 2
+
+[profile.rc.package.scryer-interface-core]
+opt-level = 2
+
+[profile.rc.package.scryer-interface-media]
+opt-level = 2
+
+[profile.rc.package.scryer-interface-media-types]
+opt-level = 2
+
+[profile.rc.package.scryer-interface-metadata]
+opt-level = 2
+
+[profile.rc.package.scryer-interface-settings]
+opt-level = 2
+
+[profile.rc.package.alass-core]
+opt-level = 3
+
+[profile.rc.package.argon2]
+opt-level = 3
+
+[profile.rc.package.aws-lc-rs]
+opt-level = 3
+
+[profile.rc.package.aws-lc-sys]
+opt-level = 3
+
+[profile.rc.package.blake3]
+opt-level = 3
+
+[profile.rc.package.brotli]
+opt-level = 3
+
+[profile.rc.package.brotli-decompressor]
+opt-level = 3
+
+[profile.rc.package.crc32fast]
+opt-level = 3
+
+[profile.rc.package.fast_image_resize]
+opt-level = 3
+
+[profile.rc.package.flate2]
+opt-level = 3
+
+[profile.rc.package.image]
+opt-level = 3
+
+[profile.rc.package.lzma-rs]
+opt-level = 3
+
+[profile.rc.package.miniz_oxide]
+opt-level = 3
+
+[profile.rc.package.ml-dsa]
+opt-level = 3
+
+[profile.rc.package.ravif]
+opt-level = 3
+
+[profile.rc.package.rav1e]
+opt-level = 3
+
+[profile.rc.package.ring]
+opt-level = 3
+
+[profile.rc.package.rustls]
+opt-level = 3
+
+[profile.rc.package.rustls-webpki]
+opt-level = 3
+
+[profile.rc.package.sevenz-rust2]
+opt-level = 3
+
+[profile.rc.package.sha2]
+opt-level = 3
+
+[profile.rc.package.symphonia]
+opt-level = 3
+
+[profile.rc.package.weaver-rar]
+opt-level = 3
+
+[profile.rc.package.zip]
+opt-level = 3
+
+[profile.rc.package.zlib-rs]
+opt-level = 3
+
+[profile.rc.package.zstd]
+opt-level = 3
+
+[profile.rc.package.zstd-safe]
+opt-level = 3
+
+[profile.rc.package.zstd-sys]
+opt-level = 3
 
 [profile.dev.package.image]
 opt-level = 3

@@ -75,6 +75,7 @@ jobs:
             sccache_lane: scryer-linux-x86_64-musl
             sccache_writer_id: scryer-linux-x86_64-portable
             artifact_name: scryer-linux-x86_64-portable
+            release_profile: release
             extra_rustflags: ""
           - arch: x86_64
             variant: haswell
@@ -83,6 +84,7 @@ jobs:
             sccache_lane: scryer-linux-x86_64-musl
             sccache_writer_id: scryer-linux-x86_64-haswell
             artifact_name: scryer-linux-x86_64-haswell
+            release_profile: release
             extra_rustflags: "-C target-cpu=haswell"
           - arch: arm64
             variant: portable
@@ -91,15 +93,17 @@ jobs:
             sccache_lane: scryer-linux-arm64-musl
             sccache_writer_id: scryer-linux-arm64-portable
             artifact_name: scryer-linux-arm64-portable
+            release_profile: release
             extra_rustflags: ""
           - arch: arm64
-            variant: cortex-a76
+            variant: optimized
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             sccache_lane: scryer-linux-arm64-musl
-            sccache_writer_id: scryer-linux-arm64-cortex-a76
-            artifact_name: scryer-linux-arm64-cortex-a76
-            extra_rustflags: "-C target-cpu=cortex-a76"
+            sccache_writer_id: scryer-linux-arm64-optimized
+            artifact_name: scryer-linux-arm64-optimized
+            release_profile: release
+            extra_rustflags: "-C target-feature=+aes,+crc,+dotprod,+fp16,+lse,+neon,+rdm,+sha2 --cfg aes_armv8"
     env:
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
@@ -109,7 +113,7 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
-      SCRYER_CARGO_PROFILE: release
+      SCRYER_CARGO_PROFILE: ${{ matrix.release_profile }}
       SCRYER_SCCACHE_BUILD_FLAVOR: release
     steps:
       - uses: actions/checkout@v6
@@ -219,6 +223,7 @@ jobs:
             sccache_lane: scryer-macos-arm64
             sccache_writer_id: scryer-darwin-arm64-portable
             artifact_name: scryer-darwin-arm64-portable
+            release_profile: release-lean
             extra_rustflags: ""
           - arch: arm64
             variant: apple-m1
@@ -227,6 +232,7 @@ jobs:
             sccache_lane: scryer-macos-arm64
             sccache_writer_id: scryer-darwin-arm64-apple-m1
             artifact_name: scryer-darwin-arm64-apple-m1
+            release_profile: release
             extra_rustflags: "-C target-cpu=apple-m1 --cfg aes_armv8 --cfg chacha20_force_neon"
           - arch: x86_64
             variant: portable
@@ -235,6 +241,7 @@ jobs:
             sccache_lane: scryer-macos-x86_64
             sccache_writer_id: scryer-darwin-x86_64-portable
             artifact_name: scryer-darwin-x86_64-portable
+            release_profile: release-lean
             extra_rustflags: ""
     env:
       CARGO_INCREMENTAL: "0"
@@ -244,7 +251,7 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
-      SCRYER_CARGO_PROFILE: release
+      SCRYER_CARGO_PROFILE: ${{ matrix.release_profile }}
       SCRYER_SCCACHE_BUILD_FLAVOR: release
     steps:
       - uses: actions/checkout@v6
@@ -352,6 +359,7 @@ jobs:
             sccache_lane: scryer-windows-x86_64-msvc
             sccache_writer_id: scryer-windows-x86_64-portable
             artifact_name: scryer-windows-x86_64-portable
+            release_profile: release
             install_nasm: true
             use_clang_cl: false
           - arch: arm64
@@ -361,6 +369,7 @@ jobs:
             sccache_lane: scryer-windows-arm64-msvc
             sccache_writer_id: scryer-windows-arm64-portable
             artifact_name: scryer-windows-arm64-portable
+            release_profile: release-lean
             install_nasm: false
             use_clang_cl: true
     env:
@@ -371,7 +380,7 @@ jobs:
       SCCACHE_CACHE_SIZE: 10G
       SCCACHE_DIR: ${{ github.workspace }}\.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
-      SCRYER_CARGO_PROFILE: release
+      SCRYER_CARGO_PROFILE: ${{ matrix.release_profile }}
       SCRYER_SCCACHE_BUILD_FLAVOR: release
     steps:
       - uses: actions/checkout@v6

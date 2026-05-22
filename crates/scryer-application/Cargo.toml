@@ -3,18 +3,50 @@ name = "scryer-application"
 version = "0.15.4"
 edition.workspace = true
 
+[features]
+default = []
+runtime = [
+    "runtime-archives",
+    "runtime-backups",
+    "runtime-media-analysis",
+    "runtime-plugin-trust",
+]
+runtime-archives = [
+    "dep:flate2",
+    "dep:lzma-rs",
+    "dep:sevenz-rust2",
+    "dep:weaver-rar",
+    "dep:zip",
+]
+runtime-backups = ["dep:tar", "dep:zstd"]
+runtime-media-analysis = [
+    "dep:alass-core",
+    "dep:chardetng",
+    "dep:encoding_rs",
+    "dep:scryer-mediainfo",
+    "dep:symphonia",
+    "dep:whatlang",
+]
+runtime-plugin-trust = [
+    "dep:base64",
+    "dep:rustls-pki-types",
+    "dep:rustls-webpki",
+    "dep:sigstore",
+    "dep:x509-cert",
+]
+
 [dependencies]
 scryer-domain = { path = "../scryer-domain" }
 scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
 scryer-release-parser = { path = "../scryer-release-parser" }
 scryer-rules = { path = "../scryer-rules" }
-scryer-mediainfo = { path = "../scryer-mediainfo" }
+scryer-mediainfo = { path = "../scryer-mediainfo", optional = true }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
 jsonwebtoken = { workspace = true }
 rand_core = { workspace = true }
 argon2 = { workspace = true }
 aws-lc-rs = { workspace = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider", "http2", "gzip", "brotli", "zstd", "deflate"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider", "http2", "gzip", "brotli", "deflate"] }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,28 +58,28 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 semver = { workspace = true }
 metrics = { workspace = true }
-weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.4.3", default-features = false }
-sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"] }
-zip = { version = "8", default-features = false, features = ["deflate"] }
-tar = "0.4"
-flate2 = "1"
-zstd = "0.13"
-lzma-rs = "0.3"
+weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.4.3", default-features = false, optional = true }
+sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"], optional = true }
+zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1", optional = true }
+zstd = { version = "0.13", optional = true }
+lzma-rs = { version = "0.3", optional = true }
 tempfile = "3"
-alass-core = "2.0.0"
-chardetng = "1"
-encoding_rs = "0.8"
-symphonia = { version = "0.5", features = ["aac", "flac", "mp3", "vorbis", "pcm", "mkv", "isomp4"] }
+alass-core = { version = "2.0.0", optional = true }
+chardetng = { version = "1", optional = true }
+encoding_rs = { version = "0.8", optional = true }
+symphonia = { version = "0.5", features = ["aac", "flac", "mp3", "vorbis", "pcm", "mkv", "isomp4"], optional = true }
 unicode-normalization = "0.1"
-whatlang = "0.16"
+whatlang = { version = "0.16", optional = true }
 regex = "1"
 blake3 = "1"
 const-oid = "0.9"
-sigstore = { version = "0.13", default-features = false, features = ["cosign", "sigstore-trust-root", "rustls-tls"] }
-base64 = "0.22"
-rustls-pki-types = "1"
-rustls-webpki = "0.103"
-x509-cert = "0.2"
+sigstore = { version = "0.13", default-features = false, features = ["cosign", "sigstore-trust-root", "rustls-tls"], optional = true }
+base64 = { version = "0.22", optional = true }
+rustls-pki-types = { version = "1", optional = true }
+rustls-webpki = { version = "0.103", optional = true }
+x509-cert = { version = "0.2", optional = true }
 url = "2"
 
 [target.'cfg(unix)'.dependencies]

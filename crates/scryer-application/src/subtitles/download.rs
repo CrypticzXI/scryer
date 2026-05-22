@@ -154,9 +154,10 @@ pub async fn download_and_save_with_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "runtime-archives")]
     use crate::subtitles::{SubtitleMatch, SubtitleQuery};
-    use std::io::Cursor;
 
+    #[cfg(feature = "runtime-archives")]
     struct StaticProvider {
         content: Vec<u8>,
         format: String,
@@ -164,6 +165,7 @@ mod tests {
         content_type: Option<String>,
     }
 
+    #[cfg(feature = "runtime-archives")]
     #[async_trait::async_trait]
     impl SubtitleProvider for StaticProvider {
         async fn search(&self, _query: &SubtitleQuery) -> AppResult<Vec<SubtitleMatch>> {
@@ -184,12 +186,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "runtime-archives")]
     #[tokio::test]
     async fn download_and_save_extracts_compressed_subtitle_before_writing() {
         let subtitle_content =
             b"[Script Info]\nTitle: Test\n\n[Events]\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello\n";
         let mut xz_content = Vec::new();
-        lzma_rs::xz_compress(&mut Cursor::new(subtitle_content), &mut xz_content).unwrap();
+        lzma_rs::xz_compress(&mut std::io::Cursor::new(subtitle_content), &mut xz_content)
+            .unwrap();
 
         let provider = StaticProvider {
             content: xz_content,

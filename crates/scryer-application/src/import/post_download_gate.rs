@@ -16,6 +16,7 @@ use tracing::warn;
 
 pub(crate) enum ImportedFileGateDecision {
     Accepted(Box<ImportedFileAcceptance>),
+    #[cfg_attr(not(feature = "runtime-media-analysis"), allow(dead_code))]
     Rejected(ImportedFileRejection),
 }
 
@@ -83,6 +84,7 @@ pub(crate) fn build_import_profile_decision(
     decision
 }
 
+#[cfg(feature = "runtime-media-analysis")]
 pub(crate) fn build_media_file_analysis(
     analysis: &scryer_mediainfo::MediaAnalysis,
 ) -> crate::MediaFileAnalysis {
@@ -204,6 +206,7 @@ fn build_synthetic_media_file_analysis(
     }
 }
 
+#[cfg(feature = "runtime-media-analysis")]
 fn build_stream_pointer_media_file_analysis_from_parsed(
     parsed: &crate::ParsedReleaseMetadata,
 ) -> crate::MediaFileAnalysis {
@@ -232,6 +235,7 @@ fn inferred_container_format_for_path(path: &Path) -> Option<String> {
         .map(|ext| ext.to_ascii_lowercase())
 }
 
+#[cfg(feature = "runtime-media-analysis")]
 fn path_is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
         .map(|metadata| metadata.file_type().is_symlink())
@@ -245,6 +249,7 @@ fn path_is_symlink(path: &Path) -> bool {
     clippy::too_many_arguments,
     reason = "probe-and-validate carries the full import gate context through one decision point"
 )]
+#[cfg(feature = "runtime-media-analysis")]
 pub(crate) async fn probe_and_validate(
     app: &AppUseCase,
     title: &Title,
@@ -443,6 +448,31 @@ pub(crate) async fn probe_and_validate(
     ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
         analysis: Some(build_media_file_analysis(&analysis)),
         scan_error: None,
+    }))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "probe-and-validate carries the full import gate context through one decision point"
+)]
+#[cfg(not(feature = "runtime-media-analysis"))]
+pub(crate) async fn probe_and_validate(
+    _app: &AppUseCase,
+    _title: &Title,
+    parsed: &crate::ParsedReleaseMetadata,
+    _quality_profile: &crate::QualityProfile,
+    path: &Path,
+    _size_bytes: i64,
+    _has_existing_file: bool,
+    _existing_score: Option<i32>,
+    _is_filler: bool,
+) -> ImportedFileGateDecision {
+    ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
+        analysis: Some(build_synthetic_media_file_analysis(
+            parsed,
+            inferred_container_format_for_path(path),
+        )),
+        scan_error: Some("native media analysis is not compiled into this target".to_string()),
     }))
 }
 

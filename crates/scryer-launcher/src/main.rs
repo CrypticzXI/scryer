@@ -13,7 +13,7 @@ const CONFIG_DIR: &str = "/config";
 const DEFAULT_DB_PATH: &str = "/config/scryer.db";
 const PORTABLE_PAYLOAD_NAME: &str = "scryer-portable";
 const HASWELL_PAYLOAD_NAME: &str = "scryer-haswell";
-const CORTEX_A76_PAYLOAD_NAME: &str = "scryer-cortex-a76";
+const ARM64_OPTIMIZED_PAYLOAD_NAME: &str = "scryer-arm64-optimized";
 const LAUNCHER_UID_DEFAULT: u32 = 1000;
 const LAUNCHER_GID_DEFAULT: u32 = 1000;
 const X86_REQUIRED_FEATURES: &[&str] = &[
@@ -100,7 +100,7 @@ enum Arch {
 enum Lane {
     Portable,
     Haswell,
-    CortexA76,
+    Arm64Optimized,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,7 +246,7 @@ fn resolve_runtime_launch<O: LauncherOps>(
     let portable = config.payload_root.join(PORTABLE_PAYLOAD_NAME);
     let optimized = match lane {
         Lane::Haswell => Some(config.payload_root.join(HASWELL_PAYLOAD_NAME)),
-        Lane::CortexA76 => Some(config.payload_root.join(CORTEX_A76_PAYLOAD_NAME)),
+        Lane::Arm64Optimized => Some(config.payload_root.join(ARM64_OPTIMIZED_PAYLOAD_NAME)),
         Lane::Portable => None,
     };
 
@@ -293,7 +293,9 @@ fn determine_lane<O: LauncherOps>(ops: &O, arch: Arch, cpuinfo_path: &Path) -> L
 
     match arch {
         Arch::Amd64 if feature_set_has_all(&features, X86_REQUIRED_FEATURES) => Lane::Haswell,
-        Arch::Arm64 if feature_set_has_all(&features, ARM_REQUIRED_FEATURES) => Lane::CortexA76,
+        Arch::Arm64 if feature_set_has_all(&features, ARM_REQUIRED_FEATURES) => {
+            Lane::Arm64Optimized
+        }
         _ => Lane::Portable,
     }
 }
@@ -788,20 +790,20 @@ mod tests {
     }
 
     #[test]
-    fn arm64_should_select_optimized_when_cortex_a76_features_are_present() {
+    fn arm64_should_select_optimized_when_required_features_are_present() {
         let ops = MockLauncherOps::default();
         let mut config = base_config();
         config.container_arch_override = Some("arm64".into());
         ops.insert_entry(
             "/cpuinfo",
-            MockEntry::text_file(include_str!("../tests/fixtures/arm64-cortex-a76.cpuinfo")),
+            MockEntry::text_file(include_str!("../tests/fixtures/arm64-optimized.cpuinfo")),
         );
         ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
-        ops.insert_entry("/payloads/scryer-cortex-a76", MockEntry::executable_file());
+        ops.insert_entry("/payloads/scryer-arm64-optimized", MockEntry::executable_file());
         let runtime = resolve_runtime_launch(&ops, &config).expect("arm64 optimized runtime");
         assert_eq!(
             runtime.primary,
-            PathBuf::from("/payloads/scryer-cortex-a76")
+            PathBuf::from("/payloads/scryer-arm64-optimized")
         );
         assert_eq!(
             runtime.fallback,

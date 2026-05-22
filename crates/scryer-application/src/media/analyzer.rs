@@ -21,6 +21,7 @@ impl MediaAnalyzer for NativeMediaAnalyzer {
                 )));
             }
 
+            #[cfg(feature = "runtime-media-analysis")]
             match scryer_mediainfo::analyze_file(&path) {
                 Ok(analysis) if scryer_mediainfo::is_valid_video(&analysis) => {
                     Ok(MediaAnalysisOutcome::Valid(Box::new(
@@ -32,6 +33,10 @@ impl MediaAnalyzer for NativeMediaAnalyzer {
                 )),
                 Err(error) => Ok(MediaAnalysisOutcome::Invalid(error.to_string())),
             }
+            #[cfg(not(feature = "runtime-media-analysis"))]
+            Ok(MediaAnalysisOutcome::Invalid(
+                "native media analysis is not compiled into this target".to_string(),
+            ))
         })
         .await
         .map_err(|error| AppError::Repository(error.to_string()))?

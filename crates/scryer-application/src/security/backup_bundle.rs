@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Cursor, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -26,7 +26,9 @@ pub const EXPORT_BATCH_SIZE: i64 = 1_000;
 const ENCRYPTED_BUNDLE_MAGIC: [u8; 8] = [0x53, 0x42, 0x45, 0x5f, 0x96, 0x31, 0xc4, 0x2a];
 const BACKUP_ENCRYPTION_VERSION_1: u8 = 1;
 const BACKUP_ENCRYPTION_CHUNK_SIZE: usize = 1024 * 1024;
+#[cfg(any(feature = "runtime-backups", test))]
 const BACKUP_ENCRYPTION_TAG_LEN: usize = 16;
+#[cfg(any(feature = "runtime-backups", test))]
 const BACKUP_ENCRYPTION_MAX_CIPHERTEXT_CHUNK_LEN: usize =
     BACKUP_ENCRYPTION_CHUNK_SIZE + BACKUP_ENCRYPTION_TAG_LEN;
 const BACKUP_ENCRYPTION_SALT_LEN: usize = 16;
@@ -90,6 +92,7 @@ impl BackupEncryptionMetadataV1 {
         bytes
     }
 
+    #[cfg(any(feature = "runtime-backups", test))]
     fn from_bytes(bytes: &[u8]) -> AppResult<Self> {
         if bytes.len() != BACKUP_ENCRYPTION_METADATA_V1_LEN {
             return Err(AppError::Validation(
@@ -317,6 +320,7 @@ impl<W: Write> Write for AeadChunkWriter<W> {
     }
 }
 
+#[cfg(any(feature = "runtime-backups", test))]
 struct AeadChunkReader<R> {
     reader: R,
     key: LessSafeKey,
@@ -328,6 +332,7 @@ struct AeadChunkReader<R> {
     finished: bool,
 }
 
+#[cfg(any(feature = "runtime-backups", test))]
 impl<R: Read> AeadChunkReader<R> {
     fn new(reader: R, header: EncryptedBundleHeaderV1, passphrase: &str) -> AppResult<Self> {
         let metadata_bytes = header.metadata.to_bytes();
@@ -390,6 +395,7 @@ impl<R: Read> AeadChunkReader<R> {
     }
 }
 
+#[cfg(any(feature = "runtime-backups", test))]
 impl<R: Read> Read for AeadChunkReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if buf.is_empty() {
@@ -1027,6 +1033,7 @@ fn checksum_hex(path: impl AsRef<Path>) -> AppResult<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+#[cfg(feature = "runtime-backups")]
 fn write_bundle_payload<W: Write>(stage_dir: &Path, writer: W) -> AppResult<W> {
     let encoder = zstd::Encoder::new(writer, 3)
         .map_err(|error| AppError::Repository(format!("failed to start zstd encoder: {error}")))?;
@@ -1052,6 +1059,14 @@ fn write_bundle_payload<W: Write>(stage_dir: &Path, writer: W) -> AppResult<W> {
         .map_err(|error| AppError::Repository(format!("failed to finalize zstd payload: {error}")))
 }
 
+#[cfg(not(feature = "runtime-backups"))]
+fn write_bundle_payload<W: Write>(_stage_dir: &Path, _writer: W) -> AppResult<W> {
+    Err(AppError::Repository(
+        "backup bundle payload support is not compiled into this target".into(),
+    ))
+}
+
+#[cfg(feature = "runtime-backups")]
 fn extract_bundle_to_tempdir(bundle_path: &Path, passphrase: Option<&str>) -> AppResult<TempDir> {
     let tempdir = tempfile::tempdir().map_err(|error| {
         AppError::Repository(format!(
@@ -1070,6 +1085,14 @@ fn extract_bundle_to_tempdir(bundle_path: &Path, passphrase: Option<&str>) -> Ap
     Ok(tempdir)
 }
 
+#[cfg(not(feature = "runtime-backups"))]
+fn extract_bundle_to_tempdir(_bundle_path: &Path, _passphrase: Option<&str>) -> AppResult<TempDir> {
+    Err(AppError::Repository(
+        "backup bundle payload support is not compiled into this target".into(),
+    ))
+}
+
+#[cfg(feature = "runtime-backups")]
 fn open_bundle_payload_reader(
     bundle_path: &Path,
     passphrase: Option<&str>,
@@ -1093,7 +1116,7 @@ fn open_bundle_payload_reader(
         let reader = AeadChunkReader::new(reader, header, passphrase)?;
         Ok(Box::new(reader))
     } else {
-        Ok(Box::new(Cursor::new(prefix[..read].to_vec()).chain(reader)))
+        Ok(Box::new(std::io::Cursor::new(prefix[..read].to_vec()).chain(reader)))
     }
 }
 
@@ -1112,6 +1135,7 @@ fn parse_encrypted_bundle_header_from_reader(
     parse_encrypted_bundle_header_after_magic(reader).map(Some)
 }
 
+#[cfg(any(feature = "runtime-backups", test))]
 fn parse_encrypted_bundle_header_after_magic(
     reader: &mut impl Read,
 ) -> AppResult<EncryptedBundleHeaderV1> {
@@ -1201,6 +1225,7 @@ fn chunk_aad(version: u8, metadata_bytes: &[u8], chunk_index: u64) -> Vec<u8> {
     aad
 }
 
+#[cfg(any(feature = "runtime-backups", test))]
 fn read_encrypted_chunk_len(reader: &mut impl Read) -> AppResult<Option<usize>> {
     let mut len = [0_u8; 4];
     let read = reader.read(&mut len[..1]).map_err(|error| {
@@ -1232,6 +1257,7 @@ fn app_error_to_io_error(error: AppError) -> io::Error {
     io::Error::other(error.to_string())
 }
 
+#[cfg(feature = "runtime-backups")]
 fn map_streaming_bundle_error<E>(error: E, fallback: &str) -> AppError
 where
     E: std::error::Error + 'static,
@@ -1426,7 +1452,7 @@ fn ensure_owner_only_permissions(path: &Path) -> AppResult<()> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::{Cursor, Seek, SeekFrom, Write};
 
     fn manifest_with_part(part: &str, checksum: &str) -> BackupBundleManifest {
         manifest_with_parts(

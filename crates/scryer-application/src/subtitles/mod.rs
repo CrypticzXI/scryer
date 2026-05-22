@@ -6,13 +6,25 @@
 pub mod configs;
 pub mod download;
 mod external;
+#[cfg(feature = "runtime-media-analysis")]
 mod external_probe;
+#[cfg(not(feature = "runtime-media-analysis"))]
+#[path = "external_probe_stub.rs"]
+mod external_probe;
+#[cfg(feature = "runtime-archives")]
+pub mod extraction;
+#[cfg(not(feature = "runtime-archives"))]
+#[path = "extraction_stub.rs"]
 pub mod extraction;
 pub mod language;
 pub mod orchestration;
 pub mod provider;
 pub mod scoring;
 pub mod search;
+#[cfg(feature = "runtime-media-analysis")]
+pub mod sync;
+#[cfg(not(feature = "runtime-media-analysis"))]
+#[path = "sync_stub.rs"]
 pub mod sync;
 pub mod wanted;
 

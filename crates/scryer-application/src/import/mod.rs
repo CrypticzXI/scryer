@@ -1,5 +1,9 @@
 pub(crate) use crate::*;
 
+#[cfg(feature = "runtime-archives")]
+pub(crate) mod archive_extractor;
+#[cfg(not(feature = "runtime-archives"))]
+#[path = "archive_extractor_stub.rs"]
 pub(crate) mod archive_extractor;
 pub(crate) mod checks;
 pub mod completed_download;

@@ -3343,6 +3343,6 @@ mod plugin_http_client_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "runtime-plugin-trust"))]
 #[path = "app_usecase_plugins_tests.rs"]
 mod app_usecase_plugins_tests;

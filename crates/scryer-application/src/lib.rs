@@ -137,9 +137,10 @@ pub use app_usecase_integration::start_download_queue_poller;
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
 pub use app_usecase_rss::RssSyncReport;
 pub(crate) use audio_requirements::{
-    missing_required_audio_languages, normalize_required_audio_languages,
-    release_audio_language_hints, required_audio_languages_match,
+    normalize_required_audio_languages, release_audio_language_hints, required_audio_languages_match,
 };
+#[cfg(any(test, feature = "runtime-media-analysis"))]
+pub(crate) use audio_requirements::missing_required_audio_languages;
 pub use catalog::facets::handler::{
     FacetHandler, HydrationResult, movie_to_hydration_result, series_to_hydration_result,
 };
