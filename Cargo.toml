@@ -69,6 +69,14 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+[profile.e2e]
+inherits = "release"
+opt-level = 1
+lto = "thin"
+codegen-units = 32
+strip = true
+panic = "abort"
+
 [profile.release-launcher]
 inherits = "release"
 opt-level = "z"
