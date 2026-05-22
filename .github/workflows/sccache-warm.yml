@@ -507,19 +507,31 @@ jobs:
           $env:SCRYER_SMG_GRAPHQL_URL = "https://smg.scryer.media/graphql"
           $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=."
           $env:CMAKE_GENERATOR = "Ninja"
+          $wrapperDir = Join-Path $env:RUNNER_TEMP "scryer-compiler-wrappers"
+          New-Item -ItemType Directory -Force -Path $wrapperDir | Out-Null
           if ($env:USE_CLANG_CL -eq "true") {
-            $env:CC = "sccache clang-cl"
-            $env:CXX = "sccache clang-cl"
-            $env:CMAKE_C_COMPILER = "clang-cl"
-            $env:CMAKE_CXX_COMPILER = "clang-cl"
+            $compilerPath = (Get-Command clang-cl -ErrorAction Stop).Source
+            $ccWrapper = Join-Path $wrapperDir "clang-cl-cc.cmd"
+            $cxxWrapper = Join-Path $wrapperDir "clang-cl-cxx.cmd"
+            "@echo off`r`n""sccache"" ""$compilerPath"" %*" | Set-Content -Path $ccWrapper -Encoding ascii
+            "@echo off`r`n""sccache"" ""$compilerPath"" %*" | Set-Content -Path $cxxWrapper -Encoding ascii
+            $env:CC = $ccWrapper
+            $env:CXX = $cxxWrapper
+            $env:CMAKE_C_COMPILER = $compilerPath
+            $env:CMAKE_CXX_COMPILER = $compilerPath
             $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
             $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
             $env:AR = "llvm-lib"
           } else {
-            $env:CC = "sccache cl"
-            $env:CXX = "sccache cl"
-            $env:CMAKE_C_COMPILER = "cl"
-            $env:CMAKE_CXX_COMPILER = "cl"
+            $compilerPath = (Get-Command cl -ErrorAction Stop).Source
+            $ccWrapper = Join-Path $wrapperDir "cl-cc.cmd"
+            $cxxWrapper = Join-Path $wrapperDir "cl-cxx.cmd"
+            "@echo off`r`n""sccache"" ""$compilerPath"" %*" | Set-Content -Path $ccWrapper -Encoding ascii
+            "@echo off`r`n""sccache"" ""$compilerPath"" %*" | Set-Content -Path $cxxWrapper -Encoding ascii
+            $env:CC = $ccWrapper
+            $env:CXX = $cxxWrapper
+            $env:CMAKE_C_COMPILER = $compilerPath
+            $env:CMAKE_CXX_COMPILER = $compilerPath
             $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
             $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
             $env:AR = "lib"
