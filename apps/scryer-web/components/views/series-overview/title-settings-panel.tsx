@@ -235,7 +235,7 @@ export function TitleSettingsPanel({
   };
 
   return (
-    <div className="p-4">
+    <div id="series-overview-title-settings" className="p-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="min-w-0">
           <label className="mb-1 block text-xs font-medium text-muted-foreground">
@@ -246,7 +246,7 @@ export function TitleSettingsPanel({
             onValueChange={(v) => void handleProfileChange(v)}
             disabled={saving || qualityProfiles.length === 0}
           >
-            <SelectTrigger className="h-9 w-full">
+            <SelectTrigger id="series-overview-settings-quality-profile" className="h-9 w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -271,7 +271,7 @@ export function TitleSettingsPanel({
             onValueChange={(v) => void handleRootFolderChange(v)}
             disabled={saving}
           >
-            <SelectTrigger className="h-9 w-full font-mono text-sm">
+            <SelectTrigger id="series-overview-settings-root-folder" className="h-9 w-full font-mono text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -298,7 +298,7 @@ export function TitleSettingsPanel({
             onValueChange={(v) => void handleSeasonFolderChange(v)}
             disabled={saving}
           >
-            <SelectTrigger className="h-9 w-full">
+            <SelectTrigger id="series-overview-settings-season-folder" className="h-9 w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -312,14 +312,17 @@ export function TitleSettingsPanel({
           <label className="mb-1 block text-xs font-medium text-muted-foreground">
             {t("title.requiredAudioLanguages")}
           </label>
-          <SubtitleLanguagePicker
-            value={requiredAudioLanguages}
-            onChange={(codes) => void handleRequiredAudioChange(codes)}
-            compact
-            disabled={audioSaving}
-          />
+          <div id="series-overview-settings-required-audio-languages">
+            <SubtitleLanguagePicker
+              value={requiredAudioLanguages}
+              onChange={(codes) => void handleRequiredAudioChange(codes)}
+              compact
+              disabled={audioSaving}
+            />
+          </div>
           {hasAudioOverride ? (
             <button
+              id="series-overview-settings-required-audio-reset"
               type="button"
               className="mt-1 text-xs text-primary hover:underline"
               onClick={() => void handleResetAudioOverride()}
@@ -341,7 +344,7 @@ export function TitleSettingsPanel({
                 onValueChange={(v) => void handleFillerPolicyChange(v)}
                 disabled={saving}
               >
-                <SelectTrigger className="h-9 w-full">
+                <SelectTrigger id="series-overview-settings-filler-policy" className="h-9 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -361,7 +364,7 @@ export function TitleSettingsPanel({
                 onValueChange={(v) => void handleRecapPolicyChange(v)}
                 disabled={saving}
               >
-                <SelectTrigger className="h-9 w-full">
+                <SelectTrigger id="series-overview-settings-recap-policy" className="h-9 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -384,6 +387,7 @@ export function TitleSettingsPanel({
             </p>
           </div>
           <Button
+            id="series-overview-settings-fix-match"
             type="button"
             variant="primary"
             size="sm"
@@ -399,6 +403,7 @@ export function TitleSettingsPanel({
       <div className={`${onOpenFixMatch ? "mt-3" : "mt-5"} rounded-lg border border-border/70 bg-muted/20 px-3 py-3`}>
         <div className="flex justify-end">
           <Button
+            id="series-overview-rename-preview"
             type="button"
             variant="primary"
             size="sm"
@@ -415,6 +420,7 @@ export function TitleSettingsPanel({
             plan={renamePlan}
             applying={renameApplying}
             applyDisabled={renameApplying || renamePreviewing || renamePlan.renamable === 0}
+            applyButtonId="series-overview-rename-apply"
             onApply={() => void handleApplyRename()}
           />
         ) : null}

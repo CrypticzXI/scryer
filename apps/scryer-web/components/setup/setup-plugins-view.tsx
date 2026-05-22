@@ -15,7 +15,7 @@ import type {
   PluginInstallProgressRecord,
   RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 interface SetupPluginsViewProps {
   t: (

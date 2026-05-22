@@ -1,12 +1,20 @@
-import { Loader2, Rocket } from "lucide-react";
+import * as React from "react";
+import { AlertTriangle, ChevronDown, Loader2, Rocket, ShieldPlus, Trash2, Upload } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
-import type { GeneralSettings } from "@/lib/types/settings";
+import {
+  TrustedCertificateUploadError,
+  bundlePemFromTrustedCertificateEntries,
+  mergeTrustedCertificateEntries,
+  readTrustedCertificateEntriesFromFiles,
+} from "@/lib/utils/certificates";
+import type { GeneralSettings, TrustedCertificateEntry } from "@/lib/types/settings";
 
 type SettingsOverviewSectionProps = {
   availableLanguages: LanguageOption[];
@@ -31,8 +39,81 @@ export function SettingsOverviewSection({
   onSaveGeneralSettings,
 }: SettingsOverviewSectionProps) {
   const t = useTranslate();
+  const [advancedTrustOpen, setAdvancedTrustOpen] = React.useState(false);
+  const [trustedCertUploadError, setTrustedCertUploadError] = React.useState<string | null>(null);
+  const [trustedCertUploading, setTrustedCertUploading] = React.useState(false);
+  const trustedCertInputRef = React.useRef<HTMLInputElement | null>(null);
   const updateGeneralSettings = (patch: Partial<GeneralSettings>) =>
     onGeneralSettingsChange({ ...generalSettings, ...patch });
+  const applyTrustedCertificateEntries = React.useCallback(
+    (entries: TrustedCertificateEntry[]) => {
+      updateGeneralSettings({
+        pluginHttpTrustedCertificates: entries,
+        pluginHttpCaBundlePem: bundlePemFromTrustedCertificateEntries(entries),
+      });
+    },
+    [generalSettings, onGeneralSettingsChange],
+  );
+  const mapTrustedCertUploadError = React.useCallback(
+    (error: unknown) => {
+      if (error instanceof TrustedCertificateUploadError) {
+        switch (error.code) {
+          case "pem_bundle_missing_certificate":
+            return t("settings.pluginHttpTrustUploadMissingCertificate");
+          case "pem_bundle_trailing_text":
+            return t("settings.pluginHttpTrustUploadTrailingText");
+          case "pem_bundle_invalid_certificate":
+            return t("settings.pluginHttpTrustUploadInvalidCertificate");
+        }
+      }
+      return t("settings.pluginHttpTrustUploadReadError");
+    },
+    [t],
+  );
+  const handleTrustedCertificateUpload = React.useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files ? [...event.target.files] : [];
+      event.target.value = "";
+      if (files.length === 0) {
+        return;
+      }
+
+      setTrustedCertUploading(true);
+      setTrustedCertUploadError(null);
+      try {
+        const incoming = await readTrustedCertificateEntriesFromFiles(files);
+        const merged = mergeTrustedCertificateEntries(
+          generalSettings.pluginHttpTrustedCertificates,
+          incoming,
+        );
+        applyTrustedCertificateEntries(merged);
+      } catch (error) {
+        setTrustedCertUploadError(mapTrustedCertUploadError(error));
+      } finally {
+        setTrustedCertUploading(false);
+      }
+    },
+    [
+      applyTrustedCertificateEntries,
+      generalSettings.pluginHttpTrustedCertificates,
+      mapTrustedCertUploadError,
+    ],
+  );
+  const handleRemoveTrustedCertificate = React.useCallback(
+    (fingerprintSha256: string) => {
+      setTrustedCertUploadError(null);
+      applyTrustedCertificateEntries(
+        generalSettings.pluginHttpTrustedCertificates.filter(
+          (entry) => entry.fingerprintSha256 !== fingerprintSha256,
+        ),
+      );
+    },
+    [applyTrustedCertificateEntries, generalSettings.pluginHttpTrustedCertificates],
+  );
+  const handleClearTrustedCertificates = React.useCallback(() => {
+    setTrustedCertUploadError(null);
+    applyTrustedCertificateEntries([]);
+  }, [applyTrustedCertificateEntries]);
 
   return (
     <div className="space-y-6 text-sm">
@@ -128,6 +209,140 @@ export function SettingsOverviewSection({
             </Button>
           </>
         )}
+      </div>
+
+      <div
+        id="settings-general-plugin-http-trust-section"
+        className="space-y-4 border-t border-border pt-6"
+      >
+        <Collapsible open={advancedTrustOpen} onOpenChange={setAdvancedTrustOpen}>
+          <CollapsibleTrigger asChild>
+            <Button
+              id="settings-general-plugin-http-trust-toggle"
+              type="button"
+              variant="outline"
+              className="flex w-full items-center justify-between gap-3"
+            >
+              <span className="flex items-center gap-2">
+                <ShieldPlus className="h-4 w-4" />
+                <span className="text-left">
+                  {t("settings.pluginHttpTrustTitle")}
+                </span>
+                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                  {t("settings.pluginHttpTrustAdvancedLabel")}
+                </span>
+              </span>
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>
+                  {generalSettings.pluginHttpTrustedCertificates.length > 0
+                    ? t("settings.pluginHttpTrustStoredCount", {
+                        count: generalSettings.pluginHttpTrustedCertificates.length,
+                      })
+                    : t("settings.pluginHttpTrustEmpty")}
+                </span>
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${advancedTrustOpen ? "rotate-180" : ""}`}
+                />
+              </span>
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-4 pt-4">
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
+                <div className="space-y-1">
+                  <p className="font-medium">{t("settings.pluginHttpTrustWarningTitle")}</p>
+                  <p className="text-muted-foreground">
+                    {t("settings.pluginHttpTrustWarningBody")}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-muted-foreground">
+                {t("settings.pluginHttpTrustDescription")}
+              </p>
+              <input
+                id="settings-general-plugin-http-trust-upload-input"
+                ref={trustedCertInputRef}
+                type="file"
+                accept=".pem,.crt,.cer,.der"
+                multiple
+                className="hidden"
+                onChange={handleTrustedCertificateUpload}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  id="settings-general-plugin-http-trust-upload-button"
+                  type="button"
+                  variant="outline"
+                  disabled={trustedCertUploading}
+                  onClick={() => trustedCertInputRef.current?.click()}
+                >
+                  {trustedCertUploading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      {t("label.loading")}
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="mr-2 h-4 w-4" />
+                      {t("settings.pluginHttpTrustUploadButton")}
+                    </>
+                  )}
+                </Button>
+                <Button
+                  id="settings-general-plugin-http-trust-clear"
+                  type="button"
+                  variant="ghost"
+                  disabled={generalSettings.pluginHttpTrustedCertificates.length === 0}
+                  onClick={handleClearTrustedCertificates}
+                >
+                  {t("settings.pluginHttpTrustClearButton")}
+                </Button>
+              </div>
+              {trustedCertUploadError ? (
+                <p className="text-sm text-destructive">{trustedCertUploadError}</p>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              {generalSettings.pluginHttpTrustedCertificates.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.pluginHttpTrustEmpty")}
+                </p>
+              ) : (
+                generalSettings.pluginHttpTrustedCertificates.map((entry) => (
+                  <div
+                    id={`settings-general-plugin-http-trust-entry-${entry.fingerprintSha256}`}
+                    key={entry.fingerprintSha256}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2"
+                  >
+                    <div className="space-y-1">
+                      <p className="font-medium">
+                        {t("settings.pluginHttpTrustEntryLabel")}
+                      </p>
+                      <code className="text-xs text-muted-foreground">
+                        {entry.fingerprintSha256}
+                      </code>
+                    </div>
+                    <Button
+                      id={`settings-general-plugin-http-trust-remove-${entry.fingerprintSha256}`}
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleRemoveTrustedCertificate(entry.fingerprintSha256)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      <span className="sr-only">{t("label.remove")}</span>
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
       </div>
 
       <div className="border-t border-border pt-6">

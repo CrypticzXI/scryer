@@ -725,6 +725,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 validation_json: None,
             },
             SettingDefinitionSeed {
+                category: "general".into(),
+                scope: "system".into(),
+                key_name: "plugins.http.ca_bundle_pem".into(),
+                data_type: "string".into(),
+                default_value_json: "\"\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
                 category: "security".into(),
                 scope: "system".into(),
                 key_name: "auth.form_login_enabled".into(),
@@ -3901,6 +3910,11 @@ async fn graphql_typed_general_settings_defaults() {
           generalSettings {
             keepHistoryForever
             historyRetentionDays
+            pluginHttpCaBundlePem
+            pluginHttpTrustedCertificates {
+              fingerprintSha256
+              pem
+            }
           }
         }
         "#,
@@ -3910,10 +3924,36 @@ async fn graphql_typed_general_settings_defaults() {
     assert_no_errors(&read);
     assert_eq!(read["data"]["generalSettings"]["keepHistoryForever"], false);
     assert_eq!(read["data"]["generalSettings"]["historyRetentionDays"], 180);
+    assert_eq!(read["data"]["generalSettings"]["pluginHttpCaBundlePem"], "");
+    assert_eq!(
+        read["data"]["generalSettings"]["pluginHttpTrustedCertificates"],
+        json!([])
+    );
 }
 
 #[tokio::test]
 async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() {
+    const TEST_PLUGIN_HTTP_CA_CERT_PEM: &str = concat!(
+        "-----BEGIN CERTIFICATE-----\n",
+        "MIIDITCCAgmgAwIBAgIUY40m7DS0vG3xUR0EXxPLYFVq/WkwDQYJKoZIhvcNAQEL\n",
+        "BQAwGDEWMBQGA1UEAwwNZTJlLWppbWFrdS1jYTAeFw0yNjA1MjExNzE4NTNaFw0z\n",
+        "NjA1MTgxNzE4NTNaMBgxFjAUBgNVBAMMDWUyZS1qaW1ha3UtY2EwggEiMA0GCSqG\n",
+        "SIb3DQEBAQUAA4IBDwAwggEKAoIBAQCygxcuiabmKSdpOdnE2Vg9x8AxDtsv3apm\n",
+        "qaAeDTaG2uPeSjQsxKJfYDkRmOS9eqEV+yYQeiRwAdq3vadUd/eVlfvvrCtCswkx\n",
+        "vHhDvKpgc8KW239IdygK8JFHJz1FTfZRfgWgiKGnlqef6R1w8BjewD6/byv+VJxR\n",
+        "cQaVmrBfc7ZzXL41C/WCpdZLMyzRn1EeoEvTYqn1+Yqhhx8WlIQlT2Ha3gOIvAAX\n",
+        "Xh1CyfosZbFGfuVk4njM01K00N8GaMk0CWwMvgKADPKNh29S1Pv4PnL5k03Qb4gS\n",
+        "bAMRWJi+xMYmtAdINPnJscPKj++vOMdJxGQunpgkXKoHELZWLOANAgMBAAGjYzBh\n",
+        "MB8GA1UdIwQYMBaAFMJFcy1sAajZvY0Amv6QuPe4iqPUMA8GA1UdEwEB/wQFMAMB\n",
+        "Af8wDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBTCRXMtbAGo2b2NAJr+kLj3uIqj\n",
+        "1DANBgkqhkiG9w0BAQsFAAOCAQEAIZkWiXfdJSLtHUlqUfT5R9ko8acIt1uQt2kI\n",
+        "3SiDqyFrHWTT+cyfFyqBIEASPLX9fgPHkz42K4P1Kc9W4JR8o/QWRK7A0hvbCzuB\n",
+        "Z/5+agQ15hA1priLKk/oqoILFhT3LHR3/6mzk6vJ3EmIyDITUZ6tQiQS0zyXCxpR\n",
+        "8aCN5dsNaBwN42hxBrm/7TjiNCdX54zjLg6cPbtrsHnAI7NBi3O/WNEYISiUcC5O\n",
+        "FnEYx13QF8BQo/cY55EZDrEnF4+R6Q3DPQJHhd6tIoEYvxp8wVnUjQb3nWib1wvW\n",
+        "dlYNMnHca3kyT/MHY4oX5MmPsHY8ANxBBz0XSKw5ysN4cNpK/Q==\n",
+        "-----END CERTIFICATE-----\n",
+    );
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
 
@@ -3924,13 +3964,19 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
           updateGeneralSettings(input: $input) {
             keepHistoryForever
             historyRetentionDays
+            pluginHttpCaBundlePem
+            pluginHttpTrustedCertificates {
+              fingerprintSha256
+              pem
+            }
           }
         }
         "#,
         json!({
           "input": {
             "keepHistoryForever": false,
-            "historyRetentionDays": 45
+            "historyRetentionDays": 45,
+            "pluginHttpCaBundlePem": TEST_PLUGIN_HTTP_CA_CERT_PEM
           }
         }),
     )
@@ -3940,6 +3986,16 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
         first_update["data"]["updateGeneralSettings"]["historyRetentionDays"],
         45
     );
+    assert_eq!(
+        first_update["data"]["updateGeneralSettings"]["pluginHttpCaBundlePem"],
+        TEST_PLUGIN_HTTP_CA_CERT_PEM
+    );
+    assert_eq!(
+        first_update["data"]["updateGeneralSettings"]["pluginHttpTrustedCertificates"]
+            .as_array()
+            .map(std::vec::Vec::len),
+        Some(1)
+    );
 
     let forever_update = gql(
         &ctx,
@@ -3948,13 +4004,19 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
           updateGeneralSettings(input: $input) {
             keepHistoryForever
             historyRetentionDays
+            pluginHttpCaBundlePem
+            pluginHttpTrustedCertificates {
+              fingerprintSha256
+              pem
+            }
           }
         }
         "#,
         json!({
           "input": {
             "keepHistoryForever": true,
-            "historyRetentionDays": 0
+            "historyRetentionDays": 0,
+            "pluginHttpCaBundlePem": TEST_PLUGIN_HTTP_CA_CERT_PEM
           }
         }),
     )
@@ -3968,6 +4030,16 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
         forever_update["data"]["updateGeneralSettings"]["historyRetentionDays"],
         45
     );
+    assert_eq!(
+        forever_update["data"]["updateGeneralSettings"]["pluginHttpCaBundlePem"],
+        TEST_PLUGIN_HTTP_CA_CERT_PEM
+    );
+    assert_eq!(
+        forever_update["data"]["updateGeneralSettings"]["pluginHttpTrustedCertificates"]
+            .as_array()
+            .map(std::vec::Vec::len),
+        Some(1)
+    );
 
     let read = gql(
         &ctx,
@@ -3976,6 +4048,11 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
           generalSettings {
             keepHistoryForever
             historyRetentionDays
+            pluginHttpCaBundlePem
+            pluginHttpTrustedCertificates {
+              fingerprintSha256
+              pem
+            }
           }
         }
         "#,
@@ -3985,6 +4062,16 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
     assert_no_errors(&read);
     assert_eq!(read["data"]["generalSettings"]["keepHistoryForever"], true);
     assert_eq!(read["data"]["generalSettings"]["historyRetentionDays"], 45);
+    assert_eq!(
+        read["data"]["generalSettings"]["pluginHttpCaBundlePem"],
+        TEST_PLUGIN_HTTP_CA_CERT_PEM
+    );
+    assert_eq!(
+        read["data"]["generalSettings"]["pluginHttpTrustedCertificates"]
+            .as_array()
+            .map(std::vec::Vec::len),
+        Some(1)
+    );
 }
 
 #[tokio::test]

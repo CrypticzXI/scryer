@@ -2023,7 +2023,7 @@ fn remove_stale_builtin_assets(ctx: &TaskContext) -> Result<()> {
         let managed = path
             .extension()
             .and_then(OsStr::to_str)
-            .is_some_and(|ext| matches!(ext, "wasm" | "json" | "txt"));
+            .is_some_and(|ext| matches!(ext, "zst" | "json" | "txt"));
         if managed && !keep.contains(&path) {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove stale builtin {}", path.display()))?;

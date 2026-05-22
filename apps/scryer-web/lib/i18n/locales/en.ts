@@ -456,9 +456,9 @@ const en: LocaleDictionary = {
   "settings.downloadClientSabnzbdNzbdavHelp":
     "For NzbDav, point SAB-compatible completed downloads at the mounted completed-symlinks path, make sure Scryer can read that mount locally, and add remote path mappings if NzbDav reports a different visible path.",
   "settings.downloadClientQbittorrentDecypharrHelp":
-    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password.",
+    "For Decypharr-backed qBittorrent, use your Arr URL as the username and your Arr token as the password. Set the matching Arr name, like radarr or sonarr, in Download Client Routing for that facet.",
   "settings.downloadClientDecypharrFilesystemHelp":
-    "Completed-download import only works from paths Scryer can read locally. Mount Decypharr or NzbDav output paths into Scryer and add remote path mappings when the reported paths differ.",
+    "Completed-download import only works from paths Scryer can read locally. For Decypharr and NzbDav, Scryer imports from the completed symlink folder reported by the client, so mount that path into Scryer and add remote path mappings when the reported paths differ.",
   "settings.downloadClientNamePlaceholder": "My Download Client",
   "settings.downloadClientHostPlaceholder": "download.example.com",
   "settings.downloadClientUrlBasePlaceholder": "e.g. api",
@@ -572,8 +572,29 @@ const en: LocaleDictionary = {
   "settings.historyRetentionDaysSuffix": "days",
   "settings.historyRetentionDaysLabel": "Retain history for N days",
   "settings.historyRetentionSaved": "History retention settings saved.",
+  "settings.generalSaved": "General settings saved.",
   "settings.historyRetentionValidation":
     "History retention days must be at least 1 unless history is kept forever.",
+  "settings.pluginHttpTrustTitle": "Plugin HTTPS trusted certificates",
+  "settings.pluginHttpTrustAdvancedLabel": "Advanced feature",
+  "settings.pluginHttpTrustStoredCount": "{{count}} stored",
+  "settings.pluginHttpTrustDescription":
+    "Augment outbound HTTPS trust for WASM plugins with additional private or self-managed certificate authorities.",
+  "settings.pluginHttpTrustWarningTitle": "Use this only when you trust the certificate authority",
+  "settings.pluginHttpTrustWarningBody":
+    "These certificates extend HTTPS trust for plugin outbound requests. Only upload certificate authority files that you control or explicitly trust.",
+  "settings.pluginHttpTrustUploadButton": "Upload trusted certificates",
+  "settings.pluginHttpTrustClearButton": "Clear all",
+  "settings.pluginHttpTrustEmpty": "No extra trusted certificates uploaded.",
+  "settings.pluginHttpTrustEntryLabel": "Trusted certificate",
+  "settings.pluginHttpTrustUploadMissingCertificate":
+    "The uploaded file did not contain a PEM certificate block or DER certificate.",
+  "settings.pluginHttpTrustUploadTrailingText":
+    "The uploaded PEM file contained unexpected non-certificate text.",
+  "settings.pluginHttpTrustUploadInvalidCertificate":
+    "The uploaded certificate could not be parsed.",
+  "settings.pluginHttpTrustUploadReadError":
+    "The uploaded certificate file could not be processed.",
   "settings.tlsTitle": "TLS / SSL",
   "settings.tlsCertPathLabel": "TLS certificate path",
   "settings.tlsCertPathHelp":

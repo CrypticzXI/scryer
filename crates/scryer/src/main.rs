@@ -31,8 +31,9 @@ use axum::routing::{get, post};
 use scryer_application::{
     AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
     HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
-    NotificationPluginProvider, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
-    RuntimePluginLoad, SeriesFacetHandler, SubtitlePluginProvider, SystemInfoProvider,
+    NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime,
+    PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad,
+    SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider, SystemInfoProvider,
     TitleImageKind, TitleImageRepository, load_runtime_plugin_from_persisted_installation_payload,
     start_background_acquisition_poller, start_background_auto_backup_scheduler,
     start_background_banner_loop, start_background_download_delete_poller,
@@ -482,6 +483,8 @@ async fn main() {
     let cors_allow_all = cors.allow_all || cors.allowed_origins.iter().any(|origin| origin == "*");
     if cors_allow_all {
         tracing::warn!("CORS configured with wildcard origin(s)");
+    } else if cors.allowed_origins.is_empty() {
+        tracing::info!("CORS configured for same-origin requests only");
     } else {
         tracing::info!(origins = ?cors.allowed_origins, "CORS configured with explicit origin list");
     }
@@ -738,6 +741,30 @@ async fn bootstrap_application(
     let download_client_configs = datastore.download_client_configs();
     let subtitle_provider_configs = datastore.subtitle_provider_configs();
     let settings_for_router = datastore.settings();
+    let plugin_http_runtime = Arc::new(scryer_plugins::shared_plugin_http_runtime());
+    let plugin_http_ca_bundle_pem = match settings_for_router
+        .get_setting_json(SETTINGS_SCOPE_SYSTEM, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, None)
+        .await
+        .map_err(|error| format!("failed to load plugin HTTP trusted certificates: {error}"))?
+    {
+        Some(value_json) => match serde_json::from_str::<String>(&value_json) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    key = PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+                    error = %error,
+                    "failed to decode stored plugin HTTP trusted certificate bundle; ignoring"
+                );
+                String::new()
+            }
+        },
+        None => String::new(),
+    };
+    plugin_http_runtime
+        .set_plugin_http_ca_bundle_pem(plugin_http_ca_bundle_pem)
+        .map_err(|error| {
+            format!("failed to initialize plugin HTTP trusted certificates: {error}")
+        })?;
     let customization_store = datastore.customization_store();
     let staged_nzb_store = Arc::new(
         FileSystemStagedNzbStore::new_with_startup_purge(datastore.staged_nzb_path(), true)
@@ -953,6 +980,7 @@ async fn bootstrap_application(
         .with_indexer_caps_refresher(Arc::new(
             scryer_infrastructure::indexer_caps::DirectNabCapsSnapshotRefresher::new(),
         ))
+        .with_plugin_http_trust_runtime(plugin_http_runtime)
         .with_plugin_provider(plugin_provider)
         .with_builtin_download_client_connection_tester(Arc::new(
             BuiltinDownloadClientConnectionTester,

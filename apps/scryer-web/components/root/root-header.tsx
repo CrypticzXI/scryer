@@ -32,7 +32,7 @@ import {
   globalSearchConfigureAddId,
   globalSearchMetadataResultId,
   selectorId,
-} from "@/lib/utils/e2e-selectors";
+} from "@/lib/utils/dom-ids";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
 
 

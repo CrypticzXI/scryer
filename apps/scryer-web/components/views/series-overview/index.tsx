@@ -612,6 +612,7 @@ export function SeriesOverviewView({
     return (
       <div className="space-y-4">
         <OverviewBackLink
+          id="series-overview-back-link"
           label={t("title.backToFacet", { facet: backLabel })}
           onClick={() => onBackToList?.()}
         />
@@ -630,6 +631,7 @@ export function SeriesOverviewView({
     <>
       <div className="space-y-4">
       <OverviewBackLink
+        id="series-overview-back-link"
         label={t("title.backToFacet", { facet: backLabel })}
         onClick={() => onBackToList?.()}
       />

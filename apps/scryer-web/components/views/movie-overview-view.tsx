@@ -44,6 +44,7 @@ import type { WantedSearchPhase, WantedStatus } from "@/lib/types";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
 import { boxedActionButtonBaseClass, boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
@@ -304,7 +305,7 @@ function TitleSettingsPanel({
   };
 
   return (
-    <div className="p-4">
+    <div id="movie-overview-title-settings" className="p-4">
       <div className="grid gap-4 md:grid-cols-2">
         <div className="min-w-0">
           <label className="mb-1 block text-xs font-medium text-muted-foreground">
@@ -315,7 +316,7 @@ function TitleSettingsPanel({
             onValueChange={(v) => void handleProfileChange(v)}
             disabled={saving || qualityProfiles.length === 0}
           >
-            <SelectTrigger className="h-9 w-full">
+            <SelectTrigger id="movie-overview-settings-quality-profile" className="h-9 w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -337,6 +338,7 @@ function TitleSettingsPanel({
           </label>
           <div className="flex flex-col gap-2 sm:flex-row">
             <Input
+              id="movie-overview-settings-root-folder"
               className="h-9 font-mono text-sm"
               value={rootFolderDraft}
               onChange={(e) => setRootFolderDraft(e.target.value)}
@@ -347,6 +349,7 @@ function TitleSettingsPanel({
             />
             {rootFolderDraft.trim() !== (currentRootFolder || defaultRootFolder) && (
               <Button
+                id="movie-overview-settings-root-folder-save"
                 size="sm"
                 className="h-9 sm:self-auto"
                 onClick={() => void handleRootFolderSave()}
@@ -362,14 +365,17 @@ function TitleSettingsPanel({
           <label className="mb-1 block text-xs font-medium text-muted-foreground">
             {t("title.requiredAudioLanguages")}
           </label>
-          <SubtitleLanguagePicker
-            value={requiredAudioLanguages}
-            onChange={(codes) => void handleRequiredAudioChange(codes)}
-            compact
-            disabled={audioSaving}
-          />
+          <div id="movie-overview-settings-required-audio-languages">
+            <SubtitleLanguagePicker
+              value={requiredAudioLanguages}
+              onChange={(codes) => void handleRequiredAudioChange(codes)}
+              compact
+              disabled={audioSaving}
+            />
+          </div>
           {hasAudioOverride ? (
             <button
+              id="movie-overview-settings-required-audio-reset"
               type="button"
               className="mt-1 text-xs text-primary hover:underline"
               onClick={() => void handleResetAudioOverride()}
@@ -390,6 +396,7 @@ function TitleSettingsPanel({
             </p>
           </div>
           <Button
+            id="movie-overview-settings-fix-match"
             type="button"
             variant="primary"
             size="sm"
@@ -522,6 +529,7 @@ export function MovieOverviewView({
     return (
       <div className="space-y-4">
         <OverviewBackLink
+          id="movie-overview-back-link"
           label={t("title.backToFacet", { facet: t("nav.movies") })}
           onClick={() => onBackToList?.()}
         />
@@ -604,6 +612,7 @@ export function MovieOverviewView({
   return (
     <div className="space-y-4">
       <OverviewBackLink
+        id="movie-overview-back-link"
         label={t("title.backToFacet", { facet: t("nav.movies") })}
         onClick={() => onBackToList?.()}
       />
@@ -900,6 +909,7 @@ export function MovieOverviewView({
               </CardTitle>
             {canManageTitle ? (
               <Button
+                id="movie-overview-rename-preview"
                 className="w-full sm:w-auto"
                 size="sm"
                 variant="primary"
@@ -918,7 +928,12 @@ export function MovieOverviewView({
                 {t("title.noFilesTracked")} {t("title.noFilesTrackedHint")}
               </p>
               {canManageTitle ? (
-                <Button size="sm" onClick={onRefreshAndScan} disabled={refreshAndScanLoading}>
+                <Button
+                  id="movie-overview-files-refresh-and-scan"
+                  size="sm"
+                  onClick={onRefreshAndScan}
+                  disabled={refreshAndScanLoading}
+                >
                   {t("settings.libraryScanButton")}
                 </Button>
               ) : null}
@@ -927,7 +942,11 @@ export function MovieOverviewView({
             <div className="space-y-2">
               {mediaFiles.map((mediaFile) => {
                 return (
-                  <div key={mediaFile.id} className="rounded bg-card/60 px-3 py-3 text-sm">
+                  <div
+                    key={mediaFile.id}
+                    id={selectorId("movie-overview-media-file", mediaFile.id)}
+                    className="rounded bg-card/60 px-3 py-3 text-sm"
+                  >
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0 flex-1 space-y-2">
                         <div className="flex items-start gap-3">
@@ -970,6 +989,7 @@ export function MovieOverviewView({
                             type="button"
                             size="sm"
                             variant="secondary"
+                            id={selectorId("movie-overview-search-subtitles", mediaFile.id)}
                             className={`${boxedTextActionButtonBaseClass} ${boxedActionButtonToneClass.search}`}
                             onClick={() => setSubtitleSearchTarget({ mediaFileId: mediaFile.id, filePath: mediaFile.filePath })}
                             title={t("subtitle.search")}
@@ -984,6 +1004,7 @@ export function MovieOverviewView({
                             type="button"
                             size="icon-sm"
                             variant="secondary"
+                            id={selectorId("movie-overview-delete-file", mediaFile.id)}
                             onClick={() => onDeleteFile(mediaFile.id)}
                             className={`${boxedActionButtonBaseClass} ${boxedActionButtonToneClass.delete}`}
                             title={t("mediaFile.delete")}
@@ -1032,6 +1053,7 @@ export function MovieOverviewView({
                 plan={renamePlan}
                 applying={renameApplying}
                 applyDisabled={renameApplying || renamePlan.renamable === 0}
+                applyButtonId="movie-overview-rename-apply"
                 onApply={onApplyRename}
               />
             </div>

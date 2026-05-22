@@ -5,11 +5,13 @@ type Props = {
   label: string;
   onClick?: () => void;
   className?: string;
+  id?: string;
 };
 
-export function OverviewBackLink({ label, onClick, className }: Props) {
+export function OverviewBackLink({ label, onClick, className, id }: Props) {
   return (
     <button
+      id={id ?? "title-overview-back-link"}
       type="button"
       onClick={onClick}
       className={cn(

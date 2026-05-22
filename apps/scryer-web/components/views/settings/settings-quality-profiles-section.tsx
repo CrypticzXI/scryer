@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useTranslate } from "@/lib/context/translate-context";
 import { PERSONA_OVERRIDE_DEFAULTS } from "@/lib/constants/quality-profiles";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,

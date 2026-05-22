@@ -18,6 +18,7 @@ import { fixTitleMatchMutation } from "@/lib/graphql/mutations";
 import { searchMetadataQuery } from "@/lib/graphql/queries";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type FixableTitle = {
   id: string;
@@ -173,7 +174,7 @@ export function FixTitleMatchDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent id="fix-title-match-dialog" className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>{t("title.fixMatchDialogTitle")}</DialogTitle>
           <DialogDescription>
@@ -186,6 +187,7 @@ export function FixTitleMatchDialog({
         <div className="space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Input
+              id="fix-title-match-search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("title.fixMatchSearchPlaceholder")}
@@ -205,13 +207,19 @@ export function FixTitleMatchDialog({
           ) : null}
 
           {error ? (
-            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            <div
+              id="fix-title-match-error"
+              className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300"
+            >
               {error}
             </div>
           ) : null}
 
           {!searching && !error && query.trim() && results.length === 0 ? (
-            <div className="rounded-md border border-border px-3 py-6 text-sm text-muted-foreground">
+            <div
+              id="fix-title-match-no-results"
+              className="rounded-md border border-border px-3 py-6 text-sm text-muted-foreground"
+            >
               {t("title.fixMatchNoResults")}
             </div>
           ) : null}
@@ -222,6 +230,7 @@ export function FixTitleMatchDialog({
               return (
                 <button
                   key={`${result.tvdbId}-${result.name}`}
+                  id={selectorId("fix-title-match-result", result.tvdbId)}
                   type="button"
                   className={`flex w-full gap-3 rounded-lg border p-3 text-left transition-colors ${
                     selected
@@ -257,6 +266,7 @@ export function FixTitleMatchDialog({
                   </div>
                   <div className="flex items-start">
                     <Button
+                      id={selectorId("fix-title-match-choose", result.tvdbId)}
                       type="button"
                       variant="primary"
                       size="sm"
@@ -274,10 +284,21 @@ export function FixTitleMatchDialog({
         </div>
 
         <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={applying}>
+          <Button
+            id="fix-title-match-cancel"
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={applying}
+          >
             {t("label.cancel")}
           </Button>
-          <Button type="button" onClick={() => void handleApply()} disabled={!selectedTvdbId || applying}>
+          <Button
+            id="fix-title-match-apply"
+            type="button"
+            onClick={() => void handleApply()}
+            disabled={!selectedTvdbId || applying}
+          >
             {applying ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

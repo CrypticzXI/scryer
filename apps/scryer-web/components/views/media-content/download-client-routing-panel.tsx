@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/table";
 import type { DownloadClientRecord, DownloadClientRoutingSettings } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { DOWNLOAD_CLIENT_ROUTING_EMPTY } from "@/lib/constants/nzbget";
 import {
   boxedActionButtonBaseClass,

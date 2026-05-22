@@ -418,6 +418,11 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   updateGeneralSettings(input: $input) {
     keepHistoryForever
     historyRetentionDays
+    pluginHttpCaBundlePem
+    pluginHttpTrustedCertificates {
+      fingerprintSha256
+      pem
+    }
   }
 }`;
 

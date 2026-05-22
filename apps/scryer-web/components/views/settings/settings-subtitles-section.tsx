@@ -7,6 +7,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import type { SubtitleSettings } from "@/lib/types/settings";
 import { getSubtitleLanguage } from "@/lib/constants/subtitle-languages";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
   settings: SubtitleSettings;
@@ -15,11 +16,13 @@ type Props = {
 };
 
 function Toggle({
+  id,
   checked,
   onChange,
   label,
   disabled,
 }: {
+  id: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
@@ -27,8 +30,9 @@ function Toggle({
 }) {
   return (
     <div className="flex items-center gap-3">
-      <Label className={disabled ? "text-muted-foreground" : ""}>{label}</Label>
+      <Label htmlFor={id} className={disabled ? "text-muted-foreground" : ""}>{label}</Label>
       <SettingsToggleSwitch
+        id={id}
         checked={checked}
         disabled={disabled}
         ariaLabel={label}
@@ -39,11 +43,12 @@ function Toggle({
 }
 
 /** Integer input that holds local state and only commits on blur. */
-function BlurIntegerInput({ value, onCommit, disabled }: { value: number; onCommit: (v: number) => void; disabled?: boolean }) {
+function BlurIntegerInput({ id, value, onCommit, disabled }: { id: string; value: number; onCommit: (v: number) => void; disabled?: boolean }) {
   const [local, setLocal] = React.useState(String(value));
   React.useEffect(() => { setLocal(String(value)); }, [value]);
   return (
     <Input
+      id={id}
       {...integerInputProps}
       value={local}
       onChange={(e) => setLocal(sanitizeDigits(e.target.value))}
@@ -90,15 +95,17 @@ export function SettingsSubtitlesSection({
   }
 
   return (
-    <div className="space-y-6 text-sm">
+    <div id="settings-subtitles-section" className="space-y-6 text-sm">
       <div className={`space-y-6 ${disabled ? "pointer-events-none select-none opacity-40" : ""}`}>
         {/* Languages */}
         <div className="space-y-1">
           <Label>{t("settings.sub.languages")}</Label>
-          <SubtitleLanguagePicker
+          <div id="settings-subtitles-languages">
+            <SubtitleLanguagePicker
             value={settings.languages.map((language) => language.code)}
             onChange={updateLanguageCodes}
-          />
+            />
+          </div>
           {settings.languages.length > 0 ? (
             <div className="space-y-2 pt-2">
               {settings.languages.map((language) => {
@@ -118,6 +125,7 @@ export function SettingsSubtitlesSection({
                     </div>
                     <div className="flex flex-wrap gap-3">
                       <Toggle
+                        id={selectorId("settings-subtitles-language", language.code, "hearing-impaired")}
                         checked={language.hearingImpaired}
                         onChange={(value) =>
                           update({
@@ -132,6 +140,7 @@ export function SettingsSubtitlesSection({
                         disabled={disabled}
                       />
                       <Toggle
+                        id={selectorId("settings-subtitles-language", language.code, "forced")}
                         checked={language.forced}
                         onChange={(value) =>
                           update({
@@ -159,6 +168,7 @@ export function SettingsSubtitlesSection({
             <div className="space-y-1">
               <Label>{t("settings.sub.minScoreSeries")}</Label>
               <BlurIntegerInput
+                id="settings-subtitles-min-score-series"
                 value={settings.minimumScoreSeries}
                 onCommit={(v) => update({ minimumScoreSeries: v })}
                 disabled={disabled}
@@ -167,6 +177,7 @@ export function SettingsSubtitlesSection({
             <div className="space-y-1">
               <Label>{t("settings.sub.minScoreMovie")}</Label>
               <BlurIntegerInput
+                id="settings-subtitles-min-score-movie"
                 value={settings.minimumScoreMovie}
                 onCommit={(v) => update({ minimumScoreMovie: v })}
                 disabled={disabled}
@@ -175,6 +186,7 @@ export function SettingsSubtitlesSection({
             <div className="space-y-1">
               <Label>{t("settings.sub.searchInterval")}</Label>
               <BlurIntegerInput
+                id="settings-subtitles-search-interval-hours"
                 value={settings.searchIntervalHours}
                 onCommit={(v) => update({ searchIntervalHours: v })}
                 disabled={disabled}
@@ -186,19 +198,20 @@ export function SettingsSubtitlesSection({
 
         {/* Toggles */}
         <div className="space-y-3">
-          <Toggle checked={settings.autoDownloadOnImport} onChange={(v) => update({ autoDownloadOnImport: v })} label={t("settings.sub.autoDownload")} disabled={disabled} />
-          <Toggle checked={!settings.includeAiTranslated} onChange={(v) => update({ includeAiTranslated: !v })} label={t("settings.sub.excludeAi")} disabled={disabled} />
-          <Toggle checked={!settings.includeMachineTranslated} onChange={(v) => update({ includeMachineTranslated: !v })} label={t("settings.sub.excludeMachine")} disabled={disabled} />
+          <Toggle id="settings-subtitles-auto-download-on-import" checked={settings.autoDownloadOnImport} onChange={(v) => update({ autoDownloadOnImport: v })} label={t("settings.sub.autoDownload")} disabled={disabled} />
+          <Toggle id="settings-subtitles-exclude-ai-translated" checked={!settings.includeAiTranslated} onChange={(v) => update({ includeAiTranslated: !v })} label={t("settings.sub.excludeAi")} disabled={disabled} />
+          <Toggle id="settings-subtitles-exclude-machine-translated" checked={!settings.includeMachineTranslated} onChange={(v) => update({ includeMachineTranslated: !v })} label={t("settings.sub.excludeMachine")} disabled={disabled} />
         </div>
 
         {/* Sync */}
         <div className="space-y-3">
-          <Toggle checked={settings.syncEnabled} onChange={(v) => update({ syncEnabled: v })} label={t("settings.sub.syncEnabled")} disabled={disabled} />
+          <Toggle id="settings-subtitles-sync-enabled" checked={settings.syncEnabled} onChange={(v) => update({ syncEnabled: v })} label={t("settings.sub.syncEnabled")} disabled={disabled} />
           <p className="text-xs text-muted-foreground">{t("settings.sub.syncEnabledHelp")}</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="space-y-1">
               <Label>{t("settings.sub.syncThresholdSeries")}</Label>
               <BlurIntegerInput
+                id="settings-subtitles-sync-threshold-series"
                 value={settings.syncThresholdSeries}
                 onCommit={(v) => update({ syncThresholdSeries: v })}
                 disabled={syncDisabled}
@@ -207,6 +220,7 @@ export function SettingsSubtitlesSection({
             <div className="space-y-1">
               <Label>{t("settings.sub.syncThresholdMovie")}</Label>
               <BlurIntegerInput
+                id="settings-subtitles-sync-threshold-movie"
                 value={settings.syncThresholdMovie}
                 onCommit={(v) => update({ syncThresholdMovie: v })}
                 disabled={syncDisabled}
@@ -215,6 +229,7 @@ export function SettingsSubtitlesSection({
             <div className="space-y-1">
               <Label>{t("settings.sub.syncMaxOffset")}</Label>
               <BlurIntegerInput
+                id="settings-subtitles-sync-max-offset-seconds"
                 value={settings.syncMaxOffsetSeconds}
                 onCommit={(v) => update({ syncMaxOffsetSeconds: v })}
                 disabled={syncDisabled}

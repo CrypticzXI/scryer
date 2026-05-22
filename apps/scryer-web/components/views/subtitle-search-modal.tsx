@@ -34,6 +34,7 @@ import type {
   ExternalSubtitleBlocklistEntryRecord,
   ExternalSubtitleRecord,
 } from "@/lib/types/subtitles";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
   open: boolean;
@@ -250,7 +251,10 @@ export function SubtitleSearchModal({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex h-[min(92vh,58rem)] !w-[calc(100vw-1.5rem)] !max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden sm:!w-[min(98vw,96rem)] sm:!max-w-[min(98vw,96rem)]">
+        <DialogContent
+          id="subtitle-search-dialog"
+          className="flex h-[min(92vh,58rem)] !w-[calc(100vw-1.5rem)] !max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden sm:!w-[min(98vw,96rem)] sm:!max-w-[min(98vw,96rem)]"
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Search className="h-4 w-4" />
@@ -276,6 +280,7 @@ export function SubtitleSearchModal({
                     {t("subtitle.providersRequiredBody")}
                   </p>
                   <Button
+                    id="subtitle-search-open-settings"
                     asChild
                     size="sm"
                     variant="outline"
@@ -308,16 +313,21 @@ export function SubtitleSearchModal({
               </div>
             ) : null}
             <div className="flex items-center gap-2">
-              <div className="min-w-0 flex-1">
+              <div id="subtitle-search-language-picker" className="min-w-0 flex-1">
                 <SubtitleLanguagePicker
                   value={language ? [language] : []}
                   onChange={(codes) => setLanguage(codes[0] ?? "")}
                   singleSelect
                   compact
                   disabled={!canSearchSubtitles}
+                  triggerId="subtitle-search-language-trigger"
+                  panelId="subtitle-search-language-panel"
+                  searchInputId="subtitle-search-language-input"
+                  optionIdPrefix="subtitle-search-language-option"
                 />
               </div>
               <Button
+                id="subtitle-search-submit"
                 onClick={handleSearch}
                 disabled={searching || !language.trim() || !canSearchSubtitles}
               >
@@ -449,6 +459,7 @@ export function SubtitleSearchModal({
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-right">
                         <Button
+                          id={selectorId("subtitle-search-download", r.providerFileId)}
                           size="icon-sm"
                           variant="default"
                           disabled={downloadingId === r.providerFileId}

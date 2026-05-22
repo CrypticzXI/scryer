@@ -38,6 +38,7 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+import { selectorId } from "@/lib/utils/dom-ids";
 import {
   EpisodeProgressBar,
   getCollectionEpisodeProgressPresentation,
@@ -277,14 +278,30 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
       onValueChange={(value) => onTabChange(value as EpisodePanelTab | "history")}
     >
       <TabsList className="flex w-full flex-nowrap overflow-x-auto">
-        <TabsTrigger value="details" className="shrink-0">{t("episode.details")}</TabsTrigger>
+        <TabsTrigger
+          id={selectorId("series-overview-episode-tab", episode.id, "details")}
+          value="details"
+          className="shrink-0"
+        >{t("episode.details")}</TabsTrigger>
         {showSearchTab ? (
-          <TabsTrigger value="search" className="shrink-0">{t("episode.search")}</TabsTrigger>
+          <TabsTrigger
+            id={selectorId("series-overview-episode-tab", episode.id, "search")}
+            value="search"
+            className="shrink-0"
+          >{t("episode.search")}</TabsTrigger>
         ) : null}
         {showHistoryTab ? (
-          <TabsTrigger value="history" className="shrink-0">{t("history.title")}</TabsTrigger>
+          <TabsTrigger
+            id={selectorId("series-overview-episode-tab", episode.id, "history")}
+            value="history"
+            className="shrink-0"
+          >{t("history.title")}</TabsTrigger>
         ) : null}
-        <TabsTrigger value="blocklist" className="shrink-0">{t("episode.blocklist")}</TabsTrigger>
+        <TabsTrigger
+          id={selectorId("series-overview-episode-tab", episode.id, "blocklist")}
+          value="blocklist"
+          className="shrink-0"
+        >{t("episode.blocklist")}</TabsTrigger>
       </TabsList>
       <TabsContent value="details">
         <EpisodeDetailsPanel
@@ -303,6 +320,7 @@ const EpisodePanelContent = React.memo(function EpisodePanelContent({
         ) : (
           <div className="mb-2 flex items-center justify-end">
             <Button
+              id={selectorId("series-overview-episode-search-refresh", episode.id)}
               type="button"
               variant="ghost"
               size="sm"
@@ -512,6 +530,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
   if (isMobile) {
     return (
       <div
+        id={selectorId("series-overview-episode", episode.id)}
         data-episode-id={episode.id}
         className={cn(
           "rounded-lg border border-border bg-card/50 p-3",
@@ -520,6 +539,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
       >
         <div className="flex items-start gap-3">
           <button
+            id={selectorId("series-overview-episode-monitor", episode.id)}
             type="button"
             disabled={!onSetEpisodeMonitored || episodeToggling}
             aria-label={t("title.episodeMonitored")}
@@ -541,6 +561,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-3">
               <button
+                id={selectorId("series-overview-episode-details-toggle", episode.id)}
                 type="button"
                 className="min-w-0 flex-1 text-left"
                 onClick={handleToggleEpisodeDetails}
@@ -579,6 +600,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
             <div className="mt-3 flex flex-col gap-2">
               {onAutoSearchEpisode ? (
                 <Button
+                  id={selectorId("series-overview-episode-auto-search", episode.id)}
                   type="button"
                   size="sm"
                   variant="secondary"
@@ -596,6 +618,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
               ) : null}
               {onRunEpisodeSearch && onQueueFromEpisodeSearch ? (
                 <Button
+                  id={selectorId("series-overview-episode-interactive-search", episode.id)}
                   type="button"
                   size="sm"
                   variant="primary"
@@ -620,10 +643,15 @@ const EpisodeRow = React.memo(function EpisodeRow({
 
   return (
     <React.Fragment>
-      <TableRow data-episode-id={episode.id} className={`cv-auto-row-sm${episode.monitored ? "" : " opacity-50"}`}>
+      <TableRow
+        id={selectorId("series-overview-episode", episode.id)}
+        data-episode-id={episode.id}
+        className={`cv-auto-row-sm${episode.monitored ? "" : " opacity-50"}`}
+      >
         <TableCell className="pl-2 pr-0 text-right align-middle">
           <div className="flex items-center justify-end">
             <button
+              id={selectorId("series-overview-episode-monitor", episode.id)}
               type="button"
               disabled={episodeToggling}
               aria-label={t("title.episodeMonitored")}
@@ -655,6 +683,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
           </div>
         </TableCell>
         <TableCell
+          id={selectorId("series-overview-episode-details-toggle", episode.id)}
           className="cursor-pointer align-middle text-sm text-card-foreground hover:text-foreground"
           onClick={handleToggleEpisodeDetails}
         >
@@ -688,6 +717,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
                   <TooltipTrigger asChild>
                     <span>
                       <EpisodeTableActionButton
+                        id={selectorId("series-overview-episode-auto-search", episode.id)}
                         tone="auto"
                         onClick={handleAutoSearchClick}
                         disabled={autoSearching}
@@ -712,6 +742,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
                   <TooltipTrigger asChild>
                     <span>
                       <EpisodeTableActionButton
+                        id={selectorId("series-overview-episode-interactive-search", episode.id)}
                         tone="search"
                         onClick={handleToggleEpisodeSearch}
                         label={t("label.search")}
@@ -731,7 +762,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
         </TableCell>
       </TableRow>
       {isPanelOpen ? (
-        <TableRow>
+        <TableRow id={selectorId("series-overview-episode-panel", episode.id)}>
           <TableCell colSpan={6} className="border-t border-border bg-background/40 p-0">
             <div className="px-4 py-3">
               {panelContent}

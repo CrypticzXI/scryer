@@ -1,5 +1,4 @@
 import * as React from "react";
-import { createPortal } from "react-dom";
 import { buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ChevronDown, Search, X } from "lucide-react";
@@ -9,7 +8,6 @@ import {
   type SubtitleLanguage,
 } from "@/lib/constants/subtitle-languages";
 import { useTranslate } from "@/lib/context/translate-context";
-import { resolveFloatingPanelPlacement } from "@/lib/floating-panel";
 import { cn } from "@/lib/utils";
 
 type SubtitleLanguagePickerProps = {
@@ -20,6 +18,10 @@ type SubtitleLanguagePickerProps = {
   compact?: boolean;
   disabled?: boolean;
   singleSelect?: boolean;
+  triggerId?: string;
+  panelId?: string;
+  searchInputId?: string;
+  optionIdPrefix?: string;
 };
 
 function matchesFilter(lang: SubtitleLanguage, filter: string): boolean {
@@ -39,6 +41,10 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
   compact = false,
   disabled = false,
   singleSelect = false,
+  triggerId,
+  panelId,
+  searchInputId,
+  optionIdPrefix,
 }: SubtitleLanguagePickerProps) {
   const t = useTranslate();
   const pickerRef = React.useRef<HTMLDivElement>(null);
@@ -46,15 +52,10 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const [isOpen, setIsOpen] = React.useState(false);
   const [filter, setFilter] = React.useState("");
-  const [pickerRect, setPickerRect] = React.useState<DOMRect | null>(null);
 
   React.useEffect(() => {
     if (!isOpen) {
       setFilter("");
-      return;
-    }
-    if (pickerRef.current && typeof window !== "undefined") {
-      setPickerRect(pickerRef.current.getBoundingClientRect());
     }
   }, [isOpen]);
 
@@ -75,20 +76,9 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
       }
     };
 
-    const handleScrollOrResize = () => {
-      if (!pickerRef.current || typeof window === "undefined") {
-        return;
-      }
-      setPickerRect(pickerRef.current.getBoundingClientRect());
-    };
-
     document.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("scroll", handleScrollOrResize, true);
-    window.addEventListener("resize", handleScrollOrResize, true);
     return () => {
       document.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("scroll", handleScrollOrResize, true);
-      window.removeEventListener("resize", handleScrollOrResize, true);
     };
   }, [disabled, isOpen]);
 
@@ -109,19 +99,9 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
         : SUBTITLE_LANGUAGES,
     [filter],
   );
-  const panelPlacement = React.useMemo(() => {
-    if (!pickerRect) {
-      return null;
-    }
-    return resolveFloatingPanelPlacement({
-      anchorRect: pickerRect,
-      desiredWidth: Math.max(320, Math.round(pickerRect.width)),
-      desiredMaxHeight: 320,
-    });
-  }, [pickerRect]);
 
   React.useEffect(() => {
-    if (!isOpen || !panelPlacement || typeof window === "undefined") {
+    if (!isOpen || typeof window === "undefined") {
       return;
     }
     const frame = window.requestAnimationFrame(() => {
@@ -129,7 +109,7 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
       searchInputRef.current?.select();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [isOpen, panelPlacement]);
+  }, [isOpen]);
 
   const toggleLanguage = (code: string) => {
     if (singleSelect) {
@@ -175,24 +155,19 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
   );
 
   const floatingPanel =
-    isOpen && panelPlacement
-      ? createPortal(
+    isOpen
+      ? (
           <div
+            id={panelId}
             ref={floatingPanelRef}
-            className="z-50 flex flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg"
-            style={{
-              position: "fixed",
-              top: panelPlacement.top,
-              left: panelPlacement.left,
-              width: panelPlacement.width,
-              maxHeight: panelPlacement.maxHeight,
-            }}
+            className="absolute top-[calc(100%+0.5rem)] left-0 z-20 flex max-h-80 w-full min-w-[20rem] flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg"
           >
             {/* Search input */}
             <div className="border-b border-border p-2">
               <div className="flex items-center gap-2 rounded-md border border-input bg-field px-2 py-1">
                 <Search className="h-3.5 w-3.5 text-muted-foreground" />
                 <input
+                  id={searchInputId}
                   ref={searchInputRef}
                   type="text"
                   className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
@@ -214,6 +189,7 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
                   {filteredLanguages.map((lang) => (
                     <label
                       key={lang.code}
+                      id={optionIdPrefix ? `${optionIdPrefix}-${lang.code}` : undefined}
                       className="flex items-center gap-3 rounded-md px-2 py-1.5 text-sm text-foreground hover:bg-accent/60"
                     >
                       <Checkbox
@@ -239,19 +215,20 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
                 </div>
               )}
             </div>
-          </div>,
-          document.body,
+          </div>
         )
       : null;
 
   return (
     <div ref={pickerRef} className={cn("relative inline-block w-full", className)}>
       <div
+        id={triggerId}
         role="button"
         tabIndex={disabled ? -1 : 0}
         aria-disabled={disabled}
         aria-expanded={isOpen}
         aria-haspopup="dialog"
+        aria-controls={panelId}
         className={cn(
           buttonVariants({ variant: "secondary" }),
           "h-auto min-h-10 w-full justify-between gap-2 border border-input bg-field px-3 py-2 text-sm",

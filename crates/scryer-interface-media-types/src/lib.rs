@@ -1591,9 +1591,17 @@ pub struct AcquisitionSettingsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct PluginHttpTrustedCertificatePayload {
+    pub fingerprint_sha256: String,
+    pub pem: String,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct GeneralSettingsPayload {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+    pub plugin_http_ca_bundle_pem: String,
+    pub plugin_http_trusted_certificates: Vec<PluginHttpTrustedCertificatePayload>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1984,6 +1992,7 @@ pub struct UpdateServiceSettingsInput {
 pub struct UpdateGeneralSettingsInput {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+    pub plugin_http_ca_bundle_pem: String,
 }
 
 #[derive(InputObject, Clone)]

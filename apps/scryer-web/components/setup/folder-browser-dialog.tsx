@@ -11,7 +11,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { browsePathQuery } from "@/lib/graphql/queries";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 interface DirectoryEntry {
   name: string;

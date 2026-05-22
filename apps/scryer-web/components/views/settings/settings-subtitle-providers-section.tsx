@@ -42,6 +42,7 @@ import {
   boxedActionButtonToneClass,
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
   editingProviderId: string | null;
@@ -242,6 +243,7 @@ function DynamicSubtitleConfigField({
   hasStoredSecretValue: boolean;
 }) {
   const t = useTranslate();
+  const fieldId = selectorId("settings-subtitle-provider-config", field.key);
   const requiredMarker = field.required ? (
     <span aria-hidden="true" className="text-destructive">
       *
@@ -252,6 +254,7 @@ function DynamicSubtitleConfigField({
     return (
       <label className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2">
         <input
+          id={fieldId}
           type="checkbox"
           checked={value === "true"}
           onChange={(event) =>
@@ -275,7 +278,7 @@ function DynamicSubtitleConfigField({
   if (field.fieldType === "select" && field.options.length > 0) {
     return (
       <label>
-        <Label className="mb-2 inline-flex items-center gap-2">
+        <Label htmlFor={fieldId} className="mb-2 inline-flex items-center gap-2">
           {field.label}
           {requiredMarker}
         </Label>
@@ -283,7 +286,7 @@ function DynamicSubtitleConfigField({
           value={value || field.defaultValue || ""}
           onValueChange={(nextValue) => onChange(field.key, nextValue)}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger id={fieldId} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -304,11 +307,12 @@ function DynamicSubtitleConfigField({
   if (field.fieldType === "multiline") {
     return (
       <label>
-        <Label className="mb-2 inline-flex items-center gap-2">
+        <Label htmlFor={fieldId} className="mb-2 inline-flex items-center gap-2">
           {field.label}
           {requiredMarker}
         </Label>
         <Textarea
+          id={fieldId}
           value={value}
           onChange={(event) => onChange(field.key, event.target.value)}
           required={field.required}
@@ -329,11 +333,12 @@ function DynamicSubtitleConfigField({
 
   return (
     <label>
-      <Label className="mb-2 inline-flex items-center gap-2">
+      <Label htmlFor={fieldId} className="mb-2 inline-flex items-center gap-2">
         {field.label}
         {requiredMarker}
       </Label>
       <Input
+        id={fieldId}
         value={value}
         onChange={(event) => onChange(field.key, event.target.value)}
         type={isSecretField ? "password" : "text"}
@@ -483,7 +488,7 @@ export function SettingsSubtitleProvidersSection({
   );
 
   return (
-    <div className="space-y-4 rounded-xl border border-border/60 bg-card/30 p-4">
+    <div id="settings-subtitle-providers-section" className="space-y-4 rounded-xl border border-border/60 bg-card/30 p-4">
       <CardTitle className="flex items-center gap-2 text-base">
         <PlugZap className="h-4 w-4" />
         {t("settings.subtitleProviders")}
@@ -519,7 +524,10 @@ export function SettingsSubtitleProvidersSection({
                 </TableRow>
               ) : (
                 providerConfigs.map((provider) => (
-                  <TableRow key={provider.id}>
+                  <TableRow
+                    key={provider.id}
+                    id={selectorId("settings-subtitle-provider-row", provider.id)}
+                  >
                     <TableCell className="font-medium">{provider.name}</TableCell>
                     <TableCell>{provider.providerType}</TableCell>
                     <TableCell className="text-center">
@@ -534,6 +542,7 @@ export function SettingsSubtitleProvidersSection({
                     <TableCell className="text-right">
                       <div className="inline-flex items-center gap-2">
                         <SubtitleProviderActionButton
+                          id={selectorId("settings-subtitle-provider-edit", provider.id)}
                           label={t("label.edit")}
                           tone="edit"
                           onClick={() => editProvider(provider)}
@@ -542,6 +551,7 @@ export function SettingsSubtitleProvidersSection({
                           <Edit className="h-4 w-4" />
                         </SubtitleProviderActionButton>
                         <SubtitleProviderActionButton
+                          id={selectorId("settings-subtitle-provider-toggle", provider.id)}
                           label={
                             provider.isEnabled ? t("label.disable") : t("label.enable")
                           }
@@ -556,6 +566,7 @@ export function SettingsSubtitleProvidersSection({
                           )}
                         </SubtitleProviderActionButton>
                         <SubtitleProviderActionButton
+                          id={selectorId("settings-subtitle-provider-delete", provider.id)}
                           label={t("label.delete")}
                           tone="delete"
                           onClick={() => void deleteProvider(provider)}
@@ -576,6 +587,7 @@ export function SettingsSubtitleProvidersSection({
       {isEditorOpen ? (
         <>
           <form
+            id="settings-subtitle-provider-form"
             className="space-y-4 rounded-lg border border-border/60 p-4"
             onSubmit={submitProvider}
           >
@@ -597,7 +609,7 @@ export function SettingsSubtitleProvidersSection({
                   value={normalizedProviderType}
                   onValueChange={handleProviderTypeChange}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger id="settings-subtitle-provider-type" className="w-full">
                     <SelectValue placeholder={t("form.providerTypePlaceholder")} />
                   </SelectTrigger>
                   <SelectContent>
@@ -613,6 +625,7 @@ export function SettingsSubtitleProvidersSection({
               <label>
                 <Label className="mb-2 block">{t("label.name")}</Label>
                 <Input
+                  id="settings-subtitle-provider-name"
                   value={providerDraft.name}
                   onChange={(event) =>
                     setProviderDraft((previous) => ({
@@ -628,6 +641,7 @@ export function SettingsSubtitleProvidersSection({
 
             <label className="flex items-center gap-2">
               <input
+                id="settings-subtitle-provider-enabled"
                 type="checkbox"
                 checked={providerDraft.isEnabled}
                 onChange={(event) =>
@@ -650,6 +664,7 @@ export function SettingsSubtitleProvidersSection({
                     className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-sm"
                   >
                     <input
+                      id={selectorId("settings-subtitle-provider-facet", facet.value)}
                       type="checkbox"
                       checked={providerDraft.enabledFacets.includes(facet.value)}
                       onChange={(event) =>
@@ -691,6 +706,7 @@ export function SettingsSubtitleProvidersSection({
 
             <div className="flex flex-wrap gap-2">
               <Button
+                id="settings-subtitle-provider-save"
                 type="submit"
                 disabled={
                   mutatingProviderId !== null ||
@@ -701,6 +717,7 @@ export function SettingsSubtitleProvidersSection({
                 {editingProviderId ? t("label.save") : t("label.create")}
               </Button>
               <Button
+                id="settings-subtitle-provider-test-connection"
                 type="button"
                 variant="secondary"
                 onClick={() => void testProviderConnection()}
@@ -712,6 +729,7 @@ export function SettingsSubtitleProvidersSection({
                 {t("label.testConnection")}
               </Button>
               <Button
+                id="settings-subtitle-provider-cancel"
                 type="button"
                 variant="outline"
                 onClick={resetProviderDraft}
@@ -724,6 +742,7 @@ export function SettingsSubtitleProvidersSection({
           {isEditing ? (
             <div className="flex justify-center">
               <Button
+                id="settings-subtitle-provider-create-new"
                 type="button"
                 size="lg"
                 onClick={startCreateProvider}
@@ -739,6 +758,7 @@ export function SettingsSubtitleProvidersSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-subtitle-provider-create"
             type="button"
             size="lg"
             onClick={startCreateProvider}

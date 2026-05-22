@@ -3,19 +3,22 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    BlocklistRepository, DownloadSourceIdentity, ImportRepository, MediaFileRepository,
-    ReleaseAttemptRepository, ShowRepository, TitleRepository, WantedItemRepository,
-    import_completed_download,
+    BlocklistRepository, DownloadClientConfigRepository, DownloadSourceIdentity, ImportRepository,
+    MediaFileRepository, ReleaseAttemptRepository, ShowRepository, TitleRepository,
+    WantedItemRepository, import_completed_download,
 };
 use scryer_domain::{
-    Collection, CompletedDownload, Episode, Id, ImportDecision, ImportSkipReason, MediaFacet, Title,
+    Collection, CompletedDownload, DownloadClientConfig, DownloadClientStatus, Episode, Id,
+    ImportDecision, ImportSkipReason, MediaFacet, Title,
 };
-use scryer_infrastructure::{FsFileImporter, ImportStore, SettingDefinitionSeed};
+use scryer_infrastructure::{
+    DownloadClientConfigStore, FsFileImporter, ImportStore, SettingDefinitionSeed,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -695,6 +698,157 @@ async fn import_movie_symlink_file_preserves_symlink_and_synthetic_media_traits(
     assert_eq!(media_files[0].video_codec, None);
     assert_eq!(media_files[0].audio_codec, None);
     assert_eq!(media_files[0].audio_channels, None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_movie_decypharr_symlink_release_folder_succeeds() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let release_name =
+        "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.AV1.Opus-nAV1gator";
+    let file_name = format!("{release_name}.mkv");
+
+    let backing_dir = tempfile::tempdir().expect("backing tempdir");
+    let backing_video = backing_dir.path().join(&file_name);
+    std::fs::write(&backing_video, b"fake video content").expect("write backing video");
+
+    let symlink_root = tempfile::tempdir().expect("symlink root tempdir");
+    let release_dir = symlink_root.path().join("radarr").join(release_name);
+    std::fs::create_dir_all(&release_dir).expect("create release dir");
+    let source_link = release_dir.join(&file_name);
+    std::os::unix::fs::symlink(&backing_video, &source_link).expect("create source symlink");
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_movie_title(
+        &ctx,
+        "title-movie-decypharr-1",
+        "Harry Potter and the Prisoner of Azkaban",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+
+    let completed = CompletedDownload {
+        client_type: "qbittorrent".to_string(),
+        client_id: "test-client".to_string(),
+        download_client_item_id: "dl-movie-decypharr-1".to_string(),
+        name: release_name.to_string(),
+        dest_dir: release_dir.to_string_lossy().to_string(),
+        category: Some("radarr".to_string()),
+        size_bytes: None,
+        completed_at: None,
+        parameters: vec![
+            ("*scryer_title_id".to_string(), title.id.clone()),
+            ("*scryer_facet".to_string(), "movie".to_string()),
+        ],
+    };
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("import_completed_download");
+
+    assert_eq!(result.decision, ImportDecision::Imported);
+    assert_eq!(
+        result.link_type.map(|strategy| strategy.as_str()),
+        Some("symlink")
+    );
+    let dest_path = result.dest_path.expect("dest path");
+    assert!(
+        std::fs::symlink_metadata(&dest_path)
+            .expect("dest metadata")
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_movie_decypharr_symlink_release_folder_uses_remote_path_mapping() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let release_name =
+        "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.AV1.Opus-nAV1gator";
+    let file_name = format!("{release_name}.mkv");
+
+    let backing_dir = tempfile::tempdir().expect("backing tempdir");
+    let backing_video = backing_dir.path().join(&file_name);
+    std::fs::write(&backing_video, b"fake video content").expect("write backing video");
+
+    let local_symlink_root = tempfile::tempdir().expect("local symlink root tempdir");
+    let local_category_root = local_symlink_root.path().join("radarr");
+    let local_release_dir = local_category_root.join(release_name);
+    std::fs::create_dir_all(&local_release_dir).expect("create local release dir");
+    let source_link = local_release_dir.join(&file_name);
+    std::os::unix::fs::symlink(&backing_video, &source_link).expect("create source symlink");
+
+    let remote_category_root = "/mnt/symlinks/radarr";
+    let download_client_configs =
+        DownloadClientConfigStore::new(ctx.db.datastore(), Arc::new(RwLock::new(None)));
+    let config = download_client_configs
+        .create(DownloadClientConfig {
+            id: Id::new().0,
+            name: "Decypharr".to_string(),
+            client_type: "qbittorrent".to_string(),
+            config_json: format!(
+                r#"{{"remote_path_mappings":"{} => {}"}}"#,
+                remote_category_root,
+                local_category_root.to_string_lossy()
+            ),
+            is_enabled: true,
+            status: DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            client_priority: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("seed qbittorrent config");
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_movie_title(
+        &ctx,
+        "title-movie-decypharr-2",
+        "Harry Potter and the Prisoner of Azkaban",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+
+    let completed = CompletedDownload {
+        client_type: "qbittorrent".to_string(),
+        client_id: config.id,
+        download_client_item_id: "dl-movie-decypharr-2".to_string(),
+        name: release_name.to_string(),
+        dest_dir: format!("{remote_category_root}/{release_name}"),
+        category: Some("radarr".to_string()),
+        size_bytes: None,
+        completed_at: None,
+        parameters: vec![
+            ("*scryer_title_id".to_string(), title.id.clone()),
+            ("*scryer_facet".to_string(), "movie".to_string()),
+        ],
+    };
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("import_completed_download");
+
+    assert_eq!(result.decision, ImportDecision::Imported);
+    assert_eq!(
+        result.link_type.map(|strategy| strategy.as_str()),
+        Some("symlink")
+    );
+    let dest_path = result.dest_path.expect("dest path");
+    assert!(
+        std::fs::symlink_metadata(&dest_path)
+            .expect("dest metadata")
+            .file_type()
+            .is_symlink()
+    );
 }
 
 // ---------------------------------------------------------------------------

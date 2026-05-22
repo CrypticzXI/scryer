@@ -21,11 +21,13 @@ export function MediaRenamePlanPanel({
   applying,
   applyDisabled,
   onApply,
+  applyButtonId,
 }: {
   plan: MediaRenamePlan;
   applying: boolean;
   applyDisabled: boolean;
   onApply: () => void;
+  applyButtonId?: string;
 }) {
   const t = useTranslate();
 
@@ -66,7 +68,7 @@ export function MediaRenamePlanPanel({
         </table>
       </div>
       <div className="flex justify-end">
-        <Button size="sm" type="button" onClick={onApply} disabled={applyDisabled}>
+        <Button id={applyButtonId} size="sm" type="button" onClick={onApply} disabled={applyDisabled}>
           {applying ? t("rename.applying") : t("rename.applyButton")}
         </Button>
       </div>

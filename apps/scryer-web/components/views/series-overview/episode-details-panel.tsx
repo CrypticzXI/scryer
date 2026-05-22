@@ -14,6 +14,7 @@ import { ExternalSubtitleSection } from "@/components/common/external-subtitle-s
 import { SubtitleSearchModal } from "@/components/views/subtitle-search-modal";
 import { Button } from "@/components/ui/button";
 import { boxedActionButtonBaseClass, boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 export function EpisodeDetailsPanel({
   episode,
@@ -43,7 +44,7 @@ export function EpisodeDetailsPanel({
     {},
   );
   return (
-    <div className="space-y-3">
+    <div id={selectorId("series-overview-episode-details", episode.id)} className="space-y-3">
       {episode.overview ? (
         <div>
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t("episode.overview")}</p>
@@ -69,7 +70,11 @@ export function EpisodeDetailsPanel({
             {mediaFiles.map((file) => {
               const downloads = subtitleDownloadsByMediaFile[file.id] ?? [];
               return (
-                <div key={file.id} className="space-y-1.5 rounded bg-card/60 px-3 py-2 text-sm">
+                <div
+                  key={file.id}
+                  id={selectorId("series-overview-episode-file", file.id)}
+                  className="space-y-1.5 rounded bg-card/60 px-3 py-2 text-sm"
+                >
                   <div className="flex flex-wrap items-center gap-3">
                     <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
                     <span className="min-w-0 break-all font-mono text-xs text-muted-foreground">{file.filePath}</span>
@@ -84,6 +89,7 @@ export function EpisodeDetailsPanel({
                       type="button"
                       size="sm"
                       variant="secondary"
+                      id={selectorId("series-overview-search-subtitles", file.id)}
                       className={`ml-auto h-8 border px-3 ${boxedActionButtonToneClass.search}`}
                       onClick={() =>
                         setSubtitleSearchTarget({
@@ -100,6 +106,7 @@ export function EpisodeDetailsPanel({
                         type="button"
                         size="icon-sm"
                         variant="secondary"
+                        id={selectorId("series-overview-delete-file", file.id)}
                         onClick={() => onDeleteFile(file.id)}
                         className={`${boxedActionButtonBaseClass} ${boxedActionButtonToneClass.delete}`}
                         title={t("mediaFile.delete")}

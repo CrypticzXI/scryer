@@ -40,6 +40,7 @@ import type {
   PPScriptDraft,
   PPScriptRun,
 } from "@/components/containers/settings/settings-post-processing-container";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type SettingsPostProcessingSectionProps = {
   scripts: PPScript[];
@@ -256,6 +257,7 @@ export const SettingsPostProcessingSection = React.memo(
                 {scripts.map((script) => (
                   <React.Fragment key={script.id}>
                     <TableRow
+                      id={selectorId("settings-post-processing-row", script.id)}
                       className="cursor-pointer"
                       onClick={() => handleToggleExpand(script.id)}
                     >
@@ -294,6 +296,7 @@ export const SettingsPostProcessingSection = React.memo(
                           onClick={(e) => e.stopPropagation()}
                         >
                           <Button
+                            id={selectorId("settings-post-processing-toggle", script.id)}
                             type="button"
                             size="icon-sm"
                             variant="secondary"
@@ -309,6 +312,7 @@ export const SettingsPostProcessingSection = React.memo(
                             <Power className="h-4 w-4" />
                           </Button>
                           <Button
+                            id={selectorId("settings-post-processing-edit", script.id)}
                             type="button"
                             size="icon-sm"
                             variant="secondary"
@@ -323,6 +327,7 @@ export const SettingsPostProcessingSection = React.memo(
                             <Edit className="h-4 w-4" />
                           </Button>
                           <Button
+                            id={selectorId("settings-post-processing-delete", script.id)}
                             type="button"
                             size="icon-sm"
                             variant="secondary"
@@ -383,12 +388,13 @@ export const SettingsPostProcessingSection = React.memo(
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <form className="space-y-4" onSubmit={submitScript}>
+            <form id="settings-post-processing-form" className="space-y-4" onSubmit={submitScript}>
               {/* Name + Description */}
               <div className="grid gap-3 md:grid-cols-2">
                 <label>
                   <Label className="mb-2 block">{t("settings.pp.name")}</Label>
                   <Input
+                    id="settings-post-processing-name"
                     value={scriptDraft.name}
                     onChange={(e) =>
                       setScriptDraft((prev) => ({ ...prev, name: e.target.value }))
@@ -402,6 +408,7 @@ export const SettingsPostProcessingSection = React.memo(
                     {t("settings.pp.descriptionLabel")}
                   </Label>
                   <Input
+                    id="settings-post-processing-description"
                     value={scriptDraft.description}
                     onChange={(e) =>
                       setScriptDraft((prev) => ({
@@ -421,6 +428,7 @@ export const SettingsPostProcessingSection = React.memo(
                 </Label>
                 <div className="flex gap-2">
                   <Button
+                    id="settings-post-processing-script-type-inline"
                     type="button"
                     size="sm"
                     variant={scriptDraft.scriptType === "inline" ? "default" : "secondary"}
@@ -431,6 +439,7 @@ export const SettingsPostProcessingSection = React.memo(
                     {t("settings.pp.inline")}
                   </Button>
                   <Button
+                    id="settings-post-processing-script-type-file"
                     type="button"
                     size="sm"
                     variant={scriptDraft.scriptType === "file" ? "default" : "secondary"}
@@ -466,6 +475,7 @@ export const SettingsPostProcessingSection = React.memo(
                     </Label>
                     <div className="flex gap-2">
                       <Input
+                        id="settings-post-processing-script-path"
                         value={scriptDraft.scriptContent}
                         onChange={(e) =>
                           setScriptDraft((prev) => ({
@@ -477,6 +487,7 @@ export const SettingsPostProcessingSection = React.memo(
                         placeholder="/usr/local/bin/post-process.sh"
                       />
                       <Button
+                        id="settings-post-processing-browse"
                         type="button"
                         variant="outline"
                         onClick={() => setFolderBrowserOpen(true)}
@@ -504,6 +515,7 @@ export const SettingsPostProcessingSection = React.memo(
                   {FACET_OPTIONS.map((opt) => (
                     <label key={opt.value} className="flex items-center gap-2">
                       <Checkbox
+                        id={selectorId("settings-post-processing-facet", opt.value)}
                         checked={scriptDraft.appliedFacets.includes(opt.value)}
                         onCheckedChange={(checked) => {
                           setScriptDraft((prev) => {
@@ -528,6 +540,7 @@ export const SettingsPostProcessingSection = React.memo(
                 <div className="space-y-2">
                   <label className="flex items-center gap-2">
                     <input
+                      id="settings-post-processing-execution-blocking"
                       type="radio"
                       name="executionMode"
                       value="blocking"
@@ -547,6 +560,7 @@ export const SettingsPostProcessingSection = React.memo(
                   </label>
                   <label className="flex items-center gap-2">
                     <input
+                      id="settings-post-processing-execution-fire-and-forget"
                       type="radio"
                       name="executionMode"
                       value="fire_and_forget"
@@ -629,7 +643,7 @@ export const SettingsPostProcessingSection = React.memo(
 
               {/* Actions */}
               <div className="flex gap-2">
-                <Button type="submit" disabled={mutatingScriptId !== null}>
+                <Button id="settings-post-processing-save" type="submit" disabled={mutatingScriptId !== null}>
                   {mutatingScriptId !== null
                     ? t("label.saving")
                     : editingScriptId
@@ -637,6 +651,7 @@ export const SettingsPostProcessingSection = React.memo(
                       : t("label.create")}
                 </Button>
                 <Button
+                  id="settings-post-processing-cancel"
                   type="button"
                   variant="secondary"
                   onClick={resetDraft}
@@ -650,6 +665,7 @@ export const SettingsPostProcessingSection = React.memo(
         {editorMode === "edit" ? (
           <div className="flex justify-center">
             <Button
+              id="settings-post-processing-create-new"
               type="button"
               size="lg"
               onClick={startCreateScript}
@@ -664,8 +680,9 @@ export const SettingsPostProcessingSection = React.memo(
           </>
         ) : (
           <div className="flex justify-center">
-            <Button
-              type="button"
+          <Button
+            id="settings-post-processing-create"
+            type="button"
               size="lg"
               onClick={startCreateScript}
               disabled={mutatingScriptId !== null}

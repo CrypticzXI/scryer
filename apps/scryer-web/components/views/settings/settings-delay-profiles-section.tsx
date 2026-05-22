@@ -25,6 +25,7 @@ import type {
   ParsedDelayProfile,
 } from "@/lib/types/delay-profiles";
 import { FACET_OPTIONS } from "@/lib/utils/delay-profiles";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type SettingsDelayProfilesSectionProps = {
   loading: boolean;
@@ -89,7 +90,7 @@ export function SettingsDelayProfilesSection({
   }
 
   return (
-    <div className="space-y-6">
+    <div id="settings-delay-profiles-section" className="space-y-6">
       {parseError && (
         <div className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">
           {parseError}
@@ -124,7 +125,10 @@ export function SettingsDelayProfilesSection({
               </TableHeader>
               <TableBody>
                 {profiles.map((profile) => (
-                  <TableRow key={profile.id}>
+                  <TableRow
+                    key={profile.id}
+                    id={selectorId("settings-delay-profile-row", profile.id)}
+                  >
                     <TableCell className="font-medium">{profile.name}</TableCell>
                     <TableCell>{profile.usenet_delay_minutes}m</TableCell>
                     <TableCell>{profile.torrent_delay_minutes}m</TableCell>
@@ -147,6 +151,7 @@ export function SettingsDelayProfilesSection({
                     <TableCell>
                       <div className="flex gap-1">
                         <Button
+                          id={selectorId("settings-delay-profile-edit", profile.id)}
                           type="button"
                           size="icon-sm"
                           variant="secondary"
@@ -161,6 +166,7 @@ export function SettingsDelayProfilesSection({
                           <Edit className="h-4 w-4" />
                         </Button>
                         <Button
+                          id={selectorId("settings-delay-profile-delete", profile.id)}
                           type="button"
                           size="icon-sm"
                           variant="secondary"
@@ -244,6 +250,7 @@ export function SettingsDelayProfilesSection({
                 {(["usenet", "torrent"] as const).map((proto) => (
                   <label key={proto} className="flex items-center gap-2 text-sm">
                     <input
+                      id={selectorId("settings-delay-profile-preferred", proto)}
                       type="radio"
                       name="preferred_protocol"
                       value={proto}
@@ -302,6 +309,7 @@ export function SettingsDelayProfilesSection({
                 {FACET_OPTIONS.map((facet) => (
                   <label key={facet} className="flex items-center gap-2 text-sm">
                     <Checkbox
+                      id={selectorId("settings-delay-profile-facet", facet)}
                       checked={draft.applies_to_facets.includes(facet)}
                       onCheckedChange={() => toggleFacet(facet)}
                     />
@@ -353,6 +361,7 @@ export function SettingsDelayProfilesSection({
             {/* Enabled */}
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
+                id="settings-delay-profile-enabled"
                 checked={draft.enabled}
                 onCheckedChange={(checked) =>
                   updateField("enabled", checked === true)
@@ -363,14 +372,14 @@ export function SettingsDelayProfilesSection({
 
             {/* Actions */}
             <div className="flex gap-2 pt-2">
-              <Button type="submit" disabled={saving}>
+              <Button id="settings-delay-profile-save" type="submit" disabled={saving}>
                 {saving
                   ? t("label.saving")
                   : isEditing
                     ? t("label.save")
                     : t("settings.delayProfileCreate")}
               </Button>
-              <Button type="button" variant="outline" onClick={resetDraft}>
+              <Button id="settings-delay-profile-cancel" type="button" variant="outline" onClick={resetDraft}>
                 {t("label.cancel")}
               </Button>
             </div>
@@ -380,6 +389,7 @@ export function SettingsDelayProfilesSection({
       {editorMode === "edit" ? (
         <div className="flex justify-center">
           <Button
+            id="settings-delay-profile-create-new"
             type="button"
             size="lg"
             onClick={startCreateProfile}
@@ -395,6 +405,7 @@ export function SettingsDelayProfilesSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-delay-profile-create"
             type="button"
             size="lg"
             onClick={startCreateProfile}

@@ -20,7 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,

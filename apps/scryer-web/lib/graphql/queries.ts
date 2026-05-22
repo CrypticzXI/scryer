@@ -1614,6 +1614,11 @@ export const generalSettingsQuery = `query GeneralSettings {
   generalSettings {
     keepHistoryForever
     historyRetentionDays
+    pluginHttpCaBundlePem
+    pluginHttpTrustedCertificates {
+      fingerprintSha256
+      pem
+    }
   }
 }`;
 

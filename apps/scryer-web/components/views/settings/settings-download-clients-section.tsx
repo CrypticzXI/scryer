@@ -26,7 +26,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import type { DownloadClientRecord, DownloadClientDraft, DownloadClientTypeOption } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,

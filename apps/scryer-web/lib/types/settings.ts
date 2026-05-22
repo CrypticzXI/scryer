@@ -33,6 +33,13 @@ export type AcquisitionSettings = {
 export type GeneralSettings = {
   keepHistoryForever: boolean;
   historyRetentionDays: number;
+  pluginHttpCaBundlePem: string;
+  pluginHttpTrustedCertificates: TrustedCertificateEntry[];
+};
+
+export type TrustedCertificateEntry = {
+  fingerprintSha256: string;
+  pem: string;
 };
 
 export type SecuritySettings = {

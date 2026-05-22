@@ -13,7 +13,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { titlesQuery } from "@/lib/graphql/queries";
 import type { DownloadQueueItem } from "@/lib/types";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type TitleSearchResult = {
   id: string;

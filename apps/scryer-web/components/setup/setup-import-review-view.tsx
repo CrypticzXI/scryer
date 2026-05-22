@@ -5,7 +5,7 @@ import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
 import type { ConfigFieldDef } from "@/lib/types";
 import type { ExternalImportPreview } from "@/lib/types/external-import";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 import {
   externalImportDownloadClientNeedsUserSuppliedApiKey,

@@ -294,6 +294,7 @@ export function SetupRestoreView({
             <div className="space-y-2 text-sm">
               <span className="font-medium">{t("setup.restoreSelectBundle")}</span>
               <input
+                id="setup-restore-file-input"
                 key={fileInputKey}
                 ref={fileInputRef}
                 type="file"
@@ -349,6 +350,7 @@ export function SetupRestoreView({
                   </div>
                   <div className="flex flex-wrap items-center justify-center gap-3">
                     <Button
+                      id="setup-restore-select-file"
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={inspecting}
@@ -357,6 +359,7 @@ export function SetupRestoreView({
                     </Button>
                     {selectedBundle ? (
                       <Button
+                        id="setup-restore-clear-file"
                         type="button"
                         variant="destructive"
                         onClick={resetSelection}
@@ -377,6 +380,7 @@ export function SetupRestoreView({
               <label className="block space-y-2 text-sm">
                 <span className="font-medium">{t("settings.password")}</span>
                 <Input
+                  id="setup-restore-password"
                   type="password"
                   value={password}
                   onChange={(event) => {
@@ -399,7 +403,7 @@ export function SetupRestoreView({
             ) : null}
 
             {error ? (
-              <p className="text-sm text-destructive">{error}</p>
+              <p id="setup-restore-error" className="text-sm text-destructive">{error}</p>
             ) : null}
           </CardContent>
         </Card>
@@ -486,7 +490,7 @@ export function SetupRestoreView({
               </p>
 
               {error ? (
-                <p className="text-sm text-destructive">{error}</p>
+                <p id="setup-restore-error" className="text-sm text-destructive">{error}</p>
               ) : null}
             </CardContent>
           </Card>
@@ -494,7 +498,7 @@ export function SetupRestoreView({
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button variant="ghost" onClick={onBack} disabled={inspecting || applying}>
+        <Button id="setup-restore-back" variant="ghost" onClick={onBack} disabled={inspecting || applying}>
           <ArrowLeft className="mr-2 h-4 w-4" />
           {t("setup.back")}
         </Button>
@@ -502,6 +506,7 @@ export function SetupRestoreView({
         <div className="flex flex-wrap items-center gap-2">
           {summary ? (
             <Button
+              id="setup-restore-choose-another"
               type="button"
               variant="outline"
               onClick={resetSelection}
@@ -513,12 +518,13 @@ export function SetupRestoreView({
           ) : null}
 
           {summary ? (
-            <Button type="button" onClick={() => void handleApply()} disabled={applying}>
+            <Button id="setup-restore-apply" type="button" onClick={() => void handleApply()} disabled={applying}>
               {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               {t("setup.restoreApply")}
             </Button>
           ) : (
             <Button
+              id="setup-restore-inspect"
               type="button"
               onClick={() => void handleInspect()}
               disabled={

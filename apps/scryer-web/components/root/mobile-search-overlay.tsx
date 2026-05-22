@@ -18,7 +18,7 @@ import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import {
   globalSearchConfigureAddId,
   globalSearchMetadataResultId,
-} from "@/lib/utils/e2e-selectors";
+} from "@/lib/utils/dom-ids";
 import { TitlePoster } from "@/components/title-poster";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";

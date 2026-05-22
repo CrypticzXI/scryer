@@ -29,7 +29,7 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { previewManualImportQuery } from "@/lib/graphql/queries";
 import { queueManualImportMutation } from "@/lib/graphql/mutations";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { useClient } from "urql";
 
 type FilePreview = {

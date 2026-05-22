@@ -29,7 +29,7 @@ import type {
   ProviderTypeInfo,
   ConfigFieldDef,
 } from "@/lib/types";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import {
   boxedActionButtonBaseClass,

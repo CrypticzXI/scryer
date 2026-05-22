@@ -703,6 +703,15 @@ impl SystemInfoProvider for NullSystemInfoProvider {
 }
 
 #[derive(Default)]
+pub struct NullPluginHttpTrustConfigRuntime;
+
+impl crate::PluginHttpTrustConfigRuntime for NullPluginHttpTrustConfigRuntime {
+    fn set_plugin_http_ca_bundle_pem(&self, _bundle_pem: String) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 pub struct NullLogicalBackupExporter;
 
 #[async_trait]

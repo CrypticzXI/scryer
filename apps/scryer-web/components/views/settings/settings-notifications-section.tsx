@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/table";
 import type { Translate } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { sectionLabelForFacet } from "@/lib/facets/helpers";
 import { viewFromFacet } from "@/lib/facets/helpers";
 import type {

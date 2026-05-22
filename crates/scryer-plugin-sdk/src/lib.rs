@@ -7,6 +7,7 @@ use schemars::{JsonSchema, schema_for};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize, Serializer};
 
+pub mod http;
 pub mod indexer;
 pub mod net;
 pub mod notification;

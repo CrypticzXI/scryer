@@ -58,7 +58,7 @@ import type {
 import type { ActivitySection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import {
   buildQueueStatusDetail,

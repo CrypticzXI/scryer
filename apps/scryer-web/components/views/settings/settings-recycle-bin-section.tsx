@@ -14,6 +14,7 @@ import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
 } from "@/lib/utils/action-button-styles";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 export type RecycledItem = {
   id: string;
@@ -93,10 +94,11 @@ export function SettingsRecycleBinSection({
   }
 
   return (
-    <div className="space-y-4">
+    <div id="settings-recycle-bin-section" className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{t("settings.recycleBinSection")}</p>
         <Button
+          id="settings-recycle-bin-empty-all"
           variant="outline"
           size="sm"
           disabled={items.length === 0 || mutatingId !== null}
@@ -125,7 +127,10 @@ export function SettingsRecycleBinSection({
             {items.map((item) => {
               const isBusy = mutatingId === item.id || mutatingId === "__empty__";
               return (
-                <TableRow key={item.id}>
+                <TableRow
+                  key={item.id}
+                  id={selectorId("settings-recycle-bin-row", item.id)}
+                >
                   <TableCell>
                     <div>
                       <div className="font-medium">{item.fileName}</div>
@@ -146,6 +151,7 @@ export function SettingsRecycleBinSection({
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
                       <Button
+                        id={selectorId("settings-recycle-bin-restore", item.id)}
                         type="button"
                         size="icon-sm"
                         variant="secondary"
@@ -161,6 +167,7 @@ export function SettingsRecycleBinSection({
                         <RotateCcw className="h-4 w-4" />
                       </Button>
                       <Button
+                        id={selectorId("settings-recycle-bin-delete", item.id)}
                         type="button"
                         size="icon-sm"
                         variant="secondary"

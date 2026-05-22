@@ -427,6 +427,10 @@ pub trait SystemInfoProvider: Send + Sync {
     async fn current_encryption_key_base64(&self) -> AppResult<Option<String>>;
 }
 
+pub trait PluginHttpTrustConfigRuntime: Send + Sync {
+    fn set_plugin_http_ca_bundle_pem(&self, bundle_pem: String) -> AppResult<()>;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatastoreInfo {
     pub engine: String,

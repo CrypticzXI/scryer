@@ -16,7 +16,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import { SCORING_PERSONA_CHOICES } from "@/lib/constants/quality-profiles";
 import { cn } from "@/lib/utils";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { DownloadClientRoutingPanel } from "@/components/views/media-content/download-client-routing-panel";
 import {
   boxedActionButtonBaseClass,

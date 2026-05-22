@@ -65,6 +65,15 @@ fn from_general_settings(settings: scryer_application::GeneralSettings) -> Gener
     GeneralSettingsPayload {
         keep_history_forever: settings.keep_history_forever,
         history_retention_days: settings.history_retention_days,
+        plugin_http_ca_bundle_pem: settings.plugin_http_ca_bundle_pem,
+        plugin_http_trusted_certificates: settings
+            .plugin_http_trusted_certificates
+            .into_iter()
+            .map(|certificate| PluginHttpTrustedCertificatePayload {
+                fingerprint_sha256: certificate.fingerprint_sha256,
+                pem: certificate.pem,
+            })
+            .collect(),
     }
 }
 
@@ -348,6 +357,7 @@ impl SettingsMutations {
                 AppUpdateGeneralSettings {
                     keep_history_forever: input.keep_history_forever,
                     history_retention_days: input.history_retention_days,
+                    plugin_http_ca_bundle_pem: input.plugin_http_ca_bundle_pem,
                 },
             )
             .await

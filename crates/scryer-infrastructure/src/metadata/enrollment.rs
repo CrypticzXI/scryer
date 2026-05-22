@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use aws_lc_rs::{digest, hmac, rand::SecureRandom};
 use base64::Engine as _;
-use ml_dsa::{KeyGen, MlDsa65};
+use ml_dsa::{Keypair, MlDsa65, SigningKey};
 use scryer_application::SettingsRepository;
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
@@ -512,8 +512,6 @@ async fn generate_pq_keypair() -> Result<PqKeypair, EnrollmentError> {
 }
 
 fn generate_pq_keypair_sync() -> Result<PqKeypair, EnrollmentError> {
-    use ml_dsa::signature::Keypair;
-
     let rng = aws_lc_rs::rand::SystemRandom::new();
     let mut seed_bytes = [0u8; 32];
     rng.fill(&mut seed_bytes)
@@ -521,7 +519,7 @@ fn generate_pq_keypair_sync() -> Result<PqKeypair, EnrollmentError> {
 
     let mut seed = ml_dsa::Seed::default();
     seed.copy_from_slice(&seed_bytes);
-    let keypair = MlDsa65::from_seed(&seed);
+    let keypair = SigningKey::<MlDsa65>::from_seed(&seed);
     let public_key = keypair.verifying_key().encode();
     let public_key_bytes = public_key.as_slice();
 
@@ -749,7 +747,7 @@ async fn sign_pq_seed(seed_b64: &str, message: &[u8]) -> Result<String, String> 
 }
 
 fn sign_pq_seed_sync(seed_b64: &str, message: &[u8]) -> Result<String, String> {
-    use ml_dsa::signature::Signer;
+    use ml_dsa::Signer;
 
     let seed_bytes = base64::engine::general_purpose::STANDARD
         .decode(seed_b64.as_bytes())
@@ -762,8 +760,8 @@ fn sign_pq_seed_sync(seed_b64: &str, message: &[u8]) -> Result<String, String> {
     }
     let mut seed = ml_dsa::Seed::default();
     seed.copy_from_slice(&seed_bytes);
-    let keypair = MlDsa65::from_seed(&seed);
-    let signature = keypair.signing_key().sign(message);
+    let keypair = SigningKey::<MlDsa65>::from_seed(&seed);
+    let signature = keypair.sign(message);
     let encoded = signature.encode();
     Ok(base64::engine::general_purpose::STANDARD.encode(encoded.as_slice()))
 }

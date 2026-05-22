@@ -4,6 +4,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
   username?: string;
@@ -33,7 +34,7 @@ export function SettingsProfileSection({
   const canSubmit = currentPassword.length > 0 && newPassword.length > 0 && !passwordMismatch && !saving;
 
   return (
-    <div className="space-y-6 text-sm">
+    <div id="settings-profile-section" className="space-y-6 text-sm">
       <div className="space-y-2">
         <h3 className="text-base font-medium">{t("profile.accountInfo")}</h3>
         <div className="flex items-center gap-2 text-muted-foreground">
@@ -80,7 +81,12 @@ export function SettingsProfileSection({
               <p className="text-xs text-destructive">{t("profile.passwordMismatch")}</p>
             ) : null}
           </div>
-          <Button onClick={onChangePassword} disabled={!canSubmit} className="w-fit">
+          <Button
+            id={selectorId("settings-profile-change-password")}
+            onClick={onChangePassword}
+            disabled={!canSubmit}
+            className="w-fit"
+          >
             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             {t("profile.changePassword")}
           </Button>

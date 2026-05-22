@@ -17,7 +17,7 @@ import { getDefaultIndexerRouting } from "@/lib/constants/indexers";
 import type { IndexerCategoryRoutingSettings, IndexerRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,

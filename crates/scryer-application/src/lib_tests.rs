@@ -12533,6 +12533,32 @@ async fn create_enabled_download_client_config(
     .expect("create download client config")
 }
 
+async fn seed_download_client_config(
+    app: &AppUseCase,
+    id: &str,
+    name: &str,
+    client_type: &str,
+) -> DownloadClientConfig {
+    app.services
+        .integrations
+        .download_client_configs
+        .create(DownloadClientConfig {
+            id: id.to_string(),
+            name: name.to_string(),
+            client_type: client_type.to_string(),
+            config_json: "{}".to_string(),
+            is_enabled: true,
+            status: scryer_domain::DownloadClientStatus::Healthy,
+            last_error: None,
+            last_seen_at: None,
+            client_priority: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .expect("seed download client config")
+}
+
 async fn set_download_client_cleanup_routing(
     app: &AppUseCase,
     user: &User,
@@ -13385,6 +13411,194 @@ async fn try_import_completed_downloads_leaves_already_imported_item_unprocessed
 
     assert!(!processed.contains(item_id));
     assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn try_import_completed_downloads_uses_download_submission_fallback_for_untagged_qbittorrent_history()
+ {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+
+    let config =
+        seed_download_client_config(&app, "decypharr-qbit-cleanup", "Decypharr", "qbittorrent")
+            .await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, false).await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Decypharr Cleanup".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+
+    let now = Utc::now().to_rfc3339();
+    let item_id = "decypharr-untagged-cleanup-1";
+    import_repo.records.lock().await.push(ImportRecord {
+        id: Id::new().0,
+        source_client_id: Some(config.id.clone()),
+        source_system: "qbittorrent".to_string(),
+        source_ref: item_id.to_string(),
+        import_type: ImportType::MovieDownload,
+        status: ImportStatus::Completed,
+        payload_json: String::new(),
+        result_json: None,
+        started_at: Some(now.clone()),
+        finished_at: Some(now.clone()),
+        created_at: now.clone(),
+        updated_at: now,
+    });
+
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "qbittorrent".to_string();
+    item.title_id = Some(title.id.clone());
+    item.title_name = title.name.clone();
+    item.facet = Some("movie".to_string());
+    item.is_scryer_origin = false;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        &title.id,
+        "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.AV1.Opus-nAV1gator",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.client_type = "qbittorrent".to_string();
+    completed.category = Some("radarr".to_string());
+    completed.parameters.clear();
+    *download_client.completed_downloads.lock().await = vec![completed];
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "qbittorrent".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some(title.name.clone()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("seed download submission");
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(processed.contains(item_id));
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+    );
+}
+
+#[tokio::test]
+async fn try_import_completed_downloads_retries_terminal_cleanup_for_untagged_qbittorrent_history()
+{
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let config =
+        seed_download_client_config(&app, "decypharr-qbit-retry", "Decypharr", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, false).await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Decypharr Retry".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+
+    let item_id = "decypharr-untagged-retry-1";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "qbittorrent".to_string();
+    item.title_id = Some(title.id.clone());
+    item.title_name = title.name.clone();
+    item.facet = Some("movie".to_string());
+    item.is_scryer_origin = false;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        &title.id,
+        "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.AV1.Opus-nAV1gator",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.client_type = "qbittorrent".to_string();
+    completed.category = Some("radarr".to_string());
+    completed.parameters.clear();
+    *download_client.completed_downloads.lock().await = vec![completed];
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "qbittorrent".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some(title.name.clone()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("seed download submission");
+    download_submissions
+        .update_tracked_state(
+            &DownloadSourceIdentity::new(Some(config.id.as_str()), "qbittorrent", item_id),
+            TrackedDownloadState::Imported.as_str(),
+        )
+        .await
+        .expect("seed tracked state");
+
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
+
+    assert!(processed.contains(item_id));
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+    );
 }
 
 #[tokio::test]

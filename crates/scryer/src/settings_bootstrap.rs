@@ -156,6 +156,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_GENERAL,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+            data_type: "string",
+            default_value_json: "\"\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: AUTO_BACKUP_ENABLED_KEY,
             data_type: "boolean",
             default_value_json: "false",
@@ -340,6 +348,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_MEDIA,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: LEGACY_NZBGET_CATEGORY_SETTING_KEY,
+            data_type: "string",
+            default_value_json: "\"\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: NZBGET_RECENT_PRIORITY_SETTING_KEY,
             data_type: "string",
             default_value_json: "\"\"",
@@ -357,6 +373,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             category: SETTINGS_CATEGORY_MEDIA,
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            data_type: "string",
+            default_value_json: "{}",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
             data_type: "string",
             default_value_json: "{}",
             is_sensitive: false,
@@ -943,6 +967,12 @@ mod tests {
         }));
         assert!(service_setting_seeds().iter().any(|seed| {
             seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"\""
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
                 && seed.key_name == AUTO_BACKUP_ENABLED_KEY
                 && seed.data_type == "boolean"
                 && seed.default_value_json == "false"
@@ -962,6 +992,22 @@ mod tests {
                 && seed.key_name == AUTO_BACKUP_KEY_KEY
                 && seed.data_type == "string"
                 && seed.is_sensitive
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_legacy_download_client_keys() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == LEGACY_NZBGET_CATEGORY_SETTING_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"\""
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "{}"
         }));
     }
 

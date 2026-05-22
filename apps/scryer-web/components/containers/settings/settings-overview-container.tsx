@@ -15,6 +15,8 @@ import type { GeneralSettings } from "@/lib/types/settings";
 const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   keepHistoryForever: false,
   historyRetentionDays: 180,
+  pluginHttpCaBundlePem: "",
+  pluginHttpTrustedCertificates: [],
 };
 
 type SettingsOverviewContainerProps = {
@@ -112,14 +114,20 @@ export function SettingsOverviewContainer({
     setGeneralSaving(true);
     try {
       const { data, error } = await client
-        .mutation(updateGeneralSettingsMutation, { input: generalSettings })
+        .mutation(updateGeneralSettingsMutation, {
+          input: {
+            keepHistoryForever: generalSettings.keepHistoryForever,
+            historyRetentionDays: generalSettings.historyRetentionDays,
+            pluginHttpCaBundlePem: generalSettings.pluginHttpCaBundlePem,
+          },
+        })
         .toPromise();
       if (error) throw error;
       setGeneralSettings({
         ...DEFAULT_GENERAL_SETTINGS,
         ...data?.updateGeneralSettings,
       });
-      setGlobalStatus(t("settings.historyRetentionSaved"));
+      setGlobalStatus(t("settings.generalSaved"));
     } catch (error) {
       setGlobalStatus(
         error instanceof Error ? error.message : t("status.failedToUpdate"),

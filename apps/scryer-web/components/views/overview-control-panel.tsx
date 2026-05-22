@@ -16,6 +16,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
 
 type ActionButtonProps = {
+  id: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   active?: boolean;
@@ -45,6 +46,7 @@ type Props = {
 };
 
 function ActionButton({
+  id,
   label,
   icon: Icon,
   active = false,
@@ -55,6 +57,7 @@ function ActionButton({
 }: ActionButtonProps) {
   return (
     <Button
+      id={id}
       type="button"
       variant="ghost"
       className={cn(
@@ -118,7 +121,7 @@ export function OverviewControlPanel({
   }, [onInteractiveSearch]);
 
   return (
-    <Card className="overflow-hidden p-0">
+    <Card id="title-overview-control-panel" className="overflow-hidden p-0">
       <CardContent className="space-y-0 p-0">
         <div
           className={cn(
@@ -127,6 +130,7 @@ export function OverviewControlPanel({
           )}
         >
           <ActionButton
+            id="title-overview-toggle-monitoring"
             label={monitored ? t("title.unmonitorAction") : t("title.monitorAction")}
             icon={monitored ? EyeOff : Eye}
             active={monitored}
@@ -136,6 +140,7 @@ export function OverviewControlPanel({
             onClick={onToggleMonitoring}
           />
           <ActionButton
+            id="title-overview-search-monitored"
             label={resolvedSearchMonitoredLabel}
             icon={Zap}
             loading={searchMonitoredLoading}
@@ -144,6 +149,7 @@ export function OverviewControlPanel({
           />
           {hasInteractiveSearch ? (
             <ActionButton
+              id="title-overview-interactive-search"
               label={t("label.interactiveSearch")}
               icon={Search}
               active={expandedPanel === "interactive"}
@@ -153,6 +159,7 @@ export function OverviewControlPanel({
             />
           ) : null}
           <ActionButton
+            id="title-overview-refresh-and-scan"
             label={t("title.refreshAndScanAction")}
             icon={RefreshCw}
             loading={refreshAndScanLoading}
@@ -160,12 +167,14 @@ export function OverviewControlPanel({
             onClick={onRefreshAndScan}
           />
           <ActionButton
+            id="title-overview-history"
             label={t("activity.history")}
             icon={ClipboardList}
             disabled={!onHistory}
             onClick={onHistory}
           />
           <ActionButton
+            id="title-overview-edit-settings"
             label={t("label.edit")}
             icon={Edit}
             active={expandedPanel === "settings"}
@@ -173,6 +182,7 @@ export function OverviewControlPanel({
             onClick={handleToggleSettings}
           />
           <ActionButton
+            id="title-overview-delete"
             label={t("label.delete")}
             icon={Trash2}
             destructive
@@ -183,19 +193,19 @@ export function OverviewControlPanel({
         </div>
 
         {showPersistentSearchNotice ? (
-          <div className="border-t border-border bg-card/70 p-4">
+          <div id="title-overview-search-notice" className="border-t border-border bg-card/70 p-4">
             {searchNotice}
           </div>
         ) : null}
 
         {expandedPanel === "settings" && settingsPanel ? (
-          <div className="border-t border-border bg-card/70">
+          <div id="title-overview-settings-panel" className="border-t border-border bg-card/70">
             {settingsPanel}
           </div>
         ) : null}
 
         {expandedPanel === "interactive" && interactiveSearchPanel ? (
-          <div className="border-t border-border bg-card/70">
+          <div id="title-overview-interactive-search-panel" className="border-t border-border bg-card/70">
             {interactiveSearchPanel}
           </div>
         ) : null}

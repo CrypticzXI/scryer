@@ -55,15 +55,20 @@ impl CorsConfig {
 }
 
 fn default_cors_allowed_origins() -> Vec<String> {
-    let mut origins = vec![
-        "http://localhost:3000".to_string(),
-        "http://127.0.0.1:3000".to_string(),
-        "http://0.0.0.0:3000".to_string(),
-        "http://host.docker.internal:3000".to_string(),
-        "http://nodejs:3000".to_string(),
-    ];
+    let mut origins = if cfg!(debug_assertions) {
+        vec![
+            "http://localhost:3000".to_string(),
+            "http://127.0.0.1:3000".to_string(),
+            "http://0.0.0.0:3000".to_string(),
+            "http://host.docker.internal:3000".to_string(),
+            "http://nodejs:3000".to_string(),
+        ]
+    } else {
+        Vec::new()
+    };
 
-    if let Ok(web_ui_url) = std::env::var("SCRYER_WEB_UI_URL")
+    if cfg!(debug_assertions)
+        && let Ok(web_ui_url) = std::env::var("SCRYER_WEB_UI_URL")
         && let Some(web_ui_origin) = canonical_origin(&web_ui_url)
     {
         push_origin_if_missing(&mut origins, web_ui_origin.clone());
@@ -757,6 +762,66 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[test]
+    fn default_cors_origins_match_runtime_mode() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        // SAFETY: tests serialize access to process env via ENV_LOCK.
+        unsafe {
+            std::env::remove_var("SCRYER_WEB_UI_URL");
+        }
+
+        let origins = default_cors_allowed_origins();
+
+        if cfg!(debug_assertions) {
+            assert!(
+                origins
+                    .iter()
+                    .any(|origin| origin == "http://localhost:3000")
+            );
+        } else {
+            assert!(origins.is_empty());
+        }
+    }
+
+    #[test]
+    fn web_ui_origin_only_extends_dev_mode_defaults() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        // SAFETY: tests serialize access to process env via ENV_LOCK.
+        unsafe {
+            std::env::set_var("SCRYER_WEB_UI_URL", "http://127.0.0.1:4545/app");
+        }
+
+        let origins = default_cors_allowed_origins();
+
+        if cfg!(debug_assertions) {
+            assert!(
+                origins
+                    .iter()
+                    .any(|origin| origin == "http://127.0.0.1:4545")
+            );
+            assert!(
+                origins
+                    .iter()
+                    .any(|origin| origin == "http://localhost:4545")
+            );
+            assert!(
+                origins
+                    .iter()
+                    .any(|origin| origin == "http://host.docker.internal:4545")
+            );
+        } else {
+            assert!(origins.is_empty());
+        }
+
+        // SAFETY: tests serialize access to process env via ENV_LOCK.
+        unsafe {
+            std::env::remove_var("SCRYER_WEB_UI_URL");
+        }
+    }
 
     #[test]
     fn scan_library_mutation_returns_ok_status() {

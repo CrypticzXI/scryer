@@ -49,6 +49,7 @@ import type {
   RuleValidationResult,
 } from "@/lib/types/rule-sets";
 import ruleInputContract from "@/lib/contracts/rule-input-contract.json";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type SettingsRulesSectionProps = {
   isEditorOpen: boolean;
@@ -471,6 +472,7 @@ function RuleLibrary({
           {/* Tab selector */}
           <div className="mb-3 flex gap-2 border-b border-border pb-2">
             <button
+              id="settings-rules-library-tab-builtin"
               type="button"
               className={cn(
                 "px-3 py-1.5 text-sm font-medium transition-colors rounded-t",
@@ -483,6 +485,7 @@ function RuleLibrary({
               Built-in
             </button>
             <button
+              id="settings-rules-library-tab-community"
               type="button"
               className={cn(
                 "px-3 py-1.5 text-sm font-medium transition-colors rounded-t",
@@ -509,6 +512,7 @@ function RuleLibrary({
                     : categoryFilter === cat;
                   return (
                     <button
+                      id={selectorId("settings-rules-library-category", isAll ? "all" : cat)}
                       key={cat}
                       type="button"
                       className={cn(
@@ -536,6 +540,7 @@ function RuleLibrary({
           selectedPack ? (
             <div>
               <button
+                id="settings-rules-library-back-to-packs"
                 type="button"
                 className="mb-3 text-xs text-muted-foreground hover:text-foreground"
                 onClick={() => {
@@ -579,6 +584,7 @@ function RuleLibrary({
               ) : null}
               {communityPacks.map((pack) => (
                 <button
+                  id={selectorId("settings-rules-library-pack", pack.id)}
                   key={pack.id}
                   type="button"
                   className="group rounded-lg border border-border bg-card/50 p-3 text-left transition-colors hover:border-primary/40 hover:bg-card"
@@ -619,6 +625,7 @@ function TemplateGrid({
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
       {templates.map((tpl) => (
         <button
+          id={selectorId("settings-rules-library-template", tpl.id)}
           key={tpl.id}
           type="button"
           className="group rounded-lg border border-border bg-card/50 p-3 text-left transition-colors hover:border-primary/40 hover:bg-card"
@@ -672,7 +679,7 @@ export function SettingsRulesSection({
 }: SettingsRulesSectionProps) {
   const t = useTranslate();
   return (
-    <div className="space-y-4 text-sm">
+    <div id="settings-rules-section" className="space-y-4 text-sm">
       <CardTitle className="flex items-center gap-2 text-base">
         <FileCode2 className="h-4 w-4" />
         {t("settings.rulesSection")}
@@ -704,7 +711,10 @@ export function SettingsRulesSection({
             </TableHeader>
             <TableBody>
               {ruleSetRecords.map((record) => (
-                <TableRow key={record.id}>
+                <TableRow
+                  key={record.id}
+                  id={selectorId("settings-rule-row", record.id)}
+                >
                   <TableCell className="font-medium">
                     {record.name}
                     {record.isManaged && record.managedKey ? (
@@ -729,6 +739,7 @@ export function SettingsRulesSection({
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
                       <Button
+                        id={selectorId("settings-rule-toggle", record.id)}
                         type="button"
                         size="icon-sm"
                         variant="secondary"
@@ -756,6 +767,7 @@ export function SettingsRulesSection({
                       {!record.isManaged ? (
                         <>
                           <Button
+                            id={selectorId("settings-rule-edit", record.id)}
                             type="button"
                             size="icon-sm"
                             variant="secondary"
@@ -770,6 +782,7 @@ export function SettingsRulesSection({
                             <Edit className="h-4 w-4" />
                           </Button>
                           <Button
+                            id={selectorId("settings-rule-delete", record.id)}
                             type="button"
                             size="icon-sm"
                             variant="secondary"
@@ -818,11 +831,12 @@ export function SettingsRulesSection({
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <form className="space-y-3" onSubmit={submitRuleSet}>
+              <form id="settings-rule-form" className="space-y-3" onSubmit={submitRuleSet}>
                 <div className="grid gap-3 md:grid-cols-3">
                   <label>
                     <Label className="mb-2 block">{t("label.name")}</Label>
                     <Input
+                      id="settings-rule-name"
                       value={ruleSetDraft.name}
                       onChange={(e) =>
                         setRuleSetDraft((prev) => ({
@@ -839,6 +853,7 @@ export function SettingsRulesSection({
                       {t("settings.ruleDescription")}
                     </Label>
                     <Input
+                      id="settings-rule-description"
                       value={ruleSetDraft.description}
                       onChange={(e) =>
                         setRuleSetDraft((prev) => ({
@@ -854,6 +869,7 @@ export function SettingsRulesSection({
                       {t("settings.rulePriority")}
                     </Label>
                     <Input
+                      id="settings-rule-priority"
                       {...integerInputProps}
                       value={ruleSetDraft.priority}
                       onChange={(e) =>
@@ -898,6 +914,7 @@ export function SettingsRulesSection({
                         className="flex items-center gap-2"
                       >
                         <input
+                          id={selectorId("settings-rule-facet", opt.value)}
                           type="checkbox"
                           checked={ruleSetDraft.appliedFacets.includes(
                             opt.value,
@@ -922,6 +939,7 @@ export function SettingsRulesSection({
 
                 <label className="flex items-center gap-2">
                   <input
+                    id="settings-rule-enabled"
                     type="checkbox"
                     checked={ruleSetDraft.enabled}
                     onChange={(e) =>
@@ -956,7 +974,7 @@ export function SettingsRulesSection({
                 ) : null}
 
                 <div className="flex gap-2">
-                  <Button type="submit" disabled={mutatingRuleSetId !== null}>
+                  <Button id="settings-rule-save" type="submit" disabled={mutatingRuleSetId !== null}>
                     {mutatingRuleSetId !== null
                       ? t("label.saving")
                       : editingRuleSetId
@@ -964,6 +982,7 @@ export function SettingsRulesSection({
                         : t("settings.ruleCreate")}
                   </Button>
                   <Button
+                    id="settings-rule-validate"
                     type="button"
                     variant="secondary"
                     onClick={() => void validateDraft()}
@@ -974,6 +993,7 @@ export function SettingsRulesSection({
                       : t("settings.ruleValidate")}
                   </Button>
                   <Button
+                    id="settings-rule-cancel"
                     type="button"
                     variant="secondary"
                     onClick={resetRuleSetDraft}
@@ -987,6 +1007,7 @@ export function SettingsRulesSection({
           {editorMode === "edit" ? (
             <div className="flex justify-center">
               <Button
+                id="settings-rule-create-new"
                 type="button"
                 size="lg"
                 onClick={startCreateRuleSet}
@@ -1002,6 +1023,7 @@ export function SettingsRulesSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-rule-create"
             type="button"
             size="lg"
             onClick={startCreateRuleSet}

@@ -41,6 +41,7 @@ import { hasImportItemsForView, pendingImportCountForView } from "@/lib/types";
 import type { AuthUser } from "@/lib/hooks/use-auth";
 import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
 import type { AppPermission } from "@/lib/utils/permissions";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type NavItem = {
   id: ViewId;
@@ -418,6 +419,7 @@ function RootSidebarContent({
                     <React.Fragment key={item.id}>
                       <SidebarMenuItem>
                         <SidebarMenuButton
+                          id={selectorId("root-sidebar-nav", item.id)}
                           isActive={view === item.id}
                           onClick={(event) => {
                             handleNavigate(event, item.id);
@@ -447,6 +449,7 @@ function RootSidebarContent({
                     <React.Fragment key={item.id}>
                       <SidebarMenuItem>
                         <SidebarMenuButton
+                          id={selectorId("root-sidebar-nav", item.id)}
                           isActive={view === item.id}
                           onClick={(event) => {
                             if (isSettingsTop) {
@@ -507,6 +510,7 @@ function RootSidebarContent({
                             ? visibleSettingsEntries.map((entry) => (
                               <SidebarMenuSubItem key={entry.id}>
                                   <SidebarMenuSubButton
+                                    id={selectorId("root-sidebar-settings", entry.id)}
                                     isActive={settingsSection === entry.id}
                                     onClick={(event) => {
                                       handleNavigate(event, "settings", entry.id);
@@ -523,6 +527,7 @@ function RootSidebarContent({
                               SYSTEM_SUB_PAGES.map((entry) => (
                                 <SidebarMenuSubItem key={entry.id}>
                                   <SidebarMenuSubButton
+                                    id={selectorId("root-sidebar-system", entry.id)}
                                     isActive={systemSection === entry.id}
                                     onClick={(event) => {
                                       handleNavigate(event, "system", undefined, undefined, entry.id);
@@ -536,6 +541,7 @@ function RootSidebarContent({
                               visibleActivitySubPages.map((entry) => (
                                 <SidebarMenuSubItem key={entry.id}>
                                   <SidebarMenuSubButton
+                                    id={selectorId("root-sidebar-activity", entry.id)}
                                     isActive={activitySection === entry.id}
                                     onClick={(event) => {
                                       handleNavigate(
@@ -560,6 +566,7 @@ function RootSidebarContent({
                               visibleWantedSubPages.map((entry) => (
                                 <SidebarMenuSubItem key={entry.id}>
                                   <SidebarMenuSubButton
+                                    id={selectorId("root-sidebar-wanted", entry.id)}
                                     isActive={wantedSection === entry.id}
                                     onClick={(event) => {
                                       handleNavigate(
@@ -580,6 +587,7 @@ function RootSidebarContent({
                               <>
                                 <SidebarMenuSubItem>
                                   <SidebarMenuSubButton
+                                    id={selectorId("root-sidebar-media", item.id, "overview")}
                                     isActive={contentSettingsSection === "overview"}
                                     onClick={(event) => {
                                       handleNavigate(event, item.id, undefined, "overview");
@@ -591,6 +599,7 @@ function RootSidebarContent({
                                 {canAccessFacetImport && hasImportsForView(item.id) ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
+                                      id={selectorId("root-sidebar-media", item.id, "import")}
                                       isActive={contentSettingsSection === "import"}
                                       onClick={(event) => {
                                         handleNavigate(event, item.id, undefined, "import");
@@ -607,6 +616,7 @@ function RootSidebarContent({
                                   <SidebarMenuSubItem>
                                     <Collapsible open={isSettingsSubPage(contentSettingsSection)}>
                                       <SidebarMenuSubButton
+                                        id={selectorId("root-sidebar-media", item.id, "settings")}
                                         isActive={isSettingsSubPage(contentSettingsSection)}
                                         onClick={(event) => {
                                           handleNavigate(event, item.id, undefined, "library");
@@ -620,6 +630,7 @@ function RootSidebarContent({
                                           {MEDIA_SETTINGS_SUB_PAGES.map((subPage) => (
                                             <SidebarMenuSubItem key={subPage.id}>
                                               <SidebarMenuSubButton
+                                                id={selectorId("root-sidebar-media", item.id, subPage.id)}
                                                 isActive={contentSettingsSection === subPage.id}
                                                 onClick={(event) => {
                                                   handleNavigate(event, item.id, undefined, subPage.id);
@@ -651,6 +662,7 @@ function RootSidebarContent({
           <div className="flex items-center justify-between gap-2">
             {themeMounted ? (
               <button
+                id="root-sidebar-theme-toggle"
                 type="button"
                 onClick={cycleTheme}
                 aria-label={`Switch theme (current: ${getThemeLabel(theme)})`}
@@ -681,7 +693,10 @@ function RootSidebarContent({
       </Sidebar>
       <SidebarInset className="relative bg-background md:ml-4">
         <div className="mb-3 flex items-center gap-3 rounded-xl border border-border bg-card/80 px-3 py-2 md:hidden">
-          <SidebarTrigger className="size-9 rounded-lg border border-border bg-background text-foreground shadow-none" />
+          <SidebarTrigger
+            id="root-sidebar-mobile-trigger"
+            className="size-9 rounded-lg border border-border bg-background text-foreground shadow-none"
+          />
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">{currentTopLevelLabel}</p>
             {currentSubsectionLabel && currentSubsectionLabel !== currentTopLevelLabel ? (

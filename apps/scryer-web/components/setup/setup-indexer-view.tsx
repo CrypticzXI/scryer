@@ -4,7 +4,7 @@ import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { selectorId } from "@/lib/utils/e2e-selectors";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { type ConfigFieldDef, visibleIndexerConfigFields } from "@/lib/types";
 
 interface ProviderOption {

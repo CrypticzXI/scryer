@@ -962,6 +962,7 @@ pub struct AppConfigServices {
     pub(crate) settings: Arc<dyn SettingsRepository>,
     pub(crate) quality_profiles: Arc<dyn QualityProfileRepository>,
     pub(crate) system_info: Arc<dyn SystemInfoProvider>,
+    pub(crate) plugin_http_trust_runtime: RuntimeFeature<Arc<dyn PluginHttpTrustConfigRuntime>>,
     pub(crate) logical_backup_exporter: Arc<dyn LogicalBackupExporter>,
     pub(crate) backup_dir: PathBuf,
     pub(crate) smg_registration_secret: Option<String>,
@@ -1172,6 +1173,7 @@ impl AppServices {
                 settings,
                 quality_profiles,
                 system_info: Arc::new(NullSystemInfoProvider),
+                plugin_http_trust_runtime: RuntimeFeature::Disabled,
                 logical_backup_exporter: Arc::new(NullLogicalBackupExporter),
                 backup_dir,
                 smg_registration_secret: None,
@@ -1325,6 +1327,14 @@ impl AppServicesBuildConfiguration {
 
         missing
     }
+}
+
+impl AppServicesBuilder {
+    app_services_builder_runtime_feature_setter!(
+        with_plugin_http_trust_runtime,
+        config.plugin_http_trust_runtime,
+        Arc<dyn PluginHttpTrustConfigRuntime>
+    );
 }
 
 impl AppServicesBuilder {

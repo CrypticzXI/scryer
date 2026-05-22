@@ -19,6 +19,7 @@ use tracing::{info, warn};
 use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
 use crate::notification_adapter::WasmNotificationClient;
+use crate::plugin_http_host;
 use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::types::{
@@ -2447,11 +2448,13 @@ fn build_plugin_with_socket_host(
     let _build_guard = WASMTIME_PLUGIN_BUILD_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut functions = socket_host.functions();
+    functions.extend(plugin_http_host::host_functions(&manifest));
 
     extism::PluginBuilder::new(manifest)
         .with_wasi(true)
         .with_http_response_headers(true)
-        .with_functions(socket_host.functions())
+        .with_functions(functions)
         .build()
 }
 

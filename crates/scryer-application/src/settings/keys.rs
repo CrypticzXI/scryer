@@ -23,6 +23,7 @@ pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];
 pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
 pub const HISTORY_KEEP_FOREVER_KEY: &str = "history.keep_forever";
 pub const HISTORY_RETENTION_DAYS_KEY: &str = "history.retention_days";
+pub const PLUGIN_HTTP_CA_BUNDLE_PEM_KEY: &str = "plugins.http.ca_bundle_pem";
 pub const AUTO_BACKUP_ENABLED_KEY: &str = "backup.auto.enabled";
 pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local";
 pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";
