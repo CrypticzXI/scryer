@@ -800,7 +800,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LLVM_PREFIX="$(brew --prefix llvm)"
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
@@ -810,8 +809,7 @@ jobs:
           export CMAKE_CXX_COMPILER="clang++"
           export CMAKE_C_COMPILER_LAUNCHER="sccache"
           export CMAKE_CXX_COMPILER_LAUNCHER="sccache"
-          export LDFLAGS="-fuse-ld=${LLVM_PREFIX}/bin/ld64.lld"
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=${LLVM_PREFIX}/bin/ld64.lld"
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=."
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
@@ -1002,34 +1000,15 @@ jobs:
           $env:SCRYER_SMG_REGISTRATION_SECRET = "${{ secrets.SMG_REGISTRATION_SECRET }}"
           $env:SCRYER_SMG_GRAPHQL_URL = "https://smg.scryer.media/graphql"
           $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=."
-          $env:CMAKE_GENERATOR = "Ninja"
-          $wrapperDir = Join-Path $env:RUNNER_TEMP "scryer-compiler-wrappers"
-          New-Item -ItemType Directory -Force -Path $wrapperDir | Out-Null
           if ($env:USE_CLANG_CL -eq "true") {
-            $compilerPath = (Get-Command clang-cl -ErrorAction Stop).Source
-            $ccWrapper = Join-Path $wrapperDir "clang-cl-cc.cmd"
-            $cxxWrapper = Join-Path $wrapperDir "clang-cl-cxx.cmd"
-            "@echo off`r`n""sccache"" ""$compilerPath"" %*" | Set-Content -Path $ccWrapper -Encoding ascii
-            "@echo off`r`n""sccache"" ""$compilerPath"" %*" | Set-Content -Path $cxxWrapper -Encoding ascii
-            $env:CC = $ccWrapper
-            $env:CXX = $cxxWrapper
-            $env:CMAKE_C_COMPILER = $compilerPath
-            $env:CMAKE_CXX_COMPILER = $compilerPath
-            $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
-            $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
+            $env:CC = "clang-cl"
+            $env:CXX = "clang-cl"
+            $env:CMAKE_C_COMPILER = "clang-cl"
+            $env:CMAKE_CXX_COMPILER = "clang-cl"
             $env:AR = "llvm-lib"
           } else {
-            $compilerPath = (Get-Command cl -ErrorAction Stop).Source
-            $ccWrapper = Join-Path $wrapperDir "cl-cc.cmd"
-            $cxxWrapper = Join-Path $wrapperDir "cl-cxx.cmd"
-            "@echo off`r`n""sccache"" ""$compilerPath"" %*" | Set-Content -Path $ccWrapper -Encoding ascii
-            "@echo off`r`n""sccache"" ""$compilerPath"" %*" | Set-Content -Path $cxxWrapper -Encoding ascii
-            $env:CC = $ccWrapper
-            $env:CXX = $cxxWrapper
-            $env:CMAKE_C_COMPILER = $compilerPath
-            $env:CMAKE_CXX_COMPILER = $compilerPath
-            $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
-            $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
+            $env:CMAKE_C_COMPILER = "cl"
+            $env:CMAKE_CXX_COMPILER = "cl"
             $env:AR = "lib"
           }
           if ($env:USE_LLD_LINK -eq "true") {
