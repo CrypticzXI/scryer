@@ -106,7 +106,10 @@ impl AppUseCase {
             .await?;
 
         let mut seen_paths = std::collections::HashSet::new();
+        #[cfg(unix)]
         let mut results = Vec::new();
+        #[cfg(not(unix))]
+        let results = Vec::new();
 
         for library in libraries {
             for root in library.roots {

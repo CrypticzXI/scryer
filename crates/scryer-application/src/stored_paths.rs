@@ -100,6 +100,7 @@ fn decode_windows_path(encoded: &str) -> Option<PathBuf> {
     }
 }
 
+#[cfg(unix)]
 fn encode_percent_bytes(bytes: &[u8], prefix: &str) -> String {
     let mut encoded = String::from(prefix);
     for &byte in bytes {

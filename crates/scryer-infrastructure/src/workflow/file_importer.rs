@@ -235,7 +235,7 @@ impl FileImporter for FsFileImporter {
                 })?;
             }
 
-            if let ImportSourceKind::Symlink { resolved_target, .. } = &source_fingerprint.kind {
+            if let ImportSourceKind::Symlink { .. } = &source_fingerprint.kind {
                 #[cfg(not(unix))]
                 {
                     return Err(AppError::Repository(format!(
@@ -246,6 +246,12 @@ impl FileImporter for FsFileImporter {
 
                 #[cfg(unix)]
                 {
+                    let ImportSourceKind::Symlink {
+                        resolved_target, ..
+                    } = &source_fingerprint.kind
+                    else {
+                        unreachable!("checked symlink source kind above");
+                    };
                     let symlink_target = build_destination_symlink_target(&dest, resolved_target);
                     symlink(&symlink_target, &dest).map_err(|e| {
                         AppError::Repository(format!(

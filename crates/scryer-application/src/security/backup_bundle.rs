@@ -1446,6 +1446,8 @@ fn ensure_owner_only_permissions(path: &Path) -> AppResult<()> {
             ))
         })?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
 
     Ok(())
 }

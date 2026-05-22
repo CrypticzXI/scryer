@@ -33,6 +33,7 @@ pub struct ImportCheckContext<'a> {
     pub existing_files: &'a [TitleMediaFile],
 }
 
+#[cfg(unix)]
 fn to_u64<T: Into<u64>>(value: T) -> u64 {
     value.into()
 }
@@ -156,21 +157,21 @@ pub fn check_not_already_imported(ctx: &ImportCheckContext<'_>) -> ImportVerdict
 pub fn check_disk_space(ctx: &ImportCheckContext<'_>) -> ImportVerdict {
     let target_dir = ctx.dest_path.parent().unwrap_or(ctx.dest_path);
 
-    // Find an existing ancestor to stat (dest dir may not exist yet)
-    let stat_path = {
-        let mut p = target_dir.to_path_buf();
-        while !p.exists() {
-            if !p.pop() {
-                break;
-            }
-        }
-        p
-    };
-
     #[cfg(unix)]
     {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
+
+        // Find an existing ancestor to stat (dest dir may not exist yet).
+        let stat_path = {
+            let mut p = target_dir.to_path_buf();
+            while !p.exists() {
+                if !p.pop() {
+                    break;
+                }
+            }
+            p
+        };
 
         if let Ok(c_path) = CString::new(stat_path.as_os_str().as_bytes()) {
             let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
