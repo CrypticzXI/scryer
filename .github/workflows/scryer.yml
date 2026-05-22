@@ -151,6 +151,12 @@ jobs:
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
+          export CC="sccache cc"
+          export CXX="sccache c++"
+          export CMAKE_C_COMPILER="cc"
+          export CMAKE_CXX_COMPILER="c++"
+          export CMAKE_C_COMPILER_LAUNCHER="sccache"
+          export CMAKE_CXX_COMPILER_LAUNCHER="sccache"
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
           cargo clippy --target x86_64-unknown-linux-musl --locked \
             -p scryer \
@@ -302,6 +308,12 @@ jobs:
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
+          export CC="sccache cc"
+          export CXX="sccache c++"
+          export CMAKE_C_COMPILER="cc"
+          export CMAKE_CXX_COMPILER="c++"
+          export CMAKE_C_COMPILER_LAUNCHER="sccache"
+          export CMAKE_CXX_COMPILER_LAUNCHER="sccache"
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
           export RUST_MIN_STACK="4194304"
           cargo nextest run --target x86_64-unknown-linux-musl --locked \
@@ -623,6 +635,12 @@ jobs:
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
+          export CC="sccache cc"
+          export CXX="sccache c++"
+          export CMAKE_C_COMPILER="cc"
+          export CMAKE_CXX_COMPILER="c++"
+          export CMAKE_C_COMPILER_LAUNCHER="sccache"
+          export CMAKE_CXX_COMPILER_LAUNCHER="sccache"
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
@@ -762,8 +780,14 @@ jobs:
           path: scryer-web-out
 
       - name: Install system dependencies
-        if: ${{ matrix.install_nasm }}
-        run: brew install nasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(llvm)
+          if [[ "${{ matrix.install_nasm }}" == "true" ]]; then
+            packages+=(nasm)
+          fi
+          brew install "${packages[@]}"
 
       - name: Prime sccache server
         shell: bash
@@ -776,10 +800,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          LLVM_PREFIX="$(brew --prefix llvm)"
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=."
+          export CC="sccache clang"
+          export CXX="sccache clang++"
+          export CMAKE_C_COMPILER="clang"
+          export CMAKE_CXX_COMPILER="clang++"
+          export CMAKE_C_COMPILER_LAUNCHER="sccache"
+          export CMAKE_CXX_COMPILER_LAUNCHER="sccache"
+          export LDFLAGS="-fuse-ld=${LLVM_PREFIX}/bin/ld64.lld"
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=${LLVM_PREFIX}/bin/ld64.lld"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
