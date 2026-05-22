@@ -1675,11 +1675,11 @@ impl AppUseCase {
                 .services
                 .integrations
                 .builtin_download_client_connection_tester
-                .test_connection(&client_type, &config_json)
+                .test_connection(&client_type, config_json)
                 .await;
         }
 
-        self.test_plugin_download_client_connection(actor, &client_type, &config_json)
+        self.test_plugin_download_client_connection(actor, &client_type, config_json)
             .await
     }
 

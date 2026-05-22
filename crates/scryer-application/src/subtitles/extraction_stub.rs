@@ -34,7 +34,9 @@ pub async fn normalize_downloaded_subtitle(
 fn final_subtitle_format(file: &SubtitleFile) -> Option<String> {
     extension_for_filename(file.filename.as_deref())
         .filter(|format| is_supported_subtitle_format(format))
-        .or_else(|| is_supported_subtitle_format(&file.format).then(|| normalize_extension(&file.format)))
+        .or_else(|| {
+            is_supported_subtitle_format(&file.format).then(|| normalize_extension(&file.format))
+        })
 }
 
 fn extension_for_filename(filename: Option<&str>) -> Option<String> {

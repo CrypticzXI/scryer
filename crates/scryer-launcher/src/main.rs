@@ -799,7 +799,10 @@ mod tests {
             MockEntry::text_file(include_str!("../tests/fixtures/arm64-optimized.cpuinfo")),
         );
         ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
-        ops.insert_entry("/payloads/scryer-arm64-optimized", MockEntry::executable_file());
+        ops.insert_entry(
+            "/payloads/scryer-arm64-optimized",
+            MockEntry::executable_file(),
+        );
         let runtime = resolve_runtime_launch(&ops, &config).expect("arm64 optimized runtime");
         assert_eq!(
             runtime.primary,

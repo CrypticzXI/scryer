@@ -192,8 +192,7 @@ mod tests {
         let subtitle_content =
             b"[Script Info]\nTitle: Test\n\n[Events]\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello\n";
         let mut xz_content = Vec::new();
-        lzma_rs::xz_compress(&mut std::io::Cursor::new(subtitle_content), &mut xz_content)
-            .unwrap();
+        lzma_rs::xz_compress(&mut std::io::Cursor::new(subtitle_content), &mut xz_content).unwrap();
 
         let provider = StaticProvider {
             content: xz_content,

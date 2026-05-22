@@ -1454,11 +1454,11 @@ pub mod test_nulls {
         AppError, AppResult, BuiltinDownloadClientConnectionTester, CollectionUpdate,
         CreateTitleOutcome, DownloadClient, DownloadClientAddRequest,
         DownloadClientConfigRepository, DownloadClientConfigUpdate, DownloadGrabResult,
-        EpisodeUpdate, IndexerClient, IndexerRoutingPlan,
-        IndexerSearchResponse, PendingTitleHydration, PrimaryCollectionSummary, QualityProfile,
-        QualityProfileRepository, ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome,
-        ReleaseDownloadFailureSignature, ScopedExternalId, SearchMode, ShowRepository,
-        TitleMetadataUpdate, TitleReleaseBlocklistEntry, TitleRepository, UserRepository,
+        EpisodeUpdate, IndexerClient, IndexerRoutingPlan, IndexerSearchResponse,
+        PendingTitleHydration, PrimaryCollectionSummary, QualityProfile, QualityProfileRepository,
+        ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
+        ScopedExternalId, SearchMode, ShowRepository, TitleMetadataUpdate,
+        TitleReleaseBlocklistEntry, TitleRepository, UserRepository,
     };
     use async_trait::async_trait;
     use scryer_domain::{

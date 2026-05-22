@@ -1116,7 +1116,9 @@ fn open_bundle_payload_reader(
         let reader = AeadChunkReader::new(reader, header, passphrase)?;
         Ok(Box::new(reader))
     } else {
-        Ok(Box::new(std::io::Cursor::new(prefix[..read].to_vec()).chain(reader)))
+        Ok(Box::new(
+            std::io::Cursor::new(prefix[..read].to_vec()).chain(reader),
+        ))
     }
 }
 

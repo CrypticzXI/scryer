@@ -202,7 +202,7 @@ impl BackupMutations {
         }
 
         let data_dir = restore.data_dir.clone();
-        let datastore_config = restore.datastore_config.clone();
+        let datastore_config = restore.datastore_config;
         let datastore = restore.datastore.clone();
         let password = normalize_password(password);
         let summary = match tokio::task::spawn_blocking(move || {

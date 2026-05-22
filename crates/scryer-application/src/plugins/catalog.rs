@@ -1,6 +1,4 @@
-use std::{
-    collections::HashSet,
-};
+use std::collections::HashSet;
 
 #[cfg(feature = "runtime-plugin-trust")]
 use std::{
