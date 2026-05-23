@@ -834,18 +834,26 @@ async fn maybe_sync_downloaded_subtitle(
         max_offset_seconds: sync_settings.max_offset_seconds,
     };
 
-    let audio_transcoder = app
+    let subtitle_plugin_provider = app
         .services
         .integrations
         .subtitle_plugin_provider
-        .available()
-        .and_then(|provider| provider.audio_transcoder_client());
+        .available();
+    let subtitle_sync_client =
+        subtitle_plugin_provider.and_then(|provider| provider.subtitle_sync_client());
+    let plugin_installed = subtitle_plugin_provider.is_some_and(|provider| {
+        provider
+            .available_provider_types()
+            .iter()
+            .any(|provider_type| provider_type == "enhanced-subtitle-sync")
+    });
 
-    match sync::sync_subtitle_with_policy_and_audio_transcoder(
+    match sync::sync_subtitle_with_policy_and_plugin_sync(
         video_path,
         subtitle_path,
         policy,
-        audio_transcoder,
+        subtitle_sync_client,
+        plugin_installed,
     )
     .await
     {

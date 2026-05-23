@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::provider::{SubtitleMatch, SubtitleProvider, SubtitleQuery, compute_opensubtitles_hash};
+use super::provider::{SubtitleMatch, SubtitleProvider, SubtitleQuery, compute_subtitle_file_hash};
 use crate::AppResult;
 
 /// Orchestrates subtitle searching by enriching the provider query with a file hash
@@ -15,7 +15,7 @@ impl SubtitleSearchOrchestrator {
     /// Search for subtitles for a media file.
     ///
     /// Strategy:
-    /// 1. Compute an OpenSubtitles hash when possible.
+    /// 1. Compute a host-side subtitle file hash when possible.
     /// 2. Send one provider query containing both the hash and metadata.
     /// 3. Let the provider decide how to combine those inputs.
     pub async fn search(
@@ -26,7 +26,7 @@ impl SubtitleSearchOrchestrator {
     ) -> AppResult<Vec<SubtitleMatch>> {
         let mut combined_query = query.clone();
         if combined_query.file_hash.is_none() {
-            combined_query.file_hash = compute_opensubtitles_hash(file_path).ok();
+            combined_query.file_hash = compute_subtitle_file_hash(file_path).ok();
         }
 
         provider.search(&combined_query).await

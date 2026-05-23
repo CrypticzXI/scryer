@@ -72,7 +72,8 @@ impl PluginHttpRuntime {
             return Ok(client.clone());
         }
 
-        let client = build_plugin_http_client(&state.extra_ca_bundle_pem).map_err(Error::msg)?;
+        let client = scryer_outbound_http::blocking_plugin_host_client(&state.extra_ca_bundle_pem)
+            .map_err(Error::msg)?;
         state.cached_client = Some(client.clone());
         Ok(client)
     }
@@ -284,7 +285,7 @@ fn execute_request(
         builder = builder.body(body);
     }
 
-    builder.send().map_err(|error| {
+    scryer_outbound_http::send_blocking_reqwest_request(builder).map_err(|error| {
         if error.is_timeout() {
             Error::msg("timeout")
         } else {
@@ -321,33 +322,6 @@ fn read_response_body(
     Ok(body)
 }
 
-fn build_plugin_http_client(extra_ca_bundle_pem: &str) -> Result<Client, String> {
-    scryer_outbound_http::install_default_rustls_provider();
-    let mut builder = reqwest::blocking::Client::builder();
-    if !extra_ca_bundle_pem.trim().is_empty() {
-        builder = builder.tls_certs_merge(uploaded_root_certificates(extra_ca_bundle_pem)?);
-    }
-    builder
-        .build()
-        .map_err(|error| format!("failed to build plugin HTTP client: {error}"))
-}
-
-fn uploaded_root_certificates(bundle_pem: &str) -> Result<Vec<reqwest::Certificate>, String> {
-    if bundle_pem.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let certificates = reqwest::Certificate::from_pem_bundle(bundle_pem.as_bytes())
-        .map_err(|error| format!("failed to parse uploaded trusted certificate bundle: {error}"))?;
-    if certificates.is_empty() {
-        return Err(
-            "uploaded trusted certificate bundle did not contain any X.509 certificates"
-                .to_string(),
-        );
-    }
-    Ok(certificates)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,27 +349,20 @@ mod tests {
     );
 
     #[test]
-    fn add_uploaded_certificates_accepts_valid_pem_bundle() {
-        let certificates = uploaded_root_certificates(TEST_PLUGIN_HTTP_CA_CERT_PEM)
-            .expect("valid trusted certificate bundle");
-
-        assert_eq!(certificates.len(), 1);
-    }
-
-    #[test]
     fn build_plugin_http_client_accepts_empty_trust_bundle() {
-        build_plugin_http_client("").expect("default trust bundle should build");
+        scryer_outbound_http::blocking_plugin_host_client("")
+            .expect("default trust bundle should build");
     }
 
     #[test]
     fn build_plugin_http_client_accepts_uploaded_certificates() {
-        build_plugin_http_client(TEST_PLUGIN_HTTP_CA_CERT_PEM)
+        scryer_outbound_http::blocking_plugin_host_client(TEST_PLUGIN_HTTP_CA_CERT_PEM)
             .expect("uploaded trust bundle should build");
     }
 
     #[test]
     fn add_uploaded_certificates_rejects_non_certificate_pem_items() {
-        let error = uploaded_root_certificates(
+        let error = scryer_outbound_http::blocking_plugin_host_client(
             "-----BEGIN PRIVATE KEY-----\nZmFrZQ==\n-----END PRIVATE KEY-----\n",
         )
         .expect_err("non-certificate bundle should be rejected");

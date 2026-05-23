@@ -7,6 +7,7 @@ mod notification_adapter;
 mod plugin_http_host;
 mod socket_host;
 mod subtitle_adapter;
+mod subtitle_sync_adapter;
 mod types;
 
 pub use loader::DynamicDownloadClientPluginProvider;

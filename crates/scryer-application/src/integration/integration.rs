@@ -1543,6 +1543,7 @@ impl AppUseCase {
         if management_capabilities.supports_managed_children_sync && created.is_enabled {
             self.queue_managed_indexer_sync(&created.id);
         }
+        self.publish_indexers_changed();
         Ok(created)
     }
 
@@ -1729,6 +1730,7 @@ impl AppUseCase {
                     .await?;
             }
         }
+        self.publish_indexers_changed();
         Ok(updated)
     }
 
@@ -1778,6 +1780,7 @@ impl AppUseCase {
         remove_indexer_routing_entries(&mut routing_by_scope, &config.id);
         self.save_indexer_routing_by_scope(actor, routing_by_scope)
             .await?;
+        self.publish_indexers_changed();
         Ok(())
     }
 
@@ -1959,6 +1962,7 @@ impl AppUseCase {
 
         self.save_indexer_routing_by_scope(actor, routing_by_scope)
             .await?;
+        self.publish_indexers_changed();
         Ok(result)
     }
 

@@ -26,6 +26,6 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", 
 rustls-native-certs = "0.8"
 url = "2"
 zstd = "0.13"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"

@@ -4,6 +4,7 @@ members = [
     "xtask-release",
     "xtask-migrations",
     "xtask-support",
+    "xtask-trash-guides",
     "crates/scryer-domain",
     "crates/scryer-application",
     "crates/scryer-outbound-http",
@@ -116,9 +117,6 @@ opt-level = 2
 [profile.release-lean.package.scryer-interface-settings]
 opt-level = 2
 
-[profile.release-lean.package.alass-core]
-opt-level = 3
-
 [profile.release-lean.package.argon2]
 opt-level = 3
 
@@ -179,9 +177,6 @@ opt-level = 3
 [profile.release-lean.package.sha2]
 opt-level = 3
 
-[profile.release-lean.package.symphonia]
-opt-level = 3
-
 [profile.release-lean.package.weaver-rar]
 opt-level = 3
 
@@ -224,9 +219,6 @@ opt-level = 2
 
 [profile.rc.package.scryer-interface-settings]
 opt-level = 2
-
-[profile.rc.package.alass-core]
-opt-level = 3
 
 [profile.rc.package.argon2]
 opt-level = 3
@@ -286,9 +278,6 @@ opt-level = 3
 opt-level = 3
 
 [profile.rc.package.sha2]
-opt-level = 3
-
-[profile.rc.package.symphonia]
 opt-level = 3
 
 [profile.rc.package.weaver-rar]

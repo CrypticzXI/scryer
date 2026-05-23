@@ -11,8 +11,7 @@ use scryer_domain::{
     IndexerCategoryValueKind, IndexerConfig,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
-    external_arr_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
 };
 use serde_json::Value;
 
@@ -269,7 +268,7 @@ impl DirectNabCapsSnapshotRefresher {
     pub fn new() -> Self {
         Self {
             outbound_http: OutboundHttpClient::new(
-                external_arr_reqwest_client(),
+                generic_reqwest_client(),
                 RateLimitRegistry::new(),
             ),
         }

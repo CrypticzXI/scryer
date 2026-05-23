@@ -3,6 +3,7 @@ use crate::model::{
     AudioCodec, ExternalIdSource, MetadataEnrichment, ParsedExternalId, ParsedReleaseMetadata,
     ReleaseParseCandidate, ReleaseSource, VideoCodec,
 };
+use crate::trash_guides;
 
 #[derive(Clone, Copy)]
 enum LanguageScope {
@@ -280,12 +281,20 @@ pub(crate) fn enrich_candidate(
         enrichment.is_ai_enhanced = true;
     }
 
+    let trash_guide_signals = trash_guides::detect_token_signals(&normalized_tokens);
+    enrichment.is_ai_enhanced |= trash_guide_signals.ai_enhanced;
+    enrichment.is_proper_upload |= trash_guide_signals.proper;
+    enrichment.is_repack |= trash_guide_signals.repack;
+    enrichment.is_hardcoded_subs |= trash_guide_signals.hardcoded_subs;
+
     enrichment.languages_audio = dedupe_keep_order(enrichment.languages_audio);
     enrichment.languages_subtitles = dedupe_keep_order(enrichment.languages_subtitles);
     enrichment.audio_codecs = dedupe_keep_order(enrichment.audio_codecs);
 
     if enrichment.is_dual_audio || enrichment.languages_audio.len() > 1 {
         enrichment.is_dubs_only = false;
+    } else if trash_guide_signals.dubs_only {
+        enrichment.is_dubs_only = true;
     }
 
     enrichment.normalized_source = normalize_source_for_service(

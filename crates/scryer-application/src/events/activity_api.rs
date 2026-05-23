@@ -1174,6 +1174,15 @@ impl AppUseCase {
         Ok(self.runtime.events.import_history_broadcast.subscribe())
     }
 
+    pub async fn subscribe_indexers_changed(
+        &self,
+        actor: &User,
+    ) -> AppResult<broadcast::Receiver<()>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        Ok(self.runtime.events.indexers_changed_broadcast.subscribe())
+    }
+
     pub async fn active_library_scans(&self, actor: &User) -> AppResult<Vec<LibraryScanSession>> {
         let visibility = load_library_scan_visibility(self, actor).await?;
         Ok(self

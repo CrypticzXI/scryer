@@ -5193,18 +5193,10 @@ fn coalesce_source(tokens: &[Token], index: usize) -> String {
 }
 
 fn normalize_streaming_service(token: &str) -> Option<&'static str> {
+    if let Some(service) = crate::trash_guides::normalize_streaming_service_alias(token) {
+        return Some(service);
+    }
     match token {
-        "AMZN" | "AMAZON" => Some("Amazon"),
-        "NF" | "NETFLIX" => Some("Netflix"),
-        "ATVP" | "APTV" => Some("Apple TV+"),
-        "DSNP" | "DNSP" => Some("Disney+"),
-        "MAX" | "HMAX" | "HBO" => Some("HBO Max"),
-        "PMTP" | "PARAMOUNT" => Some("Paramount+"),
-        "PCOK" | "PEACOCK" => Some("Peacock"),
-        "HULU" => Some("Hulu"),
-        "CR" | "CRUNCHYROLL" => Some("Crunchyroll"),
-        "FUNI" | "FUNIMATION" => Some("Funimation"),
-        "HIDIVE" => Some("HIDIVE"),
         "STAN" => Some("Stan"),
         "ITUNES" => Some("iTunes"),
         "BILI" => Some("Bilibili"),

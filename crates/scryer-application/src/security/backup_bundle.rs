@@ -721,7 +721,6 @@ pub struct BackupInstanceSecrets {
     encryption_master_key: String,
     jwt_signing_secret: String,
     smg_registration_secret: Option<String>,
-    smg_ca_cert: Option<String>,
     smg_gateway_url: Option<String>,
 }
 
@@ -731,7 +730,6 @@ impl BackupInstanceSecrets {
             encryption_master_key: secrets.encryption_master_key,
             jwt_signing_secret: secrets.jwt_signing_secret,
             smg_registration_secret: secrets.smg_registration_secret,
-            smg_ca_cert: secrets.smg_ca_cert,
             smg_gateway_url: secrets.smg_gateway_url,
         }
     }
@@ -751,9 +749,6 @@ impl BackupInstanceSecrets {
         if let Some(value) = self.smg_registration_secret.as_deref() {
             push_env_assignment(&mut output, "SCRYER_SMG_REGISTRATION_SECRET", value);
         }
-        if let Some(value) = self.smg_ca_cert.as_deref() {
-            push_env_assignment(&mut output, "SCRYER_SMG_CA_CERT", value);
-        }
         if let Some(value) = self.smg_gateway_url.as_deref() {
             push_env_assignment(&mut output, "SCRYER_METADATA_GATEWAY_GRAPHQL_URL", value);
         }
@@ -766,7 +761,6 @@ pub struct BackupExportSecrets {
     pub encryption_master_key: String,
     pub jwt_signing_secret: String,
     pub smg_registration_secret: Option<String>,
-    pub smg_ca_cert: Option<String>,
     pub smg_gateway_url: Option<String>,
 }
 
@@ -1487,13 +1481,11 @@ mod tests {
             encryption_master_key: "enc".into(),
             jwt_signing_secret: "jwt".into(),
             smg_registration_secret: Some("reg".into()),
-            smg_ca_cert: Some("line1\nline2".into()),
             smg_gateway_url: Some("https://smg.example/graphql".into()),
         };
 
         let env_file = secrets.to_env_file();
         assert!(env_file.contains("SCRYER_ENCRYPTION_KEY=\"enc\""));
-        assert!(env_file.contains("SCRYER_SMG_CA_CERT=\"line1\\nline2\""));
     }
 
     #[test]
@@ -1927,7 +1919,6 @@ mod tests {
                 encryption_master_key: "master-key".to_string(),
                 jwt_signing_secret: "jwt-secret".to_string(),
                 smg_registration_secret: Some("smg-secret".to_string()),
-                smg_ca_cert: None,
                 smg_gateway_url: None,
             },
         })?;

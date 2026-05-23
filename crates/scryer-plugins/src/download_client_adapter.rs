@@ -30,6 +30,7 @@ pub struct WasmDownloadClient {
     client_name: String,
     client_id: String,
     http: reqwest::Client,
+    no_redirect_http: reqwest::Client,
 }
 
 impl WasmDownloadClient {
@@ -44,13 +45,8 @@ impl WasmDownloadClient {
             descriptor,
             client_name,
             client_id,
-            http: {
-                scryer_outbound_http::install_default_rustls_provider();
-                reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(30))
-                    .build()
-                    .unwrap_or_default()
-            },
+            http: scryer_outbound_http::plugin_reqwest_client(),
+            no_redirect_http: scryer_outbound_http::no_redirect_reqwest_client(),
         }
     }
 }
@@ -399,13 +395,7 @@ impl DownloadClient for WasmDownloadClient {
             && (url.starts_with("http://") || url.starts_with("https://"))
             && !url.starts_with("magnet:")
         {
-            let no_redirect = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default();
-
-            match no_redirect.get(url).send().await {
+            match scryer_outbound_http::send_reqwest_request(self.no_redirect_http.get(url)).await {
                 Ok(resp) if resp.status().is_redirection() => {
                     if let Some(location) =
                         resp.headers().get("location").and_then(|v| v.to_str().ok())
@@ -419,7 +409,9 @@ impl DownloadClient for WasmDownloadClient {
                             resolved_download_url = Some(location.to_string());
                             torrent_url = Some(location.to_string());
                             // Follow the redirect with the normal client
-                            if let Ok(resp) = self.http.get(location).send().await
+                            if let Ok(resp) =
+                                scryer_outbound_http::send_reqwest_request(self.http.get(location))
+                                    .await
                                 && resp.status().is_success()
                             {
                                 let content_type = resp
@@ -439,6 +431,11 @@ impl DownloadClient for WasmDownloadClient {
                     }
                 }
                 Ok(resp) if resp.status().is_success() => {
+                    let response_url = resp.url().to_string();
+                    if response_url != *url {
+                        resolved_download_url = Some(response_url.clone());
+                        torrent_url = Some(response_url);
+                    }
                     let content_type = resp
                         .headers()
                         .get(reqwest::header::CONTENT_TYPE)

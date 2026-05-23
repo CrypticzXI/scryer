@@ -4,6 +4,7 @@ use crate::scoring_weights::{
     ScoringOverrides, ScoringPersona, ScoringWeights, audio_weight_for_codec,
 };
 use chrono::{DateTime, Utc};
+use scryer_release_parser::detect_trash_guides_blocked_title;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -887,6 +888,11 @@ pub fn evaluate_against_profile_for_category(
         if release.is_dubs_only {
             d.log("anime_dubs_only", weights.anime_dubs_only_penalty);
         }
+    }
+
+    // ── TRaSH title block knowledge ──────────────────────────────────────────
+    if let Some(code) = detect_trash_guides_blocked_title(&release.raw_title, category_hint) {
+        d.log(code, BLOCK_SCORE);
     }
 
     // ── Release group reputation ─────────────────────────────────────────────

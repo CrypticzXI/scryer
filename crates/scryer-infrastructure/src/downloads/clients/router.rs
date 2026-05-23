@@ -13,7 +13,7 @@ use scryer_application::{
     parse_download_client_remote_path_mappings,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, MediaFacet};
-use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry, default_reqwest_client};
+use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry, generic_reqwest_client};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{debug, warn};
@@ -329,7 +329,7 @@ impl PrioritizedDownloadClientRouter {
         plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
         feedback_read_timeout: Duration,
     ) -> Self {
-        let http_client = default_reqwest_client();
+        let http_client = generic_reqwest_client();
         Self {
             download_client_configs,
             settings,

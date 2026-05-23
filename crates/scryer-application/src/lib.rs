@@ -79,7 +79,10 @@ pub(crate) use rules::user_rule_input;
 
 pub use download_client_config::resolve_download_client_base_url_from_config_json;
 pub use import::completed_download as completed_download_handler;
-pub use ports::{AudioTranscodeArtifact, AudioTranscodeJob, AudioTranscoderClient};
+pub use ports::{
+    AudioTranscodeArtifact, AudioTranscodeJob, AudioTranscoderClient, SubtitleSyncClient,
+    SubtitleSyncJob,
+};
 pub(crate) mod normalize;
 pub use import::failed_download as failed_download_handler;
 pub use import::post_processing as app_usecase_post_processing;

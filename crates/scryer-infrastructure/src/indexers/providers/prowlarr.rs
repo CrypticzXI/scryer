@@ -20,8 +20,7 @@ use scryer_domain::{
     IndexerConfig, TaggedAlias,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
-    external_arr_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -329,7 +328,7 @@ pub struct ProwlarrManagementClient {
 
 impl ProwlarrManagementClient {
     fn new(config: &IndexerConfig) -> Self {
-        let http_client = external_arr_reqwest_client();
+        let http_client = generic_reqwest_client();
         Self {
             config: ProwlarrConfig::from_indexer_config(config),
             outbound_http: OutboundHttpClient::new(http_client, RateLimitRegistry::new()),

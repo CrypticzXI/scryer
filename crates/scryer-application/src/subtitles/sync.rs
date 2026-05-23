@@ -1,20 +1,20 @@
-//! Subtitle timing synchronization using pure Rust audio decoding and alignment.
+//! Subtitle timing synchronization using an optional plugin-owned sync engine.
 //!
 //! The sync pipeline:
-//! 1. Decodes a usable audio track with Symphonia.
-//! 2. Builds speech spans with a lightweight adaptive VAD.
-//! 3. Parses subtitle timing spans from SRT or ASS/SSA.
-//! 4. Uses alass-core to estimate a constant offset and skips low-consistency
-//!    alignments instead of forcing a risky rewrite.
+//! 1. Applies policy gates that do not require media analysis.
+//! 2. Parses subtitle timing spans from SRT or ASS/SSA.
+//! 3. Delegates media analysis and alignment to the optional enhanced sync plugin.
+//! 4. Applies the returned constant offset when the plugin reports a safe sync.
 
 use std::{fmt, path::Path, sync::Arc};
 
 use crate::{
     AppError, AppResult,
-    ports::{AudioTranscodeJob, AudioTranscoderClient},
+    ports::{SubtitleSyncClient, SubtitleSyncJob},
 };
-use alass_core::{NoProgressHandler, TimeDelta, TimePoint, TimeSpan};
-use scryer_plugin_sdk::{AudioTranscodeCodec, AudioTranscodeStatus};
+use scryer_plugin_sdk::{
+    AudioTranscodeCodec, SubtitleSyncAlignResponse, SubtitleSyncAlignSkipReason, SubtitleTimingSpan,
+};
 
 /// Result of a subtitle sync operation.
 #[derive(Debug, Clone)]
@@ -35,20 +35,8 @@ pub struct SyncResult {
     pub skipped_reason: Option<SyncSkipReason>,
 }
 
-const WINDOW_MS: i64 = 10;
-const SPLIT_PENALTY: f64 = 7.0;
-const MIN_REFERENCE_SPANS: usize = 3;
 const MIN_SUBTITLE_SPANS: usize = 3;
-const MIN_EFFECTIVE_OFFSET_MS: i64 = 50;
-const DELTA_CONSISTENCY_TOLERANCE_MS: i64 = 350;
-const MIN_CONSISTENT_DELTA_RATIO: f64 = 0.5;
-const VAD_START_THRESHOLD_MIN: f64 = 500.0;
-const VAD_STOP_THRESHOLD_MIN: f64 = 250.0;
-const VAD_START_MULTIPLIER: f64 = 3.0;
-const VAD_STOP_MULTIPLIER: f64 = 1.8;
-const VAD_NOISE_SMOOTHING: f64 = 0.05;
-const VAD_MIN_SILENCE_WINDOWS: usize = 3;
-const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID: &str = "enhanced-subtitle-sync";
+pub const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID: &str = "enhanced-subtitle-sync";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtitleTimingFormat {
@@ -70,6 +58,7 @@ pub enum SyncSkipReason {
     Disabled,
     ForcedSubtitle,
     ScoreAboveThreshold,
+    SubtitleSyncPluginRequired,
     UnsupportedSubtitleFormat,
     AudioDecodeFailed,
     NotEnoughReferenceSpans,
@@ -86,6 +75,7 @@ impl SyncSkipReason {
             Self::Disabled => "disabled",
             Self::ForcedSubtitle => "forced_subtitle",
             Self::ScoreAboveThreshold => "score_above_threshold",
+            Self::SubtitleSyncPluginRequired => "subtitle_sync_plugin_required",
             Self::UnsupportedSubtitleFormat => "unsupported_subtitle_format",
             Self::AudioDecodeFailed => "audio_decode_failed",
             Self::NotEnoughReferenceSpans => "not_enough_reference_spans",
@@ -134,14 +124,6 @@ impl SyncPolicy {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct AlignmentSummary {
-    offset_ms: i64,
-    consistency_ratio: f64,
-    nosplit_score: f64,
-    split_score: f64,
-}
-
-#[derive(Debug, Clone, Copy)]
 struct AssEventFormat {
     field_count: usize,
     start_idx: usize,
@@ -176,14 +158,15 @@ pub async fn sync_subtitle_with_policy(
     subtitle_path: &Path,
     policy: SyncPolicy,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_policy_and_audio_transcoder(video_path, subtitle_path, policy, None).await
+    sync_subtitle_with_policy_and_plugin_sync(video_path, subtitle_path, policy, None, false).await
 }
 
-pub async fn sync_subtitle_with_policy_and_audio_transcoder(
+pub async fn sync_subtitle_with_policy_and_plugin_sync(
     video_path: &Path,
     subtitle_path: &Path,
     policy: SyncPolicy,
-    audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
+    subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
+    plugin_installed: bool,
 ) -> AppResult<SyncResult> {
     if let Some(reason) = policy.skip_reason() {
         tracing::debug!(
@@ -196,11 +179,12 @@ pub async fn sync_subtitle_with_policy_and_audio_transcoder(
         return Ok(skipped_sync_result(0, None, None, None, None, reason));
     }
 
-    sync_subtitle_with_audio_transcoder(
+    sync_subtitle_with_plugin_sync(
         video_path,
         subtitle_path,
         policy.max_offset_seconds,
-        audio_transcoder,
+        subtitle_sync_client,
+        plugin_installed,
     )
     .await
 }
@@ -211,49 +195,16 @@ pub async fn sync_subtitle(
     subtitle_path: &Path,
     max_offset_seconds: i64,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_audio_transcoder(video_path, subtitle_path, max_offset_seconds, None).await
+    sync_subtitle_with_plugin_sync(video_path, subtitle_path, max_offset_seconds, None, false).await
 }
 
-pub async fn sync_subtitle_with_audio_transcoder(
+pub async fn sync_subtitle_with_plugin_sync(
     video_path: &Path,
     subtitle_path: &Path,
     max_offset_seconds: i64,
-    audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
+    subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
+    plugin_installed: bool,
 ) -> AppResult<SyncResult> {
-    let reference_spans = match extract_audio_speech_spans(video_path, audio_transcoder).await {
-        Ok(spans) => spans,
-        Err(error) => {
-            tracing::warn!(
-                path = %video_path.display(),
-                error = %error,
-                "subtitle sync skipped: audio decode failed"
-            );
-            return Ok(skipped_sync_result(
-                0,
-                None,
-                None,
-                None,
-                None,
-                SyncSkipReason::AudioDecodeFailed,
-            ));
-        }
-    };
-    if reference_spans.len() < MIN_REFERENCE_SPANS {
-        tracing::debug!(
-            path = %video_path.display(),
-            spans = reference_spans.len(),
-            "subtitle sync skipped: not enough reference speech spans"
-        );
-        return Ok(skipped_sync_result(
-            0,
-            None,
-            None,
-            None,
-            None,
-            SyncSkipReason::NotEnoughReferenceSpans,
-        ));
-    }
-
     let Some((subtitle_format, subtitle_spans)) = read_subtitle_spans(subtitle_path)? else {
         tracing::debug!(
             path = %subtitle_path.display(),
@@ -285,105 +236,135 @@ pub async fn sync_subtitle_with_audio_transcoder(
         ));
     }
 
-    let alignment = tokio::task::spawn_blocking(move || {
-        crate::nice_thread();
-        compute_alignment(&reference_spans, &subtitle_spans)
-    })
-    .await
-    .map_err(|e| AppError::Repository(format!("alass task panicked: {e}")))?;
-
-    if alignment.nosplit_score <= 0.0 || alignment.split_score <= 0.0 {
+    let Some(subtitle_sync_client) = subtitle_sync_client else {
         tracing::warn!(
-            path = %subtitle_path.display(),
-            format = subtitle_format.label(),
-            offset_ms = alignment.offset_ms,
-            nosplit_score = alignment.nosplit_score,
-            split_score = alignment.split_score,
-            "subtitle sync skipped: alignment score too weak"
+            path = %video_path.display(),
+            plugin_id = ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
+            "{}",
+            if plugin_installed {
+                missing_enhanced_sync_update_hint()
+            } else {
+                missing_enhanced_sync_install_hint()
+            }
         );
         return Ok(skipped_sync_result(
-            alignment.offset_ms,
+            0,
             Some(subtitle_format),
-            Some(alignment.consistency_ratio),
-            Some(alignment.nosplit_score),
-            Some(alignment.split_score),
-            SyncSkipReason::WeakAlignment,
+            None,
+            None,
+            None,
+            SyncSkipReason::SubtitleSyncPluginRequired,
         ));
-    }
+    };
 
-    if alignment.consistency_ratio < MIN_CONSISTENT_DELTA_RATIO {
-        tracing::warn!(
-            path = %subtitle_path.display(),
-            format = subtitle_format.label(),
-            offset_ms = alignment.offset_ms,
-            consistency_ratio = alignment.consistency_ratio,
-            "subtitle sync skipped: low alignment consistency"
-        );
-        return Ok(skipped_sync_result(
-            alignment.offset_ms,
-            Some(subtitle_format),
-            Some(alignment.consistency_ratio),
-            Some(alignment.nosplit_score),
-            Some(alignment.split_score),
-            SyncSkipReason::LowAlignmentConsistency,
-        ));
-    }
-
-    if alignment.offset_ms.unsigned_abs() > (max_offset_seconds as u64 * 1000) {
-        tracing::warn!(
-            path = %subtitle_path.display(),
-            format = subtitle_format.label(),
-            offset_ms = alignment.offset_ms,
+    let response = match subtitle_sync_client
+        .align_subtitle(SubtitleSyncJob {
+            input_path: video_path.to_path_buf(),
+            subtitle_spans,
             max_offset_seconds,
-            "subtitle sync skipped: offset exceeds configured maximum"
-        );
-        return Ok(skipped_sync_result(
-            alignment.offset_ms,
-            Some(subtitle_format),
-            Some(alignment.consistency_ratio),
-            Some(alignment.nosplit_score),
-            Some(alignment.split_score),
-            SyncSkipReason::OffsetExceedsMaximum,
-        ));
-    }
+            expected_codec: targeted_audio_codec_for_path(video_path),
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(
+                path = %video_path.display(),
+                plugin_id = ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
+                error = %error,
+                "subtitle sync skipped: plugin execution failed"
+            );
+            return Ok(skipped_sync_result(
+                0,
+                Some(subtitle_format),
+                None,
+                None,
+                None,
+                SyncSkipReason::AudioDecodeFailed,
+            ));
+        }
+    };
 
-    if alignment.offset_ms.unsigned_abs() < MIN_EFFECTIVE_OFFSET_MS as u64 {
+    if !response.warnings.is_empty() {
         tracing::debug!(
-            path = %subtitle_path.display(),
-            format = subtitle_format.label(),
-            offset_ms = alignment.offset_ms,
-            "subtitle sync skipped: offset too small to apply"
+            path = %video_path.display(),
+            backend = response.backend.as_str(),
+            warnings = ?response.warnings,
+            "subtitle sync plugin reported warnings"
         );
-        return Ok(skipped_sync_result(
-            alignment.offset_ms,
-            Some(subtitle_format),
-            Some(alignment.consistency_ratio),
-            Some(alignment.nosplit_score),
-            Some(alignment.split_score),
-            SyncSkipReason::OffsetTooSmall,
-        ));
     }
 
-    apply_subtitle_offset(subtitle_path, subtitle_format, alignment.offset_ms)?;
+    if !response.applied {
+        return Ok(sync_result_from_plugin_response(subtitle_format, response));
+    }
+
+    apply_subtitle_offset(subtitle_path, subtitle_format, response.offset_ms)?;
 
     tracing::info!(
         path = %subtitle_path.display(),
         format = subtitle_format.label(),
-        offset_ms = alignment.offset_ms,
-        consistency_ratio = alignment.consistency_ratio,
-        nosplit_score = alignment.nosplit_score,
-        split_score = alignment.split_score,
+        backend = response.backend.as_str(),
+        offset_ms = response.offset_ms,
+        consistency_ratio = response.consistency_ratio,
+        nosplit_score = response.nosplit_score,
+        split_score = response.split_score,
         "subtitle synchronized"
     );
     Ok(SyncResult {
-        offset_ms: alignment.offset_ms,
+        offset_ms: response.offset_ms,
         applied: true,
         format: Some(subtitle_format),
-        consistency_ratio: Some(alignment.consistency_ratio),
-        nosplit_score: Some(alignment.nosplit_score),
-        split_score: Some(alignment.split_score),
+        consistency_ratio: response.consistency_ratio,
+        nosplit_score: response.nosplit_score,
+        split_score: response.split_score,
         skipped_reason: None,
     })
+}
+
+fn missing_enhanced_sync_install_hint() -> String {
+    format!(
+        "subtitle sync requires plugin '{}'; install and enable it to use subtitle sync",
+        ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
+    )
+}
+
+fn missing_enhanced_sync_update_hint() -> String {
+    format!(
+        "subtitle sync plugin '{}' is installed but too old; update it to restore subtitle sync support",
+        ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
+    )
+}
+
+fn sync_result_from_plugin_response(
+    subtitle_format: SubtitleTimingFormat,
+    response: SubtitleSyncAlignResponse,
+) -> SyncResult {
+    skipped_sync_result(
+        response.offset_ms,
+        Some(subtitle_format),
+        response.consistency_ratio,
+        response.nosplit_score,
+        response.split_score,
+        response
+            .skipped_reason
+            .map(map_plugin_skip_reason)
+            .unwrap_or(SyncSkipReason::AudioDecodeFailed),
+    )
+}
+
+fn map_plugin_skip_reason(reason: SubtitleSyncAlignSkipReason) -> SyncSkipReason {
+    match reason {
+        SubtitleSyncAlignSkipReason::AudioDecodeFailed => SyncSkipReason::AudioDecodeFailed,
+        SubtitleSyncAlignSkipReason::NotEnoughReferenceSpans => {
+            SyncSkipReason::NotEnoughReferenceSpans
+        }
+        SubtitleSyncAlignSkipReason::WeakAlignment => SyncSkipReason::WeakAlignment,
+        SubtitleSyncAlignSkipReason::LowAlignmentConsistency => {
+            SyncSkipReason::LowAlignmentConsistency
+        }
+        SubtitleSyncAlignSkipReason::OffsetExceedsMaximum => SyncSkipReason::OffsetExceedsMaximum,
+        SubtitleSyncAlignSkipReason::OffsetTooSmall => SyncSkipReason::OffsetTooSmall,
+    }
 }
 
 fn skipped_sync_result(
@@ -403,163 +384,6 @@ fn skipped_sync_result(
         split_score,
         skipped_reason: Some(reason),
     }
-}
-
-fn compute_alignment(
-    reference_spans: &[TimeSpan],
-    subtitle_spans: &[TimeSpan],
-) -> AlignmentSummary {
-    let (offset, nosplit_score) = alass_core::align_nosplit(
-        reference_spans,
-        subtitle_spans,
-        alass_core::standard_scoring,
-        NoProgressHandler,
-    );
-    let (split_deltas, split_score) = alass_core::align(
-        reference_spans,
-        subtitle_spans,
-        SPLIT_PENALTY,
-        None,
-        alass_core::standard_scoring,
-        NoProgressHandler,
-    );
-
-    let offset_ms = offset.as_i64();
-    let consistency_ratio = delta_consistency_ratio(&split_deltas, offset_ms);
-
-    AlignmentSummary {
-        offset_ms,
-        consistency_ratio,
-        nosplit_score,
-        split_score,
-    }
-}
-
-fn delta_consistency_ratio(deltas: &[TimeDelta], offset_ms: i64) -> f64 {
-    if deltas.is_empty() {
-        return 0.0;
-    }
-
-    let consistent = deltas
-        .iter()
-        .filter(|delta| (delta.as_i64() - offset_ms).abs() <= DELTA_CONSISTENCY_TOLERANCE_MS)
-        .count();
-    consistent as f64 / deltas.len() as f64
-}
-
-// ── Audio extraction via Symphonia, with targeted FFmpeg-WASM fallback ──────
-
-fn audio_transcode_codec_label(codec: AudioTranscodeCodec) -> &'static str {
-    match codec {
-        AudioTranscodeCodec::Ac3 => "AC-3",
-        AudioTranscodeCodec::Eac3 => "E-AC-3",
-        AudioTranscodeCodec::Dts => "DTS",
-        AudioTranscodeCodec::DtsHdMaCore => "DTS-HD MA (core fallback)",
-        AudioTranscodeCodec::TrueHd => "TrueHD",
-    }
-}
-
-fn should_warn_missing_enhanced_sync_plugin(
-    targeted_codec: Option<AudioTranscodeCodec>,
-    has_audio_transcoder: bool,
-) -> Option<AudioTranscodeCodec> {
-    targeted_codec.filter(|_| !has_audio_transcoder)
-}
-
-fn missing_enhanced_sync_install_hint(codec: AudioTranscodeCodec) -> String {
-    format!(
-        "subtitle sync could not decode targeted audio codec {} with native audio support; install and enable plugin '{}' for expanded codec support",
-        audio_transcode_codec_label(codec),
-        ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
-    )
-}
-
-async fn extract_audio_speech_spans(
-    video_path: &Path,
-    audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
-) -> AppResult<Vec<TimeSpan>> {
-    let targeted_codec = targeted_audio_codec_for_path(video_path);
-    let has_audio_transcoder = audio_transcoder.is_some();
-
-    if let (Some(codec), Some(transcoder)) = (targeted_codec, audio_transcoder) {
-        match transcode_targeted_audio_to_flac(video_path, codec, transcoder).await {
-            Ok(spans) => return Ok(spans),
-            Err(error) => {
-                tracing::warn!(
-                    path = %video_path.display(),
-                    codec = ?codec,
-                    error = %error,
-                    "targeted audio transcode failed; falling back to native audio decode"
-                );
-            }
-        }
-    }
-
-    match decode_audio_speech_spans_blocking(video_path).await {
-        Ok(spans) => Ok(spans),
-        Err(error) => {
-            if let Some(codec) =
-                should_warn_missing_enhanced_sync_plugin(targeted_codec, has_audio_transcoder)
-            {
-                tracing::warn!(
-                    path = %video_path.display(),
-                    codec = audio_transcode_codec_label(codec),
-                    plugin_id = ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
-                    error = %error,
-                    "{}",
-                    missing_enhanced_sync_install_hint(codec)
-                );
-            }
-            Err(error)
-        }
-    }
-}
-
-async fn transcode_targeted_audio_to_flac(
-    video_path: &Path,
-    codec: AudioTranscodeCodec,
-    transcoder: Arc<dyn AudioTranscoderClient>,
-) -> AppResult<Vec<TimeSpan>> {
-    let temp_dir = tempfile::Builder::new()
-        .prefix("scryer-sync-audio-")
-        .tempdir()
-        .map_err(|error| {
-            AppError::Repository(format!("failed to create audio transcode tempdir: {error}"))
-        })?;
-    let output_path = temp_dir.path().join("sync.flac");
-    let artifact = transcoder
-        .transcode_sync_flac(AudioTranscodeJob {
-            input_path: video_path.to_path_buf(),
-            output_path: output_path.clone(),
-            expected_codec: codec,
-        })
-        .await?;
-
-    match artifact.response.status {
-        AudioTranscodeStatus::Decoded => {
-            decode_audio_speech_spans_blocking(&artifact.output_path).await
-        }
-        AudioTranscodeStatus::UnsupportedCodec => Err(AppError::Repository(format!(
-            "audio transcoder does not support codec {codec:?}"
-        ))),
-        AudioTranscodeStatus::Error => Err(AppError::Repository(
-            artifact
-                .response
-                .message
-                .unwrap_or_else(|| "audio transcode failed".to_string()),
-        )),
-    }
-}
-
-async fn decode_audio_speech_spans_blocking(video_path: &Path) -> AppResult<Vec<TimeSpan>> {
-    let path = video_path.to_path_buf();
-
-    tokio::task::spawn_blocking(move || {
-        crate::nice_thread();
-        decode_audio_to_speech_spans(&path)
-    })
-    .await
-    .map_err(|e| AppError::Repository(format!("audio decode task panicked: {e}")))?
 }
 
 fn targeted_audio_codec_for_path(video_path: &Path) -> Option<AudioTranscodeCodec> {
@@ -596,281 +420,6 @@ fn targeted_audio_codec(codec: Option<&str>, profile: Option<&str>) -> Option<Au
     }
 }
 
-struct SelectedAudioTrack {
-    id: u32,
-    sample_rate: u32,
-    decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
-}
-
-/// Decode a usable audio track and produce speech spans via adaptive energy VAD.
-fn decode_audio_to_speech_spans(path: &Path) -> AppResult<Vec<TimeSpan>> {
-    use symphonia::core::formats::FormatOptions;
-    use symphonia::core::formats::probe::Hint;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::meta::MetadataOptions;
-
-    let file = std::fs::File::open(path).map_err(|e| {
-        AppError::Repository(format!("cannot open video for audio extraction: {e}"))
-    })?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let probed = symphonia::default::get_probe()
-        .probe(
-            &hint,
-            mss,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
-        .map_err(|e| AppError::Repository(format!("audio probe failed: {e}")))?;
-
-    let mut format = probed;
-    let SelectedAudioTrack {
-        id: track_id,
-        sample_rate,
-        mut decoder,
-    } = select_audio_track(format.as_mut())?;
-    let mut detector = SpeechSpanDetector::new(sample_rate);
-    let mut decoded_samples = Vec::<i16>::new();
-
-    loop {
-        let packet = match format.next_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) => break,
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            Err(_) => break,
-        };
-
-        if packet.track_id != track_id {
-            continue;
-        }
-
-        let decoded = match decoder.decode(&packet) {
-            Ok(decoded) => decoded,
-            Err(_) => continue,
-        };
-
-        let channels = decoded.spec().channels().count().max(1);
-        decoded.copy_to_vec_interleaved(&mut decoded_samples);
-        detector.push_interleaved_i16(&decoded_samples, channels);
-    }
-
-    Ok(detector.finish())
-}
-
-fn select_audio_track(
-    format: &mut dyn symphonia::core::formats::FormatReader,
-) -> AppResult<SelectedAudioTrack> {
-    use symphonia::core::codecs::audio::{AudioDecoderOptions, CODEC_ID_NULL_AUDIO};
-    use symphonia::core::formats::TrackType;
-
-    let default_track_id = format.default_track(TrackType::Audio).map(|track| track.id);
-    let mut best_track: Option<(i32, SelectedAudioTrack)> = None;
-
-    for track in format.tracks() {
-        let Some(audio_params) = track
-            .codec_params
-            .as_ref()
-            .and_then(|params| params.audio())
-        else {
-            continue;
-        };
-
-        if audio_params.codec == CODEC_ID_NULL_AUDIO {
-            continue;
-        };
-
-        let Ok(decoder) = symphonia::default::get_codecs()
-            .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
-        else {
-            continue;
-        };
-
-        let sample_rate = audio_params.sample_rate.unwrap_or(44_100);
-        let channel_count = audio_params
-            .channels
-            .as_ref()
-            .map(|channels| channels.count())
-            .unwrap_or(1);
-        let priority = track_selection_priority(track, default_track_id)
-            + channel_count as i32
-            + sample_rate as i32 / 1000;
-
-        let selected = SelectedAudioTrack {
-            id: track.id,
-            sample_rate,
-            decoder,
-        };
-
-        match &best_track {
-            Some((best_priority, _)) if *best_priority >= priority => {}
-            _ => best_track = Some((priority, selected)),
-        }
-    }
-
-    best_track
-        .map(|(_, track)| track)
-        .ok_or_else(|| AppError::Repository("no decodable audio track found".into()))
-}
-
-fn track_selection_priority(
-    track: &symphonia::core::formats::Track,
-    default_track_id: Option<u32>,
-) -> i32 {
-    let mut priority = 0;
-    if Some(track.id) == default_track_id {
-        priority += 10_000;
-    }
-    if track
-        .codec_params
-        .as_ref()
-        .and_then(|params| params.audio())
-        .and_then(|params| params.sample_rate)
-        .is_some()
-    {
-        priority += 1_000;
-    }
-    if track.language.is_some() {
-        priority += 10;
-    }
-    priority
-}
-
-struct SpeechSpanDetector {
-    samples_per_window: usize,
-    frames_in_window: usize,
-    window_energy_sum: f64,
-    current_window_start_ms: i64,
-    noise_floor: f64,
-    noise_floor_initialized: bool,
-    below_threshold_windows: usize,
-    in_speech: bool,
-    speech_start_ms: i64,
-    spans: Vec<TimeSpan>,
-}
-
-impl SpeechSpanDetector {
-    fn new(sample_rate: u32) -> Self {
-        Self {
-            samples_per_window: (sample_rate / 100).max(1) as usize,
-            frames_in_window: 0,
-            window_energy_sum: 0.0,
-            current_window_start_ms: 0,
-            noise_floor: 0.0,
-            noise_floor_initialized: false,
-            below_threshold_windows: 0,
-            in_speech: false,
-            speech_start_ms: 0,
-            spans: Vec::new(),
-        }
-    }
-
-    fn push_interleaved_i16(&mut self, samples: &[i16], channels: usize) {
-        let channels = channels.max(1);
-        for frame in samples.chunks_exact(channels) {
-            let mean_sq = frame
-                .iter()
-                .map(|sample| {
-                    let sample = *sample as f64;
-                    sample * sample
-                })
-                .sum::<f64>()
-                / channels as f64;
-            self.push_frame_energy(mean_sq);
-        }
-    }
-
-    fn push_frame_energy(&mut self, mean_sq: f64) {
-        self.window_energy_sum += mean_sq;
-        self.frames_in_window += 1;
-
-        if self.frames_in_window >= self.samples_per_window {
-            let rms = (self.window_energy_sum / self.frames_in_window as f64).sqrt();
-            self.process_window(rms);
-            self.frames_in_window = 0;
-            self.window_energy_sum = 0.0;
-        }
-    }
-
-    fn process_window(&mut self, rms: f64) {
-        if !self.noise_floor_initialized {
-            self.noise_floor = rms.clamp(1.0, VAD_START_THRESHOLD_MIN / VAD_START_MULTIPLIER);
-            self.noise_floor_initialized = true;
-        } else if !self.in_speech || rms < self.noise_floor * VAD_START_MULTIPLIER {
-            self.noise_floor =
-                (1.0 - VAD_NOISE_SMOOTHING) * self.noise_floor + VAD_NOISE_SMOOTHING * rms.max(1.0);
-        }
-
-        let start_threshold =
-            (self.noise_floor * VAD_START_MULTIPLIER).max(VAD_START_THRESHOLD_MIN);
-        let stop_threshold = (self.noise_floor * VAD_STOP_MULTIPLIER).max(VAD_STOP_THRESHOLD_MIN);
-        let window_start_ms = self.current_window_start_ms;
-
-        if rms > start_threshold {
-            self.below_threshold_windows = 0;
-            if !self.in_speech {
-                self.in_speech = true;
-                self.speech_start_ms = window_start_ms;
-            }
-        } else if self.in_speech && rms <= stop_threshold {
-            self.below_threshold_windows += 1;
-            if self.below_threshold_windows >= VAD_MIN_SILENCE_WINDOWS {
-                let end_ms = window_start_ms - ((VAD_MIN_SILENCE_WINDOWS as i64 - 1) * WINDOW_MS);
-                self.push_span(self.speech_start_ms, end_ms);
-                self.in_speech = false;
-                self.below_threshold_windows = 0;
-            }
-        } else if self.in_speech {
-            self.below_threshold_windows = 0;
-        }
-
-        self.current_window_start_ms += WINDOW_MS;
-    }
-
-    fn finish(mut self) -> Vec<TimeSpan> {
-        if self.frames_in_window > 0 {
-            let rms = (self.window_energy_sum / self.frames_in_window as f64).sqrt();
-            self.process_window(rms);
-            self.frames_in_window = 0;
-            self.window_energy_sum = 0.0;
-        }
-
-        if self.in_speech {
-            self.push_span(self.speech_start_ms, self.current_window_start_ms);
-            self.in_speech = false;
-        }
-
-        self.spans
-    }
-
-    fn push_span(&mut self, start_ms: i64, end_ms: i64) {
-        if end_ms <= start_ms {
-            return;
-        }
-
-        if let Some(last) = self.spans.last_mut() {
-            let last_end = last.end.as_i64();
-            if start_ms - last_end <= WINDOW_MS {
-                *last = TimeSpan::new(last.start, TimePoint::from(end_ms));
-                return;
-            }
-        }
-
-        self.spans.push(TimeSpan::new(
-            TimePoint::from(start_ms),
-            TimePoint::from(end_ms),
-        ));
-    }
-}
-
 // ── Subtitle parsing and shifting with charset detection ─────────────────────
 
 /// Read a subtitle file, auto-detecting charset for common wild-text encodings.
@@ -898,7 +447,9 @@ fn read_subtitle_to_string(path: &Path) -> AppResult<String> {
     Ok(decoded.into_owned())
 }
 
-fn read_subtitle_spans(path: &Path) -> AppResult<Option<(SubtitleTimingFormat, Vec<TimeSpan>)>> {
+fn read_subtitle_spans(
+    path: &Path,
+) -> AppResult<Option<(SubtitleTimingFormat, Vec<SubtitleTimingSpan>)>> {
     let content = read_subtitle_to_string(path)?;
     let Some(format) = detect_subtitle_format(path, &content) else {
         return Ok(None);
@@ -953,13 +504,16 @@ fn apply_subtitle_offset(
     Ok(())
 }
 
-fn read_srt_spans_from_str(content: &str) -> Vec<TimeSpan> {
+fn read_srt_spans_from_str(content: &str) -> Vec<SubtitleTimingSpan> {
     let mut spans = Vec::new();
     for line in content.lines() {
         if let Some((start, end)) = line.split_once("-->")
             && let (Some(start), Some(end)) = (parse_srt_ts(start.trim()), parse_srt_ts(end.trim()))
         {
-            spans.push(TimeSpan::new(TimePoint::from(start), TimePoint::from(end)));
+            spans.push(SubtitleTimingSpan {
+                start_ms: start,
+                end_ms: end,
+            });
         }
     }
     spans
@@ -984,7 +538,7 @@ fn shift_srt_content(content: &str, offset_ms: i64) -> String {
     out
 }
 
-fn read_ass_spans_from_str(content: &str) -> Vec<TimeSpan> {
+fn read_ass_spans_from_str(content: &str) -> Vec<SubtitleTimingSpan> {
     let mut spans = Vec::new();
     let mut in_events = false;
     let mut event_format = AssEventFormat::default();
@@ -1015,7 +569,10 @@ fn read_ass_spans_from_str(content: &str) -> Vec<TimeSpan> {
             parse_ass_ts(fields[event_format.start_idx].trim()),
             parse_ass_ts(fields[event_format.end_idx].trim()),
         ) {
-            spans.push(TimeSpan::new(TimePoint::from(start), TimePoint::from(end)));
+            spans.push(SubtitleTimingSpan {
+                start_ms: start,
+                end_ms: end,
+            });
         }
     }
 
@@ -1200,19 +757,6 @@ fn format_ass_ts(ms: i64) -> String {
     )
 }
 
-// ── Standalone VAD for testing ───────────────────────────────────────────────
-
-/// Adaptive energy-based VAD on raw 16-bit mono PCM, used by unit tests.
-#[cfg(test)]
-fn detect_speech_spans(pcm: &[u8], sample_rate: u32) -> Vec<TimeSpan> {
-    let mut detector = SpeechSpanDetector::new(sample_rate);
-    for sample in pcm.chunks_exact(2) {
-        let sample = i16::from_le_bytes([sample[0], sample[1]]) as f64;
-        detector.push_frame_energy(sample * sample);
-    }
-    detector.finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1251,23 +795,17 @@ mod tests {
     }
 
     #[test]
-    fn missing_enhanced_sync_plugin_warning_only_applies_without_transcoder() {
-        assert_eq!(
-            should_warn_missing_enhanced_sync_plugin(Some(AudioTranscodeCodec::TrueHd), false),
-            Some(AudioTranscodeCodec::TrueHd)
-        );
-        assert_eq!(
-            should_warn_missing_enhanced_sync_plugin(Some(AudioTranscodeCodec::Dts), true),
-            None
-        );
-        assert_eq!(should_warn_missing_enhanced_sync_plugin(None, false), None);
+    fn missing_enhanced_sync_plugin_warning_mentions_install_hint() {
+        let message = missing_enhanced_sync_install_hint();
+        assert!(message.contains("install and enable it"));
+        assert!(message.contains(ENHANCED_SUBTITLE_SYNC_PLUGIN_ID));
     }
 
     #[test]
-    fn missing_enhanced_sync_plugin_warning_mentions_install_hint() {
-        let message = missing_enhanced_sync_install_hint(AudioTranscodeCodec::DtsHdMaCore);
-        assert!(message.contains("DTS-HD MA"));
-        assert!(message.contains("install and enable plugin"));
+    fn missing_enhanced_sync_plugin_warning_mentions_update_hint() {
+        let message = missing_enhanced_sync_update_hint();
+        assert!(message.contains("too old"));
+        assert!(message.contains("update"));
         assert!(message.contains(ENHANCED_SUBTITLE_SYNC_PLUGIN_ID));
     }
 
@@ -1276,12 +814,6 @@ mod tests {
         assert_eq!(parse_ass_ts("0:01:23.45"), Some(83_450));
         assert_eq!(format_ass_ts(83_450), "0:01:23.45");
         assert_eq!(format_ass_ts(-100), "0:00:00.00");
-    }
-
-    #[test]
-    fn silent_audio_no_spans() {
-        let silent = vec![0u8; 32_000];
-        assert!(detect_speech_spans(&silent, 16_000).is_empty());
     }
 
     #[test]
@@ -1309,78 +841,6 @@ mod tests {
     #[test]
     fn parse_srt_ts_rejects_non_numeric() {
         assert_eq!(parse_srt_ts("ab:cd:ef,ghi"), None);
-    }
-
-    #[test]
-    fn loud_audio_produces_one_big_span() {
-        let sample_rate = 16_000u32;
-        let spw = (sample_rate / 100) as usize;
-        let num_windows = 50;
-        let mut pcm = Vec::with_capacity(spw * num_windows * 2);
-        for _ in 0..(spw * num_windows) {
-            pcm.extend_from_slice(&32_767i16.to_le_bytes());
-        }
-        let spans = detect_speech_spans(&pcm, sample_rate);
-        assert_eq!(spans.len(), 1);
-    }
-
-    #[test]
-    fn alternating_loud_silent_windows_get_smoothed_into_one_span() {
-        let sample_rate = 16_000u32;
-        let spw = (sample_rate / 100) as usize;
-        let mut pcm = Vec::new();
-        for w in 0..10u32 {
-            let sample: i16 = if w % 2 == 0 { 20_000 } else { 0 };
-            for _ in 0..spw {
-                pcm.extend_from_slice(&sample.to_le_bytes());
-            }
-        }
-        let spans = detect_speech_spans(&pcm, sample_rate);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].start.as_i64(), 0);
-        assert_eq!(spans[0].end.as_i64(), 100);
-    }
-
-    #[test]
-    fn two_loud_bursts_separated_by_silence() {
-        let sample_rate = 16_000u32;
-        let spw = (sample_rate / 100) as usize;
-        let mut pcm = Vec::new();
-        for w in 0..10u32 {
-            let sample: i16 = if !(3..7).contains(&w) { 20_000 } else { 0 };
-            for _ in 0..spw {
-                pcm.extend_from_slice(&sample.to_le_bytes());
-            }
-        }
-        let spans = detect_speech_spans(&pcm, sample_rate);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].start.as_i64(), 0);
-        assert_eq!(spans[0].end.as_i64(), 30);
-        assert_eq!(spans[1].start.as_i64(), 70);
-        assert_eq!(spans[1].end.as_i64(), 100);
-    }
-
-    #[test]
-    fn empty_pcm_no_spans() {
-        assert!(detect_speech_spans(&[], 16_000).is_empty());
-    }
-
-    #[test]
-    fn near_threshold_audio() {
-        let sample_rate = 16_000u32;
-        let spw = (sample_rate / 100) as usize;
-
-        let mut pcm_at = Vec::new();
-        for _ in 0..spw {
-            pcm_at.extend_from_slice(&500i16.to_le_bytes());
-        }
-        assert!(detect_speech_spans(&pcm_at, sample_rate).is_empty());
-
-        let mut pcm_above = Vec::new();
-        for _ in 0..(spw * 2) {
-            pcm_above.extend_from_slice(&501i16.to_le_bytes());
-        }
-        assert_eq!(detect_speech_spans(&pcm_above, sample_rate).len(), 1);
     }
 
     #[test]
@@ -1416,8 +876,8 @@ Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,ignored\n\
 Dialogue: 0,0:00:03.00,0:00:05.00,Default,,0,0,0,,Hello\n";
         let spans = read_ass_spans_from_str(content);
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].start.as_i64(), 3_000);
-        assert_eq!(spans[0].end.as_i64(), 5_000);
+        assert_eq!(spans[0].start_ms, 3_000);
+        assert_eq!(spans[0].end_ms, 5_000);
     }
 
     #[test]
@@ -1431,22 +891,37 @@ Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,note\n";
         assert!(shifted.contains("Comment: 0,0:00:02.50,0:00:03.50,Default,,0,0,0,,note"));
     }
 
-    #[test]
-    fn delta_consistency_ratio_counts_clustered_offsets() {
-        let clustered = vec![
-            TimeDelta::from_i64(1_000),
-            TimeDelta::from_i64(1_050),
-            TimeDelta::from_i64(900),
-            TimeDelta::from_i64(1_320),
-        ];
-        let inconsistent = vec![
-            TimeDelta::from_i64(1_000),
-            TimeDelta::from_i64(1_500),
-            TimeDelta::from_i64(2_100),
-        ];
+    #[tokio::test]
+    async fn sync_requires_plugin_when_unavailable() {
+        let subtitle = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            subtitle.path(),
+            "1\n00:00:01,000 --> 00:00:04,000\nHello\n\n2\n00:00:05,000 --> 00:00:08,000\nWorld\n\n3\n00:00:09,000 --> 00:00:12,000\nAgain\n",
+        )
+        .unwrap();
 
-        assert!(delta_consistency_ratio(&clustered, 1_000) > 0.7);
-        assert!(delta_consistency_ratio(&inconsistent, 1_000) < 0.5);
+        let result = sync_subtitle_with_policy_and_plugin_sync(
+            Path::new("/tmp/video.mkv"),
+            subtitle.path(),
+            SyncPolicy {
+                enabled: true,
+                forced: false,
+                score: Some(10),
+                threshold: Some(90),
+                max_offset_seconds: 60,
+            },
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.applied);
+        assert_eq!(
+            result.skipped_reason,
+            Some(SyncSkipReason::SubtitleSyncPluginRequired)
+        );
+        assert_eq!(result.format, Some(SubtitleTimingFormat::Srt));
     }
 
     #[tokio::test]

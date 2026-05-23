@@ -1405,6 +1405,20 @@ fn ai_enhanced_gets_block_score() {
     assert!(!d.allowed);
 }
 
+#[test]
+fn trash_guides_blocked_title_gets_block_score() {
+    let profile = QualityProfile::default();
+    let w = balanced_weights();
+    let release = parse_release_metadata("Movie.2024.2160p.WEB-DL.H.265.BiTOR");
+    let d = evaluate_against_profile(&profile, &release, false, &w);
+    assert!(
+        d.scoring_log
+            .iter()
+            .any(|e| e.code == "trash_guides_lq_release_title" && e.delta == BLOCK_SCORE)
+    );
+    assert!(!d.allowed);
+}
+
 // ── Phase E: release group reputation ────────────────────────────────────
 
 #[test]

@@ -1745,6 +1745,10 @@ export const importHistoryChangedSubscription = `subscription ImportHistoryChang
   importHistoryChanged
 }`;
 
+export const indexersChangedSubscription = `subscription IndexersChanged {
+  indexersChanged
+}`;
+
 export const providerCatalogChangedSubscription = `subscription ProviderCatalogChanged {
   providerCatalogChanged
 }`;

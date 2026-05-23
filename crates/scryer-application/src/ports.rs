@@ -1,7 +1,9 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
-use scryer_plugin_sdk::{AudioTranscodeCodec, AudioTranscodeResponse};
+use scryer_plugin_sdk::{
+    AudioTranscodeCodec, AudioTranscodeResponse, SubtitleSyncAlignResponse, SubtitleTimingSpan,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -1752,12 +1754,25 @@ pub struct AudioTranscodeArtifact {
     pub response: AudioTranscodeResponse,
 }
 
+#[derive(Debug, Clone)]
+pub struct SubtitleSyncJob {
+    pub input_path: PathBuf,
+    pub subtitle_spans: Vec<SubtitleTimingSpan>,
+    pub max_offset_seconds: i64,
+    pub expected_codec: Option<AudioTranscodeCodec>,
+}
+
 #[async_trait]
 pub trait AudioTranscoderClient: Send + Sync {
     async fn transcode_sync_flac(
         &self,
         job: AudioTranscodeJob,
     ) -> AppResult<AudioTranscodeArtifact>;
+}
+
+#[async_trait]
+pub trait SubtitleSyncClient: Send + Sync {
+    async fn align_subtitle(&self, job: SubtitleSyncJob) -> AppResult<SubtitleSyncAlignResponse>;
 }
 
 pub trait NotificationPluginProvider: Send + Sync {
@@ -1830,6 +1845,9 @@ pub trait SubtitlePluginProvider: Send + Sync {
         host_bindings: &std::collections::HashMap<scryer_domain::PluginHostBindingId, String>,
     ) -> Option<Arc<dyn SubtitleProviderClient>>;
     fn audio_transcoder_client(&self) -> Option<Arc<dyn AudioTranscoderClient>> {
+        None
+    }
+    fn subtitle_sync_client(&self) -> Option<Arc<dyn SubtitleSyncClient>> {
         None
     }
     fn available_provider_types(&self) -> Vec<String>;

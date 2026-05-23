@@ -1060,14 +1060,12 @@ impl DatastoreAssembly {
     pub fn metadata_gateway_client(
         &self,
         endpoint: String,
-        accept_invalid_certs: bool,
         enrollment_config: SmgEnrollmentConfig,
     ) -> MetadataGatewayClient {
         match &self.stores {
             DatastoreStores::Sqlite { settings_store, .. } => {
                 MetadataGatewayClient::new_with_enrollment_store(
                     endpoint,
-                    accept_invalid_certs,
                     settings_store.clone(),
                     enrollment_config,
                 )
@@ -1075,7 +1073,6 @@ impl DatastoreAssembly {
             DatastoreStores::Postgres { settings_store, .. } => {
                 MetadataGatewayClient::new_with_enrollment_store(
                     endpoint,
-                    accept_invalid_certs,
                     settings_store.clone(),
                     enrollment_config,
                 )
@@ -1851,7 +1848,6 @@ mod tests {
                     encryption_master_key: "test-master-key".to_string(),
                     jwt_signing_secret: "test-jwt-secret".to_string(),
                     smg_registration_secret: Some("test-smg-secret".to_string()),
-                    smg_ca_cert: Some("test-smg-ca".to_string()),
                     smg_gateway_url: Some("https://smg.example.invalid/graphql".to_string()),
                 },
             };

@@ -12,7 +12,7 @@ use scryer_domain::{
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
-    default_reqwest_client,
+    generic_reqwest_client,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -276,7 +276,7 @@ impl WeaverDownloadClient {
     ) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
         let graphql_url = format!("{base}/graphql");
-        let http_client = default_reqwest_client();
+        let http_client = generic_reqwest_client();
         Self {
             graphql_url,
             api_key,

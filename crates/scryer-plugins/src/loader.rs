@@ -9,7 +9,7 @@ use scryer_application::{
     AppError, AppResult, AudioTranscoderClient, DownloadClient, DownloadClientPluginProvider,
     ExternalPluginWasm, IndexerClient, IndexerPluginProvider, NotificationClient,
     NotificationPluginProvider, PluginDescriptorLoader, RuntimePluginLoad, SubtitlePluginProvider,
-    SubtitleProviderClient,
+    SubtitleProviderClient, SubtitleSyncClient,
 };
 use scryer_domain::{
     DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
@@ -24,13 +24,14 @@ use crate::notification_adapter::WasmNotificationClient;
 use crate::plugin_http_host;
 use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
+use crate::subtitle_sync_adapter::WasmSubtitleSyncClient;
 use crate::types::{
     ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, EXPORT_DESCRIBE,
     EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
     EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED,
     EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH,
-    EXPORT_NOTIFICATION_SEND, EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE,
-    EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
+    EXPORT_NOTIFICATION_SEND, EXPORT_SUBSYNC_ALIGN, EXPORT_SUBTITLE_DOWNLOAD,
+    EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
     PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SDK_VERSION,
     SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
     plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
@@ -1865,6 +1866,20 @@ impl WasmSubtitlePluginProvider {
         let client = WasmAudioTranscoderClient::new(wasm_bytes, loaded.descriptor.clone());
         Some(Arc::new(client))
     }
+
+    fn subtitle_sync_client_from_loaded(
+        loaded: &LoadedPlugin,
+    ) -> Option<Arc<dyn SubtitleSyncClient>> {
+        let wasm_bytes = loaded.materialize_wasm().ok()?;
+        let manifest = Manifest::new([extism::Wasm::data(wasm_bytes.clone())])
+            .with_timeout(std::time::Duration::from_secs(10));
+        let plugin = build_plugin(manifest).ok()?;
+        if !plugin.function_exists(EXPORT_SUBSYNC_ALIGN) {
+            return None;
+        }
+        let client = WasmSubtitleSyncClient::new(wasm_bytes, loaded.descriptor.clone());
+        Some(Arc::new(client))
+    }
 }
 
 impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
@@ -1911,6 +1926,13 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
             .values()
             .find(|loaded| loaded.descriptor.provider_type() == "enhanced-subtitle-sync")
             .and_then(Self::audio_transcoder_client_from_loaded)
+    }
+
+    fn subtitle_sync_client(&self) -> Option<Arc<dyn SubtitleSyncClient>> {
+        self.plugins
+            .values()
+            .find(|loaded| loaded.descriptor.provider_type() == "enhanced-subtitle-sync")
+            .and_then(Self::subtitle_sync_client_from_loaded)
     }
 
     fn available_provider_types(&self) -> Vec<String> {

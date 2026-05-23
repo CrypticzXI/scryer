@@ -15,7 +15,7 @@ use scryer_application::{
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
-    metadata_gateway_reqwest_client,
+    smg_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -77,10 +77,9 @@ fn apq_hash(query: &str) -> String {
     sha256_hex(query)
 }
 
-/// Configuration for SMG enrollment (mTLS client certificates).
+/// Configuration for SMG enrollment and application-layer instance auth.
 pub struct SmgEnrollmentConfig {
     pub registration_secret: Option<String>,
-    pub ca_cert: Option<String>,
 }
 
 /// Signing materials for application-layer instance authentication.
@@ -191,7 +190,6 @@ const METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL: Duration = Duration::from_se
 const METADATA_GATEWAY_COMPATIBILITY_STARTUP_GUARD: Duration = Duration::from_secs(30 * 60);
 const METADATA_GATEWAY_VERSION_COMPATIBILITY_PATH: &str = "/api/version-compatibility";
 const SCRYER_RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
-const SCRYER_SMG_USER_AGENT: &str = concat!("Scryer-", env!("CARGO_PKG_VERSION"));
 
 #[derive(Deserialize)]
 struct VersionCompatibilitySuccessResponse {
@@ -302,13 +300,11 @@ pub struct MetadataGatewayClient {
 impl MetadataGatewayClient {
     pub fn new(
         endpoint: String,
-        accept_invalid_certs: bool,
         db: crate::SqliteServices,
         enrollment_config: SmgEnrollmentConfig,
     ) -> Self {
         Self::new_with_enrollment_store(
             endpoint,
-            accept_invalid_certs,
             Arc::new(crate::SettingsStore::new(
                 db.datastore(),
                 db.encryption_key_state(),
@@ -319,14 +315,9 @@ impl MetadataGatewayClient {
 
     pub fn new_with_enrollment_store(
         endpoint: String,
-        accept_invalid_certs: bool,
         enrollment_store: Arc<dyn SettingsRepository>,
         enrollment_config: SmgEnrollmentConfig,
     ) -> Self {
-        if accept_invalid_certs {
-            warn!("metadata gateway client: TLS certificate verification DISABLED");
-        }
-
         let search_hash = apq_hash(graphql_docs::SEARCH_TVDB_QUERY);
         let search_rich_hash = apq_hash(graphql_docs::SEARCH_TVDB_RICH_QUERY);
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
@@ -345,7 +336,6 @@ impl MetadataGatewayClient {
 
         debug!(
             endpoint = %endpoint,
-            accept_invalid_certs,
             has_registration_secret = enrollment_config.registration_secret.is_some(),
             %search_hash,
             %search_rich_hash,
@@ -355,8 +345,7 @@ impl MetadataGatewayClient {
             "metadata gateway client initialized (APQ enabled)"
         );
 
-        let http = metadata_gateway_reqwest_client(accept_invalid_certs, SCRYER_SMG_USER_AGENT)
-            .expect("failed to build HTTP client");
+        let http = smg_reqwest_client();
 
         Self {
             outbound_http: OutboundHttpClient::new(http.clone(), RateLimitRegistry::new()),
@@ -381,12 +370,8 @@ impl MetadataGatewayClient {
 
     pub fn new_without_enrollment_store(
         endpoint: String,
-        accept_invalid_certs: bool,
         enrollment_config: SmgEnrollmentConfig,
     ) -> Self {
-        if accept_invalid_certs {
-            warn!("metadata gateway client: TLS certificate verification DISABLED");
-        }
         if enrollment_config.registration_secret.is_some() {
             warn!(
                 "SMG enrollment is not available for this datastore engine in the PostgreSQL blank-install slice"
@@ -406,8 +391,7 @@ impl MetadataGatewayClient {
         } else {
             format!("{}/api/register", endpoint.trim_end_matches('/'))
         };
-        let http = metadata_gateway_reqwest_client(accept_invalid_certs, SCRYER_SMG_USER_AGENT)
-            .expect("failed to build HTTP client");
+        let http = smg_reqwest_client();
 
         Self {
             outbound_http: OutboundHttpClient::new(http.clone(), RateLimitRegistry::new()),
@@ -519,7 +503,6 @@ impl MetadataGatewayClient {
             &**db,
             &self.registration_url,
             registration_secret,
-            self.enrollment_config.ca_cert.as_deref(),
         )
         .await
         {
@@ -1149,7 +1132,6 @@ impl MetadataGatewayClient {
             seed_b64,
             key_id,
             &self.registration_url,
-            self.enrollment_config.ca_cert.as_deref(),
         )
         .await
         {

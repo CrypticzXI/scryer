@@ -2112,7 +2112,18 @@ fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
     Ok(())
 }
 
+fn sync_trash_guides_for_release(ctx: &TaskContext) -> Result<()> {
+    step("Syncing TRaSH Guides knowledge");
+    let mut command = ctx.command_in("cargo", &ctx.repo_root);
+    command.args(["run", "-p", "xtask", "--", "trash-guides", "sync"]);
+    run_checked(&mut command)?;
+    ok("TRaSH Guides sync complete");
+    Ok(())
+}
+
 fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
+    sync_trash_guides_for_release(ctx)?;
+
     step("Determining next version");
     let latest_tag = latest_prefixed_tag(ctx, "scryer-v")?;
     let current_version = latest_tag

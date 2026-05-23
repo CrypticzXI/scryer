@@ -15,15 +15,12 @@ use scryer_application::{
     TitleImageStorageMode, TitleImageVariantRecord,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
-    title_image_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
 };
 use tracing::warn;
 
 const MAX_SOURCE_BYTES: usize = 20 * 1024 * 1024;
 const POSTER_VARIANT_WIDTHS: [u32; 3] = [500, 250, 70];
-const TITLE_IMAGE_CONNECT_TIMEOUT_SECS: u64 = 5;
-const TITLE_IMAGE_REQUEST_TIMEOUT_SECS: u64 = 20;
 const AVIF_SPEED: u8 = if cfg!(debug_assertions) { 10 } else { 6 };
 const AVIF_VARIANT_SPEED: u8 = 9;
 const AVIF_QUALITY: u8 = if cfg!(debug_assertions) { 60 } else { 85 };
@@ -38,14 +35,11 @@ pub struct HttpTitleImageProcessor {
 
 impl HttpTitleImageProcessor {
     pub fn new() -> Self {
-        let client = title_image_reqwest_client(
-            &format!("scryer/{}", env!("CARGO_PKG_VERSION")),
-            std::time::Duration::from_secs(TITLE_IMAGE_CONNECT_TIMEOUT_SECS),
-            std::time::Duration::from_secs(TITLE_IMAGE_REQUEST_TIMEOUT_SECS),
-        )
-        .expect("title image reqwest client should build");
         Self {
-            outbound_http: OutboundHttpClient::new(client, RateLimitRegistry::new()),
+            outbound_http: OutboundHttpClient::new(
+                generic_reqwest_client(),
+                RateLimitRegistry::new(),
+            ),
             max_source_bytes: MAX_SOURCE_BYTES,
             avif_enabled: true,
         }
@@ -53,14 +47,11 @@ impl HttpTitleImageProcessor {
 
     #[cfg(test)]
     pub(crate) fn new_for_tests(avif_enabled: bool) -> Self {
-        let client = title_image_reqwest_client(
-            "scryer-tests",
-            std::time::Duration::from_secs(TITLE_IMAGE_CONNECT_TIMEOUT_SECS),
-            std::time::Duration::from_secs(TITLE_IMAGE_REQUEST_TIMEOUT_SECS),
-        )
-        .expect("title image test reqwest client should build");
         Self {
-            outbound_http: OutboundHttpClient::new(client, RateLimitRegistry::new()),
+            outbound_http: OutboundHttpClient::new(
+                generic_reqwest_client(),
+                RateLimitRegistry::new(),
+            ),
             max_source_bytes: MAX_SOURCE_BYTES,
             avif_enabled,
         }

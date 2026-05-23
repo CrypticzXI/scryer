@@ -10,7 +10,7 @@ use scryer_application::{
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, default_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -176,7 +176,7 @@ impl SabnzbdDownloadClient {
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
     ) -> Self {
-        let http_client = default_reqwest_client();
+        let http_client = generic_reqwest_client();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: normalize_optional_auth_value(api_key),

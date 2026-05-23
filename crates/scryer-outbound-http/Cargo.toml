@@ -4,7 +4,7 @@ version = "0.15.6"
 edition.workspace = true
 
 [dependencies]
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "gzip", "brotli", "deflate", "zstd", "blocking"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
 tokio = { workspace = true }
 thiserror = { workspace = true }

@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
-use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -16,7 +15,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tempfile::NamedTempFile;
 use xtask_support::{TaskContext, command_available, ok, run_status, step, warn};
 
 mod profile;
@@ -81,9 +79,9 @@ struct Cli {
 enum Commands {
     Release(ReleaseArgs),
     Builtins(BuiltinsArgs),
+    TrashGuides(TrashGuidesArgs),
     Migrations(MigrationsArgs),
     Sdk(SdkArgs),
-    ValidateTrashGuides,
     Ci(CiArgs),
     Stack(StackArgs),
     Serve(ServeArgs),
@@ -108,6 +106,17 @@ struct ReleaseArgs {
 struct BuiltinsArgs {
     #[command(subcommand)]
     command: BuiltinsCommand,
+}
+
+#[derive(Args)]
+struct TrashGuidesArgs {
+    #[command(subcommand)]
+    command: TrashGuidesCommand,
+}
+
+#[derive(Subcommand)]
+enum TrashGuidesCommand {
+    Sync,
 }
 
 #[derive(Subcommand)]
@@ -304,9 +313,9 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Release(args) => delegate_release(&ctx, &args),
         Commands::Builtins(args) => delegate_builtins(&ctx, &args),
+        Commands::TrashGuides(args) => delegate_trash_guides(&ctx, &args),
         Commands::Migrations(args) => delegate_migrations(&ctx, &args),
         Commands::Sdk(args) => delegate_sdk(&ctx, &args),
-        Commands::ValidateTrashGuides => run_validate_trash_guides(&ctx),
         Commands::Ci(args) => match args.command {
             CiCommand::Clippy(args) => run_clippy_ci(&ctx, args),
         },
@@ -358,6 +367,13 @@ fn delegate_builtins(ctx: &TaskContext, args: &BuiltinsArgs) -> Result<()> {
         BuiltinsCommand::Sync => vec!["builtins".to_string(), "sync".to_string()],
     };
     delegate_to_package(ctx, "xtask-release", &forwarded)
+}
+
+fn delegate_trash_guides(ctx: &TaskContext, args: &TrashGuidesArgs) -> Result<()> {
+    let forwarded = match args.command {
+        TrashGuidesCommand::Sync => vec!["sync".to_string()],
+    };
+    delegate_to_package(ctx, "xtask-trash-guides", &forwarded)
 }
 
 fn delegate_sdk(ctx: &TaskContext, args: &SdkArgs) -> Result<()> {
@@ -1163,81 +1179,6 @@ fn signal_process_group(process_id: u32, signal: i32) -> io::Result<()> {
         return Ok(());
     }
     Err(error)
-}
-
-fn run_validate_trash_guides(ctx: &TaskContext) -> Result<()> {
-    let release_stamp = ctx.path(".claude/trash-guides-validation-timestamp");
-    require_command("claude")?;
-
-    let smg_dir = ctx.repo_root.join("../smg");
-    if !smg_dir.is_dir() {
-        bail!(
-            "smg repo not found at {} — required for trash guide scraper",
-            smg_dir.display()
-        );
-    }
-
-    step("Building trash guide scraper");
-    let bin_dir = tempfile::tempdir()?;
-    let bin_path = bin_dir.path().join("scrape-trash-guides");
-    let mut build = ctx.release_command_in("go", &smg_dir);
-    build.args(["build", "-o"]);
-    build.arg(&bin_path);
-    build.arg("./cmd/scrape-trash-guides");
-    run_checked(&mut build)?;
-    if !bin_path.is_file() {
-        bail!(
-            "trash guide scraper build did not produce {}",
-            bin_path.display()
-        );
-    }
-    ok("Trash guide scraper built");
-
-    let output = NamedTempFile::new()?;
-    step("Starting trash guide scraper");
-    let mut command = ctx.command(&bin_path);
-    command.arg("-o").arg(output.path());
-    let mut scraper = command.spawn()?;
-
-    step("Waiting for trash guide scraper");
-    let status = scraper.wait()?;
-    if !status.success() {
-        bail!("Trash guide scraper failed");
-    }
-    let output_size = fs::metadata(output.path())?.len();
-    if output_size == 0 {
-        bail!("Trash guide scraper produced empty output");
-    }
-    ok(format!(
-        "Trash guide scraper complete ({output_size} bytes)"
-    ));
-
-    let prompt_file = ctx.path("scripts/prompts/validate-trash-guides.md");
-    step("Spawning Claude to validate release group data");
-    let mut prompt = fs::read_to_string(&prompt_file)?;
-    prompt.push_str("\n\n<trash-guides-json>\n");
-    prompt.push_str(&fs::read_to_string(output.path())?);
-    prompt.push_str("\n</trash-guides-json>\n");
-
-    let mut claude = ctx.release_command("claude");
-    claude.env("CLAUDECODE", "").arg("-p").arg(prompt).args([
-        "--model",
-        "claude-opus-4-6",
-        "--max-turns",
-        "30",
-        "--allowedTools",
-        "Read,Edit,Write,Glob,Grep,Bash(cargo nextest*),Bash(ls*)",
-    ]);
-    run_checked(&mut claude)?;
-    if let Some(parent) = release_stamp.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(
-        &release_stamp,
-        Utc::now().format("%Y-%m-%dT%H:%M:%S%z").to_string(),
-    )?;
-    ok("Release group validation complete");
-    Ok(())
 }
 
 fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {

@@ -17,7 +17,7 @@ use scryer_domain::{
     PersistedPluginWasmPayload, PluginSourceKind, PluginSupportTier, PluginWasmEncoding,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, timeout_reqwest_client,
+    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
 };
 use scryer_plugin_sdk::{
     PluginDescriptor, SDK_VERSION, effective_host_sdk_constraint, host_version_matches_constraint,
@@ -31,10 +31,10 @@ use tracing::{debug, warn};
 
 static PLUGIN_HTTP_RATE_LIMITS: LazyLock<RateLimitRegistry> = LazyLock::new(RateLimitRegistry::new);
 static DEFAULT_PLUGIN_HTTP_CLIENT: LazyLock<Result<OutboundHttpClient, String>> =
-    LazyLock::new(|| build_plugin_http_client(None));
+    LazyLock::new(build_plugin_http_client);
 #[cfg(test)]
 static RULE_PACK_PLUGIN_HTTP_CLIENT: LazyLock<Result<OutboundHttpClient, String>> =
-    LazyLock::new(|| build_plugin_http_client(Some(Duration::from_secs(15))));
+    LazyLock::new(build_plugin_http_client);
 
 #[derive(Clone, Copy)]
 enum PluginHttpClientProfile {
@@ -1147,12 +1147,9 @@ fn plugin_type_belongs_to_indexer_family(plugin_type: &str) -> bool {
     )
 }
 
-fn build_plugin_http_client(timeout: Option<Duration>) -> Result<OutboundHttpClient, String> {
-    let client = timeout_reqwest_client(timeout)
-        .map_err(|error| format!("failed to build plugin HTTP client: {error}"))?;
-
+fn build_plugin_http_client() -> Result<OutboundHttpClient, String> {
     Ok(OutboundHttpClient::new(
-        client,
+        generic_reqwest_client(),
         PLUGIN_HTTP_RATE_LIMITS.clone(),
     ))
 }

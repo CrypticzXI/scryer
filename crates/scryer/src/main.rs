@@ -903,10 +903,6 @@ async fn bootstrap_application(
         .filter(|v| !v.is_empty())
         .or_else(|| SMG_GRAPHQL_URL.map(String::from))
         .unwrap_or_else(|| "http://127.0.0.1:8090/graphql".to_string());
-    // TODO: Remove SCRYER_METADATA_GATEWAY_INSECURE once the gateway has proper TLS certificates.
-    let metadata_gateway_insecure = std::env::var("SCRYER_METADATA_GATEWAY_INSECURE")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
     let smg_registration_secret = SMG_REGISTRATION_SECRET
         .map(String::from)
         .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
@@ -928,16 +924,10 @@ async fn bootstrap_application(
         },
     };
 
-    let smg_ca_cert = SMG_CA_CERT
-        .map(String::from)
-        .or_else(|| std::env::var("SCRYER_SMG_CA_CERT").ok())
-        .filter(|s| !s.is_empty());
     let metadata_gateway = Arc::new(datastore.metadata_gateway_client(
         metadata_gateway_url,
-        metadata_gateway_insecure,
         SmgEnrollmentConfig {
             registration_secret: smg_registration_secret,
-            ca_cert: smg_ca_cert,
         },
     ));
     let library_scanner = Arc::new(FileSystemLibraryScanner::new());
@@ -1005,12 +995,6 @@ async fn bootstrap_application(
             SMG_REGISTRATION_SECRET
                 .map(String::from)
                 .or_else(|| std::env::var("SCRYER_SMG_REGISTRATION_SECRET").ok())
-                .filter(|value| !value.is_empty()),
-        )
-        .with_smg_ca_cert(
-            SMG_CA_CERT
-                .map(String::from)
-                .or_else(|| std::env::var("SCRYER_SMG_CA_CERT").ok())
                 .filter(|value| !value.is_empty()),
         )
         .with_smg_gateway_url(Some(

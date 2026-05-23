@@ -14,7 +14,7 @@ use scryer_application::{
 use scryer_domain::{DownloadQueueItem, DownloadQueueState};
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
-    default_reqwest_client,
+    generic_reqwest_client,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -81,7 +81,7 @@ impl NzbgetDownloadClient {
             "ALL" | "FORCE" => dupe_mode.to_uppercase(),
             _ => "SCORE".to_string(),
         };
-        let http_client = default_reqwest_client();
+        let http_client = generic_reqwest_client();
         Self {
             rpc_url: rpc_url.trim_end_matches('/').to_string(),
             username,

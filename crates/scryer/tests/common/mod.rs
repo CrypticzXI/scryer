@@ -634,11 +634,9 @@ impl TestContext {
 
         let metadata_gateway = MetadataGatewayClient::new(
             format!("{}/graphql", smg_server.uri()),
-            true, // accept invalid certs (wiremock is plain HTTP)
             db.clone(),
             SmgEnrollmentConfig {
                 registration_secret: None,
-                ca_cert: None,
             },
         );
 
@@ -802,10 +800,7 @@ impl TestContext {
 
     /// Build a reqwest client suitable for hitting the test server.
     pub fn http_client(&self) -> reqwest::Client {
-        scryer_outbound_http::install_default_rustls_provider();
-        reqwest::Client::builder()
-            .build()
-            .expect("failed to build reqwest client")
+        scryer_outbound_http::generic_reqwest_client()
     }
 }
 

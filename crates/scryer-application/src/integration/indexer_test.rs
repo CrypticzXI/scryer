@@ -294,14 +294,7 @@ fn format_preflight_transport_error(url: &url::Url, origin: &str, error: &str) -
 #[cfg(not(test))]
 async fn preflight_test_flight_url(url: &url::Url) -> AppResult<()> {
     let origin = url.origin().ascii_serialization();
-    let client = scryer_outbound_http::no_redirect_timeout_reqwest_client(Some(
-        std::time::Duration::from_secs(10),
-    ))
-    .map_err(|error| {
-        AppError::Repository(format!(
-            "failed to build unauthenticated test-flight client: {error}"
-        ))
-    })?;
+    let client = scryer_outbound_http::no_redirect_reqwest_client();
     let outbound_http = scryer_outbound_http::OutboundHttpClient::new(
         client,
         scryer_outbound_http::RateLimitRegistry::new(),
@@ -917,6 +910,18 @@ mod tests {
         assert_eq!(*provider.plan_sync_calls.lock().unwrap(), expected_calls);
     }
 
+    async fn expect_indexers_changed(
+        receiver: &mut tokio::sync::broadcast::Receiver<()>,
+        context: &str,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_millis(250), receiver.recv())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for indexersChanged: {context}"))
+            .unwrap_or_else(|error| {
+                panic!("indexersChanged receiver failed for {context}: {error}")
+            });
+    }
+
     #[test]
     fn validate_test_flight_url_uses_origin_only_for_preflight() {
         let url = validate_test_flight_url("https://api.nzbgeek.info/api?t=search&apikey=secret")
@@ -1305,6 +1310,47 @@ mod tests {
                 .iter()
                 .all(|config| config.managed_parent_config_id.is_none())
         );
+    }
+
+    #[tokio::test]
+    async fn create_indexer_config_publishes_indexers_changed() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let client = Arc::new(RecordingIndexerClient::new(true));
+        let app = test_app(
+            indexer_repo,
+            Some(Arc::new(RecordingPluginProvider::new(
+                "torrent_rss",
+                vec![string_field(
+                    "feed_url",
+                    "Feed URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                rss_only_capabilities(),
+                client,
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+        let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
+
+        app.create_indexer_config(
+            &test_admin(),
+            NewIndexerConfig {
+                name: "RSS".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: true,
+                config_json: Some(
+                    r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#.to_string(),
+                ),
+            },
+        )
+        .await
+        .unwrap();
+
+        expect_indexers_changed(&mut receiver, "create_indexer_config").await;
     }
 
     #[tokio::test]
@@ -2293,6 +2339,66 @@ mod tests {
                 && entry.enabled
                 && entry.categories == vec!["5070"]
         }));
+    }
+
+    #[tokio::test]
+    async fn sync_indexer_config_publishes_indexers_changed() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "parent".to_string(),
+                name: "Parent Manager".to_string(),
+                provider_type: "manager".to_string(),
+                base_url: "https://manager.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some("{}".to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(
+            crate::IndexerSyncPlan {
+                children: vec![crate::ManagedIndexerChildPlan {
+                    child_key: "new".to_string(),
+                    name: "Managed New".to_string(),
+                    provider_type: "torrent_rss".to_string(),
+                    config_json: r#"{"feed_url":"https://new.example/rss"}"#.to_string(),
+                    is_enabled: true,
+                    enable_interactive_search: true,
+                    enable_auto_search: false,
+                    managed_metadata_json: None,
+                    caps_snapshot_json: None,
+                    routing_scopes: Vec::new(),
+                }],
+            },
+        ));
+        let app = test_app(
+            indexer_repo,
+            Some(provider),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+        let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
+
+        app.sync_indexer_config(&test_admin(), "parent")
+            .await
+            .unwrap();
+
+        expect_indexers_changed(&mut receiver, "sync_indexer_config").await;
     }
 
     #[tokio::test]

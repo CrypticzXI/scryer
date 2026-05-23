@@ -208,11 +208,9 @@ async fn setup() -> (
 
     let smg = scryer_infrastructure::MetadataGatewayClient::new(
         "http://localhost:2/graphql".to_string(),
-        true,
         db.clone(),
         scryer_infrastructure::SmgEnrollmentConfig {
             registration_secret: None,
-            ca_cert: None,
         },
     );
 

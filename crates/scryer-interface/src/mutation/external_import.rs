@@ -841,41 +841,35 @@ impl ExternalImportMutations {
                 )
             });
 
-            let parent_id = if let Some(existing_config) = existing_parent {
-                if existing_config.config_json.as_deref() == Some(config_json.as_str())
-                    && existing_config.is_enabled
+            if let Some(existing_config) = existing_parent {
+                match app
+                    .update_indexer_config(
+                        &actor,
+                        IndexerConfigUpdate {
+                            id: existing_config.id.clone(),
+                            name: None,
+                            provider_type: None,
+                            derived_base_url: None,
+                            rate_limit_seconds: None,
+                            rate_limit_burst: None,
+                            is_enabled: Some(true),
+                            enable_interactive_search: None,
+                            enable_auto_search: None,
+                            managed_parent_config_id: None,
+                            managed_child_key: None,
+                            managed_metadata_json: None,
+                            caps_snapshot_json: None,
+                            config_json: Some(config_json.clone()),
+                        },
+                    )
+                    .await
                 {
-                    existing_config.id
-                } else {
-                    match app
-                        .update_indexer_config(
-                            &actor,
-                            IndexerConfigUpdate {
-                                id: existing_config.id.clone(),
-                                name: None,
-                                provider_type: None,
-                                derived_base_url: None,
-                                rate_limit_seconds: None,
-                                rate_limit_burst: None,
-                                is_enabled: Some(true),
-                                enable_interactive_search: None,
-                                enable_auto_search: None,
-                                managed_parent_config_id: None,
-                                managed_child_key: None,
-                                managed_metadata_json: None,
-                                caps_snapshot_json: None,
-                                config_json: Some(config_json.clone()),
-                            },
-                        )
-                        .await
-                    {
-                        Ok(updated) => updated.id,
-                        Err(err) => {
-                            result
-                                .errors
-                                .push(format!("failed to update Prowlarr config '{name}': {err}"));
-                            continue;
-                        }
+                    Ok(_) => {}
+                    Err(err) => {
+                        result
+                            .errors
+                            .push(format!("failed to update Prowlarr config '{name}': {err}"));
+                        continue;
                     }
                 }
             } else {
@@ -895,9 +889,8 @@ impl ExternalImportMutations {
                     )
                     .await
                 {
-                    Ok(config) => {
+                    Ok(_config) => {
                         result.indexers_created += 1;
-                        config.id
                     }
                     Err(err) => {
                         result
@@ -906,8 +899,7 @@ impl ExternalImportMutations {
                         continue;
                     }
                 }
-            };
-            app.queue_managed_indexer_sync(&parent_id);
+            }
         }
 
         // ── Auto-install non-builtin plugins needed by selected indexers ──

@@ -1,6 +1,8 @@
 use std::{fmt, path::Path, sync::Arc};
 
-use crate::{AppResult, ports::AudioTranscoderClient};
+use crate::{AppResult, ports::SubtitleSyncClient};
+
+pub const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID: &str = "enhanced-subtitle-sync";
 
 #[derive(Debug, Clone)]
 pub struct SyncResult {
@@ -33,6 +35,7 @@ pub enum SyncSkipReason {
     Disabled,
     ForcedSubtitle,
     ScoreAboveThreshold,
+    SubtitleSyncPluginRequired,
     UnsupportedSubtitleFormat,
     AudioDecodeFailed,
     NotEnoughReferenceSpans,
@@ -49,6 +52,7 @@ impl SyncSkipReason {
             Self::Disabled => "disabled",
             Self::ForcedSubtitle => "forced_subtitle",
             Self::ScoreAboveThreshold => "score_above_threshold",
+            Self::SubtitleSyncPluginRequired => "subtitle_sync_plugin_required",
             Self::UnsupportedSubtitleFormat => "unsupported_subtitle_format",
             Self::AudioDecodeFailed => "audio_decode_failed",
             Self::NotEnoughReferenceSpans => "not_enough_reference_spans",
@@ -93,14 +97,16 @@ pub async fn sync_subtitle_with_policy(
     _subtitle_path: &Path,
     policy: SyncPolicy,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_policy_and_audio_transcoder(_video_path, _subtitle_path, policy, None).await
+    sync_subtitle_with_policy_and_plugin_sync(_video_path, _subtitle_path, policy, None, false)
+        .await
 }
 
-pub async fn sync_subtitle_with_policy_and_audio_transcoder(
+pub async fn sync_subtitle_with_policy_and_plugin_sync(
     _video_path: &Path,
     _subtitle_path: &Path,
     policy: SyncPolicy,
-    _audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
+    _subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
+    _plugin_installed: bool,
 ) -> AppResult<SyncResult> {
     Ok(SyncResult {
         offset_ms: 0,
@@ -118,7 +124,7 @@ pub async fn sync_subtitle(
     subtitle_path: &Path,
     max_offset_seconds: i64,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_policy(
+    sync_subtitle_with_policy_and_plugin_sync(
         video_path,
         subtitle_path,
         SyncPolicy {
@@ -128,6 +134,8 @@ pub async fn sync_subtitle(
             threshold: None,
             max_offset_seconds,
         },
+        None,
+        false,
     )
     .await
 }
