@@ -1437,6 +1437,25 @@ impl AppUseCase {
         Ok((synced_count, failures))
     }
 
+    pub fn queue_managed_indexer_sync(&self, config_id: &str) {
+        let config_id = config_id.trim().to_string();
+        if config_id.is_empty() {
+            return;
+        }
+
+        let app = self.clone();
+        tokio::spawn(async move {
+            let actor = scryer_domain::User::new_admin("system-managed-indexer-sync");
+            if let Err(error) = app.sync_indexer_config(&actor, &config_id).await {
+                tracing::warn!(
+                    config_id = %config_id,
+                    error = %error,
+                    "background managed indexer sync failed"
+                );
+            }
+        });
+    }
+
     pub async fn get_indexer_config(
         &self,
         actor: &User,
@@ -1521,18 +1540,8 @@ impl AppUseCase {
             .await?;
         self.ensure_indexer_routing_entry_for_indexer(actor, &created.id)
             .await?;
-        if management_capabilities.supports_managed_children_sync
-            && let Err(error) = self.sync_indexer_config(actor, &created.id).await
-        {
-            if let Err(cleanup_error) = self.delete_indexer_config(actor, &created.id).await {
-                tracing::warn!(
-                    config_id = %created.id,
-                    sync_error = %error,
-                    cleanup_error = %cleanup_error,
-                    "failed to roll back managed indexer after auto-sync failure"
-                );
-            }
-            return Err(error);
+        if management_capabilities.supports_managed_children_sync && created.is_enabled {
+            self.queue_managed_indexer_sync(&created.id);
         }
         Ok(created)
     }
@@ -1714,7 +1723,7 @@ impl AppUseCase {
             .await?;
         if should_sync_managed_children {
             if updated.is_enabled {
-                self.sync_indexer_config(actor, &updated.id).await?;
+                self.queue_managed_indexer_sync(&updated.id);
             } else if existing.is_enabled != updated.is_enabled {
                 self.set_managed_child_indexers_enabled_state(&updated.id, false)
                     .await?;

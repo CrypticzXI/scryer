@@ -268,6 +268,17 @@ fn merge_prowlarr_group(
     }
 }
 
+fn detect_imported_prowlarr_proxy_indexer(
+    indexer: &ArrIndexer,
+    linked_prowlarr_base_url: Option<&str>,
+) -> Option<DetectedProwlarrIndexer> {
+    if let Some(linked_prowlarr_base_url) = linked_prowlarr_base_url {
+        external_import::detect_linked_prowlarr_proxy_indexer(indexer, linked_prowlarr_base_url)
+    } else {
+        external_import::detect_prowlarr_proxy_indexer(indexer)
+    }
+}
+
 fn version_from_validation_result(
     result: &scryer_application::IndexerValidationResult,
 ) -> Option<String> {
@@ -365,6 +376,7 @@ impl ExternalImportMutations {
         let mut idx_key_idx: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         let mut prowlarr_groups: HashMap<String, ProwlarrImportGroup> = HashMap::new();
+        let linked_prowlarr_base_url = input.prowlarr.as_ref().map(|conn| conn.base_url.as_str());
 
         if let Some(conn) = &input.prowlarr {
             let config_json = prowlarr_parent_config_json(&conn.base_url, &conn.api_key);
@@ -442,9 +454,10 @@ impl ExternalImportMutations {
                             if external_import::should_skip_imported_indexer(&idx) {
                                 continue;
                             }
-                            if let Some(detected) =
-                                external_import::detect_prowlarr_proxy_indexer(&idx)
-                            {
+                            if let Some(detected) = detect_imported_prowlarr_proxy_indexer(
+                                &idx,
+                                linked_prowlarr_base_url,
+                            ) {
                                 merge_prowlarr_group(&mut prowlarr_groups, detected, source);
                                 continue;
                             }
@@ -637,6 +650,7 @@ impl ExternalImportMutations {
         let mut seen_dc_keys: HashSet<String> = HashSet::new();
         let mut seen_idx_keys: HashSet<String> = HashSet::new();
         let mut prowlarr_groups: HashMap<String, ProwlarrImportGroup> = HashMap::new();
+        let linked_prowlarr_base_url = input.prowlarr.as_ref().map(|conn| conn.base_url.as_str());
 
         if let Some(conn) = &input.prowlarr {
             let dedup_key = prowlarr_dedup_key(&conn.base_url);
@@ -677,7 +691,9 @@ impl ExternalImportMutations {
 
             if let Ok(indexers) = client.list_indexers().await {
                 for idx in indexers {
-                    if let Some(detected) = external_import::detect_prowlarr_proxy_indexer(&idx) {
+                    if let Some(detected) =
+                        detect_imported_prowlarr_proxy_indexer(&idx, linked_prowlarr_base_url)
+                    {
                         let dedup_key = prowlarr_dedup_key(&detected.base_url);
                         if selected_idx_keys.contains(&dedup_key) {
                             merge_prowlarr_group(&mut prowlarr_groups, detected, source);
@@ -891,12 +907,7 @@ impl ExternalImportMutations {
                     }
                 }
             };
-
-            if let Err(err) = app.sync_indexer_config(&actor, &parent_id).await {
-                result.errors.push(format!(
-                    "failed to sync Prowlarr indexers for '{name}': {err}"
-                ));
-            }
+            app.queue_managed_indexer_sync(&parent_id);
         }
 
         // ── Auto-install non-builtin plugins needed by selected indexers ──
@@ -1559,8 +1570,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        imported_indexer_config_json, map_download_client, map_indexer,
-        merge_direct_prowlarr_group, merge_prowlarr_group, prowlarr_dedup_key,
+        detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json, map_download_client,
+        map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, prowlarr_dedup_key,
     };
 
     #[test]
@@ -1701,5 +1712,46 @@ mod tests {
                 "Indexer C".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn linked_prowlarr_proxy_detection_accepts_torznab_without_api_path() {
+        let detected = detect_imported_prowlarr_proxy_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "Torrent Child".into(),
+                implementation: "Torznab".into(),
+                fields: HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("http://prowlarr.local/12345".into()),
+                )]),
+            },
+            Some("http://prowlarr.local"),
+        )
+        .expect("linked prowlarr proxy");
+
+        assert_eq!(detected.base_url, "http://prowlarr.local");
+        assert_eq!(detected.child_name, "Torrent Child");
+    }
+
+    #[test]
+    fn direct_linked_prowlarr_detection_does_not_match_other_parents() {
+        let detected = detect_imported_prowlarr_proxy_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "Torrent Child".into(),
+                implementation: "Torznab".into(),
+                fields: HashMap::from([
+                    (
+                        "baseUrl".into(),
+                        Value::String("http://other-prowlarr.local/12345".into()),
+                    ),
+                    ("apiPath".into(), Value::String("/api".into())),
+                ]),
+            },
+            Some("http://prowlarr.local"),
+        );
+
+        assert!(detected.is_none());
     }
 }

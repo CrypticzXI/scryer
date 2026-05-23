@@ -690,6 +690,27 @@ pub fn detect_prowlarr_proxy_indexer(indexer: &ArrIndexer) -> Option<DetectedPro
     })
 }
 
+pub fn detect_linked_prowlarr_proxy_indexer(
+    indexer: &ArrIndexer,
+    linked_prowlarr_base_url: &str,
+) -> Option<DetectedProwlarrIndexer> {
+    let implementation = indexer.implementation.trim().to_ascii_lowercase();
+    if implementation != "newznab" && implementation != "torznab" {
+        return None;
+    }
+
+    let base_url = prowlarr_parent_base_url(&field_str(&indexer.fields, "baseUrl")?)?;
+    if !same_base_url(&base_url, linked_prowlarr_base_url) {
+        return None;
+    }
+
+    Some(DetectedProwlarrIndexer {
+        base_url,
+        api_key: field_str_sensitive(&indexer.fields, "apiKey"),
+        child_name: indexer.name.clone(),
+    })
+}
+
 pub fn should_skip_imported_indexer(indexer: &ArrIndexer) -> bool {
     let implementation = indexer.implementation.trim().to_ascii_lowercase();
     if implementation != "newznab" && implementation != "torznab" {
@@ -720,6 +741,12 @@ fn prowlarr_parent_base_url(base_url: &str) -> Option<String> {
     url.set_path(parent_path);
 
     Some(url.as_str().trim_end_matches('/').to_string())
+}
+
+fn same_base_url(left: &str, right: &str) -> bool {
+    left.trim()
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(right.trim().trim_end_matches('/'))
 }
 
 fn known_native_indexer_provider_type(
@@ -815,8 +842,9 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        ArrIndexer, ExternalArrApiBucket, detect_prowlarr_proxy_indexer, map_download_client_type,
-        map_indexer_provider_type, should_skip_imported_indexer,
+        ArrIndexer, ExternalArrApiBucket, detect_linked_prowlarr_proxy_indexer,
+        detect_prowlarr_proxy_indexer, map_download_client_type, map_indexer_provider_type,
+        should_skip_imported_indexer,
     };
 
     #[test]
@@ -958,6 +986,30 @@ mod tests {
 
         assert_eq!(detected.base_url, "http://prowlarr.local");
         assert_eq!(detected.api_key, None);
+    }
+
+    #[test]
+    fn detects_linked_prowlarr_proxy_indexer_without_api_path() {
+        let detected = detect_linked_prowlarr_proxy_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "Torrent Child".into(),
+                implementation: "Torznab".into(),
+                fields: HashMap::from([
+                    (
+                        "baseUrl".into(),
+                        Value::String("https://media.example.test/prowlarr/98765".into()),
+                    ),
+                    ("apiKey".into(), Value::String("secret".into())),
+                ]),
+            },
+            "https://media.example.test/prowlarr",
+        )
+        .expect("linked prowlarr proxy indexer");
+
+        assert_eq!(detected.base_url, "https://media.example.test/prowlarr");
+        assert_eq!(detected.api_key.as_deref(), Some("secret"));
+        assert_eq!(detected.child_name, "Torrent Child");
     }
 
     #[test]
