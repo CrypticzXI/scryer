@@ -1143,6 +1143,46 @@ impl SystemQueries {
         })
     }
 
+    async fn preview_manual_import_path(
+        &self,
+        ctx: &Context<'_>,
+        input: PreviewManualImportPathInput,
+    ) -> GqlResult<ManualImportPreviewPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+
+        let preview = scryer_application::preview_manual_import_path(
+            &app,
+            &actor,
+            &input.path,
+            &input.title_id,
+        )
+        .await
+        .map_err(to_gql_error)?;
+
+        Ok(ManualImportPreviewPayload {
+            files: preview
+                .files
+                .into_iter()
+                .map(|f| ManualImportFilePreviewPayload {
+                    file_path: f.file_path,
+                    file_name: f.file_name,
+                    size_bytes: f.size_bytes.to_string(),
+                    quality: f.quality,
+                    parsed_season: f.parsed_season.map(|v| v as i32),
+                    parsed_episodes: f.parsed_episodes.into_iter().map(|v| v as i32).collect(),
+                    suggested_episode_id: f.suggested_episode_id,
+                    suggested_episode_label: f.suggested_episode_label,
+                })
+                .collect(),
+            available_episodes: preview
+                .available_episodes
+                .into_iter()
+                .map(from_episode)
+                .collect(),
+        })
+    }
+
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
         match current_user_from_ctx(ctx) {
             Some(user) => Ok(Some(from_user(user))),

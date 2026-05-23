@@ -1360,6 +1360,14 @@ pub struct IgnoreTrackedDownloadInput {
     pub download_client_item_id: String,
 }
 
+#[derive(InputObject)]
+pub struct MarkTrackedDownloadFailedInput {
+    pub client_id: Option<String>,
+    pub client_type: String,
+    pub download_client_item_id: String,
+    pub skip_reacquire: Option<bool>,
+}
+
 #[derive(OneofObject, Clone)]
 pub enum QueueDownloadScopeInput {
     Episode(String),
@@ -1890,6 +1898,7 @@ pub struct WantedSearchPayload {
 pub enum DownloadQueueActionKindValue {
     QueuedManualImport,
     IgnoredTrackedDownload,
+    MarkedTrackedDownloadFailed,
     AssignedTrackedDownloadTitle,
     Paused,
     Resumed,
@@ -1904,6 +1913,19 @@ pub struct QueueManualImportInput {
     pub client_type: String,
     pub download_client_item_id: String,
     pub files: Option<Vec<ManualImportFileMappingInput>>,
+}
+
+#[derive(InputObject)]
+pub struct PreviewManualImportPathInput {
+    pub path: String,
+    pub title_id: String,
+}
+
+#[derive(InputObject)]
+pub struct QueuePathManualImportInput {
+    pub title_id: String,
+    pub path: String,
+    pub files: Vec<ManualImportFileMappingInput>,
 }
 
 #[derive(InputObject, Clone)]

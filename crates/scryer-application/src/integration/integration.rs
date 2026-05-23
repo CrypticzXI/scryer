@@ -3253,6 +3253,70 @@ impl AppUseCase {
         Ok(import_id)
     }
 
+    pub async fn queue_path_manual_import(
+        &self,
+        actor: &User,
+        title_id: String,
+        source_path: String,
+        files: Vec<crate::ManualImportFileMapping>,
+    ) -> AppResult<String> {
+        let source_ref = source_path.trim().to_string();
+        if source_ref.is_empty() {
+            return Err(AppError::Validation(
+                "manual import path is required".to_string(),
+            ));
+        }
+        if files.is_empty() {
+            return Err(AppError::Validation(
+                "at least one mapped file is required for path manual import".to_string(),
+            ));
+        }
+
+        self.require_title_library_permission(
+            actor,
+            &title_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
+        crate::import_workflow::validate_path_manual_import_mappings(&source_ref, &files)?;
+
+        let client_type = "path".to_string();
+        let source_identity = DownloadSourceIdentity::new(None, &client_type, &source_ref);
+        let payload_json = serde_json::to_string(&crate::ManualImportRequestPayload {
+            requested_by_user_id: Some(actor.id.clone()),
+            title_id: Some(title_id.clone()),
+            download_client_item_id: source_ref.clone(),
+            client_id: None,
+            client_type: client_type.clone(),
+            files,
+            requested_at: Utc::now().to_rfc3339(),
+        })
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+        let import_id = self
+            .services
+            .workflow
+            .imports
+            .queue_import_request(
+                source_identity,
+                ImportType::ManualImport.as_str().to_string(),
+                payload_json,
+            )
+            .await?;
+
+        let title = self.services.catalog.titles.get_by_id(&title_id).await?;
+        self.emit_import_requested_event(
+            Some(actor.id.clone()),
+            title.as_ref(),
+            client_type,
+            source_ref,
+            scryer_domain::ImportRequestKind::Manual,
+        )
+        .await;
+
+        Ok(import_id)
+    }
+
     pub async fn trigger_manual_import(
         &self,
         actor: &User,
@@ -3318,6 +3382,7 @@ impl AppUseCase {
         client_id: Option<&str>,
         client_type: &str,
         download_client_item_id: &str,
+        skip_reacquire: bool,
     ) -> AppResult<()> {
         self.require_download_item_permission(
             actor,
@@ -3334,11 +3399,14 @@ impl AppUseCase {
             .as_ref()
             .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
         handle
-            .mark_failed(crate::tracked_downloads::tracked_download_id(
-                client_id,
-                client_type,
-                download_client_item_id,
-            ))
+            .mark_failed(
+                crate::tracked_downloads::tracked_download_id(
+                    client_id,
+                    client_type,
+                    download_client_item_id,
+                ),
+                skip_reacquire,
+            )
             .await?;
         Ok(())
     }
@@ -4043,7 +4111,11 @@ async fn handle_tracked_download_command(
             }
             let _ = reply.send(result);
         }
-        TrackedDownloadCommand::MarkFailed { id, reply } => {
+        TrackedDownloadCommand::MarkFailed {
+            id,
+            skip_reacquire,
+            reply,
+        } => {
             if tracked_work_in_flight.contains(&id) {
                 let _ = reply.send(Err(AppError::Validation(format!(
                     "tracked download {id} is busy processing"
@@ -4054,6 +4126,7 @@ async fn handle_tracked_download_command(
                 td.state = TrackedDownloadState::FailedPending;
                 td.status = TrackedDownloadStatus::Error;
                 td.status_messages.clear();
+                td.skip_reacquire_on_failure = skip_reacquire;
                 let _ = try_dispatch_tracked_download_background_work(
                     app,
                     actor,
@@ -4084,6 +4157,7 @@ async fn handle_tracked_download_command(
                 td.status_messages.clear();
                 td.import_attempted = false;
                 td.path_missing_since = None;
+                td.skip_reacquire_on_failure = false;
                 Ok(())
             } else {
                 Err(AppError::NotFound(format!("tracked download {id}")))
@@ -4604,6 +4678,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
 
@@ -4663,6 +4738,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
 

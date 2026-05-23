@@ -27,6 +27,7 @@ tmp/nzbget/**
 # Optional local/config files
 **/*.env
 **/.env
+.scryer-e2e-*.Dockerfile
 
 # Docker and node leftovers
 **/node_modules

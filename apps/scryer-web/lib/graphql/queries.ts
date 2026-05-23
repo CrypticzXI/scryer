@@ -1876,6 +1876,32 @@ export const previewManualImportQuery = `query PreviewManualImport($clientId: St
   }
 }`;
 
+export const previewManualImportPathQuery = `query PreviewManualImportPath($input: PreviewManualImportPathInput!) {
+  previewManualImportPath(input: $input) {
+    files {
+      filePath
+      fileName
+      sizeBytes
+      quality
+      parsedSeason
+      parsedEpisodes
+      suggestedEpisodeId
+      suggestedEpisodeLabel
+    }
+    availableEpisodes {
+      id
+      titleId
+      collectionId
+      episodeType
+      episodeNumber
+      seasonNumber
+      episodeLabel
+      title
+      monitored
+    }
+  }
+}`;
+
 export const wantedItemsQuery = `query WantedItems($statuses: [WantedStatusValue!], $mediaTypes: [WantedMediaTypeValue!], $titleId: String, $libraryIds: [String!], $titleSearch: String, $latestDecisionCodes: [String!], $limit: Int, $offset: Int) {
   wantedItems(statuses: $statuses, mediaTypes: $mediaTypes, titleId: $titleId, libraryIds: $libraryIds, titleSearch: $titleSearch, latestDecisionCodes: $latestDecisionCodes, limit: $limit, offset: $offset) {
     items {

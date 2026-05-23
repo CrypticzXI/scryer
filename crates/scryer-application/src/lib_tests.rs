@@ -3531,7 +3531,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
                         .as_deref()
                         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                         .map(|value| value.with_timezone(&Utc) <= now)
-                        .unwrap_or(true)
+                        .unwrap_or(false)
             })
             .cloned()
             .collect();
@@ -13277,6 +13277,7 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
         is_trackable: true,
         import_attempted: true,
         path_missing_since: None,
+        skip_reacquire_on_failure: false,
     };
 
     let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
@@ -14709,6 +14710,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         is_trackable: true,
         import_attempted: false,
         path_missing_since: None,
+        skip_reacquire_on_failure: false,
     };
 
     crate::failed_download_handler::process_failed(&app, &mut tracked_download).await;
@@ -14879,6 +14881,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
             release_title: "Duplicate.Failed.Release.1080p.WEB-DL".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
+            skip_reacquire: false,
         },
         None,
     )
@@ -14900,6 +14903,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
             release_title: "Duplicate.Failed.Release.1080p.WEB-DL".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
+            skip_reacquire: false,
         },
         None,
     )
@@ -14958,6 +14962,143 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         .await
         .expect("list title history");
     assert_eq!(history.total_count, 2);
+}
+
+#[tokio::test]
+async fn process_download_failure_skip_reacquire_records_failure_without_due_search() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Failed Only".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let wanted = WantedItem {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
+        search_phase: "initial".to_string(),
+        next_search_at: Some(Utc::now().to_rfc3339()),
+        last_search_at: Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339()),
+        search_count: 1,
+        baseline_date: Some(
+            (Utc::now() - chrono::Duration::days(14))
+                .format("%Y-%m-%d")
+                .to_string(),
+        ),
+        status: WantedStatus::Grabbed,
+        grabbed_release: Some(
+            serde_json::json!({
+                "title": "Manual.Failed.Only.1080p.WEB-DL",
+                "score": 100,
+                "grabbed_at": Utc::now().to_rfc3339(),
+            })
+            .to_string(),
+        ),
+        current_score: Some(100),
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_wanted_item(&wanted)
+        .await
+        .expect("seed wanted item");
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "failed-only".to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some("Manual.Failed.Only.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record failed submission");
+
+    let outcome = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: Some(wanted.clone()),
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "nzbget".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "failed-only".to_string(),
+            release_title: "Manual.Failed.Only.1080p.WEB-DL".to_string(),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+            skip_reacquire: true,
+        },
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        crate::acquisition_workflow::FailureHandlingOutcome::RecordedNoReacquire
+    );
+
+    let updated_wanted = wanted_items
+        .get_wanted_item_by_id(&wanted.id)
+        .await
+        .expect("get wanted")
+        .expect("wanted item");
+    assert_eq!(updated_wanted.status, WantedStatus::Wanted);
+    assert!(updated_wanted.next_search_at.is_none());
+    assert!(updated_wanted.grabbed_release.is_none());
+
+    let due = wanted_items
+        .list_due_wanted_items(&Utc::now().to_rfc3339(), 10, &[])
+        .await
+        .expect("list due wanted");
+    assert!(due.is_empty());
+
+    let blocklist = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert_eq!(blocklist.len(), 1);
+    assert_eq!(blocklist[0].download_id.as_deref(), Some("failed-only"));
 }
 
 #[tokio::test]
@@ -15030,6 +15171,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
             release_title: "Friends".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
+            skip_reacquire: false,
         },
         None,
     )
@@ -15051,6 +15193,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
             release_title: "Friends".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
+            skip_reacquire: false,
         },
         None,
     )
@@ -15130,6 +15273,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         is_trackable: true,
         import_attempted: false,
         path_missing_since: None,
+        skip_reacquire_on_failure: false,
     };
 
     crate::failed_download_handler::process_failed(&app, &mut tracked_download).await;
@@ -15323,6 +15467,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             release_title: "Season.Pack.Failure.Recovery.S07.1080p.WEB-DL".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
+            skip_reacquire: false,
         },
         None,
     )
@@ -15353,6 +15498,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         is_trackable: true,
         import_attempted: false,
         path_missing_since: None,
+        skip_reacquire_on_failure: false,
     };
 
     crate::failed_download_handler::process_failed(&app, &mut tracked_download).await;
@@ -16851,6 +16997,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             release_title: "Friends".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
+            skip_reacquire: false,
         },
         None,
     )

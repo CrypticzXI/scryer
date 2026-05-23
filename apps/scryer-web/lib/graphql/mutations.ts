@@ -693,6 +693,17 @@ export const queueManualImportMutation = `mutation QueueManualImport($input: Que
   }
 }`;
 
+export const queuePathManualImportMutation = `mutation QueuePathManualImport($input: QueuePathManualImportInput!) {
+  queuePathManualImport(input: $input) {
+    kind
+    downloadClientItemId
+    clientId
+    clientType
+    importId
+    removed
+  }
+}`;
+
 export const pauseDownloadMutation = `mutation PauseDownload($input: PauseDownloadInput!) {
   pauseDownload(input: $input) {
     kind
@@ -1536,6 +1547,27 @@ export const retryImportMutation = `mutation RetryImport($input: RetryImportInpu
 
 export const ignoreTrackedDownloadMutation = `mutation IgnoreTrackedDownload($input: IgnoreTrackedDownloadInput!) {
   ignoreTrackedDownload(input: $input) {
+    kind
+    downloadClientItemId
+    clientId
+    clientType
+    removed
+    queueItem {
+      id
+      titleId
+      titleName
+      clientId
+      clientType
+      downloadClientItemId
+      state
+      trackedState
+      trackedStatus
+    }
+  }
+}`;
+
+export const markTrackedDownloadFailedMutation = `mutation MarkTrackedDownloadFailed($input: MarkTrackedDownloadFailedInput!) {
+  markTrackedDownloadFailed(input: $input) {
     kind
     downloadClientItemId
     clientId

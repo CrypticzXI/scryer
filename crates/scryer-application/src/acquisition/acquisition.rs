@@ -708,6 +708,7 @@ pub(crate) struct DownloadFailureContext {
     pub release_title: String,
     pub reason: String,
     pub remove_from_client_if_configured: bool,
+    pub skip_reacquire: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -716,6 +717,7 @@ pub(crate) enum FailureHandlingOutcome {
     RequeuedFreshSearch,
     RequeuedDeferred,
     RecordedOnly,
+    RecordedNoReacquire,
     AlreadyHandled,
 }
 
@@ -1308,6 +1310,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
                     release_title: release_title.clone(),
                     reason: failed_item.reason.clone(),
                     remove_from_client_if_configured: true,
+                    skip_reacquire: false,
                 },
                 Some(dl_snapshot),
             )
@@ -1393,6 +1396,34 @@ async fn resolve_failed_collection_episode_wanted_items(
         .collect())
 }
 
+async fn mark_wanted_item_failed_without_reacquire(
+    app: &AppUseCase,
+    item: &WantedItem,
+) -> AppResult<()> {
+    app.services
+        .workflow
+        .wanted_items
+        .update_wanted_item_status(
+            &item.id,
+            WantedStatus::Wanted.as_str(),
+            None,
+            item.last_search_at.as_deref(),
+            item.search_count,
+            item.current_score,
+            None,
+        )
+        .await
+        .map_err(|err| {
+            warn!(
+                wanted_item_id = item.id.as_str(),
+                title_id = item.title_id.as_str(),
+                error = %err,
+                "failed to mark wanted item failed without scheduling reacquisition"
+            );
+            err
+        })
+}
+
 async fn load_recent_failed_season_pack_seasons_for_title(
     app: &AppUseCase,
     title_id: &str,
@@ -1469,7 +1500,7 @@ pub(crate) async fn process_download_failure(
         )
         .await;
 
-    if let Some(title_id) = resolved_title_id.as_deref() {
+    let failure_already_recorded = if let Some(title_id) = resolved_title_id.as_deref() {
         match app
             .services
             .workflow
@@ -1486,9 +1517,9 @@ pub(crate) async fn process_download_failure(
                     release_title = release_title_for_matching,
                     "skipping duplicate failed download handling; failure already recorded"
                 );
-                return FailureHandlingOutcome::AlreadyHandled;
+                true
             }
-            Ok(false) => {}
+            Ok(false) => false,
             Err(error) => {
                 warn!(
                     title_id,
@@ -1498,8 +1529,15 @@ pub(crate) async fn process_download_failure(
                     error = %error,
                     "failed to check for duplicate failed download blocklist entry"
                 );
+                false
             }
         }
+    } else {
+        false
+    };
+
+    if failure_already_recorded && !context.skip_reacquire {
+        return FailureHandlingOutcome::AlreadyHandled;
     }
 
     let failed_collection_items = if let Some(submission) = failed_submission.as_ref() {
@@ -1541,7 +1579,58 @@ pub(crate) async fn process_download_failure(
     )
     .await;
 
-    let (outcome, failure_reason) = if let Some(items) = failed_collection_items.as_ref() {
+    let (outcome, failure_reason) = if context.skip_reacquire {
+        if let Some(items) = failed_collection_items.as_ref() {
+            let mut update_error = None;
+            for item in items {
+                if let Err(err) = mark_wanted_item_failed_without_reacquire(app, item).await {
+                    update_error.get_or_insert_with(|| err.to_string());
+                }
+            }
+            if let Some(err) = update_error {
+                (
+                    FailureHandlingOutcome::RecordedOnly,
+                    format!(
+                        "season pack download failed for '{}': {}; failed to disable reacquisition: {}",
+                        release_title_for_matching, context.reason, err
+                    ),
+                )
+            } else {
+                (
+                    FailureHandlingOutcome::RecordedNoReacquire,
+                    format!(
+                        "season pack download failed for '{}': {}; recorded failure without reacquisition",
+                        release_title_for_matching, context.reason
+                    ),
+                )
+            }
+        } else if let Some(item) = wanted_item.as_ref() {
+            match mark_wanted_item_failed_without_reacquire(app, item).await {
+                Ok(()) => (
+                    FailureHandlingOutcome::RecordedNoReacquire,
+                    format!(
+                        "download failed for '{}': {}; recorded failure without reacquisition",
+                        release_title_for_matching, context.reason
+                    ),
+                ),
+                Err(err) => (
+                    FailureHandlingOutcome::RecordedOnly,
+                    format!(
+                        "download failed for '{}': {}; failed to disable reacquisition: {}",
+                        release_title_for_matching, context.reason, err
+                    ),
+                ),
+            }
+        } else {
+            (
+                FailureHandlingOutcome::RecordedNoReacquire,
+                format!(
+                    "download failed: {} — {}; recorded failure without reacquisition",
+                    release_title_for_matching, context.reason
+                ),
+            )
+        }
+    } else if let Some(items) = failed_collection_items.as_ref() {
         let now = Utc::now();
         let next_search_at = now.to_rfc3339();
 
@@ -1661,22 +1750,24 @@ pub(crate) async fn process_download_failure(
 
     let blocklist_reason = format!("download client failure: {}", context.reason);
 
-    record_failed_release_outcome(
-        app,
-        resolved_title_id.as_deref(),
-        &attribution,
-        normalized_source_title.clone(),
-        normalized_source_hint.clone(),
-        download_id.clone(),
-        Some(context.client_id.clone()),
-        context.client_name.clone(),
-        Some(context.client_type.clone()),
-        quality,
-        Some(failure_reason),
-        Some(blocklist_reason),
-        None,
-    )
-    .await;
+    if !failure_already_recorded {
+        record_failed_release_outcome(
+            app,
+            resolved_title_id.as_deref(),
+            &attribution,
+            normalized_source_title.clone(),
+            normalized_source_hint.clone(),
+            download_id.clone(),
+            Some(context.client_id.clone()),
+            context.client_name.clone(),
+            Some(context.client_type.clone()),
+            quality,
+            Some(failure_reason),
+            Some(blocklist_reason),
+            None,
+        )
+        .await;
+    }
 
     if context.remove_from_client_if_configured
         && let Some(title) = attribution.title.as_ref()

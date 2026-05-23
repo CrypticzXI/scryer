@@ -757,41 +757,40 @@ async fn apply_import_result(
     result: ImportResult,
     files_imported_this_pass: usize,
 ) -> bool {
+    if verify_import(app, td, files_imported_this_pass).await {
+        td.state = TrackedDownloadState::Imported;
+        td.status = TrackedDownloadStatus::Ok;
+        td.status_messages.clear();
+        return true;
+    }
+
+    if import_result_is_retryable(&result) {
+        let result_json = serde_json::to_string(&result).ok();
+        if let Err(err) = app
+            .update_import_status_and_notify(&result.import_id, ImportStatus::Pending, result_json)
+            .await
+        {
+            tracing::warn!(
+                import_id = result.import_id.as_str(),
+                error = %err,
+                "failed to restore retryable import attempt to pending status"
+            );
+        }
+        td.state = TrackedDownloadState::ImportPending;
+        td.status = TrackedDownloadStatus::Warning;
+        td.status_messages = vec![retryable_import_result_message(&result)];
+        return false;
+    }
+
     match result.decision {
         ImportDecision::Imported => {
-            if verify_import(app, td, files_imported_this_pass).await {
-                td.state = TrackedDownloadState::Imported;
-                td.status = TrackedDownloadStatus::Ok;
-                td.status_messages.clear();
-                true
-            } else {
-                td.state = TrackedDownloadState::ImportPending;
-                td.status = TrackedDownloadStatus::Warning;
-                td.status_messages = vec![
-                    "Import partially completed; waiting for remaining files or verification."
-                        .to_string(),
-                ];
-                false
-            }
-        }
-        ImportDecision::Skipped
-            if matches!(result.skip_reason, Some(ImportSkipReason::AlreadyImported)) =>
-        {
-            match verify_import(app, td, files_imported_this_pass).await {
-                true => {
-                    td.state = TrackedDownloadState::Imported;
-                    td.status = TrackedDownloadStatus::Ok;
-                    td.status_messages.clear();
-                    true
-                }
-                false => {
-                    td.state = TrackedDownloadState::ImportBlocked;
-                    td.status = TrackedDownloadStatus::Warning;
-                    td.status_messages =
-                        vec![import_result_message(&result, ImportStatus::Skipped)];
-                    false
-                }
-            }
+            td.state = TrackedDownloadState::ImportPending;
+            td.status = TrackedDownloadStatus::Warning;
+            td.status_messages = vec![
+                "Import partially completed; waiting for remaining files or verification."
+                    .to_string(),
+            ];
+            false
         }
         ImportDecision::Failed => {
             td.state = TrackedDownloadState::ImportBlocked;
@@ -806,6 +805,39 @@ async fn apply_import_result(
             false
         }
     }
+}
+
+fn import_result_is_retryable(result: &ImportResult) -> bool {
+    if matches!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles))
+        && Path::new(&result.source_path).exists()
+    {
+        return true;
+    }
+
+    result
+        .error_message
+        .as_deref()
+        .is_some_and(error_message_is_retryable)
+}
+
+fn error_message_is_retryable(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "active-download marker",
+        "still being unpacked",
+        "still_unpacking",
+        "source changed",
+        "locked",
+        "temporarily",
+        "not found or inaccessible",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn retryable_import_result_message(result: &ImportResult) -> String {
+    let detail = import_result_message(result, ImportStatus::Skipped);
+    format!("{detail} Retrying automatically.")
 }
 
 fn import_result_message(result: &ImportResult, fallback_status: ImportStatus) -> String {
@@ -2144,6 +2176,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         }
     }
 
@@ -2750,6 +2783,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_result_marks_already_present_rejection_imported_when_expected_units_are_covered()
+    {
+        let title = build_title("title-1", "Show", MediaFacet::Series);
+        let collection = build_collection("season-1", "title-1", "1");
+        let episode = build_episode("ep-1", "title-1", "season-1", "1", "1", None);
+        let app = build_app(
+            vec![title],
+            vec![collection],
+            vec![episode],
+            vec![build_artifact_with_result(
+                "dl-1",
+                Some("ep-1"),
+                "Show.S01E01.mkv",
+                "already_present",
+            )],
+        );
+        let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+        let result = ImportResult {
+            import_id: "import-1".to_string(),
+            decision: ImportDecision::Rejected,
+            skip_reason: Some(ImportSkipReason::AlreadyImported),
+            title_id: Some("title-1".to_string()),
+            source_system: Some("nzbget".to_string()),
+            source_ref: Some("dl-1".to_string()),
+            source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+            source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+            dest_path: None,
+            quality: None,
+            episode_ids: vec![],
+            file_size_bytes: None,
+            link_type: None,
+            error_message: Some("episode already imported".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+        };
+
+        assert!(apply_import_result(&app, &mut td, result, 0).await);
+        assert_eq!(td.state, TrackedDownloadState::Imported);
+        assert_eq!(td.status, TrackedDownloadStatus::Ok);
+        assert!(td.status_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_result_keeps_retryable_no_video_import_pending() {
+        let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let result = ImportResult {
+            import_id: "import-1".to_string(),
+            decision: ImportDecision::Skipped,
+            skip_reason: Some(ImportSkipReason::NoVideoFiles),
+            title_id: Some("title-1".to_string()),
+            source_system: Some("nzbget".to_string()),
+            source_ref: Some("dl-1".to_string()),
+            source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+            source_path: temp_dir.path().to_string_lossy().into_owned(),
+            dest_path: None,
+            quality: None,
+            episode_ids: vec![],
+            file_size_bytes: None,
+            link_type: None,
+            error_message: Some("no eligible video files found".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+        };
+
+        assert!(!apply_import_result(&app, &mut td, result, 0).await);
+        assert_eq!(td.state, TrackedDownloadState::ImportPending);
+        assert_eq!(td.status, TrackedDownloadStatus::Warning);
+        assert!(td.status_messages[0].contains("Retrying automatically"));
+    }
+
+    #[tokio::test]
     async fn check_emits_manual_interaction_notification_once() {
         let existing_dir =
             std::env::temp_dir().join(format!("scryer-completed-path-{}", Id::new().0));
@@ -2826,6 +2932,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         check(&app, &mut td).await;

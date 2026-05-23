@@ -51,6 +51,8 @@ pub struct TrackedDownload {
     pub import_attempted: bool,
     /// When a completed download path first became unavailable.
     pub path_missing_since: Option<DateTime<Utc>>,
+    /// Manual failure actions can record the failure without reacquiring.
+    pub skip_reacquire_on_failure: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,6 +178,7 @@ impl TrackedDownloadService {
             client_item,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         Self::resolve_title(app, &mut td).await;
@@ -606,6 +609,7 @@ pub enum TrackedDownloadCommand {
     },
     MarkFailed {
         id: String,
+        skip_reacquire: bool,
         reply: oneshot::Sender<AppResult<()>>,
     },
     RetryImport {
@@ -666,11 +670,12 @@ impl TrackedDownloadHandle {
         })?
     }
 
-    pub async fn mark_failed(&self, id: String) -> AppResult<()> {
+    pub async fn mark_failed(&self, id: String, skip_reacquire: bool) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::MarkFailed {
                 id,
+                skip_reacquire,
                 reply: reply_tx,
             })
             .await
@@ -2292,6 +2297,7 @@ mod tests {
                     is_trackable: true,
                     import_attempted: false,
                     path_missing_since: None,
+                    skip_reacquire_on_failure: false,
                 },
             );
         }
@@ -2338,6 +2344,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         crate::failed_download_handler::check(&mut tracked);
@@ -2475,6 +2482,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         crate::fail_active_manual_import_for_source(&app, &tracked, "health below critical").await;
@@ -2651,6 +2659,7 @@ mod tests {
             is_trackable: true,
             import_attempted: false,
             path_missing_since: None,
+            skip_reacquire_on_failure: false,
         };
 
         crate::fail_active_manual_import_for_source(&app, &tracked, "health below critical").await;

@@ -1,12 +1,12 @@
 //! FailedDownloadHandler — failure detection and processing (plan 055).
 //!
 //! check(): detects downloads that failed in the client or are encrypted.
-//! process_failed(): records the failure, emits events, triggers redownload.
+//! process_failed(): records the failure, emits events, and optionally reacquires.
 
 use scryer_domain::{DownloadQueueState, TrackedDownloadState, TrackedDownloadStatus};
 
 use crate::AppUseCase;
-use crate::acquisition_workflow::DownloadFailureContext;
+use crate::acquisition_workflow::{DownloadFailureContext, FailureHandlingOutcome};
 use crate::tracked_downloads::TrackedDownload;
 
 /// Detect failed downloads during the poll cycle.
@@ -60,10 +60,10 @@ pub async fn process_failed(app: &AppUseCase, td: &mut TrackedDownload) {
         id = %td.id,
         title_id = ?td.title_id,
         reason = failure_reason,
-        "download failed — processing failure"
+        "download failed - processing failure"
     );
 
-    let _ = crate::acquisition_workflow::process_download_failure(
+    let outcome = crate::acquisition_workflow::process_download_failure(
         app,
         DownloadFailureContext {
             wanted_item: None,
@@ -78,10 +78,19 @@ pub async fn process_failed(app: &AppUseCase, td: &mut TrackedDownload) {
                 .unwrap_or_else(|| td.client_item.title_name.clone()),
             reason: failure_reason.to_string(),
             remove_from_client_if_configured: false,
+            skip_reacquire: td.skip_reacquire_on_failure,
         },
         None,
     )
     .await;
+    if td.skip_reacquire_on_failure
+        && !matches!(outcome, FailureHandlingOutcome::RecordedNoReacquire)
+    {
+        td.status_messages.push(
+            "Failure was recorded, but Scryer could not confirm that reacquisition was disabled."
+                .to_string(),
+        );
+    }
     crate::fail_active_manual_import_for_source(app, td, failure_reason).await;
 
     td.state = TrackedDownloadState::Failed;

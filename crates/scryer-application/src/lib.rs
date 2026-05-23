@@ -186,7 +186,8 @@ pub use import_workflow::{
     ManualImportExecutionResult, ManualImportFileMapping, ManualImportFilePreview,
     ManualImportFileResult, ManualImportPreview, ManualImportRequestPayload, execute_manual_import,
     execute_queued_manual_import, import_completed_download, preview_manual_import,
-    retry_failed_import, start_background_manual_import_poller, try_import_completed_downloads,
+    preview_manual_import_path, retry_failed_import, start_background_manual_import_poller,
+    try_import_completed_downloads,
 };
 pub use integration::download_queue_commands::start_background_download_delete_poller;
 pub(crate) use integration::integration::ManualImportSourceResolution;
