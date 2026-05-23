@@ -85,6 +85,7 @@ export type AuthState = {
   user: AuthUser | null;
   loading: boolean;
   effectiveFormLoginEnabled: boolean | null;
+  passkeyEnabled: boolean;
   login: (
     username: string,
     password: string,
@@ -111,6 +112,7 @@ export function useAuth(): AuthState {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
+  const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -161,6 +163,7 @@ export function useAuth(): AuthState {
             ? runtimeState.effectiveFormLoginEnabled
             : null,
         );
+        setPasskeyEnabled(runtimeState?.passkeyEnabled === true);
       } catch {
         // Fall back to the existing token/bootstrap path when the public
         // runtime-state probe is temporarily unavailable.
@@ -259,6 +262,7 @@ export function useAuth(): AuthState {
     user,
     loading,
     effectiveFormLoginEnabled,
+    passkeyEnabled,
     login,
     adoptSession,
     logout,

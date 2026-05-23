@@ -557,6 +557,8 @@ pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
         form_login_enabled: false,
         skip_login_for_local_ips: false,
         effective_form_login_enabled: false,
+        webauthn_configured: false,
+        passkey_enabled: false,
         env_override_active: false,
         env_override_description: None,
         epoch: 0,

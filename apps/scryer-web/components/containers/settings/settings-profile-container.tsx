@@ -1,9 +1,13 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useClient } from "urql";
 import { SettingsProfileSection } from "@/components/views/settings/settings-profile-section";
-import { setUserPasswordMutation } from "@/lib/graphql/mutations";
+import { deleteMyPasskeyMutation, setUserPasswordMutation } from "@/lib/graphql/mutations";
+import { myPasskeysQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useAuth } from "@/lib/hooks/use-auth";
+import type { PasskeySummary } from "@/lib/types/settings";
+import { PasskeyClientError, registerPasskey } from "@/lib/utils/passkeys";
 
 type Props = {
   userId?: string;
@@ -14,10 +18,29 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { passkeyEnabled } = useAuth();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
+  const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [loadingPasskeys, setLoadingPasskeys] = useState(false);
+  const [addingPasskey, setAddingPasskey] = useState(false);
+  const [deletingPasskeyId, setDeletingPasskeyId] = useState<string | null>(null);
+
+  const formatPasskeyError = useCallback((error: unknown) => {
+    if (error instanceof PasskeyClientError) {
+      if (error.code === "unsupported") {
+        return t("auth.passkeyUnsupported");
+      }
+      if (error.code === "cancelled") {
+        return t("auth.passkeyCancelled");
+      }
+      return error.message || t("profile.passkeyOperationFailed");
+    }
+
+    return error instanceof Error ? error.message : t("profile.passkeyOperationFailed");
+  }, [t]);
 
   const handleChangePassword = useCallback(async () => {
     if (!userId || !newPassword || newPassword !== confirmPassword) return;
@@ -50,6 +73,68 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     }
   }, [client, userId, currentPassword, newPassword, confirmPassword, setGlobalStatus, t]);
 
+  const loadPasskeys = useCallback(async () => {
+    if (!passkeyEnabled || !userId) {
+      setPasskeys([]);
+      setLoadingPasskeys(false);
+      return;
+    }
+
+    setLoadingPasskeys(true);
+    try {
+      const result = await client.query<{ myPasskeys?: PasskeySummary[] }>(myPasskeysQuery, {}).toPromise();
+      if (result.error) {
+        setGlobalStatus(result.error.message);
+        return;
+      }
+
+      setPasskeys(result.data?.myPasskeys ?? []);
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("profile.passkeyOperationFailed"));
+    } finally {
+      setLoadingPasskeys(false);
+    }
+  }, [client, passkeyEnabled, setGlobalStatus, t, userId]);
+
+  useEffect(() => {
+    void loadPasskeys();
+  }, [loadPasskeys]);
+
+  const handleAddPasskey = useCallback(async () => {
+    if (!passkeyEnabled || !userId) return;
+
+    setAddingPasskey(true);
+    try {
+      const passkey = await registerPasskey(client);
+      setPasskeys((current) => [...current, passkey]);
+      setGlobalStatus(t("profile.passkeyAdded"));
+    } catch (error) {
+      setGlobalStatus(formatPasskeyError(error));
+    } finally {
+      setAddingPasskey(false);
+    }
+  }, [client, formatPasskeyError, passkeyEnabled, setGlobalStatus, t, userId]);
+
+  const handleDeletePasskey = useCallback(async (id: string) => {
+    setDeletingPasskeyId(id);
+    try {
+      const result = await client
+        .mutation<{ deleteMyPasskey?: boolean }, { id: string }>(deleteMyPasskeyMutation, { id })
+        .toPromise();
+      if (result.error || result.data?.deleteMyPasskey !== true) {
+        setGlobalStatus(result.error?.message ?? t("profile.passkeyDeleteFailed"));
+        return;
+      }
+
+      setPasskeys((current) => current.filter((passkey) => passkey.id !== id));
+      setGlobalStatus(t("profile.passkeyDeleted"));
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("profile.passkeyDeleteFailed"));
+    } finally {
+      setDeletingPasskeyId(null);
+    }
+  }, [client, setGlobalStatus, t]);
+
   return (
     <SettingsProfileSection
       username={username}
@@ -61,6 +146,13 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       onNewPasswordChange={setNewPassword}
       onConfirmPasswordChange={setConfirmPassword}
       onChangePassword={handleChangePassword}
+      showPasskeys={passkeyEnabled && Boolean(userId)}
+      passkeys={passkeys}
+      loadingPasskeys={loadingPasskeys}
+      addingPasskey={addingPasskey}
+      deletingPasskeyId={deletingPasskeyId}
+      onAddPasskey={handleAddPasskey}
+      onDeletePasskey={handleDeletePasskey}
     />
   );
 }

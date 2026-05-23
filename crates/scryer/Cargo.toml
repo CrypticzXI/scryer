@@ -36,6 +36,8 @@ metrics-exporter-prometheus = "0.18"
 directories = "6"
 open = "5"
 governor = { workspace = true }
+webauthn-rs = { workspace = true }
+url = "2"
 
 [dev-dependencies]
 scryer-rules = { path = "../scryer-rules" }

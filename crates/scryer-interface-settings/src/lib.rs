@@ -103,6 +103,16 @@ fn from_auth_runtime_state(auth_runtime: &AuthRuntimeStateSnapshot) -> AuthRunti
     AuthRuntimeStatePayload {
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
+        passkey_enabled: auth_runtime.passkey_enabled,
+    }
+}
+
+fn from_passkey_summary(summary: scryer_application::PasskeySummary) -> PasskeySummaryPayload {
+    PasskeySummaryPayload {
+        id: summary.id,
+        friendly_name: summary.friendly_name,
+        created_at: summary.created_at,
+        last_used_at: summary.last_used_at,
     }
 }
 
@@ -192,6 +202,16 @@ impl SettingsQueries {
     async fn auth_runtime_state(&self, ctx: &Context<'_>) -> GqlResult<AuthRuntimeStatePayload> {
         let auth_runtime = auth_runtime_from_ctx(ctx);
         Ok(from_auth_runtime_state(&auth_runtime.snapshot()))
+    }
+
+    async fn my_passkeys(&self, ctx: &Context<'_>) -> GqlResult<Vec<PasskeySummaryPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.list_my_passkeys(&actor, auth_runtime.snapshot().effective_form_login_enabled)
+            .await
+            .map(|passkeys| passkeys.into_iter().map(from_passkey_summary).collect())
+            .map_err(to_gql_error)
     }
 
     async fn delay_profiles(&self, ctx: &Context<'_>) -> GqlResult<Vec<DelayProfilePayload>> {

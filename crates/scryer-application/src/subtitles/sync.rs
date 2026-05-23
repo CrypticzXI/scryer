@@ -48,6 +48,7 @@ const VAD_START_MULTIPLIER: f64 = 3.0;
 const VAD_STOP_MULTIPLIER: f64 = 1.8;
 const VAD_NOISE_SMOOTHING: f64 = 0.05;
 const VAD_MIN_SILENCE_WINDOWS: usize = 3;
+const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID: &str = "enhanced-subtitle-sync";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtitleTimingFormat {
@@ -448,13 +449,39 @@ fn delta_consistency_ratio(deltas: &[TimeDelta], offset_ms: i64) -> f64 {
 
 // ── Audio extraction via Symphonia, with targeted FFmpeg-WASM fallback ──────
 
+fn audio_transcode_codec_label(codec: AudioTranscodeCodec) -> &'static str {
+    match codec {
+        AudioTranscodeCodec::Ac3 => "AC-3",
+        AudioTranscodeCodec::Eac3 => "E-AC-3",
+        AudioTranscodeCodec::Dts => "DTS",
+        AudioTranscodeCodec::DtsHdMaCore => "DTS-HD MA (core fallback)",
+        AudioTranscodeCodec::TrueHd => "TrueHD",
+    }
+}
+
+fn should_warn_missing_enhanced_sync_plugin(
+    targeted_codec: Option<AudioTranscodeCodec>,
+    has_audio_transcoder: bool,
+) -> Option<AudioTranscodeCodec> {
+    targeted_codec.filter(|_| !has_audio_transcoder)
+}
+
+fn missing_enhanced_sync_install_hint(codec: AudioTranscodeCodec) -> String {
+    format!(
+        "subtitle sync could not decode targeted audio codec {} with native audio support; install and enable plugin '{}' for expanded codec support",
+        audio_transcode_codec_label(codec),
+        ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
+    )
+}
+
 async fn extract_audio_speech_spans(
     video_path: &Path,
     audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
 ) -> AppResult<Vec<TimeSpan>> {
-    if let Some(codec) = targeted_audio_codec_for_path(video_path)
-        && let Some(transcoder) = audio_transcoder
-    {
+    let targeted_codec = targeted_audio_codec_for_path(video_path);
+    let has_audio_transcoder = audio_transcoder.is_some();
+
+    if let (Some(codec), Some(transcoder)) = (targeted_codec, audio_transcoder) {
         match transcode_targeted_audio_to_flac(video_path, codec, transcoder).await {
             Ok(spans) => return Ok(spans),
             Err(error) => {
@@ -468,7 +495,24 @@ async fn extract_audio_speech_spans(
         }
     }
 
-    decode_audio_speech_spans_blocking(video_path).await
+    match decode_audio_speech_spans_blocking(video_path).await {
+        Ok(spans) => Ok(spans),
+        Err(error) => {
+            if let Some(codec) =
+                should_warn_missing_enhanced_sync_plugin(targeted_codec, has_audio_transcoder)
+            {
+                tracing::warn!(
+                    path = %video_path.display(),
+                    codec = audio_transcode_codec_label(codec),
+                    plugin_id = ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
+                    error = %error,
+                    "{}",
+                    missing_enhanced_sync_install_hint(codec)
+                );
+            }
+            Err(error)
+        }
+    }
 }
 
 async fn transcode_targeted_audio_to_flac(
@@ -1204,6 +1248,27 @@ mod tests {
         );
         assert_eq!(targeted_audio_codec(Some("aac"), None), None);
         assert_eq!(targeted_audio_codec(Some("flac"), None), None);
+    }
+
+    #[test]
+    fn missing_enhanced_sync_plugin_warning_only_applies_without_transcoder() {
+        assert_eq!(
+            should_warn_missing_enhanced_sync_plugin(Some(AudioTranscodeCodec::TrueHd), false),
+            Some(AudioTranscodeCodec::TrueHd)
+        );
+        assert_eq!(
+            should_warn_missing_enhanced_sync_plugin(Some(AudioTranscodeCodec::Dts), true),
+            None
+        );
+        assert_eq!(should_warn_missing_enhanced_sync_plugin(None, false), None);
+    }
+
+    #[test]
+    fn missing_enhanced_sync_plugin_warning_mentions_install_hint() {
+        let message = missing_enhanced_sync_install_hint(AudioTranscodeCodec::DtsHdMaCore);
+        assert!(message.contains("DTS-HD MA"));
+        assert!(message.contains("install and enable plugin"));
+        assert!(message.contains(ENHANCED_SUBTITLE_SYNC_PLUGIN_ID));
     }
 
     #[test]

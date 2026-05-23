@@ -879,6 +879,7 @@ pub struct AppCatalogServices {
 #[derive(Clone)]
 pub struct AppIdentityServices {
     pub(crate) users: Arc<dyn UserRepository>,
+    pub(crate) webauthn: Arc<dyn WebauthnRepository>,
 }
 
 #[derive(Clone)]
@@ -1114,7 +1115,10 @@ impl AppServices {
                 shows,
                 libraries: Arc::new(NullLibraryRepository),
             },
-            identity: AppIdentityServices { users },
+            identity: AppIdentityServices {
+                users,
+                webauthn: Arc::new(null_repositories::NullWebauthnRepository),
+            },
             events: AppEventServices {
                 domain_events: Arc::new(NullDomainEventRepository),
                 job_runs: Arc::new(null_repositories::NullJobRunRepository),
@@ -1343,6 +1347,11 @@ impl AppServicesBuilder {
         with_libraries,
         catalog.libraries,
         Arc<dyn LibraryRepository>
+    );
+    app_services_builder_setter!(
+        with_webauthn_store,
+        identity.webauthn,
+        Arc<dyn WebauthnRepository>
     );
     pub fn with_customization_store<T>(mut self, store: Arc<T>) -> Self
     where
@@ -1710,6 +1719,7 @@ pub struct AppUseCase {
     pub(crate) jwt_signing_keys: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     pub(crate) jwt_signing_keys_loaded: Arc<OnceCell<()>>,
     pub(crate) jwt_signing_keys_seed_lock: Arc<Mutex<()>>,
+    pub webauthn: RuntimeFeature<Arc<webauthn_rs::Webauthn>>,
 }
 
 impl AppUseCase {
@@ -1772,6 +1782,7 @@ impl AppUseCase {
             jwt_signing_keys: self.jwt_signing_keys.clone(),
             jwt_signing_keys_loaded: self.jwt_signing_keys_loaded.clone(),
             jwt_signing_keys_seed_lock: self.jwt_signing_keys_seed_lock.clone(),
+            webauthn: self.webauthn.clone(),
         }
     }
 

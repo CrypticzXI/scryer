@@ -214,6 +214,10 @@ pub(crate) mod user_store {
     pub(crate) use crate::users::store::*;
 }
 
+pub(crate) mod webauthn_store {
+    pub(crate) use crate::users::webauthn_store::*;
+}
+
 pub(crate) mod workflow_store {
     pub(crate) use crate::workflow::stores::*;
 }
@@ -302,6 +306,7 @@ pub use storage::types::{
     SettingsValueRecord, WorkflowOperationRecord,
 };
 pub use users::store::UserStore;
+pub use users::webauthn_store::WebauthnStore;
 pub use workflow::file_importer::FsFileImporter;
 pub use workflow::release_store::ReleaseStore;
 pub use workflow::stores::{

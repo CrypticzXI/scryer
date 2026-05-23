@@ -123,6 +123,41 @@ fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfile
     }
 }
 
+fn from_webauthn_challenge_start(
+    challenge: scryer_application::WebauthnChallengeStart,
+) -> WebauthnChallengePayload {
+    WebauthnChallengePayload {
+        challenge_id: challenge.challenge_id,
+        options_json: challenge.options_json,
+    }
+}
+
+fn from_passkey_summary(summary: scryer_application::PasskeySummary) -> PasskeySummaryPayload {
+    PasskeySummaryPayload {
+        id: summary.id,
+        friendly_name: summary.friendly_name,
+        created_at: summary.created_at,
+        last_used_at: summary.last_used_at,
+    }
+}
+
+async fn login_payload_from_user(
+    app: &scryer_application::AppUseCase,
+    user: scryer_domain::User,
+) -> Result<LoginPayload, Error> {
+    let user = app
+        .attach_user_authorization(user)
+        .await
+        .map_err(to_gql_error)?;
+    let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
+    let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
+    Ok(LoginPayload {
+        token,
+        user: from_user(user),
+        expires_at,
+    })
+}
+
 fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
     let normalize_list = |values: Vec<String>| {
         let mut seen = std::collections::HashSet::new();
@@ -747,24 +782,94 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    async fn webauthn_register_start(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<WebauthnChallengePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.webauthn_register_start(&actor, auth_runtime.snapshot().effective_form_login_enabled)
+            .await
+            .map(from_webauthn_challenge_start)
+            .map_err(to_gql_error)
+    }
+
+    async fn webauthn_register_complete(
+        &self,
+        ctx: &Context<'_>,
+        input: WebauthnRegisterCompleteInput,
+    ) -> GqlResult<PasskeySummaryPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.webauthn_register_complete(
+            &actor,
+            &input.challenge_id,
+            &input.response_json,
+            input.friendly_name,
+            auth_runtime.snapshot().effective_form_login_enabled,
+        )
+        .await
+        .map(from_passkey_summary)
+        .map_err(to_gql_error)
+    }
+
+    async fn webauthn_authenticate_start(
+        &self,
+        ctx: &Context<'_>,
+        username: Option<String>,
+    ) -> GqlResult<WebauthnChallengePayload> {
+        let app = app_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.webauthn_authenticate_start(
+            username.as_deref(),
+            auth_runtime.snapshot().effective_form_login_enabled,
+        )
+        .await
+        .map(from_webauthn_challenge_start)
+        .map_err(to_gql_error)
+    }
+
+    async fn webauthn_authenticate_complete(
+        &self,
+        ctx: &Context<'_>,
+        input: WebauthnCompleteInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        let user = app
+            .webauthn_authenticate_complete(
+                &input.challenge_id,
+                &input.response_json,
+                auth_runtime.snapshot().effective_form_login_enabled,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        login_payload_from_user(&app, user).await
+    }
+
+    async fn delete_my_passkey(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        app.delete_my_passkey(
+            &actor,
+            &id,
+            auth_runtime.snapshot().effective_form_login_enabled,
+        )
+        .await
+        .map(|_| true)
+        .map_err(to_gql_error)
+    }
+
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let user = app
             .authenticate_credentials(&input.username, &input.password)
             .await
             .map_err(to_gql_error)?;
-        let user = app
-            .attach_user_authorization(user)
-            .await
-            .map_err(to_gql_error)?;
-        let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
-        let expires_at =
-            (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
-        Ok(LoginPayload {
-            token,
-            user: from_user(user),
-            expires_at,
-        })
+        login_payload_from_user(&app, user).await
     }
 
     /// Mark the setup wizard as complete.

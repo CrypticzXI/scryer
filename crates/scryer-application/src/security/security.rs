@@ -5,6 +5,7 @@ use aws_lc_rs::hmac;
 
 use super::*;
 use crate::services::AppAssembly;
+use crate::services::RuntimeFeature;
 use crate::types::{
     BackupDownloadTicket, BackupDownloadTokenClaims, JwtLibraryPermissionClaim,
     ReleaseCandidateTokenClaims,
@@ -45,6 +46,15 @@ impl AppUseCase {
         auth: JwtAuthConfig,
         facet_registry: Arc<FacetRegistry>,
     ) -> Self {
+        Self::new_with_webauthn(assembly, auth, facet_registry, None)
+    }
+
+    pub fn new_with_webauthn(
+        assembly: AppAssembly,
+        auth: JwtAuthConfig,
+        facet_registry: Arc<FacetRegistry>,
+        webauthn: Option<Arc<webauthn_rs::Webauthn>>,
+    ) -> Self {
         Self {
             services: assembly.services,
             runtime: assembly.runtime,
@@ -54,6 +64,7 @@ impl AppUseCase {
             jwt_signing_keys: Arc::new(RwLock::new(HashMap::new())),
             jwt_signing_keys_loaded: Arc::new(OnceCell::new()),
             jwt_signing_keys_seed_lock: Arc::new(Mutex::new(())),
+            webauthn: webauthn.map(RuntimeFeature::enabled).unwrap_or_default(),
         }
     }
 

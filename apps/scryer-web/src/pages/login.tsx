@@ -2,9 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { useAuth } from "@/lib/hooks/use-auth";
+import { useLanguage } from "@/lib/hooks/use-language";
 import { Input } from "@/components/ui/input";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
+import { authenticateWithPasskey, PasskeyClientError } from "@/lib/utils/passkeys";
 
 function resolveRedirectTarget(value: string | null): string {
   if (!value || !value.startsWith("/") || value.startsWith("//")) {
@@ -18,11 +20,13 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { serviceRestarting } = useBackendRestarting();
-  const { login, user, loading: authLoading } = useAuth();
+  const { t } = useLanguage(searchParams);
+  const { login, adoptSession, user, loading: authLoading, passkeyEnabled } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [passkeySubmitting, setPasskeySubmitting] = useState(false);
   const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
 
   // Redirect to home if already authenticated
@@ -41,12 +45,40 @@ export default function LoginPage() {
         await login(username, password);
         navigate(redirectTarget, { replace: true });
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Invalid username or password.");
+        setError(err instanceof Error ? err.message : t("auth.invalidCredentials"));
       } finally {
         setSubmitting(false);
       }
     },
-    [login, navigate, password, redirectTarget, username],
+    [login, navigate, password, redirectTarget, t, username],
+  );
+
+  const handlePasskeySignIn = useCallback(
+    async () => {
+      setError(null);
+      setPasskeySubmitting(true);
+      try {
+        const result = await authenticateWithPasskey();
+        adoptSession(result.token, result.user);
+        navigate(redirectTarget, { replace: true });
+      } catch (err) {
+        if (err instanceof PasskeyClientError) {
+          if (err.code === "unsupported") {
+            setError(t("auth.passkeyUnsupported"));
+          } else if (err.code === "cancelled") {
+            setError(t("auth.passkeyCancelled"));
+          } else {
+            setError(err.message || t("auth.passkeyFailed"));
+          }
+          return;
+        }
+
+        setError(err instanceof Error ? err.message : t("auth.passkeyFailed"));
+      } finally {
+        setPasskeySubmitting(false);
+      }
+    },
+    [adoptSession, navigate, redirectTarget, t],
   );
 
   if (serviceRestarting) {
@@ -68,7 +100,7 @@ export default function LoginPage() {
         onSubmit={handleSubmit}
         className="w-full max-w-sm space-y-5 rounded-lg border border-border bg-card/70 p-8"
       >
-        <h1 className="text-center text-xl font-semibold tracking-tight">Sign in</h1>
+        <h1 className="text-center text-xl font-semibold tracking-tight">{t("auth.signIn")}</h1>
 
         {error && (
           <div className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300">{error}</div>
@@ -76,7 +108,7 @@ export default function LoginPage() {
 
         <div className="space-y-1.5">
           <label htmlFor="username" className="block text-sm font-medium text-muted-foreground">
-            Username
+            {t("auth.username")}
           </label>
           <Input
             id="username"
@@ -86,13 +118,13 @@ export default function LoginPage() {
             required
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="Username"
+            placeholder={t("auth.username")}
           />
         </div>
 
         <div className="space-y-1.5">
           <label htmlFor="password" className="block text-sm font-medium text-muted-foreground">
-            Password
+            {t("auth.password")}
           </label>
           <Input
             id="password"
@@ -101,19 +133,38 @@ export default function LoginPage() {
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password"
+            placeholder={t("auth.password")}
           />
         </div>
 
         <button
           id="login-submit"
           type="submit"
-          disabled={submitting}
+          disabled={submitting || passkeySubmitting}
           className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
         >
           {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-          {submitting ? "Signing in..." : "Sign in"}
+          {submitting ? t("auth.signingIn") : t("auth.signIn")}
         </button>
+
+        {passkeyEnabled ? (
+          <>
+            <div className="flex items-center gap-3 text-xs uppercase tracking-[0.2em] text-muted-foreground">
+              <div className="h-px flex-1 bg-border" />
+              <span>{t("label.or")}</span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+            <button
+              type="button"
+              onClick={handlePasskeySignIn}
+              disabled={submitting || passkeySubmitting}
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+            >
+              {passkeySubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {passkeySubmitting ? t("auth.passkeySigningIn") : t("auth.signInWithPasskey")}
+            </button>
+          </>
+        ) : null}
       </form>
     </div>
   );

@@ -77,6 +77,21 @@ struct FilterStrategyContext<'a> {
     is_rss_request: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum SearchLane {
+    Interactive,
+    BackgroundAuto,
+}
+
+impl SearchLane {
+    fn from_mode(mode: SearchMode) -> Self {
+        match mode {
+            SearchMode::Interactive => Self::Interactive,
+            SearchMode::Auto => Self::BackgroundAuto,
+        }
+    }
+}
+
 #[derive(Default)]
 struct StrategyBatchHealth {
     any_success: bool,
@@ -329,7 +344,7 @@ fn is_romanized_alias(alias: &str) -> bool {
 /// Per-indexer rate limiter tracking the last request time.
 #[derive(Clone)]
 struct IndexerRateLimiter {
-    last_request: Arc<Mutex<HashMap<String, tokio::time::Instant>>>,
+    last_request: Arc<Mutex<HashMap<(String, SearchLane), tokio::time::Instant>>>,
 }
 
 impl IndexerRateLimiter {
@@ -343,11 +358,12 @@ impl IndexerRateLimiter {
     /// When `rate_limit_seconds` is set (from config/plugin), that value wins.
     /// Otherwise the default depends on the search mode:
     ///   - Interactive: 1s (fast for end-user experience)
-    ///   - Auto: 5s (gentle on indexer APIs during background acquisition)
+    ///   - Auto: 1s (keeps background acquisition moving without blocking the
+    ///     interactive lane behind a long default wait)
     async fn acquire(&self, indexer_id: &str, rate_limit_seconds: Option<i64>, mode: SearchMode) {
         let default_secs = match mode {
             SearchMode::Interactive => 1,
-            SearchMode::Auto => 5,
+            SearchMode::Auto => 1,
         };
         let interval_secs = rate_limit_seconds.unwrap_or(default_secs).max(0) as u64;
         if interval_secs == 0 {
@@ -356,20 +372,21 @@ impl IndexerRateLimiter {
 
         let interval = std::time::Duration::from_secs(interval_secs);
         let now = tokio::time::Instant::now();
+        let lane_key = (indexer_id.to_string(), SearchLane::from_mode(mode));
 
         let mut map = self.last_request.lock().await;
-        if let Some(last) = map.get(indexer_id) {
+        if let Some(last) = map.get(&lane_key) {
             let elapsed = now.duration_since(*last);
             if elapsed < interval {
                 let wait = interval - elapsed;
                 drop(map); // Release lock while sleeping
                 tokio::time::sleep(wait).await;
                 let mut map = self.last_request.lock().await;
-                map.insert(indexer_id.to_string(), tokio::time::Instant::now());
+                map.insert(lane_key, tokio::time::Instant::now());
                 return;
             }
         }
-        map.insert(indexer_id.to_string(), now);
+        map.insert(lane_key, now);
     }
 }
 
@@ -3598,6 +3615,46 @@ mod tests {
         );
 
         assert_eq!(alias.as_deref(), Some("Sora no Vale"));
+    }
+
+    #[tokio::test]
+    async fn indexer_rate_limiter_keeps_interactive_lane_independent_from_auto_lane() {
+        let limiter = IndexerRateLimiter::new();
+
+        limiter.acquire("idx", None, SearchMode::Auto).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            limiter.acquire("idx", None, SearchMode::Interactive),
+        )
+        .await
+        .expect("interactive lane should not wait behind background auto pacing");
+    }
+
+    #[tokio::test]
+    async fn indexer_rate_limiter_uses_shorter_auto_default_interval() {
+        let limiter = IndexerRateLimiter::new();
+
+        limiter.acquire("idx", None, SearchMode::Auto).await;
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                limiter.acquire("idx", None, SearchMode::Auto),
+            )
+            .await
+            .is_err(),
+            "immediate follow-up auto searches should still be paced"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(950)).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            limiter.acquire("idx", None, SearchMode::Auto),
+        )
+        .await
+        .expect("auto lane should become available again after roughly one second");
     }
 
     #[test]

@@ -1723,6 +1723,16 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
   authRuntimeState {
     effectiveFormLoginEnabled
     skipLoginForLocalIps
+    passkeyEnabled
+  }
+}`;
+
+export const myPasskeysQuery = `query MyPasskeys {
+  myPasskeys {
+    id
+    friendlyName
+    createdAt
+    lastUsedAt
   }
 }`;
 

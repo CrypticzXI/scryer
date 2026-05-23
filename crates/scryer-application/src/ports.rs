@@ -317,6 +317,43 @@ pub trait UserRepository: Send + Sync {
 }
 
 #[async_trait]
+pub trait WebauthnRepository: Send + Sync {
+    async fn list_credentials_for_user(
+        &self,
+        user_id: &str,
+    ) -> AppResult<Vec<WebauthnCredentialRecord>>;
+    async fn get_credential_by_id_for_user(
+        &self,
+        credential_record_id: &str,
+        user_id: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>>;
+    async fn get_credential_by_credential_id(
+        &self,
+        credential_id: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>>;
+    async fn create_credential(
+        &self,
+        credential: WebauthnCredentialRecord,
+    ) -> AppResult<WebauthnCredentialRecord>;
+    async fn update_credential(
+        &self,
+        credential: WebauthnCredentialRecord,
+    ) -> AppResult<WebauthnCredentialRecord>;
+    async fn delete_credential_for_user(
+        &self,
+        credential_record_id: &str,
+        user_id: &str,
+    ) -> AppResult<()>;
+    async fn create_challenge(
+        &self,
+        challenge: WebauthnChallengeRecord,
+    ) -> AppResult<WebauthnChallengeRecord>;
+    async fn get_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>>;
+    async fn delete_challenge(&self, id: &str) -> AppResult<()>;
+    async fn delete_expired_challenges(&self, now: &str) -> AppResult<u64>;
+}
+
+#[async_trait]
 pub trait DomainEventRepository: Send + Sync {
     async fn append(&self, event: NewDomainEvent) -> AppResult<DomainEvent>;
     async fn append_many(&self, events: Vec<NewDomainEvent>) -> AppResult<Vec<DomainEvent>>;

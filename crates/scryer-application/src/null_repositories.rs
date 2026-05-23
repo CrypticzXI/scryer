@@ -34,8 +34,8 @@ use crate::{
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
     TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
     TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository, ports::DatastoreInfo,
-    ports::LogicalBackupExporter,
+    WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository, ports::DatastoreInfo, ports::LogicalBackupExporter,
 };
 
 #[derive(Default)]
@@ -1454,6 +1454,68 @@ impl LibraryRepository for NullLibraryRepository {
 
     async fn title_library_id(&self, _title_id: &str) -> AppResult<Option<String>> {
         Ok(None)
+    }
+}
+
+#[derive(Default)]
+pub struct NullWebauthnRepository;
+
+#[async_trait]
+impl WebauthnRepository for NullWebauthnRepository {
+    async fn list_credentials_for_user(&self, _: &str) -> AppResult<Vec<WebauthnCredentialRecord>> {
+        Ok(vec![])
+    }
+
+    async fn get_credential_by_id_for_user(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>> {
+        Ok(None)
+    }
+
+    async fn get_credential_by_credential_id(
+        &self,
+        _: &str,
+    ) -> AppResult<Option<WebauthnCredentialRecord>> {
+        Ok(None)
+    }
+
+    async fn create_credential(
+        &self,
+        _: WebauthnCredentialRecord,
+    ) -> AppResult<WebauthnCredentialRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn update_credential(
+        &self,
+        _: WebauthnCredentialRecord,
+    ) -> AppResult<WebauthnCredentialRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete_credential_for_user(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn create_challenge(
+        &self,
+        _: WebauthnChallengeRecord,
+    ) -> AppResult<WebauthnChallengeRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_challenge(&self, _: &str) -> AppResult<Option<WebauthnChallengeRecord>> {
+        Ok(None)
+    }
+
+    async fn delete_challenge(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_expired_challenges(&self, _: &str) -> AppResult<u64> {
+        Ok(0)
     }
 }
 

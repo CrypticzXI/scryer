@@ -798,11 +798,38 @@ pub struct LoginInput {
     pub password: String,
 }
 
+#[derive(InputObject)]
+pub struct WebauthnCompleteInput {
+    pub challenge_id: String,
+    pub response_json: String,
+}
+
+#[derive(InputObject)]
+pub struct WebauthnRegisterCompleteInput {
+    pub challenge_id: String,
+    pub response_json: String,
+    pub friendly_name: Option<String>,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct LoginPayload {
     pub token: String,
     pub user: UserPayload,
     pub expires_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct WebauthnChallengePayload {
+    pub challenge_id: String,
+    pub options_json: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PasskeySummaryPayload {
+    pub id: String,
+    pub friendly_name: Option<String>,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1633,6 +1660,7 @@ pub struct SecuritySettingsPayload {
 pub struct AuthRuntimeStatePayload {
     pub effective_form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
+    pub passkey_enabled: bool,
 }
 
 #[derive(SimpleObject, Clone)]

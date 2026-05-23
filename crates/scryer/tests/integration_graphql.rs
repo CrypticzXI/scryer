@@ -4117,6 +4117,7 @@ async fn graphql_auth_runtime_state_is_public() {
           authRuntimeState {
             effectiveFormLoginEnabled
             skipLoginForLocalIps
+            passkeyEnabled
           }
         }
         "#,
@@ -4133,6 +4134,82 @@ async fn graphql_auth_runtime_state_is_public() {
         body["data"]["authRuntimeState"]["skipLoginForLocalIps"],
         false
     );
+    assert_eq!(body["data"]["authRuntimeState"]["passkeyEnabled"], false);
+}
+
+#[tokio::test]
+async fn graphql_passkey_register_start_requires_authentication() {
+    let ctx = TestContext::new().await;
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        mutation PasskeyRegisterStart {
+          webauthnRegisterStart {
+            challengeId
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert_eq!(message, "authentication required");
+}
+
+#[tokio::test]
+async fn graphql_passkey_authenticate_start_is_public() {
+    let ctx = TestContext::new().await;
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        mutation PasskeyAuthenticateStart {
+          webauthnAuthenticateStart {
+            challengeId
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert_eq!(
+        message,
+        "validation: passkey authentication is unavailable while form login is disabled"
+    );
+}
+
+#[tokio::test]
+async fn graphql_my_passkeys_requires_authentication() {
+    let ctx = TestContext::new().await;
+
+    let body = schema_exec(
+        &ctx,
+        r#"
+        query MyPasskeys {
+          myPasskeys {
+            id
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert_eq!(message, "authentication required");
 }
 
 #[tokio::test]

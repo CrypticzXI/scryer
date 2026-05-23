@@ -60,6 +60,14 @@ export type AutoBackupSettings = {
 export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
+  passkeyEnabled: boolean;
+};
+
+export type PasskeySummary = {
+  id: string;
+  friendlyName: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
 };
 
 export type MediaSettings = {

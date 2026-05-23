@@ -61,6 +61,8 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tower_http::compression::CompressionLayer;
+use url::Url;
+use webauthn_rs::WebauthnBuilder;
 
 use admin_routes::{
     AdminSettingsQuery, admin_migrations_handler, admin_settings_list, bootstrap_admin_password,
@@ -993,7 +995,9 @@ async fn bootstrap_application(
         .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))
         .build();
 
-    let app_use_case = AppUseCase::new(
+    let webauthn = build_webauthn_runtime();
+    let webauthn_configured = webauthn.is_some();
+    let app_use_case = AppUseCase::new_with_webauthn(
         services,
         scryer_application::JwtAuthConfig {
             issuer: jwt_issuer,
@@ -1001,6 +1005,7 @@ async fn bootstrap_application(
             jwt_signing_salt,
         },
         facet_registry,
+        webauthn,
     );
 
     app_use_case.connect_library_scan_tracker().await;
@@ -1057,11 +1062,14 @@ async fn bootstrap_application(
         .await
         .map_err(|error| format!("failed to load security settings: {error}"))?;
     let auth_mode = resolve_auth_mode_from_env();
+    let effective_form_login_enabled =
+        auth_mode.effective_form_login_enabled(saved_security_settings.form_login_enabled);
     let auth_runtime = AuthRuntimeStateHandle::new(AuthRuntimeStateSnapshot {
         form_login_enabled: saved_security_settings.form_login_enabled,
         skip_login_for_local_ips: saved_security_settings.skip_login_for_local_ips,
-        effective_form_login_enabled: auth_mode
-            .effective_form_login_enabled(saved_security_settings.form_login_enabled),
+        effective_form_login_enabled,
+        webauthn_configured,
+        passkey_enabled: webauthn_configured && effective_form_login_enabled,
         env_override_active: auth_mode.env_override_active(),
         env_override_description: auth_mode.env_override_description.clone(),
         epoch: 0,
@@ -1509,6 +1517,55 @@ pub(crate) fn normalize_env_option(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn build_webauthn_runtime() -> Option<Arc<webauthn_rs::Webauthn>> {
+    let rp_id = normalize_env_option("SCRYER_WEBAUTHN_RP_ID");
+    let rp_origin = normalize_env_option("SCRYER_WEBAUTHN_RP_ORIGIN");
+
+    match (rp_id, rp_origin) {
+        (Some(rp_id), Some(rp_origin)) => {
+            let origin = match Url::parse(&rp_origin) {
+                Ok(origin) => origin,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "disabling passkeys because SCRYER_WEBAUTHN_RP_ORIGIN is invalid"
+                    );
+                    return None;
+                }
+            };
+
+            let builder = match WebauthnBuilder::new(&rp_id, &origin) {
+                Ok(builder) => builder,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "disabling passkeys because the WebAuthn RP config is invalid"
+                    );
+                    return None;
+                }
+            };
+
+            match builder.build() {
+                Ok(runtime) => Some(Arc::new(runtime)),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "disabling passkeys because the WebAuthn runtime could not be built"
+                    );
+                    None
+                }
+            }
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            tracing::warn!(
+                "disabling passkeys because SCRYER_WEBAUTHN_RP_ID and SCRYER_WEBAUTHN_RP_ORIGIN must both be set"
+            );
+            None
+        }
+        (None, None) => None,
+    }
 }
 
 fn load_or_create_persistent_jwt_signing_salt(data_dir: &Path) -> std::io::Result<String> {

@@ -201,7 +201,11 @@ pub(crate) fn rate_limited_message(class: GraphqlRateLimitClass) -> String {
 fn classify_query(query: &str) -> GraphqlRateLimitClass {
     let compact = query.split_whitespace().collect::<String>();
     let lower = compact.to_ascii_lowercase();
-    if lower.contains("mutation") && lower.contains("login") {
+    if lower.contains("mutation")
+        && (lower.contains("login")
+            || lower.contains("webauthnauthenticatestart")
+            || lower.contains("webauthnauthenticatecomplete"))
+    {
         return GraphqlRateLimitClass::Login;
     }
     if contains_expensive_field(&compact) {
@@ -353,6 +357,22 @@ mod tests {
             "mutation Login { login(input: { username: \"a\", password: \"b\" }) { token } }",
         ));
         assert_eq!(classify_graphql(&batch), GraphqlRateLimitClass::Login);
+    }
+
+    #[test]
+    fn passkey_authenticate_mutations_use_login_bucket() {
+        let start_batch = BatchRequest::Single(async_graphql::Request::new(
+            "mutation PasskeyStart { webauthnAuthenticateStart(username: \"a\") { challengeId } }",
+        ));
+        assert_eq!(classify_graphql(&start_batch), GraphqlRateLimitClass::Login);
+
+        let complete_batch = BatchRequest::Single(async_graphql::Request::new(
+            "mutation PasskeyComplete { webauthnAuthenticateComplete(input: { challengeId: \"c\", responseJson: \"{}\" }) { token } }",
+        ));
+        assert_eq!(
+            classify_graphql(&complete_batch),
+            GraphqlRateLimitClass::Login
+        );
     }
 
     #[test]

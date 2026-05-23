@@ -6,20 +6,58 @@ import {
   TITLE_CORE_FIELDS,
 } from "./queries";
 
-export const loginMutation = `mutation Login($input: LoginInput!) {
-  login(input: $input) {
-    token
-    user {
+const AUTH_USER_FIELDS = `
       id
       username
       appPermissions
       libraryPermissions {
         libraryId
         permissions
-      }
+      }`;
+
+const LOGIN_PAYLOAD_FIELDS = `
+    token
+    user {${AUTH_USER_FIELDS}
     }
-    expiresAt
+    expiresAt`;
+
+export const loginMutation = `mutation Login($input: LoginInput!) {
+  login(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
   }
+}`;
+
+export const webauthnRegisterStartMutation = `mutation WebauthnRegisterStart {
+  webauthnRegisterStart {
+    challengeId
+    optionsJson
+  }
+}`;
+
+export const webauthnRegisterCompleteMutation = `mutation WebauthnRegisterComplete($input: WebauthnRegisterCompleteInput!) {
+  webauthnRegisterComplete(input: $input) {
+    id
+    friendlyName
+    createdAt
+    lastUsedAt
+  }
+}`;
+
+export const webauthnAuthenticateStartMutation = `mutation WebauthnAuthenticateStart($username: String) {
+  webauthnAuthenticateStart(username: $username) {
+    challengeId
+    optionsJson
+  }
+}`;
+
+export const webauthnAuthenticateCompleteMutation = `mutation WebauthnAuthenticateComplete($input: WebauthnCompleteInput!) {
+  webauthnAuthenticateComplete(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: String!) {
+  deleteMyPasskey(id: $id)
 }`;
 
 export const createUserMutation = `mutation CreateUser($input: CreateUserInput!) {

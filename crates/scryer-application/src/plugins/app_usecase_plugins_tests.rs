@@ -3164,6 +3164,17 @@ async fn install_uploaded_plugin_requires_risk_acknowledgement() {
 
 // ── seed_builtin_plugins ─────────────────────────────────────────────────────
 
+#[test]
+fn available_subtitle_provider_types_hide_generator_only_plugins() {
+    let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&["enhanced-subtitle-sync"]));
+    let h = bootstrap_plugins_with_subtitles(None, Some(subtitle_provider));
+
+    assert!(
+        h.app.available_subtitle_provider_types().is_empty(),
+        "generator-only subtitle plugins should not appear in subtitle provider setup"
+    );
+}
+
 #[tokio::test]
 async fn seed_uses_provider_builtin_inventory() {
     let provider = MockPluginProvider::new()

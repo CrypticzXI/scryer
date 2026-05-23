@@ -1036,6 +1036,64 @@ pub struct JwtAuthConfig {
     pub jwt_signing_salt: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebauthnChallengeType {
+    Registration,
+    Authentication,
+}
+
+impl WebauthnChallengeType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Registration => "registration",
+            Self::Authentication => "authentication",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "registration" => Some(Self::Registration),
+            "authentication" => Some(Self::Authentication),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebauthnCredentialRecord {
+    pub id: String,
+    pub user_id: String,
+    pub credential_id: String,
+    pub credential_json: String,
+    pub friendly_name: Option<String>,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebauthnChallengeRecord {
+    pub id: String,
+    pub user_id: Option<String>,
+    pub challenge_type: WebauthnChallengeType,
+    pub state_json: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebauthnChallengeStart {
+    pub challenge_id: String,
+    pub options_json: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasskeySummary {
+    pub id: String,
+    pub friendly_name: Option<String>,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct JwtClaims {
     pub sub: String,

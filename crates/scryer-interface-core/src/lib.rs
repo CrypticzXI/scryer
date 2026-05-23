@@ -39,6 +39,8 @@ pub struct AuthRuntimeStateSnapshot {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub effective_form_login_enabled: bool,
+    pub webauthn_configured: bool,
+    pub passkey_enabled: bool,
     pub env_override_active: bool,
     pub env_override_description: Option<String>,
     pub epoch: u64,
@@ -79,15 +81,19 @@ impl AuthRuntimeStateHandle {
             let previous_policy = (
                 snapshot.effective_form_login_enabled,
                 snapshot.effective_form_login_enabled && snapshot.skip_login_for_local_ips,
+                snapshot.passkey_enabled,
             );
             snapshot.form_login_enabled = form_login_enabled;
             snapshot.skip_login_for_local_ips = skip_login_for_local_ips;
             if !snapshot.env_override_active {
                 snapshot.effective_form_login_enabled = form_login_enabled;
             }
+            snapshot.passkey_enabled =
+                snapshot.webauthn_configured && snapshot.effective_form_login_enabled;
             let next_policy = (
                 snapshot.effective_form_login_enabled,
                 snapshot.effective_form_login_enabled && snapshot.skip_login_for_local_ips,
+                snapshot.passkey_enabled,
             );
             if next_policy != previous_policy {
                 snapshot.epoch += 1;
