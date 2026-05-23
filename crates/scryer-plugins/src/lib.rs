@@ -1,3 +1,4 @@
+mod audio_transcoder_adapter;
 pub mod builtins;
 mod download_client_adapter;
 mod indexer_adapter;

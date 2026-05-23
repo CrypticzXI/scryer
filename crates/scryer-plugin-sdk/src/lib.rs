@@ -288,6 +288,8 @@ pub const EXPORT_NOTIFICATION_SEND: &str = "scryer_notification_send";
 pub const EXPORT_SUBTITLE_SEARCH: &str = "scryer_subtitle_search";
 pub const EXPORT_SUBTITLE_DOWNLOAD: &str = "scryer_subtitle_download";
 pub const EXPORT_SUBTITLE_GENERATE: &str = "scryer_subtitle_generate";
+pub const EXPORT_AUDIO_TRANSCODE_DESCRIBE: &str = "scryer_audio_transcode_describe";
+pub const EXPORT_AUDIO_TRANSCODE: &str = "scryer_audio_transcode";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1354,6 +1356,107 @@ pub struct SubtitlePluginGenerateRequest {
 pub struct SubtitlePluginGenerateResponse {
     pub content_base64: String,
     pub format: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioTranscodeProfile {
+    SyncFlac,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioTranscodeCodec {
+    Ac3,
+    Eac3,
+    Dts,
+    DtsHdMaCore,
+    TrueHd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioTranscodeStatus {
+    Decoded,
+    UnsupportedCodec,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AudioStreamSelector {
+    Default,
+    StreamIndex { index: u32 },
+    Language { language: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AudioTranscodeInputRef {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AudioTranscodeOutputRef {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AudioTranscodeDescriptor {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub sdk_version: String,
+    pub sdk_constraint: String,
+    pub supported_profiles: Vec<AudioTranscodeProfile>,
+    pub supported_input_codecs: Vec<AudioTranscodeCodec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AudioTranscodeRequest {
+    pub input: AudioTranscodeInputRef,
+    pub output: AudioTranscodeOutputRef,
+    pub profile: AudioTranscodeProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<AudioStreamSelector>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_codec: Option<AudioTranscodeCodec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AudioTranscodeStreamMetadata {
+    pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    pub codec: AudioTranscodeCodec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_codec_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_profile: Option<String>,
+    #[serde(default)]
+    pub used_core_fallback: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AudioTranscodeResponse {
+    pub status: AudioTranscodeStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<AudioTranscodeOutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<AudioTranscodeStreamMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples_written: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_start_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

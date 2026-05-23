@@ -347,7 +347,7 @@ pub(crate) fn project_final_metadata(
             .iter()
             .filter_map(|codec| AudioCodec::parse(codec))
             .collect();
-    } else if let Some(audio) = projected.audio.clone() {
+    } else if let Some(audio) = projected.audio {
         projected.audio_codecs = vec![audio];
     }
     if enrichment.audio_channels.is_some() {

@@ -34,6 +34,8 @@ use crate::{JobKey, JobTriggerSource};
 const MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM: usize = 5;
 const STANDBY_RETENTION_HOURS: i64 = 24;
 const ACQUISITION_SCAN_QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+const ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE: usize = 10;
+const ACQUISITION_SLICE_YIELD_INTERVAL: usize = 10;
 
 fn parsed_release_season_pack_season(parsed: &crate::ParsedReleaseMetadata) -> Option<u32> {
     parsed.episode.as_ref().and_then(|episode| {
@@ -1850,6 +1852,27 @@ async fn process_due_wanted_items(app: &AppUseCase) {
     process_due_wanted_items_with_blocked_facets(app, &blocked_facets).await;
 }
 
+fn select_due_items_for_cooperative_slice(
+    due_items: Vec<WantedItem>,
+) -> (Vec<WantedItem>, HashMap<String, usize>) {
+    let mut selected = Vec::with_capacity(due_items.len());
+    let mut selected_per_title: HashMap<String, usize> = HashMap::new();
+    let mut deferred_per_title: HashMap<String, usize> = HashMap::new();
+
+    for item in due_items {
+        let selected_for_title = selected_per_title.entry(item.title_id.clone()).or_insert(0);
+        if *selected_for_title >= ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE {
+            *deferred_per_title.entry(item.title_id.clone()).or_insert(0) += 1;
+            continue;
+        }
+
+        *selected_for_title += 1;
+        selected.push(item);
+    }
+
+    (selected, deferred_per_title)
+}
+
 pub(crate) async fn process_due_wanted_items_with_blocked_facets(
     app: &AppUseCase,
     blocked_facets: &[MediaFacet],
@@ -1901,6 +1924,20 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
         return;
     }
 
+    let fetched_due_count = due_items.len();
+    let (due_items, deferred_per_title) = select_due_items_for_cooperative_slice(due_items);
+    if !deferred_per_title.is_empty() {
+        info!(
+            fetched_due_count,
+            selected_due_count = due_items.len(),
+            deferred_due_count = deferred_per_title.values().copied().sum::<usize>(),
+            deferred_title_count = deferred_per_title.len(),
+            per_title_slice_limit = ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE,
+            deferred_titles = ?deferred_per_title,
+            "background acquisition: deferring excess wanted items for cooperative processing"
+        );
+    }
+
     if !has_enabled_download_clients(app).await {
         warn!(
             count = due_items.len(),
@@ -1940,6 +1977,7 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
         }
     }
 
+    let mut processed_in_slice = 0usize;
     for item in &due_items {
         if let Err(err) = process_single_wanted_item(
             app,
@@ -1960,6 +1998,10 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
                 error = %err,
                 "failed to process wanted item"
             );
+        }
+        processed_in_slice += 1;
+        if processed_in_slice % ACQUISITION_SLICE_YIELD_INTERVAL == 0 {
+            tokio::task::yield_now().await;
         }
 
         // Re-read the wanted item status after processing.  If the item was
@@ -2129,6 +2171,28 @@ async fn process_single_wanted_item(
             return Ok(());
         }
     };
+
+    if item.search_count == 0 {
+        let queue_delay_ms = item
+            .next_search_at
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| {
+                now.signed_duration_since(value.with_timezone(&Utc))
+                    .num_milliseconds()
+            })
+            .unwrap_or_default();
+        info!(
+            wanted_item_id = item.id.as_str(),
+            title_id = item.title_id.as_str(),
+            title = title.name.as_str(),
+            media_type = item.media_type.as_str(),
+            search_phase = item.search_phase.as_str(),
+            search_count = item.search_count,
+            queue_delay_ms,
+            "background acquisition: first pass for wanted item"
+        );
+    }
 
     // Load episode data for episode-type wanted items
     let episode = if item.media_type == "episode" {

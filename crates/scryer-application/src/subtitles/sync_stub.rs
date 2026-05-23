@@ -1,6 +1,6 @@
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, sync::Arc};
 
-use crate::AppResult;
+use crate::{AppResult, ports::AudioTranscoderClient};
 
 #[derive(Debug, Clone)]
 pub struct SyncResult {
@@ -34,6 +34,7 @@ pub enum SyncSkipReason {
     ForcedSubtitle,
     ScoreAboveThreshold,
     UnsupportedSubtitleFormat,
+    AudioDecodeFailed,
     NotEnoughReferenceSpans,
     NotEnoughSubtitleSpans,
     WeakAlignment,
@@ -49,6 +50,7 @@ impl SyncSkipReason {
             Self::ForcedSubtitle => "forced_subtitle",
             Self::ScoreAboveThreshold => "score_above_threshold",
             Self::UnsupportedSubtitleFormat => "unsupported_subtitle_format",
+            Self::AudioDecodeFailed => "audio_decode_failed",
             Self::NotEnoughReferenceSpans => "not_enough_reference_spans",
             Self::NotEnoughSubtitleSpans => "not_enough_subtitle_spans",
             Self::WeakAlignment => "weak_alignment",
@@ -90,6 +92,15 @@ pub async fn sync_subtitle_with_policy(
     _video_path: &Path,
     _subtitle_path: &Path,
     policy: SyncPolicy,
+) -> AppResult<SyncResult> {
+    sync_subtitle_with_policy_and_audio_transcoder(_video_path, _subtitle_path, policy, None).await
+}
+
+pub async fn sync_subtitle_with_policy_and_audio_transcoder(
+    _video_path: &Path,
+    _subtitle_path: &Path,
+    policy: SyncPolicy,
+    _audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
 ) -> AppResult<SyncResult> {
     Ok(SyncResult {
         offset_ms: 0,

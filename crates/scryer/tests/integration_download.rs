@@ -2335,6 +2335,11 @@ async fn sabnzbd_submit_download_deletes_self_staged_nzb_on_failure() {
         .respond_with(ResponseTemplate::new(500).set_body_string("addfile failed"))
         .mount(&server)
         .await;
+    Mock::given(method("POST"))
+        .and(path("/sabnzbd/api"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("addfile failed"))
+        .mount(&server)
+        .await;
 
     let client = SabnzbdDownloadClient::with_staged_nzb_store(
         server.uri(),
@@ -2400,8 +2405,8 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
     let request_body = String::from_utf8_lossy(&requests[0].body);
     assert_eq!(
         requests[0].url.query(),
-        Some("apikey=test-api-key"),
-        "sabnzbd upload should authenticate with the API key in the query string"
+        Some("mode=addfile&output=json&apikey=test-api-key"),
+        "sabnzbd upload should keep control fields and API-key auth in the query string"
     );
     assert!(
         request_body.contains("filename=\"Staged.SAB.Release.nzb\""),
@@ -2414,6 +2419,14 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
     assert!(
         !request_body.contains("name=\"apikey\""),
         "sabnzbd upload should not duplicate API-key auth in the multipart body: {request_body}"
+    );
+    assert!(
+        !request_body.contains("name=\"mode\""),
+        "sabnzbd upload should not duplicate mode in the multipart body: {request_body}"
+    );
+    assert!(
+        !request_body.contains("name=\"output\""),
+        "sabnzbd upload should not duplicate output in the multipart body: {request_body}"
     );
     assert_eq!(
         requests
@@ -2509,20 +2522,28 @@ async fn sabnzbd_submit_download_accepts_username_password_auth() {
     let request_body = String::from_utf8_lossy(&requests[0].body);
     assert_eq!(
         requests[0].url.query(),
-        None,
-        "credential-auth SAB upload should not send an API key in the query string"
+        Some("mode=addfile&output=json&ma_username=test-user&ma_password=test-pass"),
+        "credential-auth SAB upload should send control fields and credentials in the query string"
     );
     assert!(
-        request_body.contains("name=\"ma_username\"") && request_body.contains("test-user"),
-        "credential-auth SAB upload should include ma_username in the multipart body: {request_body}"
+        !request_body.contains("name=\"ma_username\""),
+        "credential-auth SAB upload should not duplicate ma_username in the multipart body: {request_body}"
     );
     assert!(
-        request_body.contains("name=\"ma_password\"") && request_body.contains("test-pass"),
-        "credential-auth SAB upload should include ma_password in the multipart body: {request_body}"
+        !request_body.contains("name=\"ma_password\""),
+        "credential-auth SAB upload should not duplicate ma_password in the multipart body: {request_body}"
     );
     assert!(
         !request_body.contains("name=\"apikey\""),
         "credential-auth SAB upload should not include API-key fields in the multipart body: {request_body}"
+    );
+    assert!(
+        !request_body.contains("name=\"mode\""),
+        "credential-auth SAB upload should not duplicate mode in the multipart body: {request_body}"
+    );
+    assert!(
+        !request_body.contains("name=\"output\""),
+        "credential-auth SAB upload should not duplicate output in the multipart body: {request_body}"
     );
 }
 

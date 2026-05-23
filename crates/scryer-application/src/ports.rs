@@ -1,7 +1,9 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
+use scryer_plugin_sdk::{AudioTranscodeCodec, AudioTranscodeResponse};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
 
@@ -1699,6 +1701,27 @@ pub trait SubtitleProviderClient: Send + Sync {
     fn name(&self) -> &str;
 }
 
+#[derive(Debug, Clone)]
+pub struct AudioTranscodeJob {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+    pub expected_codec: AudioTranscodeCodec,
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioTranscodeArtifact {
+    pub output_path: PathBuf,
+    pub response: AudioTranscodeResponse,
+}
+
+#[async_trait]
+pub trait AudioTranscoderClient: Send + Sync {
+    async fn transcode_sync_flac(
+        &self,
+        job: AudioTranscodeJob,
+    ) -> AppResult<AudioTranscodeArtifact>;
+}
+
 pub trait NotificationPluginProvider: Send + Sync {
     fn client_for_channel(
         &self,
@@ -1768,6 +1791,9 @@ pub trait SubtitlePluginProvider: Send + Sync {
         config: &scryer_domain::SubtitleProviderConfig,
         host_bindings: &std::collections::HashMap<scryer_domain::PluginHostBindingId, String>,
     ) -> Option<Arc<dyn SubtitleProviderClient>>;
+    fn audio_transcoder_client(&self) -> Option<Arc<dyn AudioTranscoderClient>> {
+        None
+    }
     fn available_provider_types(&self) -> Vec<String>;
     fn builtin_provider_types(&self) -> Vec<String> {
         vec![]

@@ -834,7 +834,21 @@ async fn maybe_sync_downloaded_subtitle(
         max_offset_seconds: sync_settings.max_offset_seconds,
     };
 
-    match sync::sync_subtitle_with_policy(video_path, subtitle_path, policy).await {
+    let audio_transcoder = app
+        .services
+        .integrations
+        .subtitle_plugin_provider
+        .available()
+        .and_then(|provider| provider.audio_transcoder_client());
+
+    match sync::sync_subtitle_with_policy_and_audio_transcoder(
+        video_path,
+        subtitle_path,
+        policy,
+        audio_transcoder,
+    )
+    .await
+    {
         Ok(result) => {
             if result.applied
                 && let Some(id) = download_id

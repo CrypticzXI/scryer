@@ -7,10 +7,14 @@
 //! 4. Uses alass-core to estimate a constant offset and skips low-consistency
 //!    alignments instead of forcing a risky rewrite.
 
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, sync::Arc};
 
-use crate::{AppError, AppResult};
+use crate::{
+    AppError, AppResult,
+    ports::{AudioTranscodeJob, AudioTranscoderClient},
+};
 use alass_core::{NoProgressHandler, TimeDelta, TimePoint, TimeSpan};
+use scryer_plugin_sdk::{AudioTranscodeCodec, AudioTranscodeStatus};
 
 /// Result of a subtitle sync operation.
 #[derive(Debug, Clone)]
@@ -66,6 +70,7 @@ pub enum SyncSkipReason {
     ForcedSubtitle,
     ScoreAboveThreshold,
     UnsupportedSubtitleFormat,
+    AudioDecodeFailed,
     NotEnoughReferenceSpans,
     NotEnoughSubtitleSpans,
     WeakAlignment,
@@ -81,6 +86,7 @@ impl SyncSkipReason {
             Self::ForcedSubtitle => "forced_subtitle",
             Self::ScoreAboveThreshold => "score_above_threshold",
             Self::UnsupportedSubtitleFormat => "unsupported_subtitle_format",
+            Self::AudioDecodeFailed => "audio_decode_failed",
             Self::NotEnoughReferenceSpans => "not_enough_reference_spans",
             Self::NotEnoughSubtitleSpans => "not_enough_subtitle_spans",
             Self::WeakAlignment => "weak_alignment",
@@ -169,6 +175,15 @@ pub async fn sync_subtitle_with_policy(
     subtitle_path: &Path,
     policy: SyncPolicy,
 ) -> AppResult<SyncResult> {
+    sync_subtitle_with_policy_and_audio_transcoder(video_path, subtitle_path, policy, None).await
+}
+
+pub async fn sync_subtitle_with_policy_and_audio_transcoder(
+    video_path: &Path,
+    subtitle_path: &Path,
+    policy: SyncPolicy,
+    audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
+) -> AppResult<SyncResult> {
     if let Some(reason) = policy.skip_reason() {
         tracing::debug!(
             path = %subtitle_path.display(),
@@ -180,7 +195,13 @@ pub async fn sync_subtitle_with_policy(
         return Ok(skipped_sync_result(0, None, None, None, None, reason));
     }
 
-    sync_subtitle(video_path, subtitle_path, policy.max_offset_seconds).await
+    sync_subtitle_with_audio_transcoder(
+        video_path,
+        subtitle_path,
+        policy.max_offset_seconds,
+        audio_transcoder,
+    )
+    .await
 }
 
 /// Synchronize a subtitle file with a video file's audio track.
@@ -189,7 +210,33 @@ pub async fn sync_subtitle(
     subtitle_path: &Path,
     max_offset_seconds: i64,
 ) -> AppResult<SyncResult> {
-    let reference_spans = extract_audio_speech_spans(video_path).await?;
+    sync_subtitle_with_audio_transcoder(video_path, subtitle_path, max_offset_seconds, None).await
+}
+
+pub async fn sync_subtitle_with_audio_transcoder(
+    video_path: &Path,
+    subtitle_path: &Path,
+    max_offset_seconds: i64,
+    audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
+) -> AppResult<SyncResult> {
+    let reference_spans = match extract_audio_speech_spans(video_path, audio_transcoder).await {
+        Ok(spans) => spans,
+        Err(error) => {
+            tracing::warn!(
+                path = %video_path.display(),
+                error = %error,
+                "subtitle sync skipped: audio decode failed"
+            );
+            return Ok(skipped_sync_result(
+                0,
+                None,
+                None,
+                None,
+                None,
+                SyncSkipReason::AudioDecodeFailed,
+            ));
+        }
+    };
     if reference_spans.len() < MIN_REFERENCE_SPANS {
         tracing::debug!(
             path = %video_path.display(),
@@ -399,10 +446,68 @@ fn delta_consistency_ratio(deltas: &[TimeDelta], offset_ms: i64) -> f64 {
     consistent as f64 / deltas.len() as f64
 }
 
-// ── Audio extraction via Symphonia (pure Rust, no external deps) ────────────
+// ── Audio extraction via Symphonia, with targeted FFmpeg-WASM fallback ──────
 
-/// Extract speech spans from a video file's audio track using Symphonia.
-async fn extract_audio_speech_spans(video_path: &Path) -> AppResult<Vec<TimeSpan>> {
+async fn extract_audio_speech_spans(
+    video_path: &Path,
+    audio_transcoder: Option<Arc<dyn AudioTranscoderClient>>,
+) -> AppResult<Vec<TimeSpan>> {
+    if let Some(codec) = targeted_audio_codec_for_path(video_path)
+        && let Some(transcoder) = audio_transcoder
+    {
+        match transcode_targeted_audio_to_flac(video_path, codec, transcoder).await {
+            Ok(spans) => return Ok(spans),
+            Err(error) => {
+                tracing::warn!(
+                    path = %video_path.display(),
+                    codec = ?codec,
+                    error = %error,
+                    "targeted audio transcode failed; falling back to native audio decode"
+                );
+            }
+        }
+    }
+
+    decode_audio_speech_spans_blocking(video_path).await
+}
+
+async fn transcode_targeted_audio_to_flac(
+    video_path: &Path,
+    codec: AudioTranscodeCodec,
+    transcoder: Arc<dyn AudioTranscoderClient>,
+) -> AppResult<Vec<TimeSpan>> {
+    let temp_dir = tempfile::Builder::new()
+        .prefix("scryer-sync-audio-")
+        .tempdir()
+        .map_err(|error| {
+            AppError::Repository(format!("failed to create audio transcode tempdir: {error}"))
+        })?;
+    let output_path = temp_dir.path().join("sync.flac");
+    let artifact = transcoder
+        .transcode_sync_flac(AudioTranscodeJob {
+            input_path: video_path.to_path_buf(),
+            output_path: output_path.clone(),
+            expected_codec: codec,
+        })
+        .await?;
+
+    match artifact.response.status {
+        AudioTranscodeStatus::Decoded => {
+            decode_audio_speech_spans_blocking(&artifact.output_path).await
+        }
+        AudioTranscodeStatus::UnsupportedCodec => Err(AppError::Repository(format!(
+            "audio transcoder does not support codec {codec:?}"
+        ))),
+        AudioTranscodeStatus::Error => Err(AppError::Repository(
+            artifact
+                .response
+                .message
+                .unwrap_or_else(|| "audio transcode failed".to_string()),
+        )),
+    }
+}
+
+async fn decode_audio_speech_spans_blocking(video_path: &Path) -> AppResult<Vec<TimeSpan>> {
     let path = video_path.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
@@ -411,6 +516,40 @@ async fn extract_audio_speech_spans(video_path: &Path) -> AppResult<Vec<TimeSpan
     })
     .await
     .map_err(|e| AppError::Repository(format!("audio decode task panicked: {e}")))?
+}
+
+fn targeted_audio_codec_for_path(video_path: &Path) -> Option<AudioTranscodeCodec> {
+    let analysis = scryer_mediainfo::analyze_file_with_options(
+        video_path,
+        scryer_mediainfo::AnalyzeOptions {
+            profile: scryer_mediainfo::AnalysisProfile::FfprobeParity,
+        },
+    )
+    .ok()?;
+    targeted_audio_codec(
+        analysis.audio_codec.as_deref(),
+        analysis.audio_profile.as_deref(),
+    )
+}
+
+fn targeted_audio_codec(codec: Option<&str>, profile: Option<&str>) -> Option<AudioTranscodeCodec> {
+    let normalized = codec?.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "ac3" => Some(AudioTranscodeCodec::Ac3),
+        "eac3" => Some(AudioTranscodeCodec::Eac3),
+        "truehd" | "mlp" => Some(AudioTranscodeCodec::TrueHd),
+        "dts" => {
+            if profile
+                .map(|profile| profile.to_ascii_lowercase().contains("dts-hd ma"))
+                .unwrap_or(false)
+            {
+                Some(AudioTranscodeCodec::DtsHdMaCore)
+            } else {
+                Some(AudioTranscodeCodec::Dts)
+            }
+        }
+        _ => None,
+    }
 }
 
 struct SelectedAudioTrack {
@@ -1039,6 +1178,32 @@ mod tests {
         assert_eq!(parse_srt_ts("00:01:23,456"), Some(83_456));
         assert_eq!(format_srt_ts(83_456), "00:01:23,456");
         assert_eq!(format_srt_ts(0), "00:00:00,000");
+    }
+
+    #[test]
+    fn targeted_audio_codec_routes_only_ffmpeg_wasm_codecs() {
+        assert_eq!(
+            targeted_audio_codec(Some("ac3"), None),
+            Some(AudioTranscodeCodec::Ac3)
+        );
+        assert_eq!(
+            targeted_audio_codec(Some("eac3"), None),
+            Some(AudioTranscodeCodec::Eac3)
+        );
+        assert_eq!(
+            targeted_audio_codec(Some("truehd"), None),
+            Some(AudioTranscodeCodec::TrueHd)
+        );
+        assert_eq!(
+            targeted_audio_codec(Some("dts"), Some("DTS-HD MA")),
+            Some(AudioTranscodeCodec::DtsHdMaCore)
+        );
+        assert_eq!(
+            targeted_audio_codec(Some("dts"), Some("DTS Core")),
+            Some(AudioTranscodeCodec::Dts)
+        );
+        assert_eq!(targeted_audio_codec(Some("aac"), None), None);
+        assert_eq!(targeted_audio_codec(Some("flac"), None), None);
     }
 
     #[test]

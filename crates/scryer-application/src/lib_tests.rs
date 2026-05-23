@@ -17372,6 +17372,143 @@ async fn rss_sync_skips_indexer_search_when_no_download_clients_are_enabled() {
 }
 
 #[tokio::test]
+async fn acquisition_cycle_limits_due_work_per_title_slice() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(TrackingIndexerClient::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Large Series Backlog".into(),
+                facet: MediaFacet::Series,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Series)
+        .await;
+
+    let now = Utc::now();
+    for season_number in 1..=12 {
+        let season = app
+            .services
+            .catalog
+            .shows
+            .create_collection(Collection {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_type: CollectionType::Season,
+                collection_index: season_number.to_string(),
+                label: Some(format!("Season {season_number}")),
+                ordered_path: None,
+                narrative_order: Some(season_number.to_string()),
+                first_episode_number: Some("1".to_string()),
+                last_episode_number: Some("1".to_string()),
+                interstitial_movie: None,
+                specials_movies: vec![],
+                interstitial_season_episode: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create season");
+
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some("1".to_string()),
+                season_number: Some(season_number.to_string()),
+                episode_label: Some(format!("S{season_number:02}E01")),
+                title: Some(format!("Episode {season_number}")),
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create episode");
+
+        let created_at = (now + chrono::Duration::seconds(i64::from(season_number))).to_rfc3339();
+        wanted_items
+            .upsert_wanted_item(&WantedItem {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
+                episode_id: Some(episode.id.clone()),
+                collection_id: Some(season.id.clone()),
+                season_number: Some(season_number.to_string()),
+                episode_number: Some("1".to_string()),
+                media_type: "episode".to_string(),
+                search_phase: "initial".to_string(),
+                next_search_at: Some(now.to_rfc3339()),
+                last_search_at: None,
+                search_count: 0,
+                baseline_date: Some("2024-01-01".to_string()),
+                status: WantedStatus::Wanted,
+                grabbed_release: None,
+                current_score: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: created_at.clone(),
+                updated_at: created_at,
+            })
+            .await
+            .expect("seed due episode wanted item");
+    }
+
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+
+    let store = wanted_items.store.lock().await.clone();
+    let processed = store
+        .iter()
+        .filter(|item| item.search_count > 0 && item.last_search_at.is_some())
+        .count();
+    let deferred = store
+        .iter()
+        .filter(|item| item.search_count == 0 && item.last_search_at.is_none())
+        .count();
+
+    assert_eq!(processed, 10);
+    assert_eq!(deferred, 2);
+    assert!(indexer_client.searches.lock().await.len() >= 10);
+}
+
+#[tokio::test]
 async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
