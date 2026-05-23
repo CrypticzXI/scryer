@@ -106,9 +106,6 @@ impl AppUseCase {
                 let result = client.validate_connection().await?;
                 validate_indexer_connection_result(result)?;
             }
-            if management_capabilities.supports_managed_children_sync {
-                client.plan_sync("test-connection").await?;
-            }
             return Ok(());
         }
 
@@ -905,6 +902,21 @@ mod tests {
         user
     }
 
+    async fn wait_for_plan_sync_calls(
+        provider: &Arc<RecordingPluginProvider>,
+        expected_calls: usize,
+    ) {
+        for _ in 0..20 {
+            if *provider.plan_sync_calls.lock().unwrap() == expected_calls {
+                return;
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), expected_calls);
+    }
+
     #[test]
     fn validate_test_flight_url_uses_origin_only_for_preflight() {
         let url = validate_test_flight_url("https://api.nzbgeek.info/api?t=search&apikey=secret")
@@ -1250,7 +1262,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_indexer_config_rejects_managed_sync_preflight_failures() {
+    async fn create_indexer_config_saves_managed_parent_before_background_sync_failure() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error(
             "managed sync preflight failed",
@@ -1261,7 +1273,7 @@ mod tests {
             Arc::new(NullSettingsRepository),
         );
 
-        let error = app
+        let created = app
             .create_indexer_config(
                 &test_admin(),
                 NewIndexerConfig {
@@ -1276,18 +1288,27 @@ mod tests {
                 },
             )
             .await
-            .expect_err("managed sync preflight should fail save");
+            .expect("managed parent should save before background sync");
 
-        assert_eq!(
-            error.to_string(),
-            "validation: managed sync preflight failed"
+        wait_for_plan_sync_calls(&provider, 1).await;
+        let stored = indexer_repo
+            .get_by_id(&created.id)
+            .await
+            .unwrap()
+            .expect("saved managed parent");
+        assert_eq!(stored.name, "Manager");
+        assert!(
+            indexer_repo
+                .list(None)
+                .await
+                .unwrap()
+                .iter()
+                .all(|config| config.managed_parent_config_id.is_none())
         );
-        assert!(indexer_repo.created.lock().await.is_empty());
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
     #[tokio::test]
-    async fn update_indexer_config_rejects_managed_sync_preflight_failures() {
+    async fn update_indexer_config_enables_managed_parent_even_if_background_sync_fails() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         indexer_repo.created.lock().await.push(IndexerConfig {
             id: "cfg-1".to_string(),
@@ -1320,7 +1341,7 @@ mod tests {
             Arc::new(NullSettingsRepository),
         );
 
-        let error = app
+        let updated = app
             .update_indexer_config(
                 &test_admin(),
                 crate::IndexerConfigUpdate {
@@ -1341,19 +1362,16 @@ mod tests {
                 },
             )
             .await
-            .expect_err("managed sync preflight should fail enable");
+            .expect("managed parent enable should save before background sync");
 
-        assert_eq!(
-            error.to_string(),
-            "validation: managed sync preflight failed"
-        );
+        assert!(updated.is_enabled);
+        wait_for_plan_sync_calls(&provider, 1).await;
         let stored = indexer_repo
             .get_by_id("cfg-1")
             .await
             .unwrap()
             .expect("existing config");
-        assert!(!stored.is_enabled);
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
+        assert!(stored.is_enabled);
     }
 
     #[tokio::test]
@@ -1566,10 +1584,11 @@ mod tests {
         let seen_management = provider.seen_management_configs.lock().unwrap();
         assert_eq!(seen_management.len(), 1);
         assert_eq!(seen_management[0].base_url, "https://ipt.beelyrics.net");
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 0);
     }
 
     #[tokio::test]
-    async fn create_indexer_config_auto_syncs_managed_children() {
+    async fn create_indexer_config_queues_background_sync_for_managed_children() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let sync_plan = crate::IndexerSyncPlan {
             children: vec![crate::ManagedIndexerChildPlan {
@@ -1610,7 +1629,9 @@ mod tests {
                 },
             )
             .await
-            .expect("managed parent should auto-sync");
+            .expect("managed parent should save");
+
+        wait_for_plan_sync_calls(&provider, 1).await;
 
         let configs = indexer_repo.list(None).await.unwrap();
         assert_eq!(configs.len(), 2);
@@ -1623,15 +1644,14 @@ mod tests {
             child.managed_parent_config_id.as_deref(),
             Some(created.id.as_str())
         );
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
     }
 
     #[tokio::test]
-    async fn create_indexer_config_rolls_back_when_auto_sync_fails() {
+    async fn create_indexer_config_keeps_managed_parent_when_background_sync_fails() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error_on_call(
             "managed sync failed after create",
-            2,
+            1,
         ));
         let app = test_app(
             indexer_repo.clone(),
@@ -1639,7 +1659,7 @@ mod tests {
             Arc::new(RecordingSettingsRepository::default()),
         );
 
-        let error = app
+        let created = app
             .create_indexer_config(
                 &test_admin(),
                 NewIndexerConfig {
@@ -1654,14 +1674,12 @@ mod tests {
                 },
             )
             .await
-            .expect_err("create should roll back if auto-sync fails");
+            .expect("create should succeed before background sync failure");
 
-        assert_eq!(
-            error.to_string(),
-            "validation: managed sync failed after create"
-        );
-        assert!(indexer_repo.list(None).await.unwrap().is_empty());
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+        wait_for_plan_sync_calls(&provider, 1).await;
+        let configs = indexer_repo.list(None).await.unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].id, created.id);
     }
 
     #[tokio::test]
@@ -1885,15 +1903,15 @@ mod tests {
             .unwrap();
 
         assert!(updated.is_enabled);
+        wait_for_plan_sync_calls(&provider, 1).await;
         let child = indexer_repo.get_by_id("child").await.unwrap().unwrap();
         assert!(child.is_enabled);
         assert!(child.enable_interactive_search);
         assert!(!child.enable_auto_search);
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
     }
 
     #[tokio::test]
-    async fn updating_enabled_managed_parent_config_triggers_immediate_sync() {
+    async fn updating_enabled_managed_parent_config_queues_background_sync() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let now = Utc::now();
         indexer_repo
@@ -1946,7 +1964,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(updated.base_url, "https://manager.changed.example");
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+        wait_for_plan_sync_calls(&provider, 1).await;
     }
 
     #[tokio::test]
