@@ -2000,6 +2000,7 @@ export const pluginsQuery = `query Plugins {
     lastCheckedAt
     outageMessage
     blockedActions
+    restoreWarnings
     lastError
   }
 }`;

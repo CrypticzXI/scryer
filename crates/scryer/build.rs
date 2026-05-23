@@ -4,7 +4,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use scryer_runtime_info::{determine_build_lane, validate_build_lane_assertion};
+
 fn main() {
+    let compiled_build_lane = compiled_build_lane();
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR is not set");
     let output_path = Path::new(&out_dir).join("embedded_ui_assets.rs");
     let mut output = String::new();
@@ -132,6 +135,19 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SCRYER_SMG_REGISTRATION_SECRET");
     println!("cargo:rerun-if-env-changed=SCRYER_SMG_CA_CERT");
     println!("cargo:rerun-if-env-changed=SCRYER_SMG_GRAPHQL_URL");
+    println!(
+        "cargo:rustc-env=SCRYER_COMPILED_BUILD_LANE={}",
+        compiled_build_lane.as_str()
+    );
+    println!("cargo:rerun-if-env-changed=SCRYER_BUILD_LANE");
+}
+
+fn compiled_build_lane() -> scryer_runtime_info::BinaryLane {
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    let derived_lane = determine_build_lane(&target_arch, &target_features);
+    validate_build_lane_assertion(env::var("SCRYER_BUILD_LANE").ok().as_deref(), derived_lane)
+        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn collect_files(root: &Path) -> Result<Vec<(String, PathBuf)>, io::Error> {

@@ -91,6 +91,49 @@ include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
+    scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
+        .expect("SCRYER_COMPILED_BUILD_LANE must be emitted by build.rs")
+}
+
+fn spawn_plugin_catalog_refresh_task(app_use_case: AppUseCase) {
+    tokio::spawn(async move {
+        if let Err(error) = app_use_case.refresh_plugin_catalog_internal().await {
+            tracing::warn!(error = %error, "failed to refresh plugin catalog in background");
+            return;
+        }
+        if let Err(error) = app_use_case
+            .migrate_nzbgeek_builtin_to_official_internal()
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                "failed to migrate nzbgeek builtin to official plugin"
+            );
+        }
+    });
+}
+
+fn spawn_sigstore_trust_root_prime_task(app_use_case: AppUseCase) {
+    tokio::spawn(async move {
+        loop {
+            match app_use_case.prime_plugin_trust_roots_internal().await {
+                Ok(()) => {
+                    tracing::info!("sigstore trust roots primed");
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to prime sigstore trust roots; retrying in 5 minutes"
+                    );
+                    tokio::time::sleep(Duration::from_secs(300)).await;
+                }
+            }
+        }
+    });
+}
+
 fn restore_datastore_config(config: &DatastoreConfig) -> RestoreDatastoreConfig {
     RestoreDatastoreConfig {
         engine: match config.engine {
@@ -412,12 +455,14 @@ async fn main() {
             .init();
     }
 
-    if let Err(error) =
-        finalize_pending_restore_if_present(&data_dir, &pre_restore_datastore_config).await
-    {
-        tracing::error!(error = %error, "failed to finalize pending restore");
-        std::process::exit(1);
-    }
+    let finalized_pending_restore =
+        match finalize_pending_restore_if_present(&data_dir, &pre_restore_datastore_config).await {
+            Ok(finalized) => finalized,
+            Err(error) => {
+                tracing::error!(error = %error, "failed to finalize pending restore");
+                std::process::exit(1);
+            }
+        };
 
     load_env_file(Some(&data_dir), true);
 
@@ -506,6 +551,7 @@ async fn main() {
                 match bootstrap_application(
                     datastore_config,
                     migration_mode,
+                    finalized_pending_restore,
                     jwt_issuer,
                     jwt_access_ttl_seconds,
                     bootstrap_bind,
@@ -595,6 +641,7 @@ async fn main() {
 async fn bootstrap_application(
     datastore_config: DatastoreConfig,
     _migration_mode: MigrationMode,
+    finalized_pending_restore: bool,
     jwt_issuer: String,
     jwt_access_ttl_seconds: u64,
     bind: String,
@@ -953,6 +1000,7 @@ async fn bootstrap_application(
     );
     let services = datastore
         .app_services_builder(indexer_client, download_client)
+        .with_runtime_environment(compiled_binary_lane(), data_dir.clone())
         .with_smg_registration_secret(
             SMG_REGISTRATION_SECRET
                 .map(String::from)
@@ -1007,15 +1055,29 @@ async fn bootstrap_application(
         facet_registry,
         webauthn,
     );
+    tracing::info!(
+        build_lane = %app_use_case.runtime_build_lane(),
+        build_class = %app_use_case.runtime_build_class(),
+        "initialized runtime build identity"
+    );
+    app_use_case.warm_runtime_performance();
+    if finalized_pending_restore {
+        tracing::info!("recovering restored plugins from remote catalogs");
+        if let Err(error) = app_use_case
+            .recover_restored_plugins_after_backup_restore()
+            .await
+        {
+            tracing::error!(error = %error, "failed to recover restored plugins");
+            std::process::exit(1);
+        }
+    }
 
     app_use_case.connect_library_scan_tracker().await;
+    spawn_sigstore_trust_root_prime_task(app_use_case.clone());
+    spawn_plugin_catalog_refresh_task(app_use_case.clone());
 
     if let Err(e) = app_use_case.reconcile_default_library_roots().await {
         tracing::warn!(error = %e, "failed to reconcile default library roots on startup");
-    }
-
-    if let Err(e) = app_use_case.refresh_plugin_catalog_internal().await {
-        tracing::warn!(error = %e, "failed to refresh plugin catalog on startup");
     }
 
     if let Err(e) = app_use_case.migrate_legacy_persona_preferences().await {

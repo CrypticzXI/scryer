@@ -16,6 +16,7 @@ struct MockPluginInstallationRepo {
     installations: Arc<Mutex<Vec<PluginInstallation>>>,
     payloads: Arc<Mutex<HashMap<String, PersistedPluginWasmPayload>>>,
     catalog_sources: Arc<Mutex<Vec<scryer_domain::PluginCatalogSource>>>,
+    catalog_status: Arc<Mutex<Option<scryer_domain::PluginCatalogStatusRecord>>>,
     seeded: Arc<Mutex<Vec<SeededPluginRecord>>>,
     get_enabled_payload_calls: Arc<AtomicUsize>,
     get_single_payload_calls: Arc<AtomicUsize>,
@@ -78,6 +79,7 @@ impl MockPluginInstallationRepo {
             installations: Arc::new(Mutex::new(vec![])),
             payloads: Arc::new(Mutex::new(HashMap::new())),
             catalog_sources: Arc::new(Mutex::new(vec![])),
+            catalog_status: Arc::new(Mutex::new(None)),
             seeded: Arc::new(Mutex::new(vec![])),
             get_enabled_payload_calls: Arc::new(AtomicUsize::new(0)),
             get_single_payload_calls: Arc::new(AtomicUsize::new(0)),
@@ -415,6 +417,14 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
         Ok(())
     }
 
+    async fn delete_plugin_catalog_source(&self, source_key: &str) -> AppResult<()> {
+        self.catalog_sources
+            .lock()
+            .await
+            .retain(|source| source.source_key != source_key);
+        Ok(())
+    }
+
     async fn list_plugin_catalog_sources(
         &self,
     ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {
@@ -436,16 +446,22 @@ impl PluginInstallationRepository for MockPluginInstallationRepo {
 
     async fn upsert_plugin_catalog_status(
         &self,
-        _status: &scryer_domain::PluginCatalogStatusRecord,
+        status: &scryer_domain::PluginCatalogStatusRecord,
     ) -> AppResult<()> {
+        *self.catalog_status.lock().await = Some(status.clone());
         Ok(())
     }
 
     async fn get_plugin_catalog_status(
         &self,
-        _status_key: &str,
+        status_key: &str,
     ) -> AppResult<Option<scryer_domain::PluginCatalogStatusRecord>> {
-        Ok(None)
+        Ok(self
+            .catalog_status
+            .lock()
+            .await
+            .clone()
+            .filter(|status| status.status_key == status_key))
     }
 }
 
@@ -3322,4 +3338,35 @@ fn latest_compatible_child_release_keeps_older_sdk_line_visible() {
     let selected = latest_compatible_child_release(&catalog).expect("compatible release");
 
     assert_eq!(selected.version, "0.1.0");
+}
+
+#[tokio::test]
+async fn recover_restored_plugins_skips_local_uploads_and_persists_warning() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let mut installation = make_installation("local-upload", "0.1.0", false, true);
+    installation.name = "Local Upload".to_string();
+    installation.source_kind = PluginSourceKind::Manual;
+    installation.source_repo = None;
+    h.plugin_repo.installations.lock().await.push(installation);
+
+    h.app
+        .recover_restored_plugins_after_backup_restore()
+        .await
+        .unwrap();
+
+    assert!(h.plugin_repo.installations.lock().await.is_empty());
+
+    let stored = h
+        .plugin_repo
+        .get_plugin_catalog_status(CATALOG_STATUS_KEY)
+        .await
+        .unwrap()
+        .expect("stored plugin catalog status");
+    let payload: serde_json::Value = serde_json::from_str(&stored.status_json).unwrap();
+    assert_eq!(
+        payload["restoreWarnings"],
+        serde_json::json!([
+            "Skipped restoring plugin 'Local Upload' because it was uploaded locally and cannot be re-downloaded from a remote catalog source."
+        ])
+    );
 }

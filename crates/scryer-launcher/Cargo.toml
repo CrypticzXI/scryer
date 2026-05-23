@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 libc = "0.2"
+scryer-runtime-info = { path = "../scryer-runtime-info" }

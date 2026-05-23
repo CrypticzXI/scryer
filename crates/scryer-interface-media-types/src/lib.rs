@@ -2721,6 +2721,7 @@ pub struct RegistryPluginPayload {
     pub official: bool,
     pub publisher: Option<String>,
     pub support_tier: String,
+    pub status: Option<String>,
     pub docs_url: Option<String>,
     pub source_repo: Option<String>,
     pub builtin: bool,
@@ -2789,6 +2790,7 @@ pub struct PluginCatalogStatusPayload {
     pub last_checked_at: Option<String>,
     pub outage_message: Option<String>,
     pub blocked_actions: Vec<String>,
+    pub restore_warnings: Vec<String>,
     pub last_error: Option<String>,
 }
 

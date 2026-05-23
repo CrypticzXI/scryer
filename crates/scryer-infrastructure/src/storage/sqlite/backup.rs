@@ -17,6 +17,7 @@ use sqlx::{Column, Row, TypeInfo, ValueRef};
 
 use crate::backup_import_normalization::{
     ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
+    strip_nonportable_backup_fields,
 };
 
 #[derive(Clone, Debug)]
@@ -414,7 +415,10 @@ async fn export_table_part(
 
         let row_count = rows.len() as i64;
         for row in rows {
-            let value = encode_row(&row)?;
+            let mut value = encode_row(&row)?;
+            if let JsonValue::Object(object) = &mut value {
+                strip_nonportable_backup_fields(table, object);
+            }
             line_buffer.clear();
             serde_json::to_writer(&mut line_buffer, &value).map_err(|error| {
                 AppError::Repository(format!("failed to encode backup row for {table}: {error}"))

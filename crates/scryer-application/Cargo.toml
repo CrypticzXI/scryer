@@ -28,6 +28,7 @@ runtime-media-analysis = [
     "dep:whatlang",
 ]
 runtime-plugin-trust = [
+    "dep:brotli",
     "dep:rustls-pki-types",
     "dep:rustls-webpki",
     "dep:sigstore",
@@ -42,6 +43,7 @@ scryer-release-parser = { path = "../scryer-release-parser" }
 scryer-rules = { path = "../scryer-rules" }
 scryer-mediainfo = { path = "../scryer-mediainfo", optional = true }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
+scryer-runtime-info = { path = "../scryer-runtime-info" }
 jsonwebtoken = { workspace = true }
 rand_core = { workspace = true }
 argon2 = { workspace = true }
@@ -62,6 +64,7 @@ chrono = { workspace = true }
 semver = { workspace = true }
 metrics = { workspace = true }
 base64 = "0.22"
+brotli = { version = "8", optional = true }
 weaver-rar = { git = "https://github.com/scryer-media/weaver.git", tag = "weaver-v0.4.3", default-features = false, optional = true }
 sevenz-rust2 = { version = "0.21", features = ["aes256", "bzip2", "deflate", "zstd"], optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }

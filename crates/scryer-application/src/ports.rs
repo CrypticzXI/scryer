@@ -1274,6 +1274,7 @@ pub trait PluginInstallationRepository: Send + Sync {
         provider_type: &str,
     ) -> AppResult<()>;
     async fn upsert_plugin_catalog_source(&self, source: &PluginCatalogSource) -> AppResult<()>;
+    async fn delete_plugin_catalog_source(&self, source_key: &str) -> AppResult<()>;
     async fn list_plugin_catalog_sources(&self) -> AppResult<Vec<PluginCatalogSource>>;
     async fn get_plugin_catalog_source(
         &self,

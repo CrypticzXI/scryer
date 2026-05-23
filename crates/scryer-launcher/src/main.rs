@@ -9,6 +9,10 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use scryer_runtime_info::{
+    BinaryLane, MachineArch, lane_from_canonical_features, normalize_feature_token,
+};
+
 const CONFIG_DIR: &str = "/config";
 const DEFAULT_DB_PATH: &str = "/config/scryer.db";
 const PORTABLE_PAYLOAD_NAME: &str = "scryer-portable";
@@ -16,28 +20,6 @@ const HASWELL_PAYLOAD_NAME: &str = "scryer-haswell";
 const ARM64_OPTIMIZED_PAYLOAD_NAME: &str = "scryer-arm64-optimized";
 const LAUNCHER_UID_DEFAULT: u32 = 1000;
 const LAUNCHER_GID_DEFAULT: u32 = 1000;
-const X86_REQUIRED_FEATURES: &[&str] = &[
-    "avx",
-    "avx2",
-    "bmi1",
-    "bmi2",
-    "f16c",
-    "fma",
-    "lzcnt",
-    "movbe",
-    "pclmulqdq",
-    "popcnt",
-    "rdrand",
-    "sse3",
-    "sse4.1",
-    "sse4.2",
-    "ssse3",
-    "xsave",
-    "xsaveopt",
-];
-const ARM_REQUIRED_FEATURES: &[&str] = &[
-    "aes", "crc32", "dotprod", "fp16", "lse", "neon", "rdm", "sha2",
-];
 
 fn main() {
     let config = LaunchConfig::from_env(env::args_os().skip(1).collect());
@@ -89,25 +71,11 @@ impl LaunchConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Arch {
-    Amd64,
-    Arm64,
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Lane {
-    Portable,
-    Haswell,
-    Arm64Optimized,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeLaunch {
     primary: PathBuf,
     fallback: Option<PathBuf>,
-    lane: Lane,
+    lane: BinaryLane,
 }
 
 trait LauncherOps {
@@ -245,9 +213,9 @@ fn resolve_runtime_launch<O: LauncherOps>(
     let lane = determine_lane(ops, arch, &config.cpuinfo_path);
     let portable = config.payload_root.join(PORTABLE_PAYLOAD_NAME);
     let optimized = match lane {
-        Lane::Haswell => Some(config.payload_root.join(HASWELL_PAYLOAD_NAME)),
-        Lane::Arm64Optimized => Some(config.payload_root.join(ARM64_OPTIMIZED_PAYLOAD_NAME)),
-        Lane::Portable => None,
+        BinaryLane::Haswell => Some(config.payload_root.join(HASWELL_PAYLOAD_NAME)),
+        BinaryLane::Arm64Optimized => Some(config.payload_root.join(ARM64_OPTIMIZED_PAYLOAD_NAME)),
+        BinaryLane::Portable => None,
     };
 
     let portable_ok = ops.path_is_executable_file(&portable);
@@ -264,7 +232,7 @@ fn resolve_runtime_launch<O: LauncherOps>(
         (true, _, _) => Ok(RuntimeLaunch {
             primary: portable,
             fallback: None,
-            lane: Lane::Portable,
+            lane: BinaryLane::Portable,
         }),
         _ => Err(format!(
             "no executable scryer payload found under {}",
@@ -273,35 +241,23 @@ fn resolve_runtime_launch<O: LauncherOps>(
     }
 }
 
-fn detect_arch(override_value: Option<&str>) -> Arch {
+fn detect_arch(override_value: Option<&str>) -> MachineArch {
     let machine = override_value.unwrap_or(std::env::consts::ARCH);
-
-    match machine.to_ascii_lowercase().as_str() {
-        "x86_64" | "amd64" => Arch::Amd64,
-        "aarch64" | "arm64" => Arch::Arm64,
-        _ => Arch::Unknown,
-    }
+    MachineArch::from_machine(machine)
 }
 
-fn determine_lane<O: LauncherOps>(ops: &O, arch: Arch, cpuinfo_path: &Path) -> Lane {
+fn determine_lane<O: LauncherOps>(ops: &O, arch: MachineArch, cpuinfo_path: &Path) -> BinaryLane {
     let Ok(contents) = ops.read_to_string(cpuinfo_path) else {
-        return Lane::Portable;
+        return BinaryLane::Portable;
     };
     let Some(features) = normalized_features(&contents, arch) else {
-        return Lane::Portable;
+        return BinaryLane::Portable;
     };
-
-    match arch {
-        Arch::Amd64 if feature_set_has_all(&features, X86_REQUIRED_FEATURES) => Lane::Haswell,
-        Arch::Arm64 if feature_set_has_all(&features, ARM_REQUIRED_FEATURES) => {
-            Lane::Arm64Optimized
-        }
-        _ => Lane::Portable,
-    }
+    lane_from_canonical_features(arch, &features)
 }
 
-fn normalized_features(contents: &str, arch: Arch) -> Option<HashSet<&'static str>> {
-    if matches!(arch, Arch::Unknown) {
+fn normalized_features(contents: &str, arch: MachineArch) -> Option<HashSet<&'static str>> {
+    if matches!(arch, MachineArch::Unknown) {
         return None;
     }
 
@@ -317,12 +273,7 @@ fn normalized_features(contents: &str, arch: Arch) -> Option<HashSet<&'static st
 
         let mut line_features = HashSet::new();
         for token in values.split_whitespace() {
-            let normalized = match arch {
-                Arch::Amd64 => normalize_x86_feature(token),
-                Arch::Arm64 => normalize_arm_feature(token),
-                Arch::Unknown => None,
-            };
-            if let Some(feature) = normalized {
+            if let Some(feature) = normalize_feature_token(arch, token) {
                 line_features.insert(feature);
             }
         }
@@ -341,47 +292,6 @@ fn normalized_features(contents: &str, arch: Arch) -> Option<HashSet<&'static st
         }
     }
     Some(common)
-}
-
-fn normalize_x86_feature(token: &str) -> Option<&'static str> {
-    match token.trim().to_ascii_lowercase().as_str() {
-        "avx" | "avx1.0" => Some("avx"),
-        "avx2" | "avx2.0" => Some("avx2"),
-        "bmi1" => Some("bmi1"),
-        "bmi2" => Some("bmi2"),
-        "f16c" => Some("f16c"),
-        "fma" => Some("fma"),
-        "abm" | "lzcnt" => Some("lzcnt"),
-        "movbe" => Some("movbe"),
-        "pclmul" | "pclmulqdq" => Some("pclmulqdq"),
-        "popcnt" => Some("popcnt"),
-        "rdrand" => Some("rdrand"),
-        "sse3" => Some("sse3"),
-        "sse4_1" | "sse4.1" => Some("sse4.1"),
-        "sse4_2" | "sse4.2" => Some("sse4.2"),
-        "ssse3" => Some("ssse3"),
-        "osxsave" | "xsave" => Some("xsave"),
-        "xsaveopt" => Some("xsaveopt"),
-        _ => None,
-    }
-}
-
-fn normalize_arm_feature(token: &str) -> Option<&'static str> {
-    match token.trim().to_ascii_lowercase().as_str() {
-        "aes" => Some("aes"),
-        "crc" | "crc32" => Some("crc32"),
-        "asimd" | "neon" => Some("neon"),
-        "fphp" | "asimdhp" | "fp16" => Some("fp16"),
-        "atomics" | "lse" => Some("lse"),
-        "asimdrdm" | "rdm" => Some("rdm"),
-        "asimddp" | "dotprod" => Some("dotprod"),
-        "sha2" => Some("sha2"),
-        _ => None,
-    }
-}
-
-fn feature_set_has_all(features: &HashSet<&'static str>, required: &[&'static str]) -> bool {
-    required.iter().all(|feature| features.contains(feature))
 }
 
 fn resolved_db_path(raw: Option<String>) -> PathBuf {
@@ -769,10 +679,13 @@ mod tests {
     fn amd64_should_select_optimized_when_haswell_features_are_present() {
         let features = normalized_features(
             include_str!("../tests/fixtures/amd64-haswell.cpuinfo"),
-            Arch::Amd64,
+            MachineArch::Amd64,
         )
         .expect("features should parse");
-        assert!(feature_set_has_all(&features, X86_REQUIRED_FEATURES));
+        assert_eq!(
+            lane_from_canonical_features(MachineArch::Amd64, &features),
+            BinaryLane::Haswell
+        );
     }
 
     #[test]
@@ -786,7 +699,7 @@ mod tests {
         let config = base_config();
         let runtime = resolve_runtime_launch(&ops, &config).expect("portable runtime");
         assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-portable"));
-        assert_eq!(runtime.lane, Lane::Portable);
+        assert_eq!(runtime.lane, BinaryLane::Portable);
     }
 
     #[test]
@@ -826,7 +739,7 @@ mod tests {
         ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
         let runtime = resolve_runtime_launch(&ops, &config).expect("portable runtime");
         assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-portable"));
-        assert_eq!(runtime.lane, Lane::Portable);
+        assert_eq!(runtime.lane, BinaryLane::Portable);
     }
 
     #[test]
@@ -837,7 +750,7 @@ mod tests {
         ops.insert_entry("/payloads/scryer-portable", MockEntry::executable_file());
         let runtime = resolve_runtime_launch(&ops, &config).expect("portable runtime");
         assert_eq!(runtime.primary, PathBuf::from("/payloads/scryer-portable"));
-        assert_eq!(runtime.lane, Lane::Portable);
+        assert_eq!(runtime.lane, BinaryLane::Portable);
     }
 
     #[test]
@@ -853,7 +766,7 @@ mod tests {
     fn malformed_cpuinfo_should_fallback_to_portable() {
         let features = normalized_features(
             include_str!("../tests/fixtures/malformed.cpuinfo"),
-            Arch::Amd64,
+            MachineArch::Amd64,
         );
         assert!(features.is_none());
     }
@@ -867,10 +780,13 @@ flags       : avx avx2 bmi1 bmi2 f16c fma abm movbe pclmulqdq popcnt rdrand sse3
 \n\
 processor   : 1\n\
 flags       : avx avx2 bmi1 bmi2 f16c fma movbe pclmulqdq popcnt rdrand sse3 sse4_1 sse4_2 ssse3 xsave xsaveopt\n",
-            Arch::Amd64,
+            MachineArch::Amd64,
         )
         .expect("common features should still parse");
-        assert!(!feature_set_has_all(&features, X86_REQUIRED_FEATURES));
+        assert_eq!(
+            lane_from_canonical_features(MachineArch::Amd64, &features),
+            BinaryLane::Portable
+        );
     }
 
     #[test]

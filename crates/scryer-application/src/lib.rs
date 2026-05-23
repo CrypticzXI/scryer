@@ -97,7 +97,7 @@ pub use plugins::plugins::load_runtime_plugin_from_persisted_installation_payloa
 pub use quality::release_dedup;
 pub use services::{
     PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,
-    PluginInstallState,
+    PluginInstallState, RuntimePerformanceClass, RuntimePerformanceSnapshot,
 };
 pub const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize =

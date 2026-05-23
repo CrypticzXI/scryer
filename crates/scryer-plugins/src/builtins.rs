@@ -26,7 +26,7 @@ pub const TORZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
     description: include_str!("../builtins/torznab_indexer.description.txt"),
 };
 
-pub const INDEXER_BUILTINS: &[BuiltinPluginAsset] = &[NZBGEEK, NEWZNAB, TORZNAB];
+pub const INDEXER_BUILTINS: &[BuiltinPluginAsset] = &[NEWZNAB, TORZNAB];
 pub const SUBTITLE_BUILTINS: &[BuiltinPluginAsset] = &[];
 pub const DOWNLOAD_CLIENT_BUILTINS: &[BuiltinPluginAsset] = &[];
 pub const NOTIFICATION_BUILTINS: &[BuiltinPluginAsset] = &[];

@@ -57,7 +57,7 @@ pub fn external_plugin_installation_is_supported_shape(
     descriptor_present: bool,
 ) -> bool {
     wasm_bytes.is_some()
-        && wasm_encoding == "zstd"
+        && matches!(wasm_encoding, "zstd" | "brotli")
         && matches!(
             wasm_digest_algo.map(|value| value.trim().to_ascii_lowercase()),
             Some(value) if value == "blake3"

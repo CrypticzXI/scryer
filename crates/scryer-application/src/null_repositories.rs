@@ -657,6 +657,9 @@ impl PluginInstallationRepository for NullPluginInstallationRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn delete_plugin_catalog_source(&self, _source_key: &str) -> AppResult<()> {
+        Ok(())
+    }
     async fn list_plugin_catalog_sources(
         &self,
     ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {

@@ -1,0 +1,6 @@
+[package]
+name = "scryer-runtime-info"
+version = "0.15.6"
+edition.workspace = true
+
+[dependencies]

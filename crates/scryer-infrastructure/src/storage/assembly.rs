@@ -559,6 +559,10 @@ impl PluginInstallationRepository for DatastoreCustomizationStore {
         self.plugins.upsert_plugin_catalog_source(source).await
     }
 
+    async fn delete_plugin_catalog_source(&self, source_key: &str) -> AppResult<()> {
+        self.plugins.delete_plugin_catalog_source(source_key).await
+    }
+
     async fn list_plugin_catalog_sources(
         &self,
     ) -> AppResult<Vec<scryer_domain::PluginCatalogSource>> {

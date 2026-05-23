@@ -882,6 +882,14 @@ fn serve_encryption_key() -> String {
     base64::engine::general_purpose::STANDARD.encode(digest)
 }
 
+fn dotenv_or_process_env(dotenv_envs: &[(String, String)], key: &str) -> Option<String> {
+    std::env::var(key).ok().or_else(|| {
+        dotenv_envs.iter().find_map(|(dotenv_key, value)| {
+            (dotenv_key == key && !value.trim().is_empty()).then(|| value.clone())
+        })
+    })
+}
+
 fn ensure_frontend_dependencies(ctx: &TaskContext, web_dir: &Path) -> Result<()> {
     step("Syncing frontend dependencies for Vite dev server");
     let mut install = ctx.command_in("npm", web_dir);
@@ -917,13 +925,17 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     let backend_port = backend_port(&args.bind)?;
     let frontend_port = resolve_frontend_port(args.frontend_port)?;
     let backend_url = format!("http://127.0.0.1:{backend_port}");
-    let frontend_url = format!("http://127.0.0.1:{frontend_port}");
+    let frontend_url = format!("http://localhost:{frontend_port}");
     let vite_use_polling =
         std::env::var("SCRYER_VITE_USE_POLLING").unwrap_or_else(|_| "true".to_string());
     let vite_poll_interval =
         std::env::var("SCRYER_VITE_POLL_INTERVAL_MS").unwrap_or_else(|_| "250".to_string());
     let datastore = prepare_serve_datastore(ctx, &args, mode)?;
     let encryption_key = serve_encryption_key();
+    let webauthn_rp_id = dotenv_or_process_env(&dotenv_envs, "SCRYER_WEBAUTHN_RP_ID")
+        .unwrap_or_else(|| "localhost".to_string());
+    let webauthn_rp_origin = dotenv_or_process_env(&dotenv_envs, "SCRYER_WEBAUTHN_RP_ORIGIN")
+        .unwrap_or_else(|| frontend_url.clone());
     let backend_binary = ctx.path("target/debug/scryer");
     let backend_log = PathBuf::from(
         std::env::var("SCRYER_DEV_BACKEND_LOG")
@@ -959,6 +971,8 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     println!("   Vite dev server: {frontend_url}");
     println!("   Vite file watch: polling={vite_use_polling} interval_ms={vite_poll_interval}");
     println!("   Keychain: disabled for xtask serve");
+    println!("   WebAuthn RP ID: {webauthn_rp_id}");
+    println!("   WebAuthn RP origin: {webauthn_rp_origin}");
     match datastore.kind {
         ServeDatastoreKind::Sqlite => println!("   Datastore: SQLite ({})", datastore.location),
         ServeDatastoreKind::Postgres => {
@@ -990,6 +1004,8 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
         .env("SCRYER_ENCRYPTION_KEY", &encryption_key)
         .env("SCRYER_OPEN_BROWSER", "false")
         .env("SCRYER_WEB_UI_URL", &frontend_url)
+        .env("SCRYER_WEBAUTHN_RP_ID", &webauthn_rp_id)
+        .env("SCRYER_WEBAUTHN_RP_ORIGIN", &webauthn_rp_origin)
         .env("SCRYER_BIND", &args.bind)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));

@@ -169,10 +169,6 @@ const BUILTIN_PLUGINS: &[BuiltinPluginSpec] = &[
         artifact_stem: "newznab_indexer",
     },
     BuiltinPluginSpec {
-        plugin_id: "nzbgeek",
-        artifact_stem: "nzbgeek_indexer",
-    },
-    BuiltinPluginSpec {
         plugin_id: "torznab",
         artifact_stem: "torznab_indexer",
     },

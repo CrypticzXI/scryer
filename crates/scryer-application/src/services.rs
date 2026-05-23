@@ -1,5 +1,7 @@
 use super::*;
 use crate::ports::IndexerCapsSnapshotRefresher;
+use scryer_runtime_info::{BinaryClass, BinaryLane};
+use std::io::{Read, Write};
 
 /// In-process guard table for download-submission dedupe and scope ownership.
 ///
@@ -790,8 +792,62 @@ pub struct AppRuntimePluginState {
     pub plugin_install_orchestrator: PluginInstallOrchestrator,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimePerformanceClass {
+    Slow,
+    Fast,
+}
+
+impl std::fmt::Display for RuntimePerformanceClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slow => f.write_str("slow"),
+            Self::Fast => f.write_str("fast"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimePerformanceSnapshot {
+    pub cpu_class: RuntimePerformanceClass,
+    pub config_io_class: RuntimePerformanceClass,
+    pub cpu_probe_elapsed_ms: Option<u64>,
+    pub config_io_probe_elapsed_ms: Option<u64>,
+}
+
+impl RuntimePerformanceSnapshot {
+    pub fn slow() -> Self {
+        Self {
+            cpu_class: RuntimePerformanceClass::Slow,
+            config_io_class: RuntimePerformanceClass::Slow,
+            cpu_probe_elapsed_ms: None,
+            config_io_probe_elapsed_ms: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AppRuntimeEnvironmentState {
+    pub build_lane: BinaryLane,
+    pub build_class: BinaryClass,
+    pub(crate) config_dir: Arc<PathBuf>,
+    pub(crate) performance_snapshot: Arc<OnceCell<RuntimePerformanceSnapshot>>,
+}
+
+impl AppRuntimeEnvironmentState {
+    pub fn new(build_lane: BinaryLane, config_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            build_lane,
+            build_class: build_lane.binary_class(),
+            config_dir: Arc::new(config_dir.into()),
+            performance_snapshot: Arc::new(OnceCell::new()),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppRuntimeState {
+    pub environment: AppRuntimeEnvironmentState,
     pub events: AppRuntimeEventState,
     pub catalog: AppRuntimeCatalogState,
     pub acquisition: AppRuntimeAcquisitionState,
@@ -802,8 +858,8 @@ pub struct AppRuntimeState {
     pub plugins: AppRuntimePluginState,
 }
 
-impl Default for AppRuntimeState {
-    fn default() -> Self {
+impl AppRuntimeState {
+    pub fn new(build_lane: BinaryLane, config_dir: impl Into<PathBuf>) -> Self {
         let (domain_event_tx, _domain_event_rx) = broadcast::channel(256);
         // Match the main domain-event buffer so short notification bursts can queue wake hints
         // while the dispatcher catches up from persisted offsets.
@@ -813,6 +869,7 @@ impl Default for AppRuntimeState {
         let (settings_changed_tx, _) = broadcast::channel::<Vec<String>>(16);
 
         Self {
+            environment: AppRuntimeEnvironmentState::new(build_lane, config_dir),
             events: AppRuntimeEventState {
                 domain_event_broadcast: domain_event_tx,
                 notification_event_broadcast: notification_event_tx,
@@ -860,6 +917,12 @@ impl Default for AppRuntimeState {
                 plugin_install_orchestrator: PluginInstallOrchestrator::default(),
             },
         }
+    }
+}
+
+impl Default for AppRuntimeState {
+    fn default() -> Self {
+        Self::new(BinaryLane::Portable, PathBuf::from("."))
     }
 }
 
@@ -1339,6 +1402,15 @@ impl AppServicesBuilder {
         config.plugin_http_trust_runtime,
         Arc<dyn PluginHttpTrustConfigRuntime>
     );
+
+    pub fn with_runtime_environment(
+        mut self,
+        build_lane: BinaryLane,
+        config_dir: impl Into<PathBuf>,
+    ) -> Self {
+        self.runtime = AppRuntimeState::new(build_lane, config_dir);
+        self
+    }
 }
 
 impl AppServicesBuilder {
@@ -1758,6 +1830,31 @@ impl AppUseCase {
         }
 
         Ok(state.matcher.clone().unwrap_or(matcher))
+    }
+
+    pub fn runtime_build_lane(&self) -> BinaryLane {
+        self.runtime.environment.build_lane
+    }
+
+    pub fn runtime_build_class(&self) -> BinaryClass {
+        self.runtime.environment.build_class
+    }
+
+    pub async fn runtime_performance(&self) -> RuntimePerformanceSnapshot {
+        let environment = self.runtime.environment.clone();
+        initialize_runtime_performance_snapshot(
+            environment.performance_snapshot.as_ref(),
+            environment.config_dir.clone(),
+            Arc::new(probe_runtime_performance_snapshot),
+        )
+        .await
+    }
+
+    pub fn warm_runtime_performance(&self) {
+        let app = self.clone();
+        tokio::spawn(async move {
+            let _ = app.runtime_performance().await;
+        });
     }
 
     /// Test-only escape hatch for selectively overriding already-assembled services.
@@ -2452,6 +2549,163 @@ fn should_invalidate_monitored_title_matcher(payload: &scryer_domain::DomainEven
     )
 }
 
+type RuntimePerformanceProbe =
+    Arc<dyn Fn(PathBuf) -> RuntimePerformanceSnapshot + Send + Sync + 'static>;
+
+async fn initialize_runtime_performance_snapshot(
+    cell: &OnceCell<RuntimePerformanceSnapshot>,
+    config_dir: Arc<PathBuf>,
+    probe: RuntimePerformanceProbe,
+) -> RuntimePerformanceSnapshot {
+    cell.get_or_init(|| async move {
+        let config_dir_for_probe = config_dir.as_ref().clone();
+        let config_dir_for_log = config_dir_for_probe.clone();
+        let snapshot =
+            match tokio::task::spawn_blocking(move || (probe)(config_dir_for_probe)).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "runtime performance probe task failed; using conservative slow defaults"
+                    );
+                    RuntimePerformanceSnapshot::slow()
+                }
+            };
+        tracing::info!(
+            cpu_class = %snapshot.cpu_class,
+            config_io_class = %snapshot.config_io_class,
+            cpu_probe_elapsed_ms = snapshot.cpu_probe_elapsed_ms,
+            config_io_probe_elapsed_ms = snapshot.config_io_probe_elapsed_ms,
+            config_dir = %config_dir_for_log.display(),
+            "runtime performance probe settled"
+        );
+        snapshot
+    })
+    .await
+    .clone()
+}
+
+fn probe_runtime_performance_snapshot(config_dir: PathBuf) -> RuntimePerformanceSnapshot {
+    let (cpu_class, cpu_probe_elapsed_ms) = probe_cpu_performance();
+    let (config_io_class, config_io_probe_elapsed_ms) = probe_config_io_performance(&config_dir);
+    RuntimePerformanceSnapshot {
+        cpu_class,
+        config_io_class,
+        cpu_probe_elapsed_ms,
+        config_io_probe_elapsed_ms,
+    }
+}
+
+fn classify_cpu_elapsed(elapsed: std::time::Duration) -> RuntimePerformanceClass {
+    if elapsed <= std::time::Duration::from_millis(125) {
+        RuntimePerformanceClass::Fast
+    } else {
+        RuntimePerformanceClass::Slow
+    }
+}
+
+fn probe_cpu_performance() -> (RuntimePerformanceClass, Option<u64>) {
+    const CPU_PROBE_BYTES: usize = 8 * 1024 * 1024;
+    const CPU_PROBE_PASSES: usize = 32;
+    const SLOW_CAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+    let mut buffer = vec![0_u64; CPU_PROBE_BYTES / std::mem::size_of::<u64>()];
+    let start = std::time::Instant::now();
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+
+    for pass in 0..CPU_PROBE_PASSES {
+        for word in &mut buffer {
+            state = state
+                .wrapping_add(0xA076_1D64_78BD_642F_u64 ^ (pass as u64))
+                .rotate_left(13);
+            let mixed = state ^ word.rotate_left((state & 31) as u32) ^ 0xE703_7ED1_A0B4_28DB_u64;
+            *word = word.wrapping_add(mixed).rotate_left(7) ^ mixed;
+            std::hint::black_box(*word);
+        }
+
+        if start.elapsed() > SLOW_CAP {
+            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            return (RuntimePerformanceClass::Slow, Some(elapsed_ms));
+        }
+    }
+
+    std::hint::black_box(state);
+    let elapsed = start.elapsed();
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    (classify_cpu_elapsed(elapsed), Some(elapsed_ms))
+}
+
+fn classify_config_io_elapsed(elapsed: std::time::Duration) -> RuntimePerformanceClass {
+    if elapsed <= std::time::Duration::from_millis(200) {
+        RuntimePerformanceClass::Fast
+    } else {
+        RuntimePerformanceClass::Slow
+    }
+}
+
+fn probe_config_io_performance(config_dir: &Path) -> (RuntimePerformanceClass, Option<u64>) {
+    const PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+    const CHUNK_BYTES: usize = 1 * 1024 * 1024;
+    const SLOW_CAP: std::time::Duration = std::time::Duration::from_millis(500);
+
+    if !config_dir.is_dir() && std::fs::create_dir_all(config_dir).is_err() {
+        return (RuntimePerformanceClass::Slow, None);
+    }
+
+    let probe_name = format!(
+        ".scryer-runtime-probe-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let probe_path = config_dir.join(probe_name);
+    let chunk = vec![0x5Au8; CHUNK_BYTES];
+    let start = std::time::Instant::now();
+
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&probe_path)?;
+        let mut written = 0;
+        while written < PAYLOAD_BYTES {
+            let to_write = std::cmp::min(CHUNK_BYTES, PAYLOAD_BYTES - written);
+            file.write_all(&chunk[..to_write])?;
+            written += to_write;
+            if start.elapsed() > SLOW_CAP {
+                return Ok(());
+            }
+        }
+        file.flush()?;
+        file.sync_all()?;
+
+        let mut file = std::fs::File::open(&probe_path)?;
+        let mut read_buffer = vec![0_u8; CHUNK_BYTES];
+        loop {
+            let bytes_read = file.read(&mut read_buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            std::hint::black_box(&read_buffer[..bytes_read]);
+            if start.elapsed() > SLOW_CAP {
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    })();
+
+    let cleanup_result = std::fs::remove_file(&probe_path);
+
+    if result.is_err() || cleanup_result.is_err() {
+        let elapsed_ms = u64::try_from(start.elapsed().as_millis()).ok();
+        return (RuntimePerformanceClass::Slow, elapsed_ms);
+    }
+
+    let elapsed = start.elapsed();
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    (classify_config_io_elapsed(elapsed), Some(elapsed_ms))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2462,6 +2716,8 @@ mod tests {
     };
     use async_trait::async_trait;
     use scryer_domain::IndexerConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
 
     struct TestIndexerConfigRepository;
 
@@ -2517,6 +2773,114 @@ mod tests {
     #[test]
     fn build_partial_for_tests_allows_partial_test_assemblies() {
         let _ = test_builder().build_partial_for_tests();
+    }
+
+    #[test]
+    fn runtime_build_identity_defaults_to_portable() {
+        let runtime = AppRuntimeState::default();
+        assert_eq!(runtime.environment.build_lane, BinaryLane::Portable);
+        assert_eq!(runtime.environment.build_class, BinaryClass::Portable);
+    }
+
+    #[test]
+    fn runtime_environment_builder_sets_build_identity() {
+        let assembly = test_builder()
+            .with_runtime_environment(BinaryLane::Haswell, "/tmp/scryer-config")
+            .build_partial_for_tests();
+        assert_eq!(assembly.runtime.environment.build_lane, BinaryLane::Haswell);
+        assert_eq!(
+            assembly.runtime.environment.build_class,
+            BinaryClass::Optimized
+        );
+        assert_eq!(
+            assembly.runtime.environment.config_dir.as_ref(),
+            &PathBuf::from("/tmp/scryer-config")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_performance_initializer_shares_one_probe_run() {
+        let cell = Arc::new(OnceCell::new());
+        let config_dir = Arc::new(PathBuf::from("."));
+        let probe_runs = Arc::new(AtomicUsize::new(0));
+        let probe: RuntimePerformanceProbe = Arc::new({
+            let probe_runs = probe_runs.clone();
+            move |_path: PathBuf| {
+                probe_runs.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                RuntimePerformanceSnapshot {
+                    cpu_class: RuntimePerformanceClass::Fast,
+                    config_io_class: RuntimePerformanceClass::Slow,
+                    cpu_probe_elapsed_ms: Some(50),
+                    config_io_probe_elapsed_ms: Some(5),
+                }
+            }
+        });
+
+        let left = {
+            let cell = cell.clone();
+            let config_dir = config_dir.clone();
+            let probe = probe.clone();
+            tokio::spawn(async move {
+                initialize_runtime_performance_snapshot(cell.as_ref(), config_dir, probe).await
+            })
+        };
+        let right = {
+            let cell = cell.clone();
+            let config_dir = config_dir.clone();
+            let probe = probe.clone();
+            tokio::spawn(async move {
+                initialize_runtime_performance_snapshot(cell.as_ref(), config_dir, probe).await
+            })
+        };
+
+        let first = left.await.expect("left probe");
+        let second = right.await.expect("right probe");
+        assert_eq!(probe_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(first, second);
+
+        let start = std::time::Instant::now();
+        let cached =
+            initialize_runtime_performance_snapshot(cell.as_ref(), config_dir, probe).await;
+        assert_eq!(cached, first);
+        assert!(start.elapsed() < std::time::Duration::from_millis(20));
+    }
+
+    #[test]
+    fn cpu_elapsed_threshold_classification_is_stable() {
+        assert_eq!(
+            classify_cpu_elapsed(std::time::Duration::from_millis(125)),
+            RuntimePerformanceClass::Fast
+        );
+        assert_eq!(
+            classify_cpu_elapsed(std::time::Duration::from_millis(126)),
+            RuntimePerformanceClass::Slow
+        );
+    }
+
+    #[test]
+    fn config_io_elapsed_threshold_classification_is_stable() {
+        assert_eq!(
+            classify_config_io_elapsed(std::time::Duration::from_millis(200)),
+            RuntimePerformanceClass::Fast
+        );
+        assert_eq!(
+            classify_config_io_elapsed(std::time::Duration::from_millis(201)),
+            RuntimePerformanceClass::Slow
+        );
+    }
+
+    #[test]
+    fn config_io_probe_creates_missing_directory_before_measuring() {
+        let temp = tempdir().expect("tempdir");
+        let missing = temp.path().join("missing");
+        let (class, elapsed_ms) = probe_config_io_performance(&missing);
+        assert!(matches!(
+            class,
+            RuntimePerformanceClass::Slow | RuntimePerformanceClass::Fast
+        ));
+        assert!(missing.is_dir());
+        assert!(elapsed_ms.is_some());
     }
 
     #[tokio::test]

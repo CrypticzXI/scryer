@@ -70,6 +70,7 @@ jobs:
         include:
           - arch: x86_64
             variant: portable
+            build_lane: portable
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             sccache_lane: scryer-linux-x86_64-musl
@@ -80,6 +81,7 @@ jobs:
             extra_rustflags: ""
           - arch: x86_64
             variant: haswell
+            build_lane: haswell
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             sccache_lane: scryer-linux-x86_64-musl
@@ -90,6 +92,7 @@ jobs:
             extra_rustflags: "-C target-cpu=haswell"
           - arch: arm64
             variant: portable
+            build_lane: portable
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             sccache_lane: scryer-linux-arm64-musl
@@ -100,6 +103,7 @@ jobs:
             extra_rustflags: ""
           - arch: arm64
             variant: optimized
+            build_lane: arm64_optimized
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             sccache_lane: scryer-linux-arm64-musl
@@ -170,6 +174,7 @@ jobs:
         run: |
           set -euo pipefail
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
+          export SCRYER_BUILD_LANE="${{ matrix.build_lane }}"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
           target_cc_var="CC_$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
@@ -209,6 +214,7 @@ jobs:
         include:
           - arch: arm64
             variant: portable
+            build_lane: portable
             runner: macos-15
             target: aarch64-apple-darwin
             sccache_lane: scryer-macos-arm64
@@ -219,6 +225,7 @@ jobs:
             extra_rustflags: ""
           - arch: arm64
             variant: apple-m1
+            build_lane: arm64_optimized
             runner: macos-15
             target: aarch64-apple-darwin
             sccache_lane: scryer-macos-arm64
@@ -229,6 +236,7 @@ jobs:
             extra_rustflags: "-C target-cpu=apple-m1 --cfg aes_armv8 --cfg chacha20_force_neon"
           - arch: x86_64
             variant: portable
+            build_lane: portable
             runner: macos-15-intel
             target: x86_64-apple-darwin
             sccache_lane: scryer-macos-x86_64
@@ -298,6 +306,7 @@ jobs:
         run: |
           set -euo pipefail
           export SCRYER_EMBED_UI_DIR="${GITHUB_WORKSPACE}/scryer-web-out"
+          export SCRYER_BUILD_LANE="${{ matrix.build_lane }}"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
           export CC="sccache clang"

@@ -18,6 +18,7 @@ members = [
     "crates/scryer-rules",
     "crates/scryer-plugin-sdk",
     "crates/scryer-plugins",
+    "crates/scryer-runtime-info",
     "crates/scryer-launcher",
     "crates/scryer",
     "crates/scryer-mock-apis",

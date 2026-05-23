@@ -5815,6 +5815,7 @@ dependencies = [
  "scryer-outbound-http",
  "scryer-plugins",
  "scryer-rules",
+ "scryer-runtime-info",
  "serde",
  "serde_json",
  "sqlx",
@@ -5841,6 +5842,7 @@ dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
  "blake3",
+ "brotli",
  "chardetng",
  "chrono",
  "const-oid 0.10.2",
@@ -5864,6 +5866,7 @@ dependencies = [
  "scryer-plugin-sdk",
  "scryer-release-parser",
  "scryer-rules",
+ "scryer-runtime-info",
  "semver",
  "serde",
  "serde_json",
@@ -6033,6 +6036,7 @@ name = "scryer-launcher"
 version = "0.15.6"
 dependencies = [
  "libc",
+ "scryer-runtime-info",
 ]
 
 [[package]]
@@ -6143,6 +6147,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
 ]
+
+[[package]]
+name = "scryer-runtime-info"
+version = "0.15.6"
 
 [[package]]
 name = "scrypt"

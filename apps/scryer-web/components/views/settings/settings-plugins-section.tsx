@@ -71,6 +71,7 @@ export type PluginCatalogStatusRecord = {
   lastCheckedAt?: string | null;
   outageMessage?: string | null;
   blockedActions: string[];
+  restoreWarnings: string[];
   lastError?: string | null;
 };
 
@@ -651,6 +652,17 @@ export function SettingsPluginsSection({
       {catalogStatus?.outageMessage && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
           {catalogStatus.outageMessage}
+        </div>
+      )}
+
+      {catalogStatus && catalogStatus.restoreWarnings.length > 0 && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+          <div className="font-medium">Restore warnings</div>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {catalogStatus.restoreWarnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
         </div>
       )}
 

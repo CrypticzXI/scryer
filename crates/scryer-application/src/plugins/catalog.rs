@@ -3,7 +3,7 @@ use std::collections::HashSet;
 #[cfg(feature = "runtime-plugin-trust")]
 use std::{
     collections::BTreeMap,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -41,11 +41,23 @@ use x509_cert::{
 use crate::{AppError, AppResult};
 use scryer_domain::PluginSupportTier;
 
+#[cfg(test)]
+#[allow(dead_code)]
 const CENTRAL_CATALOG_SCHEMA_VERSION: &str = "scryer.plugin.catalog.v2";
+#[cfg(test)]
+#[allow(dead_code)]
 const CHILD_CATALOG_SCHEMA_VERSION: &str = "scryer.plugin.child_catalog.v2";
+#[cfg(test)]
+#[allow(dead_code)]
 const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "scryer.plugin.v1";
+#[cfg(test)]
+#[allow(dead_code)]
 const PLUGIN_ARTIFACT_NAME: &str = "plugin.wasm.zst";
+#[cfg(test)]
+#[allow(dead_code)]
 const PLUGIN_MANIFEST_NAME: &str = "plugin.manifest.json";
+#[cfg(test)]
+#[allow(dead_code)]
 const ZSTD_COMPRESSION_LABEL: &str = "zstd";
 #[cfg(feature = "runtime-plugin-trust")]
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
@@ -59,14 +71,20 @@ type RekorVerificationKeys = BTreeMap<String, CosignVerificationKey>;
 type FulcioTrustAnchors = Vec<TrustAnchor<'static>>;
 
 #[cfg(feature = "runtime-plugin-trust")]
-static REKOR_VERIFICATION_KEYS: OnceLock<Result<Arc<RekorVerificationKeys>, String>> =
-    OnceLock::new();
+struct SigstoreTrustMaterial {
+    rekor_keys: Arc<RekorVerificationKeys>,
+    fulcio_anchors: Arc<FulcioTrustAnchors>,
+}
+
 #[cfg(feature = "runtime-plugin-trust")]
-static FULCIO_TRUST_ANCHORS: OnceLock<Result<Arc<FulcioTrustAnchors>, String>> = OnceLock::new();
+static SIGSTORE_TRUST_MATERIAL: OnceLock<Mutex<Option<Arc<SigstoreTrustMaterial>>>> =
+    OnceLock::new();
 
 #[cfg(feature = "runtime-plugin-trust")]
 static VERIFY_LIMIT: OnceLock<Semaphore> = OnceLock::new();
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CentralCatalog {
@@ -76,6 +94,8 @@ pub struct CentralCatalog {
     pub rule_packs: Vec<RulePackCatalogEntry>,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CentralCatalogEntry {
@@ -92,6 +112,8 @@ pub struct CentralCatalogEntry {
     pub required_signer: RequiredSigner,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulePackCatalogEntry {
@@ -113,6 +135,123 @@ pub struct RequiredSigner {
     pub github_workflow: Option<String>,
 }
 
+pub const CATALOG_V3_SCHEMA_VERSION: &str = "scryer.plugin.catalog.v3";
+pub const CATALOG_V3_REDIRECT_SCHEMA_VERSION: &str = "scryer.plugin.catalog.v3.redirect";
+pub const CATALOG_V3_REDIRECT_BUNDLE_SUFFIX: &str = ".bundle.json";
+pub const CATALOG_V3_RUNTIME_WASIP1: &str = "wasm32-wasip1";
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginLifecycleStatus {
+    Beta,
+    Active,
+    Deprecated,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3Redirect {
+    pub schema_version: String,
+    pub catalog_version: u64,
+    pub artifacts: Vec<CatalogV3RedirectArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3RedirectArtifact {
+    pub url: String,
+    #[serde(default)]
+    pub mirror_urls: Vec<String>,
+    pub signature_url: String,
+    #[serde(default)]
+    pub signature_mirror_urls: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3 {
+    pub schema_version: String,
+    pub catalog_version: u64,
+    pub plugins: Vec<CatalogV3PluginEntry>,
+    #[serde(default)]
+    pub rule_packs: Vec<CatalogV3RulePackEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3PluginEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub plugin_type: String,
+    pub provider_type: String,
+    pub publisher: String,
+    pub support_tier: PluginSupportTier,
+    pub status: PluginLifecycleStatus,
+    pub docs_url: String,
+    pub source_repo: String,
+    pub required_signer: RequiredSigner,
+    pub releases: Vec<CatalogV3PluginRelease>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3PluginRelease {
+    pub version: String,
+    pub sdk_constraint: String,
+    pub artifacts: Vec<CatalogV3PluginArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3PluginArtifact {
+    pub runtime: String,
+    #[serde(default)]
+    pub required_features: Vec<String>,
+    pub url: String,
+    #[serde(default)]
+    pub mirror_urls: Vec<String>,
+    pub signature_url: String,
+    #[serde(default)]
+    pub signature_mirror_urls: Vec<String>,
+    pub digests: Vec<String>,
+    pub wasm_digests: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3RulePackEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub releases: Vec<CatalogV3RulePackRelease>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3RulePackRelease {
+    pub version: String,
+    #[serde(default)]
+    pub min_scryer_version: Option<String>,
+    pub rule_pack_digests: Vec<String>,
+    pub artifacts: Vec<CatalogV3DistributionArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3DistributionArtifact {
+    pub url: String,
+    #[serde(default)]
+    pub mirror_urls: Vec<String>,
+    pub signature_url: String,
+    #[serde(default)]
+    pub signature_mirror_urls: Vec<String>,
+    pub digests: Vec<String>,
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildCatalog {
@@ -129,6 +268,8 @@ pub struct ChildCatalog {
     pub releases: Vec<ChildCatalogRelease>,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildCatalogRelease {
@@ -137,6 +278,8 @@ pub struct ChildCatalogRelease {
     pub artifact_manifest_url: String,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginReleaseManifest {
@@ -159,6 +302,8 @@ pub struct GitHubRepo {
     pub name: String,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct CatalogOutageStatus {
     pub github_available: bool,
@@ -166,17 +311,20 @@ pub struct CatalogOutageStatus {
     pub message: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct GitHubStatusSummary {
     status: GitHubOverallStatus,
     components: Vec<GitHubStatusComponent>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct GitHubOverallStatus {
     indicator: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct GitHubStatusComponent {
     name: String,
@@ -216,6 +364,8 @@ impl GitHubRepo {
         format!("{}/{}", self.owner, self.name)
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn release_asset_prefix(&self) -> String {
         format!(
             "https://github.com/{}/{}/releases/download/",
@@ -223,9 +373,18 @@ impl GitHubRepo {
         )
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn child_catalog_url(&self) -> String {
         format!(
             "https://github.com/{}/{}/releases/latest/download/catalog-v2.min.json.zst",
+            self.owner, self.name
+        )
+    }
+
+    pub fn catalog_v3_url(&self) -> String {
+        format!(
+            "https://github.com/{}/{}/releases/latest/download/catalog-v3.json",
             self.owner, self.name
         )
     }
@@ -245,6 +404,8 @@ impl GitHubRepo {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn parse_and_validate_central_catalog(raw: &[u8]) -> AppResult<CentralCatalog> {
     let catalog: CentralCatalog = serde_json::from_slice(raw)
         .map_err(|e| AppError::Validation(format!("invalid central plugin catalog JSON: {e}")))?;
@@ -252,6 +413,7 @@ pub fn parse_and_validate_central_catalog(raw: &[u8]) -> AppResult<CentralCatalo
     Ok(catalog)
 }
 
+#[cfg(test)]
 pub fn parse_and_validate_child_catalog(
     raw: &[u8],
     central: Option<&CentralCatalogEntry>,
@@ -263,6 +425,8 @@ pub fn parse_and_validate_child_catalog(
     Ok(catalog)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn parse_and_validate_release_manifest(
     raw: &[u8],
     child: &ChildCatalog,
@@ -273,6 +437,20 @@ pub fn parse_and_validate_release_manifest(
         .map_err(|e| AppError::Validation(format!("invalid plugin release manifest JSON: {e}")))?;
     validate_release_manifest(&manifest, child, release, expected_repo)?;
     Ok(manifest)
+}
+
+pub fn parse_and_validate_catalog_v3(raw: &[u8]) -> AppResult<CatalogV3> {
+    let catalog: CatalogV3 = serde_json::from_slice(raw)
+        .map_err(|e| AppError::Validation(format!("invalid plugin catalog v3 JSON: {e}")))?;
+    validate_catalog_v3(&catalog)?;
+    Ok(catalog)
+}
+
+pub fn parse_and_validate_catalog_v3_redirect(raw: &[u8]) -> AppResult<CatalogV3Redirect> {
+    let redirect: CatalogV3Redirect = serde_json::from_slice(raw)
+        .map_err(|e| AppError::Validation(format!("invalid plugin catalog redirect JSON: {e}")))?;
+    validate_catalog_v3_redirect(&redirect)?;
+    Ok(redirect)
 }
 
 #[cfg(feature = "runtime-plugin-trust")]
@@ -320,6 +498,27 @@ pub async fn decompress_zstd(compressed: Vec<u8>) -> AppResult<Vec<u8>> {
 pub async fn decompress_zstd(_compressed: Vec<u8>) -> AppResult<Vec<u8>> {
     Err(AppError::Validation(
         "plugin zstd decompression is not compiled into this target".to_string(),
+    ))
+}
+
+#[cfg(feature = "runtime-plugin-trust")]
+pub async fn decompress_brotli(compressed: Vec<u8>) -> AppResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        let mut output = Vec::new();
+        let mut decoder = brotli::Decompressor::new(compressed.as_slice(), 4096);
+        std::io::Read::read_to_end(&mut decoder, &mut output).map_err(|e| {
+            AppError::Repository(format!("failed to decompress brotli payload: {e}"))
+        })?;
+        Ok(output)
+    })
+    .await
+    .map_err(|e| AppError::Repository(format!("brotli decompression panicked: {e}")))?
+}
+
+#[cfg(not(feature = "runtime-plugin-trust"))]
+pub async fn decompress_brotli(_compressed: Vec<u8>) -> AppResult<Vec<u8>> {
+    Err(AppError::Validation(
+        "plugin brotli decompression is not compiled into this target".to_string(),
     ))
 }
 
@@ -384,11 +583,42 @@ pub fn verify_split_digest(
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn verify_digest(label: &str, expected: &str, bytes: &[u8]) -> AppResult<()> {
     let (algorithm, digest) = parse_digest_string(expected)?;
     verify_split_digest(label, &algorithm, &digest, bytes)
 }
 
+pub fn verify_digest_set(label: &str, expected_digests: &[String], bytes: &[u8]) -> AppResult<()> {
+    for digest in expected_digests {
+        let Ok((algorithm, digest_hex)) = parse_digest_string(digest) else {
+            continue;
+        };
+        if algorithm != "blake3" {
+            continue;
+        }
+        return verify_split_digest(label, &algorithm, &digest_hex, bytes);
+    }
+    if !expected_digests.is_empty() {
+        return Err(AppError::Validation(format!(
+            "{label} is missing a usable blake3 digest"
+        )));
+    }
+    Err(AppError::Validation(format!(
+        "{label} must declare at least one digest"
+    )))
+}
+
+pub fn redirect_bundle_url_for(url: &str) -> String {
+    if let Some(prefix) = url.strip_suffix(".json") {
+        return format!("{prefix}{CATALOG_V3_REDIRECT_BUNDLE_SUFFIX}");
+    }
+    format!("{url}{CATALOG_V3_REDIRECT_BUNDLE_SUFFIX}")
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn github_outage_status_from_summary(raw: &[u8]) -> Option<CatalogOutageStatus> {
     let summary: GitHubStatusSummary = serde_json::from_slice(raw).ok()?;
     if summary.status.indicator == "none" {
@@ -426,6 +656,8 @@ pub fn github_outage_status_from_summary(raw: &[u8]) -> Option<CatalogOutageStat
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn validate_central_catalog(catalog: &CentralCatalog) -> AppResult<()> {
     if catalog.schema_version != CENTRAL_CATALOG_SCHEMA_VERSION {
         return Err(AppError::Validation(format!(
@@ -502,6 +734,7 @@ fn validate_central_catalog(catalog: &CentralCatalog) -> AppResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_child_catalog(
     catalog: &ChildCatalog,
     central: Option<&CentralCatalogEntry>,
@@ -582,6 +815,8 @@ fn validate_child_catalog(
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn validate_release_manifest(
     manifest: &PluginReleaseManifest,
     child: &ChildCatalog,
@@ -630,6 +865,289 @@ fn validate_release_manifest(
         expected_repo,
     )?;
     Ok(())
+}
+
+fn validate_catalog_v3_redirect(redirect: &CatalogV3Redirect) -> AppResult<()> {
+    if redirect.schema_version != CATALOG_V3_REDIRECT_SCHEMA_VERSION {
+        return Err(AppError::Validation(format!(
+            "unsupported plugin catalog redirect schema '{}'",
+            redirect.schema_version
+        )));
+    }
+    if redirect.catalog_version == 0 {
+        return Err(AppError::Validation(
+            "plugin catalog redirect catalog_version must be greater than zero".to_string(),
+        ));
+    }
+    if redirect.artifacts.is_empty() {
+        return Err(AppError::Validation(
+            "plugin catalog redirect must include at least one artifact".to_string(),
+        ));
+    }
+    for artifact in &redirect.artifacts {
+        validate_distribution_url("plugin catalog redirect artifact", &artifact.url)?;
+        validate_distribution_url(
+            "plugin catalog redirect artifact signature",
+            &artifact.signature_url,
+        )?;
+        for mirror in &artifact.mirror_urls {
+            validate_distribution_url("plugin catalog redirect artifact mirror", mirror)?;
+        }
+        for mirror in &artifact.signature_mirror_urls {
+            validate_distribution_url("plugin catalog redirect signature mirror", mirror)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_catalog_v3(catalog: &CatalogV3) -> AppResult<()> {
+    if catalog.schema_version != CATALOG_V3_SCHEMA_VERSION {
+        return Err(AppError::Validation(format!(
+            "unsupported plugin catalog schema '{}'",
+            catalog.schema_version
+        )));
+    }
+    if catalog.catalog_version == 0 {
+        return Err(AppError::Validation(
+            "plugin catalog version must be greater than zero".to_string(),
+        ));
+    }
+
+    let mut plugin_ids = HashSet::new();
+    for plugin in &catalog.plugins {
+        require_non_empty("plugin id", &plugin.id)?;
+        require_non_empty("plugin name", &plugin.name)?;
+        require_non_empty("plugin type", &plugin.plugin_type)?;
+        require_non_empty("provider type", &plugin.provider_type)?;
+        require_non_empty("publisher", &plugin.publisher)?;
+        require_non_empty("docs_url", &plugin.docs_url)?;
+        require_non_empty("source_repo", &plugin.source_repo)?;
+        if !plugin_ids.insert(plugin.id.clone()) {
+            return Err(AppError::Validation(format!(
+                "duplicate plugin id '{}' in plugin catalog",
+                plugin.id
+            )));
+        }
+        let source_repo = GitHubRepo::parse(&plugin.source_repo)?;
+        if plugin.required_signer.github_repository != source_repo.slug() {
+            return Err(AppError::Validation(format!(
+                "plugin '{}' signer repo '{}' does not match source repo '{}'",
+                plugin.id,
+                plugin.required_signer.github_repository,
+                source_repo.slug()
+            )));
+        }
+        validate_plugin_release_set(plugin)?;
+    }
+
+    let mut rule_pack_ids = HashSet::new();
+    for pack in &catalog.rule_packs {
+        require_non_empty("rule pack id", &pack.id)?;
+        require_non_empty("rule pack name", &pack.name)?;
+        require_non_empty("rule pack author", &pack.author)?;
+        if !rule_pack_ids.insert(pack.id.clone()) {
+            return Err(AppError::Validation(format!(
+                "duplicate rule pack id '{}' in plugin catalog",
+                pack.id
+            )));
+        }
+        let mut versions = HashSet::new();
+        for release in &pack.releases {
+            parse_version(&release.version)?;
+            if !versions.insert(release.version.clone()) {
+                return Err(AppError::Validation(format!(
+                    "duplicate rule pack release version '{}' for '{}'",
+                    release.version, pack.id
+                )));
+            }
+            if let Some(min_scryer_version) = release.min_scryer_version.as_deref() {
+                Version::parse(min_scryer_version.trim()).map_err(|error| {
+                    AppError::Validation(format!(
+                        "rule pack '{}' has invalid min_scryer_version '{}': {error}",
+                        pack.id, min_scryer_version
+                    ))
+                })?;
+            }
+            if release.rule_pack_digests.is_empty() {
+                return Err(AppError::Validation(format!(
+                    "rule pack '{}' release '{}' must include rule_pack_digests",
+                    pack.id, release.version
+                )));
+            }
+            for digest in &release.rule_pack_digests {
+                require_digest("rule_pack_digest", digest)?;
+            }
+            validate_distribution_artifacts(&pack.id, &release.version, &release.artifacts)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_plugin_release_set(plugin: &CatalogV3PluginEntry) -> AppResult<()> {
+    let mut versions = HashSet::new();
+    for release in &plugin.releases {
+        parse_version(&release.version)?;
+        VersionReq::parse(&release.sdk_constraint).map_err(|e| {
+            AppError::Validation(format!(
+                "invalid sdk_constraint '{}' for plugin '{}': {e}",
+                release.sdk_constraint, plugin.id
+            ))
+        })?;
+        if !versions.insert(release.version.clone()) {
+            return Err(AppError::Validation(format!(
+                "duplicate release version '{}' for plugin '{}'",
+                release.version, plugin.id
+            )));
+        }
+        if release.artifacts.is_empty() {
+            return Err(AppError::Validation(format!(
+                "plugin '{}' release '{}' must include at least one artifact",
+                plugin.id, release.version
+            )));
+        }
+        let mut artifact_keys = HashSet::new();
+        for artifact in &release.artifacts {
+            require_non_empty("artifact runtime", &artifact.runtime)?;
+            if artifact.runtime != CATALOG_V3_RUNTIME_WASIP1 {
+                return Err(AppError::Validation(format!(
+                    "plugin '{}' release '{}' has unsupported runtime '{}'",
+                    plugin.id, release.version, artifact.runtime
+                )));
+            }
+            let mut features = artifact
+                .required_features
+                .iter()
+                .map(|feature| feature.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>();
+            features.sort();
+            features.dedup();
+            for feature in &features {
+                match feature.as_str() {
+                    "simd128" | "relaxed-simd" => {}
+                    _ => {
+                        return Err(AppError::Validation(format!(
+                            "plugin '{}' release '{}' uses unsupported required feature '{}'",
+                            plugin.id, release.version, feature
+                        )));
+                    }
+                }
+            }
+            if features.iter().any(|feature| feature == "relaxed-simd")
+                && !features.iter().any(|feature| feature == "simd128")
+            {
+                return Err(AppError::Validation(format!(
+                    "plugin '{}' release '{}' cannot require relaxed-simd without simd128",
+                    plugin.id, release.version
+                )));
+            }
+            let artifact_url = artifact.url.trim();
+            let encoding = artifact_encoding_from_url(artifact_url).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "plugin '{}' release '{}' artifact '{}' has unsupported encoding",
+                    plugin.id, release.version, artifact.url
+                ))
+            })?;
+            let artifact_key = format!("{encoding}|{}", features.join(","));
+            if !artifact_keys.insert(artifact_key) {
+                return Err(AppError::Validation(format!(
+                    "plugin '{}' release '{}' has duplicate artifact variant/encoding rows",
+                    plugin.id, release.version
+                )));
+            }
+            validate_distribution_artifact(
+                &format!("plugin '{}' release '{}'", plugin.id, release.version),
+                artifact_url,
+                &artifact.mirror_urls,
+                &artifact.signature_url,
+                &artifact.signature_mirror_urls,
+                &artifact.digests,
+            )?;
+            if artifact.wasm_digests.is_empty() {
+                return Err(AppError::Validation(format!(
+                    "plugin '{}' release '{}' artifact '{}' must include wasm_digests",
+                    plugin.id, release.version, artifact.url
+                )));
+            }
+            for digest in &artifact.wasm_digests {
+                require_digest("wasm_digest", digest)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_distribution_artifacts(
+    owner_id: &str,
+    release_version: &str,
+    artifacts: &[CatalogV3DistributionArtifact],
+) -> AppResult<()> {
+    if artifacts.is_empty() {
+        return Err(AppError::Validation(format!(
+            "'{owner_id}' release '{release_version}' must include at least one artifact"
+        )));
+    }
+    for artifact in artifacts {
+        validate_distribution_artifact(
+            &format!("'{}' release '{}'", owner_id, release_version),
+            &artifact.url,
+            &artifact.mirror_urls,
+            &artifact.signature_url,
+            &artifact.signature_mirror_urls,
+            &artifact.digests,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_distribution_artifact(
+    label: &str,
+    url: &str,
+    mirror_urls: &[String],
+    signature_url: &str,
+    signature_mirror_urls: &[String],
+    digests: &[String],
+) -> AppResult<()> {
+    validate_distribution_url(label, url)?;
+    validate_distribution_url(&format!("{label} signature"), signature_url)?;
+    for mirror in mirror_urls {
+        validate_distribution_url(&format!("{label} mirror"), mirror)?;
+    }
+    for mirror in signature_mirror_urls {
+        validate_distribution_url(&format!("{label} signature mirror"), mirror)?;
+    }
+    if digests.is_empty() {
+        return Err(AppError::Validation(format!(
+            "{label} must include at least one digest"
+        )));
+    }
+    for digest in digests {
+        require_digest("artifact digest", digest)?;
+    }
+    Ok(())
+}
+
+fn validate_distribution_url(label: &str, url: &str) -> AppResult<()> {
+    let parsed = Url::parse(url).map_err(|error| {
+        AppError::Validation(format!("{label} URL '{url}' is invalid: {error}"))
+    })?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(()),
+        scheme => Err(AppError::Validation(format!(
+            "{label} URL '{url}' must use http or https, got '{scheme}'"
+        ))),
+    }
+}
+
+pub fn artifact_encoding_from_url(url: &str) -> Option<&'static str> {
+    let normalized = url.trim().to_ascii_lowercase();
+    if normalized.ends_with(".br") {
+        Some("br")
+    } else if normalized.ends_with(".zst") {
+        Some("zst")
+    } else {
+        None
+    }
 }
 
 #[cfg(feature = "runtime-plugin-trust")]
@@ -704,47 +1222,73 @@ fn rekor_integrated_time(integrated_time: i64) -> AppResult<UnixTime> {
 
 #[cfg(feature = "runtime-plugin-trust")]
 fn cached_rekor_verification_keys() -> AppResult<Arc<RekorVerificationKeys>> {
-    REKOR_VERIFICATION_KEYS
-        .get_or_init(|| {
-            let trust_root = tokio::runtime::Handle::current()
-                .block_on(SigstoreTrustRoot::new(None))
-                .map_err(|e| format!("failed to load Sigstore trust root: {e}"))?;
-            let rekor_keys = trust_root
-                .rekor_keys()
-                .map_err(|e| format!("failed to load Sigstore Rekor public keys: {e}"))?;
-            parse_rekor_verification_keys(rekor_keys)
-                .map(Arc::new)
-                .map_err(|error| error.to_string())
-        })
-        .clone()
-        .map_err(AppError::Repository)
+    Ok(cached_sigstore_trust_material()?.rekor_keys.clone())
 }
 
 #[cfg(feature = "runtime-plugin-trust")]
 fn cached_fulcio_trust_anchors() -> AppResult<Arc<FulcioTrustAnchors>> {
-    FULCIO_TRUST_ANCHORS
-        .get_or_init(|| {
-            let trust_root = tokio::runtime::Handle::current()
-                .block_on(SigstoreTrustRoot::new(None))
-                .map_err(|e| format!("failed to load Sigstore trust root: {e}"))?;
-            let fulcio_certs = trust_root
-                .fulcio_certs()
-                .map_err(|e| format!("failed to load Sigstore Fulcio certificates: {e}"))?;
-            let anchors = fulcio_certs
-                .iter()
-                .map(|cert| {
-                    webpki::anchor_from_trusted_cert(cert)
-                        .map(|anchor| anchor.to_owned())
-                        .map_err(|error| error.to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            if anchors.is_empty() {
-                return Err("Sigstore Fulcio trust root is empty".to_string());
-            }
-            Ok(Arc::new(anchors))
+    Ok(cached_sigstore_trust_material()?.fulcio_anchors.clone())
+}
+
+#[cfg(feature = "runtime-plugin-trust")]
+fn cached_sigstore_trust_material() -> AppResult<Arc<SigstoreTrustMaterial>> {
+    let cache = SIGSTORE_TRUST_MATERIAL.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().map_err(|_| {
+        AppError::Repository("sigstore trust-root cache lock is poisoned".to_string())
+    })?;
+    if let Some(cached) = guard.as_ref() {
+        return Ok(cached.clone());
+    }
+    let loaded = Arc::new(load_sigstore_trust_material_blocking()?);
+    *guard = Some(loaded.clone());
+    Ok(loaded)
+}
+
+#[cfg(feature = "runtime-plugin-trust")]
+fn load_sigstore_trust_material_blocking() -> AppResult<SigstoreTrustMaterial> {
+    let trust_root = tokio::runtime::Handle::current()
+        .block_on(SigstoreTrustRoot::new(None))
+        .map_err(|e| AppError::Repository(format!("failed to load Sigstore trust root: {e}")))?;
+    let rekor_keys = trust_root.rekor_keys().map_err(|e| {
+        AppError::Repository(format!("failed to load Sigstore Rekor public keys: {e}"))
+    })?;
+    let fulcio_certs = trust_root.fulcio_certs().map_err(|e| {
+        AppError::Repository(format!("failed to load Sigstore Fulcio certificates: {e}"))
+    })?;
+    let anchors = fulcio_certs
+        .iter()
+        .map(|cert| {
+            webpki::anchor_from_trusted_cert(cert)
+                .map(|anchor| anchor.to_owned())
+                .map_err(|error| AppError::Repository(error.to_string()))
         })
-        .clone()
-        .map_err(AppError::Repository)
+        .collect::<Result<Vec<_>, _>>()?;
+    if anchors.is_empty() {
+        return Err(AppError::Repository(
+            "Sigstore Fulcio trust root is empty".to_string(),
+        ));
+    }
+    Ok(SigstoreTrustMaterial {
+        rekor_keys: Arc::new(parse_rekor_verification_keys(rekor_keys)?),
+        fulcio_anchors: Arc::new(anchors),
+    })
+}
+
+#[cfg(feature = "runtime-plugin-trust")]
+pub async fn prime_sigstore_trust_roots() -> AppResult<()> {
+    tokio::task::spawn_blocking(cached_sigstore_trust_material)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("sigstore trust-root priming panicked: {error}"))
+        })?
+        .map(|_| ())
+}
+
+#[cfg(not(feature = "runtime-plugin-trust"))]
+pub async fn prime_sigstore_trust_roots() -> AppResult<()> {
+    Err(AppError::Validation(
+        "plugin signature verification is not compiled into this target".to_string(),
+    ))
 }
 
 #[cfg(feature = "runtime-plugin-trust")]
@@ -1006,6 +1550,8 @@ fn require_non_empty(label: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn require_identity_match(label: &str, expected: &str, actual: &str) -> AppResult<()> {
     if expected != actual {
         return Err(AppError::Validation(format!(
@@ -1042,6 +1588,8 @@ fn normalize_hex_digest(input: &str) -> AppResult<String> {
     Ok(trimmed.to_ascii_lowercase())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn require_release_asset_url(label: &str, url: &str, repo: &GitHubRepo) -> AppResult<()> {
     if !url.starts_with(&repo.release_asset_prefix()) {
         return Err(AppError::Validation(format!(
@@ -1052,6 +1600,8 @@ fn require_release_asset_url(label: &str, url: &str, repo: &GitHubRepo) -> AppRe
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn plugin_manifest_asset_url(manifest_url: &str, asset_name: &str) -> AppResult<String> {
     let parsed = Url::parse(manifest_url)
         .map_err(|e| AppError::Validation(format!("invalid plugin manifest URL: {e}")))?;
@@ -1081,6 +1631,14 @@ mod tests {
             parse_digest_string("blake3:0123456789abcdef").expect("digest should parse");
         assert_eq!(algorithm, "blake3");
         assert_eq!(digest, "0123456789abcdef");
+    }
+
+    #[test]
+    fn redirect_bundle_url_uses_json_companion_contract() {
+        assert_eq!(
+            redirect_bundle_url_for("https://cdn.scryer.media/catalog/v3/catalog-v3.redirect.json"),
+            "https://cdn.scryer.media/catalog/v3/catalog-v3.redirect.bundle.json"
+        );
     }
 
     #[test]

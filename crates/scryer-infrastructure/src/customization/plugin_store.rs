@@ -372,6 +372,16 @@ impl PluginInstallationRepository for PluginStore {
         .await
     }
 
+    async fn delete_plugin_catalog_source(&self, source_key: &str) -> AppResult<()> {
+        execute_write(
+            &self.datastore,
+            "delete_plugin_catalog_source",
+            "DELETE FROM plugin_catalog_sources WHERE source_key = {}",
+            vec![SqlArg::Text(source_key.to_string())],
+        )
+        .await
+    }
+
     async fn list_plugin_catalog_sources(&self) -> AppResult<Vec<PluginCatalogSource>> {
         let sql = format!(
             "SELECT {PLUGIN_CATALOG_SOURCE_COLUMNS}
@@ -793,6 +803,7 @@ fn support_tier_label(value: PluginSupportTier) -> &'static str {
 
 fn parse_wasm_encoding(value: &str) -> PluginWasmEncoding {
     match value {
+        "brotli" => PluginWasmEncoding::Brotli,
         "zstd" => PluginWasmEncoding::Zstd,
         _ => PluginWasmEncoding::Identity,
     }
@@ -801,6 +812,7 @@ fn parse_wasm_encoding(value: &str) -> PluginWasmEncoding {
 fn wasm_encoding_label(value: PluginWasmEncoding) -> &'static str {
     match value {
         PluginWasmEncoding::Identity => "identity",
+        PluginWasmEncoding::Brotli => "brotli",
         PluginWasmEncoding::Zstd => "zstd",
     }
 }

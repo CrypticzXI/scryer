@@ -2441,6 +2441,7 @@ pub enum PluginSupportTier {
 pub enum PluginWasmEncoding {
     #[default]
     Identity,
+    Brotli,
     Zstd,
 }
 

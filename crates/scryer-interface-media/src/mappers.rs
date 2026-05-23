@@ -1664,6 +1664,7 @@ pub fn from_registry_plugin(p: RegistryPlugin) -> RegistryPluginPayload {
         official: p.official,
         publisher: p.publisher,
         support_tier: support_tier_label(p.support_tier),
+        status: p.status,
         docs_url: p.docs_url,
         source_repo: p.source_repo,
         builtin: p.builtin,
@@ -1883,6 +1884,7 @@ pub fn from_plugin_catalog_status(status: PluginCatalogStatus) -> PluginCatalogS
         last_checked_at: status.last_checked_at,
         outage_message: status.outage_message,
         blocked_actions: status.blocked_actions,
+        restore_warnings: status.restore_warnings,
         last_error: status.last_error,
     }
 }
