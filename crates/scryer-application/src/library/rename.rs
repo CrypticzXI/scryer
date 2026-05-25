@@ -1525,18 +1525,9 @@ fn resolve_rename_common_metadata(
         .video_codec
         .map(|codec| codec.to_string())
         .or_else(|| {
-            media_file.and_then(|file| {
-                file.video_codec_parsed
-                    .clone()
-                    .map(|codec| codec.to_string())
-            })
+            media_file.and_then(|file| file.video_codec_parsed.map(|codec| codec.to_string()))
         })
-        .or_else(|| {
-            parsed_current
-                .video_codec
-                .clone()
-                .map(|codec| codec.to_string())
-        })
+        .or_else(|| parsed_current.video_codec.map(|codec| codec.to_string()))
         .unwrap_or_default();
     let audio_codec = analyzed
         .audio_codec

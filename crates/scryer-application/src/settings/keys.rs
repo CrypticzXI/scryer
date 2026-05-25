@@ -29,6 +29,14 @@ pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local
 pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";
 pub const FORM_LOGIN_ENABLED_KEY: &str = "auth.form_login_enabled";
 pub const SKIP_LOGIN_FOR_LOCAL_IPS_KEY: &str = "auth.skip_login_for_local_ips";
+pub const AUTH_ALLOWED_PROVIDERS_KEY: &str = "auth.providers.allowed";
+pub const AUTH_PROVIDER_LOGIN_ENABLED_KEY: &str = "auth.providers.login_enabled";
+pub const AUTH_PROVIDER_LINKING_ENABLED_KEY: &str = "auth.providers.linking_enabled";
+pub const AUTH_ALLOWED_JELLYFIN_CONNECTION_IDS_KEY: &str =
+    "auth.providers.jellyfin.allowed_connection_ids";
+pub const AUTH_ALLOWED_PLEX_CONNECTION_IDS_KEY: &str = "auth.providers.plex.allowed_connection_ids";
+pub const AUTH_JELLYFIN_CONNECTIONS_KEY: &str = "auth.providers.jellyfin.connections";
+pub const AUTH_PLEX_CONNECTIONS_KEY: &str = "auth.providers.plex.connections";
 
 pub(crate) fn default_indexer_routing_categories_for_scope(scope_id: &str) -> Vec<String> {
     match scope_id {

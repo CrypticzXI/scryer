@@ -1,8 +1,8 @@
 use async_graphql::{Enum, InputObject, Json, MaybeUndefined, OneofObject, SimpleObject};
 use scryer_domain::{
     AppPermission, DomainEventType, DownloadQueueState, ImportDecision, ImportErrorCode,
-    ImportSkipReason, ImportStatus, ImportType, LibraryPermission, MediaFacet, TitleMatchType,
-    TrackedDownloadState, TrackedDownloadStatus,
+    ImportSkipReason, ImportStatus, ImportType, LibraryPermission, MediaFacet, MediaRequestStatus,
+    TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
 };
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -117,6 +117,26 @@ impl MediaFacetValue {
 pub enum PendingImportStatusValue {
     Pending,
     Ignored,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "lowercase")]
+pub enum MediaRequestStatusValue {
+    Pending,
+}
+
+impl MediaRequestStatusValue {
+    pub fn from_domain(value: MediaRequestStatus) -> Self {
+        match value {
+            MediaRequestStatus::Pending => Self::Pending,
+        }
+    }
+
+    pub fn into_domain(self) -> MediaRequestStatus {
+        match self {
+            Self::Pending => MediaRequestStatus::Pending,
+        }
+    }
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -351,6 +371,7 @@ pub enum DomainEventTypeValue {
     JobNextRunUpdated,
     DownloadQueueItemUpserted,
     DownloadQueueItemRemoved,
+    MediaRequestSubmitted,
 }
 
 impl DomainEventTypeValue {
@@ -394,6 +415,7 @@ impl DomainEventTypeValue {
             DomainEventType::JobNextRunUpdated => Self::JobNextRunUpdated,
             DomainEventType::DownloadQueueItemUpserted => Self::DownloadQueueItemUpserted,
             DomainEventType::DownloadQueueItemRemoved => Self::DownloadQueueItemRemoved,
+            DomainEventType::MediaRequestSubmitted => Self::MediaRequestSubmitted,
         }
     }
 
@@ -437,6 +459,7 @@ impl DomainEventTypeValue {
             Self::JobNextRunUpdated => DomainEventType::JobNextRunUpdated,
             Self::DownloadQueueItemUpserted => DomainEventType::DownloadQueueItemUpserted,
             Self::DownloadQueueItemRemoved => DomainEventType::DownloadQueueItemRemoved,
+            Self::MediaRequestSubmitted => DomainEventType::MediaRequestSubmitted,
         }
     }
 }
@@ -798,6 +821,62 @@ pub struct LoginInput {
     pub password: String,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalAccountProviderValue {
+    Plex,
+    Jellyfin,
+}
+
+impl ExternalAccountProviderValue {
+    pub fn into_domain(self) -> scryer_domain::ExternalAccountProvider {
+        match self {
+            Self::Plex => scryer_domain::ExternalAccountProvider::Plex,
+            Self::Jellyfin => scryer_domain::ExternalAccountProvider::Jellyfin,
+        }
+    }
+
+    pub fn from_domain(provider: scryer_domain::ExternalAccountProvider) -> Self {
+        match provider {
+            scryer_domain::ExternalAccountProvider::Plex => Self::Plex,
+            scryer_domain::ExternalAccountProvider::Jellyfin => Self::Jellyfin,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum ExternalAccountStatusValue {
+    PendingClaim,
+    Active,
+    Disabled,
+}
+
+impl ExternalAccountStatusValue {
+    pub fn from_domain(status: scryer_domain::ExternalAccountStatus) -> Self {
+        match status {
+            scryer_domain::ExternalAccountStatus::PendingClaim => Self::PendingClaim,
+            scryer_domain::ExternalAccountStatus::Active => Self::Active,
+            scryer_domain::ExternalAccountStatus::Disabled => Self::Disabled,
+        }
+    }
+}
+
+#[derive(InputObject)]
+pub struct LoginWithPlexInput {
+    pub connection_id: String,
+    pub plex_auth_token: String,
+    pub persist_session: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct LoginWithJellyfinInput {
+    pub connection_id: String,
+    pub username: String,
+    pub password: String,
+    pub persist_session: Option<bool>,
+}
+
 #[derive(InputObject)]
 pub struct WebauthnCompleteInput {
     pub challenge_id: String,
@@ -836,6 +915,41 @@ pub struct PasskeySummaryPayload {
 pub struct ExternalIdPayload {
     pub source: String,
     pub value: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaRequestRequesterPayload {
+    pub user_id: String,
+    pub username: String,
+    pub requested_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaRequestPayload {
+    pub id: String,
+    pub library_id: String,
+    pub facet: MediaFacetValue,
+    pub status: MediaRequestStatusValue,
+    pub identity_fingerprint: String,
+    pub title: String,
+    pub sort_title: Option<String>,
+    pub slug: Option<String>,
+    pub poster_url: Option<String>,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub language: Option<String>,
+    pub content_status: Option<String>,
+    pub external_ids: Vec<ExternalIdPayload>,
+    pub requesters: Vec<MediaRequestRequesterPayload>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SubmitMediaRequestPayload {
+    pub accepted: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -930,6 +1044,22 @@ pub struct UserPayload {
     pub username: String,
     pub app_permissions: Vec<AppPermissionValue>,
     pub library_permissions: Vec<UserLibraryPermissionGrantPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct LinkedAccountPayload {
+    pub id: String,
+    pub user_id: String,
+    pub provider: ExternalAccountProviderValue,
+    pub connection_id: String,
+    pub external_user_id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub status: ExternalAccountStatusValue,
+    pub verified_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1840,6 +1970,22 @@ pub struct AddTitleInput {
     pub content_status: Option<String>,
 }
 
+#[derive(InputObject, Clone)]
+pub struct SubmitMediaRequestInput {
+    pub library_id: String,
+    pub facet: MediaFacetValue,
+    pub title: String,
+    pub external_ids: Vec<ExternalIdInput>,
+    pub poster_url: Option<String>,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub sort_title: Option<String>,
+    pub slug: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub language: Option<String>,
+    pub content_status: Option<String>,
+}
+
 #[derive(InputObject)]
 pub struct SearchReleasesInput {
     pub title_id: String,
@@ -2057,6 +2203,72 @@ pub struct UpdateAutoBackupSettingsInput {
 pub struct UpdateSecuritySettingsInput {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct AuthProviderConnectionPayload {
+    pub id: String,
+    pub display_name: String,
+    pub user_visible_url: Option<String>,
+    pub base_url: Option<String>,
+    pub machine_id: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct AuthProviderSettingsPayload {
+    pub allowed_providers: Vec<ExternalAccountProviderValue>,
+    pub provider_login_enabled: Vec<ExternalAccountProviderValue>,
+    pub provider_linking_enabled: Vec<ExternalAccountProviderValue>,
+    pub allowed_jellyfin_connection_ids: Vec<String>,
+    pub allowed_plex_connection_ids: Vec<String>,
+    pub allowed_jellyfin_connections: Vec<AuthProviderConnectionPayload>,
+    pub allowed_plex_connections: Vec<AuthProviderConnectionPayload>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct AuthProviderConnectionInput {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub base_url: Option<String>,
+    pub machine_id: Option<String>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateAuthProviderSettingsInput {
+    pub allowed_providers: Vec<ExternalAccountProviderValue>,
+    pub provider_login_enabled: Vec<ExternalAccountProviderValue>,
+    pub provider_linking_enabled: Vec<ExternalAccountProviderValue>,
+    pub allowed_jellyfin_connection_ids: Vec<String>,
+    pub allowed_plex_connection_ids: Vec<String>,
+    pub allowed_jellyfin_connections: Option<Vec<AuthProviderConnectionInput>>,
+    pub allowed_plex_connections: Option<Vec<AuthProviderConnectionInput>>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct CreateExternalAccountInviteInput {
+    pub user_id: String,
+    pub connection_id: String,
+    pub provider: ExternalAccountProviderValue,
+    pub external_user_id: String,
+    pub username: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct LinkPlexAccountInput {
+    pub connection_id: String,
+    pub plex_auth_token: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct LinkJellyfinAccountInput {
+    pub connection_id: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UnlinkExternalAccountInput {
+    pub linked_account_id: String,
 }
 
 #[derive(InputObject, Clone)]
@@ -2687,6 +2899,7 @@ pub struct MetadataEpisodePayload {
     pub aired: String,
     pub runtime_minutes: i32,
     pub is_filler: bool,
+    pub image_url: String,
 }
 
 #[derive(SimpleObject, Clone)]

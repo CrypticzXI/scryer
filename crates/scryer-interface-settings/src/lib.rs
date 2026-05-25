@@ -44,6 +44,48 @@ fn from_subtitle_settings(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_auth_provider_settings_redacts_connection_internals() {
+        let payload =
+            from_auth_provider_runtime_settings(scryer_application::AuthProviderSettings {
+                allowed_providers: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
+                provider_login_enabled: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
+                provider_linking_enabled: vec![scryer_domain::ExternalAccountProvider::Jellyfin],
+                allowed_jellyfin_connection_ids: vec!["jellyfin-main".to_string()],
+                allowed_plex_connection_ids: vec![],
+                allowed_jellyfin_connections: vec![scryer_application::AuthProviderConnection {
+                    id: "jellyfin-main".to_string(),
+                    display_name: "Main Jellyfin".to_string(),
+                    base_url: Some("https://jellyfin.example.test".to_string()),
+                    machine_id: None,
+                }],
+                allowed_plex_connections: vec![scryer_application::AuthProviderConnection {
+                    id: "plex-main".to_string(),
+                    display_name: "Main Plex".to_string(),
+                    base_url: None,
+                    machine_id: Some("machine-1".to_string()),
+                }],
+            });
+
+        assert_eq!(payload.allowed_jellyfin_connections[0].id, "jellyfin-main");
+        assert_eq!(
+            payload.allowed_jellyfin_connections[0].display_name,
+            "Main Jellyfin"
+        );
+        assert!(
+            payload.allowed_jellyfin_connections[0]
+                .user_visible_url
+                .is_none()
+        );
+        assert!(payload.allowed_jellyfin_connections[0].base_url.is_none());
+        assert!(payload.allowed_plex_connections[0].machine_id.is_none());
+    }
+}
+
 fn from_acquisition_settings(
     settings: scryer_application::AcquisitionSettings,
 ) -> AcquisitionSettingsPayload {
@@ -96,6 +138,103 @@ fn from_security_settings(
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
+    }
+}
+
+fn auth_provider_connections(
+    connections: Vec<scryer_application::AuthProviderConnection>,
+) -> Vec<AuthProviderConnectionPayload> {
+    connections
+        .into_iter()
+        .map(|connection| AuthProviderConnectionPayload {
+            user_visible_url: connection
+                .base_url
+                .clone()
+                .or_else(|| connection.machine_id.clone()),
+            id: connection.id,
+            display_name: connection.display_name,
+            base_url: connection.base_url,
+            machine_id: connection.machine_id,
+        })
+        .collect()
+}
+
+fn runtime_auth_provider_connections(
+    connections: Vec<scryer_application::AuthProviderConnection>,
+) -> Vec<AuthProviderConnectionPayload> {
+    connections
+        .into_iter()
+        .map(|connection| AuthProviderConnectionPayload {
+            id: connection.id,
+            display_name: connection.display_name,
+            user_visible_url: None,
+            base_url: None,
+            machine_id: None,
+        })
+        .collect()
+}
+
+fn from_auth_provider_settings(
+    settings: scryer_application::AuthProviderSettings,
+) -> AuthProviderSettingsPayload {
+    let allowed_jellyfin_connection_ids = settings.allowed_jellyfin_connection_ids;
+    let allowed_plex_connection_ids = settings.allowed_plex_connection_ids;
+
+    AuthProviderSettingsPayload {
+        allowed_providers: settings
+            .allowed_providers
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        provider_login_enabled: settings
+            .provider_login_enabled
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        provider_linking_enabled: settings
+            .provider_linking_enabled
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        allowed_jellyfin_connections: auth_provider_connections(
+            settings.allowed_jellyfin_connections,
+        ),
+        allowed_plex_connections: auth_provider_connections(settings.allowed_plex_connections),
+        allowed_jellyfin_connection_ids,
+        allowed_plex_connection_ids,
+    }
+}
+
+fn from_auth_provider_runtime_settings(
+    settings: scryer_application::AuthProviderSettings,
+) -> AuthProviderSettingsPayload {
+    let allowed_jellyfin_connection_ids = settings.allowed_jellyfin_connection_ids;
+    let allowed_plex_connection_ids = settings.allowed_plex_connection_ids;
+
+    AuthProviderSettingsPayload {
+        allowed_providers: settings
+            .allowed_providers
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        provider_login_enabled: settings
+            .provider_login_enabled
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        provider_linking_enabled: settings
+            .provider_linking_enabled
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        allowed_jellyfin_connections: runtime_auth_provider_connections(
+            settings.allowed_jellyfin_connections,
+        ),
+        allowed_plex_connections: runtime_auth_provider_connections(
+            settings.allowed_plex_connections,
+        ),
+        allowed_jellyfin_connection_ids,
+        allowed_plex_connection_ids,
     }
 }
 
@@ -197,6 +336,29 @@ impl SettingsQueries {
             .map_err(to_gql_error)?;
 
         Ok(from_security_settings(settings, &auth_runtime.snapshot()))
+    }
+
+    async fn auth_provider_settings(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<AuthProviderSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.get_auth_provider_settings(&actor)
+            .await
+            .map(from_auth_provider_settings)
+            .map_err(to_gql_error)
+    }
+
+    async fn auth_provider_runtime_settings(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<AuthProviderSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        app.get_auth_provider_runtime_settings()
+            .await
+            .map(from_auth_provider_runtime_settings)
+            .map_err(to_gql_error)
     }
 
     async fn auth_runtime_state(&self, ctx: &Context<'_>) -> GqlResult<AuthRuntimeStatePayload> {

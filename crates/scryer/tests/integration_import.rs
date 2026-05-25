@@ -283,6 +283,7 @@ async fn seed_series_episode(ctx: &TestContext, title: &Title) -> Episode {
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -397,6 +398,7 @@ async fn seed_series_episode_in_collection(
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };

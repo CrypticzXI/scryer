@@ -1631,9 +1631,9 @@ async fn sabnzbd_test_connection_returns_version() {
 async fn sabnzbd_test_connection_accepts_username_password_auth() {
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
+    Mock::given(method("POST"))
         .and(path("/api"))
-        .and(query_param("mode", "version"))
+        .and(body_string_contains("mode=version"))
         .respond_with(
             ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/version.json")),
         )
@@ -1642,6 +1642,7 @@ async fn sabnzbd_test_connection_accepts_username_password_auth() {
 
     Mock::given(method("POST"))
         .and(path("/api"))
+        .and(body_string_contains("mode=queue"))
         .respond_with(
             ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
         )
@@ -1656,8 +1657,12 @@ async fn sabnzbd_test_connection_accepts_username_password_auth() {
     let requests = server.received_requests().await.unwrap();
     let auth_request = requests
         .iter()
-        .find(|request| request.method.as_str() == "POST" && request.url.path() == "/api")
-        .expect("credential auth request should be posted");
+        .find(|request| {
+            request.method.as_str() == "POST"
+                && request.url.path() == "/api"
+                && String::from_utf8_lossy(&request.body).contains("mode=queue")
+        })
+        .expect("credential queue auth request should be posted");
     let body = String::from_utf8_lossy(&auth_request.body);
     assert!(body.contains("mode=queue"));
     assert!(body.contains("ma_username=test-user"));

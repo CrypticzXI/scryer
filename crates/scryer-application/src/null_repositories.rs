@@ -5,7 +5,8 @@ use chrono::Utc;
 use scryer_domain::ImportFileResult;
 use scryer_domain::{
     AppPermissionMask, DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus,
-    ImportType, Library, LibraryGrant, MediaFacet, NewDomainEvent, TitleHistoryEventType,
+    ImportType, Library, LibraryGrant, MediaFacet, MediaRequest, NewDomainEvent,
+    TitleHistoryEventType, User,
 };
 
 use scryer_domain::RuleSet;
@@ -22,19 +23,21 @@ use crate::{
     AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     CutoffUnmetQualitySummary, DomainEventRepository, DownloadQueueCommandRecord,
     DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, ExternalImportMonitorSnapshotRepository, FileImporter,
-    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
-    IndexerQueryStats, IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository,
-    LibraryProbeRepository, LibraryProbeSignature, LibraryRepository, LibraryRootDraft,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedItemRepository, MediaFileRepository,
-    NewBlocklistEntry, NotificationChannelRepository, NotificationSubscriptionRepository,
-    PendingRelease, PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
-    PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
-    RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
-    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
-    TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, WantedItem, WantedItemRepository,
-    WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
+    DownloadSubmissionRepository, ExternalIdentityVerifier,
+    ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
+    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
+    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
+    LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestQuery,
+    MediaRequestRepository, NewBlocklistEntry, NewMediaRequest, NotificationChannelRepository,
+    NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository, PendingStagedNzb,
+    PluginDescriptorLoader, PluginInstallationRepository, PostProcessingScriptRepository,
+    ReleaseDecision, RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore,
+    SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
+    TitleImageProcessor, TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
+    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, UserExternalAccountRepository,
+    VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
+    WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
     WorkflowOperationRepository, ports::DatastoreInfo, ports::LogicalBackupExporter,
 };
 
@@ -1461,6 +1464,27 @@ impl LibraryRepository for NullLibraryRepository {
 }
 
 #[derive(Default)]
+pub struct NullMediaRequestRepository;
+
+#[async_trait]
+impl MediaRequestRepository for NullMediaRequestRepository {
+    async fn submit(
+        &self,
+        _request: NewMediaRequest,
+        _requester: &User,
+        _submitted_event: NewDomainEvent,
+    ) -> AppResult<MediaRequest> {
+        Err(AppError::Repository(
+            "media request repository not configured".into(),
+        ))
+    }
+
+    async fn list(&self, _query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
 pub struct NullWebauthnRepository;
 
 #[async_trait]
@@ -1519,6 +1543,70 @@ impl WebauthnRepository for NullWebauthnRepository {
 
     async fn delete_expired_challenges(&self, _: &str) -> AppResult<u64> {
         Ok(0)
+    }
+}
+
+#[derive(Default)]
+pub struct NullUserExternalAccountRepository;
+
+#[async_trait]
+impl UserExternalAccountRepository for NullUserExternalAccountRepository {
+    async fn create(
+        &self,
+        _: scryer_domain::UserExternalAccount,
+    ) -> AppResult<scryer_domain::UserExternalAccount> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn list_by_user_id(&self, _: &str) -> AppResult<Vec<scryer_domain::UserExternalAccount>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _: &str) -> AppResult<Option<scryer_domain::UserExternalAccount>> {
+        Ok(None)
+    }
+
+    async fn get_by_provider_identity(
+        &self,
+        _: scryer_domain::ExternalAccountProvider,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<scryer_domain::UserExternalAccount>> {
+        Ok(None)
+    }
+
+    async fn update(
+        &self,
+        _: scryer_domain::UserExternalAccount,
+    ) -> AppResult<scryer_domain::UserExternalAccount> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullExternalIdentityVerifier;
+
+#[async_trait]
+impl ExternalIdentityVerifier for NullExternalIdentityVerifier {
+    async fn verify_plex(&self, _: &str, _: &str) -> AppResult<VerifiedExternalIdentity> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn verify_jellyfin(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> AppResult<VerifiedExternalIdentity> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
     }
 }
 

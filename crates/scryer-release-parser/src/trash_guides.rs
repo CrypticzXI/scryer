@@ -219,7 +219,7 @@ mod tests {
         let tokens = vec![
             "THE".to_string(),
             "UPSCALER".to_string(),
-            "REPACK2".to_string(),
+            "REPACK".to_string(),
         ];
         let matched = detect_token_signals(&tokens);
         assert!(matched.ai_enhanced);

@@ -1,13 +1,16 @@
 
 import * as React from "react";
-import { ArrowLeft, Loader2, Plus, Search, X } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, Search, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
-import type { MetadataCatalogAddOptions } from "@/lib/hooks/use-global-search";
+import type {
+  MetadataCatalogAddOptions,
+  MetadataCatalogRequestOptions,
+} from "@/lib/hooks/use-global-search";
 import { FACET_REGISTRY } from "@/lib/facets/registry";
 import {
   sectionLabelForFacet,
@@ -22,6 +25,7 @@ import {
 import { TitlePoster } from "@/components/title-poster";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { AddToCatalogDialog, EMPTY_SEARCH_RESULT } from "@/components/root/add-to-catalog-dialog";
+import { RequestMediaDialog } from "@/components/root/request-media-dialog";
 
 type MobileSearchOverlayProps = {
   onClose: () => void;
@@ -49,6 +53,10 @@ export function MobileSearchOverlay({
   const t = useTranslate();
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [addDialogTarget, setAddDialogTarget] = React.useState<{
+    result: MetadataTvdbSearchItem;
+    facet: Facet;
+  } | null>(null);
+  const [requestDialogTarget, setRequestDialogTarget] = React.useState<{
     result: MetadataTvdbSearchItem;
     facet: Facet;
   } | null>(null);
@@ -124,10 +132,12 @@ export function MobileSearchOverlay({
     isCatalogConfigReady,
     resolveDefaultQualityProfileIdForFacet,
     addMetadataSearchResultToCatalog,
+    requestMetadataSearchResult,
     isMetadataSearchResultInCatalog,
     catalogQualityProfileOptions,
     rootFoldersByFacet,
     librariesByFacet,
+    requestableLibrariesByFacet,
     setGlobalSearch,
     resetGlobalSearch,
   } = searchState;
@@ -159,6 +169,17 @@ export function MobileSearchOverlay({
       return titleId;
     },
     [addMetadataSearchResultToCatalog, librariesByFacet, onOpenOverview, resetGlobalSearch],
+  );
+
+  const handleRequestDialogSubmit = React.useCallback(
+    async (result: MetadataTvdbSearchItem, facet: Facet, options: MetadataCatalogRequestOptions) => {
+      const accepted = await requestMetadataSearchResult(result, facet, options);
+      if (accepted) {
+        resetGlobalSearch();
+      }
+      return accepted;
+    },
+    [requestMetadataSearchResult, resetGlobalSearch],
   );
 
   const renderCatalogItem = React.useCallback(
@@ -217,6 +238,15 @@ export function MobileSearchOverlay({
   const renderMetadataItem = React.useCallback(
     (result: MetadataTvdbSearchItem, facet: "movie" | "series" | "anime") => {
       const isInCatalog = isMetadataSearchResultInCatalog(facet, result);
+      const canAdd = librariesByFacet[facet].length > 0;
+      const canRequest = requestableLibrariesByFacet[facet].length > 0;
+      const opensRequestDialog = !canAdd && canRequest;
+      const disabled = isInCatalog || (!canAdd && !canRequest);
+      const actionLabel = isInCatalog
+        ? t("search.alreadyCataloged")
+        : opensRequestDialog
+          ? t("search.request")
+          : t("search.configureAdd");
       const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
 
       return (
@@ -249,17 +279,25 @@ export function MobileSearchOverlay({
             <Button
               id={globalSearchConfigureAddId(facet, result)}
               type="button"
-              variant={isInCatalog ? "secondary" : "default"}
+              variant={disabled ? "secondary" : "default"}
               className={
-                isInCatalog
+                disabled
                   ? "h-10 w-10 flex-none bg-accent text-card-foreground px-0"
                   : "h-10 w-10 flex-none bg-emerald-500 text-foreground hover:bg-emerald-600 px-0"
               }
-              onClick={() => handleOpenAddDialog(result, facet)}
-              disabled={isInCatalog}
-              aria-label={isInCatalog ? t("search.alreadyCataloged") : t("search.configureAdd")}
+              onClick={() =>
+                opensRequestDialog
+                  ? setRequestDialogTarget({ result, facet })
+                  : handleOpenAddDialog(result, facet)
+              }
+              disabled={disabled}
+              aria-label={actionLabel}
             >
-              <Plus className="h-4 w-4" />
+              {opensRequestDialog ? (
+                <Send className="h-4 w-4" />
+              ) : (
+                <Plus className="h-4 w-4" />
+              )}
             </Button>
           </div>
 
@@ -269,7 +307,13 @@ export function MobileSearchOverlay({
         </div>
       );
     },
-    [handleOpenAddDialog, isMetadataSearchResultInCatalog, t],
+    [
+      handleOpenAddDialog,
+      isMetadataSearchResultInCatalog,
+      librariesByFacet,
+      requestableLibrariesByFacet,
+      t,
+    ],
   );
 
   const renderMetadataSection = (
@@ -400,8 +444,16 @@ export function MobileSearchOverlay({
         catalogConfigLoading={Boolean(addDialogTarget) && catalogConfigLoading && !isAddDialogConfigReady}
         defaultQualityProfileId={resolveDefaultQualityProfileIdForFacet(addDialogTarget?.facet ?? "series")}
         rootFolders={rootFoldersByFacet[addDialogTarget?.facet ?? "series"]}
-        libraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}
-        onSubmit={handleAddDialogSubmit}
+        manageableLibraries={librariesByFacet[addDialogTarget?.facet ?? "series"]}
+        onAdd={handleAddDialogSubmit}
+      />
+      <RequestMediaDialog
+        open={requestDialogTarget !== null}
+        onOpenChange={(open) => { if (!open) setRequestDialogTarget(null); }}
+        result={requestDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
+        facet={requestDialogTarget?.facet ?? "series"}
+        requestableLibraries={requestableLibrariesByFacet[requestDialogTarget?.facet ?? "series"]}
+        onRequest={handleRequestDialogSubmit}
       />
     </div>
   );

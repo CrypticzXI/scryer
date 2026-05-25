@@ -1,4 +1,5 @@
 use super::*;
+use crate::plugins::catalog::RulePackCatalogEntry;
 use async_trait::async_trait;
 use scryer_domain::{
     NotificationChannelConfig, PersistedPluginWasmPayload, PluginHostBindingId, PluginSupportTier,
@@ -95,10 +96,7 @@ impl MockPluginInstallationRepo {
 
     async fn store_catalog_fixture(&self, fixture: &CatalogFixtureManifest) -> AppResult<()> {
         let mut sources = self.catalog_sources.lock().await;
-        sources.retain(|source| {
-            source.source_key != CENTRAL_CATALOG_SOURCE_KEY
-                && !source.source_key.starts_with("child:")
-        });
+        sources.retain(|source| source.source_key != CENTRAL_CATALOG_SOURCE_KEY);
 
         if fixture.plugins.is_empty() && fixture.rule_packs.is_empty() {
             return Ok(());
@@ -109,98 +107,82 @@ impl MockPluginInstallationRepo {
 
         for plugin in &fixture.plugins {
             let source_repo = fixture_source_repo(&plugin.id);
-            let github_repo = GitHubRepo::parse(&source_repo)?;
-            central_plugins.push(CentralCatalogEntry {
-                id: plugin.id.clone(),
-                name: plugin.name.clone(),
-                description: plugin.description.clone(),
-                plugin_type: plugin.plugin_type.clone(),
-                provider_type: plugin.provider_type.clone(),
-                publisher: "scryer".to_string(),
-                support_tier: if plugin.official {
-                    PluginSupportTier::Official
-                } else {
-                    PluginSupportTier::Unverified
-                },
-                docs_url: format!("https://example.com/{}/docs", plugin.id),
-                source_repo: source_repo.clone(),
-                child_catalog_url: fixture_child_catalog_url(
-                    &github_repo,
-                    plugin
-                        .releases
-                        .first()
-                        .map(|release| release.version.as_str()),
-                ),
-                required_signer: RequiredSigner {
-                    github_repository: github_repo.slug(),
-                    github_workflow: None,
-                },
-            });
-
             let releases = plugin
                 .releases
                 .iter()
                 .filter(|release| !release.builtin)
                 .filter_map(|release| {
-                    release.wasm_url.as_ref()?;
-                    Some(ChildCatalogRelease {
-                        version: release.version.clone(),
-                        sdk_constraint: release.sdk_constraint.clone(),
-                        artifact_manifest_url: format!(
-                            "{}v{}/plugin.manifest.json",
-                            github_repo.release_asset_prefix(),
-                            release.version
-                        ),
-                    })
+                    let wasm_url = release.wasm_url.as_ref()?;
+                    let artifact_url = fixture_plugin_artifact_url(wasm_url);
+                    Some(serde_json::json!({
+                        "version": release.version.clone(),
+                        "sdk_constraint": release.sdk_constraint.clone(),
+                        "artifacts": [{
+                            "runtime": "wasm32-wasip1",
+                            "required_features": [],
+                            "url": artifact_url,
+                            "mirror_urls": [],
+                            "signature_url": format!("{artifact_url}.bundle.json"),
+                            "signature_mirror_urls": [],
+                            "digests": [fixture_artifact_digest()],
+                            "wasm_digests": [fixture_wasm_digest()],
+                        }],
+                    }))
                 })
                 .collect::<Vec<_>>();
 
-            let child = ChildCatalog {
-                schema_version: "scryer.plugin.child_catalog.v2".to_string(),
-                id: plugin.id.clone(),
-                name: plugin.name.clone(),
-                description: plugin.description.clone(),
-                plugin_type: plugin.plugin_type.clone(),
-                provider_type: plugin.provider_type.clone(),
-                publisher: "scryer".to_string(),
-                support_tier: if plugin.official {
-                    PluginSupportTier::Official
-                } else {
-                    PluginSupportTier::Unverified
+            central_plugins.push(serde_json::json!({
+                "id": plugin.id.clone(),
+                "name": plugin.name.clone(),
+                "description": plugin.description.clone(),
+                "plugin_type": plugin.plugin_type.clone(),
+                "provider_type": plugin.provider_type.clone(),
+                "publisher": "scryer",
+                "support_tier": if plugin.official { "official" } else { "unverified" },
+                "status": "active",
+                "docs_url": format!("https://example.com/{}/docs", plugin.id),
+                "source_repo": source_repo.clone(),
+                "required_signer": {
+                    "github_repository": format!(
+                        "scryer-media/test-plugin-{}",
+                        plugin.id.replace('_', "-")
+                    )
                 },
-                docs_url: format!("https://example.com/{}/docs", plugin.id),
-                source_repo,
-                releases,
-            };
-
-            sources.push(scryer_domain::PluginCatalogSource {
-                source_key: child_catalog_source_key(&plugin.id),
-                source_kind: "child".to_string(),
-                source_url: fixture_child_catalog_url(
-                    &github_repo,
-                    plugin
-                        .releases
-                        .first()
-                        .map(|release| release.version.as_str()),
-                ),
-                github_repo: Some(github_repo.slug()),
-                support_tier: if plugin.official {
-                    PluginSupportTier::Official
-                } else {
-                    PluginSupportTier::Unverified
-                },
-                catalog_json: Some(serde_json::to_string(&child).expect("serialize child catalog")),
-                last_success_at: Some(now),
-                last_error: None,
-                updated_at: now,
-            });
+                "releases": releases,
+            }));
         }
 
-        let central = CentralCatalog {
-            schema_version: "scryer.plugin.catalog.v2".to_string(),
-            plugins: central_plugins,
-            rule_packs: fixture.rule_packs.clone(),
-        };
+        let rule_packs = fixture
+            .rule_packs
+            .iter()
+            .map(|pack| {
+                serde_json::json!({
+                    "id": pack.id.clone(),
+                    "name": pack.name.clone(),
+                    "description": pack.description.clone(),
+                    "author": pack.author.clone(),
+                    "releases": [{
+                        "version": pack.version.clone(),
+                        "min_scryer_version": pack.min_scryer_version.clone(),
+                        "rule_pack_digests": [fixture_rule_pack_digest()],
+                        "artifacts": [{
+                            "url": pack.url.clone(),
+                            "mirror_urls": [],
+                            "signature_url": format!("{}.bundle.json", pack.url),
+                            "signature_mirror_urls": [],
+                            "digests": [fixture_artifact_digest()],
+                        }],
+                    }],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let central = serde_json::json!({
+            "schema_version": "scryer.plugin.catalog.v3",
+            "catalog_version": 1,
+            "plugins": central_plugins,
+            "rule_packs": rule_packs,
+        });
 
         sources.push(scryer_domain::PluginCatalogSource {
             source_key: CENTRAL_CATALOG_SOURCE_KEY.to_string(),
@@ -208,7 +190,7 @@ impl MockPluginInstallationRepo {
             source_url: plugin_catalog_url(),
             github_repo: Some(CENTRAL_CATALOG_REPO.to_string()),
             support_tier: PluginSupportTier::Official,
-            catalog_json: Some(serde_json::to_string(&central).expect("serialize central catalog")),
+            catalog_json: Some(central.to_string()),
             last_success_at: Some(now),
             last_error: None,
             updated_at: now,
@@ -530,6 +512,7 @@ struct MockPluginProvider {
     plugin_sdk_versions: HashMap<String, String>,
     plugin_sdk_constraints: HashMap<String, String>,
     plugin_types: HashMap<String, String>,
+    extra_config_fields: HashMap<String, Vec<scryer_domain::ConfigFieldDef>>,
     removed_provider_types: StdArc<StdMutex<Vec<String>>>,
     reload_count: AtomicUsize,
     upsert_count: AtomicUsize,
@@ -549,6 +532,7 @@ impl MockPluginProvider {
             plugin_sdk_versions: HashMap::new(),
             plugin_sdk_constraints: HashMap::new(),
             plugin_types: HashMap::new(),
+            extra_config_fields: HashMap::new(),
             removed_provider_types: StdArc::new(StdMutex::new(vec![])),
             reload_count: AtomicUsize::new(0),
             upsert_count: AtomicUsize::new(0),
@@ -577,6 +561,25 @@ impl MockPluginProvider {
     fn with_builtin_provider(mut self, pt: &str, name: &str, default_url: Option<&str>) -> Self {
         self = self.with_provider(pt, name, default_url);
         self.builtin_types.push(pt.to_string());
+        self
+    }
+
+    fn with_required_secret_field(mut self, pt: &str, key: &str) -> Self {
+        self.extra_config_fields
+            .entry(pt.to_string())
+            .or_default()
+            .push(scryer_domain::ConfigFieldDef {
+                key: key.to_string(),
+                label: "API Key".to_string(),
+                field_type: scryer_domain::ConfigFieldType::Password,
+                required: true,
+                default_value: None,
+                value_source: scryer_domain::ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: Vec::new(),
+                help_text: None,
+            });
         self
     }
 
@@ -636,8 +639,9 @@ impl IndexerPluginProvider for MockPluginProvider {
         &self,
         provider_type: &str,
     ) -> Vec<scryer_domain::ConfigFieldDef> {
+        let mut fields = Vec::new();
         if let Some(default_url) = self.default_urls.get(provider_type) {
-            return vec![scryer_domain::ConfigFieldDef {
+            fields.push(scryer_domain::ConfigFieldDef {
                 key: "base_url".to_string(),
                 label: "Base URL".to_string(),
                 field_type: scryer_domain::ConfigFieldType::String,
@@ -648,10 +652,14 @@ impl IndexerPluginProvider for MockPluginProvider {
                 host_binding: None,
                 options: Vec::new(),
                 help_text: None,
-            }];
+            });
         }
 
-        Vec::new()
+        if let Some(extra_fields) = self.extra_config_fields.get(provider_type) {
+            fields.extend(extra_fields.iter().cloned());
+        }
+
+        fields
     }
 
     fn plugin_type_for_provider(&self, provider_type: &str) -> Option<String> {
@@ -1004,12 +1012,25 @@ fn fixture_source_repo(plugin_id: &str) -> String {
     )
 }
 
-fn fixture_child_catalog_url(github_repo: &GitHubRepo, version: Option<&str>) -> String {
-    format!(
-        "{}v{}/catalog-v2.min.json.zst",
-        github_repo.release_asset_prefix(),
-        version.unwrap_or("0.1.0")
-    )
+fn fixture_plugin_artifact_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.ends_with(".zst") || trimmed.ends_with(".br") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.zst")
+    }
+}
+
+fn fixture_artifact_digest() -> &'static str {
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+fn fixture_wasm_digest() -> &'static str {
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+}
+
+fn fixture_rule_pack_digest() -> &'static str {
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 }
 
 fn make_catalog_fixture_json(entries: &[serde_json::Value]) -> String {
@@ -1078,6 +1099,18 @@ fn catalog_entry_with_type(
 ) -> serde_json::Value {
     let mut entry = catalog_entry(id, version, builtin, wasm_url);
     entry["plugin_type"] = serde_json::json!(plugin_type);
+    entry
+}
+
+fn catalog_entry_with_provider_type(
+    id: &str,
+    provider_type: &str,
+    version: &str,
+    builtin: bool,
+    wasm_url: Option<&str>,
+) -> serde_json::Value {
+    let mut entry = catalog_entry(id, version, builtin, wasm_url);
+    entry["provider_type"] = serde_json::json!(provider_type);
     entry
 }
 
@@ -1611,7 +1644,7 @@ async fn apply_runtime_plugin_upsert_routes_usenet_indexer_to_indexer_family_onl
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1620,14 +1653,14 @@ async fn apply_runtime_plugin_upsert_routes_usenet_indexer_to_indexer_family_onl
     h.app
         .apply_runtime_plugin_upsert(
             &make_installation_with_type(
-                "animetosho",
+                "example-indexer",
                 "0.1.0",
                 "usenet_indexer",
-                "animetosho",
+                "example_indexer",
                 false,
                 true,
             ),
-            make_runtime_plugin_load("animetosho", "usenet_indexer", "animetosho"),
+            make_runtime_plugin_load("example-indexer", "usenet_indexer", "example_indexer"),
         )
         .unwrap();
 
@@ -1648,28 +1681,28 @@ async fn apply_runtime_plugin_replace_removes_previous_indexer_provider_when_key
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle),
         Some(download),
         Some(notification),
     );
 
     let previous = make_installation_with_type(
-        "animetosho",
+        "example-indexer",
         "0.1.0",
         "usenet_indexer",
-        "animetosho",
+        "example_indexer",
         false,
         true,
     );
     let mut next = previous.clone();
-    next.provider_type = "animetosho_v2".to_string();
+    next.provider_type = "example_indexer_v2".to_string();
 
     h.app
         .apply_runtime_plugin_replace(
             &previous,
             &next,
-            make_runtime_plugin_load("animetosho", "usenet_indexer", "animetosho_v2"),
+            make_runtime_plugin_load("example-indexer", "usenet_indexer", "example_indexer_v2"),
         )
         .unwrap();
 
@@ -1682,7 +1715,7 @@ async fn apply_runtime_plugin_replace_removes_previous_indexer_provider_when_key
             .removed_provider_types
             .lock()
             .expect("removed provider types lock"),
-        vec!["animetosho".to_string()]
+        vec!["example_indexer".to_string()]
     );
 }
 
@@ -1692,7 +1725,7 @@ async fn apply_runtime_plugin_upsert_routes_subtitle_family_only() {
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1729,7 +1762,7 @@ async fn apply_runtime_plugin_upsert_routes_notification_family_only() {
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1759,7 +1792,7 @@ async fn apply_runtime_plugin_upsert_routes_download_client_family_only() {
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -1871,7 +1904,7 @@ async fn uninstall_notification_plugin_touches_only_notification_family() {
     let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
     let notification = Arc::new(MockNotificationPluginProvider::new(&["email"]));
     let h = bootstrap_plugins_with_runtime_providers(
-        Some(MockPluginProvider::new().with_provider("animetosho", "AnimeTosho", None)),
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
         Some(subtitle.clone()),
         Some(download.clone()),
         Some(notification.clone()),
@@ -2365,16 +2398,17 @@ async fn plugin_update_count_matches_available_plugins() {
 #[tokio::test]
 async fn list_default_base_url_from_provider() {
     let provider = MockPluginProvider::new().with_provider(
-        "animetosho",
-        "AnimeTosho",
-        Some("https://feed.animetosho.org"),
+        "example_indexer",
+        "Example Indexer",
+        Some("https://indexer.example"),
     );
     let h = bootstrap_plugins(Some(provider));
-    let json = make_catalog_fixture_json(&[catalog_entry(
-        "animetosho",
+    let json = make_catalog_fixture_json(&[catalog_entry_with_provider_type(
+        "example-indexer",
+        "example_indexer",
         "0.1.0",
         false,
-        Some("https://example.com/animetosho.wasm.zst"),
+        Some("https://example.com/example-indexer.wasm.zst"),
     )]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
@@ -2384,26 +2418,28 @@ async fn list_default_base_url_from_provider() {
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert_eq!(
         result[0].default_base_url.as_deref(),
-        Some("https://feed.animetosho.org")
+        Some("https://indexer.example")
     );
 }
 
 #[tokio::test]
 async fn list_uses_application_builtin_provider_types_over_catalog_flags() {
     let provider = MockPluginProvider::new().with_builtin_provider(
-        "animetosho",
-        "AnimeTosho",
-        Some("https://feed.animetosho.org"),
+        "example_indexer",
+        "Example Indexer",
+        Some("https://indexer.example"),
     );
     let subtitle_provider = Arc::new(MockSubtitlePluginProvider::new(&[]));
     let h = bootstrap_plugins_with_subtitles(Some(provider), Some(subtitle_provider));
-    let json = make_catalog_fixture_json(&[catalog_entry_with_type(
-        "animetosho",
+    let mut entry = catalog_entry_with_type(
+        "example-indexer",
         "indexer",
         "0.3.4",
         false,
-        Some("https://example.com/animetosho.wasm.zst"),
-    )]);
+        Some("https://example.com/example-indexer.wasm.zst"),
+    );
+    entry["provider_type"] = serde_json::json!("example_indexer");
+    let json = make_catalog_fixture_json(&[entry]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
         .await
@@ -2414,7 +2450,7 @@ async fn list_uses_application_builtin_provider_types_over_catalog_flags() {
     assert!(
         result
             .iter()
-            .find(|plugin| plugin.id == "animetosho")
+            .find(|plugin| plugin.id == "example-indexer")
             .unwrap()
             .builtin
     );
@@ -3219,6 +3255,29 @@ async fn seed_uses_provider_builtin_inventory() {
 }
 
 #[tokio::test]
+async fn seed_preserves_legacy_nzbgeek_builtin_for_catalog_migration() {
+    let provider = MockPluginProvider::new()
+        .with_builtin_provider("newznab", "Newznab Indexer", None)
+        .with_builtin_provider("torznab", "Torznab Indexer", None);
+    let h = bootstrap_plugins(Some(provider));
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("nzbgeek", "0.2.10", true, true));
+
+    h.app.seed_builtin_plugins().await.unwrap();
+
+    let installations = h.plugin_repo.list_plugin_installations().await.unwrap();
+    let legacy = installations
+        .iter()
+        .find(|installation| installation.plugin_id == "nzbgeek")
+        .expect("legacy nzbgeek builtin should be preserved for catalog migration");
+    assert!(legacy.is_builtin);
+    assert_eq!(legacy.source_kind, PluginSourceKind::Bundled);
+}
+
+#[tokio::test]
 async fn rebuild_plugin_provider_seeds_builtin_installations() {
     let provider = MockPluginProvider::new()
         .with_builtin_provider(
@@ -3248,9 +3307,9 @@ async fn rebuild_plugin_provider_seeds_builtin_installations() {
 #[tokio::test]
 async fn reconcile_creates_config_for_default_url_plugin() {
     let provider = MockPluginProvider::new().with_provider(
-        "animetosho",
-        "AnimeTosho",
-        Some("https://feed.animetosho.org"),
+        "example_indexer",
+        "Example Indexer",
+        Some("https://indexer.example"),
     );
     let h = bootstrap_plugins(Some(provider));
 
@@ -3258,24 +3317,24 @@ async fn reconcile_creates_config_for_default_url_plugin() {
 
     let configs = h.indexer_config_repo.store.lock().await;
     assert_eq!(configs.len(), 1);
-    assert_eq!(configs[0].provider_type, "animetosho");
-    assert_eq!(configs[0].base_url, "https://feed.animetosho.org");
+    assert_eq!(configs[0].provider_type, "example_indexer");
+    assert_eq!(configs[0].base_url, "https://indexer.example");
     assert!(configs[0].is_enabled);
 }
 
 #[tokio::test]
 async fn reconcile_skips_when_config_exists() {
     let provider = MockPluginProvider::new().with_provider(
-        "animetosho",
-        "AnimeTosho",
-        Some("https://feed.animetosho.org"),
+        "example_indexer",
+        "Example Indexer",
+        Some("https://indexer.example"),
     );
     let h = bootstrap_plugins(Some(provider));
     h.indexer_config_repo
         .store
         .lock()
         .await
-        .push(make_indexer_config("animetosho"));
+        .push(make_indexer_config("example_indexer"));
 
     h.app.reconcile_indexer_configs().await.unwrap();
 
@@ -3286,6 +3345,23 @@ async fn reconcile_skips_when_config_exists() {
 #[tokio::test]
 async fn reconcile_skips_without_default_url() {
     let provider = MockPluginProvider::new().with_provider("newznab", "Newznab", None);
+    let h = bootstrap_plugins(Some(provider));
+
+    h.app.reconcile_indexer_configs().await.unwrap();
+
+    let configs = h.indexer_config_repo.store.lock().await;
+    assert!(configs.is_empty());
+}
+
+#[tokio::test]
+async fn reconcile_skips_when_plugin_requires_user_secret() {
+    let provider = MockPluginProvider::new()
+        .with_provider(
+            "private_indexer",
+            "Private Indexer",
+            Some("https://indexer.example"),
+        )
+        .with_required_secret_field("private_indexer", "api_key");
     let h = bootstrap_plugins(Some(provider));
 
     h.app.reconcile_indexer_configs().await.unwrap();

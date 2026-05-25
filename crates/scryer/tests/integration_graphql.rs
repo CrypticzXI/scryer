@@ -1271,6 +1271,7 @@ async fn create_series_scan_episode(
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -1340,6 +1341,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
             absolute_number: Some("12".to_string()),
             overview: None,
             tvdb_id: Some("9100103".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -1502,6 +1504,7 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
             absolute_number: Some("7".to_string()),
             overview: None,
             tvdb_id: Some("9156701".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -1807,6 +1810,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_only_interstitial_
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("9300101".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2367,6 +2371,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
             absolute_number: Some("12".to_string()),
             overview: None,
             tvdb_id: Some("9500103".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -2864,6 +2869,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("9800101".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -5307,6 +5313,7 @@ async fn graphql_traverses_core_graph_relationships() {
         absolute_number: None,
         overview: Some("Episode overview".to_string()),
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -6992,6 +6999,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7018,6 +7026,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7044,6 +7053,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7070,6 +7080,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: false,
             created_at: chrono::Utc::now(),
         })
@@ -7925,6 +7936,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -7950,6 +7962,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -8061,6 +8074,7 @@ async fn graphql_scan_title_library_matches_numbered_special_episode_on_disk() {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -8142,6 +8156,7 @@ async fn graphql_scan_title_library_matches_daily_episodes_by_air_date() {
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: chrono::Utc::now(),
     };
@@ -10966,6 +10981,7 @@ async fn graphql_title_history_includes_download_failed_and_blocklisted_events()
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("download-outcome-episode-1".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11155,6 +11171,7 @@ async fn graphql_title_history_filters_by_episode_id() {
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("episode-history-1".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11180,6 +11197,7 @@ async fn graphql_title_history_filters_by_episode_id() {
             absolute_number: Some("2".to_string()),
             overview: None,
             tvdb_id: Some("episode-history-2".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11310,6 +11328,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
             absolute_number: Some("1".to_string()),
             overview: None,
             tvdb_id: Some("history-episode-1".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11335,6 +11354,7 @@ async fn graphql_episode_history_omits_ambiguous_source_path_for_multi_file_even
             absolute_number: Some("2".to_string()),
             overview: None,
             tvdb_id: Some("history-episode-2".to_string()),
+            image_url: None,
             monitored: true,
             created_at: chrono::Utc::now(),
         })
@@ -11531,7 +11551,7 @@ async fn graphql_metadata_series() {
         &ctx,
         r#"query($id: String!) {
             metadataSeries(id: $id) {
-                name year seasons { number label } episodes { name seasonNumber }
+                name year seasons { number label } episodes { name seasonNumber imageUrl }
             }
         }"#,
         json!({ "id": "345678" }),
@@ -11542,6 +11562,10 @@ async fn graphql_metadata_series() {
     assert_eq!(series["name"], "Test Show Name");
     assert_eq!(series["seasons"].as_array().unwrap().len(), 2);
     assert_eq!(series["episodes"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        series["episodes"][0]["imageUrl"],
+        "https://image.tmdb.org/t/p/original/pilot.jpg"
+    );
 }
 
 const LARGE_GRAPHQL_TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
@@ -11797,6 +11821,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
                     absolute_number: None,
                     overview: Some("Legacy episode".to_string()),
                     tvdb_id: Some("9999001".to_string()),
+                    image_url: None,
                     monitored: true,
                     created_at: chrono::Utc::now(),
                 })

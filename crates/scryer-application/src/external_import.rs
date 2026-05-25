@@ -651,21 +651,16 @@ pub fn map_download_client_type(implementation: &str) -> Option<&'static str> {
 
 /// Map the Sonarr/Radarr indexer implementation to a Scryer provider type.
 ///
-/// For Newznab indexers, checks the base URL to identify known services that have
-/// native Scryer plugins (e.g. NZBGeek, AnimeTosho) rather than falling back to
-/// the generic newznab plugin.
+/// This intentionally maps Arr's *nab families to Scryer's generic *nab
+/// plugins only. Provider-specific plugin matching is deferred until catalog
+/// metadata can drive it.
 pub fn map_indexer_provider_type(
     implementation: &str,
-    fields: &HashMap<String, Value>,
+    _fields: &HashMap<String, Value>,
 ) -> Option<&'static str> {
-    let native_provider = known_native_indexer_provider_type(
-        field_str(fields, "baseUrl"),
-        field_str(fields, "apiPath"),
-    );
-
     match implementation.trim().to_ascii_lowercase().as_str() {
-        "newznab" => native_provider.or(Some("newznab")),
-        "torznab" => None,
+        "newznab" => Some("newznab"),
+        "torznab" => Some("torznab"),
         _ => None,
     }
 }
@@ -721,6 +716,8 @@ pub fn should_skip_imported_indexer(indexer: &ArrIndexer) -> bool {
     };
 
     let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    // Dead-service tombstone: legacy Arr installs may still contain these
+    // indexers, but Scryer should not import or auto-install anything for them.
     normalized.contains("animetosho.org") || normalized.contains("feed.animetosho.org")
 }
 
@@ -746,23 +743,6 @@ fn same_base_url(left: &str, right: &str) -> bool {
     left.trim()
         .trim_end_matches('/')
         .eq_ignore_ascii_case(right.trim().trim_end_matches('/'))
-}
-
-fn known_native_indexer_provider_type(
-    base_url: Option<String>,
-    api_path: Option<String>,
-) -> Option<&'static str> {
-    let endpoint = format!(
-        "{} {}",
-        base_url.unwrap_or_default().to_lowercase(),
-        api_path.unwrap_or_default().to_lowercase()
-    );
-
-    if endpoint.contains("nzbgeek.info") {
-        Some("nzbgeek")
-    } else {
-        None
-    }
 }
 
 /// Supported Sonarr v4+ / Radarr v6+ builds replace sensitive field values with this placeholder
@@ -878,13 +858,23 @@ mod tests {
     }
 
     #[test]
-    fn map_indexer_provider_type_does_not_map_animetosho_for_newznab() {
+    fn map_indexer_provider_type_maps_newznab_presets_to_generic_provider() {
         assert_eq!(
             map_indexer_provider_type(
                 "Newznab",
                 &HashMap::from([(
                     "baseUrl".into(),
-                    Value::String("https://feed.animetosho.org".into()),
+                    Value::String("https://api.nzbgeek.info".into()),
+                )]),
+            ),
+            Some("newznab")
+        );
+        assert_eq!(
+            map_indexer_provider_type(
+                "Newznab",
+                &HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("https://api.dognzb.cr".into()),
                 )]),
             ),
             Some("newznab")
@@ -892,21 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn map_indexer_provider_type_does_not_map_animetosho_for_torznab() {
-        assert_eq!(
-            map_indexer_provider_type(
-                "Torznab",
-                &HashMap::from([(
-                    "baseUrl".into(),
-                    Value::String("https://feed.animetosho.org".into()),
-                )]),
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn map_indexer_provider_type_keeps_generic_torznab_unsupported() {
+    fn map_indexer_provider_type_maps_torznab_to_generic_provider() {
         assert_eq!(
             map_indexer_provider_type(
                 "Torznab",
@@ -915,6 +891,14 @@ mod tests {
                     Value::String("https://torznab.example.com".into()),
                 )]),
             ),
+            Some("torznab")
+        );
+    }
+
+    #[test]
+    fn map_indexer_provider_type_keeps_unknown_implementation_unsupported() {
+        assert_eq!(
+            map_indexer_provider_type("TorrentRss", &HashMap::new()),
             None
         );
     }
@@ -928,6 +912,15 @@ mod tests {
             fields: HashMap::from([(
                 "baseUrl".into(),
                 Value::String("https://feed.animetosho.org".into()),
+            )]),
+        }));
+        assert!(should_skip_imported_indexer(&ArrIndexer {
+            id: 2,
+            name: "AnimeTosho".into(),
+            implementation: "Newznab".into(),
+            fields: HashMap::from([(
+                "baseUrl".into(),
+                Value::String("https://animetosho.org".into()),
             )]),
         }));
     }

@@ -1409,8 +1409,8 @@ fn ai_enhanced_gets_block_score() {
 fn trash_guides_blocked_title_gets_block_score() {
     let profile = QualityProfile::default();
     let w = balanced_weights();
-    let release = parse_release_metadata("Movie.2024.2160p.WEB-DL.H.265.BiTOR");
-    let d = evaluate_against_profile(&profile, &release, false, &w);
+    let release = parse_release_metadata("Series.Name.2160p.BiTOR.WEB-DL");
+    let d = evaluate_against_profile_for_category(&profile, &release, false, &w, Some("series"));
     assert!(
         d.scoring_log
             .iter()

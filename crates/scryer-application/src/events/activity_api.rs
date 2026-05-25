@@ -230,6 +230,9 @@ async fn event_allowed(
         {
             Ok(true)
         }
+        DomainEventPayload::MediaRequestSubmitted(data) => {
+            Ok(allowed_library_ids.contains(&data.library_id))
+        }
         DomainEventPayload::LibraryScanStarted(data) => Ok(data
             .library_id
             .as_ref()
@@ -248,6 +251,7 @@ async fn event_allowed(
 }
 
 pub const SUPPORTED_TITLE_HISTORY_EVENT_TYPES: &[TitleHistoryEventType] = &[
+    TitleHistoryEventType::Requested,
     TitleHistoryEventType::Grabbed,
     TitleHistoryEventType::DownloadFailed,
     TitleHistoryEventType::Blocklisted,
@@ -268,6 +272,7 @@ const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::ReleaseBlocklisted,
     DomainEventType::MediaFileDeleted,
     DomainEventType::MediaFileRenamed,
+    DomainEventType::MediaRequestSubmitted,
 ];
 
 pub fn supported_title_history_event_types() -> &'static [TitleHistoryEventType] {
@@ -334,7 +339,10 @@ async fn project_title_history_page(
         });
     }
 
-    if filter.group_by_event && filter.episode_id.is_none() {
+    let include_request_history =
+        should_include_request_history(filter, effective_title_ids.as_deref());
+
+    if filter.group_by_event && filter.episode_id.is_none() && !include_request_history {
         let limit = filter.limit.max(1);
         let total_count = app
             .services
@@ -377,15 +385,26 @@ async fn project_title_history_page(
     }
 
     let mut domain_filter = DomainEventFilter {
-        title_id: filter
-            .title_ids
-            .as_ref()
-            .and_then(|title_ids| (title_ids.len() == 1).then(|| title_ids[0].clone()))
-            .or_else(|| (matched_title_ids.len() == 1).then(|| matched_title_ids[0].clone())),
+        title_id: (!include_request_history)
+            .then(|| {
+                filter
+                    .title_ids
+                    .as_ref()
+                    .and_then(|title_ids| (title_ids.len() == 1).then(|| title_ids[0].clone()))
+                    .or_else(|| {
+                        (matched_title_ids.len() == 1).then(|| matched_title_ids[0].clone())
+                    })
+            })
+            .flatten(),
         event_types: Some(TITLE_HISTORY_DOMAIN_EVENT_TYPES.to_vec()),
         ..DomainEventFilter::default()
     };
     let limit = filter.limit.max(1);
+    let media_request_match_titles = if include_request_history {
+        load_title_history_media_request_match_titles(app, effective_title_ids.as_deref()).await?
+    } else {
+        Vec::new()
+    };
     let mut before_sequence = None;
     let mut total_count = 0i64;
     let mut records = Vec::new();
@@ -407,13 +426,16 @@ async fn project_title_history_page(
 
         before_sequence = batch.last().map(|event| event.sequence);
         for event in &batch {
-            let event_records = if filter.group_by_event {
-                crate::event_views::title_history_record_from_domain_event(event)
-                    .into_iter()
-                    .collect::<Vec<_>>()
-            } else {
-                title_history_records_from_domain_event(event)
-            };
+            let event_records =
+                if matches!(&event.payload, DomainEventPayload::MediaRequestSubmitted(_)) {
+                    media_request_title_history_records(event, &media_request_match_titles)
+                } else if filter.group_by_event {
+                    crate::event_views::title_history_record_from_domain_event(event)
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                } else {
+                    title_history_records_from_domain_event(event)
+                };
 
             for record in event_records {
                 if !matched_title_ids.is_empty() && !matched_title_ids.contains(&record.title_id) {
@@ -442,6 +464,140 @@ async fn project_title_history_page(
         records,
         total_count,
     })
+}
+
+async fn load_title_history_media_request_match_titles(
+    app: &AppUseCase,
+    title_ids: Option<&[String]>,
+) -> AppResult<Vec<Title>> {
+    let Some(title_ids) = title_ids else {
+        return Ok(Vec::new());
+    };
+
+    let mut titles = Vec::new();
+    for title_id in title_ids {
+        if let Some(title) = app.services.catalog.titles.get_by_id(title_id).await? {
+            titles.push(title);
+        }
+    }
+    Ok(titles)
+}
+
+fn media_request_title_history_records(
+    event: &DomainEvent,
+    titles: &[Title],
+) -> Vec<TitleHistoryRecord> {
+    let DomainEventPayload::MediaRequestSubmitted(data) = &event.payload else {
+        return Vec::new();
+    };
+    let data_json = serde_json::to_string(&event.payload).ok();
+
+    titles
+        .iter()
+        .filter(|title| title.library_id == data.library_id)
+        .filter(|title| media_request_external_ids_overlap(&title.external_ids, &data.external_ids))
+        .map(|title| TitleHistoryRecord {
+            id: format!("{}:{}", event.event_id, title.id),
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            facet: Some(title.facet.clone()),
+            episode_id: None,
+            episode_ids: Vec::new(),
+            collection_id: None,
+            event_type: TitleHistoryEventType::Requested,
+            source_title: Some(data.title_name.clone()),
+            display_title: Some(data.title_name.clone()),
+            source_system: Some("smg".to_string()),
+            source_ref: Some(data.request_id.clone()),
+            source_hint: None,
+            quality: None,
+            download_id: None,
+            client_id: None,
+            client_name: None,
+            import_id: None,
+            skip_reason: None,
+            retry_requires_password: false,
+            failure_reason: None,
+            blocklist_reason: None,
+            source_path: None,
+            dest_path: None,
+            data_json: data_json.clone(),
+            occurred_at: event.occurred_at.to_rfc3339(),
+            created_at: event.occurred_at.to_rfc3339(),
+        })
+        .collect()
+}
+
+fn media_request_external_ids_overlap(
+    title_ids: &[ExternalId],
+    request_ids: &[ExternalId],
+) -> bool {
+    request_ids.iter().any(|request_id| {
+        title_ids.iter().any(|title_id| {
+            title_id.source.eq_ignore_ascii_case(&request_id.source)
+                && title_id.value == request_id.value
+        })
+    })
+}
+
+fn should_include_request_history(
+    filter: &TitleHistoryFilter,
+    effective_title_ids: Option<&[String]>,
+) -> bool {
+    let Some(title_ids) = effective_title_ids else {
+        return false;
+    };
+    if title_ids.is_empty() {
+        return false;
+    }
+
+    match filter.event_types.as_ref() {
+        Some(event_types) => event_types.contains(&TitleHistoryEventType::Requested),
+        None => title_ids.len() == 1,
+    }
+}
+
+#[cfg(test)]
+mod title_history_request_filter_tests {
+    use super::*;
+
+    fn filter(event_types: Option<Vec<TitleHistoryEventType>>) -> TitleHistoryFilter {
+        TitleHistoryFilter {
+            event_types,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_unfiltered_history_does_not_scan_for_requests() {
+        assert!(!should_include_request_history(&filter(None), None));
+    }
+
+    #[test]
+    fn default_single_title_history_includes_matching_requests() {
+        let title_ids = vec!["title-1".to_string()];
+        assert!(should_include_request_history(
+            &filter(None),
+            Some(&title_ids),
+        ));
+    }
+
+    #[test]
+    fn explicit_requested_filter_includes_requests_for_known_titles() {
+        let title_ids = vec!["title-1".to_string(), "title-2".to_string()];
+        assert!(should_include_request_history(
+            &filter(Some(vec![TitleHistoryEventType::Requested])),
+            Some(&title_ids),
+        ));
+    }
+
+    #[test]
+    fn explicit_requested_filter_without_title_matches_does_not_scan() {
+        assert!(!should_include_request_history(
+            &filter(Some(vec![TitleHistoryEventType::Requested])),
+            None,
+        ));
+    }
 }
 
 async fn resolve_title_history_title_ids(

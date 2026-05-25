@@ -691,6 +691,10 @@ impl ExternalImportMutations {
 
             if let Ok(indexers) = client.list_indexers().await {
                 for idx in indexers {
+                    if external_import::should_skip_imported_indexer(&idx) {
+                        continue;
+                    }
+
                     if let Some(detected) =
                         detect_imported_prowlarr_proxy_indexer(&idx, linked_prowlarr_base_url)
                     {
@@ -1587,23 +1591,43 @@ mod tests {
     }
 
     #[test]
-    fn map_indexer_marks_sonarr_animetosho_as_unsupported() {
+    fn map_indexer_marks_sonarr_torznab_as_supported() {
         let payload = map_indexer(
             &ArrIndexer {
                 id: 1,
-                name: "AnimeTosho".into(),
+                name: "Torrent Indexer".into(),
                 implementation: "Torznab".into(),
                 fields: HashMap::from([(
                     "baseUrl".into(),
-                    Value::String("https://feed.animetosho.org".into()),
+                    Value::String("https://torznab.example".into()),
                 )]),
             },
             "sonarr",
         );
 
-        assert!(!payload.supported);
-        assert_eq!(payload.scryer_provider_type, None);
-        assert_eq!(payload.dedup_key, "unsupported:https://feed.animetosho.org");
+        assert!(payload.supported);
+        assert_eq!(payload.scryer_provider_type.as_deref(), Some("torznab"));
+        assert_eq!(payload.dedup_key, "torznab:https://torznab.example");
+    }
+
+    #[test]
+    fn map_indexer_marks_sonarr_newznab_preset_as_generic_newznab() {
+        let payload = map_indexer(
+            &ArrIndexer {
+                id: 1,
+                name: "NZBGeek".into(),
+                implementation: "Newznab".into(),
+                fields: HashMap::from([(
+                    "baseUrl".into(),
+                    Value::String("https://api.nzbgeek.info".into()),
+                )]),
+            },
+            "sonarr",
+        );
+
+        assert!(payload.supported);
+        assert_eq!(payload.scryer_provider_type.as_deref(), Some("newznab"));
+        assert_eq!(payload.dedup_key, "newznab:https://api.nzbgeek.info");
     }
 
     #[test]

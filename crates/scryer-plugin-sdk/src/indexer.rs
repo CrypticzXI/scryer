@@ -499,7 +499,7 @@ pub fn indexer_capability_fixtures() -> Vec<PluginDescriptor> {
             },
         ),
         fixture_descriptor(
-            "animetosho",
+            "id_only_anime_indexer",
             IndexerSourceKind::Generic,
             IndexerCapabilities {
                 rss: true,

@@ -35,6 +35,7 @@ pub enum RuleFacet {
 
 #[derive(Debug, Clone, Copy)]
 pub struct GroupEntry {
+    #[allow(dead_code)]
     pub name: &'static str,
     pub tier: GroupTier,
     pub facet: RuleFacet,

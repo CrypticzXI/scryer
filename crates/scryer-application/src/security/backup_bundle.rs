@@ -540,6 +540,18 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "media_request_external_ids",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_request_requesters",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_requests",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "notification_channels",
         classification: BackupTableClassification::Export,
     },
@@ -656,6 +668,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "user_external_accounts",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "user_library_permission_masks",
         classification: BackupTableClassification::Export,
     },
@@ -665,6 +681,14 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "wanted_items",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "webauthn_challenges",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "webauthn_credentials",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {

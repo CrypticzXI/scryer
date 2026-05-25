@@ -434,6 +434,8 @@ pub struct EpisodeUpdate {
     pub collection_id: Option<String>,
     pub overview: Option<String>,
     pub tvdb_id: Option<String>,
+    pub image_url: Option<String>,
+    pub clear_image_url: bool,
 }
 
 impl EpisodeUpdate {
@@ -451,6 +453,8 @@ impl EpisodeUpdate {
             || self.collection_id.is_some()
             || self.overview.is_some()
             || self.tvdb_id.is_some()
+            || self.image_url.is_some()
+            || self.clear_image_url
     }
 
     pub fn has_non_monitor_changes(&self) -> bool {
@@ -466,6 +470,8 @@ impl EpisodeUpdate {
             || self.collection_id.is_some()
             || self.overview.is_some()
             || self.tvdb_id.is_some()
+            || self.image_url.is_some()
+            || self.clear_image_url
     }
 }
 

@@ -2,7 +2,8 @@ use super::*;
 use async_trait::async_trait;
 use scryer_domain::{
     DomainEventFilter, DomainEventPayload, DomainEventType, EventType, ImportType,
-    JobRunCompletedEventData, JobRunStartedEventData, RootFolderEntry, TrackedDownloadState,
+    JobRunCompletedEventData, JobRunStartedEventData, MediaRequestRequester, MediaRequestStatus,
+    RootFolderEntry, TrackedDownloadState,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -458,7 +459,7 @@ impl MediaFileRepository for MockMediaFileRepo {
             release_group: input.release_group.clone(),
             source_type: input.source_type.clone(),
             resolution: input.resolution.clone(),
-            video_codec_parsed: input.video_codec_parsed.clone(),
+            video_codec_parsed: input.video_codec_parsed,
             audio_codec_parsed: input.audio_codec_parsed.clone(),
             audio_channels_parsed: input.audio_channels_parsed.clone(),
             acquisition_score: input.acquisition_score,
@@ -1196,6 +1197,83 @@ impl DomainEventRepository for MockDomainEventRepo {
     }
 }
 
+#[derive(Default)]
+struct MockMediaRequestRepo {
+    requests: Arc<Mutex<Vec<MediaRequest>>>,
+    domain_events: Option<Arc<MockDomainEventRepo>>,
+}
+
+impl MockMediaRequestRepo {
+    fn with_domain_events(domain_events: Arc<MockDomainEventRepo>) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            domain_events: Some(domain_events),
+        }
+    }
+}
+
+#[async_trait]
+impl MediaRequestRepository for MockMediaRequestRepo {
+    async fn submit(
+        &self,
+        request: NewMediaRequest,
+        requester: &User,
+        submitted_event: NewDomainEvent,
+    ) -> AppResult<MediaRequest> {
+        let mut requests = self.requests.lock().await;
+        let now = Utc::now();
+        let stored = MediaRequest {
+            id: request.id,
+            library_id: request.library_id,
+            facet: request.facet,
+            status: MediaRequestStatus::Pending,
+            identity_fingerprint: request.identity_fingerprint,
+            title: request.title,
+            sort_title: request.sort_title,
+            slug: request.slug,
+            poster_url: request.poster_url,
+            year: request.year,
+            overview: request.overview,
+            runtime_minutes: request.runtime_minutes,
+            language: request.language,
+            content_status: request.content_status,
+            external_ids: request.external_ids,
+            requesters: vec![MediaRequestRequester {
+                user_id: requester.id.clone(),
+                username: requester.username.clone(),
+                requested_at: now,
+            }],
+            created_by_user_id: request.created_by_user_id,
+            created_at: now,
+            updated_at: now,
+        };
+        requests.push(stored.clone());
+        drop(requests);
+        if let Some(domain_events) = &self.domain_events {
+            domain_events.append(submitted_event).await?;
+        }
+        Ok(stored)
+    }
+
+    async fn list(&self, query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>> {
+        let requests = self.requests.lock().await;
+        Ok(requests
+            .iter()
+            .filter(|request| {
+                query
+                    .facet
+                    .as_ref()
+                    .is_none_or(|facet| &request.facet == facet)
+                    && query.status.is_none_or(|status| request.status == status)
+                    && query.library_ids.as_ref().is_none_or(|library_ids| {
+                        library_ids.iter().any(|id| id == &request.library_id)
+                    })
+            })
+            .cloned()
+            .collect())
+    }
+}
+
 struct MockLibraryRepo {
     libraries: Arc<Mutex<Vec<Library>>>,
     app_permissions: Arc<Mutex<HashMap<String, AppPermissionMask>>>,
@@ -1676,6 +1754,11 @@ impl ShowRepository for MockShowRepo {
         }
         if let Some(value) = update.tvdb_id {
             item.tvdb_id = Some(value);
+        }
+        if update.clear_image_url {
+            item.image_url = None;
+        } else if let Some(value) = update.image_url {
+            item.image_url = Some(value);
         }
 
         Ok(item.clone())
@@ -3022,11 +3105,11 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         Ok(entries.iter().find(|entry| entry.id == id).cloned())
     }
 
-    async fn touch_last_error(&self, provider_type: &str) -> AppResult<()> {
+    async fn touch_last_error(&self, id: &str) -> AppResult<()> {
         let mut entries = self.store.lock().await;
         let now = Utc::now();
         for entry in entries.iter_mut() {
-            if entry.provider_type == provider_type {
+            if entry.id == id {
                 entry.last_error_at = Some(now);
                 entry.updated_at = now;
             }
@@ -5440,6 +5523,504 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
     );
 
     (app, test_admin_user())
+}
+
+struct MediaRequestTestHarness {
+    app: AppUseCase,
+    user: User,
+    titles: Arc<MockTitleRepo>,
+    libraries: Arc<MockLibraryRepo>,
+    media_requests: Arc<MockMediaRequestRepo>,
+    domain_events: Arc<MockDomainEventRepo>,
+}
+
+fn bootstrap_media_request_app() -> MediaRequestTestHarness {
+    let titles = Arc::new(MockTitleRepo::default());
+    let shows = Arc::new(MockShowRepo::default());
+    let users = Arc::new(MockUserRepo::default());
+    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let download_client = Arc::new(StubDownloadClient::default());
+    let indexer_client = Arc::new(MockIndexerClient);
+    let libraries = Arc::new(MockLibraryRepo::default());
+    let domain_events = Arc::new(MockDomainEventRepo::default());
+    let media_requests = Arc::new(MockMediaRequestRepo::with_domain_events(
+        domain_events.clone(),
+    ));
+
+    let services = AppServices::builder(
+        titles.clone(),
+        shows,
+        users,
+        indexer_configs,
+        indexer_client,
+        download_client,
+        download_client_configs,
+        release_attempts,
+        settings,
+        quality_profiles,
+        String::new(),
+    )
+    .with_domain_events(domain_events.clone())
+    .with_libraries(libraries.clone())
+    .with_media_requests(media_requests.clone())
+    .build_partial_for_tests();
+    let mut registry = FacetRegistry::new();
+    registry.register(Arc::new(MovieFacetHandler));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Series,
+    )));
+    registry.register(Arc::new(SeriesFacetHandler::new(
+        scryer_domain::MediaFacet::Anime,
+    )));
+
+    MediaRequestTestHarness {
+        app: AppUseCase::new(
+            services,
+            JwtAuthConfig {
+                issuer: "scryer-test".to_string(),
+                access_ttl_seconds: 3600,
+                jwt_signing_salt: "test-salt".to_string(),
+            },
+            Arc::new(registry),
+        ),
+        user: test_admin_user(),
+        titles,
+        libraries,
+        media_requests,
+        domain_events,
+    }
+}
+
+fn media_request_input(library_id: impl Into<String>, tvdb_id: i64) -> SubmitMediaRequestInput {
+    SubmitMediaRequestInput {
+        library_id: library_id.into(),
+        facet: MediaFacet::Movie,
+        title: "Glass Harbor".to_string(),
+        sort_title: Some("Glass Harbor".to_string()),
+        slug: Some("glass-harbor".to_string()),
+        poster_url: Some("https://example.test/glass-harbor.jpg".to_string()),
+        year: Some(2026),
+        overview: Some("A test request subject".to_string()),
+        runtime_minutes: Some(101),
+        language: Some("en".to_string()),
+        content_status: Some("Released".to_string()),
+        external_ids: vec![
+            ExternalId {
+                source: "TVDB".to_string(),
+                value: tvdb_id.to_string(),
+            },
+            ExternalId {
+                source: "imdb".to_string(),
+                value: "tt1234567".to_string(),
+            },
+        ],
+    }
+}
+
+fn library_permission_user(
+    username: &str,
+    library_id: &str,
+    permissions: &[scryer_domain::LibraryPermission],
+) -> User {
+    let mut user = User::new_admin(username);
+    user.authorization = scryer_domain::UserAuthorization {
+        app: AppPermissionMask::NONE,
+        libraries: HashMap::from([(
+            library_id.to_string(),
+            scryer_domain::LibraryPermissionMask::from_permissions(permissions.iter().copied()),
+        )]),
+        default_library: scryer_domain::LibraryPermissionMask::NONE,
+        loaded: true,
+    };
+    user
+}
+
+fn custom_movie_library(id: &str, name: &str) -> Library {
+    let mut library = mock_default_library(MediaFacet::Movie);
+    library.id = id.to_string();
+    library.name = name.to_string();
+    library.slug = name.to_ascii_lowercase().replace(' ', "-");
+    library.is_default = false;
+    library
+}
+
+#[tokio::test]
+async fn submit_media_request_creates_request_requester_and_domain_event() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let outcome = harness
+        .app
+        .submit_media_request(&harness.user, media_request_input(library_id.clone(), 9010))
+        .await
+        .expect("request submission should succeed");
+
+    assert!(outcome.accepted);
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.library_id, library_id);
+    assert_eq!(request.status, MediaRequestStatus::Pending);
+    assert_eq!(request.created_by_user_id, harness.user.id);
+    assert_eq!(request.requesters.len(), 1);
+    assert_eq!(request.requesters[0].user_id, harness.user.id);
+    assert_eq!(
+        request.external_ids,
+        vec![
+            ExternalId {
+                source: "imdb".to_string(),
+                value: "tt1234567".to_string(),
+            },
+            ExternalId {
+                source: "tvdb".to_string(),
+                value: "9010".to_string(),
+            },
+        ]
+    );
+
+    let events = harness.domain_events.events.lock().await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].actor_user_id.as_deref(),
+        Some(harness.user.id.as_str())
+    );
+    match &events[0].payload {
+        DomainEventPayload::MediaRequestSubmitted(data) => {
+            assert_eq!(data.request_id, request.id);
+            assert_eq!(data.library_id, library_id);
+            assert_eq!(data.title_name, "Glass Harbor");
+            assert_eq!(data.external_ids, request.external_ids);
+        }
+        other => panic!("unexpected event payload: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn media_request_activity_is_visible_to_library_viewers() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    harness
+        .app
+        .submit_media_request(&harness.user, media_request_input(library_id.clone(), 9021))
+        .await
+        .expect("request submission should succeed");
+
+    let viewer = library_permission_user(
+        "request-activity-viewer",
+        &library_id,
+        &[scryer_domain::LibraryPermission::View],
+    );
+    let activities = harness
+        .app
+        .recent_activity(&viewer, 10, 0)
+        .await
+        .expect("request activity should be visible");
+
+    assert_eq!(activities.len(), 1);
+    assert_eq!(activities[0].kind, ActivityKind::SystemNotice);
+    assert!(
+        activities[0].message.contains("Requested 'Glass Harbor'"),
+        "unexpected activity message: {}",
+        activities[0].message
+    );
+}
+
+#[tokio::test]
+async fn submit_media_request_duplicate_same_user_creates_separate_submission_and_event() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let input = media_request_input(library_id, 9011);
+
+    let first = harness
+        .app
+        .submit_media_request(&harness.user, input.clone())
+        .await
+        .expect("first request should succeed");
+    let second = harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("duplicate request should succeed opaquely");
+
+    assert!(first.accepted);
+    assert!(second.accepted);
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.requesters.len() == 1));
+    let request_ids = requests
+        .iter()
+        .map(|request| request.id.clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(request_ids.len(), 2);
+    drop(requests);
+
+    let events = harness.domain_events.events.lock().await;
+    assert_eq!(events.len(), 2);
+    assert!(
+        events
+            .iter()
+            .all(|event| matches!(event.payload, DomainEventPayload::MediaRequestSubmitted(_)))
+    );
+}
+
+#[tokio::test]
+async fn submit_media_request_second_user_creates_private_submission_without_exposing_prior_request()
+ {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let input = media_request_input(library_id.clone(), 9012);
+    let second_user = library_permission_user(
+        "requester-two",
+        &library_id,
+        &[scryer_domain::LibraryPermission::Request],
+    );
+
+    let first = harness
+        .app
+        .submit_media_request(&harness.user, input.clone())
+        .await
+        .expect("first request should succeed");
+    let second = harness
+        .app
+        .submit_media_request(&second_user, input)
+        .await
+        .expect("second request should attach opaquely");
+
+    assert!(first.accepted);
+    assert!(second.accepted);
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.requesters.len() == 1));
+    let requester_ids = requests
+        .iter()
+        .flat_map(|request| request.requesters.iter().map(|entry| entry.user_id.clone()))
+        .collect::<HashSet<_>>();
+    assert!(requester_ids.contains(&harness.user.id));
+    assert!(requester_ids.contains(&second_user.id));
+    assert_eq!(requester_ids.len(), 2);
+    drop(requests);
+
+    let events = harness.domain_events.events.lock().await;
+    let request_ids = events
+        .iter()
+        .map(|event| match &event.payload {
+            DomainEventPayload::MediaRequestSubmitted(data) => data.request_id.clone(),
+            other => panic!("unexpected event payload: {other:?}"),
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(events.len(), 2);
+    assert_eq!(request_ids.len(), 2);
+}
+
+#[tokio::test]
+async fn submit_media_request_accepts_search_correlation_id_without_tvdb() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut input = media_request_input(library_id, 9019);
+    input.external_ids = vec![ExternalId {
+        source: "imdb".to_string(),
+        value: "tt7654321".to_string(),
+    }];
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("imdb-backed search request should succeed");
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].external_ids,
+        vec![ExternalId {
+            source: "imdb".to_string(),
+            value: "tt7654321".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn submit_media_request_rejects_ids_that_cannot_correlate_to_smg_search() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut input = media_request_input(library_id, 9020);
+    input.external_ids = vec![ExternalId {
+        source: "unknown".to_string(),
+        value: "opaque".to_string(),
+    }];
+
+    let error = harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect_err("unsupported identity should fail");
+
+    assert!(
+        matches!(error, AppError::Validation(ref message) if message.contains("searchable SMG identifier")),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn submit_media_request_allows_same_identity_in_different_libraries() {
+    let harness = bootstrap_media_request_app();
+    let default_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let alternate_library_id = "movie-library-alt".to_string();
+    harness
+        .libraries
+        .libraries
+        .lock()
+        .await
+        .push(custom_movie_library(&alternate_library_id, "Movie Alt"));
+
+    harness
+        .app
+        .submit_media_request(
+            &harness.user,
+            media_request_input(default_library_id.clone(), 9013),
+        )
+        .await
+        .expect("default library request should succeed");
+    harness
+        .app
+        .submit_media_request(
+            &harness.user,
+            media_request_input(alternate_library_id.clone(), 9013),
+        )
+        .await
+        .expect("alternate library request should succeed");
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.library_id == default_library_id)
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.library_id == alternate_library_id)
+    );
+}
+
+#[tokio::test]
+async fn submit_media_request_blocks_existing_title_in_target_library() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    harness
+        .titles
+        .store
+        .lock()
+        .await
+        .push(make_due_hydration_title(
+            "existing-movie",
+            MediaFacet::Movie,
+            9014,
+        ));
+
+    let error = harness
+        .app
+        .submit_media_request(&harness.user, media_request_input(library_id, 9014))
+        .await
+        .expect_err("existing title identity should block request");
+
+    assert!(
+        matches!(error, AppError::Validation(ref message) if message.contains("already exists")),
+        "unexpected error: {error:?}"
+    );
+    assert!(harness.media_requests.requests.lock().await.is_empty());
+    assert!(harness.domain_events.events.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn submit_media_request_requires_request_permission_and_matching_facet() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let requestless_user = library_permission_user("viewer", &library_id, &[]);
+
+    let permission_error = harness
+        .app
+        .submit_media_request(
+            &requestless_user,
+            media_request_input(library_id.clone(), 9015),
+        )
+        .await
+        .expect_err("request permission should be required");
+    assert!(
+        matches!(permission_error, AppError::Unauthorized(_)),
+        "unexpected permission error: {permission_error:?}"
+    );
+
+    let mut mismatched = media_request_input(library_id, 9016);
+    mismatched.facet = MediaFacet::Series;
+    let facet_error = harness
+        .app
+        .submit_media_request(&harness.user, mismatched)
+        .await
+        .expect_err("facet mismatch should fail");
+    assert!(
+        matches!(facet_error, AppError::Validation(ref message) if message.contains("facet")),
+        "unexpected facet error: {facet_error:?}"
+    );
+}
+
+#[tokio::test]
+async fn list_media_requests_filters_by_facet_and_manageable_libraries() {
+    let harness = bootstrap_media_request_app();
+    let default_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let alternate_library_id = "movie-library-queue".to_string();
+    harness
+        .libraries
+        .libraries
+        .lock()
+        .await
+        .push(custom_movie_library(&alternate_library_id, "Movie Queue"));
+
+    harness
+        .app
+        .submit_media_request(
+            &harness.user,
+            media_request_input(default_library_id.clone(), 9017),
+        )
+        .await
+        .expect("default library request should succeed");
+    harness
+        .app
+        .submit_media_request(
+            &harness.user,
+            media_request_input(alternate_library_id.clone(), 9018),
+        )
+        .await
+        .expect("alternate library request should succeed");
+
+    let queue_manager = library_permission_user(
+        "queue-manager",
+        &alternate_library_id,
+        &[scryer_domain::LibraryPermission::ManageTitles],
+    );
+    let requests = harness
+        .app
+        .list_media_requests(
+            &queue_manager,
+            ListMediaRequestsInput {
+                facet: Some(MediaFacet::Movie),
+                library_ids: Some(vec![default_library_id, alternate_library_id.clone()]),
+                status: Some(MediaRequestStatus::Pending),
+            },
+        )
+        .await
+        .expect("request list should load");
+
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].library_id, alternate_library_id);
+    assert_eq!(requests[0].requesters.len(), 1);
 }
 
 fn bootstrap_with_metadata_gateway_and_titles(
@@ -11534,6 +12115,7 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_series_querie
             absolute_number: None,
             overview: None,
             tvdb_id: Some("tvdb-series-211".to_string()),
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -11623,6 +12205,7 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_anime_queries
             absolute_number: Some("35".to_string()),
             overview: None,
             tvdb_id: Some("tvdb-anime-211".to_string()),
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -15387,6 +15970,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
                 absolute_number: None,
                 overview: None,
                 tvdb_id: None,
+                image_url: None,
                 monitored: true,
                 created_at: Utc::now(),
             })
@@ -15839,6 +16423,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
                 absolute_number: None,
                 overview: None,
                 tvdb_id: None,
+                image_url: None,
                 monitored: true,
                 created_at: Utc::now(),
             })
@@ -16082,6 +16667,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -16110,6 +16696,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -16313,6 +16900,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
                 absolute_number: None,
                 overview: None,
                 tvdb_id: None,
+                image_url: None,
                 monitored: true,
                 created_at: Utc::now(),
             })
@@ -16599,6 +17187,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 absolute_number: None,
                 overview: None,
                 tvdb_id: None,
+                image_url: None,
                 monitored: true,
                 created_at: Utc::now(),
             })
@@ -16763,6 +17352,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
                 absolute_number: None,
                 overview: None,
                 tvdb_id: None,
+                image_url: None,
                 monitored: true,
                 created_at: Utc::now(),
             })
@@ -16906,6 +17496,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
                 absolute_number: None,
                 overview: None,
                 tvdb_id: None,
+                image_url: None,
                 monitored: true,
                 created_at: Utc::now(),
             })
@@ -17452,6 +18043,7 @@ async fn acquisition_cycle_limits_due_work_per_title_slice() {
                 absolute_number: None,
                 overview: None,
                 tvdb_id: None,
+                image_url: None,
                 monitored: true,
                 created_at: Utc::now(),
             })
@@ -17587,6 +18179,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -17720,6 +18313,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         })
@@ -18386,6 +18980,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: false,
             created_at: Utc::now(),
         })
@@ -18414,6 +19009,7 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: false,
             created_at: Utc::now(),
         })
@@ -19301,6 +19897,88 @@ async fn create_collection_and_episode() {
 }
 
 #[tokio::test]
+async fn series_hydration_persists_and_clears_episode_image_url() {
+    let (app, user) = bootstrap();
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Still Frames".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![ExternalId {
+                    source: "tvdb_id".into(),
+                    value: "880088".into(),
+                }],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let seasons = vec![SeasonMetadata {
+        tvdb_id: 880_001,
+        number: 1,
+        label: "Season 1".into(),
+        episode_type: "official".into(),
+    }];
+    let mut episodes = vec![EpisodeMetadata {
+        tvdb_id: 880_101,
+        episode_number: 1,
+        name: "A Still Frame".into(),
+        aired: "2026-01-01".into(),
+        runtime_minutes: 24,
+        is_filler: false,
+        is_recap: false,
+        overview: "A frame is captured.".into(),
+        absolute_number: "1".into(),
+        season_number: 1,
+        image_url: " https://image.tmdb.org/t/p/original/still-a.jpg ".into(),
+    }];
+
+    app.create_series_seasons_and_episodes(&title, &seasons, &episodes, &[], &[])
+        .await;
+    let collection = app
+        .list_collections(&user, &title.id)
+        .await
+        .expect("list collections")
+        .into_iter()
+        .next()
+        .expect("collection created");
+    let hydrated = app
+        .list_episodes(&user, &collection.id)
+        .await
+        .expect("list episodes");
+    assert_eq!(
+        hydrated[0].image_url.as_deref(),
+        Some("https://image.tmdb.org/t/p/original/still-a.jpg")
+    );
+
+    episodes[0].image_url = "https://image.tmdb.org/t/p/original/still-b.jpg".into();
+    app.create_series_seasons_and_episodes(&title, &seasons, &episodes, &[], &[])
+        .await;
+    let updated = app
+        .list_episodes(&user, &collection.id)
+        .await
+        .expect("list episodes after image update");
+    assert_eq!(
+        updated[0].image_url.as_deref(),
+        Some("https://image.tmdb.org/t/p/original/still-b.jpg")
+    );
+
+    episodes[0].image_url = "not-a-url".into();
+    app.create_series_seasons_and_episodes(&title, &seasons, &episodes, &[], &[])
+        .await;
+    let cleared = app
+        .list_episodes(&user, &collection.id)
+        .await
+        .expect("list episodes after image clear");
+    assert_eq!(cleared[0].image_url, None);
+}
+
+#[tokio::test]
 async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
     let (app, user) = bootstrap();
     let app = app.with_test_overrides(|services| {
@@ -19374,6 +20052,7 @@ async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
             overview: "Episode 1".into(),
             absolute_number: "1".into(),
             season_number: 1,
+            image_url: String::new(),
         },
         EpisodeMetadata {
             tvdb_id: 1002,
@@ -19386,6 +20065,7 @@ async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
             overview: "Episode 26".into(),
             absolute_number: "26".into(),
             season_number: 1,
+            image_url: String::new(),
         },
         EpisodeMetadata {
             tvdb_id: 2001,
@@ -19398,6 +20078,7 @@ async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
             overview: "Special cut".into(),
             absolute_number: String::new(),
             season_number: 0,
+            image_url: String::new(),
         },
     ];
     let anime_mappings = vec![AnimeMapping {
@@ -19536,6 +20217,7 @@ async fn series_season_zero_creates_canonical_specials_collection() {
             overview: "Special".into(),
             absolute_number: String::new(),
             season_number: 0,
+            image_url: String::new(),
         },
         EpisodeMetadata {
             tvdb_id: 8101,
@@ -19548,6 +20230,7 @@ async fn series_season_zero_creates_canonical_specials_collection() {
             overview: "Episode 1".into(),
             absolute_number: "1".into(),
             season_number: 1,
+            image_url: String::new(),
         },
     ];
 
@@ -19786,6 +20469,7 @@ async fn series_rollout_reuses_legacy_season_zero_specials_collection() {
         overview: "Legacy special".into(),
         absolute_number: String::new(),
         season_number: 0,
+        image_url: String::new(),
     }];
 
     app.create_series_seasons_and_episodes(&title, &seasons, &episodes, &[], &[])
@@ -19862,6 +20546,7 @@ async fn anime_mapping_without_movie_link_does_not_create_interstitial_collectio
             overview: "Episode 1".into(),
             absolute_number: "1".into(),
             season_number: 1,
+            image_url: String::new(),
         },
         EpisodeMetadata {
             tvdb_id: 3002,
@@ -19874,6 +20559,7 @@ async fn anime_mapping_without_movie_link_does_not_create_interstitial_collectio
             overview: "Special".into(),
             absolute_number: String::new(),
             season_number: 0,
+            image_url: String::new(),
         },
     ];
     let anime_mappings = vec![AnimeMapping {
@@ -19956,6 +20642,7 @@ async fn anime_hydration_persists_scoped_anibridge_ids_for_episode_and_full_seas
             overview: String::new(),
             absolute_number: episode_number.to_string(),
             season_number: 2,
+            image_url: String::new(),
         })
         .collect::<Vec<_>>();
     let anime_mappings = vec![AnimeMapping {
@@ -20105,6 +20792,7 @@ async fn anime_specials_movies_attach_to_specials_collection_and_keep_ordered_mo
             overview: "Episode 1".into(),
             absolute_number: "1".into(),
             season_number: 1,
+            image_url: String::new(),
         },
         EpisodeMetadata {
             tvdb_id: 6001,
@@ -20117,6 +20805,7 @@ async fn anime_specials_movies_attach_to_specials_collection_and_keep_ordered_mo
             overview: "Episode 1".into(),
             absolute_number: "26".into(),
             season_number: 2,
+            image_url: String::new(),
         },
     ];
 
@@ -20252,6 +20941,7 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
             overview: "Episode 1".into(),
             absolute_number: "1".into(),
             season_number: 1,
+            image_url: String::new(),
         },
         EpisodeMetadata {
             tvdb_id: 2001,
@@ -20264,6 +20954,7 @@ async fn anime_interstitial_refresh_updates_localized_collection_metadata() {
             overview: "Movie special".into(),
             absolute_number: String::new(),
             season_number: 0,
+            image_url: String::new(),
         },
     ];
     let anime_mappings = vec![AnimeMapping {
@@ -20426,6 +21117,7 @@ async fn anime_specials_refresh_updates_localized_specials_movie_metadata() {
         overview: "Episode 1".into(),
         absolute_number: "1".into(),
         season_number: 1,
+        image_url: String::new(),
     }];
 
     let japanese_special = AnimeMovie {

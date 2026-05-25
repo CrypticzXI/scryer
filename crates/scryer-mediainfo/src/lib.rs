@@ -7,6 +7,7 @@ mod codec;
 mod mkv;
 mod mp4;
 mod probe;
+mod scan;
 mod ts;
 mod types;
 
@@ -36,6 +37,9 @@ impl From<std::io::Error> for MediaInfoError {
 /// Analysis behavior profile for media probing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnalysisProfile {
+    /// Fast bounded metadata pass. This avoids payload/sample deep probes and
+    /// leaves richer confirmation to callers that need it.
+    Fast,
     /// Preserve the richer native analyzer behavior, including bounded deep
     /// scans for metadata such as HDR10+ where cheaper signals justify it.
     DefaultRich,
@@ -54,7 +58,7 @@ pub struct AnalyzeOptions {
 impl Default for AnalyzeOptions {
     fn default() -> Self {
         Self {
-            profile: AnalysisProfile::DefaultRich,
+            profile: AnalysisProfile::Fast,
         }
     }
 }
@@ -150,18 +154,26 @@ pub fn analyze_file_with_options(
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
 
-    let format = sniff_container_format(file_path).or(match ext.as_str() {
+    let format = match ext.as_str() {
         "mkv" | "webm" => Some(ContainerFormat::Matroska),
         "mp4" | "m4v" | "mov" => Some(ContainerFormat::Mp4),
         "avi" => Some(ContainerFormat::Avi),
         "ts" | "m2ts" => Some(ContainerFormat::Ts),
         _ => None,
-    });
+    }
+    .or_else(|| sniff_container_format(file_path));
 
     let raw = match format {
-        Some(ContainerFormat::Matroska) => mkv::parse_mkv(file_path, options.profile)?,
+        Some(ContainerFormat::Matroska) => {
+            let profile = if options.profile == AnalysisProfile::Fast {
+                AnalysisProfile::DefaultRich
+            } else {
+                options.profile
+            };
+            mkv::parse_mkv(file_path, profile)?
+        }
         Some(ContainerFormat::Mp4) => mp4::parse_mp4(file_path, options.profile)?,
-        Some(ContainerFormat::Avi) => avi::parse_avi(file_path)?,
+        Some(ContainerFormat::Avi) => avi::parse_avi(file_path, options.profile)?,
         Some(ContainerFormat::Ts) => ts::parse_ts(file_path)?,
         None => return Err(MediaInfoError::UnsupportedFormat(ext)),
     };

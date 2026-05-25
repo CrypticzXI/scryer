@@ -340,6 +340,10 @@ function RootSidebarContent({
         return canAccessFacetImport ? t("nav.import") : getMediaOverviewLabel(view, t);
       }
 
+      if (contentSettingsSection === "requests") {
+        return canManageTitle ? t("nav.requests") : getMediaOverviewLabel(view, t);
+      }
+
       if (isSettingsSubPage(contentSettingsSection)) {
         if (!canAccessMediaSettings) {
           return getMediaOverviewLabel(view, t);
@@ -379,6 +383,7 @@ function RootSidebarContent({
     view,
     canAccessFacetImport,
     canAccessMediaSettings,
+    canManageTitle,
     visibleActivitySubPages,
     visibleSettingsEntries,
     visibleWantedSubPages,
@@ -609,6 +614,19 @@ function RootSidebarContent({
                                       {pendingImportCountForNavView(item.id) > 0 ? (
                                         <LeafNavBadge count={pendingImportCountForNavView(item.id)} />
                                       ) : null}
+                                    </SidebarMenuSubButton>
+                                  </SidebarMenuSubItem>
+                                ) : null}
+                                {canManageTitle ? (
+                                  <SidebarMenuSubItem>
+                                    <SidebarMenuSubButton
+                                      id={selectorId("root-sidebar-media", item.id, "requests")}
+                                      isActive={contentSettingsSection === "requests"}
+                                      onClick={(event) => {
+                                        handleNavigate(event, item.id, undefined, "requests");
+                                      }}
+                                    >
+                                      {t("nav.requests")}
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}

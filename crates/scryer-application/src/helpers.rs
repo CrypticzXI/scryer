@@ -3,7 +3,6 @@ use std::future::Future;
 
 pub(crate) const INHERIT_QUALITY_PROFILE_VALUE: &str = "__inherit__";
 pub(crate) const NATIVE_DOWNLOAD_CLIENT_TYPES: [&str; 3] = ["nzbget", "sabnzbd", "weaver"];
-pub(crate) const INDEXER_PROVIDER_NZBGEEK: &str = "nzbgeek";
 
 pub(crate) fn parsed_episode_lookup_season(
     ep_meta: &ParsedEpisodeMetadata,

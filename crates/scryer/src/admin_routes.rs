@@ -6,13 +6,12 @@ use axum::Json;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use scryer_application::AppUseCase;
-use scryer_domain::{AppPermission, NewIndexerConfig};
+use scryer_domain::AppPermission;
 use scryer_infrastructure::SettingsStore;
 use scryer_interface::context::AuthRuntimeStateHandle;
 use serde::{Deserialize, Serialize};
 
 use crate::middleware::{map_app_error, resolve_actor_with_app_permission};
-use crate::normalize_env_option;
 use crate::settings_bootstrap::{SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM};
 
 pub(crate) async fn bootstrap_admin_password(app_use_case: &AppUseCase) {
@@ -35,112 +34,6 @@ pub(crate) async fn bootstrap_admin_password(app_use_case: &AppUseCase) {
         Ok(_) => tracing::info!("admin password bootstrapped (change it in Settings > Users)"),
         Err(error) => tracing::warn!(error = %error, "failed to set admin password"),
     }
-}
-
-pub(crate) async fn seed_indexer_configs_from_env(app_use_case: &AppUseCase) -> Result<(), String> {
-    let actor = app_use_case
-        .find_or_create_default_user()
-        .await
-        .map_err(|error| format!("failed to initialize default admin user: {error}"))?;
-
-    seed_single_indexer(
-        app_use_case,
-        &actor,
-        "SCRYER_NZBGEEK",
-        "NZBGeek",
-        "nzbgeek",
-        "https://api.nzbgeek.info",
-    )
-    .await?;
-
-    seed_single_indexer(
-        app_use_case,
-        &actor,
-        "SCRYER_DOGNZB",
-        "DogNZB",
-        "dognzb",
-        "https://api.dognzb.cr",
-    )
-    .await?;
-
-    Ok(())
-}
-
-async fn seed_single_indexer(
-    app_use_case: &AppUseCase,
-    actor: &scryer_domain::User,
-    env_prefix: &str,
-    default_name: &str,
-    default_provider_type: &str,
-    default_base_url: &str,
-) -> Result<(), String> {
-    let provider_type = normalize_env_option(&format!("{env_prefix}_PROVIDER_TYPE"))
-        .unwrap_or_else(|| default_provider_type.to_string())
-        .to_lowercase();
-    let base_url = normalize_env_option(&format!("{env_prefix}_API_BASE_URL"))
-        .unwrap_or_else(|| default_base_url.to_string())
-        .trim_end_matches('/')
-        .to_string();
-    let api_key = normalize_env_option(&format!("{env_prefix}_API_KEY"));
-
-    if api_key.is_none() {
-        tracing::debug!(
-            provider = default_provider_type,
-            "{env_prefix}_API_KEY is not set; skipping indexer seed"
-        );
-        return Ok(());
-    }
-    let api_key = api_key.expect("checked above");
-
-    let input = NewIndexerConfig {
-        name: normalize_env_option(&format!("{env_prefix}_NAME"))
-            .unwrap_or_else(|| default_name.to_string()),
-        provider_type: provider_type.clone(),
-        rate_limit_seconds: parse_optional_env_i64(&format!("{env_prefix}_RATE_LIMIT_SECONDS")),
-        rate_limit_burst: parse_optional_env_i64(&format!("{env_prefix}_RATE_LIMIT_BURST")),
-        is_enabled: parse_env_bool(&format!("{env_prefix}_ENABLED"), true),
-        enable_interactive_search: true,
-        enable_auto_search: true,
-        config_json: Some(
-            serde_json::json!({
-                "base_url": base_url,
-                "api_key": api_key,
-            })
-            .to_string(),
-        ),
-    };
-
-    let existing = app_use_case
-        .list_indexer_configs(actor, Some(provider_type.clone()))
-        .await
-        .map_err(|error| format!("failed to list existing indexers: {error}"))?;
-    let normalized_base_url = normalize_base_url(&base_url);
-
-    let already_seeded = existing.iter().any(|config| {
-        config.provider_type.eq_ignore_ascii_case(&provider_type)
-            && normalize_base_url(&config.base_url) == normalized_base_url
-    });
-
-    if already_seeded {
-        tracing::info!(
-            provider = provider_type,
-            base_url = %base_url,
-            "indexer config from environment already exists, skipping insert"
-        );
-        return Ok(());
-    }
-
-    app_use_case
-        .create_indexer_config(actor, input)
-        .await
-        .map_err(|error| format!("failed to create indexer config: {error}"))?;
-
-    tracing::info!(
-        provider = provider_type,
-        base_url = %base_url,
-        "seeded indexer config from environment"
-    );
-    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -415,29 +308,6 @@ pub(crate) async fn admin_migrations_handler(database: Arc<SettingsStore>) -> Re
         migration_checksum_mismatch_flags,
     })
     .into_response()
-}
-
-pub(crate) fn normalize_base_url(raw: &str) -> String {
-    raw.trim().trim_end_matches('/').to_string()
-}
-
-pub(crate) fn parse_optional_env_i64(name: &str) -> Option<i64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .filter(|value| *value > 0)
-}
-
-pub(crate) fn parse_env_bool(name: &str, default: bool) -> bool {
-    let Some(value) = normalize_env_option(name) else {
-        return default;
-    };
-
-    match value.to_lowercase().as_str() {
-        "1" | "true" | "yes" | "y" | "on" => true,
-        "0" | "false" | "no" | "n" | "off" => false,
-        _ => default,
-    }
 }
 
 #[cfg(test)]

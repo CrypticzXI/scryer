@@ -3,11 +3,14 @@ import { useClient } from "urql";
 import { toast } from "sonner";
 import { SettingsSecuritySection } from "@/components/views/settings/settings-security-section";
 import { disposeWsClient } from "@/lib/graphql/ws-client";
-import { updateSecuritySettingsMutation } from "@/lib/graphql/mutations";
-import { securitySettingsQuery } from "@/lib/graphql/queries";
+import {
+  updateAuthProviderSettingsMutation,
+  updateSecuritySettingsMutation,
+} from "@/lib/graphql/mutations";
+import { authProviderSettingsQuery, securitySettingsQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useAuth } from "@/lib/hooks/use-auth";
-import type { SecuritySettings } from "@/lib/types/settings";
+import type { AuthProviderSettings, SecuritySettings } from "@/lib/types/settings";
 import { APP_PERMISSIONS, hasAppPermission } from "@/lib/utils/permissions";
 
 const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
@@ -17,6 +20,17 @@ const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   envOverrideActive: false,
   envOverrideDescription: null,
 };
+
+const DEFAULT_AUTH_PROVIDER_SETTINGS: AuthProviderSettings = {
+  allowedProviders: [],
+  providerLoginEnabled: [],
+  providerLinkingEnabled: [],
+  allowedJellyfinConnectionIds: [],
+  allowedPlexConnectionIds: [],
+  allowedJellyfinConnections: [],
+  allowedPlexConnections: [],
+};
+
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
@@ -30,7 +44,10 @@ export function SettingsSecurityContainer() {
   const [settings, setSettings] = React.useState<SecuritySettings>(
     DEFAULT_SECURITY_SETTINGS,
   );
+  const [authProviderSettings, setAuthProviderSettings] =
+    React.useState<AuthProviderSettings>(DEFAULT_AUTH_PROVIDER_SETTINGS);
   const [loading, setLoading] = React.useState(true);
+  const [authProviderSaving, setAuthProviderSaving] = React.useState(false);
   const [enableConfirmOpen, setEnableConfirmOpen] = React.useState(false);
   const [disableConfirmOpen, setDisableConfirmOpen] = React.useState(false);
   const [confirmBusy, setConfirmBusy] = React.useState(false);
@@ -43,16 +60,25 @@ export function SettingsSecurityContainer() {
 
     (async () => {
       try {
-        const { data, error } = await client.query(securitySettingsQuery, {}).toPromise();
-        if (error) throw error;
+        const [securityResult, authProviderResult] = await Promise.all([
+          client.query(securitySettingsQuery, {}).toPromise(),
+          client.query(authProviderSettingsQuery, {}).toPromise(),
+        ]);
+        if (securityResult.error) throw securityResult.error;
+        if (authProviderResult.error) throw authProviderResult.error;
         if (cancelled) return;
         setSettings({
           ...DEFAULT_SECURITY_SETTINGS,
-          ...data?.securitySettings,
+          ...securityResult.data?.securitySettings,
+        });
+        setAuthProviderSettings({
+          ...DEFAULT_AUTH_PROVIDER_SETTINGS,
+          ...authProviderResult.data?.authProviderSettings,
         });
       } catch (error) {
         if (!cancelled) {
           setSettings(DEFAULT_SECURITY_SETTINGS);
+          setAuthProviderSettings(DEFAULT_AUTH_PROVIDER_SETTINGS);
           toast.error(errorMessage(error, t("settings.securityLoadFailed")));
         }
       } finally {
@@ -263,10 +289,61 @@ export function SettingsSecurityContainer() {
     token,
   ]);
 
+  const handleAuthProviderSettingsSave = React.useCallback(async () => {
+    setAuthProviderSaving(true);
+    try {
+      const allowedJellyfinConnections =
+        authProviderSettings.allowedJellyfinConnections.map((connection) => ({
+          id: connection.id,
+          displayName: connection.displayName,
+          baseUrl: connection.baseUrl,
+          machineId: null,
+        }));
+      const allowedPlexConnections =
+        authProviderSettings.allowedPlexConnections.map((connection) => ({
+          id: connection.id,
+          displayName: connection.displayName,
+          baseUrl: null,
+          machineId: connection.machineId,
+        }));
+      const { data, error } = await client
+        .mutation(updateAuthProviderSettingsMutation, {
+          input: {
+            allowedProviders: authProviderSettings.allowedProviders,
+            providerLoginEnabled: authProviderSettings.providerLoginEnabled,
+            providerLinkingEnabled: authProviderSettings.providerLinkingEnabled,
+            allowedJellyfinConnectionIds: allowedJellyfinConnections
+              .map((connection) => connection.id.trim())
+              .filter(Boolean),
+            allowedPlexConnectionIds: allowedPlexConnections
+              .map((connection) => connection.id.trim())
+              .filter(Boolean),
+            allowedJellyfinConnections,
+            allowedPlexConnections,
+          },
+        })
+        .toPromise();
+      if (error || !data?.updateAuthProviderSettings) {
+        throw error ?? new Error(t("settings.securitySaveFailed"));
+      }
+      setAuthProviderSettings({
+        ...DEFAULT_AUTH_PROVIDER_SETTINGS,
+        ...data.updateAuthProviderSettings,
+      });
+      toast.success(t("settings.securityPreferenceSaved"));
+    } catch (error) {
+      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+    } finally {
+      setAuthProviderSaving(false);
+    }
+  }, [authProviderSettings, client, t]);
+
   return (
     <SettingsSecuritySection
       settings={settings}
+      authProviderSettings={authProviderSettings}
       loading={loading}
+      authProviderSaving={authProviderSaving}
       enableConfirmOpen={enableConfirmOpen}
       disableConfirmOpen={disableConfirmOpen}
       confirmBusy={confirmBusy}
@@ -281,6 +358,8 @@ export function SettingsSecurityContainer() {
       onConfirmDisable={handleConfirmDisable}
       onCancelDisable={handleCancelDisable}
       onSkipLocalIpsChange={handleSkipLocalIpsChange}
+      onAuthProviderSettingsChange={setAuthProviderSettings}
+      onAuthProviderSettingsSave={handleAuthProviderSettingsSave}
     />
   );
 }

@@ -1,12 +1,16 @@
 import { useState, useCallback, useEffect } from "react";
 import { useClient } from "urql";
 import { SettingsProfileSection } from "@/components/views/settings/settings-profile-section";
-import { deleteMyPasskeyMutation, setUserPasswordMutation } from "@/lib/graphql/mutations";
-import { myPasskeysQuery } from "@/lib/graphql/queries";
+import {
+  deleteMyPasskeyMutation,
+  setUserPasswordMutation,
+  unlinkExternalAccountMutation,
+} from "@/lib/graphql/mutations";
+import { linkedAccountsQuery, myPasskeysQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useAuth } from "@/lib/hooks/use-auth";
-import type { PasskeySummary } from "@/lib/types/settings";
+import type { LinkedAccount, PasskeySummary } from "@/lib/types/settings";
 import { PasskeyClientError, registerPasskey } from "@/lib/utils/passkeys";
 
 type Props = {
@@ -24,9 +28,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [linkedAccounts, setLinkedAccounts] = useState<LinkedAccount[]>([]);
   const [loadingPasskeys, setLoadingPasskeys] = useState(false);
+  const [loadingLinkedAccounts, setLoadingLinkedAccounts] = useState(false);
   const [addingPasskey, setAddingPasskey] = useState(false);
   const [deletingPasskeyId, setDeletingPasskeyId] = useState<string | null>(null);
+  const [unlinkingAccountId, setUnlinkingAccountId] = useState<string | null>(null);
 
   const formatPasskeyError = useCallback((error: unknown) => {
     if (error instanceof PasskeyClientError) {
@@ -100,6 +107,34 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     void loadPasskeys();
   }, [loadPasskeys]);
 
+  const loadLinkedAccounts = useCallback(async () => {
+    if (!userId) {
+      setLinkedAccounts([]);
+      setLoadingLinkedAccounts(false);
+      return;
+    }
+
+    setLoadingLinkedAccounts(true);
+    try {
+      const result = await client
+        .query<{ linkedAccounts?: LinkedAccount[] }>(linkedAccountsQuery, { userId })
+        .toPromise();
+      if (result.error) {
+        setGlobalStatus(result.error.message);
+        return;
+      }
+      setLinkedAccounts(result.data?.linkedAccounts ?? []);
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("profile.linkedAccountsLoadFailed"));
+    } finally {
+      setLoadingLinkedAccounts(false);
+    }
+  }, [client, setGlobalStatus, t, userId]);
+
+  useEffect(() => {
+    void loadLinkedAccounts();
+  }, [loadLinkedAccounts]);
+
   const handleAddPasskey = useCallback(async () => {
     if (!passkeyEnabled || !userId) return;
 
@@ -135,6 +170,31 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     }
   }, [client, setGlobalStatus, t]);
 
+  const handleUnlinkExternalAccount = useCallback(async (id: string) => {
+    setUnlinkingAccountId(id);
+    try {
+      const result = await client
+        .mutation<{ unlinkExternalAccount?: boolean }, { input: { linkedAccountId: string } }>(
+          unlinkExternalAccountMutation,
+          { input: { linkedAccountId: id } },
+        )
+        .toPromise();
+      if (result.error || result.data?.unlinkExternalAccount !== true) {
+        setGlobalStatus(result.error?.message ?? t("profile.linkedAccountUnlinkFailed"));
+        return;
+      }
+
+      setLinkedAccounts((current) => current.filter((account) => account.id !== id));
+      setGlobalStatus(t("profile.linkedAccountUnlinked"));
+    } catch (error) {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("profile.linkedAccountUnlinkFailed"),
+      );
+    } finally {
+      setUnlinkingAccountId(null);
+    }
+  }, [client, setGlobalStatus, t]);
+
   return (
     <SettingsProfileSection
       username={username}
@@ -148,11 +208,15 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       onChangePassword={handleChangePassword}
       showPasskeys={passkeyEnabled && Boolean(userId)}
       passkeys={passkeys}
+      linkedAccounts={linkedAccounts}
       loadingPasskeys={loadingPasskeys}
+      loadingLinkedAccounts={loadingLinkedAccounts}
       addingPasskey={addingPasskey}
       deletingPasskeyId={deletingPasskeyId}
+      unlinkingAccountId={unlinkingAccountId}
       onAddPasskey={handleAddPasskey}
       onDeletePasskey={handleDeletePasskey}
+      onUnlinkExternalAccount={handleUnlinkExternalAccount}
     />
   );
 }

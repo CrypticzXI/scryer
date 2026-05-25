@@ -188,13 +188,14 @@ impl AppUseCase {
     }
 
     async fn derive_jwt_key_for_user(&self, user: &User) -> AppResult<Option<Vec<u8>>> {
-        let Some(password_hash) = user.password_hash.as_deref() else {
-            return Ok(None);
-        };
         let user = self.user_with_authorization(user).await?;
+        let signing_seed = user
+            .password_hash
+            .clone()
+            .unwrap_or_else(|| format!("federated:{}", user.id));
 
         Ok(Some(self.derive_jwt_key(
-            password_hash,
+            &signing_seed,
             &Self::authorization_fingerprint(&user),
         )))
     }
@@ -259,11 +260,11 @@ impl AppUseCase {
     }
 
     pub async fn issue_access_token(&self, actor: &User) -> AppResult<String> {
-        let password_hash = actor
-            .password_hash
-            .as_deref()
-            .ok_or_else(|| AppError::Unauthorized("cannot issue token: no password hash".into()))?;
         let actor = self.user_with_authorization(actor).await?;
+        let signing_seed = actor
+            .password_hash
+            .clone()
+            .unwrap_or_else(|| format!("federated:{}", actor.id));
 
         let now = Utc::now();
         let iat = now.timestamp();
@@ -284,7 +285,7 @@ impl AppUseCase {
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
         let signing_key =
-            self.derive_jwt_key(password_hash, &Self::authorization_fingerprint(&actor));
+            self.derive_jwt_key(&signing_seed, &Self::authorization_fingerprint(&actor));
         let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
 
         let token = jsonwebtoken::encode(&header, &claims, &key)

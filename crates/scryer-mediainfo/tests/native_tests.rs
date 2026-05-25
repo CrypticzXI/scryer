@@ -221,7 +221,13 @@ fn mp4_dv_profile8() {
 
 #[test]
 fn mkv_hevc_hdr10plus() {
-    let a = analyze_file(&media("hevc_hdr10plus.mkv")).unwrap();
+    let a = analyze_file_with_options(
+        &media("hevc_hdr10plus.mkv"),
+        AnalyzeOptions {
+            profile: AnalysisProfile::DefaultRich,
+        },
+    )
+    .unwrap();
     assert_eq!(a.video_codec.as_deref(), Some("hevc"));
     assert_eq!(a.video_hdr_format.as_deref(), Some("HDR10+"));
     assert_eq!(a.video_bit_depth, Some(10));
@@ -244,7 +250,13 @@ fn mkv_hevc_hdr10plus_ffprobe_parity_profile() {
 
 #[test]
 fn mp4_hevc_hdr10plus() {
-    let a = analyze_file(&media("hevc_hdr10plus.mp4")).unwrap();
+    let a = analyze_file_with_options(
+        &media("hevc_hdr10plus.mp4"),
+        AnalyzeOptions {
+            profile: AnalysisProfile::DefaultRich,
+        },
+    )
+    .unwrap();
     assert_eq!(a.video_codec.as_deref(), Some("hevc"));
     assert_eq!(a.video_hdr_format.as_deref(), Some("HDR10+"));
     assert!(is_valid_video(&a));

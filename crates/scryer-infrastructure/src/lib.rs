@@ -46,6 +46,10 @@ pub mod encryption {
     pub use crate::security::encryption::*;
 }
 
+pub mod external_identity {
+    pub use crate::security::external_identity::*;
+}
+
 pub mod external_import {
     pub use scryer_application::external_import::*;
 }
@@ -97,6 +101,10 @@ pub(crate) mod library_store {
 
 pub(crate) mod media_file_store {
     pub(crate) use crate::media::search::media_file_store::*;
+}
+
+pub(crate) mod media_request_store {
+    pub(crate) use crate::media::requests::*;
 }
 
 pub(crate) mod metadata_gateway {
@@ -237,6 +245,7 @@ pub mod sqlite {
         SubtitleDownloadStore, WantedStore,
     };
     pub use crate::media::libraries::store::LibraryStore;
+    pub use crate::media::requests::MediaRequestStore;
     pub use crate::media::search::media_file_store::MediaFileStore;
     pub use crate::media::shows::store::ShowStore;
     pub use crate::media::titles::store::TitleStore;
@@ -279,6 +288,7 @@ pub use media::libraries::state_store::{
     SubtitleDownloadStore, WantedStore,
 };
 pub use media::libraries::store::LibraryStore;
+pub use media::requests::MediaRequestStore;
 pub use media::search::media_file_store::MediaFileStore;
 pub use media::shows::store::ShowStore;
 pub use media::titles::store::TitleStore;

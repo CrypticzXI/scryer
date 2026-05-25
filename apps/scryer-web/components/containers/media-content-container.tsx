@@ -1,4 +1,5 @@
 import * as React from "react";
+import { RequestsContainer } from "@/components/containers/requests-container";
 import { MediaContentView } from "@/components/views/media-content-view";
 import {
   addTitleMutation,
@@ -2499,6 +2500,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     t,
     view,
   ]);
+
+  if (contentSettingsSection === "requests") {
+    return <RequestsContainer facet={activeFacet} />;
+  }
 
   return (
     <>

@@ -1,3 +1,4 @@
+use crate::scan;
 use crate::types::RawTrack;
 
 /// Codec profile and bit-depth information extracted from bitstream headers.
@@ -1648,17 +1649,30 @@ pub(crate) fn hevc_nal_length_size(hvcc: &[u8]) -> usize {
 /// Returns `true` if a registered user data SEI with country_code 0xB5 (USA),
 /// provider_code 0x003C (Samsung), and provider_oriented_code 0x0001 is found.
 pub(crate) fn scan_hevc_frame_for_hdr10plus(frame: &[u8], nal_length_size: usize) -> bool {
+    if !(1..=4).contains(&nal_length_size) {
+        return false;
+    }
+
     let mut offset = 0;
     while offset + nal_length_size <= frame.len() {
+        let Some(candidate) =
+            scan::find_hevc_sei_nal_header_candidate(frame, offset + nal_length_size)
+        else {
+            return false;
+        };
         let nal_len = read_be_length(&frame[offset..], nal_length_size);
         offset += nal_length_size;
         if nal_len == 0 || offset + nal_len > frame.len() {
             break;
         }
+        if candidate.offset >= offset + nal_len {
+            offset += nal_len;
+            continue;
+        }
         let nal_data = &frame[offset..offset + nal_len];
         // HEVC NAL header is 2 bytes. nal_unit_type is bits 1-6 of byte 0.
-        if nal_data.len() >= 3 {
-            let nal_type = (nal_data[0] >> 1) & 0x3F;
+        if nal_data.len() >= 3 && candidate.offset == offset {
+            let nal_type = candidate.nal_type;
             // PREFIX_SEI_NUT = 39, SUFFIX_SEI_NUT = 40
             if (nal_type == 39 || nal_type == 40) && check_sei_for_hdr10plus(&nal_data[2..]) {
                 return true;
@@ -1726,13 +1740,7 @@ fn check_sei_for_hdr10plus(sei_rbsp: &[u8]) -> bool {
 
 /// Check raw ITU-T T.35 payload bytes for HDR10+ metadata.
 pub(crate) fn scan_itu_t35_payload_for_hdr10plus(payload: &[u8]) -> bool {
-    payload.len() >= 6
-        && payload[0] == 0xB5
-        && payload[1] == 0x00
-        && payload[2] == 0x3C
-        && payload[3] == 0x00
-        && payload[4] == 0x01
-        && payload[5] == 0x04
+    scan::find_hdr10plus_itu_t35_candidate(payload, 0) == Some(0)
 }
 
 /// Maps an H.264 profile_idc value to a human-readable profile name.

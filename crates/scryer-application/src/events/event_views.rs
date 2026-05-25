@@ -202,6 +202,11 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
             ActivitySeverity::Info,
             import_requested_message(data.client_type.as_str(), data.source_ref.as_str()),
         ),
+        DomainEventPayload::MediaRequestSubmitted(data) => (
+            ActivityKind::SystemNotice,
+            ActivitySeverity::Info,
+            format!("Requested '{}' for catalog review.", data.title_name),
+        ),
         DomainEventPayload::ImportRecoveryCompleted(data) => (
             ActivityKind::SystemNotice,
             ActivitySeverity::Warning,

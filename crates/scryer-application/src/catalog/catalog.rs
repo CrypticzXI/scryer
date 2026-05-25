@@ -2554,8 +2554,10 @@ impl AppUseCase {
                 } else {
                     None
                 };
+                let new_image_url = normalize_episode_image_url(&ep.image_url);
                 let tvdb_id_changed = new_tvdb_id.as_deref() != existing.tvdb_id.as_deref();
-                if title_changed || overview_changed || tvdb_id_changed {
+                let image_url_changed = new_image_url.as_deref() != existing.image_url.as_deref();
+                if title_changed || overview_changed || tvdb_id_changed || image_url_changed {
                     let _ = self
                         .services
                         .catalog
@@ -2571,6 +2573,12 @@ impl AppUseCase {
                                 title: if title_changed { new_title } else { None },
                                 overview: if overview_changed { new_overview } else { None },
                                 tvdb_id: if tvdb_id_changed { new_tvdb_id } else { None },
+                                image_url: if image_url_changed {
+                                    new_image_url.clone()
+                                } else {
+                                    None
+                                },
+                                clear_image_url: image_url_changed && new_image_url.is_none(),
                                 ..Default::default()
                             },
                         )
@@ -2613,6 +2621,7 @@ impl AppUseCase {
                 } else {
                     None
                 },
+                image_url: normalize_episode_image_url(&ep.image_url),
                 monitored: episode_monitored,
                 created_at: Utc::now(),
             };
@@ -5089,6 +5098,7 @@ impl AppUseCase {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         };
@@ -5152,6 +5162,8 @@ impl AppUseCase {
             collection_id,
             overview,
             tvdb_id: None,
+            image_url: None,
+            clear_image_url: false,
         };
         if !update.has_changes() {
             return Err(AppError::Validation(
@@ -5502,6 +5514,23 @@ fn should_monitor_episode(
     }
 }
 
+fn normalize_episode_image_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let parsed = url::Url::parse(trimmed).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    if parsed.host_str().is_none_or(|host| host.trim().is_empty()) {
+        return None;
+    }
+
+    Some(parsed.to_string())
+}
+
 /// Derive the episode type from the season number, season episode_type, and anime media type.
 fn derive_episode_type(
     season_number: i32,
@@ -5534,5 +5563,38 @@ pub(crate) fn extract_tvdb_id(title: &scryer_domain::Title) -> Option<i64> {
 async fn sync_wanted_after_hydration(app: &AppUseCase, title: &scryer_domain::Title) {
     if title.monitored && title.metadata_fetched_at.is_some() {
         app.sync_title_for_immediate_acquisition(title).await;
+    }
+}
+
+#[cfg(test)]
+mod episode_image_url_tests {
+    use super::normalize_episode_image_url;
+
+    #[test]
+    fn accepts_fully_qualified_http_episode_image_urls() {
+        assert_eq!(
+            normalize_episode_image_url(" https://image.tmdb.org/t/p/original/still.jpg ")
+                .as_deref(),
+            Some("https://image.tmdb.org/t/p/original/still.jpg")
+        );
+        assert_eq!(
+            normalize_episode_image_url("http://example.test/still.jpg").as_deref(),
+            Some("http://example.test/still.jpg")
+        );
+    }
+
+    #[test]
+    fn rejects_non_fully_qualified_episode_image_urls() {
+        for raw in [
+            "",
+            "/relative/still.jpg",
+            "//image.tmdb.org/t/p/original/still.jpg",
+            "data:image/png;base64,abc",
+            "blob:https://example.test/id",
+            "file:///tmp/still.jpg",
+            "not-a-url",
+        ] {
+            assert_eq!(normalize_episode_image_url(raw), None, "raw={raw}");
+        }
     }
 }

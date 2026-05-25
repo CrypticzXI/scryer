@@ -1651,7 +1651,7 @@ async fn import_movie_download(
         release_group: prepared.parsed.release_group.clone(),
         source_type: prepared.parsed.source.as_ref().map(ToString::to_string),
         resolution: prepared.parsed.quality.clone(),
-        video_codec_parsed: prepared.parsed.video_codec.clone(),
+        video_codec_parsed: prepared.parsed.video_codec,
         audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(path_to_stored_string(source_video.clone())),
@@ -2217,7 +2217,7 @@ async fn import_interstitial_movie_download(
             release_group: prepared.parsed.release_group.clone(),
             source_type: prepared.parsed.source.as_ref().map(ToString::to_string),
             resolution: prepared.parsed.quality.clone(),
-            video_codec_parsed: prepared.parsed.video_codec.clone(),
+            video_codec_parsed: prepared.parsed.video_codec,
             audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
             audio_channels_parsed: prepared.parsed.audio_channels.clone(),
             original_file_path: Some(path_to_stored_string(&source_video)),
@@ -3424,7 +3424,7 @@ async fn execute_resolved_episode_import(
         release_group: prepared.parsed.release_group.clone(),
         source_type: prepared.parsed.source.as_ref().map(ToString::to_string),
         resolution: effective_quality_label,
-        video_codec_parsed: prepared.parsed.video_codec.clone(),
+        video_codec_parsed: prepared.parsed.video_codec,
         audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(path_to_stored_string(source_video)),
@@ -4373,16 +4373,16 @@ fn fill_missing_release_metadata(
         target.quality = fallback.quality.clone();
     }
     if target.source.is_none() {
-        target.source = fallback.source.clone();
+        target.source = fallback.source;
     }
     if target.video_codec.is_none() {
-        target.video_codec = fallback.video_codec.clone();
+        target.video_codec = fallback.video_codec;
     }
     if target.video_encoding.is_none() {
         target.video_encoding = fallback.video_encoding.clone();
     }
     if target.audio.is_none() {
-        target.audio = fallback.audio.clone();
+        target.audio = fallback.audio;
     }
     if target.audio_channels.is_none() {
         target.audio_channels = fallback.audio_channels.clone();
@@ -4391,7 +4391,7 @@ fn fill_missing_release_metadata(
         target.release_group = fallback.release_group.clone();
     }
     if target.streaming_service.is_none() {
-        target.streaming_service = fallback.streaming_service.clone();
+        target.streaming_service = fallback.streaming_service;
     }
     if target.edition.is_none() {
         target.edition = fallback.edition.clone();

@@ -38,6 +38,7 @@ fragment SeriesFields on TvdbSeries {
     is_recap
     overview
     absolute_number
+    image_url
   }
   anime_mappings {
     mal_id

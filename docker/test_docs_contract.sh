@@ -20,7 +20,7 @@ assert_contains() {
 
 assert_contains "$README_CONTENT" "## Docker" "README should include a Docker section"
 assert_contains "$README_CONTENT" "ghcr.io/scryer-media/scryer:latest" "README should document the published image"
-assert_contains "$README_CONTENT" "auto-selects the best embedded Linux payload for the host CPU" "README should explain runtime CPU selection"
+assert_contains "$README_CONTENT" "runs one portable Linux payload through the launcher" "README should explain the single payload model"
 assert_contains "$README_CONTENT" "/config" "README should document the /config volume contract"
 assert_contains "$README_CONTENT" "PUID=1000" "README should document PUID"
 assert_contains "$README_CONTENT" "PGID=1000" "README should document PGID"
@@ -28,6 +28,6 @@ assert_contains "$README_CONTENT" "UMASK=022" "README should document UMASK"
 assert_contains "$README_CONTENT" "--user=1000:1000" "README should document non-root usage"
 assert_contains "$README_CONTENT" "--read-only=true" "README should document read-only support"
 assert_contains "$README_CONTENT" "/path/to/scryer/config:/config" "README should include a /config mount example"
-assert_contains "$README_CONTENT" "portable plus optimized Linux payloads" "README should describe the single-image payload contract"
+assert_contains "$README_CONTENT" "runtime CPU dispatch inside dependencies and Wasm plugins" "README should describe the single-image dispatch contract"
 
 printf 'docker docs contract check passed for %s\n' "$README_PATH"

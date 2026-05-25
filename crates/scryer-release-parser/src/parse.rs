@@ -2030,13 +2030,14 @@ fn range_is_embedded_in_larger_group(tokens: &[Token], range: TokenRange) -> boo
 }
 
 fn range_is_metadata_marker(tokens: &[Token], range: TokenRange) -> bool {
+    let range_len = range.end_token.saturating_sub(range.start_token);
     (range.start_token..range.end_token).any(|index| {
         tokens.get(index).is_some_and(|token| {
             let normalized = token.normalized.as_str();
             !release_group_part_is_valid(token, index > range.start_token)
                 || is_explicit_language_metadata_token(normalized)
                 || is_release_flag_metadata_token(normalized)
-                || normalize_streaming_service(normalized).is_some()
+                || (range_len == 1 && normalize_streaming_service(normalized).is_some())
                 || parse_special_kind(normalized).is_some()
         })
     })

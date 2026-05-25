@@ -1186,6 +1186,14 @@ function AuthenticatedHomePage({
   }, [canManageConfig, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
+    if (!isMediaView(view) || contentSettingsSection !== "requests" || canManageTitle) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [canManageTitle, contentSettingsSection, navigateToAccessibleDefault, view]);
+
+  useEffect(() => {
     if (view !== "wanted" || wantedSection !== "history" || canManageTitle) {
       return;
     }
@@ -1341,7 +1349,7 @@ function AuthenticatedHomePage({
                     scryerVersion={scryerVersion}
                     onNavigate={navigateTo}
                   >
-                    <main className={view === "wanted" || view === "calendar" ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>
+                    <main className={view === "wanted" || view === "calendar" || (isMediaView(view) && contentSettingsSection === "requests") ? "flex min-h-0 flex-1 flex-col" : "min-h-[70vh]"}>
                       <Suspense fallback={<ViewLoadingFallback />}>
                         <MainContent
                           view={view}

@@ -42,6 +42,7 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
 export const CONTENT_SECTION_PATH: Record<ContentSettingsSection, string> = {
   overview: "overview",
   import: "import",
+  requests: "requests",
   library: "settings/library",
   general: "settings/general",
   quality: "settings/quality",
@@ -62,7 +63,7 @@ export const ACTIVITY_SECTION_PATH: Record<ActivitySection, string> = {
   history: "history",
 };
 
-const MEDIA_RESERVED_OVERVIEW_SEGMENTS = new Set(["overview", "import", "settings"]);
+const MEDIA_RESERVED_OVERVIEW_SEGMENTS = new Set(["overview", "import", "requests", "settings"]);
 
 export function buildViewPath(
   nextView: ViewId,

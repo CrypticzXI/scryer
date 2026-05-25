@@ -26,19 +26,17 @@ use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::subtitle_sync_adapter::WasmSubtitleSyncClient;
 use crate::types::{
-    ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource, EXPORT_DESCRIBE,
-    EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
-    EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED,
-    EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH,
-    EXPORT_NOTIFICATION_SEND, EXPORT_SUBSYNC_ALIGN, EXPORT_SUBTITLE_DOWNLOAD,
-    EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
+    ConfigFieldRole, ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD,
+    EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY,
+    EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS,
+    EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND,
+    EXPORT_SUBSYNC_ALIGN, EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE,
+    EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
     PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SDK_VERSION,
     SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
     plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
 };
 
-const NZBGEEK_DEFAULT_BASE_URL: &str = "https://api.nzbgeek.info";
-const DOGNZB_DEFAULT_BASE_URL: &str = "https://api.dognzb.cr";
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
 
 type IndexerClientCacheKey = (String, String, String);
@@ -242,7 +240,7 @@ fn builtin_indexer_provider_types() -> Vec<String> {
         builtin_provider_types_from_assets(
             crate::builtins::INDEXER_BUILTINS,
             is_indexer_plugin_type,
-            |descriptor| apply_indexer_provider_overrides(descriptor, PluginLoadSource::Builtin),
+            |descriptor| descriptor,
         )
     });
 
@@ -288,12 +286,6 @@ impl WasmIndexerPluginProvider {
         plugin: ExternalPluginWasm<'_>,
     ) -> Result<LoadedPluginRecord, String> {
         let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
-        let descriptor = apply_indexer_provider_overrides(
-            descriptor,
-            PluginLoadSource::External {
-                first_party: plugin.first_party,
-            },
-        );
         if !validate_indexer_descriptor(
             &descriptor,
             PluginLoadSource::External {
@@ -310,12 +302,7 @@ impl WasmIndexerPluginProvider {
     fn prepare_runtime_plugin_record(
         plugin: RuntimePluginLoad,
     ) -> Result<LoadedPluginRecord, String> {
-        let descriptor = apply_indexer_provider_overrides(
-            plugin.descriptor,
-            PluginLoadSource::External {
-                first_party: plugin.first_party,
-            },
-        );
+        let descriptor = plugin.descriptor;
         if !validate_indexer_descriptor(
             &descriptor,
             PluginLoadSource::External {
@@ -334,7 +321,6 @@ impl WasmIndexerPluginProvider {
         asset: crate::builtins::BuiltinPluginAsset,
     ) -> Result<LoadedPluginRecord, String> {
         let descriptor = parse_builtin_descriptor(asset)?;
-        let descriptor = apply_indexer_provider_overrides(descriptor, PluginLoadSource::Builtin);
         if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin) {
             return Err("built-in indexer descriptor rejected".to_string());
         }
@@ -440,97 +426,11 @@ impl WasmIndexerPluginProvider {
     }
 }
 
-fn apply_indexer_provider_overrides(
-    mut descriptor: PluginDescriptor,
-    load_source: PluginLoadSource,
-) -> PluginDescriptor {
-    let missing_connection_url = !descriptor
-        .config_fields()
-        .iter()
-        .any(|field| field.role == Some(ConfigFieldRole::ConnectionUrl));
-    if descriptor
-        .provider_type()
-        .eq_ignore_ascii_case("torrent_rss")
-        && missing_connection_url
-        && let Some(feed_url_field) = descriptor
-            .config_fields_mut()
-            .iter_mut()
-            .find(|field| field.key.eq_ignore_ascii_case("feed_url"))
-    {
-        feed_url_field.role = Some(ConfigFieldRole::ConnectionUrl);
-    }
-
-    if matches!(load_source, PluginLoadSource::Builtin) {
-        if missing_connection_url
-            && matches!(
-                descriptor.provider_type().to_ascii_lowercase().as_str(),
-                "newznab" | "torznab" | "nzbgeek" | "dognzb"
-            )
-        {
-            descriptor.config_fields_mut().insert(
-                0,
-                ConfigFieldDef {
-                    key: "base_url".to_string(),
-                    label: "Base URL".to_string(),
-                    field_type: ConfigFieldType::String,
-                    required: true,
-                    default_value: None,
-                    value_source: ConfigFieldValueSource::User,
-                    role: Some(ConfigFieldRole::ConnectionUrl),
-                    host_binding: None,
-                    options: vec![],
-                    help_text: Some(
-                        "Base URL for the provider API endpoint, such as https://indexer.example/api"
-                            .to_string(),
-                    ),
-                },
-            );
-        }
-
-        if indexer_provider_requires_api_key(descriptor.provider_type())
-            && !indexer_has_declared_api_key_field(&descriptor)
-        {
-            descriptor.config_fields_mut().push(ConfigFieldDef {
-                key: "api_key".to_string(),
-                label: "API Key".to_string(),
-                field_type: ConfigFieldType::Password,
-                required: true,
-                default_value: None,
-                value_source: ConfigFieldValueSource::User,
-                role: None,
-                host_binding: None,
-                options: vec![],
-                help_text: Some("API key used to authenticate search requests".to_string()),
-            });
-        }
-    }
-
-    if descriptor.provider_type().eq_ignore_ascii_case("nzbgeek") {
-        descriptor.set_default_base_url(Some(NZBGEEK_DEFAULT_BASE_URL.to_string()));
-        if let Some(base_url_field) = descriptor
-            .config_fields_mut()
-            .iter_mut()
-            .find(|field| field.key == "base_url")
-        {
-            base_url_field.default_value = Some(NZBGEEK_DEFAULT_BASE_URL.to_string());
-        }
-    }
-    if descriptor.provider_type().eq_ignore_ascii_case("dognzb") {
-        descriptor.set_default_base_url(Some(DOGNZB_DEFAULT_BASE_URL.to_string()));
-        descriptor
-            .config_fields_mut()
-            .retain(|field| field.key != "api_path" && field.key != "additional_params");
-    }
-
-    descriptor
-}
-
 fn builtin_indexer_asset_for_provider(
     provider_type: &str,
 ) -> Option<crate::builtins::BuiltinPluginAsset> {
     match provider_type.trim().to_ascii_lowercase().as_str() {
         "newznab" => Some(crate::builtins::NEWZNAB),
-        "nzbgeek" => Some(crate::builtins::NZBGEEK),
         "torznab" => Some(crate::builtins::TORZNAB),
         _ => None,
     }
@@ -1540,33 +1440,7 @@ fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
         return false;
     }
 
-    if indexer_provider_requires_api_key(descriptor.provider_type())
-        && !indexer_has_declared_api_key_field(descriptor)
-    {
-        warn!(
-            plugin = descriptor.id.as_str(),
-            provider_type = descriptor.provider_type(),
-            "indexer descriptor rejected: missing declared api_key config field"
-        );
-        return false;
-    }
-
     true
-}
-
-fn indexer_provider_requires_api_key(provider_type: &str) -> bool {
-    matches!(
-        provider_type.trim().to_ascii_lowercase().as_str(),
-        "newznab" | "torznab" | "nzbgeek" | "dognzb"
-    )
-}
-
-fn indexer_has_declared_api_key_field(descriptor: &PluginDescriptor) -> bool {
-    descriptor.config_fields().iter().any(|field| {
-        field.key.eq_ignore_ascii_case("api_key")
-            && field.field_type == ConfigFieldType::Password
-            && field.value_source == ConfigFieldValueSource::User
-    })
 }
 
 fn default_indexer_connection_url(descriptor: &PluginDescriptor) -> Option<String> {
@@ -3111,7 +2985,7 @@ fn notification_supports_test_from_loaded(loaded: &LoadedPlugin) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::{NEWZNAB, NZBGEEK, TORZNAB};
+    use crate::builtins::{NEWZNAB, TORZNAB};
     use crate::types::{
         ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, DownloadClientCapabilities,
         DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind, NotificationCapabilities,
@@ -3179,21 +3053,6 @@ mod tests {
         }]
     }
 
-    fn indexer_api_key_field() -> ConfigFieldDef {
-        ConfigFieldDef {
-            key: "api_key".to_string(),
-            label: "API Key".to_string(),
-            field_type: ConfigFieldType::Password,
-            required: true,
-            default_value: None,
-            value_source: ConfigFieldValueSource::User,
-            role: None,
-            host_binding: None,
-            options: vec![],
-            help_text: None,
-        }
-    }
-
     fn descriptor(plugin_type: &str) -> PluginDescriptor {
         let provider = match plugin_type {
             "indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
@@ -3259,8 +3118,8 @@ mod tests {
             id: "test".to_string(),
             name: "Test".to_string(),
             version: "0.1.0".to_string(),
-            sdk_version: "1.0.0".to_string(),
-            sdk_constraint: ">=1.0.0, <2.0.0".to_string(),
+            sdk_version: SDK_VERSION.to_string(),
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
             socket_permissions: vec![],
             provider,
         }
@@ -3316,9 +3175,6 @@ mod tests {
             &mut descriptor,
             aliases.iter().map(|alias| (*alias).to_string()).collect(),
         );
-        if indexer_provider_requires_api_key(provider_type) {
-            descriptor.config_fields_mut().push(indexer_api_key_field());
-        }
 
         RuntimePluginLoad {
             descriptor,
@@ -3329,7 +3185,7 @@ mod tests {
 
     #[test]
     fn embedded_builtin_descriptors_match_current_sdk_line() {
-        for asset in [NEWZNAB, NZBGEEK, TORZNAB] {
+        for asset in [NEWZNAB, TORZNAB] {
             let descriptor: PluginDescriptor = serde_json::from_str(asset.descriptor_json)
                 .expect("embedded builtin descriptor should parse");
             validate_plugin_descriptor_sdk_contract(&descriptor, SDK_VERSION)
@@ -3339,7 +3195,7 @@ mod tests {
 
     #[test]
     fn builtin_records_keep_embedded_assets_until_materialized() {
-        let record = WasmIndexerPluginProvider::prepare_builtin_asset_record(NZBGEEK)
+        let record = WasmIndexerPluginProvider::prepare_builtin_asset_record(NEWZNAB)
             .expect("builtin loads");
         assert!(record.loaded.stores_builtin_asset());
 
@@ -3359,7 +3215,7 @@ mod tests {
     #[test]
     fn builtin_providers_expose_embedded_plugins() {
         let indexers = build_indexer_plugin_provider(&[], &[]);
-        for provider_type in ["newznab", "nzbgeek", "torznab"] {
+        for provider_type in ["newznab", "torznab"] {
             assert!(
                 indexers.plugin_name_for_provider(provider_type).is_some(),
                 "expected builtin indexer provider '{provider_type}' to be available"
@@ -3403,10 +3259,10 @@ mod tests {
     #[test]
     fn provider_type_collision_is_allowed_across_plugin_families() {
         let mut indexer = descriptor("indexer");
-        set_provider_type(&mut indexer, "animetosho");
+        set_provider_type(&mut indexer, "example_provider");
 
         let mut subtitle = descriptor("subtitle_provider");
-        set_provider_type(&mut subtitle, "animetosho");
+        set_provider_type(&mut subtitle, "example_provider");
 
         assert!(validate_indexer_descriptor(
             &indexer,
@@ -3420,52 +3276,49 @@ mod tests {
     }
 
     #[test]
-    fn auth_backed_indexers_require_declared_api_key_field() {
-        for provider_type in ["newznab", "torznab", "nzbgeek", "dognzb"] {
-            let mut descriptor = descriptor("usenet_indexer");
-            set_provider_type(&mut descriptor, provider_type);
-            assert!(
-                !validate_indexer_descriptor(
-                    &descriptor,
-                    PluginLoadSource::External { first_party: false }
-                ),
-                "expected {provider_type} to require an api_key field"
-            );
+    fn indexers_without_connection_field_are_rejected() {
+        let mut descriptor = descriptor("usenet_indexer");
 
-            let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
-                panic!("expected indexer descriptor");
-            };
-            indexer.config_fields.push(indexer_api_key_field());
+        let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
+            panic!("expected indexer descriptor");
+        };
+        indexer.config_fields.clear();
 
-            assert!(
-                validate_indexer_descriptor(
-                    &descriptor,
-                    PluginLoadSource::External { first_party: false }
-                ),
-                "expected {provider_type} to validate once api_key is declared"
-            );
-        }
+        assert!(!validate_indexer_descriptor(
+            &descriptor,
+            PluginLoadSource::External { first_party: false }
+        ));
     }
 
     #[test]
-    fn api_keyless_indexers_can_still_validate() {
-        for provider_type in ["animetosho", "torrent_rss"] {
-            let mut descriptor = descriptor("torrent_indexer");
-            set_provider_type(&mut descriptor, provider_type);
-            assert!(
-                validate_indexer_descriptor(
-                    &descriptor,
-                    PluginLoadSource::External { first_party: false }
-                ),
-                "expected {provider_type} to validate without api_key"
-            );
-        }
+    fn indexers_with_multiple_connection_fields_are_rejected() {
+        let mut descriptor = descriptor("usenet_indexer");
+
+        let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
+            panic!("expected indexer descriptor");
+        };
+        indexer.config_fields.push(ConfigFieldDef {
+            key: "alternate_url".to_string(),
+            label: "Alternate URL".to_string(),
+            field_type: ConfigFieldType::String,
+            required: false,
+            default_value: None,
+            value_source: ConfigFieldValueSource::User,
+            role: Some(ConfigFieldRole::ConnectionUrl),
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        });
+
+        assert!(!validate_indexer_descriptor(
+            &descriptor,
+            PluginLoadSource::External { first_party: false }
+        ));
     }
 
     #[test]
-    fn torrent_rss_feed_url_is_backfilled_as_connection_url() {
+    fn indexer_feed_url_must_declare_connection_url_role() {
         let mut descriptor = descriptor("torrent_indexer");
-        set_provider_type(&mut descriptor, "torrent_rss");
 
         let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
             panic!("expected indexer descriptor");
@@ -3482,92 +3335,6 @@ mod tests {
             options: vec![],
             help_text: None,
         }];
-
-        let descriptor = apply_indexer_provider_overrides(
-            descriptor,
-            PluginLoadSource::External { first_party: false },
-        );
-
-        assert!(
-            descriptor
-                .config_fields()
-                .iter()
-                .find(|field| field.key == "feed_url")
-                .is_some_and(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
-        );
-        assert!(validate_indexer_descriptor(
-            &descriptor,
-            PluginLoadSource::External { first_party: false }
-        ));
-    }
-
-    #[test]
-    fn auth_backed_builtin_indexers_backfill_base_url_and_api_key() {
-        for provider_type in ["newznab", "torznab", "nzbgeek", "dognzb"] {
-            let mut descriptor = descriptor("usenet_indexer");
-            set_provider_type(&mut descriptor, provider_type);
-
-            let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
-                panic!("expected indexer descriptor");
-            };
-            indexer.config_fields.clear();
-
-            let descriptor =
-                apply_indexer_provider_overrides(descriptor, PluginLoadSource::Builtin);
-
-            assert!(
-                descriptor
-                    .config_fields()
-                    .iter()
-                    .any(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
-            );
-            assert!(descriptor.config_fields().iter().any(
-                |field| field.key == "api_key" && field.field_type == ConfigFieldType::Password
-            ));
-            assert!(validate_indexer_descriptor(
-                &descriptor,
-                PluginLoadSource::Builtin
-            ));
-        }
-    }
-
-    #[test]
-    fn auth_backed_external_indexers_without_declared_fields_are_rejected() {
-        for provider_type in ["newznab", "torznab", "nzbgeek", "dognzb"] {
-            let mut descriptor = descriptor("usenet_indexer");
-            set_provider_type(&mut descriptor, provider_type);
-
-            let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
-                panic!("expected indexer descriptor");
-            };
-            indexer.config_fields.clear();
-
-            let descriptor = apply_indexer_provider_overrides(
-                descriptor,
-                PluginLoadSource::External { first_party: false },
-            );
-
-            assert!(!validate_indexer_descriptor(
-                &descriptor,
-                PluginLoadSource::External { first_party: false }
-            ));
-        }
-    }
-
-    #[test]
-    fn animetosho_external_without_connection_field_is_rejected() {
-        let mut descriptor = descriptor("torrent_indexer");
-        set_provider_type(&mut descriptor, "animetosho");
-
-        let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
-            panic!("expected indexer descriptor");
-        };
-        indexer.config_fields.clear();
-
-        let descriptor = apply_indexer_provider_overrides(
-            descriptor,
-            PluginLoadSource::External { first_party: false },
-        );
 
         assert!(!validate_indexer_descriptor(
             &descriptor,
@@ -3739,10 +3506,10 @@ mod tests {
         provider
             .upsert_runtime_plugin(runtime_plugin_load(
                 "indexer",
-                "animetosho",
-                &["animetosho-alias"],
+                "example_indexer",
+                &["example-indexer-alias"],
             ))
-            .expect("upsert animetosho");
+            .expect("upsert example indexer");
         provider
             .upsert_runtime_plugin(runtime_plugin_load("indexer", "newznab", &[]))
             .expect("upsert newznab");
@@ -3751,7 +3518,7 @@ mod tests {
             let mut cache = provider.client_cache.lock().expect("indexer cache lock");
             cache.insert(
                 (
-                    "animetosho".to_string(),
+                    "example_indexer".to_string(),
                     "cfg-a".to_string(),
                     "1".to_string(),
                 ),
@@ -3759,7 +3526,7 @@ mod tests {
             );
             cache.insert(
                 (
-                    "animetosho-alias".to_string(),
+                    "example-indexer-alias".to_string(),
                     "cfg-b".to_string(),
                     "1".to_string(),
                 ),
@@ -3772,7 +3539,7 @@ mod tests {
         }
 
         provider
-            .remove_runtime_plugin("animetosho")
+            .remove_runtime_plugin("example_indexer")
             .expect("remove target provider");
 
         let cache = provider.client_cache.lock().expect("indexer cache lock");
@@ -3791,7 +3558,7 @@ mod tests {
         assert!(
             !providers
                 .iter()
-                .any(|provider_type| provider_type == "animetosho")
+                .any(|provider_type| provider_type == "example_indexer")
         );
     }
 

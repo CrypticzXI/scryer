@@ -263,6 +263,12 @@ export const addTitleAndQueueMutation = `mutation AddTitleAndQueue($input: AddTi
   }
 }`;
 
+export const submitMediaRequestMutation = `mutation SubmitMediaRequest($input: SubmitMediaRequestInput!) {
+  submitMediaRequest(input: $input) {
+    accepted
+  }
+}`;
+
 export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteMediaFileInput!) {
   deleteMediaFile(input: $input)
 }`;
@@ -496,6 +502,75 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
+  }
+}`;
+
+const LINKED_ACCOUNT_FIELDS = `
+    id
+    userId
+    provider
+    connectionId
+    externalUserId
+    username
+    displayName
+    avatarUrl
+    status
+    verifiedAt
+    createdAt
+    updatedAt`;
+
+export const updateAuthProviderSettingsMutation = `mutation UpdateAuthProviderSettings($input: UpdateAuthProviderSettingsInput!) {
+  updateAuthProviderSettings(input: $input) {
+    allowedProviders
+    providerLoginEnabled
+    providerLinkingEnabled
+    allowedJellyfinConnectionIds
+    allowedPlexConnectionIds
+    allowedJellyfinConnections {
+      id
+      displayName
+      userVisibleUrl
+      baseUrl
+      machineId
+    }
+    allowedPlexConnections {
+      id
+      displayName
+      userVisibleUrl
+      baseUrl
+      machineId
+    }
+  }
+}`;
+
+export const createExternalAccountInviteMutation = `mutation CreateExternalAccountInvite($input: CreateExternalAccountInviteInput!) {
+  createExternalAccountInvite(input: $input) {${LINKED_ACCOUNT_FIELDS}
+  }
+}`;
+
+export const linkPlexAccountMutation = `mutation LinkPlexAccount($input: LinkPlexAccountInput!) {
+  linkPlexAccount(input: $input) {${LINKED_ACCOUNT_FIELDS}
+  }
+}`;
+
+export const linkJellyfinAccountMutation = `mutation LinkJellyfinAccount($input: LinkJellyfinAccountInput!) {
+  linkJellyfinAccount(input: $input) {${LINKED_ACCOUNT_FIELDS}
+  }
+}`;
+
+export const unlinkExternalAccountMutation = `mutation UnlinkExternalAccount($input: UnlinkExternalAccountInput!) {
+  unlinkExternalAccount(input: $input)
+}`;
+
+export const loginWithPlexMutation = `mutation LoginWithPlex($input: LoginWithPlexInput!) {
+  loginWithPlex(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const loginWithJellyfinMutation = `mutation LoginWithJellyfin($input: LoginWithJellyfinInput!) {
+  loginWithJellyfin(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
   }
 }`;
 

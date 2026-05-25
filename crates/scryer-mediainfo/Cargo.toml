@@ -18,3 +18,10 @@ scuffle-h264 = "0.2"
 scuffle-h265 = "0.2"
 bytes = "1"
 isolang = "2.4"
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "scan_hotpaths"
+harness = false

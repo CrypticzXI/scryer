@@ -16,7 +16,7 @@ use scryer_application::{
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
     DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, Library, MediaFacet,
-    PluginInstallation, PluginSupportTier, RuleSet, SubtitleProviderConfig, Title,
+    MediaRequest, PluginInstallation, PluginSupportTier, RuleSet, SubtitleProviderConfig, Title,
     TitleHistoryRecord, User,
 };
 use scryer_rules;
@@ -932,6 +932,45 @@ pub fn from_title(title: Title) -> TitlePayload {
     }
 }
 
+pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
+    MediaRequestPayload {
+        id: request.id,
+        library_id: request.library_id,
+        facet: MediaFacetValue::from_domain(request.facet),
+        status: MediaRequestStatusValue::from_domain(request.status),
+        identity_fingerprint: request.identity_fingerprint,
+        title: request.title,
+        sort_title: request.sort_title,
+        slug: request.slug,
+        poster_url: request.poster_url,
+        year: request.year,
+        overview: request.overview,
+        runtime_minutes: request.runtime_minutes,
+        language: request.language,
+        content_status: request.content_status,
+        external_ids: request
+            .external_ids
+            .into_iter()
+            .map(|id| ExternalIdPayload {
+                source: id.source,
+                value: id.value,
+            })
+            .collect(),
+        requesters: request
+            .requesters
+            .into_iter()
+            .map(|requester| MediaRequestRequesterPayload {
+                user_id: requester.user_id,
+                username: requester.username,
+                requested_at: requester.requested_at.to_rfc3339(),
+            })
+            .collect(),
+        created_by_user_id: request.created_by_user_id,
+        created_at: request.created_at.to_rfc3339(),
+        updated_at: request.updated_at.to_rfc3339(),
+    }
+}
+
 pub fn from_library(library: Library) -> LibraryPayload {
     LibraryPayload {
         id: library.id,
@@ -1273,6 +1312,7 @@ pub fn from_episode(episode: Episode) -> EpisodePayload {
         is_recap: episode.is_recap,
         absolute_number: episode.absolute_number,
         tvdb_id: episode.tvdb_id,
+        image_url: episode.image_url,
         monitored: episode.monitored,
         created_at: episode.created_at.to_rfc3339(),
     }
@@ -1400,6 +1440,23 @@ pub fn from_user(user: User) -> UserPayload {
         username,
         app_permissions,
         library_permissions,
+    }
+}
+
+pub fn from_linked_account(account: scryer_domain::UserExternalAccount) -> LinkedAccountPayload {
+    LinkedAccountPayload {
+        id: account.id,
+        user_id: account.user_id,
+        provider: ExternalAccountProviderValue::from_domain(account.provider),
+        connection_id: account.connection_id,
+        external_user_id: account.external_user_id,
+        username: account.username,
+        display_name: account.display_name,
+        avatar_url: account.avatar_url,
+        status: ExternalAccountStatusValue::from_domain(account.status),
+        verified_at: account.verified_at.map(|value| value.to_rfc3339()),
+        created_at: account.created_at.to_rfc3339(),
+        updated_at: account.updated_at.to_rfc3339(),
     }
 }
 

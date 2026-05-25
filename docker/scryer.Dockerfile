@@ -6,9 +6,9 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-COPY ${TARGETARCH}/scryer-* /opt/scryer/
+COPY ${TARGETARCH}/scryer ${TARGETARCH}/scryer-launcher /opt/scryer/
 
-RUN chmod +x /opt/scryer/scryer-* \
+RUN chmod +x /opt/scryer/scryer /opt/scryer/scryer-launcher \
     && mkdir -p /config /data
 
 USER 0:0

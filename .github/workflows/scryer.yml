@@ -321,6 +321,20 @@ jobs:
             -p scryer-release-parser \
             -p scryer-rules 2>&1 | tee rust-nextest.log
 
+      - name: Run mediainfo dispatch tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p scryer-mediainfo --locked
+          cargo test -p scryer-mediainfo --benches --locked
+
+      - name: Run release parser dispatch tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo nextest run -p scryer-release-parser --locked
+          cargo test -p scryer-release-parser --benches --locked
+
       - name: Show ending disk usage
         if: always()
         shell: bash
@@ -510,17 +524,6 @@ jobs:
             release_profile: release
             install_nasm: true
             extra_rustflags: ""
-          - arch: x86_64
-            variant: haswell
-            build_lane: haswell
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            sccache_lane: scryer-linux-x86_64-musl
-            sccache_writer_id: scryer-linux-x86_64-haswell
-            artifact_name: scryer-linux-x86_64-haswell
-            release_profile: release
-            install_nasm: true
-            extra_rustflags: "-C target-cpu=haswell"
           - arch: arm64
             variant: portable
             build_lane: portable
@@ -532,17 +535,6 @@ jobs:
             release_profile: release
             install_nasm: false
             extra_rustflags: ""
-          - arch: arm64
-            variant: optimized
-            build_lane: arm64_optimized
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            sccache_lane: scryer-linux-arm64-musl
-            sccache_writer_id: scryer-linux-arm64-optimized
-            artifact_name: scryer-linux-arm64-optimized
-            release_profile: release
-            install_nasm: false
-            extra_rustflags: "-C target-feature=+aes,+crc,+dotprod,+fp16,+lse,+neon,+rdm,+sha2 --cfg aes_armv8"
     env:
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
@@ -668,17 +660,6 @@ jobs:
             release_profile: release-lean
             install_nasm: false
             extra_rustflags: ""
-          - arch: arm64
-            variant: apple-m1
-            build_lane: arm64_optimized
-            runner: macos-15
-            target: aarch64-apple-darwin
-            sccache_lane: scryer-macos-arm64
-            sccache_writer_id: scryer-darwin-arm64-apple-m1
-            artifact_name: scryer-darwin-arm64-apple-m1
-            release_profile: release
-            install_nasm: false
-            extra_rustflags: "-C target-cpu=apple-m1 --cfg aes_armv8 --cfg chacha20_force_neon"
           - arch: x86_64
             variant: portable
             build_lane: portable
@@ -1060,22 +1041,10 @@ jobs:
           name: scryer-linux-x86_64-portable-${{ github.run_id }}
           path: artifacts
 
-      - name: Download linux amd64 haswell artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-x86_64-haswell-${{ github.run_id }}
-          path: artifacts
-
       - name: Download linux arm64 portable artifact
         uses: actions/download-artifact@v8
         with:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux arm64 optimized artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-arm64-optimized-${{ github.run_id }}
           path: artifacts
 
       - name: Download launcher amd64 artifact
@@ -1152,22 +1121,10 @@ jobs:
           name: scryer-linux-x86_64-portable-${{ github.run_id }}
           path: artifacts
 
-      - name: Download linux amd64 haswell artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-x86_64-haswell-${{ github.run_id }}
-          path: artifacts
-
       - name: Download linux arm64 portable artifact
         uses: actions/download-artifact@v8
         with:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux arm64 optimized artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-arm64-optimized-${{ github.run_id }}
           path: artifacts
 
       - name: Download launcher amd64 artifact
@@ -1244,22 +1201,10 @@ jobs:
           name: scryer-linux-x86_64-portable-${{ github.run_id }}
           path: artifacts
 
-      - name: Download linux amd64 haswell artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-x86_64-haswell-${{ github.run_id }}
-          path: artifacts
-
       - name: Download linux arm64 portable artifact
         uses: actions/download-artifact@v8
         with:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux arm64 optimized artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-arm64-optimized-${{ github.run_id }}
           path: artifacts
 
       - name: Download launcher amd64 artifact
@@ -1372,7 +1317,7 @@ jobs:
           VERSION="${VERSION#scryer-v}"
           LINUX_X86_SHA=$(shasum -a 256 release-artifacts/scryer-linux-x86_64-portable.tar.gz | cut -d ' ' -f1)
           LINUX_ARM_SHA=$(shasum -a 256 release-artifacts/scryer-linux-arm64-portable.tar.gz | cut -d ' ' -f1)
-          DARWIN_ARM_SHA=$(shasum -a 256 release-artifacts/scryer-darwin-arm64-apple-m1.tar.gz | cut -d ' ' -f1)
+          DARWIN_ARM_SHA=$(shasum -a 256 release-artifacts/scryer-darwin-arm64-portable.tar.gz | cut -d ' ' -f1)
           DARWIN_X86_SHA=$(shasum -a 256 release-artifacts/scryer-darwin-x86_64-portable.tar.gz | cut -d ' ' -f1)
           REPO="${{ github.repository }}"
 
@@ -1408,7 +1353,7 @@ jobs:
 
             on_macos do
               on_arm do
-                url "https://github.com/${REPO}/releases/download/scryer-v${VERSION}/scryer-darwin-arm64-apple-m1.tar.gz"
+                url "https://github.com/${REPO}/releases/download/scryer-v${VERSION}/scryer-darwin-arm64-portable.tar.gz"
                 sha256 "${DARWIN_ARM_SHA}"
               end
 

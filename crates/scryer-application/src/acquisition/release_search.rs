@@ -517,9 +517,8 @@ impl AppUseCase {
         episode: Option<&Episode>,
     ) -> Option<String> {
         let episode = episode?;
-        // AnimeTosho's `aid` is an AniDB anime/collection identity, not an
-        // episode identity. Prefer season/collection-scoped mappings, then let
-        // callers fall back to the title-level AniDB ID.
+        // Prefer season/collection-scoped AniDB mappings, then let callers fall
+        // back to the title-level AniDB ID.
         let collection_id = episode.collection_id.as_deref()?;
         self.local_scoped_anidb_id_for_collection(collection_id)
             .await

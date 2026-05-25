@@ -19,7 +19,7 @@ import {
   isAbortError,
   makeAbortableFetch,
 } from "@/lib/graphql/urql-client";
-import { addTitleMutation } from "@/lib/graphql/mutations";
+import { addTitleMutation, submitMediaRequestMutation } from "@/lib/graphql/mutations";
 import {
   ANIME_INTER_SEASON_MOVIES_KEY,
   ANIME_MONITOR_SPECIALS_KEY,
@@ -61,6 +61,10 @@ export type MetadataCatalogAddOptions = {
   monitorSpecials?: boolean;
   interSeasonMovies?: boolean;
   rootFolder?: string;
+};
+
+export type MetadataCatalogRequestOptions = {
+  libraryId: string;
 };
 
 export type AnimeCatalogDefaults = {
@@ -230,12 +234,18 @@ export interface UseGlobalSearchResult {
     facet: Facet,
     options: MetadataCatalogAddOptions,
   ) => Promise<string | null>;
+  requestMetadataSearchResult: (
+    result: MetadataTvdbSearchItem,
+    facet: Facet,
+    options: MetadataCatalogRequestOptions,
+  ) => Promise<boolean>;
   isMetadataSearchResultInCatalog: (
     facet: Facet,
     result: MetadataTvdbSearchItem,
   ) => boolean;
   rootFoldersByFacet: Record<Facet, RootFolderOption[]>;
   librariesByFacet: Record<Facet, LibraryRecord[]>;
+  requestableLibrariesByFacet: Record<Facet, LibraryRecord[]>;
   queueFacet: Facet;
   setQueueFacet: (value: Facet) => void;
   catalogChangeSignal: number;
@@ -333,10 +343,14 @@ export function useGlobalSearch({
   const [librariesByFacet, setLibrariesByFacet] = useState<Record<Facet, LibraryRecord[]>>(
     () => ({ movie: [], series: [], anime: [] }),
   );
+  const [requestableLibrariesByFacet, setRequestableLibrariesByFacet] = useState<
+    Record<Facet, LibraryRecord[]>
+  >(() => ({ movie: [], series: [], anime: [] }));
   const forcedOpenRef = useRef(false);
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const pendingCatalogAddKeysRef = useRef<Set<string>>(new Set());
+  const pendingRequestKeysRef = useRef<Set<string>>(new Set());
   const catalogConfigRefreshPromiseRef = useRef<Promise<void> | null>(null);
 
   const cancelAutocomplete = useCallback(() => {
@@ -473,6 +487,13 @@ export function useGlobalSearch({
           },
           { movie: [], series: [], anime: [] },
         );
+        const nextRequestableLibrariesByFacet = (data.requestableLibraries ?? []).reduce(
+          (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
+            acc[library.facet]?.push(library);
+            return acc;
+          },
+          { movie: [], series: [], anime: [] },
+        );
         setLibrariesByFacet((previous) => {
           const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
             const prev = previous[f];
@@ -483,6 +504,17 @@ export function useGlobalSearch({
             });
           });
           return same ? previous : nextLibrariesByFacet;
+        });
+        setRequestableLibrariesByFacet((previous) => {
+          const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
+            const prev = previous[f];
+            const next = nextRequestableLibrariesByFacet[f];
+            return prev.length === next.length && prev.every((entry, index) => {
+              const candidate = next[index];
+              return candidate && entry.id === candidate.id && entry.name === candidate.name && entry.slug === candidate.slug && entry.roots.length === candidate.roots.length;
+            });
+          });
+          return same ? previous : nextRequestableLibrariesByFacet;
         });
       } catch {
         // ignore settings fetch failures here; search remains functional
@@ -1043,6 +1075,61 @@ export function useGlobalSearch({
     ],
   );
 
+  const requestMetadataSearchResult = useCallback(
+    async (
+      result: MetadataTvdbSearchItem,
+      facet: Facet,
+      options: MetadataCatalogRequestOptions,
+    ) => {
+      const name = result.name.trim();
+      const libraryId = options.libraryId.trim();
+      if (!name || !libraryId) {
+        setGlobalStatus(t("status.titleRequired"));
+        return false;
+      }
+
+      const tvdbId = String(result.tvdbId).trim();
+      const imdbId = result.imdbId?.trim();
+      const externalIds = [
+        ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
+        ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
+      ];
+      const requestKey = normalizeCatalogAddRequestKey(facet, externalIds);
+      if (pendingRequestKeysRef.current.has(requestKey)) {
+        return false;
+      }
+      pendingRequestKeysRef.current.add(requestKey);
+      try {
+        const { error } = await client.mutation(submitMediaRequestMutation, {
+          input: {
+            libraryId,
+            facet,
+            title: name,
+            externalIds,
+            posterUrl: result.posterUrl || undefined,
+            year: result.year ?? undefined,
+            overview: result.overview || undefined,
+            sortTitle: result.sortTitle || undefined,
+            slug: result.slug || undefined,
+            runtimeMinutes: result.runtimeMinutes ?? undefined,
+            language: result.language || undefined,
+            contentStatus: result.status || undefined,
+          },
+        }).toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.requestSubmitted", { name }));
+        await runMetadataAutocomplete(globalSearch.trim());
+        return true;
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
+        return false;
+      } finally {
+        pendingRequestKeysRef.current.delete(requestKey);
+      }
+    },
+    [client, globalSearch, runMetadataAutocomplete, setGlobalStatus, t],
+  );
+
   /** Force-trigger global search (bypasses autocomplete min-char threshold). */
   const forceSearchGlobal = useCallback(async () => {
     const trimmed = globalSearch.trim();
@@ -1075,9 +1162,11 @@ export function useGlobalSearch({
     resolveDefaultQualityProfileIdForFacet,
     animeCatalogDefaults,
     addMetadataSearchResultToCatalog,
+    requestMetadataSearchResult,
     isMetadataSearchResultInCatalog,
     rootFoldersByFacet,
     librariesByFacet,
+    requestableLibrariesByFacet,
     queueFacet,
     setQueueFacet,
     catalogChangeSignal,

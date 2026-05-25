@@ -1099,7 +1099,7 @@ async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
 }
 
 #[tokio::test]
-async fn jellyfin_dist_plugin_refreshes_mapped_title_folder_for_import_complete() {
+async fn jellyfin_dist_plugin_refreshes_mapped_media_file_for_import_complete() {
     let Some(provider) = load_jellyfin_dist_provider() else {
         return;
     };
@@ -1164,7 +1164,7 @@ async fn jellyfin_dist_plugin_refreshes_mapped_title_folder_for_import_complete(
         json!({
             "updates": [
                 {
-                    "path": "/mnt/media/Movies/Example Movie (2024)",
+                    "path": "/mnt/media/Movies/Example Movie (2024)/Example Movie.mkv",
                     "updateType": "Created",
                 }
             ]
@@ -1243,8 +1243,12 @@ async fn jellyfin_dist_plugin_refreshes_rename_once_with_modified_update() {
         json!({
             "updates": [
                 {
-                    "path": "/mnt/media/TV/Example Show",
-                    "updateType": "Modified",
+                    "path": "/mnt/media/TV/Example Show/Old Name.mkv",
+                    "updateType": "Deleted",
+                },
+                {
+                    "path": "/mnt/media/TV/Example Show/New Name.mkv",
+                    "updateType": "Created",
                 }
             ]
         }),
@@ -1312,7 +1316,7 @@ async fn jellyfin_dist_plugin_refreshes_file_deleted_once_with_deleted_update() 
         json!({
             "updates": [
                 {
-                    "path": "/mnt/media/Movies/Example Movie (2024)",
+                    "path": "/mnt/media/Movies/Example Movie (2024)/Example Movie.mkv",
                     "updateType": "Deleted",
                 }
             ]
@@ -1430,7 +1434,7 @@ async fn jellyfin_dist_plugin_falls_back_to_movie_and_series_id_updates_when_pat
 }
 
 #[tokio::test]
-async fn jellyfin_dist_plugin_skips_unsupported_download_event_without_failure() {
+async fn jellyfin_dist_plugin_requires_media_updates_for_non_test_events() {
     let Some(provider) = load_jellyfin_dist_provider() else {
         return;
     };
@@ -1456,10 +1460,14 @@ async fn jellyfin_dist_plugin_skips_unsupported_download_event_without_failure()
         Vec::new(),
     );
 
-    client
+    let err = client
         .send_notification(&payload)
         .await
-        .expect("unsupported download event should be skipped successfully");
+        .expect_err("non-test Jellyfin notification without media updates should fail");
+    assert!(
+        err.to_string().contains("file.media_updates is required"),
+        "unexpected Jellyfin error: {err:?}"
+    );
 
     let requests = ctx
         .nzbgeek_server
@@ -1468,7 +1476,7 @@ async fn jellyfin_dist_plugin_skips_unsupported_download_event_without_failure()
         .expect("request capture should succeed");
     assert!(
         requests.is_empty(),
-        "unsupported Jellyfin download event should not make HTTP requests"
+        "invalid Jellyfin notification should not make HTTP requests"
     );
 }
 

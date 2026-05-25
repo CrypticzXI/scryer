@@ -3,13 +3,14 @@ use crate::codec::{
     detect_audio_profile_from_payload, detect_dts_channels_from_probe_bytes, merge_audio_profile,
 };
 use crate::probe::ProbeBudget;
+use crate::scan;
 use crate::types::{RawContainer, RawTrack, TrackKind};
-use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// Size of a transport payload packet without any outer framing.
 const TS_PACKET_SIZE: usize = 188;
+const TS_PID_COUNT: usize = 8192;
 /// Blu-ray / DVHS transport packets carry a 4-byte prefix ahead of the TS sync byte.
 const TS_DVHS_PACKET_SIZE: usize = 192;
 /// Reed-Solomon protected transport packets carry 16 bytes of trailing FEC data.
@@ -22,8 +23,11 @@ const PAT_PID: u16 = 0x0000;
 const PTS_HZ: f64 = 90_000.0;
 const FAST_DURATION_PROBE_PACKETS: usize = 10_000;
 const FALLBACK_DURATION_PROBE_PACKETS: usize = 50_000;
+const PROGRAM_MAP_PROBE_PACKETS: u32 = 200_000;
 const STREAM_PROBE_PACKET_LIMIT: usize = 20_000;
+const STREAM_PROBE_BATCH_PACKETS: usize = 256;
 const STREAM_PROBE_MAX_BYTES_PER_PID: u64 = 256 * 1024;
+const STREAM_PROBE_ROLLING_KEEP_BYTES: usize = 64 * 1024;
 const DOVI_VIDEO_STREAM_DESCRIPTOR: u8 = 0xB0;
 const ISO_639_LANGUAGE_DESCRIPTOR: u8 = 0x0A;
 const TELETEXT_DESCRIPTOR: u8 = 0x56;
@@ -109,17 +113,18 @@ pub(crate) fn parse_ts(path: &Path) -> Result<RawContainer, MediaInfoError> {
     let mut file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
     let file_size = file
-        .metadata()
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?
-        .len();
+        .seek(SeekFrom::End(0))
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
     let layout = detect_ts_packet_layout(&mut file)?;
-    let pmt_pid = find_pmt_pid(&mut file, layout)?;
-    let es_entries = parse_pmt(&mut file, pmt_pid, layout)?;
+    let es_entries = parse_program_map(&mut file, layout)?;
     let mut tracks: Vec<RawTrack> = es_entries.iter().map(build_track).collect();
 
-    let duration_seconds = estimate_duration(&mut file, file_size, &es_entries, layout);
-    enrich_tracks_from_probe(&mut file, &es_entries, &mut tracks, layout)?;
+    let first_probe_pts = enrich_tracks_from_probe(&mut file, &es_entries, &mut tracks, layout)?;
+    let duration_seconds =
+        estimate_duration(&mut file, file_size, &es_entries, layout, first_probe_pts);
 
     if file_size > 0
         && let Some(duration_seconds) = duration_seconds
@@ -149,14 +154,56 @@ struct EsEntry {
 }
 
 // ---------------------------------------------------------------------------
-// PAT parsing
+// Program map parsing
 // ---------------------------------------------------------------------------
 
-fn find_pmt_pid<T: Read + Seek>(
+fn parse_program_map<T: Read + Seek>(
     stream: &mut T,
     layout: TsPacketLayout,
-) -> Result<u16, MediaInfoError> {
-    let section = read_psi_section(stream, PAT_PID, 0x00, 100_000, layout)?;
+) -> Result<Vec<EsEntry>, MediaInfoError> {
+    stream
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+
+    let mut raw_packet = vec![0u8; layout.raw_packet_size];
+    let mut packet = [0u8; TS_PACKET_SIZE];
+    let mut packets_scanned = 0u32;
+    let mut pat = PsiSectionAssembler::new(0x00);
+    let mut pmt = PsiSectionAssembler::new(0x02);
+    let mut pmt_pid = None;
+
+    loop {
+        if packets_scanned >= PROGRAM_MAP_PROBE_PACKETS {
+            return Err(MediaInfoError::Parse(format!(
+                "program map not found within first {PROGRAM_MAP_PROBE_PACKETS} packets"
+            )));
+        }
+
+        if !read_ts_packet(stream, layout, &mut raw_packet, &mut packet)? {
+            return Err(MediaInfoError::Parse(
+                "program map not found before end of file".into(),
+            ));
+        }
+        packets_scanned += 1;
+
+        let pid = ts_pid(&packet);
+        if pid == PAT_PID {
+            if let Some(section) = pat.push_packet(&packet)? {
+                let next_pid = parse_pat_pmt_pid(&section)?;
+                if pmt_pid != Some(next_pid) {
+                    pmt.reset();
+                    pmt_pid = Some(next_pid);
+                }
+            }
+        } else if Some(pid) == pmt_pid
+            && let Some(section) = pmt.push_packet(&packet)?
+        {
+            return parse_pmt_section(&section);
+        }
+    }
+}
+
+fn parse_pat_pmt_pid(section: &[u8]) -> Result<u16, MediaInfoError> {
     if section.len() < 12 {
         return Err(MediaInfoError::Parse("PAT section too short".into()));
     }
@@ -185,16 +232,7 @@ fn find_pmt_pid<T: Read + Seek>(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// PMT parsing
-// ---------------------------------------------------------------------------
-
-fn parse_pmt<T: Read + Seek>(
-    stream: &mut T,
-    pmt_pid: u16,
-    layout: TsPacketLayout,
-) -> Result<Vec<EsEntry>, MediaInfoError> {
-    let section = read_psi_section(stream, pmt_pid, 0x02, 200_000, layout)?;
+fn parse_pmt_section(section: &[u8]) -> Result<Vec<EsEntry>, MediaInfoError> {
     if section.len() < 16 {
         return Err(MediaInfoError::Parse("PMT section too short".into()));
     }
@@ -241,95 +279,86 @@ fn parse_pmt<T: Read + Seek>(
     Ok(entries)
 }
 
-fn read_psi_section<T: Read + Seek>(
-    stream: &mut T,
-    pid: u16,
+struct PsiSectionAssembler {
     table_id: u8,
-    max_packets: u32,
-    layout: TsPacketLayout,
-) -> Result<Vec<u8>, MediaInfoError> {
-    stream
-        .seek(SeekFrom::Start(0))
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+    section: Vec<u8>,
+    expected_len: Option<usize>,
+    assembling: bool,
+}
 
-    let mut raw_packet = vec![0u8; layout.raw_packet_size];
-    let mut buf = [0u8; TS_PACKET_SIZE];
-    let mut packets_scanned = 0u32;
-    let mut section = Vec::new();
-    let mut expected_len = None;
-    let mut assembling = false;
-
-    loop {
-        if packets_scanned > max_packets {
-            return Err(MediaInfoError::Parse(format!(
-                "section for pid {pid:#06x} not found within first {max_packets} packets"
-            )));
+impl PsiSectionAssembler {
+    fn new(table_id: u8) -> Self {
+        Self {
+            table_id,
+            section: Vec::new(),
+            expected_len: None,
+            assembling: false,
         }
+    }
 
-        if !read_ts_packet(stream, layout, &mut raw_packet, &mut buf)? {
-            return Err(MediaInfoError::Parse(format!(
-                "section for pid {pid:#06x} not found before end of file"
-            )));
-        }
-        packets_scanned += 1;
+    fn reset(&mut self) {
+        self.section.clear();
+        self.expected_len = None;
+        self.assembling = false;
+    }
 
-        if ts_pid(&buf) != pid {
-            continue;
-        }
-
-        let payload = ts_payload(&buf);
+    fn push_packet(&mut self, packet: &[u8]) -> Result<Option<Vec<u8>>, MediaInfoError> {
+        let payload = ts_payload(packet);
         if payload.is_empty() {
-            continue;
+            return Ok(None);
         }
 
-        let payload_unit_start = buf[1] & 0x40 != 0;
+        let payload_unit_start = packet[1] & 0x40 != 0;
         let mut data = payload;
 
         if payload_unit_start {
             let pointer = data[0] as usize;
             let section_start = 1 + pointer;
             if section_start > data.len() {
-                assembling = false;
-                section.clear();
-                expected_len = None;
-                continue;
+                self.reset();
+                return Ok(None);
             }
             data = &data[section_start..];
-            section.clear();
-            expected_len = None;
-            assembling = true;
-        } else if !assembling {
-            continue;
+            self.section.clear();
+            self.expected_len = None;
+            self.assembling = true;
+        } else if !self.assembling {
+            return Ok(None);
         }
 
         if data.is_empty() {
-            continue;
+            return Ok(None);
         }
 
-        if section.is_empty() && data[0] != table_id {
-            assembling = false;
-            continue;
+        if self.section.is_empty() && data[0] != self.table_id {
+            self.reset();
+            return Ok(None);
         }
 
-        section.extend_from_slice(data);
+        self.section.extend_from_slice(data);
 
-        if expected_len.is_none() && section.len() >= 3 {
-            let section_length = ((section[1] as usize & 0x0F) << 8) | section[2] as usize;
+        if self.expected_len.is_none() && self.section.len() >= 3 {
+            let section_length =
+                ((self.section[1] as usize & 0x0F) << 8) | self.section[2] as usize;
             let total_len = section_length + 3;
             if !(3..=4096).contains(&total_len) {
-                assembling = false;
-                section.clear();
-                continue;
+                self.reset();
+                return Ok(None);
             }
-            expected_len = Some(total_len);
+            self.expected_len = Some(total_len);
         }
 
-        if let Some(total_len) = expected_len
-            && section.len() >= total_len
+        if let Some(total_len) = self.expected_len
+            && self.section.len() >= total_len
         {
+            let mut section = std::mem::take(&mut self.section);
             section.truncate(total_len);
-            return Ok(section);
+            self.expected_len = None;
+            self.assembling = false;
+            return Ok(Some(section));
         }
+
+        Ok(None)
     }
 }
 
@@ -523,105 +552,309 @@ fn enrich_tracks_from_probe<T: Read + Seek>(
     es_entries: &[EsEntry],
     tracks: &mut [RawTrack],
     layout: TsPacketLayout,
-) -> Result<(), MediaInfoError> {
-    let mut buffers: HashMap<u16, Vec<u8>> = HashMap::new();
-    let mut budgets: HashMap<u16, ProbeBudget> = HashMap::new();
-    let mut pts_by_pid: HashMap<u16, Vec<u64>> = HashMap::new();
-    for entry in es_entries {
+) -> Result<Option<u64>, MediaInfoError> {
+    let mut states = Vec::new();
+    let mut state_by_pid = [None; TS_PID_COUNT];
+    for (track_index, entry) in es_entries.iter().enumerate() {
         let kind = classify_stream_type(entry.stream_type, &entry.descriptors).0;
         if matches!(kind, TrackKind::Video | TrackKind::Audio) {
-            buffers.insert(entry.pid, Vec::new());
-            budgets.insert(entry.pid, ProbeBudget::new(STREAM_PROBE_MAX_BYTES_PER_PID));
-        }
-        if kind == TrackKind::Video {
-            pts_by_pid.insert(entry.pid, Vec::new());
+            let state_index = states.len();
+            states.push(TsStreamProbeState::new(
+                track_index,
+                kind,
+                tracks[track_index].codec_name.clone(),
+            ));
+            state_by_pid[usize::from(entry.pid)] = Some(state_index);
         }
     }
-    if buffers.is_empty() {
-        return Ok(());
+    if states.is_empty() {
+        return Ok(None);
     }
 
     stream
         .seek(SeekFrom::Start(0))
         .map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
-    let mut raw_packet = vec![0u8; layout.raw_packet_size];
+    let mut batch = vec![0_u8; layout.raw_packet_size * STREAM_PROBE_BATCH_PACKETS];
+    let mut raw_packet = vec![0_u8; layout.raw_packet_size];
     let mut pkt = [0_u8; TS_PACKET_SIZE];
     let mut packets_scanned = 0usize;
+    let mut batch_mode = true;
+    let mut active_states = states.iter().filter(|state| !state.done()).count();
+    let mut first_pts = None;
 
-    while packets_scanned < STREAM_PROBE_PACKET_LIMIT
-        && budgets.values().any(|budget| !budget.exhausted())
-    {
-        if !read_ts_packet(stream, layout, &mut raw_packet, &mut pkt)? {
-            break;
-        }
-        packets_scanned += 1;
-
-        let pid = ts_pid(&pkt);
-        let Some(buffer) = buffers.get_mut(&pid) else {
-            continue;
-        };
-        let Some(budget) = budgets.get_mut(&pid) else {
-            continue;
-        };
-        if budget.exhausted() {
-            continue;
-        }
-
-        let payload = ts_payload(&pkt);
-        if payload.is_empty() {
-            continue;
-        }
-
-        let payload = if (pkt[1] & 0x40) != 0 {
-            if let Some(pts_values) = pts_by_pid.get_mut(&pid)
-                && pts_values.len() < 8
-                && let Some(pts) = extract_pts_from_pes(payload)
-                && pts_values.last().copied() != Some(pts)
-            {
-                pts_values.push(pts);
+    while packets_scanned < STREAM_PROBE_PACKET_LIMIT && active_states > 0 {
+        if batch_mode {
+            let batch_start = stream
+                .stream_position()
+                .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+            let remaining_packets = STREAM_PROBE_PACKET_LIMIT - packets_scanned;
+            let packet_count = remaining_packets.min(STREAM_PROBE_BATCH_PACKETS);
+            let read_len = packet_count * layout.raw_packet_size;
+            let n = read_full(stream, &mut batch[..read_len]);
+            if n < layout.raw_packet_size {
+                break;
             }
-            strip_pes_header(payload).unwrap_or(payload)
-        } else {
-            payload
-        };
-        if payload.is_empty() {
-            continue;
-        }
 
-        let take = budget.consume(payload.len());
-        if take > 0 {
-            buffer.extend_from_slice(&payload[..take]);
+            let usable_len = n - (n % layout.raw_packet_size);
+            let mut offset = 0usize;
+            while offset + layout.raw_packet_size <= usable_len
+                && packets_scanned < STREAM_PROBE_PACKET_LIMIT
+                && active_states > 0
+            {
+                let sync = offset + layout.sync_offset;
+                if batch[sync] != SYNC_BYTE {
+                    stream
+                        .seek(SeekFrom::Start(batch_start + offset as u64))
+                        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+                    batch_mode = false;
+                    break;
+                }
+
+                let packet_start = sync;
+                let packet_end = packet_start + TS_PACKET_SIZE;
+                if process_stream_probe_packet(
+                    &batch[packet_start..packet_end],
+                    &state_by_pid,
+                    &mut states,
+                    tracks,
+                    &mut first_pts,
+                ) {
+                    active_states = active_states.saturating_sub(1);
+                }
+                packets_scanned += 1;
+                offset += layout.raw_packet_size;
+            }
+
+            if n < read_len || !batch_mode {
+                continue;
+            }
+        } else {
+            if !read_ts_packet(stream, layout, &mut raw_packet, &mut pkt)? {
+                break;
+            }
+            packets_scanned += 1;
+            if process_stream_probe_packet(&pkt, &state_by_pid, &mut states, tracks, &mut first_pts)
+            {
+                active_states = active_states.saturating_sub(1);
+            }
         }
     }
 
-    for (entry, track) in es_entries.iter().zip(tracks.iter_mut()) {
-        let Some(buffer) = buffers.get(&entry.pid) else {
-            continue;
-        };
+    for state in &mut states {
+        let track_index = state.track_index;
+        state.finish(&mut tracks[track_index]);
+    }
 
-        match track.codec_name.as_deref() {
-            Some("h264") => probe_h264_track(buffer, track),
-            Some("hevc") => probe_hevc_track(buffer, track),
-            Some("mpeg1video") | Some("mpeg2video") => probe_mpeg_video_track(buffer, track),
-            Some("aac") => probe_aac_track(buffer, track),
-            Some("aac_latm") => probe_latm_track(buffer, track),
-            Some("mp2") => probe_mpeg_audio_track(buffer, track),
-            Some("ac3") => probe_ac3_track(buffer, track),
-            Some("eac3") => probe_eac3_track(buffer, track),
-            Some("truehd") => probe_truehd_track(buffer, track),
-            Some("dts") => probe_dts_track(buffer, track),
+    Ok(first_pts)
+}
+
+fn process_stream_probe_packet(
+    pkt: &[u8],
+    state_by_pid: &[Option<usize>; TS_PID_COUNT],
+    states: &mut [TsStreamProbeState],
+    tracks: &mut [RawTrack],
+    first_pts: &mut Option<u64>,
+) -> bool {
+    let pid = ts_pid(pkt);
+    let Some(state_index) = state_by_pid[usize::from(pid)] else {
+        return false;
+    };
+    let Some(state) = states.get_mut(state_index) else {
+        return false;
+    };
+    if state.done() {
+        return false;
+    }
+
+    let payload = ts_payload(pkt);
+    if payload.is_empty() {
+        return false;
+    }
+
+    let payload = if (pkt[1] & 0x40) != 0 {
+        let pts = extract_pts_from_pes(payload);
+        if first_pts.is_none() {
+            *first_pts = pts;
+        }
+        state.record_pts(pts);
+        strip_pes_header(payload).unwrap_or(payload)
+    } else {
+        payload
+    };
+    if payload.is_empty() {
+        return false;
+    }
+
+    let was_done = state.done();
+    let track_index = state.track_index;
+    state.push_payload(payload, &mut tracks[track_index]);
+    !was_done && state.done()
+}
+
+struct TsStreamProbeState {
+    track_index: usize,
+    kind: TrackKind,
+    codec_name: Option<String>,
+    budget: ProbeBudget,
+    buffer: Vec<u8>,
+    pts_values: Vec<u64>,
+    complete: bool,
+}
+
+impl TsStreamProbeState {
+    fn new(track_index: usize, kind: TrackKind, codec_name: Option<String>) -> Self {
+        Self {
+            track_index,
+            kind,
+            codec_name,
+            budget: ProbeBudget::new(STREAM_PROBE_MAX_BYTES_PER_PID),
+            buffer: Vec::new(),
+            pts_values: Vec::new(),
+            complete: false,
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.complete || self.budget.exhausted()
+    }
+
+    fn record_pts(&mut self, pts: Option<u64>) {
+        if self.kind != TrackKind::Video || self.pts_values.len() >= 8 {
+            return;
+        }
+        if let Some(pts) = pts
+            && self.pts_values.last().copied() != Some(pts)
+        {
+            self.pts_values.push(pts);
+        }
+    }
+
+    fn push_payload(&mut self, payload: &[u8], track: &mut RawTrack) {
+        let take = self.budget.consume(payload.len());
+        if take > 0 {
+            let before_len = self.buffer.len();
+            self.buffer.extend_from_slice(&payload[..take]);
+            let after_len = self.buffer.len();
+            if self.should_probe_after_push(before_len, after_len, track) {
+                self.probe(track);
+            }
+        }
+    }
+
+    fn finish(&mut self, track: &mut RawTrack) {
+        self.probe(track);
+        if self.kind == TrackKind::Video && !is_plausible_frame_rate(track.frame_rate_fps) {
+            track.frame_rate_fps = estimate_frame_rate_from_pts(&self.pts_values);
+        }
+    }
+
+    fn probe(&mut self, track: &mut RawTrack) {
+        if self.complete || self.buffer.is_empty() {
+            return;
+        }
+        if !self.track_probe_needed(track) {
+            self.complete = self.probe_complete(track);
+            return;
+        }
+
+        match self.codec_name.as_deref() {
+            Some("h264") => probe_h264_track(&self.buffer, track),
+            Some("hevc") => probe_hevc_track(&self.buffer, track),
+            Some("vc1") => probe_vc1_track(&self.buffer, track),
+            Some("mpeg1video") | Some("mpeg2video") => probe_mpeg_video_track(&self.buffer, track),
+            Some("aac") => probe_aac_track(&self.buffer, track),
+            Some("aac_latm") => probe_latm_track(&self.buffer, track),
+            Some("mp2") => probe_mpeg_audio_track(&self.buffer, track),
+            Some("ac3") => probe_ac3_track(&self.buffer, track),
+            Some("eac3") => probe_eac3_track(&self.buffer, track),
+            Some("truehd") => probe_truehd_track(&self.buffer, track),
+            Some("dts") => probe_dts_track(&self.buffer, track),
             _ => {}
         }
 
-        if track.kind == TrackKind::Video && !is_plausible_frame_rate(track.frame_rate_fps) {
-            track.frame_rate_fps = pts_by_pid
-                .get(&entry.pid)
-                .and_then(|pts_values| estimate_frame_rate_from_pts(pts_values));
+        self.complete = self.probe_complete(track);
+        if self.complete {
+            self.buffer.clear();
+        } else if self.buffer.len() > STREAM_PROBE_ROLLING_KEEP_BYTES * 2 {
+            let keep_from = self.buffer.len() - STREAM_PROBE_ROLLING_KEEP_BYTES;
+            self.buffer.drain(..keep_from);
         }
     }
 
-    Ok(())
+    fn probe_complete(&self, track: &RawTrack) -> bool {
+        match self.codec_name.as_deref() {
+            Some("h264") | Some("hevc") | Some("vc1") | Some("mpeg1video") | Some("mpeg2video") => {
+                track.width.is_some()
+                    && track.height.is_some()
+                    && (is_plausible_frame_rate(track.frame_rate_fps) || self.pts_values.len() >= 8)
+            }
+            Some("aac") => {
+                track.channels.is_some()
+                    && track.audio_profile.is_some()
+                    && track.bit_rate_bps.is_some()
+            }
+            Some("aac_latm") | Some("eac3") => {
+                track.channels.is_some() && track.audio_profile.is_some()
+            }
+            Some("mp2") | Some("ac3") => track.channels.is_some(),
+            Some("truehd") => track.audio_profile.is_some(),
+            Some("dts") => {
+                track.channels.is_some()
+                    && track.audio_profile.as_deref().is_some_and(|profile| {
+                        profile != "DTS"
+                            && (!profile.starts_with("DTS-HD") || track.channels.unwrap_or(0) > 6)
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn track_probe_needed(&self, track: &RawTrack) -> bool {
+        match self.codec_name.as_deref() {
+            Some("h264") | Some("hevc") | Some("vc1") | Some("mpeg1video") | Some("mpeg2video") => {
+                track.width.is_none() || track.height.is_none()
+            }
+            Some("aac") => {
+                track.channels.is_none()
+                    || track.audio_profile.is_none()
+                    || track.bit_rate_bps.is_none()
+            }
+            Some("aac_latm") | Some("eac3") => {
+                track.channels.is_none() || track.audio_profile.is_none()
+            }
+            Some("mp2") | Some("ac3") => track.channels.is_none(),
+            Some("truehd") => track.audio_profile.is_none(),
+            Some("dts") => !self.probe_complete(track),
+            _ => true,
+        }
+    }
+
+    fn should_probe_after_push(
+        &self,
+        before_len: usize,
+        after_len: usize,
+        track: &RawTrack,
+    ) -> bool {
+        if after_len == 0 || !self.track_probe_needed(track) {
+            return false;
+        }
+        if before_len == 0 || self.budget.exhausted() {
+            return true;
+        }
+
+        match self.codec_name.as_deref() {
+            Some("aac") => crossed_probe_boundary(before_len, after_len, 64 * 1024, 16 * 1024),
+            Some("h264") | Some("hevc") | Some("vc1") | Some("mpeg1video") | Some("mpeg2video") => {
+                crossed_probe_boundary(before_len, after_len, 4 * 1024, 4 * 1024)
+            }
+            _ => crossed_probe_boundary(before_len, after_len, 2 * 1024, 2 * 1024),
+        }
+    }
+}
+
+fn crossed_probe_boundary(before_len: usize, after_len: usize, floor: usize, step: usize) -> bool {
+    after_len >= floor && (before_len < floor || before_len / step != after_len / step)
 }
 
 fn probe_h264_track(data: &[u8], track: &mut RawTrack) {
@@ -667,12 +900,45 @@ fn probe_hevc_track(data: &[u8], track: &mut RawTrack) {
     });
 }
 
+fn probe_vc1_track(data: &[u8], track: &mut RawTrack) {
+    let Some(sequence) = find_start_code_payload(data, 0x0F) else {
+        return;
+    };
+    let Some((width, height)) = parse_vc1_advanced_sequence_dimensions(sequence) else {
+        return;
+    };
+
+    track.width = Some(width as i32);
+    track.height = Some(height as i32);
+    track.codec_private = Some(sequence[..sequence.len().min(64)].to_vec());
+}
+
+fn parse_vc1_advanced_sequence_dimensions(data: &[u8]) -> Option<(u16, u16)> {
+    let mut bits = BitReader::new(data);
+    let profile = bits.read_bits(2)?;
+    if profile != 3 {
+        return None;
+    }
+
+    bits.skip_bits(3)?; // level
+    bits.skip_bits(2)?; // chroma format
+    bits.skip_bits(3)?; // frame-rate post-processing quality
+    bits.skip_bits(5)?; // bit-rate post-processing quality
+    bits.skip_bits(1)?; // post-processing flag
+    let width = ((bits.read_bits(12)? + 1) * 2) as u16;
+    let height = ((bits.read_bits(12)? + 1) * 2) as u16;
+
+    (width > 0 && height > 0).then_some((width, height))
+}
+
 fn probe_aac_track(data: &[u8], track: &mut RawTrack) {
     let Some(header) = find_adts_header(data) else {
         return;
     };
     track.channels = Some(header.channels as i32);
-    track.bit_rate_bps = header.bit_rate_bps.map(|bitrate| bitrate as i64);
+    if let Some(bit_rate_bps) = header.bit_rate_bps {
+        track.bit_rate_bps = Some(bit_rate_bps as i64);
+    }
     merge_audio_profile(
         &mut track.audio_profile,
         detect_audio_profile_from_payload(track.codec_name.as_deref(), data),
@@ -821,17 +1087,35 @@ pub(crate) struct DtsHeader {
 }
 
 fn find_adts_header(data: &[u8]) -> Option<AdtsHeader> {
+    const ADTS_BITRATE_SAMPLE_FRAMES: usize = 128;
+
     if data.len() < 7 {
         return None;
     }
-    for i in 0..=data.len() - 7 {
+    let mut start = 0;
+    let mut detected_channels = None;
+    let mut detected_sample_rate = None;
+    let mut total_frame_bytes = 0_u64;
+    let mut total_samples = 0_u64;
+    let mut frames = 0usize;
+
+    while let Some(candidate) = scan::find_audio_sync_candidate(data, start) {
+        if candidate.kind != scan::AudioSyncKind::Adts {
+            start = candidate.offset + 1;
+            continue;
+        }
+        let i = candidate.offset;
+        if i + 7 > data.len() {
+            break;
+        }
+        start = i + 1;
         let hdr = &data[i..];
-        if hdr[0] != 0xFF || (hdr[1] & 0xF0) != 0xF0 {
+        if (hdr[1] & 0xF0) != 0xF0 {
             continue;
         }
 
         let sampling_frequency_index = (hdr[2] >> 2) & 0x0F;
-        let sample_rate = match sampling_frequency_index {
+        let frame_sample_rate: u32 = match sampling_frequency_index {
             0 => 96_000,
             1 => 88_200,
             2 => 64_000,
@@ -848,35 +1132,64 @@ fn find_adts_header(data: &[u8]) -> Option<AdtsHeader> {
             _ => continue,
         };
 
-        let channels = ((hdr[2] & 0x01) << 2) | ((hdr[3] >> 6) & 0x03);
-        if channels == 0 {
+        let frame_channels = ((hdr[2] & 0x01) << 2) | ((hdr[3] >> 6) & 0x03);
+        if frame_channels == 0 {
             continue;
         }
 
-        let frame_length = (((hdr[3] & 0x03) as u32) << 11)
-            | ((hdr[4] as u32) << 3)
-            | ((hdr[5] as u32 >> 5) & 0x07);
+        let frame_length = (((hdr[3] & 0x03) as usize) << 11)
+            | ((hdr[4] as usize) << 3)
+            | (((hdr[5] >> 5) & 0x07) as usize);
         if frame_length < 7 {
+            continue;
+        }
+        if i + frame_length > data.len() {
+            break;
+        }
+        if i + frame_length + 1 < data.len()
+            && (data[i + frame_length] != 0xFF || data[i + frame_length + 1] & 0xF0 != 0xF0)
+        {
             continue;
         }
 
         let number_of_raw_data_blocks = hdr[6] & 0x03;
         let samples_per_frame = 1024_u32 * (u32::from(number_of_raw_data_blocks) + 1);
-        let bit_rate_bps = (frame_length * 8 * sample_rate).checked_div(samples_per_frame);
-
-        return Some(AdtsHeader {
-            channels,
-            bit_rate_bps,
-        });
+        detected_channels = Some(frame_channels);
+        detected_sample_rate = Some(frame_sample_rate);
+        total_frame_bytes += frame_length as u64;
+        total_samples += u64::from(samples_per_frame);
+        frames += 1;
+        start = i + frame_length;
+        if frames >= ADTS_BITRATE_SAMPLE_FRAMES {
+            break;
+        }
     }
-    None
+
+    let channels = detected_channels?;
+    let bit_rate_bps = detected_sample_rate.and_then(|sample_rate| {
+        (frames >= ADTS_BITRATE_SAMPLE_FRAMES && total_samples > 0)
+            .then(|| (total_frame_bytes * 8 * u64::from(sample_rate)) / total_samples)
+            .and_then(|bitrate| u32::try_from(bitrate).ok())
+    });
+
+    Some(AdtsHeader {
+        channels,
+        bit_rate_bps,
+    })
 }
 
 fn find_latm_header(data: &[u8]) -> Option<LatmHeader> {
-    for start in 0..data.len().saturating_sub(3) {
-        if data[start] != 0x56 || (data[start + 1] & 0xE0) != 0xE0 {
+    let mut cursor = 0;
+    while let Some(candidate) = scan::find_audio_sync_candidate(data, cursor) {
+        if candidate.kind != scan::AudioSyncKind::Latm {
+            cursor = candidate.offset + 1;
             continue;
         }
+        let start = candidate.offset;
+        if start + 3 > data.len() {
+            return None;
+        }
+        cursor = start + 1;
 
         let mut bits = BitReader::new(&data[start..]);
         if bits.read_bits(11)? != 0x2B7 {
@@ -966,7 +1279,12 @@ fn find_mpeg_audio_header(data: &[u8]) -> Option<MpegAudioHeader> {
         return None;
     }
 
-    for i in 0..=data.len() - 4 {
+    let mut start = 0;
+    while let Some(i) = scan::find_mpeg_audio_sync(data, start) {
+        if i + 4 > data.len() {
+            return None;
+        }
+        start = i + 1;
         let header = u32::from_be_bytes(data[i..i + 4].try_into().ok()?);
         if (header & 0xFFE0_0000) != 0xFFE0_0000 {
             continue;
@@ -976,6 +1294,7 @@ fn find_mpeg_audio_header(data: &[u8]) -> Option<MpegAudioHeader> {
         let layer_index = ((header >> 17) & 0x3) as usize;
         let bitrate_index = ((header >> 12) & 0xF) as usize;
         let sample_rate_index = ((header >> 10) & 0x3) as usize;
+        let padding = ((header >> 9) & 0x1) as u32;
         let channel_mode = ((header >> 6) & 0x3) as usize;
 
         if version_id == 1 || layer_index == 0 || bitrate_index == 0 || bitrate_index == 0xF {
@@ -1001,9 +1320,29 @@ fn find_mpeg_audio_header(data: &[u8]) -> Option<MpegAudioHeader> {
             continue;
         }
 
+        let layer = 4 - layer_index as u8;
+        let bit_rate_bps = bit_rate_kbps * 1000;
+        let frame_size = match (version_id == 3, layer) {
+            (_, 1) => (((12 * bit_rate_bps) / sample_rate) + padding) * 4,
+            (true, 2 | 3) => ((144 * bit_rate_bps) / sample_rate) + padding,
+            (false, 2 | 3) => ((72 * bit_rate_bps) / sample_rate) + padding,
+            _ => 0,
+        } as usize;
+        if frame_size < 4 {
+            continue;
+        }
+        if i + frame_size + 1 < data.len()
+            && (data[i + frame_size] != 0xFF || data[i + frame_size + 1] & 0xE0 != 0xE0)
+        {
+            continue;
+        }
+        if i + frame_size + 1 >= data.len() && data.len().saturating_sub(i) > 4 {
+            return None;
+        }
+
         return Some(MpegAudioHeader {
             channels: MPEG_AUDIO_CHANNELS[channel_mode],
-            bit_rate_bps: Some(bit_rate_kbps * 1000),
+            bit_rate_bps: Some(bit_rate_bps),
         });
     }
 
@@ -1014,10 +1353,17 @@ pub(crate) fn find_ac3_header(data: &[u8]) -> Option<Ac3Header> {
     if data.len() < 7 {
         return None;
     }
-    for start in 0..=data.len() - 7 {
-        if data[start] != 0x0B || data[start + 1] != 0x77 {
+    let mut cursor = 0;
+    while let Some(candidate) = scan::find_audio_sync_candidate(data, cursor) {
+        if candidate.kind != scan::AudioSyncKind::Ac3 {
+            cursor = candidate.offset + 1;
             continue;
         }
+        let start = candidate.offset;
+        if start + 7 > data.len() {
+            return None;
+        }
+        cursor = start + 1;
 
         let bsid = data[start + 5] >> 3;
         if bsid > 10 {
@@ -1059,10 +1405,17 @@ pub(crate) fn find_eac3_header(data: &[u8]) -> Option<Ac3Header> {
     if data.len() < 6 {
         return None;
     }
-    for start in 0..=data.len() - 6 {
-        if data[start] != 0x0B || data[start + 1] != 0x77 {
+    let mut cursor = 0;
+    while let Some(candidate) = scan::find_audio_sync_candidate(data, cursor) {
+        if candidate.kind != scan::AudioSyncKind::Ac3 {
+            cursor = candidate.offset + 1;
             continue;
         }
+        let start = candidate.offset;
+        if start + 6 > data.len() {
+            return None;
+        }
+        cursor = start + 1;
 
         let bsid = data[start + 5] >> 3;
         if bsid <= 10 {
@@ -1111,17 +1464,17 @@ pub(crate) fn find_dts_header(data: &[u8]) -> Option<DtsHeader> {
     if data.len() < 11 {
         return None;
     }
-    for start in 0..=data.len() - 11 {
-        let marker = u32::from_be_bytes(data[start..start + 4].try_into().ok()?);
-        if !matches!(
-            marker,
-            DTS_SYNCWORD_CORE_BE
-                | DTS_SYNCWORD_CORE_LE
-                | DTS_SYNCWORD_CORE_14B_BE
-                | DTS_SYNCWORD_CORE_14B_LE
-        ) {
+    let mut cursor = 0;
+    while let Some(candidate) = scan::find_audio_sync_candidate(data, cursor) {
+        if candidate.kind != scan::AudioSyncKind::Dts {
+            cursor = candidate.offset + 1;
             continue;
         }
+        let start = candidate.offset;
+        if start + 11 > data.len() {
+            return None;
+        }
+        cursor = start + 1;
 
         let probe_end = (start + DTS_HEADER_PROBE_BYTES).min(data.len());
         let normalized = normalize_dts_core_prefix(&data[start..probe_end])?;
@@ -1222,12 +1575,7 @@ fn normalize_dts_core_prefix(data: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn find_start_code_payload(data: &[u8], code: u8) -> Option<&[u8]> {
-    for i in 0..data.len().saturating_sub(4) {
-        if data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x01 && data[i + 3] == code {
-            return data.get(i + 4..);
-        }
-    }
-    None
+    scan::find_mpeg_start_code(data, code).and_then(|i| data.get(i + 4..))
 }
 
 struct BitReader<'a> {
@@ -1271,26 +1619,12 @@ impl<'a> BitReader<'a> {
 
 fn find_annexb_nal(data: &[u8], predicate: impl Fn(&[u8]) -> bool) -> Option<&[u8]> {
     let mut i = 0;
-    while i + 4 <= data.len() {
-        let start_code_len = if data[i..].starts_with(&[0, 0, 1]) {
-            3
-        } else if data[i..].starts_with(&[0, 0, 0, 1]) {
-            4
-        } else {
-            i += 1;
-            continue;
-        };
-
+    while let Some((start_code, start_code_len)) = scan::find_annexb_start_code(data, i) {
+        i = start_code;
         let nal_start = i + start_code_len;
-        let mut nal_end = data.len();
-        let mut j = nal_start;
-        while j + 3 < data.len() {
-            if data[j..].starts_with(&[0, 0, 1]) || data[j..].starts_with(&[0, 0, 0, 1]) {
-                nal_end = j;
-                break;
-            }
-            j += 1;
-        }
+        let nal_end = scan::find_annexb_start_code(data, nal_start)
+            .map(|(next_start, _)| next_start)
+            .unwrap_or(data.len());
 
         if nal_end > nal_start {
             let nal = &data[nal_start..nal_end];
@@ -1323,53 +1657,89 @@ fn estimate_duration<T: Read + Seek>(
     file_size: u64,
     es_entries: &[EsEntry],
     layout: TsPacketLayout,
-) -> Option<f64> {
-    estimate_duration_with_limit(
-        stream,
-        file_size,
-        es_entries,
-        FAST_DURATION_PROBE_PACKETS,
-        layout,
-    )
-    .or_else(|| {
-        estimate_duration_with_limit(
-            stream,
-            file_size,
-            es_entries,
-            FALLBACK_DURATION_PROBE_PACKETS,
-            layout,
-        )
-    })
-}
-
-fn estimate_duration_with_limit<T: Read + Seek>(
-    stream: &mut T,
-    file_size: u64,
-    es_entries: &[EsEntry],
-    packet_limit: usize,
-    layout: TsPacketLayout,
+    first_pts_hint: Option<u64>,
 ) -> Option<f64> {
     if es_entries.is_empty() || file_size < layout.raw_packet_size as u64 {
         return None;
     }
 
-    let pes_pids: Vec<u16> = es_entries
+    let mut pes_pid_lookup = [false; TS_PID_COUNT];
+    let mut has_pes_pid = false;
+    for entry in es_entries
         .iter()
         .filter(|entry| is_pes_stream_type(entry.stream_type))
-        .map(|entry| entry.pid)
-        .collect();
-    if pes_pids.is_empty() {
+    {
+        pes_pid_lookup[usize::from(entry.pid)] = true;
+        has_pes_pid = true;
+    }
+    if !has_pes_pid {
         return None;
     }
 
-    let first_pts = find_pts_near(stream, 0, true, &pes_pids, packet_limit, layout);
-    let tail_start = file_size.saturating_sub(layout.raw_packet_size as u64 * packet_limit as u64);
-    let last_pts = find_pts_near(stream, tail_start, false, &pes_pids, packet_limit, layout);
+    let first_pts = first_pts_hint
+        .or_else(|| {
+            find_pts_near(
+                stream,
+                0,
+                true,
+                &pes_pid_lookup,
+                FAST_DURATION_PROBE_PACKETS,
+                layout,
+            )
+        })
+        .or_else(|| {
+            find_pts_near(
+                stream,
+                0,
+                true,
+                &pes_pid_lookup,
+                FALLBACK_DURATION_PROBE_PACKETS,
+                layout,
+            )
+        })?;
 
-    match (first_pts, last_pts) {
-        (Some(first), Some(last)) if last > first => Some((last - first) as f64 / PTS_HZ),
-        (Some(first), Some(last)) if last <= first => {
-            let wrapped = (1u64 << 33) - first + last;
+    estimate_duration_from_first_pts(
+        stream,
+        file_size,
+        &pes_pid_lookup,
+        layout,
+        first_pts,
+        FAST_DURATION_PROBE_PACKETS,
+    )
+    .or_else(|| {
+        estimate_duration_from_first_pts(
+            stream,
+            file_size,
+            &pes_pid_lookup,
+            layout,
+            first_pts,
+            FALLBACK_DURATION_PROBE_PACKETS,
+        )
+    })
+}
+
+fn estimate_duration_from_first_pts<T: Read + Seek>(
+    stream: &mut T,
+    file_size: u64,
+    pes_pid_lookup: &[bool; TS_PID_COUNT],
+    layout: TsPacketLayout,
+    first_pts: u64,
+    packet_limit: usize,
+) -> Option<f64> {
+    let tail_start = file_size.saturating_sub(layout.raw_packet_size as u64 * packet_limit as u64);
+    let last_pts = find_pts_near(
+        stream,
+        tail_start,
+        false,
+        pes_pid_lookup,
+        packet_limit,
+        layout,
+    );
+
+    match last_pts {
+        Some(last) if last > first_pts => Some((last - first_pts) as f64 / PTS_HZ),
+        Some(last) if last <= first_pts => {
+            let wrapped = (1u64 << 33) - first_pts + last;
             Some(wrapped as f64 / PTS_HZ)
         }
         _ => None,
@@ -1379,7 +1749,34 @@ fn estimate_duration_with_limit<T: Read + Seek>(
 fn is_pes_stream_type(stream_type: u8) -> bool {
     matches!(
         stream_type,
-        0x01 | 0x02 | 0x03 | 0x04 | 0x06 | 0x0F | 0x10 | 0x11 | 0x1B | 0x24 | 0x81 | 0x87
+        0x01 | 0x02
+            | 0x03
+            | 0x04
+            | 0x06
+            | 0x0F
+            | 0x10
+            | 0x11
+            | 0x1B
+            | 0x24
+            | 0x42
+            | 0x81
+            | 0x82
+            | 0x83
+            | 0x84
+            | 0x85
+            | 0x86
+            | 0x87
+            | 0x90
+            | 0x92
+            | 0xA1
+            | 0xA2
+            | 0xC1
+            | 0xC2
+            | 0xCF
+            | 0xD2
+            | 0xD4
+            | 0xDB
+            | 0xEA
     )
 }
 
@@ -1387,7 +1784,7 @@ fn find_pts_near<T: Read + Seek>(
     stream: &mut T,
     start_pos: u64,
     first_match: bool,
-    pes_pids: &[u16],
+    pes_pid_lookup: &[bool; TS_PID_COUNT],
     max_packets: usize,
     layout: TsPacketLayout,
 ) -> Option<u64> {
@@ -1410,7 +1807,7 @@ fn find_pts_near<T: Read + Seek>(
         let packet_start = offset + layout.sync_offset;
         let pkt = &data[packet_start..packet_start + TS_PACKET_SIZE];
         let pid = ts_pid(pkt);
-        if pes_pids.contains(&pid) && (pkt[1] & 0x40) != 0 {
+        if pes_pid_lookup[usize::from(pid)] && (pkt[1] & 0x40) != 0 {
             let payload = ts_payload(pkt);
             if let Some(pts) = extract_pts_from_pes(payload) {
                 if first_match {
@@ -1653,7 +2050,10 @@ mod tests {
 
     #[test]
     fn parses_adts_header_channels_and_bitrate() {
-        let data = [0xFF, 0xF1, 0x50, 0x80, 0x10, 0x1F, 0xFC];
+        let mut data = Vec::new();
+        for _ in 0..128 {
+            data.extend_from_slice(&[0xFF, 0xF1, 0x50, 0x80, 0x00, 0xFF, 0xFC]);
+        }
         let header = find_adts_header(&data).unwrap();
         assert_eq!(header.channels, 2);
         assert!(header.bit_rate_bps.is_some());
@@ -1673,7 +2073,9 @@ mod tests {
 
     #[test]
     fn parses_mpeg_audio_header() {
-        let data = [0xFF, 0xFD, 0x84, 0x80];
+        let mut data = vec![0_u8; 388];
+        data[..4].copy_from_slice(&[0xFF, 0xFD, 0x84, 0x80]);
+        data[384..388].copy_from_slice(&[0xFF, 0xFD, 0x84, 0x80]);
         let header = find_mpeg_audio_header(&data).unwrap();
         assert_eq!(header.channels, 2);
         assert_eq!(header.bit_rate_bps, Some(128_000));

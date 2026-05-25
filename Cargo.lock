@@ -5984,7 +5984,6 @@ name = "scryer-launcher"
 version = "0.15.6"
 dependencies = [
  "libc",
- "scryer-runtime-info",
 ]
 
 [[package]]
@@ -5992,6 +5991,7 @@ name = "scryer-mediainfo"
 version = "0.15.6"
 dependencies = [
  "bytes",
+ "criterion",
  "isolang",
  "matroska-demuxer",
  "mp4parse",

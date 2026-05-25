@@ -530,7 +530,7 @@ impl AppUseCase {
                             "failed to identify discoverable passkey authentication: {error}"
                         ))
                     })?;
-                let credential_id = Self::encode_credential_id(credential_id.as_ref());
+                let credential_id = Self::encode_credential_id(credential_id);
                 let user = self
                     .load_password_backed_user(&user_uuid.to_string())
                     .await?;

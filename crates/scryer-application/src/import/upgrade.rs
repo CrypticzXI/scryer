@@ -130,7 +130,7 @@ pub(crate) async fn execute_upgrade(
         resolution: stored_quality_label
             .map(str::to_string)
             .or_else(|| prepared.parsed.quality.clone()),
-        video_codec_parsed: prepared.parsed.video_codec.clone(),
+        video_codec_parsed: prepared.parsed.video_codec,
         audio_codec_parsed: prepared.parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: prepared.parsed.audio_channels.clone(),
         original_file_path: Some(source_path_string),

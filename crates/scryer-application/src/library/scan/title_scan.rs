@@ -89,16 +89,16 @@ fn fill_missing_title_scan_release_metadata(
         target.quality = fallback.quality.clone();
     }
     if target.source.is_none() {
-        target.source = fallback.source.clone();
+        target.source = fallback.source;
     }
     if target.video_codec.is_none() {
-        target.video_codec = fallback.video_codec.clone();
+        target.video_codec = fallback.video_codec;
     }
     if target.video_encoding.is_none() {
         target.video_encoding = fallback.video_encoding.clone();
     }
     if target.audio.is_none() {
-        target.audio = fallback.audio.clone();
+        target.audio = fallback.audio;
     }
     if target.audio_channels.is_none() {
         target.audio_channels = fallback.audio_channels.clone();
@@ -107,7 +107,7 @@ fn fill_missing_title_scan_release_metadata(
         target.release_group = fallback.release_group.clone();
     }
     if target.streaming_service.is_none() {
-        target.streaming_service = fallback.streaming_service.clone();
+        target.streaming_service = fallback.streaming_service;
     }
     if target.edition.is_none() {
         target.edition = fallback.edition.clone();

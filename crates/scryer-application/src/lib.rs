@@ -27,6 +27,7 @@ mod library_scan_titles;
 #[path = "library/scan/unmatched.rs"]
 mod library_scan_unmatched;
 mod media;
+mod media_requests;
 mod notifications;
 mod null_repositories;
 pub mod persisted_records;
@@ -113,9 +114,10 @@ use scryer_domain::{
     CompletedDownload, DomainEvent, DomainEventFilter, DomainEventType, DownloadClientConfig,
     DownloadQueueItem, DownloadQueueState, Episode, ExternalId, HistoryEvent, Id, ImportFileResult,
     ImportRecord, ImportResult, ImportStatus, IndexerConfig, Library, LibraryGrant, MediaFacet,
-    NewDomainEvent, NewDownloadClientConfig, NewIndexerConfig, NewTitle, PluginCatalogSource,
-    PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput, RuleSet,
-    SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord, User,
+    MediaRequest, NewDomainEvent, NewDownloadClientConfig, NewIndexerConfig, NewTitle,
+    PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput,
+    RuleSet, SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord,
+    User,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -210,6 +212,9 @@ pub use media::language::{
     normalize_detected_audio_language_code, normalize_detected_audio_languages,
     normalize_detected_subtitle_language_code, normalize_detected_subtitle_languages,
 };
+pub use media_requests::{
+    ListMediaRequestsInput, SubmitMediaRequestInput, SubmitMediaRequestOutcome,
+};
 pub use plugins::plugins::{
     ManualPluginPreview, PluginCatalogStatus, RegistryPlugin, RulePackRegistryEntry,
     RulePackTemplate,
@@ -222,6 +227,9 @@ pub use security::backup_bundle::{
     BackupTableCatalogEntry, BackupTableClassification, EXPORT_BATCH_SIZE,
     PreparedBackupBundleDirectory, backup_table_part_filename, inspect_backup_bundle,
     prepare_backup_restore_payload,
+};
+pub use security::external_accounts::{
+    AuthProviderConnection, AuthProviderSettings, UpdateAuthProviderSettings,
 };
 pub use settings::settings::{
     AcquisitionSettings, AutoBackupSettings, DownloadClientRoutingSettingsEntry,
@@ -247,11 +255,10 @@ pub use app_usecase_integration::publish_download_queue_snapshot_events;
 #[cfg(unix)]
 pub(crate) use helpers::statvfs_path;
 pub(crate) use helpers::{
-    INDEXER_PROVIDER_NZBGEEK, INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES,
-    await_cancellable, await_cancellable_app_result, normalize_release_attempt_hint,
-    normalize_release_attempt_title, normalize_release_password,
-    normalize_release_selection_signature, normalize_show_text_opt, normalize_tags,
-    parsed_episode_lookup_season, sanitize_ids, sha256_hex, to_hex,
+    INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES, await_cancellable,
+    await_cancellable_app_result, normalize_release_attempt_hint, normalize_release_attempt_title,
+    normalize_release_password, normalize_release_selection_signature, normalize_show_text_opt,
+    normalize_tags, parsed_episode_lookup_season, sanitize_ids, sha256_hex, to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread};
 pub use jobs::definitions::{
@@ -279,23 +286,25 @@ pub use null_repositories::{
     NullImportArtifactRepository, NullImportRepository, NullIndexerStatsTracker,
     NullJobRunRepository, NullLibraryProbeRepository, NullLibraryRepository,
     NullLibraryScanUnmatchedItemRepository, NullLogicalBackupExporter, NullMediaFileRepository,
-    NullNotificationChannelRepository, NullNotificationSubscriptionRepository,
-    NullPendingReleaseRepository, NullPluginDescriptorLoader, NullPluginHttpTrustConfigRuntime,
-    NullPluginInstallationRepository, NullPostProcessingScriptRepository, NullRuleSetRepository,
-    NullSettingsRepository, NullStagedNzbStore, NullSubtitleDownloadRepository,
-    NullSystemInfoProvider, NullTitleImageProcessor, NullTitleImageRepository,
-    NullWantedItemRepository, NullWorkflowOperationRepository,
+    NullMediaRequestRepository, NullNotificationChannelRepository,
+    NullNotificationSubscriptionRepository, NullPendingReleaseRepository,
+    NullPluginDescriptorLoader, NullPluginHttpTrustConfigRuntime, NullPluginInstallationRepository,
+    NullPostProcessingScriptRepository, NullRuleSetRepository, NullSettingsRepository,
+    NullStagedNzbStore, NullSubtitleDownloadRepository, NullSystemInfoProvider,
+    NullTitleImageProcessor, NullTitleImageRepository, NullWantedItemRepository,
+    NullWorkflowOperationRepository,
 };
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
     DownloadClientPluginProvider, DownloadQueueCommandRepository, DownloadSubmissionRepository,
-    ExternalImportMonitorSnapshotRepository, ExternalPluginWasm, FileImporter,
-    HousekeepingRepository, ImportArtifactRepository, ImportRepository,
+    ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository, ExternalPluginWasm,
+    FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportRepository,
     IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
     IndexerPluginProvider, IndexerStatsTracker, JobRunRepository, LibraryProbeRepository,
     LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
-    MediaFileRepository, NOTIFICATION_REQUEST_SCHEMA_VERSION, NotificationActorPayload,
+    MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
+    NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest, NotificationActorPayload,
     NotificationAppPayload, NotificationApplicationUpdatePayload, NotificationChannelRepository,
     NotificationClient, NotificationDownloadPayload, NotificationEpisodePayload,
     NotificationExternalIdsPayload, NotificationFilePayload, NotificationHealthPayload,
@@ -308,8 +317,9 @@ pub use ports::{
     RuleSetRepository, RuntimePluginLoad, SettingsRepository, ShowRepository, StagedNzbStore,
     SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
     SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, UserRepository, WantedItemRepository,
-    WebauthnRepository, WorkflowOperationInfo, WorkflowOperationRepository,
+    TitleImageRepository, TitleRepository, UserExternalAccountRepository, UserRepository,
+    VerifiedExternalIdentity, WantedItemRepository, WebauthnRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
@@ -339,11 +349,14 @@ pub use services::{
 pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
     ANIME_MONITOR_SPECIALS_KEY, ANIME_PATH_KEY, ANIME_RECAP_POLICY_KEY, ANIME_ROOT_FOLDERS_KEY,
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
-    AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, DEFAULT_ANIME_LIBRARY_PATH,
-    DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL, DEFAULT_FILLER_POLICY, DEFAULT_FOLDER_TEMPLATE_ANIME,
-    DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DEFAULT_MOVIE_LIBRARY_PATH,
-    DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY, DEFAULT_RENAME_MISSING_METADATA_POLICY,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTH_ALLOWED_JELLYFIN_CONNECTION_IDS_KEY,
+    AUTH_ALLOWED_PLEX_CONNECTION_IDS_KEY, AUTH_ALLOWED_PROVIDERS_KEY,
+    AUTH_JELLYFIN_CONNECTIONS_KEY, AUTH_PLEX_CONNECTIONS_KEY, AUTH_PROVIDER_LINKING_ENABLED_KEY,
+    AUTH_PROVIDER_LOGIN_ENABLED_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_ENABLED_KEY,
+    AUTO_BACKUP_KEY_KEY, DEFAULT_ANIME_LIBRARY_PATH, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL,
+    DEFAULT_FILLER_POLICY, DEFAULT_FOLDER_TEMPLATE_ANIME, DEFAULT_FOLDER_TEMPLATE_MOVIE,
+    DEFAULT_FOLDER_TEMPLATE_SERIES, DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY,
+    DEFAULT_RENAME_COLLISION_POLICY, DEFAULT_RENAME_MISSING_METADATA_POLICY,
     DEFAULT_RENAME_TEMPLATE_ANIME, DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES,
     DEFAULT_SERIES_LIBRARY_PATH, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
     DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,

@@ -225,7 +225,13 @@ fn legacy_sdk_constraint(version: &str) -> String {
     let Some(version) = parsed else {
         return ">=0.0.0".to_string();
     };
-    format!(">={}.0.0, <{}.0.0", version.major, version.major + 1)
+    let upper_major = if version.major == 1 {
+        // SDK 2 keeps the SDK-v1 guest ABI loadable; SDK 3 is the next hard boundary.
+        3
+    } else {
+        version.major + 1
+    };
+    format!(">={}.0.0, <{}.0.0", version.major, upper_major)
 }
 
 fn sdk_minor_line_constraint(version: &str) -> Option<String> {
@@ -2310,11 +2316,11 @@ mod tests {
     fn effective_host_sdk_constraint_widens_legacy_minor_line() {
         assert_eq!(
             effective_host_sdk_constraint(Some("1.5.0"), ">=1.5.0, <1.6.0"),
-            ">=1.0.0, <2.0.0"
+            ">=1.0.0, <3.0.0"
         );
         assert_eq!(
             effective_host_sdk_constraint(None, ">=1.5.0, <1.6.0"),
-            ">=1.0.0, <2.0.0"
+            ">=1.0.0, <3.0.0"
         );
     }
 

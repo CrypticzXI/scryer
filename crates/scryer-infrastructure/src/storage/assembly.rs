@@ -5,14 +5,16 @@ use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
     DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
-    LibraryRepository, LogicalBackupExporter, PluginInstallationRepository,
+    LibraryRepository, LogicalBackupExporter, MediaRequestRepository, PluginInstallationRepository,
     PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
     SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, UserRepository, WebauthnRepository,
+    TitleImageRepository, TitleRepository, UserExternalAccountRepository, UserRepository,
+    WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
 use crate::HttpTitleImageProcessor;
+use crate::external_identity::HttpExternalIdentityVerifier;
 use crate::postgres::{
     PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
     restore_prepared_backup_directory_into_postgres_pool,
@@ -23,11 +25,11 @@ use crate::{
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
     IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
-    MetadataGatewayClient, MigrationMode, NotificationStore, PendingReleaseStore, PluginStore,
-    PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore,
-    ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices,
-    SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore, TitleStore, WantedStore,
-    WebauthnStore, WorkflowOperationStore,
+    MediaRequestStore, MetadataGatewayClient, MigrationMode, NotificationStore,
+    PendingReleaseStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore,
+    RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter,
+    SqliteServices, SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore,
+    TitleStore, WantedStore, WebauthnStore, WorkflowOperationStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -604,6 +606,7 @@ enum DatastoreStores {
         title_store: Arc<TitleStore>,
         show_store: Arc<ShowStore>,
         library_store: Arc<LibraryStore>,
+        media_request_store: Arc<MediaRequestStore>,
         user_store: Arc<UserStore>,
         webauthn_store: Arc<WebauthnStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
@@ -639,6 +642,7 @@ enum DatastoreStores {
         title_store: Arc<TitleStore>,
         show_store: Arc<ShowStore>,
         library_store: Arc<LibraryStore>,
+        media_request_store: Arc<MediaRequestStore>,
         user_store: Arc<UserStore>,
         webauthn_store: Arc<WebauthnStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
@@ -686,6 +690,7 @@ impl DatastoreAssembly {
         let title_store = Arc::new(TitleStore::new(datastore.clone()));
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
+        let media_request_store = Arc::new(MediaRequestStore::new(datastore.clone()));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
         let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
         let indexer_config_store = Arc::new(IndexerConfigStore::new(
@@ -742,6 +747,7 @@ impl DatastoreAssembly {
             title_store,
             show_store,
             library_store,
+            media_request_store,
             user_store,
             webauthn_store,
             indexer_config_store,
@@ -784,6 +790,7 @@ impl DatastoreAssembly {
         let title_store = Arc::new(TitleStore::new(datastore.clone()));
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
+        let media_request_store = Arc::new(MediaRequestStore::new(datastore.clone()));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
         let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
         let indexer_config_store = Arc::new(IndexerConfigStore::new(
@@ -838,6 +845,7 @@ impl DatastoreAssembly {
             title_store,
             show_store,
             library_store,
+            media_request_store,
             user_store,
             webauthn_store,
             indexer_config_store,
@@ -1090,6 +1098,7 @@ impl DatastoreAssembly {
                 title_store,
                 show_store,
                 library_store,
+                media_request_store,
                 user_store,
                 webauthn_store,
                 release_store,
@@ -1119,8 +1128,10 @@ impl DatastoreAssembly {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = show_store.clone();
                 let users: Arc<dyn UserRepository> = user_store.clone();
+                let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = library_store.clone();
+                let media_requests: Arc<dyn MediaRequestRepository> = media_request_store.clone();
 
                 AppServices::builder(
                     titles,
@@ -1136,6 +1147,11 @@ impl DatastoreAssembly {
                     self.backup_dir(),
                 )
                 .with_libraries(libraries)
+                .with_media_requests(media_requests)
+                .with_external_account_store(external_accounts)
+                .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new(
+                    self.settings(),
+                )))
                 .with_webauthn_store(webauthn)
                 .with_media_files(media_file_store.clone())
                 .with_wanted_items(wanted_store.clone())
@@ -1167,6 +1183,7 @@ impl DatastoreAssembly {
                 title_store,
                 show_store,
                 library_store,
+                media_request_store,
                 user_store,
                 webauthn_store,
                 rule_set_store,
@@ -1196,8 +1213,10 @@ impl DatastoreAssembly {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = show_store.clone();
                 let users: Arc<dyn UserRepository> = user_store.clone();
+                let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = library_store.clone();
+                let media_requests: Arc<dyn MediaRequestRepository> = media_request_store.clone();
 
                 AppServices::builder(
                     titles,
@@ -1213,6 +1232,11 @@ impl DatastoreAssembly {
                     self.backup_dir(),
                 )
                 .with_libraries(libraries)
+                .with_media_requests(media_requests)
+                .with_external_account_store(external_accounts)
+                .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new(
+                    self.settings(),
+                )))
                 .with_webauthn_store(webauthn)
                 .with_media_files(media_file_store.clone())
                 .with_wanted_items(wanted_store.clone())

@@ -16,6 +16,24 @@ import { Button } from "@/components/ui/button";
 import { boxedActionButtonBaseClass, boxedActionButtonToneClass } from "@/lib/utils/action-button-styles";
 import { selectorId } from "@/lib/utils/dom-ids";
 
+function fullyQualifiedHttpUrl(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if ((url.protocol === "http:" || url.protocol === "https:") && url.hostname.trim()) {
+      return url.toString();
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 export function EpisodeDetailsPanel({
   episode,
   mediaFiles,
@@ -36,6 +54,8 @@ export function EpisodeDetailsPanel({
     mediaFileId: string;
     filePath: string;
   } | null>(null);
+  const episodeImageUrl = React.useMemo(() => fullyQualifiedHttpUrl(episode.imageUrl), [episode.imageUrl]);
+  const episodeImageAlt = episode.title ?? episode.episodeLabel ?? "";
   const subtitleDownloadsByMediaFile = subtitleDownloads.reduce<Record<string, ExternalSubtitleRecord[]>>(
     (grouped, download) => {
       (grouped[download.mediaFileId] ??= []).push(download);
@@ -45,6 +65,15 @@ export function EpisodeDetailsPanel({
   );
   return (
     <div id={selectorId("series-overview-episode-details", episode.id)} className="space-y-3">
+      {episodeImageUrl ? (
+        <img
+          src={episodeImageUrl}
+          alt={episodeImageAlt}
+          loading="lazy"
+          decoding="async"
+          className="h-12 w-auto rounded border border-border/70 bg-muted [image-rendering:smooth]"
+        />
+      ) : null}
       {episode.overview ? (
         <div>
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t("episode.overview")}</p>

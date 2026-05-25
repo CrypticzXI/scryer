@@ -68,4 +68,5 @@ export type MetadataEpisode = {
   aired: string;
   runtimeMinutes: number;
   isFiller: boolean;
+  imageUrl: string;
 };

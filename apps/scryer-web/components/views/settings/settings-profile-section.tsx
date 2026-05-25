@@ -4,7 +4,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
-import type { PasskeySummary } from "@/lib/types/settings";
+import type { LinkedAccount, PasskeySummary } from "@/lib/types/settings";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
@@ -19,11 +19,15 @@ type Props = {
   onChangePassword: () => void;
   showPasskeys: boolean;
   passkeys: PasskeySummary[];
+  linkedAccounts: LinkedAccount[];
   loadingPasskeys: boolean;
+  loadingLinkedAccounts: boolean;
   addingPasskey: boolean;
   deletingPasskeyId: string | null;
+  unlinkingAccountId: string | null;
   onAddPasskey: () => void;
   onDeletePasskey: (id: string) => void;
+  onUnlinkExternalAccount: (id: string) => void;
 };
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -39,6 +43,17 @@ function formatTimestamp(value: string | null | undefined): string {
   return parsed.toLocaleString();
 }
 
+function providerLabel(provider: LinkedAccount["provider"]): string {
+  switch (provider) {
+    case "plex":
+      return "Plex";
+    case "jellyfin":
+      return "Jellyfin";
+    default:
+      return provider;
+  }
+}
+
 export function SettingsProfileSection({
   username,
   currentPassword,
@@ -51,11 +66,15 @@ export function SettingsProfileSection({
   onChangePassword,
   showPasskeys,
   passkeys,
+  linkedAccounts,
   loadingPasskeys,
+  loadingLinkedAccounts,
   addingPasskey,
   deletingPasskeyId,
+  unlinkingAccountId,
   onAddPasskey,
   onDeletePasskey,
+  onUnlinkExternalAccount,
 }: Props) {
   const t = useTranslate();
   const passwordMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
@@ -188,6 +207,58 @@ export function SettingsProfileSection({
           </div>
         </>
       ) : null}
+
+      <Separator />
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-base font-medium">{t("profile.linkedAccounts")}</h3>
+          <p className="text-sm text-muted-foreground">
+            {t("profile.linkedAccountsDescription")}
+          </p>
+        </div>
+
+        {loadingLinkedAccounts ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{t("label.loading")}</span>
+          </div>
+        ) : linkedAccounts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("profile.linkedAccountsEmpty")}</p>
+        ) : (
+          <div className="space-y-3">
+            {linkedAccounts.map((account) => (
+              <div
+                key={account.id}
+                className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
+              >
+                <div className="space-y-1">
+                  <div className="font-medium text-foreground">
+                    {providerLabel(account.provider)} · {account.displayName || account.username}
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    {t("profile.linkedAccountConnection")}: {account.connectionId}
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    {t("profile.linkedAccountStatus")}: {account.status}
+                  </div>
+                </div>
+                <Button
+                  id={selectorId(`settings-profile-unlink-account-${account.id}`)}
+                  variant="outline"
+                  onClick={() => onUnlinkExternalAccount(account.id)}
+                  disabled={unlinkingAccountId === account.id}
+                  className="w-fit"
+                >
+                  {unlinkingAccountId === account.id ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  {t("profile.unlinkAccount")}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

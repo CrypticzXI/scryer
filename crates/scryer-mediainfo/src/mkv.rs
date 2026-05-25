@@ -9,10 +9,12 @@ use crate::codec::{
     hevc_nal_length_size, merge_audio_profile, normalize_codec_name, normalize_pcm_codec_name,
     normalize_vfw_codec_name, scan_hevc_frame_for_hdr10plus, scan_itu_t35_payload_for_hdr10plus,
 };
+use crate::scan;
 use crate::ts::{find_ac3_header, find_dts_header, find_eac3_header};
 use crate::types::{RawContainer, RawTrack, TrackKind};
 
 const MKV_FPS_PROBE_MAX_SCAN_BYTES: u64 = 32 * 1024 * 1024;
+const MKV_DEEP_PROBE_CANDIDATE_READ_BYTES: usize = 64 * 1024;
 const MKV_FPS_PROBE_MAX_TIMESTAMPS: usize = 12;
 const MKV_FPS_PROBE_MAX_BLOCKS: usize = 24;
 const MKV_RICH_HDR10PLUS_SCAN_MAX_BYTES: u64 = 512 * 1024;
@@ -103,15 +105,25 @@ pub(crate) fn parse_mkv(
     path: &Path,
     profile: AnalysisProfile,
 ) -> Result<RawContainer, MediaInfoError> {
-    require_ebml_header_signature(path)?;
-    let header = parse_mkv_header(path)?;
-    let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let file = open_buffered_file(path)?;
+    let mut scanner = MkvRawScanner::new_with_file_len(file, u64::MAX)?;
+    let header = parse_mkv_header(&mut scanner)?;
     let format_name = header.format_name;
     let duration_seconds = header.duration_seconds;
     let num_chapters = header
         .num_chapters
-        .or_else(|| scan_mkv_chapter_count_ffprobe_style(path))
+        .or_else(|| {
+            (!header.chapters_known_absent)
+                .then(|| {
+                    scanner
+                        .scan_prefix_for_chapter_count(MKV_CHAPTER_SCAN_MAX_BYTES as u64)
+                        .ok()
+                        .flatten()
+                })
+                .flatten()
+        })
         .or(Some(0));
+    let file_size_hint = header.file_size_hint.unwrap_or(0);
     let timestamp_scale_ns = header.timestamp_scale_ns;
     let mut tracks = Vec::with_capacity(header.tracks.len());
     let mut primary_video_track_num = None;
@@ -137,76 +149,105 @@ pub(crate) fn parse_mkv(
 
     // Use a fast overall bitrate estimate for the primary video stream instead
     // of walking large frame ranges over networked filesystems.
-    if file_size > 0
+    if file_size_hint > 0
         && let Some(duration_seconds) = duration_seconds
         && duration_seconds > 0.0
         && let Some(video_idx) = primary_video_index
     {
-        tracks[video_idx].bit_rate_bps = Some((file_size as f64 * 8.0 / duration_seconds) as i64);
+        tracks[video_idx].bit_rate_bps =
+            Some((file_size_hint as f64 * 8.0 / duration_seconds) as i64);
     }
+
+    let mut frame_rate_probe = None;
+    let mut hdr10plus_probe = None;
 
     if let Some(video_idx) = primary_video_index {
         if let Some(dovi_config) = primary_video_signals.dovi_config.clone() {
             tracks[video_idx].dovi_config = Some(dovi_config);
         }
 
-        if !is_plausible_frame_rate(tracks[video_idx].frame_rate_fps)
-            && let Some(track_num) = primary_video_track_num
-            && let Some(fps) = probe_mkv_frame_rate(path, track_num, timestamp_scale_ns)
+        if profile != AnalysisProfile::Fast {
+            if !is_plausible_frame_rate(tracks[video_idx].frame_rate_fps)
+                && let Some(track_num) = primary_video_track_num
+            {
+                frame_rate_probe = Some(MkvFrameRateProbeRequest {
+                    target_track_num: track_num,
+                    timestamp_scale_ns,
+                });
+            }
+
+            if let Some(track_num) = primary_video_track_num {
+                let nal_length_size = tracks[video_idx]
+                    .codec_private
+                    .as_deref()
+                    .map(hevc_nal_length_size)
+                    .unwrap_or(4);
+
+                if profile == AnalysisProfile::FfprobeParity
+                    && should_probe_sonarr_hdr10plus(&tracks[video_idx])
+                {
+                    hdr10plus_probe = Some(MkvHdr10PlusProbeRequest::new(
+                        track_num,
+                        nal_length_size,
+                        primary_video_signals.has_itu_t_t35_mapping,
+                        Hdr10PlusProbeLimits::sonarr(),
+                    ));
+                } else if profile == AnalysisProfile::DefaultRich
+                    && should_confirm_mkv_hdr10plus(&tracks[video_idx], &primary_video_signals)
+                {
+                    hdr10plus_probe = Some(MkvHdr10PlusProbeRequest::new(
+                        track_num,
+                        nal_length_size,
+                        primary_video_signals.has_itu_t_t35_mapping,
+                        Hdr10PlusProbeLimits::rich(),
+                    ));
+                }
+            }
+        }
+    }
+
+    let audio_probe_requests = if profile == AnalysisProfile::Fast {
+        Vec::new()
+    } else {
+        audio_track_refs
+            .into_iter()
+            .filter_map(|(track_num, track_idx, header_strip_prefix)| {
+                let codec_name = tracks[track_idx].codec_name.clone()?;
+                matches!(codec_name.as_str(), "ac3" | "eac3" | "truehd" | "dts").then_some(
+                    MkvAudioProbeRequest {
+                        target_track_num: track_num,
+                        track_idx,
+                        codec_name,
+                        header_strip_prefix,
+                    },
+                )
+            })
+            .collect()
+    };
+
+    let deep_probe = probe_mkv_deep_metadata(
+        &mut scanner,
+        frame_rate_probe,
+        hdr10plus_probe,
+        audio_probe_requests,
+    );
+
+    if let Some(video_idx) = primary_video_index {
+        if let Some(fps) = deep_probe.frame_rate_fps
             && should_replace_frame_rate(tracks[video_idx].frame_rate_fps, fps)
         {
             tracks[video_idx].frame_rate_fps = Some(fps);
         }
-
-        if let Some(track_num) = primary_video_track_num {
-            let nal_length_size = tracks[video_idx]
-                .codec_private
-                .as_deref()
-                .map(hevc_nal_length_size)
-                .unwrap_or(4);
-
-            if profile == AnalysisProfile::FfprobeParity
-                && should_probe_sonarr_hdr10plus(&tracks[video_idx])
-            {
-                tracks[video_idx].has_hdr10plus = probe_mkv_hdr10plus_sonarr_style(
-                    path,
-                    track_num,
-                    nal_length_size,
-                    primary_video_signals.has_itu_t_t35_mapping,
-                );
-            } else if profile == AnalysisProfile::DefaultRich
-                && should_confirm_mkv_hdr10plus(&tracks[video_idx], &primary_video_signals)
-            {
-                tracks[video_idx].has_hdr10plus = confirm_mkv_hdr10plus(
-                    path,
-                    track_num,
-                    nal_length_size,
-                    primary_video_signals.has_itu_t_t35_mapping,
-                );
-            }
+        if let Some(has_hdr10plus) = deep_probe.has_hdr10plus {
+            tracks[video_idx].has_hdr10plus = has_hdr10plus;
         }
-
         if tracks[video_idx].frame_rate_fps.is_none() {
             tracks[video_idx].frame_rate_fps =
                 fallback_frame_rate_from_timestamp_scale(timestamp_scale_ns);
         }
     }
 
-    for (track_num, track_idx, header_strip_prefix) in audio_track_refs {
-        let codec_name = tracks[track_idx].codec_name.clone();
-        if !matches!(
-            codec_name.as_deref(),
-            Some("ac3" | "eac3" | "truehd" | "dts")
-        ) {
-            continue;
-        }
-
-        let scanned = probe_mkv_audio_metadata(
-            path,
-            track_num,
-            codec_name.as_deref().unwrap_or_default(),
-            header_strip_prefix.as_deref(),
-        );
+    for (track_idx, scanned) in deep_probe.audio {
         merge_audio_profile(&mut tracks[track_idx].audio_profile, scanned.profile);
         if let Some(channels) = scanned.channels {
             tracks[track_idx].channels = Some(
@@ -230,24 +271,6 @@ pub(crate) fn parse_mkv(
     })
 }
 
-fn require_ebml_header_signature(path: &Path) -> Result<(), MediaInfoError> {
-    const EBML_HEADER: [u8; 4] = [0x1A, 0x45, 0xDF, 0xA3];
-
-    let mut file = open_buffered_file(path)?;
-    let mut header = [0_u8; 4];
-    let bytes_read = file
-        .read(&mut header)
-        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
-
-    if bytes_read < EBML_HEADER.len() || header != EBML_HEADER {
-        return Err(MediaInfoError::Parse(
-            "matroska ebml header parsing failed".into(),
-        ));
-    }
-
-    Ok(())
-}
-
 fn open_buffered_file(path: &Path) -> Result<BufReader<std::fs::File>, MediaInfoError> {
     let file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
     Ok(BufReader::new(file))
@@ -259,6 +282,8 @@ struct ParsedMkvHeader {
     timestamp_scale_ns: f64,
     duration_seconds: Option<f64>,
     num_chapters: Option<i32>,
+    chapters_known_absent: bool,
+    file_size_hint: Option<u64>,
     tracks: Vec<ParsedMkvTrack>,
 }
 
@@ -271,6 +296,7 @@ struct ParsedMkvTrack {
 
 #[derive(Debug, Default)]
 struct MkvSeekHeadOffsets {
+    seen: bool,
     info: Option<u64>,
     tracks: Option<u64>,
     chapters: Option<u64>,
@@ -291,13 +317,15 @@ impl Default for ParsedMkvInfo {
     }
 }
 
-fn parse_mkv_header(path: &Path) -> Result<ParsedMkvHeader, MediaInfoError> {
-    let file = open_buffered_file(path)?;
-    let mut scanner = MkvRawScanner::new(file)?;
-
-    let format_name = parse_mkv_doc_type(&mut scanner)?;
+fn parse_mkv_header<R: Read + Seek>(
+    scanner: &mut MkvRawScanner<R>,
+) -> Result<ParsedMkvHeader, MediaInfoError> {
+    let format_name = parse_mkv_doc_type(scanner)?;
     let segment = scanner.read_next_segment_header()?;
     let segment_data_offset = segment.data_offset;
+    let file_size_hint = segment
+        .size
+        .and_then(|size| segment_data_offset.checked_add(size));
     let segment_end = segment.end(scanner.file_len, scanner.file_len);
 
     let mut info = None;
@@ -379,6 +407,8 @@ fn parse_mkv_header(path: &Path) -> Result<ParsedMkvHeader, MediaInfoError> {
         timestamp_scale_ns: info.timestamp_scale_ns,
         duration_seconds: info.duration_seconds,
         num_chapters,
+        chapters_known_absent: offsets.seen && offsets.chapters.is_none() && num_chapters.is_none(),
+        file_size_hint,
         tracks,
     })
 }
@@ -386,9 +416,14 @@ fn parse_mkv_header(path: &Path) -> Result<ParsedMkvHeader, MediaInfoError> {
 fn parse_mkv_doc_type<R: Read + Seek>(
     scanner: &mut MkvRawScanner<R>,
 ) -> Result<String, MediaInfoError> {
-    let header = scanner
-        .read_element_header()?
-        .ok_or_else(|| MediaInfoError::Parse("missing ebml header".into()))?;
+    let header = match scanner.read_element_header() {
+        Ok(Some(header)) => header,
+        Ok(None) => return Err(MediaInfoError::Parse("missing ebml header".into())),
+        Err(MediaInfoError::Parse(_)) => {
+            return Err(MediaInfoError::Parse("missing ebml header".into()));
+        }
+        Err(error) => return Err(error),
+    };
     if header.id != EBML_ID_EBML {
         return Err(MediaInfoError::Parse("missing ebml header".into()));
     }
@@ -408,7 +443,10 @@ fn parse_mkv_doc_type<R: Read + Seek>(
 
 fn parse_seek_head_offsets(payload: &[u8], segment_data_offset: u64) -> MkvSeekHeadOffsets {
     let mut current = payload;
-    let mut offsets = MkvSeekHeadOffsets::default();
+    let mut offsets = MkvSeekHeadOffsets {
+        seen: true,
+        ..Default::default()
+    };
     while !current.is_empty() {
         let Some((id, child_payload, consumed)) = next_ebml_element(current) else {
             break;
@@ -434,6 +472,7 @@ fn parse_seek_head_offsets(payload: &[u8], segment_data_offset: u64) -> MkvSeekH
 
 impl MkvSeekHeadOffsets {
     fn merge(&mut self, other: Self) {
+        self.seen |= other.seen;
         if self.info.is_none() {
             self.info = other.info;
         }
@@ -717,11 +756,7 @@ fn normalize_explicit_mkv_language_tag(language: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-fn scan_mkv_chapter_count_ffprobe_style(path: &Path) -> Option<i32> {
-    let buf = read_file_prefix(path, MKV_CHAPTER_SCAN_MAX_BYTES)?;
-    count_mkv_chapters_ffprobe_style_from_bytes(&buf)
-}
-
+#[cfg(test)]
 fn count_mkv_chapters_ffprobe_style_from_bytes(data: &[u8]) -> Option<i32> {
     let root = find_ebml_element_payload(data, EBML_ID_SEGMENT).unwrap_or(data);
     let chapters_payload = find_first_direct_ebml_child(root, EBML_ID_CHAPTERS)?;
@@ -732,21 +767,7 @@ fn count_mkv_chapters_ffprobe_style_from_bytes(data: &[u8]) -> Option<i32> {
     ))
 }
 
-fn read_file_prefix(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0_u8; max_bytes];
-    let mut total = 0;
-    while total < buf.len() {
-        match file.read(&mut buf[total..]) {
-            Ok(0) => break,
-            Ok(read) => total += read,
-            Err(_) => return None,
-        }
-    }
-    buf.truncate(total);
-    Some(buf)
-}
-
+#[cfg(test)]
 fn find_ebml_element_payload(mut data: &[u8], target_id: u32) -> Option<&[u8]> {
     while !data.is_empty() {
         let (id, payload, consumed) = next_ebml_element(data)?;
@@ -1066,13 +1087,174 @@ struct ScannedAudioMetadata {
     channels: Option<i32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct MkvFrameRateProbeRequest {
+    target_track_num: u64,
+    timestamp_scale_ns: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MkvHdr10PlusProbeRequest {
+    target_track_num: u64,
+    nal_length_size: usize,
+    prefer_block_additional: bool,
+    limits: Hdr10PlusProbeLimits,
+}
+
+impl MkvHdr10PlusProbeRequest {
+    fn new(
+        target_track_num: u64,
+        nal_length_size: usize,
+        prefer_block_additional: bool,
+        limits: Hdr10PlusProbeLimits,
+    ) -> Self {
+        Self {
+            target_track_num,
+            nal_length_size,
+            prefer_block_additional,
+            limits,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MkvAudioProbeRequest {
+    target_track_num: u64,
+    track_idx: usize,
+    codec_name: String,
+    header_strip_prefix: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Default)]
+struct MkvDeepProbeResult {
+    frame_rate_fps: Option<f64>,
+    has_hdr10plus: Option<bool>,
+    audio: Vec<(usize, ScannedAudioMetadata)>,
+}
+
+struct MkvFrameRateProbeTarget {
+    request: MkvFrameRateProbeRequest,
+    state: FrameRateProbeState,
+}
+
+struct MkvHdr10PlusProbeTarget {
+    target_track_num: u64,
+    state: Hdr10PlusProbeState,
+}
+
+struct MkvAudioProbeTarget {
+    target_track_num: u64,
+    track_idx: usize,
+    codec_name: String,
+    header_strip_prefix: Option<Vec<u8>>,
+    state: AudioProfileProbeState,
+}
+
+struct MkvDeepProbePlan {
+    frame_rate: Option<MkvFrameRateProbeTarget>,
+    hdr10plus: Option<MkvHdr10PlusProbeTarget>,
+    audio: Vec<MkvAudioProbeTarget>,
+}
+
+impl MkvDeepProbePlan {
+    fn new(
+        frame_rate: Option<MkvFrameRateProbeRequest>,
+        hdr10plus: Option<MkvHdr10PlusProbeRequest>,
+        audio: Vec<MkvAudioProbeRequest>,
+    ) -> Self {
+        Self {
+            frame_rate: frame_rate.map(|request| MkvFrameRateProbeTarget {
+                request,
+                state: FrameRateProbeState::default(),
+            }),
+            hdr10plus: hdr10plus.map(|request| MkvHdr10PlusProbeTarget {
+                target_track_num: request.target_track_num,
+                state: Hdr10PlusProbeState::new(
+                    request.nal_length_size,
+                    request.prefer_block_additional,
+                    request.limits,
+                ),
+            }),
+            audio: audio
+                .into_iter()
+                .map(|request| MkvAudioProbeTarget {
+                    target_track_num: request.target_track_num,
+                    track_idx: request.track_idx,
+                    codec_name: request.codec_name,
+                    header_strip_prefix: request.header_strip_prefix,
+                    state: AudioProfileProbeState::default(),
+                })
+                .collect(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.frame_rate.is_none() && self.hdr10plus.is_none() && self.audio.is_empty()
+    }
+
+    fn done(&self) -> bool {
+        self.frame_rate
+            .as_ref()
+            .is_none_or(|target| target.state.done())
+            && self
+                .hdr10plus
+                .as_ref()
+                .is_none_or(|target| target.state.done())
+            && self
+                .audio
+                .iter()
+                .all(|target| target.state.done(&target.codec_name))
+    }
+
+    fn max_scan_end(&self, file_len: u64) -> u64 {
+        let mut end = 0_u64;
+        if self.frame_rate.is_some() {
+            end = end.max(MKV_FPS_PROBE_MAX_SCAN_BYTES);
+        }
+        if let Some(target) = self.hdr10plus.as_ref() {
+            end = end.max(target.state.limits.max_file_scan_bytes);
+        }
+        if !self.audio.is_empty() {
+            end = end.max(MKV_AUDIO_PROFILE_MAX_FILE_SCAN_BYTES);
+        }
+        end.min(file_len)
+    }
+
+    fn into_result(self) -> MkvDeepProbeResult {
+        let frame_rate_fps = self.frame_rate.as_ref().and_then(|target| {
+            estimate_frame_rate_from_timestamps(
+                &target.state.timestamps,
+                target.request.timestamp_scale_ns,
+            )
+        });
+        let has_hdr10plus = self.hdr10plus.as_ref().map(|target| target.state.found);
+        let audio = self
+            .audio
+            .into_iter()
+            .filter_map(|target| {
+                let scanned = target.state.finalize(&target.codec_name);
+                (scanned.profile.is_some() || scanned.channels.is_some())
+                    .then_some((target.track_idx, scanned))
+            })
+            .collect();
+
+        MkvDeepProbeResult {
+            frame_rate_fps,
+            has_hdr10plus,
+            audio,
+        }
+    }
+}
+
 struct MkvRawScanner<R> {
     reader: R,
     file_len: u64,
     metadata_payload_bytes: u64,
+    pos: u64,
 }
 
 impl<R: Read + Seek> MkvRawScanner<R> {
+    #[cfg(test)]
     fn new(mut reader: R) -> Result<Self, MediaInfoError> {
         let file_len = reader
             .seek(SeekFrom::End(0))
@@ -1080,10 +1262,15 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         reader
             .seek(SeekFrom::Start(0))
             .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+        Self::new_with_file_len(reader, file_len)
+    }
+
+    fn new_with_file_len(reader: R, file_len: u64) -> Result<Self, MediaInfoError> {
         Ok(Self {
             reader,
             file_len,
             metadata_payload_bytes: 0,
+            pos: 0,
         })
     }
 
@@ -1101,79 +1288,69 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         Err(MediaInfoError::Parse("missing segment header".into()))
     }
 
+    fn run_deep_probe_plan(&mut self, plan: &mut MkvDeepProbePlan) -> Result<(), MediaInfoError> {
+        if plan.is_empty() {
+            return Ok(());
+        }
+        let end = plan.max_scan_end(self.file_len);
+        self.seek_to(0)?;
+        self.scan_root_for_deep_probe(end, plan)
+    }
+
+    fn scan_prefix_for_chapter_count(
+        &mut self,
+        max_bytes: u64,
+    ) -> Result<Option<i32>, MediaInfoError> {
+        let end = self.file_len.min(max_bytes);
+        self.seek_to(0)?;
+        while self.position()? < end {
+            let Some(header) = self.read_deep_probe_candidate_header(end, &[EBML_ID_CHAPTERS])?
+            else {
+                return Ok(None);
+            };
+            let child_end = header.end(end, self.file_len);
+            if header.id == EBML_ID_CHAPTERS
+                && let Some(payload) = self.read_sized_payload(header, child_end)?
+            {
+                return Ok(parse_mkv_chapters_payload(&payload));
+            }
+            self.seek_to(child_end)?;
+        }
+        Ok(None)
+    }
+
+    #[cfg(test)]
     fn probe_frame_rate(
         &mut self,
         target_track_num: u64,
         timestamp_scale_ns: f64,
     ) -> Result<Option<f64>, MediaInfoError> {
-        let mut state = FrameRateProbeState::default();
-        self.scan_root_for_frame_rate(
-            self.file_len.min(MKV_FPS_PROBE_MAX_SCAN_BYTES),
-            target_track_num,
-            &mut state,
-        )?;
-        Ok(estimate_frame_rate_from_timestamps(
-            &state.timestamps,
-            timestamp_scale_ns,
-        ))
+        let mut plan = MkvDeepProbePlan::new(
+            Some(MkvFrameRateProbeRequest {
+                target_track_num,
+                timestamp_scale_ns,
+            }),
+            None,
+            Vec::new(),
+        );
+        self.run_deep_probe_plan(&mut plan)?;
+        Ok(plan.into_result().frame_rate_fps)
     }
 
-    fn confirm_hdr10plus(
-        &mut self,
-        target_track_num: u64,
-        nal_length_size: usize,
-        prefer_block_additional: bool,
-        limits: Hdr10PlusProbeLimits,
-    ) -> Result<bool, MediaInfoError> {
-        let mut state = Hdr10PlusProbeState::new(nal_length_size, prefer_block_additional, limits);
-        self.scan_root_for_hdr10plus(
-            self.file_len.min(limits.max_file_scan_bytes),
-            target_track_num,
-            &mut state,
-        )?;
-        Ok(state.found)
-    }
-
-    fn probe_audio_metadata(
-        &mut self,
-        target_track_num: u64,
-        codec_name: &str,
-        header_strip_prefix: Option<&[u8]>,
-    ) -> Result<Option<ScannedAudioMetadata>, MediaInfoError> {
-        let mut state = AudioProfileProbeState::default();
-        self.scan_root_for_audio_profile(
-            self.file_len.min(MKV_AUDIO_PROFILE_MAX_FILE_SCAN_BYTES),
-            target_track_num,
-            codec_name,
-            header_strip_prefix,
-            &mut state,
-        )?;
-        let scanned = state.finalize(codec_name);
-        if scanned.profile.is_none() && scanned.channels.is_none() {
-            Ok(None)
-        } else {
-            Ok(Some(scanned))
-        }
-    }
-
-    fn scan_root_for_frame_rate(
+    fn scan_root_for_deep_probe(
         &mut self,
         end: u64,
-        target_track_num: u64,
-        state: &mut FrameRateProbeState,
+        plan: &mut MkvDeepProbePlan,
     ) -> Result<(), MediaInfoError> {
-        while !state.done() && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
+        const ROOT_IDS: &[u32] = &[EBML_ID_SEGMENT, EBML_ID_CLUSTER];
+        while !plan.done() && self.position()? < end {
+            let Some(header) = self.read_deep_probe_candidate_header(end, ROOT_IDS)? else {
                 break;
             };
             let child_end = header.end(end, self.file_len);
             match header.id {
-                EBML_ID_SEGMENT => {
-                    self.scan_root_for_frame_rate(child_end, target_track_num, state)?;
-                }
-                EBML_ID_CLUSTER => {
-                    self.scan_cluster_for_frame_rate(child_end, target_track_num, state)?;
-                }
+                EBML_ID_SEGMENT => self.scan_root_for_deep_probe(child_end, plan)?,
+                EBML_ID_CLUSTER => self.scan_cluster_for_deep_probe(child_end, plan)?,
                 _ => {}
             }
             self.seek_to(child_end)?;
@@ -1181,15 +1358,15 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         Ok(())
     }
 
-    fn scan_cluster_for_frame_rate(
+    fn scan_cluster_for_deep_probe(
         &mut self,
         end: u64,
-        target_track_num: u64,
-        state: &mut FrameRateProbeState,
+        plan: &mut MkvDeepProbePlan,
     ) -> Result<(), MediaInfoError> {
+        const CLUSTER_IDS: &[u32] = &[EBML_ID_TIMESTAMP, EBML_ID_SIMPLE_BLOCK, EBML_ID_BLOCK_GROUP];
         let mut cluster_timestamp = 0_u64;
-        while !state.done() && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
+        while !plan.done() && self.position()? < end {
+            let Some(header) = self.read_deep_probe_candidate_header(end, CLUSTER_IDS)? else {
                 break;
             };
             let child_end = header.end(end, self.file_len);
@@ -1205,18 +1382,12 @@ impl<R: Read + Seek> MkvRawScanner<R> {
                     if let Some(block) = self.read_block_header(
                         child_end.saturating_sub(header.data_offset),
                         cluster_timestamp,
-                    )? && block.track_number == target_track_num
-                    {
-                        state.record_timestamp(block.timestamp);
+                    )? {
+                        self.inspect_block_for_deep_probe(&block, plan)?;
                     }
                 }
                 EBML_ID_BLOCK_GROUP => {
-                    self.scan_block_group_for_frame_rate(
-                        child_end,
-                        target_track_num,
-                        cluster_timestamp,
-                        state,
-                    )?;
+                    self.scan_block_group_for_deep_probe(child_end, cluster_timestamp, plan)?;
                 }
                 _ => {}
             }
@@ -1225,203 +1396,16 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         Ok(())
     }
 
-    fn scan_block_group_for_frame_rate(
+    fn scan_block_group_for_deep_probe(
         &mut self,
         end: u64,
-        target_track_num: u64,
         cluster_timestamp: u64,
-        state: &mut FrameRateProbeState,
+        plan: &mut MkvDeepProbePlan,
     ) -> Result<(), MediaInfoError> {
-        while !state.done() && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
-                break;
-            };
-            let child_end = header.end(end, self.file_len);
-            if header.id == EBML_ID_BLOCK
-                && let Some(block) = self.read_block_header(
-                    child_end.saturating_sub(header.data_offset),
-                    cluster_timestamp,
-                )?
-                && block.track_number == target_track_num
-            {
-                state.record_timestamp(block.timestamp);
-            }
-            self.seek_to(child_end)?;
-        }
-        Ok(())
-    }
-
-    fn scan_root_for_hdr10plus(
-        &mut self,
-        end: u64,
-        target_track_num: u64,
-        state: &mut Hdr10PlusProbeState,
-    ) -> Result<(), MediaInfoError> {
-        while !state.done() && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
-                break;
-            };
-            let child_end = header.end(end, self.file_len);
-            match header.id {
-                EBML_ID_SEGMENT => {
-                    self.scan_root_for_hdr10plus(child_end, target_track_num, state)?;
-                }
-                EBML_ID_CLUSTER => {
-                    self.scan_cluster_for_hdr10plus(child_end, target_track_num, state)?;
-                }
-                _ => {}
-            }
-            self.seek_to(child_end)?;
-        }
-        Ok(())
-    }
-
-    fn scan_root_for_audio_profile(
-        &mut self,
-        end: u64,
-        target_track_num: u64,
-        codec_name: &str,
-        header_strip_prefix: Option<&[u8]>,
-        state: &mut AudioProfileProbeState,
-    ) -> Result<(), MediaInfoError> {
-        while !state.done(codec_name) && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
-                break;
-            };
-            let child_end = header.end(end, self.file_len);
-            match header.id {
-                EBML_ID_SEGMENT => {
-                    self.scan_root_for_audio_profile(
-                        child_end,
-                        target_track_num,
-                        codec_name,
-                        header_strip_prefix,
-                        state,
-                    )?;
-                }
-                EBML_ID_CLUSTER => {
-                    self.scan_cluster_for_audio_profile(
-                        child_end,
-                        target_track_num,
-                        codec_name,
-                        header_strip_prefix,
-                        state,
-                    )?;
-                }
-                _ => {}
-            }
-            self.seek_to(child_end)?;
-        }
-        Ok(())
-    }
-
-    fn scan_cluster_for_hdr10plus(
-        &mut self,
-        end: u64,
-        target_track_num: u64,
-        state: &mut Hdr10PlusProbeState,
-    ) -> Result<(), MediaInfoError> {
-        let mut cluster_timestamp = 0_u64;
-        while !state.done() && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
-                break;
-            };
-            let child_end = header.end(end, self.file_len);
-            match header.id {
-                EBML_ID_TIMESTAMP => {
-                    if let Some(timestamp) =
-                        self.read_unsigned_payload(child_end.saturating_sub(header.data_offset))?
-                    {
-                        cluster_timestamp = timestamp;
-                    }
-                }
-                EBML_ID_SIMPLE_BLOCK if !state.prefer_block_additional => {
-                    if let Some(block) = self.read_block_header(
-                        child_end.saturating_sub(header.data_offset),
-                        cluster_timestamp,
-                    )? && block.track_number == target_track_num
-                    {
-                        self.inspect_video_block_for_hdr10plus(&block, state)?;
-                    }
-                }
-                EBML_ID_BLOCK_GROUP => {
-                    self.scan_block_group_for_hdr10plus(
-                        child_end,
-                        target_track_num,
-                        cluster_timestamp,
-                        state,
-                    )?;
-                }
-                _ => {}
-            }
-            self.seek_to(child_end)?;
-        }
-        Ok(())
-    }
-
-    fn scan_cluster_for_audio_profile(
-        &mut self,
-        end: u64,
-        target_track_num: u64,
-        codec_name: &str,
-        header_strip_prefix: Option<&[u8]>,
-        state: &mut AudioProfileProbeState,
-    ) -> Result<(), MediaInfoError> {
-        let mut cluster_timestamp = 0_u64;
-        while !state.done(codec_name) && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
-                break;
-            };
-            let child_end = header.end(end, self.file_len);
-            match header.id {
-                EBML_ID_TIMESTAMP => {
-                    if let Some(timestamp) =
-                        self.read_unsigned_payload(child_end.saturating_sub(header.data_offset))?
-                    {
-                        cluster_timestamp = timestamp;
-                    }
-                }
-                EBML_ID_SIMPLE_BLOCK => {
-                    if let Some(block) = self.read_block_header(
-                        child_end.saturating_sub(header.data_offset),
-                        cluster_timestamp,
-                    )? && block.track_number == target_track_num
-                    {
-                        self.inspect_audio_block_for_profile(
-                            &block,
-                            codec_name,
-                            header_strip_prefix,
-                            state,
-                        )?;
-                    }
-                }
-                EBML_ID_BLOCK_GROUP => {
-                    self.scan_block_group_for_audio_profile(
-                        child_end,
-                        target_track_num,
-                        cluster_timestamp,
-                        codec_name,
-                        header_strip_prefix,
-                        state,
-                    )?;
-                }
-                _ => {}
-            }
-            self.seek_to(child_end)?;
-        }
-        Ok(())
-    }
-
-    fn scan_block_group_for_hdr10plus(
-        &mut self,
-        end: u64,
-        target_track_num: u64,
-        cluster_timestamp: u64,
-        state: &mut Hdr10PlusProbeState,
-    ) -> Result<(), MediaInfoError> {
-        let mut target_block_in_group = false;
-        while !state.done() && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
+        const BLOCK_GROUP_IDS: &[u32] = &[EBML_ID_BLOCK, EBML_ID_BLOCK_ADDITIONS];
+        let mut hdr10plus_target_block_in_group = false;
+        while !plan.done() && self.position()? < end {
+            let Some(header) = self.read_deep_probe_candidate_header(end, BLOCK_GROUP_IDS)? else {
                 break;
             };
             let child_end = header.end(end, self.file_len);
@@ -1430,62 +1414,70 @@ impl<R: Read + Seek> MkvRawScanner<R> {
                     if let Some(block) = self.read_block_header(
                         child_end.saturating_sub(header.data_offset),
                         cluster_timestamp,
-                    )? && block.track_number == target_track_num
-                    {
-                        target_block_in_group = true;
-                        if !state.prefer_block_additional {
-                            self.inspect_video_block_for_hdr10plus(&block, state)?;
+                    )? {
+                        if let Some(target) = plan.hdr10plus.as_ref()
+                            && target.state.prefer_block_additional
+                            && block.track_number == target.target_track_num
+                        {
+                            hdr10plus_target_block_in_group = true;
                         }
+                        self.inspect_block_for_deep_probe(&block, plan)?;
                     }
                 }
-                EBML_ID_BLOCK_ADDITIONS
-                    if state.prefer_block_additional && target_block_in_group =>
-                {
-                    self.scan_block_additions_for_hdr10plus(child_end, state)?;
+                EBML_ID_BLOCK_ADDITIONS if hdr10plus_target_block_in_group => {
+                    if let Some(target) = plan.hdr10plus.as_mut()
+                        && target.state.prefer_block_additional
+                    {
+                        self.scan_block_additions_for_hdr10plus(child_end, &mut target.state)?;
+                    }
                 }
                 _ => {}
             }
             self.seek_to(child_end)?;
         }
-        if state.prefer_block_additional
-            && target_block_in_group
-            && state.inspected_blocks < state.limits.max_video_blocks
+        if hdr10plus_target_block_in_group
+            && let Some(target) = plan.hdr10plus.as_mut()
+            && target.state.prefer_block_additional
+            && target.state.inspected_blocks < target.state.limits.max_video_blocks
         {
-            state.inspected_blocks += 1;
+            target.state.inspected_blocks += 1;
         }
         Ok(())
     }
 
-    fn scan_block_group_for_audio_profile(
+    fn inspect_block_for_deep_probe(
         &mut self,
-        end: u64,
-        target_track_num: u64,
-        cluster_timestamp: u64,
-        codec_name: &str,
-        header_strip_prefix: Option<&[u8]>,
-        state: &mut AudioProfileProbeState,
+        block: &BlockHeaderInfo,
+        plan: &mut MkvDeepProbePlan,
     ) -> Result<(), MediaInfoError> {
-        while !state.done(codec_name) && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
-                break;
-            };
-            let child_end = header.end(end, self.file_len);
-            if header.id == EBML_ID_BLOCK
-                && let Some(block) = self.read_block_header(
-                    child_end.saturating_sub(header.data_offset),
-                    cluster_timestamp,
-                )?
-                && block.track_number == target_track_num
+        if let Some(target) = plan.frame_rate.as_mut()
+            && !target.state.done()
+            && block.track_number == target.request.target_track_num
+        {
+            target.state.record_timestamp(block.timestamp);
+        }
+
+        if let Some(target) = plan.hdr10plus.as_mut()
+            && !target.state.done()
+            && !target.state.prefer_block_additional
+            && block.track_number == target.target_track_num
+        {
+            self.inspect_video_block_for_hdr10plus(block, &mut target.state)?;
+        }
+
+        for target in &mut plan.audio {
+            if !target.state.done(&target.codec_name)
+                && block.track_number == target.target_track_num
             {
                 self.inspect_audio_block_for_profile(
-                    &block,
-                    codec_name,
-                    header_strip_prefix,
-                    state,
+                    block,
+                    &target.codec_name,
+                    target.header_strip_prefix.as_deref(),
+                    &mut target.state,
                 )?;
             }
-            self.seek_to(child_end)?;
         }
+
         Ok(())
     }
 
@@ -1494,8 +1486,10 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         end: u64,
         state: &mut Hdr10PlusProbeState,
     ) -> Result<(), MediaInfoError> {
+        const BLOCK_ADDITION_IDS: &[u32] = &[EBML_ID_BLOCK_MORE];
         while !state.done() && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
+            let Some(header) = self.read_deep_probe_candidate_header(end, BLOCK_ADDITION_IDS)?
+            else {
                 break;
             };
             let child_end = header.end(end, self.file_len);
@@ -1512,8 +1506,9 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         end: u64,
         state: &mut Hdr10PlusProbeState,
     ) -> Result<(), MediaInfoError> {
+        const BLOCK_MORE_IDS: &[u32] = &[EBML_ID_BLOCK_ADDITIONAL];
         while !state.done() && self.position()? < end {
-            let Some(header) = self.read_element_header()? else {
+            let Some(header) = self.read_deep_probe_candidate_header(end, BLOCK_MORE_IDS)? else {
                 break;
             };
             let child_end = header.end(end, self.file_len);
@@ -1578,11 +1573,8 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         }
 
         self.seek_to(block.payload_offset)?;
-        let Some((frame_header_size, frame_size)) = parse_first_laced_frame_from_reader(
-            &mut self.reader,
-            block.payload_size,
-            block.lacing_type,
-        )?
+        let Some((frame_header_size, frame_size)) =
+            parse_first_laced_frame_from_reader(self, block.payload_size, block.lacing_type)?
         else {
             return Ok(());
         };
@@ -1645,11 +1637,81 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         Ok(())
     }
 
+    fn read_deep_probe_candidate_header(
+        &mut self,
+        end: u64,
+        candidate_ids: &[u32],
+    ) -> Result<Option<EbmlElementHeader>, MediaInfoError> {
+        while self.position()? < end {
+            let Some(candidate_pos) = self.find_next_deep_probe_candidate(end, candidate_ids)?
+            else {
+                return Ok(None);
+            };
+            self.seek_to(candidate_pos)?;
+            let Some(header) = self.read_element_header()? else {
+                return Ok(None);
+            };
+            let child_end = header.end(end, self.file_len);
+            if candidate_ids.contains(&header.id)
+                && header.data_offset <= child_end
+                && child_end <= end.min(self.file_len)
+            {
+                return Ok(Some(header));
+            }
+            self.seek_to(candidate_pos.saturating_add(1))?;
+        }
+
+        Ok(None)
+    }
+
+    fn find_next_deep_probe_candidate(
+        &mut self,
+        end: u64,
+        candidate_ids: &[u32],
+    ) -> Result<Option<u64>, MediaInfoError> {
+        let mut pos = self.position()?;
+        let mut buf = vec![0_u8; MKV_DEEP_PROBE_CANDIDATE_READ_BYTES];
+        while pos < end {
+            let read_len = usize::try_from(
+                end.saturating_sub(pos)
+                    .min(MKV_DEEP_PROBE_CANDIDATE_READ_BYTES as u64),
+            )
+            .unwrap_or(MKV_DEEP_PROBE_CANDIDATE_READ_BYTES);
+            if read_len == 0 {
+                return Ok(None);
+            }
+            self.seek_to(pos)?;
+            let mut bytes_read = 0;
+            while bytes_read < read_len {
+                let read = self
+                    .read(&mut buf[bytes_read..read_len])
+                    .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+                if read == 0 {
+                    break;
+                }
+                bytes_read += read;
+            }
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+            if let Some(candidate) = scan::find_ebml_candidate(&buf[..bytes_read], 0, candidate_ids)
+            {
+                return Ok(Some(pos + candidate.offset as u64));
+            }
+            if bytes_read < read_len || read_len < buf.len() {
+                return Ok(None);
+            }
+            pos = pos.saturating_add((read_len.saturating_sub(3)) as u64);
+        }
+
+        Ok(None)
+    }
+
     fn read_element_header(&mut self) -> Result<Option<EbmlElementHeader>, MediaInfoError> {
-        let Some((id, _)) = read_ebml_id_from_reader(&mut self.reader)? else {
+        let Some((id, _)) = read_ebml_id_from_reader(self)? else {
             return Ok(None);
         };
-        let (size, _) = read_ebml_size_from_reader(&mut self.reader)?;
+        let (size, _) = read_ebml_size_from_reader(self)?;
         let data_offset = self.position()?;
         Ok(Some(EbmlElementHeader {
             id,
@@ -1726,8 +1788,7 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         let start = self.position()?;
         let peek_len = data_size.min(11) as usize;
         let mut buf = [0_u8; 11];
-        self.reader
-            .read_exact(&mut buf[..peek_len])
+        self.read_exact(&mut buf[..peek_len])
             .map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
         let Some((track_number, track_len)) = parse_ebml_vint_value(&buf[..peek_len]) else {
@@ -1763,31 +1824,40 @@ impl<R: Read + Seek> MkvRawScanner<R> {
         }
         let mut buf = [0_u8; 8];
         let size = size as usize;
-        self.reader
-            .read_exact(&mut buf[..size])
+        self.read_exact(&mut buf[..size])
             .map_err(|e| MediaInfoError::Io(e.to_string()))?;
         Ok(parse_ebml_uint(&buf[..size]))
     }
 
     fn read_bytes(&mut self, size: u64) -> Result<Vec<u8>, MediaInfoError> {
         let mut buf = vec![0_u8; size as usize];
-        self.reader
-            .read_exact(&mut buf)
+        self.read_exact(&mut buf)
             .map_err(|e| MediaInfoError::Io(e.to_string()))?;
         Ok(buf)
     }
 
     fn position(&mut self) -> Result<u64, MediaInfoError> {
-        self.reader
-            .stream_position()
-            .map_err(|e| MediaInfoError::Io(e.to_string()))
+        Ok(self.pos)
     }
 
     fn seek_to(&mut self, pos: u64) -> Result<(), MediaInfoError> {
+        if self.pos == pos {
+            return Ok(());
+        }
         self.reader
             .seek(SeekFrom::Start(pos))
-            .map(|_| ())
+            .map(|new_pos| {
+                self.pos = new_pos;
+            })
             .map_err(|e| MediaInfoError::Io(e.to_string()))
+    }
+}
+
+impl<R: Read> Read for MkvRawScanner<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let bytes_read = self.reader.read(buf)?;
+        self.pos = self.pos.saturating_add(bytes_read as u64);
+        Ok(bytes_read)
     }
 }
 
@@ -1940,23 +2010,21 @@ fn should_probe_sonarr_hdr10plus(track: &RawTrack) -> bool {
         && track.color_transfer == Some(16)
 }
 
-fn probe_mkv_audio_metadata(
-    path: &Path,
-    target_track_num: u64,
-    codec_name: &str,
-    header_strip_prefix: Option<&[u8]>,
-) -> ScannedAudioMetadata {
-    let Some(file) = open_buffered_file(path).ok() else {
-        return ScannedAudioMetadata::default();
-    };
-    let Some(mut scanner) = MkvRawScanner::new(file).ok() else {
-        return ScannedAudioMetadata::default();
-    };
-    scanner
-        .probe_audio_metadata(target_track_num, codec_name, header_strip_prefix)
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+fn probe_mkv_deep_metadata<R: Read + Seek>(
+    scanner: &mut MkvRawScanner<R>,
+    frame_rate: Option<MkvFrameRateProbeRequest>,
+    hdr10plus: Option<MkvHdr10PlusProbeRequest>,
+    audio: Vec<MkvAudioProbeRequest>,
+) -> MkvDeepProbeResult {
+    let mut plan = MkvDeepProbePlan::new(frame_rate, hdr10plus, audio);
+    if plan.is_empty() {
+        return MkvDeepProbeResult::default();
+    }
+
+    if scanner.run_deep_probe_plan(&mut plan).is_err() {
+        return MkvDeepProbeResult::default();
+    }
+    plan.into_result()
 }
 
 fn audio_header_probe_bytes(codec_name: &str) -> usize {
@@ -1966,74 +2034,6 @@ fn audio_header_probe_bytes(codec_name: &str) -> usize {
         "dts" => 32,
         _ => 0,
     }
-}
-
-fn probe_mkv_frame_rate(
-    path: &Path,
-    target_track_num: u64,
-    timestamp_scale_ns: f64,
-) -> Option<f64> {
-    let file = open_buffered_file(path).ok()?;
-    let mut scanner = MkvRawScanner::new(file).ok()?;
-    scanner
-        .probe_frame_rate(target_track_num, timestamp_scale_ns)
-        .ok()
-        .flatten()
-}
-
-fn confirm_mkv_hdr10plus(
-    path: &Path,
-    target_track_num: u64,
-    nal_length_size: usize,
-    prefer_block_additional: bool,
-) -> bool {
-    run_mkv_hdr10plus_probe(
-        path,
-        target_track_num,
-        nal_length_size,
-        prefer_block_additional,
-        Hdr10PlusProbeLimits::rich(),
-    )
-}
-
-fn probe_mkv_hdr10plus_sonarr_style(
-    path: &Path,
-    target_track_num: u64,
-    nal_length_size: usize,
-    prefer_block_additional: bool,
-) -> bool {
-    run_mkv_hdr10plus_probe(
-        path,
-        target_track_num,
-        nal_length_size,
-        prefer_block_additional,
-        Hdr10PlusProbeLimits::sonarr(),
-    )
-}
-
-fn run_mkv_hdr10plus_probe(
-    path: &Path,
-    target_track_num: u64,
-    nal_length_size: usize,
-    prefer_block_additional: bool,
-    limits: Hdr10PlusProbeLimits,
-) -> bool {
-    let file = match open_buffered_file(path) {
-        Ok(file) => file,
-        Err(_) => return false,
-    };
-    let mut scanner = match MkvRawScanner::new(file) {
-        Ok(scanner) => scanner,
-        Err(_) => return false,
-    };
-    scanner
-        .confirm_hdr10plus(
-            target_track_num,
-            nal_length_size,
-            prefer_block_additional,
-            limits,
-        )
-        .unwrap_or(false)
 }
 
 fn estimate_frame_rate_from_timestamps(timestamps: &[u64], timestamp_scale_ns: f64) -> Option<f64> {

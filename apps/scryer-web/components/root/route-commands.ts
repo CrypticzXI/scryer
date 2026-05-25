@@ -4,6 +4,7 @@ import {
   Bell,
   CalendarDays,
   Captions,
+  ClipboardList,
   FolderCog,
   MonitorCog,
   Puzzle,
@@ -102,6 +103,17 @@ export function buildRouteCommands({
         keywords: [f.viewId, f.id, "import", "pending", "unmatched", "match"],
         icon: f.icon,
         onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "import"),
+      });
+    }
+
+    if (canManageTitle) {
+      commands.push({
+        id: `${f.viewId}-requests`,
+        label: `${t(f.navLabelKey)} / ${t("nav.requests")}`,
+        description: t("nav.requests"),
+        keywords: [f.viewId, f.id, "requests", "request queue", "media requests", "library"],
+        icon: ClipboardList,
+        onSelect: buildNavigate(onNavigate, f.viewId as ViewId, undefined, "requests"),
       });
     }
 

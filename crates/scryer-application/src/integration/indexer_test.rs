@@ -1315,7 +1315,7 @@ mod tests {
     #[tokio::test]
     async fn create_indexer_config_publishes_indexers_changed() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
-        let client = Arc::new(RecordingIndexerClient::new(true));
+        let client = Arc::new(RecordingIndexerClient::new(false));
         let app = test_app(
             indexer_repo,
             Some(Arc::new(RecordingPluginProvider::new(

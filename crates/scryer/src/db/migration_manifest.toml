@@ -290,6 +290,57 @@ file = "postgres/migrations/0126_webauthn_passkeys.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 127
+description = "user external accounts"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0127_user_external_accounts.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0127_user_external_accounts.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 128
+description = "episode image url"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0128_episode_image_url.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0128_episode_image_url.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 129
+description = "media requests"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0129_media_requests.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0129_media_requests.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

@@ -96,6 +96,39 @@ fn parses_daily_release_with_part_marker() {
 }
 
 #[test]
+fn parser_accepts_unicode_separator_release() {
+    let analysis = analyze_release_for_target(
+        "Show–Name.S01E02.1080p.WEB-DL.H264-Group",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(candidate.projected.normalized_title, "SHOW NAME");
+}
+
+#[test]
+fn parser_preserves_sanitize_hints_for_entities_and_controls() {
+    let analysis = analyze_release_for_target(
+        "AT&amp;T\u{200B}.Show.S01E02.1080p.WEB-DL.H264-Group",
+        &context(ContextFacetHint::Series, "AT and T Show"),
+    );
+
+    assert!(
+        analysis
+            .parse_hints
+            .iter()
+            .any(|hint| hint == "html_entity_decoded")
+    );
+    assert!(
+        analysis
+            .parse_hints
+            .iter()
+            .any(|hint| hint == "zero_width_stripped")
+    );
+}
+
+#[test]
 fn bounds_token_role_hypotheses_and_marks_pruning() {
     let analysis = analyze_release_for_target(
         "S01E01.2024.1080p.MULTI.AVC",

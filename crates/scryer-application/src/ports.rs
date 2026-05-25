@@ -179,6 +179,44 @@ pub trait LibraryRepository: Send + Sync {
     async fn title_library_id(&self, title_id: &str) -> AppResult<Option<String>>;
 }
 
+#[derive(Clone, Debug)]
+pub struct NewMediaRequest {
+    pub id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    pub identity_fingerprint: String,
+    pub title: String,
+    pub sort_title: Option<String>,
+    pub slug: Option<String>,
+    pub poster_url: Option<String>,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub language: Option<String>,
+    pub content_status: Option<String>,
+    pub external_ids: Vec<ExternalId>,
+    pub created_by_user_id: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MediaRequestQuery {
+    pub facet: Option<MediaFacet>,
+    pub library_ids: Option<Vec<String>>,
+    pub status: Option<scryer_domain::MediaRequestStatus>,
+}
+
+#[async_trait]
+pub trait MediaRequestRepository: Send + Sync {
+    async fn submit(
+        &self,
+        request: NewMediaRequest,
+        requester: &User,
+        submitted_event: NewDomainEvent,
+    ) -> AppResult<MediaRequest>;
+
+    async fn list(&self, query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>>;
+}
+
 #[async_trait]
 pub trait TitleImageRepository: Send + Sync {
     async fn list_titles_requiring_image_refresh(
@@ -318,6 +356,56 @@ pub trait UserRepository: Send + Sync {
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedExternalIdentity {
+    pub provider: scryer_domain::ExternalAccountProvider,
+    pub connection_id: String,
+    pub external_user_id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[async_trait]
+pub trait UserExternalAccountRepository: Send + Sync {
+    async fn create(
+        &self,
+        account: scryer_domain::UserExternalAccount,
+    ) -> AppResult<scryer_domain::UserExternalAccount>;
+    async fn list_by_user_id(
+        &self,
+        user_id: &str,
+    ) -> AppResult<Vec<scryer_domain::UserExternalAccount>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::UserExternalAccount>>;
+    async fn get_by_provider_identity(
+        &self,
+        provider: scryer_domain::ExternalAccountProvider,
+        connection_id: &str,
+        external_user_id: &str,
+    ) -> AppResult<Option<scryer_domain::UserExternalAccount>>;
+    async fn update(
+        &self,
+        account: scryer_domain::UserExternalAccount,
+    ) -> AppResult<scryer_domain::UserExternalAccount>;
+    async fn delete(&self, id: &str) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait ExternalIdentityVerifier: Send + Sync {
+    async fn verify_plex(
+        &self,
+        connection_id: &str,
+        plex_auth_token: &str,
+    ) -> AppResult<VerifiedExternalIdentity>;
+
+    async fn verify_jellyfin(
+        &self,
+        connection_id: &str,
+        username: &str,
+        password: &str,
+    ) -> AppResult<VerifiedExternalIdentity>;
+}
+
 #[async_trait]
 pub trait WebauthnRepository: Send + Sync {
     async fn list_credentials_for_user(
@@ -389,7 +477,7 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn list(&self, provider_type: Option<String>) -> AppResult<Vec<IndexerConfig>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<IndexerConfig>>;
     async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig>;
-    async fn touch_last_error(&self, provider_type: &str) -> AppResult<()>;
+    async fn touch_last_error(&self, id: &str) -> AppResult<()>;
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }

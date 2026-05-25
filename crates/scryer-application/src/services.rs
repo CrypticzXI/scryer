@@ -831,19 +831,46 @@ impl RuntimePerformanceSnapshot {
 pub struct AppRuntimeEnvironmentState {
     pub build_lane: BinaryLane,
     pub build_class: BinaryClass,
+    pub(crate) supported_plugin_required_features: Arc<HashSet<String>>,
     pub(crate) config_dir: Arc<PathBuf>,
     pub(crate) performance_snapshot: Arc<OnceCell<RuntimePerformanceSnapshot>>,
 }
 
 impl AppRuntimeEnvironmentState {
-    pub fn new(build_lane: BinaryLane, config_dir: impl Into<PathBuf>) -> Self {
+    pub fn new<I, S>(
+        build_lane: BinaryLane,
+        config_dir: impl Into<PathBuf>,
+        supported_plugin_required_features: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         Self {
             build_lane,
             build_class: build_lane.binary_class(),
+            supported_plugin_required_features: normalize_supported_plugin_required_features(
+                supported_plugin_required_features,
+            ),
             config_dir: Arc::new(config_dir.into()),
             performance_snapshot: Arc::new(OnceCell::new()),
         }
     }
+}
+
+fn normalize_supported_plugin_required_features<I, S>(features: I) -> Arc<HashSet<String>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    Arc::new(
+        features
+            .into_iter()
+            .map(Into::into)
+            .map(|feature| feature.trim().to_ascii_lowercase())
+            .filter(|feature| !feature.is_empty())
+            .collect::<HashSet<_>>(),
+    )
 }
 
 #[derive(Clone)]
@@ -860,7 +887,15 @@ pub struct AppRuntimeState {
 }
 
 impl AppRuntimeState {
-    pub fn new(build_lane: BinaryLane, config_dir: impl Into<PathBuf>) -> Self {
+    pub fn new<I, S>(
+        build_lane: BinaryLane,
+        config_dir: impl Into<PathBuf>,
+        supported_plugin_required_features: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let (domain_event_tx, _domain_event_rx) = broadcast::channel(256);
         // Match the main domain-event buffer so short notification bursts can queue wake hints
         // while the dispatcher catches up from persisted offsets.
@@ -871,7 +906,11 @@ impl AppRuntimeState {
         let (settings_changed_tx, _) = broadcast::channel::<Vec<String>>(16);
 
         Self {
-            environment: AppRuntimeEnvironmentState::new(build_lane, config_dir),
+            environment: AppRuntimeEnvironmentState::new(
+                build_lane,
+                config_dir,
+                supported_plugin_required_features,
+            ),
             events: AppRuntimeEventState {
                 domain_event_broadcast: domain_event_tx,
                 notification_event_broadcast: notification_event_tx,
@@ -925,7 +964,11 @@ impl AppRuntimeState {
 
 impl Default for AppRuntimeState {
     fn default() -> Self {
-        Self::new(BinaryLane::Portable, PathBuf::from("."))
+        Self::new(
+            BinaryLane::Portable,
+            PathBuf::from("."),
+            Vec::<String>::new(),
+        )
     }
 }
 
@@ -940,11 +983,13 @@ pub struct AppCatalogServices {
     pub(crate) titles: Arc<dyn TitleRepository>,
     pub(crate) shows: Arc<dyn ShowRepository>,
     pub(crate) libraries: Arc<dyn LibraryRepository>,
+    pub(crate) media_requests: Arc<dyn MediaRequestRepository>,
 }
 
 #[derive(Clone)]
 pub struct AppIdentityServices {
     pub(crate) users: Arc<dyn UserRepository>,
+    pub(crate) external_accounts: Arc<dyn UserExternalAccountRepository>,
     pub(crate) webauthn: Arc<dyn WebauthnRepository>,
 }
 
@@ -997,6 +1042,7 @@ pub struct AppIntegrationServices {
         Arc<dyn BuiltinDownloadClientConnectionTester>,
     pub(crate) download_client_configs: Arc<dyn DownloadClientConfigRepository>,
     pub(crate) subtitle_provider_configs: RuntimeFeature<Arc<dyn SubtitleProviderConfigRepository>>,
+    pub(crate) external_identity_verifier: Arc<dyn ExternalIdentityVerifier>,
     pub(crate) indexer_stats: Arc<dyn IndexerStatsTracker>,
     pub(crate) plugin_provider: RuntimeFeature<Arc<dyn IndexerPluginProvider>>,
     pub(crate) download_client_plugin_provider:
@@ -1179,9 +1225,11 @@ impl AppServices {
                 titles,
                 shows,
                 libraries: Arc::new(NullLibraryRepository),
+                media_requests: Arc::new(NullMediaRequestRepository),
             },
             identity: AppIdentityServices {
                 users,
+                external_accounts: Arc::new(null_repositories::NullUserExternalAccountRepository),
                 webauthn: Arc::new(null_repositories::NullWebauthnRepository),
             },
             events: AppEventServices {
@@ -1211,6 +1259,9 @@ impl AppServices {
                 ),
                 download_client_configs,
                 subtitle_provider_configs: RuntimeFeature::Disabled,
+                external_identity_verifier: Arc::new(
+                    null_repositories::NullExternalIdentityVerifier,
+                ),
                 indexer_stats: Arc::new(NullIndexerStatsTracker),
                 plugin_provider: RuntimeFeature::Disabled,
                 download_client_plugin_provider: RuntimeFeature::Disabled,
@@ -1404,12 +1455,28 @@ impl AppServicesBuilder {
         Arc<dyn PluginHttpTrustConfigRuntime>
     );
 
-    pub fn with_runtime_environment(
+    pub fn with_runtime_environment<I, S>(
         mut self,
         build_lane: BinaryLane,
         config_dir: impl Into<PathBuf>,
-    ) -> Self {
-        self.runtime = AppRuntimeState::new(build_lane, config_dir);
+        supported_plugin_required_features: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.runtime =
+            AppRuntimeState::new(build_lane, config_dir, supported_plugin_required_features);
+        self
+    }
+
+    pub fn with_supported_plugin_required_features<I, S>(mut self, features: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.runtime.environment.supported_plugin_required_features =
+            normalize_supported_plugin_required_features(features);
         self
     }
 }
@@ -1422,9 +1489,19 @@ impl AppServicesBuilder {
         Arc<dyn LibraryRepository>
     );
     app_services_builder_setter!(
+        with_media_requests,
+        catalog.media_requests,
+        Arc<dyn MediaRequestRepository>
+    );
+    app_services_builder_setter!(
         with_webauthn_store,
         identity.webauthn,
         Arc<dyn WebauthnRepository>
+    );
+    app_services_builder_setter!(
+        with_external_account_store,
+        identity.external_accounts,
+        Arc<dyn UserExternalAccountRepository>
     );
     pub fn with_customization_store<T>(mut self, store: Arc<T>) -> Self
     where
@@ -1515,6 +1592,11 @@ impl AppServicesBuilder {
         with_builtin_download_client_connection_tester,
         integrations.builtin_download_client_connection_tester,
         Arc<dyn BuiltinDownloadClientConnectionTester>
+    );
+    app_services_builder_setter!(
+        with_external_identity_verifier,
+        integrations.external_identity_verifier,
+        Arc<dyn ExternalIdentityVerifier>
     );
     app_services_builder_required_setter!(
         with_metadata_gateway,
@@ -1838,6 +1920,13 @@ impl AppUseCase {
 
     pub fn runtime_build_class(&self) -> BinaryClass {
         self.runtime.environment.build_class
+    }
+
+    pub(crate) fn runtime_supported_plugin_required_features(&self) -> Arc<HashSet<String>> {
+        self.runtime
+            .environment
+            .supported_plugin_required_features
+            .clone()
     }
 
     pub async fn runtime_performance(&self) -> RuntimePerformanceSnapshot {
@@ -2649,7 +2738,7 @@ fn classify_config_io_elapsed(elapsed: std::time::Duration) -> RuntimePerformanc
 
 fn probe_config_io_performance(config_dir: &Path) -> (RuntimePerformanceClass, Option<u64>) {
     const PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
-    const CHUNK_BYTES: usize = 1 * 1024 * 1024;
+    const CHUNK_BYTES: usize = 1024 * 1024;
     const SLOW_CAP: std::time::Duration = std::time::Duration::from_millis(500);
 
     if !config_dir.is_dir() && std::fs::create_dir_all(config_dir).is_err() {
@@ -2784,12 +2873,22 @@ mod tests {
         let runtime = AppRuntimeState::default();
         assert_eq!(runtime.environment.build_lane, BinaryLane::Portable);
         assert_eq!(runtime.environment.build_class, BinaryClass::Portable);
+        assert!(
+            runtime
+                .environment
+                .supported_plugin_required_features
+                .is_empty()
+        );
     }
 
     #[test]
     fn runtime_environment_builder_sets_build_identity() {
         let assembly = test_builder()
-            .with_runtime_environment(BinaryLane::Haswell, "/tmp/scryer-config")
+            .with_runtime_environment(
+                BinaryLane::Haswell,
+                "/tmp/scryer-config",
+                Vec::<String>::new(),
+            )
             .build_partial_for_tests();
         assert_eq!(assembly.runtime.environment.build_lane, BinaryLane::Haswell);
         assert_eq!(
@@ -2799,6 +2898,25 @@ mod tests {
         assert_eq!(
             assembly.runtime.environment.config_dir.as_ref(),
             &PathBuf::from("/tmp/scryer-config")
+        );
+    }
+
+    #[test]
+    fn runtime_environment_builder_sets_supported_plugin_required_features() {
+        let assembly = test_builder()
+            .with_runtime_environment(
+                BinaryLane::Portable,
+                "/tmp/scryer-config",
+                ["simd128", " relaxed-simd ", ""],
+            )
+            .build_partial_for_tests();
+        assert_eq!(
+            assembly
+                .runtime
+                .environment
+                .supported_plugin_required_features
+                .as_ref(),
+            &HashSet::from(["simd128".to_string(), "relaxed-simd".to_string()])
         );
     }
 

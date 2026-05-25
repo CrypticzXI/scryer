@@ -1,1 +1,0 @@
-NZBGeek-specific Newznab indexer with metadata extraction (thumbs, subtitles, password detection)

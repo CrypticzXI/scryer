@@ -175,6 +175,7 @@ export type CollectionEpisode = {
   isFiller: boolean;
   isRecap: boolean;
   absoluteNumber: string | null;
+  imageUrl: string | null;
   monitored: boolean;
   createdAt: string;
 };

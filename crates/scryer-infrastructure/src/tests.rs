@@ -1730,6 +1730,7 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
         absolute_number: Some("47".to_string()),
         overview: None,
         tvdb_id: Some("1234567".to_string()),
+        image_url: None,
         monitored: true,
         created_at: Utc::now(),
     };
@@ -4975,6 +4976,7 @@ async fn list_due_wanted_items_excludes_blocked_facets_before_limit() {
             absolute_number: None,
             overview: None,
             tvdb_id: None,
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         },
@@ -6557,6 +6559,7 @@ async fn sqlite_show_queries_roundtrip() {
         absolute_number: None,
         overview: Some("The pilot episode.".into()),
         tvdb_id: None,
+        image_url: Some("https://cdn.example.test/episode-created.jpg".into()),
         monitored: true,
         created_at: Utc::now(),
     };
@@ -6604,6 +6607,10 @@ async fn sqlite_show_queries_roundtrip() {
         .expect("get episode by id")
         .expect("episode should exist");
     assert_eq!(loaded_episode.id, episode.id);
+    assert_eq!(
+        loaded_episode.image_url,
+        Some("https://cdn.example.test/episode-created.jpg".into())
+    );
 
     let updated_collection = ShowRepository::update_collection(
         &shows,
@@ -6641,6 +6648,7 @@ async fn sqlite_show_queries_roundtrip() {
             collection_id: Some(collection.id.clone()),
             overview: Some("Updated overview".into()),
             tvdb_id: Some("349232".into()),
+            image_url: Some("https://cdn.example.test/episode-updated.jpg".into()),
             ..Default::default()
         },
     )
@@ -6658,6 +6666,22 @@ async fn sqlite_show_queries_roundtrip() {
     assert_eq!(updated_episode.duration_seconds, Some(2_400));
     assert!(updated_episode.has_multi_audio);
     assert!(!updated_episode.has_subtitle);
+    assert_eq!(
+        updated_episode.image_url,
+        Some("https://cdn.example.test/episode-updated.jpg".into())
+    );
+
+    let cleared_episode = ShowRepository::update_episode(
+        &shows,
+        &episode.id,
+        EpisodeUpdate {
+            clear_image_url: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("clear episode image url");
+    assert_eq!(cleared_episode.image_url, None);
 
     ShowRepository::delete_episode(&shows, &episode.id)
         .await

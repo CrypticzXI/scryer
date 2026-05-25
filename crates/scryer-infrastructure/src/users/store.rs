@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use scryer_application::{AppError, AppResult, UserRepository};
-use scryer_domain::User;
+use scryer_application::{AppError, AppResult, UserExternalAccountRepository, UserRepository};
+use scryer_domain::{ExternalAccountProvider, ExternalAccountStatus, User, UserExternalAccount};
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
 
@@ -90,6 +90,129 @@ impl UserRepository for UserStore {
     }
 }
 
+#[async_trait]
+impl UserExternalAccountRepository for UserStore {
+    async fn create(&self, account: UserExternalAccount) -> AppResult<UserExternalAccount> {
+        SqlRuntime::run_in_transaction(&self.datastore, "create_user_external_account", move |tx| {
+            let account = account.clone();
+            Box::pin(async move {
+                insert_external_account_tx(tx, &account).await?;
+                load_external_account_by_id_tx(tx, &account.id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("external account {}", account.id)))
+            })
+        })
+        .await
+    }
+
+    async fn list_by_user_id(&self, user_id: &str) -> AppResult<Vec<UserExternalAccount>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT id, user_id, provider, connection_id, external_user_id, username,
+                    display_name, avatar_url, status, verified_at, created_at, updated_at
+               FROM user_external_accounts
+              WHERE user_id = {}
+              ORDER BY provider, username",
+            &[SqlArg::Text(user_id.to_string())],
+        )
+        .await?;
+        rows.iter().map(row_to_external_account).collect()
+    }
+
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<UserExternalAccount>> {
+        load_external_account_by_id(self.datastore.read_exec(), id).await
+    }
+
+    async fn get_by_provider_identity(
+        &self,
+        provider: ExternalAccountProvider,
+        connection_id: &str,
+        external_user_id: &str,
+    ) -> AppResult<Option<UserExternalAccount>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT id, user_id, provider, connection_id, external_user_id, username,
+                    display_name, avatar_url, status, verified_at, created_at, updated_at
+               FROM user_external_accounts
+              WHERE provider = {} AND connection_id = {} AND external_user_id = {}",
+            &[
+                SqlArg::Text(provider.as_str().to_string()),
+                SqlArg::Text(connection_id.to_string()),
+                SqlArg::Text(external_user_id.to_string()),
+            ],
+        )
+        .await?;
+        row.as_ref().map(row_to_external_account).transpose()
+    }
+
+    async fn update(&self, account: UserExternalAccount) -> AppResult<UserExternalAccount> {
+        SqlRuntime::run_in_transaction(&self.datastore, "update_user_external_account", move |tx| {
+            let account = account.clone();
+            Box::pin(async move {
+                let rows = tx
+                    .execute(
+                        "UPDATE user_external_accounts
+                            SET user_id = {},
+                                provider = {},
+                                connection_id = {},
+                                external_user_id = {},
+                                username = {},
+                                display_name = {},
+                                avatar_url = {},
+                                status = {},
+                                verified_at = {},
+                                updated_at = {}
+                          WHERE id = {}",
+                        &[
+                            SqlArg::Text(account.user_id.clone()),
+                            SqlArg::Text(account.provider.as_str().to_string()),
+                            SqlArg::Text(account.connection_id.clone()),
+                            SqlArg::Text(account.external_user_id.clone()),
+                            SqlArg::Text(account.username.clone()),
+                            SqlArg::OptText(account.display_name.clone()),
+                            SqlArg::OptText(account.avatar_url.clone()),
+                            SqlArg::Text(account.status.as_str().to_string()),
+                            SqlArg::OptTimestamp(account.verified_at),
+                            SqlArg::Timestamp(account.updated_at),
+                            SqlArg::Text(account.id.clone()),
+                        ],
+                    )
+                    .await?;
+                if rows == 0 {
+                    return Err(AppError::NotFound(format!(
+                        "external account {}",
+                        account.id
+                    )));
+                }
+                load_external_account_by_id_tx(tx, &account.id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("external account {}", account.id)))
+            })
+        })
+        .await
+    }
+
+    async fn delete(&self, id: &str) -> AppResult<()> {
+        let id = id.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "delete_user_external_account", move |tx| {
+            let id = id.clone();
+            Box::pin(async move {
+                let rows = tx
+                    .execute(
+                        "DELETE FROM user_external_accounts WHERE id = {}",
+                        &[SqlArg::Text(id.clone())],
+                    )
+                    .await?;
+                if rows == 0 {
+                    return Err(AppError::NotFound(format!("external account {id}")));
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
+}
+
 async fn load_user_by_username(exec: SqlExec<'_, '_>, username: &str) -> AppResult<Option<User>> {
     let row = SqlRuntime::fetch_optional(
         exec,
@@ -135,4 +258,320 @@ fn row_to_user(row: &SqlRow) -> AppResult<User> {
         password_hash: row.opt_text("password_hash")?,
         authorization: Default::default(),
     })
+}
+
+async fn load_external_account_by_id(
+    exec: SqlExec<'_, '_>,
+    id: &str,
+) -> AppResult<Option<UserExternalAccount>> {
+    let row = SqlRuntime::fetch_optional(
+        exec,
+        "SELECT id, user_id, provider, connection_id, external_user_id, username,
+                display_name, avatar_url, status, verified_at, created_at, updated_at
+           FROM user_external_accounts
+          WHERE id = {}",
+        &[SqlArg::Text(id.to_string())],
+    )
+    .await?;
+    row.as_ref().map(row_to_external_account).transpose()
+}
+
+async fn load_external_account_by_id_tx(
+    tx: &mut SqlTx<'_>,
+    id: &str,
+) -> AppResult<Option<UserExternalAccount>> {
+    load_external_account_by_id(SqlExec::Tx(tx), id).await
+}
+
+async fn insert_external_account_tx(
+    tx: &mut SqlTx<'_>,
+    account: &UserExternalAccount,
+) -> AppResult<()> {
+    tx.execute(
+        "INSERT INTO user_external_accounts (
+             id, user_id, provider, connection_id, external_user_id, username,
+             display_name, avatar_url, status, verified_at, created_at, updated_at
+         )
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        &[
+            SqlArg::Text(account.id.clone()),
+            SqlArg::Text(account.user_id.clone()),
+            SqlArg::Text(account.provider.as_str().to_string()),
+            SqlArg::Text(account.connection_id.clone()),
+            SqlArg::Text(account.external_user_id.clone()),
+            SqlArg::Text(account.username.clone()),
+            SqlArg::OptText(account.display_name.clone()),
+            SqlArg::OptText(account.avatar_url.clone()),
+            SqlArg::Text(account.status.as_str().to_string()),
+            SqlArg::OptTimestamp(account.verified_at),
+            SqlArg::Timestamp(account.created_at),
+            SqlArg::Timestamp(account.updated_at),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+fn row_to_external_account(row: &SqlRow) -> AppResult<UserExternalAccount> {
+    let provider = ExternalAccountProvider::parse(&row.text("provider")?)
+        .ok_or_else(|| AppError::Repository("invalid external account provider".into()))?;
+    let status = ExternalAccountStatus::parse(&row.text("status")?)
+        .ok_or_else(|| AppError::Repository("invalid external account status".into()))?;
+    Ok(UserExternalAccount {
+        id: row.text("id")?,
+        user_id: row.text("user_id")?,
+        provider,
+        connection_id: row.text("connection_id")?,
+        external_user_id: row.text("external_user_id")?,
+        username: row.text("username")?,
+        display_name: row.opt_text("display_name")?,
+        avatar_url: row.opt_text("avatar_url")?,
+        status,
+        verified_at: row.opt_timestamp("verified_at")?,
+        created_at: row.timestamp("created_at")?,
+        updated_at: row.timestamp("updated_at")?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use chrono::Utc;
+    use scryer_application::{UserExternalAccountRepository, UserRepository};
+    use scryer_domain::{AppPermissionMask, LibraryPermissionMask, UserAuthorization};
+    use sqlx::sqlite::SqlitePoolOptions;
+    use tokio::sync::Mutex;
+
+    use super::*;
+
+    async fn test_store() -> UserStore {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .expect("enable foreign keys");
+        sqlx::query(
+            "CREATE TABLE users (
+                id TEXT PRIMARY KEY NOT NULL,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create users table");
+        sqlx::query(
+            "CREATE TABLE user_external_accounts (
+                id TEXT PRIMARY KEY NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                external_user_id TEXT NOT NULL,
+                username TEXT NOT NULL,
+                display_name TEXT,
+                avatar_url TEXT,
+                status TEXT NOT NULL DEFAULT 'pending_claim',
+                verified_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create user_external_accounts table");
+        sqlx::query(
+            "CREATE UNIQUE INDEX idx_user_external_accounts_provider_identity
+               ON user_external_accounts(provider, connection_id, external_user_id)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create provider identity index");
+        sqlx::query(
+            "CREATE UNIQUE INDEX idx_user_external_accounts_user_provider_connection
+               ON user_external_accounts(user_id, provider, connection_id)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create user provider connection index");
+
+        UserStore::new(StoreDatastore::Sqlite {
+            pool,
+            writer_gate: Arc::new(Mutex::new(())),
+        })
+    }
+
+    fn test_user(id: &str) -> User {
+        User {
+            id: id.to_string(),
+            username: format!("{id}_name"),
+            password_hash: Some("hash".to_string()),
+            authorization: UserAuthorization {
+                app: AppPermissionMask::NONE,
+                libraries: HashMap::new(),
+                default_library: LibraryPermissionMask::NONE,
+                loaded: true,
+            },
+        }
+    }
+
+    fn test_account(
+        id: &str,
+        user_id: &str,
+        provider: ExternalAccountProvider,
+        connection_id: &str,
+        external_user_id: &str,
+    ) -> UserExternalAccount {
+        let now = Utc::now();
+        UserExternalAccount {
+            id: id.to_string(),
+            user_id: user_id.to_string(),
+            provider,
+            connection_id: connection_id.to_string(),
+            external_user_id: external_user_id.to_string(),
+            username: format!("{external_user_id}_name"),
+            display_name: None,
+            avatar_url: None,
+            status: ExternalAccountStatus::PendingClaim,
+            verified_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn external_account_provider_identity_is_unique() {
+        let store = test_store().await;
+        UserRepository::create(&store, test_user("user_a"))
+            .await
+            .expect("create first user");
+        UserRepository::create(&store, test_user("user_b"))
+            .await
+            .expect("create second user");
+
+        UserExternalAccountRepository::create(
+            &store,
+            test_account(
+                "account_a",
+                "user_a",
+                ExternalAccountProvider::Jellyfin,
+                "server_1",
+                "external_1",
+            ),
+        )
+        .await
+        .expect("create account");
+
+        let duplicate = UserExternalAccountRepository::create(
+            &store,
+            test_account(
+                "account_b",
+                "user_b",
+                ExternalAccountProvider::Jellyfin,
+                "server_1",
+                "external_1",
+            ),
+        )
+        .await;
+
+        assert!(duplicate.is_err());
+    }
+
+    #[tokio::test]
+    async fn external_account_user_provider_connection_is_unique() {
+        let store = test_store().await;
+        UserRepository::create(&store, test_user("user_a"))
+            .await
+            .expect("create user");
+
+        UserExternalAccountRepository::create(
+            &store,
+            test_account(
+                "account_a",
+                "user_a",
+                ExternalAccountProvider::Plex,
+                "plex_main",
+                "external_1",
+            ),
+        )
+        .await
+        .expect("create account");
+
+        let duplicate = UserExternalAccountRepository::create(
+            &store,
+            test_account(
+                "account_b",
+                "user_a",
+                ExternalAccountProvider::Plex,
+                "plex_main",
+                "external_2",
+            ),
+        )
+        .await;
+
+        assert!(duplicate.is_err());
+    }
+
+    #[tokio::test]
+    async fn external_account_status_transition_persists() {
+        let store = test_store().await;
+        UserRepository::create(&store, test_user("user_a"))
+            .await
+            .expect("create user");
+        let mut account = UserExternalAccountRepository::create(
+            &store,
+            test_account(
+                "account_a",
+                "user_a",
+                ExternalAccountProvider::Jellyfin,
+                "server_1",
+                "external_1",
+            ),
+        )
+        .await
+        .expect("create account");
+
+        account.status = ExternalAccountStatus::Active;
+        account.verified_at = Some(Utc::now());
+        let updated = UserExternalAccountRepository::update(&store, account)
+            .await
+            .expect("update account");
+
+        assert_eq!(updated.status, ExternalAccountStatus::Active);
+        assert!(updated.verified_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn deleting_user_cascades_external_accounts() {
+        let store = test_store().await;
+        UserRepository::create(&store, test_user("user_a"))
+            .await
+            .expect("create user");
+        UserExternalAccountRepository::create(
+            &store,
+            test_account(
+                "account_a",
+                "user_a",
+                ExternalAccountProvider::Jellyfin,
+                "server_1",
+                "external_1",
+            ),
+        )
+        .await
+        .expect("create account");
+
+        UserRepository::delete(&store, "user_a")
+            .await
+            .expect("delete user");
+
+        let remaining = UserExternalAccountRepository::list_by_user_id(&store, "user_a")
+            .await
+            .expect("list accounts");
+        assert!(remaining.is_empty());
+    }
 }

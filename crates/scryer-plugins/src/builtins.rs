@@ -5,13 +5,6 @@ pub struct BuiltinPluginAsset {
     pub description: &'static str,
 }
 
-/// Built-in NZBGeek indexer plugin asset pair.
-pub const NZBGEEK: BuiltinPluginAsset = BuiltinPluginAsset {
-    wasm_zstd: include_bytes!("../builtins/nzbgeek_indexer.wasm.zst"),
-    descriptor_json: include_str!("../builtins/nzbgeek_indexer.descriptor.json"),
-    description: include_str!("../builtins/nzbgeek_indexer.description.txt"),
-};
-
 /// Built-in generic Newznab indexer plugin asset pair.
 pub const NEWZNAB: BuiltinPluginAsset = BuiltinPluginAsset {
     wasm_zstd: include_bytes!("../builtins/newznab_indexer.wasm.zst"),

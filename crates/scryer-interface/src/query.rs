@@ -17,9 +17,9 @@ use crate::mappers::{
     from_activity_event, from_backup_info, from_delete_preview, from_domain_event,
     from_download_queue_item, from_episode, from_external_import_monitor_warmup_progress,
     from_job_definition, from_job_run, from_library, from_library_scan_session,
-    from_library_settings, from_media_rename_plan, from_pending_import_connection,
-    from_pending_import_counts, from_pending_release, from_provider_type,
-    from_smg_version_compatibility_notice, from_system_health, from_title,
+    from_library_settings, from_linked_account, from_media_rename_plan, from_media_request,
+    from_pending_import_connection, from_pending_import_counts, from_pending_release,
+    from_provider_type, from_smg_version_compatibility_notice, from_system_health, from_title,
     from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
     from_title_release_blocklist_entry, from_user, from_wanted_item,
 };
@@ -250,6 +250,9 @@ struct AcquisitionQueries;
 #[derive(Default)]
 struct UtilityQueries;
 
+#[derive(Default)]
+struct AccountQueries;
+
 #[derive(MergedObject, Default)]
 pub struct QueryRoot(
     CatalogQueries,
@@ -260,7 +263,24 @@ pub struct QueryRoot(
     AcquisitionQueries,
     MetadataQueries,
     UtilityQueries,
+    AccountQueries,
 );
+
+#[Object]
+impl AccountQueries {
+    async fn linked_accounts(
+        &self,
+        ctx: &Context<'_>,
+        user_id: Option<String>,
+    ) -> GqlResult<Vec<LinkedAccountPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_linked_accounts(&actor, user_id.as_deref())
+            .await
+            .map(|accounts| accounts.into_iter().map(from_linked_account).collect())
+            .map_err(to_gql_error)
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 #[Object]
@@ -307,6 +327,29 @@ impl CatalogQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(libraries.into_iter().map(from_library).collect())
+    }
+
+    async fn media_requests(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+        library_ids: Option<Vec<String>>,
+        status: Option<MediaRequestStatusValue>,
+    ) -> GqlResult<Vec<MediaRequestPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let requests = app
+            .list_media_requests(
+                &actor,
+                scryer_application::ListMediaRequestsInput {
+                    facet: facet.map(MediaFacetValue::into_domain),
+                    library_ids,
+                    status: status.map(MediaRequestStatusValue::into_domain),
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(requests.into_iter().map(from_media_request).collect())
     }
 
     async fn library_settings(

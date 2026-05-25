@@ -496,9 +496,23 @@ pub(crate) fn is_ignored_library_file_name(name: &str) -> bool {
         || normalized.starts_with(".unmanic")
 }
 
+pub(crate) fn is_trailer_like_library_dir_name(name: &str) -> bool {
+    let normalized = name
+        .trim()
+        .nfkc()
+        .flat_map(char::to_lowercase)
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>();
+
+    normalized
+        .split_whitespace()
+        .any(|token| token == "trailer" || token == "trailers")
+}
+
 pub(crate) fn is_ignored_movie_subdir_name(name: &str) -> bool {
     let normalized = name.trim().to_ascii_lowercase();
     LIBRARY_IGNORED_MOVIE_SUBDIR_NAMES.contains(&normalized.as_str())
+        || is_trailer_like_library_dir_name(name)
 }
 
 pub(crate) fn should_skip_library_top_level_entry(path: &Path, is_dir: bool) -> bool {
@@ -557,6 +571,31 @@ pub(crate) fn should_skip_movie_library_subpath(root: &Path, path: &Path, is_dir
             continue;
         };
         if (components.peek().is_some() || is_dir) && is_ignored_movie_subdir_name(name) {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub(crate) fn should_skip_episodic_library_subpath(root: &Path, path: &Path, is_dir: bool) -> bool {
+    if should_skip_library_subpath(root, path, is_dir) {
+        return true;
+    }
+
+    let Some(relative) = path.strip_prefix(root).ok() else {
+        return false;
+    };
+
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if (components.peek().is_some() || is_dir) && is_trailer_like_library_dir_name(name) {
             return true;
         }
     }
@@ -902,6 +941,44 @@ mod tests {
         let path = Path::new("/library/Movie Title/Sample.2024.BluRay.mkv");
 
         assert!(!should_skip_movie_library_subpath(root, path, false));
+    }
+
+    #[test]
+    fn should_skip_movie_library_subpath_skips_trailer_like_subdirectories() {
+        let root = Path::new("/library");
+
+        for path in [
+            Path::new("/library/Movie Title/Trailers/foo.mkv"),
+            Path::new("/library/Movie Title/Movie Trailers/foo.mkv"),
+            Path::new("/library/Movie Title/12 Years a Slave (Trailers)/foo.mkv"),
+        ] {
+            assert!(
+                should_skip_movie_library_subpath(root, path, false),
+                "expected movie trailer folder to be skipped: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn should_skip_episodic_library_subpath_skips_trailers_but_not_movie_extras() {
+        let root = Path::new("/library/Anime Show");
+
+        assert!(should_skip_episodic_library_subpath(
+            root,
+            Path::new("/library/Anime Show/Movie Trailers/foo.mkv"),
+            false,
+        ));
+        assert!(should_skip_episodic_library_subpath(
+            root,
+            Path::new("/library/Anime Show/12 Years a Slave (Trailers)/foo.mkv"),
+            false,
+        ));
+        assert!(!should_skip_episodic_library_subpath(
+            root,
+            Path::new("/library/Anime Show/extras/foo.mkv"),
+            false,
+        ));
     }
 
     #[test]

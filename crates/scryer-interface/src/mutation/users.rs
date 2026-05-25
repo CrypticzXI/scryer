@@ -1,12 +1,30 @@
 use async_graphql::{Context, Object, Result as GqlResult};
+use chrono::Utc;
 use scryer_application::AppError;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::mappers::from_user;
+use crate::mappers::{from_linked_account, from_user};
 use crate::types::*;
 
 #[derive(Default)]
 pub(crate) struct UserMutations;
+
+async fn login_payload_from_user(
+    app: &scryer_application::AppUseCase,
+    user: scryer_domain::User,
+) -> GqlResult<LoginPayload> {
+    let user = app
+        .attach_user_authorization(user)
+        .await
+        .map_err(to_gql_error)?;
+    let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
+    let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
+    Ok(LoginPayload {
+        token,
+        user: from_user(user),
+        expires_at,
+    })
+}
 
 #[Object]
 impl UserMutations {
@@ -149,5 +167,90 @@ impl UserMutations {
             .await
             .map(|_| true)
             .map_err(to_gql_error)
+    }
+
+    async fn create_external_account_invite(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateExternalAccountInviteInput,
+    ) -> GqlResult<LinkedAccountPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.create_external_account_invite(
+            &actor,
+            &input.user_id,
+            input.provider.into_domain(),
+            input.connection_id,
+            input.external_user_id,
+            input.username,
+        )
+        .await
+        .map(from_linked_account)
+        .map_err(to_gql_error)
+    }
+
+    async fn link_plex_account(
+        &self,
+        ctx: &Context<'_>,
+        input: LinkPlexAccountInput,
+    ) -> GqlResult<LinkedAccountPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.link_plex_account(&actor, input.connection_id, input.plex_auth_token)
+            .await
+            .map(from_linked_account)
+            .map_err(to_gql_error)
+    }
+
+    async fn link_jellyfin_account(
+        &self,
+        ctx: &Context<'_>,
+        input: LinkJellyfinAccountInput,
+    ) -> GqlResult<LinkedAccountPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.link_jellyfin_account(&actor, input.connection_id, input.username, input.password)
+            .await
+            .map(from_linked_account)
+            .map_err(to_gql_error)
+    }
+
+    async fn unlink_external_account(
+        &self,
+        ctx: &Context<'_>,
+        input: UnlinkExternalAccountInput,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.unlink_external_account(&actor, &input.linked_account_id)
+            .await
+            .map(|_| true)
+            .map_err(to_gql_error)
+    }
+
+    async fn login_with_plex(
+        &self,
+        ctx: &Context<'_>,
+        input: LoginWithPlexInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let user = app
+            .federated_login_with_plex(input.connection_id, input.plex_auth_token)
+            .await
+            .map_err(to_gql_error)?;
+        login_payload_from_user(&app, user).await
+    }
+
+    async fn login_with_jellyfin(
+        &self,
+        ctx: &Context<'_>,
+        input: LoginWithJellyfinInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let user = app
+            .federated_login_with_jellyfin(input.connection_id, input.username, input.password)
+            .await
+            .map_err(to_gql_error)?;
+        login_payload_from_user(&app, user).await
     }
 }

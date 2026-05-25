@@ -101,6 +101,70 @@ fn from_security_settings(
     }
 }
 
+fn auth_provider_connections(
+    connections: Vec<scryer_application::AuthProviderConnection>,
+) -> Vec<AuthProviderConnectionPayload> {
+    connections
+        .into_iter()
+        .map(|connection| AuthProviderConnectionPayload {
+            user_visible_url: connection
+                .base_url
+                .clone()
+                .or_else(|| connection.machine_id.clone()),
+            id: connection.id,
+            display_name: connection.display_name,
+            base_url: connection.base_url,
+            machine_id: connection.machine_id,
+        })
+        .collect()
+}
+
+fn from_auth_provider_settings(
+    settings: scryer_application::AuthProviderSettings,
+) -> AuthProviderSettingsPayload {
+    let allowed_jellyfin_connection_ids = settings.allowed_jellyfin_connection_ids;
+    let allowed_plex_connection_ids = settings.allowed_plex_connection_ids;
+
+    AuthProviderSettingsPayload {
+        allowed_providers: settings
+            .allowed_providers
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        provider_login_enabled: settings
+            .provider_login_enabled
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        provider_linking_enabled: settings
+            .provider_linking_enabled
+            .into_iter()
+            .map(ExternalAccountProviderValue::from_domain)
+            .collect(),
+        allowed_jellyfin_connections: auth_provider_connections(
+            settings.allowed_jellyfin_connections,
+        ),
+        allowed_plex_connections: auth_provider_connections(settings.allowed_plex_connections),
+        allowed_jellyfin_connection_ids,
+        allowed_plex_connection_ids,
+    }
+}
+
+fn app_auth_provider_connections(
+    connections: Option<Vec<AuthProviderConnectionInput>>,
+) -> Vec<scryer_application::AuthProviderConnection> {
+    connections
+        .unwrap_or_default()
+        .into_iter()
+        .map(|connection| scryer_application::AuthProviderConnection {
+            id: connection.id,
+            display_name: connection.display_name.unwrap_or_default(),
+            base_url: connection.base_url,
+            machine_id: connection.machine_id,
+        })
+        .collect()
+}
+
 fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfilePayload {
     DelayProfilePayload {
         id: profile.id,
@@ -506,6 +570,46 @@ impl SettingsMutations {
         );
 
         Ok(from_security_settings(settings, &snapshot))
+    }
+
+    async fn update_auth_provider_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateAuthProviderSettingsInput,
+    ) -> GqlResult<AuthProviderSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let allowed_jellyfin_connections =
+            app_auth_provider_connections(input.allowed_jellyfin_connections);
+        let allowed_plex_connections =
+            app_auth_provider_connections(input.allowed_plex_connections);
+        app.update_auth_provider_settings(
+            &actor,
+            scryer_application::UpdateAuthProviderSettings {
+                allowed_providers: input
+                    .allowed_providers
+                    .into_iter()
+                    .map(ExternalAccountProviderValue::into_domain)
+                    .collect(),
+                provider_login_enabled: input
+                    .provider_login_enabled
+                    .into_iter()
+                    .map(ExternalAccountProviderValue::into_domain)
+                    .collect(),
+                provider_linking_enabled: input
+                    .provider_linking_enabled
+                    .into_iter()
+                    .map(ExternalAccountProviderValue::into_domain)
+                    .collect(),
+                allowed_jellyfin_connection_ids: input.allowed_jellyfin_connection_ids,
+                allowed_plex_connection_ids: input.allowed_plex_connection_ids,
+                allowed_jellyfin_connections,
+                allowed_plex_connections,
+            },
+        )
+        .await
+        .map(from_auth_provider_settings)
+        .map_err(to_gql_error)
     }
 
     async fn upsert_delay_profile(

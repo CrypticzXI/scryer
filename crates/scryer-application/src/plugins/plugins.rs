@@ -493,7 +493,7 @@ fn latest_catalog_release(plugin: &CatalogV3PluginEntry) -> Option<CatalogV3Plug
 
 fn latest_compatible_catalog_release(
     plugin: &CatalogV3PluginEntry,
-    build_class: scryer_runtime_info::BinaryClass,
+    supported_features: &HashSet<String>,
 ) -> Option<CatalogV3PluginRelease> {
     plugin
         .releases
@@ -502,7 +502,7 @@ fn latest_compatible_catalog_release(
         .filter(|release| {
             select_catalog_release_artifact(
                 release,
-                build_class,
+                supported_features,
                 crate::services::RuntimePerformanceClass::Slow,
             )
             .is_some()
@@ -516,11 +516,11 @@ fn latest_compatible_catalog_release(
 
 fn latest_host_blocked_catalog_release(
     plugin: &CatalogV3PluginEntry,
-    build_class: scryer_runtime_info::BinaryClass,
+    supported_features: &HashSet<String>,
 ) -> Option<CatalogV3PluginRelease> {
     let latest = latest_catalog_release(plugin)?;
     let latest_version = parse_catalog_release_version(&plugin.id, &latest)?;
-    let selected = latest_compatible_catalog_release(plugin, build_class);
+    let selected = latest_compatible_catalog_release(plugin, supported_features);
     match selected {
         Some(selected) => {
             let selected_version = parse_catalog_release_version(&plugin.id, &selected)?;
@@ -570,17 +570,6 @@ fn installed_catalog_release(
         .cloned()
 }
 
-fn supported_required_features_for_build_class(
-    build_class: scryer_runtime_info::BinaryClass,
-) -> HashSet<String> {
-    match build_class {
-        scryer_runtime_info::BinaryClass::Portable => HashSet::new(),
-        scryer_runtime_info::BinaryClass::Optimized => {
-            HashSet::from(["simd128".to_string(), "relaxed-simd".to_string()])
-        }
-    }
-}
-
 fn artifact_required_features_supported(
     artifact: &CatalogV3PluginArtifact,
     supported_features: &HashSet<String>,
@@ -607,15 +596,14 @@ fn preferred_plugin_artifact_encoding(
 
 fn select_catalog_release_artifact(
     release: &CatalogV3PluginRelease,
-    build_class: scryer_runtime_info::BinaryClass,
+    supported_features: &HashSet<String>,
     cpu_class: crate::services::RuntimePerformanceClass,
 ) -> Option<CatalogV3PluginArtifact> {
-    let supported_features = supported_required_features_for_build_class(build_class);
     let preferred_encoding = preferred_plugin_artifact_encoding(cpu_class);
     let mut matching = release
         .artifacts
         .iter()
-        .filter(|artifact| artifact_required_features_supported(artifact, &supported_features))
+        .filter(|artifact| artifact_required_features_supported(artifact, supported_features))
         .cloned()
         .collect::<Vec<_>>();
     matching.sort_by(|left, right| {
@@ -634,7 +622,7 @@ fn select_catalog_release_artifact(
 
 fn select_catalog_release_and_artifact(
     plugin: &CatalogV3PluginEntry,
-    build_class: scryer_runtime_info::BinaryClass,
+    supported_features: &HashSet<String>,
     cpu_class: crate::services::RuntimePerformanceClass,
 ) -> Option<(CatalogV3PluginRelease, CatalogV3PluginArtifact)> {
     plugin
@@ -642,7 +630,7 @@ fn select_catalog_release_and_artifact(
         .iter()
         .filter(|release| catalog_release_is_sdk_compatible(&plugin.id, release))
         .filter_map(|release| {
-            select_catalog_release_artifact(release, build_class, cpu_class)
+            select_catalog_release_artifact(release, supported_features, cpu_class)
                 .map(|artifact| (release, artifact))
         })
         .filter_map(|(release, artifact)| {
@@ -761,6 +749,14 @@ fn installation_is_catalog_official(installation: &PluginInstallation) -> bool {
         && installation.support_tier == PluginSupportTier::Official
         && installation.wasm_digest_algo.is_some()
         && installation.wasm_digest.is_some()
+}
+
+fn preserves_legacy_nzbgeek_builtin_for_catalog_migration(
+    installation: &PluginInstallation,
+) -> bool {
+    installation.plugin_id == LEGACY_NZBGEEK_PLUGIN_ID
+        && installation.is_builtin
+        && installation.source_kind == PluginSourceKind::Bundled
 }
 
 fn installation_is_first_party(installation: &PluginInstallation) -> bool {
@@ -1001,6 +997,7 @@ const CENTRAL_CATALOG_WORKFLOW: &str = ".github/workflows/release-plugin.yml";
 const SQLITE_PLUGIN_WASM_ZSTD_LEVEL: i32 = 3;
 const RESTORE_PLUGIN_RECOVERY_ACTOR_ID: &str = "system:restore-plugin-recovery";
 
+const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 const LEGACY_INDEXER_PLUGIN_TYPE: &str = "indexer";
 const USENET_INDEXER_PLUGIN_TYPE: &str = "usenet_indexer";
 const TORRENT_INDEXER_PLUGIN_TYPE: &str = "torrent_indexer";
@@ -1744,7 +1741,7 @@ impl AppUseCase {
             .into_iter()
             .filter(|installation| {
                 installation.is_builtin
-                    && installation.plugin_id != "nzbgeek"
+                    && !preserves_legacy_nzbgeek_builtin_for_catalog_migration(installation)
                     && !builtin_keys.contains(&builtin_lookup_key(
                         &installation.plugin_type,
                         &installation.provider_type,
@@ -1949,7 +1946,7 @@ impl AppUseCase {
             let Some(default_url) = provider.default_base_url_for_provider(&pt) else {
                 continue;
             };
-            if should_skip_auto_created_indexer_config(&pt) {
+            if !indexer_config_can_be_auto_created(&fields) {
                 continue;
             }
             let existing = self
@@ -2181,7 +2178,7 @@ impl AppUseCase {
             .plugin_installations
             .list_plugin_catalog_sources()
             .await?;
-        let build_class = self.runtime_build_class();
+        let supported_plugin_features = self.runtime_supported_plugin_required_features();
         let central = sources
             .iter()
             .find(|source| source.source_key == CENTRAL_CATALOG_SOURCE_KEY)
@@ -2217,7 +2214,8 @@ impl AppUseCase {
                 let selected = resolved_by_id.get(&entry.id);
                 let selected_release = selected.map(|value| value.release.clone());
                 let latest_release = latest_catalog_release(&entry);
-                let blocked_release = latest_host_blocked_catalog_release(&entry, build_class);
+                let blocked_release =
+                    latest_host_blocked_catalog_release(&entry, &supported_plugin_features);
                 let active_release =
                     inst.and_then(|installation| installed_catalog_release(&entry, installation));
                 let display_release = selected_release
@@ -2795,39 +2793,6 @@ impl AppUseCase {
         Ok(())
     }
 
-    pub async fn migrate_nzbgeek_builtin_to_official_internal(&self) -> AppResult<()> {
-        let Some(installation) = self
-            .services
-            .customization
-            .plugin_installations
-            .get_plugin_installation("nzbgeek")
-            .await?
-        else {
-            return Ok(());
-        };
-        if !(installation.is_builtin && installation.source_kind == PluginSourceKind::Bundled) {
-            return Ok(());
-        }
-        let resolved = self
-            .resolved_catalog_plugins()
-            .await?
-            .into_iter()
-            .find(|plugin| {
-                plugin.catalog_entry.id == "nzbgeek"
-                    && plugin.source_kind == PluginSourceKind::Downloaded
-                    && plugin.effective_support_tier == PluginSupportTier::Official
-            })
-            .ok_or_else(|| {
-                AppError::NotFound(
-                    "official nzbgeek plugin is not available for builtin migration".to_string(),
-                )
-            })?;
-        let reporter = PluginInstallProgressReporter::new(self, "system", "nzbgeek");
-        self.upgrade_catalog_plugin(resolved, installation, &reporter)
-            .await
-            .map(|_| ())
-    }
-
     async fn fetch_verified_blob_from_locations(
         &self,
         data_urls: &[String],
@@ -2922,7 +2887,7 @@ impl AppUseCase {
             .plugin_installations
             .list_plugin_catalog_sources()
             .await?;
-        let build_class = self.runtime_build_class();
+        let supported_plugin_features = self.runtime_supported_plugin_required_features();
         let cpu_class = self.runtime_performance().await.cpu_class;
         let central = sources
             .iter()
@@ -2933,9 +2898,11 @@ impl AppUseCase {
         let mut result = Vec::new();
         if let Some(central) = central {
             for entry in central.plugins {
-                let Some((release, artifact)) =
-                    select_catalog_release_and_artifact(&entry, build_class, cpu_class)
-                else {
+                let Some((release, artifact)) = select_catalog_release_and_artifact(
+                    &entry,
+                    &supported_plugin_features,
+                    cpu_class,
+                ) else {
                     continue;
                 };
                 let github_repo = GitHubRepo::parse(&entry.source_repo)?;
@@ -2965,7 +2932,7 @@ impl AppUseCase {
             let catalog = parse_and_validate_catalog_v3(catalog_json.as_bytes())?;
             let plugin = single_manual_catalog_plugin(&catalog, &manual_repo)?;
             let Some((release, artifact)) =
-                select_catalog_release_and_artifact(&plugin, build_class, cpu_class)
+                select_catalog_release_and_artifact(&plugin, &supported_plugin_features, cpu_class)
             else {
                 continue;
             };
@@ -3186,6 +3153,71 @@ impl AppUseCase {
         Ok(result)
     }
 
+    pub async fn migrate_nzbgeek_builtin_to_official_internal(&self) -> AppResult<()> {
+        let Some(installation) = self
+            .services
+            .customization
+            .plugin_installations
+            .get_plugin_installation(LEGACY_NZBGEEK_PLUGIN_ID)
+            .await?
+        else {
+            return Ok(());
+        };
+
+        if !preserves_legacy_nzbgeek_builtin_for_catalog_migration(&installation) {
+            return Ok(());
+        }
+
+        let resolved = self
+            .resolved_catalog_plugins()
+            .await?
+            .into_iter()
+            .find(|resolved| {
+                resolved.catalog_entry.id == LEGACY_NZBGEEK_PLUGIN_ID
+                    && resolved.source_kind == PluginSourceKind::Downloaded
+                    && resolved.effective_support_tier == PluginSupportTier::Official
+            })
+            .ok_or_else(|| {
+                AppError::NotFound(
+                    "official nzbgeek plugin is not available for builtin migration".to_string(),
+                )
+            })?;
+        let reporter = PluginInstallProgressReporter::new(self, "system", LEGACY_NZBGEEK_PLUGIN_ID);
+        let prepared = self
+            .prepare_catalog_plugin_install(&resolved, &reporter)
+            .await?;
+        let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
+        let previous_plugin_type = installation.plugin_type.clone();
+        let previous_provider_type = installation.provider_type.clone();
+        let (updated, runtime_plugin) = prepared.into_updated_installation(installation)?;
+
+        reporter.installing().await;
+        let result = self
+            .services
+            .customization
+            .plugin_installations
+            .update_plugin_installation(&updated, Some(persisted_wasm_bytes.as_slice()))
+            .await?;
+
+        let runtime_touched = result.is_enabled;
+        if runtime_touched {
+            let mut previous_runtime_installation = result.clone();
+            previous_runtime_installation.plugin_type = previous_plugin_type.clone();
+            previous_runtime_installation.provider_type = previous_provider_type.clone();
+            self.apply_runtime_plugin_replace(
+                &previous_runtime_installation,
+                &result,
+                runtime_plugin,
+            )?;
+        }
+        self.finalize_runtime_plugin_mutation_for_types(
+            [previous_plugin_type.as_str(), result.plugin_type.as_str()],
+            runtime_touched,
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn upsert_manual_plugin_catalog_source(
         &self,
         repo: &GitHubRepo,
@@ -3244,8 +3276,9 @@ impl AppUseCase {
         let catalog = parse_and_validate_catalog_v3(&catalog_raw)?;
         let plugin = single_manual_catalog_plugin(&catalog, &repo)?;
         let cpu_class = self.runtime_performance().await.cpu_class;
+        let supported_plugin_features = self.runtime_supported_plugin_required_features();
         let (release, artifact) =
-            select_catalog_release_and_artifact(&plugin, self.runtime_build_class(), cpu_class)
+            select_catalog_release_and_artifact(&plugin, &supported_plugin_features, cpu_class)
                 .ok_or_else(|| {
                     AppError::Validation(format!(
                         "manual plugin repo '{}' has no SDK-compatible release",
@@ -4164,10 +4197,78 @@ impl AppUseCase {
     }
 }
 
-// Builtin indexers with fixed endpoints still need a user-supplied API key,
-// so they should not be auto-created during reconciliation.
-fn should_skip_auto_created_indexer_config(provider_type: &str) -> bool {
-    provider_type.eq_ignore_ascii_case("nzbgeek") || provider_type.eq_ignore_ascii_case("dognzb")
+fn indexer_config_can_be_auto_created(fields: &[scryer_domain::ConfigFieldDef]) -> bool {
+    !fields.iter().any(|field| {
+        field.required
+            && field.value_source == scryer_domain::ConfigFieldValueSource::User
+            && field.host_binding.is_none()
+            && field.role != Some(scryer_domain::ConfigFieldRole::ConnectionUrl)
+            && field
+                .default_value
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+    })
+}
+
+#[cfg(test)]
+mod indexer_config_reconciliation_tests {
+    use super::*;
+
+    fn field(
+        key: &str,
+        role: Option<scryer_domain::ConfigFieldRole>,
+        field_type: scryer_domain::ConfigFieldType,
+        required: bool,
+        default_value: Option<&str>,
+    ) -> scryer_domain::ConfigFieldDef {
+        scryer_domain::ConfigFieldDef {
+            key: key.to_string(),
+            label: key.to_string(),
+            field_type,
+            required,
+            default_value: default_value.map(str::to_string),
+            value_source: scryer_domain::ConfigFieldValueSource::User,
+            role,
+            host_binding: None,
+            options: Vec::new(),
+            help_text: None,
+        }
+    }
+
+    #[test]
+    fn auto_create_allows_defaulted_connection_url_only() {
+        let fields = vec![field(
+            "base_url",
+            Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            scryer_domain::ConfigFieldType::String,
+            true,
+            Some("https://indexer.example"),
+        )];
+
+        assert!(indexer_config_can_be_auto_created(&fields));
+    }
+
+    #[test]
+    fn auto_create_skips_required_user_secret_without_default() {
+        let fields = vec![
+            field(
+                "base_url",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                scryer_domain::ConfigFieldType::String,
+                true,
+                Some("https://indexer.example"),
+            ),
+            field(
+                "api_key",
+                None,
+                scryer_domain::ConfigFieldType::Password,
+                true,
+                None,
+            ),
+        ];
+
+        assert!(!indexer_config_can_be_auto_created(&fields));
+    }
 }
 
 #[cfg(test)]
@@ -4283,6 +4384,148 @@ mod sdk_compatibility_tests {
         let selected = latest_compatible_child_release(&catalog).expect("compatible release");
 
         assert_eq!(selected.version, "0.1.0");
+    }
+}
+
+#[cfg(test)]
+mod catalog_artifact_selection_tests {
+    use super::*;
+    use crate::services::RuntimePerformanceClass;
+    use std::collections::HashSet;
+
+    fn artifact(required_features: &[&str], url: &str) -> CatalogV3PluginArtifact {
+        CatalogV3PluginArtifact {
+            runtime: CATALOG_V3_RUNTIME_WASIP1.to_string(),
+            required_features: required_features
+                .iter()
+                .map(|feature| (*feature).to_string())
+                .collect(),
+            url: url.to_string(),
+            mirror_urls: Vec::new(),
+            signature_url: format!("{url}.sig"),
+            signature_mirror_urls: Vec::new(),
+            digests: vec!["sha256:artifact".to_string()],
+            wasm_digests: vec!["sha256:wasm".to_string()],
+        }
+    }
+
+    fn release(artifacts: Vec<CatalogV3PluginArtifact>) -> CatalogV3PluginRelease {
+        CatalogV3PluginRelease {
+            version: "1.0.0".to_string(),
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+            artifacts,
+        }
+    }
+
+    #[test]
+    fn empty_feature_set_selects_baseline_artifact() {
+        let release = release(vec![
+            artifact(
+                &["simd128", "relaxed-simd"],
+                "https://example.invalid/plugin-simd.br",
+            ),
+            artifact(&[], "https://example.invalid/plugin.zst"),
+        ]);
+
+        let selected = select_catalog_release_artifact(
+            &release,
+            &HashSet::new(),
+            RuntimePerformanceClass::Slow,
+        )
+        .expect("baseline artifact");
+
+        assert_eq!(selected.required_features, Vec::<String>::new());
+        assert_eq!(selected.url, "https://example.invalid/plugin.zst");
+    }
+
+    #[test]
+    fn simd128_feature_set_selects_simd128_but_not_relaxed_simd() {
+        let release = release(vec![
+            artifact(&[], "https://example.invalid/plugin.zst"),
+            artifact(&["simd128"], "https://example.invalid/plugin-simd.br"),
+            artifact(
+                &["simd128", "relaxed-simd"],
+                "https://example.invalid/plugin-relaxed.br",
+            ),
+        ]);
+
+        let selected = select_catalog_release_artifact(
+            &release,
+            &HashSet::from(["simd128".to_string()]),
+            RuntimePerformanceClass::Slow,
+        )
+        .expect("simd128 artifact");
+
+        assert_eq!(selected.required_features, vec!["simd128".to_string()]);
+        assert_eq!(selected.url, "https://example.invalid/plugin-simd.br");
+    }
+
+    #[test]
+    fn full_simd_feature_set_selects_relaxed_simd_artifact() {
+        let release = release(vec![
+            artifact(&[], "https://example.invalid/plugin.zst"),
+            artifact(&["simd128"], "https://example.invalid/plugin-simd.zst"),
+            artifact(
+                &["simd128", "relaxed-simd"],
+                "https://example.invalid/plugin-relaxed.br",
+            ),
+            artifact(
+                &["simd128", "relaxed-simd"],
+                "https://example.invalid/plugin-relaxed.zst",
+            ),
+        ]);
+
+        let selected = select_catalog_release_artifact(
+            &release,
+            &HashSet::from(["simd128".to_string(), "relaxed-simd".to_string()]),
+            RuntimePerformanceClass::Slow,
+        )
+        .expect("relaxed simd artifact");
+
+        assert_eq!(
+            selected.required_features,
+            vec!["simd128".to_string(), "relaxed-simd".to_string()]
+        );
+        assert_eq!(selected.url, "https://example.invalid/plugin-relaxed.zst");
+    }
+
+    #[test]
+    fn portable_native_build_can_select_simd_artifact_from_runtime_features() {
+        let plugin = CatalogV3PluginEntry {
+            id: "alpha".to_string(),
+            name: "Alpha".to_string(),
+            description: "Alpha plugin".to_string(),
+            plugin_type: "indexer".to_string(),
+            provider_type: "alpha".to_string(),
+            publisher: "scryer".to_string(),
+            support_tier: PluginSupportTier::Official,
+            status: PluginLifecycleStatus::Active,
+            docs_url: "https://example.invalid/docs".to_string(),
+            source_repo: "https://github.com/scryer-media/alpha".to_string(),
+            required_signer: RequiredSigner {
+                github_repository: "scryer-media/alpha".to_string(),
+                github_workflow: None,
+            },
+            releases: vec![release(vec![
+                artifact(&[], "https://example.invalid/plugin.zst"),
+                artifact(
+                    &["simd128", "relaxed-simd"],
+                    "https://example.invalid/plugin-relaxed.zst",
+                ),
+            ])],
+        };
+
+        let (_, selected) = select_catalog_release_and_artifact(
+            &plugin,
+            &HashSet::from(["simd128".to_string(), "relaxed-simd".to_string()]),
+            RuntimePerformanceClass::Slow,
+        )
+        .expect("runtime feature selection should not depend on native build class");
+
+        assert_eq!(
+            selected.required_features,
+            vec!["simd128".to_string(), "relaxed-simd".to_string()]
+        );
     }
 }
 

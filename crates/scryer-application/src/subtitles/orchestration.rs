@@ -1195,12 +1195,7 @@ fn build_subtitle_query(
             .or_else(|| media_file.source_type.clone()),
         video_codec: preferred_release
             .and_then(|release| release.video_codec.as_ref().map(ToString::to_string))
-            .or_else(|| {
-                media_file
-                    .video_codec_parsed
-                    .clone()
-                    .map(|codec| codec.to_string())
-            })
+            .or_else(|| media_file.video_codec_parsed.map(|codec| codec.to_string()))
             .or(analysis_labels.video_codec),
         audio_codec: preferred_release
             .and_then(release_audio_codec)

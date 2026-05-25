@@ -1500,6 +1500,7 @@ fn merge_bulk_metadata_partial(
                             overview: ep.overview,
                             absolute_number: ep.absolute_number,
                             season_number: ep.season_number,
+                            image_url: ep.image_url,
                         })
                         .collect(),
                     anime_mappings: s
@@ -2074,6 +2075,8 @@ struct SeriesEpisodeItem {
     is_recap: bool,
     overview: String,
     absolute_number: String,
+    #[serde(default)]
+    image_url: String,
 }
 
 #[derive(Deserialize)]
@@ -2430,6 +2433,7 @@ impl MetadataGateway for MetadataGatewayClient {
                     overview: ep.overview,
                     absolute_number: ep.absolute_number,
                     season_number: ep.season_number,
+                    image_url: ep.image_url,
                 })
                 .collect(),
             anime_mappings: s

@@ -21,6 +21,10 @@ type JsonCreationOptions = {
   extensions?: AuthenticationExtensionsClientInputs;
 };
 
+type JsonCredentialCreationOptions = {
+  publicKey: JsonCreationOptions;
+};
+
 type JsonRequestOptions = {
   challenge: string;
   timeout?: number;
@@ -28,6 +32,11 @@ type JsonRequestOptions = {
   allowCredentials?: Array<PublicKeyCredentialDescriptor & { id: string }>;
   userVerification?: UserVerificationRequirement;
   extensions?: AuthenticationExtensionsClientInputs;
+};
+
+type JsonCredentialRequestOptions = {
+  publicKey: JsonRequestOptions;
+  mediation?: CredentialMediationRequirement;
 };
 
 type LoginPayload = {
@@ -102,41 +111,65 @@ function bufferToBase64Url(value: ArrayBuffer | ArrayBufferView | null | undefin
     .replace(/=+$/g, "");
 }
 
-function parseCreationOptions(optionsJson: string): PublicKeyCredentialCreationOptions {
-  const parsed = JSON.parse(optionsJson) as JsonCreationOptions;
+function parseCreationOptions(optionsJson: string): CredentialCreationOptions {
+  const parsed = JSON.parse(optionsJson) as JsonCredentialCreationOptions;
+  const publicKey = parsed.publicKey;
+  if (!publicKey?.challenge || !publicKey.user?.id) {
+    throw new PasskeyClientError(
+      "invalid_response",
+      "Passkey registration options were malformed.",
+    );
+  }
+
   const helper = credentialHelpers();
   if (typeof helper.parseCreationOptionsFromJSON === "function") {
-    return helper.parseCreationOptionsFromJSON(parsed);
+    return { publicKey: helper.parseCreationOptionsFromJSON(publicKey) };
   }
 
   return {
-    ...parsed,
-    challenge: base64UrlToBuffer(parsed.challenge),
-    user: {
-      ...parsed.user,
-      id: base64UrlToBuffer(parsed.user.id),
+    publicKey: {
+      ...publicKey,
+      challenge: base64UrlToBuffer(publicKey.challenge),
+      user: {
+        ...publicKey.user,
+        id: base64UrlToBuffer(publicKey.user.id),
+      },
+      excludeCredentials: publicKey.excludeCredentials?.map((credential) => ({
+        ...credential,
+        id: base64UrlToBuffer(credential.id),
+      })),
     },
-    excludeCredentials: parsed.excludeCredentials?.map((credential) => ({
-      ...credential,
-      id: base64UrlToBuffer(credential.id),
-    })),
   };
 }
 
-function parseRequestOptions(optionsJson: string): PublicKeyCredentialRequestOptions {
-  const parsed = JSON.parse(optionsJson) as JsonRequestOptions;
+function parseRequestOptions(optionsJson: string): CredentialRequestOptions {
+  const parsed = JSON.parse(optionsJson) as JsonCredentialRequestOptions;
+  const publicKey = parsed.publicKey;
+  if (!publicKey?.challenge) {
+    throw new PasskeyClientError(
+      "invalid_response",
+      "Passkey authentication options were malformed.",
+    );
+  }
+
   const helper = credentialHelpers();
   if (typeof helper.parseRequestOptionsFromJSON === "function") {
-    return helper.parseRequestOptionsFromJSON(parsed);
+    return {
+      publicKey: helper.parseRequestOptionsFromJSON(publicKey),
+      mediation: parsed.mediation,
+    };
   }
 
   return {
-    ...parsed,
-    challenge: base64UrlToBuffer(parsed.challenge),
-    allowCredentials: parsed.allowCredentials?.map((credential) => ({
-      ...credential,
-      id: base64UrlToBuffer(credential.id),
-    })),
+    publicKey: {
+      ...publicKey,
+      challenge: base64UrlToBuffer(publicKey.challenge),
+      allowCredentials: publicKey.allowCredentials?.map((credential) => ({
+        ...credential,
+        id: base64UrlToBuffer(credential.id),
+      })),
+    },
+    mediation: parsed.mediation,
   };
 }
 
@@ -243,9 +276,7 @@ export async function authenticateWithPasskey(
       "webauthnAuthenticateStart",
     );
 
-    const credential = await navigator.credentials.get({
-      publicKey: parseRequestOptions(start.optionsJson),
-    });
+    const credential = await navigator.credentials.get(parseRequestOptions(start.optionsJson));
     if (!(credential instanceof PublicKeyCredential)) {
       throw new PasskeyClientError("invalid_response", "No passkey assertion was returned.");
     }
@@ -283,9 +314,7 @@ export async function registerPasskey(client: Client = backendClient): Promise<P
       Record<string, never>
     >(client, webauthnRegisterStartMutation, {}, "webauthnRegisterStart");
 
-    const credential = await navigator.credentials.create({
-      publicKey: parseCreationOptions(start.optionsJson),
-    });
+    const credential = await navigator.credentials.create(parseCreationOptions(start.optionsJson));
     if (!(credential instanceof PublicKeyCredential)) {
       throw new PasskeyClientError("invalid_response", "No passkey registration was returned.");
     }

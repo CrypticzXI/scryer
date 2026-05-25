@@ -302,7 +302,7 @@ fn structured_query_collapse_skips_when_auto_mode_is_disabled_in_managed_metadat
 fn structured_query_collapse_skips_when_non_nab_indexers_are_eligible() {
     let configs = vec![
         synthetic_indexer_config("direct", "nzbgeek", true, true, true, None),
-        synthetic_indexer_config("other", "animetosho", true, true, true, None),
+        synthetic_indexer_config("other", "id_only_anime_indexer", true, true, true, None),
     ];
 
     assert!(!should_collapse_structured_nab_queries(

@@ -162,6 +162,7 @@ impl MetadataQueries {
                         aired: e.aired,
                         runtime_minutes: e.runtime_minutes,
                         is_filler: e.is_filler,
+                        image_url: e.image_url,
                     })
                     .collect()
             } else {

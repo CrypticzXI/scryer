@@ -77,6 +77,34 @@ export type LibraryRecord = {
   roots: LibraryRootRecord[];
 };
 
+export type MediaRequestRequesterRecord = {
+  userId: string;
+  username: string;
+  requestedAt: string;
+};
+
+export type MediaRequestRecord = {
+  id: string;
+  libraryId: string;
+  facet: Facet;
+  status: "pending";
+  identityFingerprint: string;
+  title: string;
+  sortTitle?: string | null;
+  slug?: string | null;
+  posterUrl?: string | null;
+  year?: number | null;
+  overview?: string | null;
+  runtimeMinutes?: number | null;
+  language?: string | null;
+  contentStatus?: string | null;
+  externalIds: ExternalId[];
+  requesters: MediaRequestRequesterRecord[];
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type LibrarySettingsRecord = {
   requiredAudioLanguagesOverride: string[] | null;
   requiredAudioLanguages: string[];

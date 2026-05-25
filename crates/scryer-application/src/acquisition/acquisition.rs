@@ -2000,7 +2000,7 @@ pub(crate) async fn process_due_wanted_items_with_blocked_facets(
             );
         }
         processed_in_slice += 1;
-        if processed_in_slice % ACQUISITION_SLICE_YIELD_INTERVAL == 0 {
+        if processed_in_slice.is_multiple_of(ACQUISITION_SLICE_YIELD_INTERVAL) {
             tokio::task::yield_now().await;
         }
 

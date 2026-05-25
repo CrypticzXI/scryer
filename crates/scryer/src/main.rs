@@ -66,7 +66,6 @@ use webauthn_rs::WebauthnBuilder;
 
 use admin_routes::{
     AdminSettingsQuery, admin_migrations_handler, admin_settings_list, bootstrap_admin_password,
-    seed_indexer_configs_from_env,
 };
 use backup_routes::{
     BackupRouteState, download_backup_handler, finalize_pending_restore_if_present,
@@ -90,6 +89,7 @@ use ui_assets::{UiAssetMode, ui_asset_mode, ui_fallback};
 include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 
 fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
     scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
@@ -106,10 +106,7 @@ fn spawn_plugin_catalog_refresh_task(app_use_case: AppUseCase) {
             .migrate_nzbgeek_builtin_to_official_internal()
             .await
         {
-            tracing::warn!(
-                error = %error,
-                "failed to migrate nzbgeek builtin to official plugin"
-            );
+            tracing::warn!(error = %error, "failed to migrate nzbgeek builtin plugin");
         }
     });
 }
@@ -990,7 +987,11 @@ async fn bootstrap_application(
     );
     let services = datastore
         .app_services_builder(indexer_client, download_client)
-        .with_runtime_environment(compiled_binary_lane(), data_dir.clone())
+        .with_runtime_environment(
+            compiled_binary_lane(),
+            data_dir.clone(),
+            scryer_plugins::detect_supported_plugin_required_features(),
+        )
         .with_smg_registration_secret(
             SMG_REGISTRATION_SECRET
                 .map(String::from)
@@ -1087,9 +1088,6 @@ async fn bootstrap_application(
     }
     if let Err(e) = app_use_case.reconcile_indexer_configs().await {
         tracing::warn!(error = %e, "failed to reconcile indexer configs on startup");
-    }
-    if let Err(error) = seed_indexer_configs_from_env(&app_use_case).await {
-        tracing::warn!(error = %error, "failed to seed indexer configs from environment");
     }
     if let Err(e) = app_use_case
         .ensure_indexer_routing_entries_for_existing_indexers()
@@ -1955,6 +1953,14 @@ async fn bootstrap_plugin_installations(
     seed_builtin_plugin_installations(customization_store).await
 }
 
+fn preserves_legacy_nzbgeek_builtin_for_catalog_migration(
+    installation: &scryer_domain::PluginInstallation,
+) -> bool {
+    installation.plugin_id == LEGACY_NZBGEEK_PLUGIN_ID
+        && installation.is_builtin
+        && installation.source_kind == scryer_domain::PluginSourceKind::Bundled
+}
+
 async fn seed_builtin_plugin_installations(
     customization_store: &DatastoreCustomizationStore,
 ) -> Result<(), String> {
@@ -2140,6 +2146,7 @@ async fn seed_builtin_plugin_installations(
         .into_iter()
         .filter(|installation| {
             installation.is_builtin
+                && !preserves_legacy_nzbgeek_builtin_for_catalog_migration(installation)
                 && !builtin_keys.contains(&builtin_lookup_key(
                     &installation.plugin_type,
                     &installation.provider_type,
@@ -2313,6 +2320,67 @@ mod tests {
                 env_override_description: Some("SCRYER_AUTH_ENABLED=true".to_string()),
                 used_legacy_dev_auto_login: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_preserves_legacy_nzbgeek_builtin_for_catalog_migration() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("plugins.db");
+        let services = SqliteServices::new(db_path.to_string_lossy())
+            .await
+            .unwrap();
+        let customization = DatastoreCustomizationStore::new(services.datastore());
+        let now = Utc::now();
+
+        customization
+            .create_plugin_installation(
+                &scryer_domain::PluginInstallation {
+                    id: scryer_domain::Id::new().0,
+                    plugin_id: "nzbgeek".to_string(),
+                    name: "NZBGeek Indexer".to_string(),
+                    description: "legacy builtin".to_string(),
+                    version: "0.2.10".to_string(),
+                    sdk_version: "1.3.0".to_string(),
+                    sdk_constraint: ">=1.3.0, <1.4.0".to_string(),
+                    scryer_constraint: None,
+                    plugin_type: "indexer".to_string(),
+                    provider_type: "nzbgeek".to_string(),
+                    source_kind: scryer_domain::PluginSourceKind::Bundled,
+                    is_enabled: true,
+                    is_builtin: true,
+                    wasm_encoding: scryer_domain::PluginWasmEncoding::Identity,
+                    wasm_digest_algo: None,
+                    source_url: None,
+                    support_tier: scryer_domain::PluginSupportTier::Official,
+                    publisher: Some("scryer".to_string()),
+                    docs_url: None,
+                    source_repo: None,
+                    manifest_url: None,
+                    wasm_digest: None,
+                    artifact_digest: None,
+                    descriptor_json: None,
+                    installed_at: now,
+                    updated_at: now,
+                },
+                None,
+            )
+            .await
+            .expect("seed legacy nzbgeek builtin row");
+
+        bootstrap_plugin_installations(&customization)
+            .await
+            .expect("bootstrap plugin installations");
+
+        let installation = customization
+            .get_plugin_installation("nzbgeek")
+            .await
+            .expect("read plugin installation")
+            .expect("legacy nzbgeek builtin should be preserved for catalog migration");
+        assert!(installation.is_builtin);
+        assert_eq!(
+            installation.source_kind,
+            scryer_domain::PluginSourceKind::Bundled
         );
     }
 

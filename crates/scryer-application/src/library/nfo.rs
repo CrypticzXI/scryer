@@ -677,6 +677,7 @@ mod tests {
             absolute_number: None,
             overview: Some("A high school chemistry teacher gets a diagnosis.".into()),
             tvdb_id: Some("349232".into()),
+            image_url: None,
             monitored: true,
             created_at: Utc::now(),
         }

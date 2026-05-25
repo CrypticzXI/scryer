@@ -88,6 +88,39 @@ pub(crate) async fn append_domain_events(
     .await
 }
 
+pub(crate) async fn append_domain_event_tx(
+    tx: &mut SqlTx<'_>,
+    event: NewDomainEvent,
+) -> AppResult<DomainEvent> {
+    let payload = serde_json::to_value(&event.payload).map_err(repo_err)?;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO domain_events (
+            event_id, occurred_at, actor_user_id, title_id, facet, correlation_id, causation_id,
+            schema_version, stream_kind, stream_id, event_type, payload_json
+         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        &[
+            SqlArg::Text(event.event_id.clone()),
+            SqlArg::Timestamp(event.occurred_at),
+            SqlArg::OptText(event.actor_user_id.clone()),
+            SqlArg::OptText(event.title_id.clone()),
+            SqlArg::OptText(event.facet.as_ref().map(|facet| facet.as_str().to_string())),
+            SqlArg::OptText(event.correlation_id.clone()),
+            SqlArg::OptText(event.causation_id.clone()),
+            SqlArg::I32(event.schema_version),
+            SqlArg::Text(event.stream.kind().to_string()),
+            SqlArg::OptText(event.stream.identifier().map(str::to_string)),
+            SqlArg::Text(event.payload.event_type().as_str().to_string()),
+            SqlArg::Json(payload),
+        ],
+    )
+    .await?;
+
+    fetch_domain_event_by_event_id(SqlExec::Tx(tx), &event.event_id)
+        .await?
+        .ok_or_else(|| AppError::Repository("failed to reload inserted domain event".into()))
+}
+
 pub(crate) async fn commit_successful_grab_tx(
     tx: &mut SqlTx<'_>,
     commit: &SuccessfulGrabCommit,
@@ -535,6 +568,12 @@ pub(crate) fn build_title_history_filter_sql(
             let mut parts = Vec::new();
             for event_type in event_types {
                 match event_type {
+                    TitleHistoryEventType::Requested => {
+                        parts.push("event_type = {}".to_string());
+                        args.push(SqlArg::Text(
+                            DomainEventType::MediaRequestSubmitted.as_str().into(),
+                        ));
+                    }
                     TitleHistoryEventType::Grabbed => {
                         parts.push("event_type = {}".to_string());
                         args.push(SqlArg::Text(

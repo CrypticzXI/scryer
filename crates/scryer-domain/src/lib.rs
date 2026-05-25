@@ -96,6 +96,57 @@ pub struct Library {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+pub enum MediaRequestStatus {
+    Pending,
+}
+
+impl MediaRequestStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "pending" => Some(Self::Pending),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaRequestRequester {
+    pub user_id: String,
+    pub username: String,
+    pub requested_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaRequest {
+    pub id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    pub status: MediaRequestStatus,
+    pub identity_fingerprint: String,
+    pub title: String,
+    pub sort_title: Option<String>,
+    pub slug: Option<String>,
+    pub poster_url: Option<String>,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub runtime_minutes: Option<i32>,
+    pub language: Option<String>,
+    pub content_status: Option<String>,
+    pub external_ids: Vec<ExternalId>,
+    pub requesters: Vec<MediaRequestRequester>,
+    pub created_by_user_id: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum AppPermission {
     ManageUsers,
     ManagePermissions,
@@ -590,6 +641,7 @@ pub struct Episode {
     pub absolute_number: Option<String>,
     pub overview: Option<String>,
     pub tvdb_id: Option<String>,
+    pub image_url: Option<String>,
     pub monitored: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -1324,6 +1376,7 @@ pub struct ImportFileResult {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TitleHistoryEventType {
+    Requested,
     Grabbed,
     DownloadFailed,
     Blocklisted,
@@ -1340,6 +1393,7 @@ pub enum TitleHistoryEventType {
 impl TitleHistoryEventType {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Requested => "requested",
             Self::Grabbed => "grabbed",
             Self::DownloadFailed => "download_failed",
             Self::Blocklisted => "blocklisted",
@@ -1356,6 +1410,7 @@ impl TitleHistoryEventType {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "requested" => Some(Self::Requested),
             "grabbed" => Some(Self::Grabbed),
             "download_failed" => Some(Self::DownloadFailed),
             "blocklisted" => Some(Self::Blocklisted),
@@ -1372,6 +1427,7 @@ impl TitleHistoryEventType {
     }
 
     pub const ALL: &[Self] = &[
+        Self::Requested,
         Self::Grabbed,
         Self::DownloadFailed,
         Self::Blocklisted,
@@ -1551,6 +1607,7 @@ pub enum EventType {
 #[serde(rename_all = "snake_case")]
 #[derive(strum::EnumIter)]
 pub enum DomainEventType {
+    MediaRequestSubmitted,
     TitleAdded,
     TitleUpdated,
     TitleRematched,
@@ -1594,6 +1651,7 @@ pub enum DomainEventType {
 impl DomainEventType {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::MediaRequestSubmitted => "media_request_submitted",
             Self::TitleAdded => "title_added",
             Self::TitleUpdated => "title_updated",
             Self::TitleRematched => "title_rematched",
@@ -1637,6 +1695,7 @@ impl DomainEventType {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "media_request_submitted" => Some(Self::MediaRequestSubmitted),
             "title_added" => Some(Self::TitleAdded),
             "title_updated" => Some(Self::TitleUpdated),
             "title_rematched" => Some(Self::TitleRematched),
@@ -1722,6 +1781,17 @@ pub struct TitleContextSnapshot {
     pub title_name: String,
     pub facet: MediaFacet,
     pub external_ids: DomainExternalIds,
+    pub poster_url: Option<String>,
+    pub year: Option<i32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaRequestSubmittedEventData {
+    pub request_id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    pub title_name: String,
+    pub external_ids: Vec<ExternalId>,
     pub poster_url: Option<String>,
     pub year: Option<i32>,
 }
@@ -2205,6 +2275,7 @@ pub struct DownloadQueueItemRemovedEventData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum DomainEventPayload {
+    MediaRequestSubmitted(MediaRequestSubmittedEventData),
     TitleAdded(TitleAddedEventData),
     TitleUpdated(TitleUpdatedEventData),
     TitleRematched(TitleRematchedEventData),
@@ -2248,6 +2319,7 @@ pub enum DomainEventPayload {
 impl DomainEventPayload {
     pub fn event_type(&self) -> DomainEventType {
         match self {
+            Self::MediaRequestSubmitted(_) => DomainEventType::MediaRequestSubmitted,
             Self::TitleAdded(_) => DomainEventType::TitleAdded,
             Self::TitleUpdated(_) => DomainEventType::TitleUpdated,
             Self::TitleRematched(_) => DomainEventType::TitleRematched,
@@ -2529,6 +2601,99 @@ pub struct User {
     pub authorization: UserAuthorization,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAccountProvider {
+    Plex,
+    Jellyfin,
+}
+
+impl ExternalAccountProvider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Plex => "plex",
+            Self::Jellyfin => "jellyfin",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plex" => Some(Self::Plex),
+            "jellyfin" => Some(Self::Jellyfin),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAccountStatus {
+    PendingClaim,
+    Active,
+    Disabled,
+}
+
+impl ExternalAccountStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PendingClaim => "pending_claim",
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pending_claim" => Some(Self::PendingClaim),
+            "active" => Some(Self::Active),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserExternalAccount {
+    pub id: String,
+    pub user_id: String,
+    pub provider: ExternalAccountProvider,
+    pub connection_id: String,
+    pub external_user_id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub status: ExternalAccountStatus,
+    pub verified_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl UserExternalAccount {
+    pub fn pending_claim(
+        user_id: impl Into<String>,
+        provider: ExternalAccountProvider,
+        connection_id: impl Into<String>,
+        external_user_id: impl Into<String>,
+        username: impl Into<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Id::new().0,
+            user_id: user_id.into(),
+            provider,
+            connection_id: connection_id.into(),
+            external_user_id: external_user_id.into(),
+            username: username.into(),
+            display_name: None,
+            avatar_url: None,
+            status: ExternalAccountStatus::PendingClaim,
+            verified_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
 impl User {
     pub fn new_admin(username: impl Into<String>) -> Self {
         Self {
@@ -2751,11 +2916,12 @@ pub struct IndexerProviderCapabilities {
     /// it can search on for each facet. Values must be from the core vocabulary:
     /// `"imdb_id"`, `"tvdb_id"`, `"anidb_id"` — matching the field names on
     /// `PluginSearchRequest`. The plugin maps these to its own query format
-    /// internally (e.g. `anidb_id` → `aid=` for AnimeTosho).
+    /// internally (for example, an anime indexer may map `anidb_id` to its own
+    /// provider-specific ID parameter).
     ///
     /// Examples:
     ///   NZBGeek:    {"movie": ["imdb_id"], "series": ["tvdb_id"]}
-    ///   AnimeTosho: {"anime": ["anidb_id"], "movie": ["anidb_id"]}
+    ///   Id-only anime indexer: {"anime": ["anidb_id"], "movie": ["anidb_id"]}
     ///   RSS:        {} (empty — feed-only, no structured search)
     #[serde(default)]
     pub supported_ids: HashMap<String, Vec<String>>,

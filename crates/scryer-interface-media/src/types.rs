@@ -110,6 +110,7 @@ pub struct EpisodePayload {
     pub is_recap: bool,
     pub absolute_number: Option<String>,
     pub tvdb_id: Option<String>,
+    pub image_url: Option<String>,
     pub monitored: bool,
     pub created_at: String,
 }

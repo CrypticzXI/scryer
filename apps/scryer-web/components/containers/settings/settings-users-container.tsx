@@ -1,23 +1,82 @@
-
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
-import { SettingsUsersSection } from "@/components/views/settings/settings-users-section";
 import {
+  SettingsUsersSection,
+  type ExternalInviteDraft,
+} from "@/components/views/settings/settings-users-section";
+import {
+  createExternalAccountInviteMutation,
   createUserMutation,
   deleteUserMutation,
   setUserAppPermissionsMutation,
   setUserLibraryPermissionsMutation,
   setUserPasswordMutation,
 } from "@/lib/graphql/mutations";
-import { librariesQuery, usersQuery } from "@/lib/graphql/queries";
+import { authProviderRuntimeSettingsQuery, librariesQuery, usersQuery } from "@/lib/graphql/queries";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { useClient } from "urql";
 import type { LibraryRecord, UserRecord } from "@/lib/types";
+import type { AuthProviderSettings, ExternalAccountProvider } from "@/lib/types/settings";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { APP_PERMISSIONS, LIBRARY_PERMISSIONS } from "@/lib/utils/permissions";
 
 type LibraryGrantDrafts = Record<string, string[]>;
+
+const DEFAULT_AUTH_PROVIDER_SETTINGS: AuthProviderSettings = {
+  allowedProviders: [],
+  providerLoginEnabled: [],
+  providerLinkingEnabled: [],
+  allowedJellyfinConnectionIds: [],
+  allowedPlexConnectionIds: [],
+  allowedJellyfinConnections: [],
+  allowedPlexConnections: [],
+};
+
+const DEFAULT_EXTERNAL_INVITE_DRAFT: ExternalInviteDraft = {
+  userId: "",
+  provider: "jellyfin",
+  connectionId: "",
+  externalUserId: "",
+  username: "",
+};
+
+function connectionIdsForProvider(
+  settings: AuthProviderSettings,
+  provider: ExternalAccountProvider,
+): string[] {
+  return provider === "jellyfin"
+    ? settings.allowedJellyfinConnectionIds
+    : settings.allowedPlexConnectionIds;
+}
+
+function connectionDescriptorsForProvider(
+  settings: AuthProviderSettings,
+  provider: ExternalAccountProvider,
+) {
+  const descriptors =
+    provider === "jellyfin"
+      ? settings.allowedJellyfinConnections
+      : settings.allowedPlexConnections;
+
+  if (descriptors.length > 0) {
+    return descriptors;
+  }
+
+  return connectionIdsForProvider(settings, provider).map((id) => ({
+    id,
+    displayName: id,
+    userVisibleUrl: null,
+  }));
+}
+
+function inviteProviders(settings: AuthProviderSettings): ExternalAccountProvider[] {
+  return settings.allowedProviders.filter(
+    (provider) =>
+      settings.providerLoginEnabled.includes(provider) &&
+      connectionDescriptorsForProvider(settings, provider).length > 0,
+  );
+}
 
 function normalizePermissions(values: string[] | null | undefined): string[] {
   return Array.from(new Set((values ?? []).map((value) => value.trim()).filter(Boolean)));
@@ -60,9 +119,18 @@ export function SettingsUsersContainer() {
   const [userLibraryPermissionDrafts, setUserLibraryPermissionDrafts] = useState<Record<string, LibraryGrantDrafts>>({});
   const [mutatingUserId, setMutatingUserId] = useState<string | null>(null);
   const [pendingDeleteUser, setPendingDeleteUser] = useState<UserRecord | null>(null);
+  const [authProviderSettings, setAuthProviderSettings] =
+    useState<AuthProviderSettings>(DEFAULT_AUTH_PROVIDER_SETTINGS);
+  const [externalInviteDraft, setExternalInviteDraft] =
+    useState<ExternalInviteDraft>(DEFAULT_EXTERNAL_INVITE_DRAFT);
+  const [externalInviteSubmitting, setExternalInviteSubmitting] = useState(false);
 
   const updateUserPasswordDraft = useCallback((userId: string, value: string) => {
     setUserPasswordDrafts((previous) => ({ ...previous, [userId]: value }));
+  }, []);
+
+  const updateExternalInviteDraft = useCallback((patch: Partial<ExternalInviteDraft>) => {
+    setExternalInviteDraft((previous) => ({ ...previous, ...patch }));
   }, []);
 
   const toggleNewAppPermission = useCallback((value: string) => {
@@ -132,10 +200,47 @@ export function SettingsUsersContainer() {
     }
   }, [client, setGlobalStatus, t]);
 
+  const refreshAuthProviderSettings = useCallback(async () => {
+    try {
+      const { data, error } = await client.query(authProviderRuntimeSettingsQuery, {}).toPromise();
+      if (error) throw error;
+      setAuthProviderSettings({
+        ...DEFAULT_AUTH_PROVIDER_SETTINGS,
+        ...data?.authProviderRuntimeSettings,
+      });
+    } catch (error) {
+      setAuthProviderSettings(DEFAULT_AUTH_PROVIDER_SETTINGS);
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+    }
+  }, [client, setGlobalStatus, t]);
+
   useEffect(() => {
     void refreshUsers();
     void refreshLibraries();
-  }, [refreshLibraries, refreshUsers]);
+    void refreshAuthProviderSettings();
+  }, [refreshAuthProviderSettings, refreshLibraries, refreshUsers]);
+
+  useEffect(() => {
+    setExternalInviteDraft((previous) => {
+      const providerOptions = inviteProviders(authProviderSettings);
+      const provider = providerOptions.includes(previous.provider)
+        ? previous.provider
+        : providerOptions[0] ?? "jellyfin";
+      const connections = connectionDescriptorsForProvider(authProviderSettings, provider);
+      const connectionId = connections.some((connection) => connection.id === previous.connectionId)
+        ? previous.connectionId
+        : connections[0]?.id ?? "";
+
+      return {
+        ...previous,
+        userId: settingsUsers.some((user) => user.id === previous.userId)
+          ? previous.userId
+          : settingsUsers[0]?.id ?? "",
+        provider,
+        connectionId,
+      };
+    });
+  }, [authProviderSettings, settingsUsers]);
 
   const createUser = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -252,6 +357,45 @@ export function SettingsUsersContainer() {
     setPendingDeleteUser(user);
   };
 
+  const createExternalAccountInvite = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const userId = externalInviteDraft.userId.trim();
+    const connectionId = externalInviteDraft.connectionId.trim();
+    const externalUserId = externalInviteDraft.externalUserId.trim();
+    const username = externalInviteDraft.username.trim();
+
+    if (!userId || !connectionId || !externalUserId || !username) {
+      setGlobalStatus(t("settings.externalAccountInviteRequired"));
+      return;
+    }
+
+    setExternalInviteSubmitting(true);
+    try {
+      const { error } = await client
+        .mutation(createExternalAccountInviteMutation, {
+          input: {
+            userId,
+            provider: externalInviteDraft.provider,
+            connectionId,
+            externalUserId,
+            username,
+          },
+        })
+        .toPromise();
+      if (error) throw error;
+      setExternalInviteDraft((previous) => ({
+        ...previous,
+        externalUserId: "",
+        username: "",
+      }));
+      setGlobalStatus(t("settings.externalAccountInviteCreated"));
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("settings.externalAccountInviteFailed"));
+    } finally {
+      setExternalInviteSubmitting(false);
+    }
+  };
+
   const confirmDeleteUser = async () => {
     if (!pendingDeleteUser) {
       return;
@@ -293,6 +437,7 @@ export function SettingsUsersContainer() {
       <SettingsUsersSection
         settingsUsers={settingsUsers}
         libraries={libraries}
+        authProviderSettings={authProviderSettings}
         newUsername={newUsername}
         setNewUsername={setNewUsername}
         newPassword={newPassword}
@@ -316,6 +461,10 @@ export function SettingsUsersContainer() {
         setUserLibraryPermissions={setUserLibraryPermissions}
         deleteUser={deleteUser}
         currentUserId={currentUser?.id ?? null}
+        externalInviteDraft={externalInviteDraft}
+        externalInviteSubmitting={externalInviteSubmitting}
+        updateExternalInviteDraft={updateExternalInviteDraft}
+        createExternalAccountInvite={createExternalAccountInvite}
       />
       <ConfirmDialog
         open={pendingDeleteUser !== null}

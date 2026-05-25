@@ -87,6 +87,7 @@ const COLLECTION_EPISODE_FIELDS = `
       isFiller
       isRecap
       absoluteNumber
+      imageUrl
       monitored
       createdAt`;
 
@@ -1570,6 +1571,18 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
       isDefault
     }
   }
+  requestableLibraries: libraries(permission: request) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    roots {
+      id
+      path
+      isDefault
+    }
+  }
   movieSettings: mediaSettings(scope: movie) {${mediaSettingsFieldSelection}
   }
   seriesSettings: mediaSettings(scope: series) {${mediaSettingsFieldSelection}
@@ -1629,6 +1642,71 @@ export const securitySettingsQuery = `query SecuritySettings {
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
+  }
+}`;
+
+export const authProviderSettingsQuery = `query AuthProviderSettings {
+  authProviderSettings {
+    allowedProviders
+    providerLoginEnabled
+    providerLinkingEnabled
+    allowedJellyfinConnectionIds
+    allowedPlexConnectionIds
+    allowedJellyfinConnections {
+      id
+      displayName
+      userVisibleUrl
+      baseUrl
+      machineId
+    }
+    allowedPlexConnections {
+      id
+      displayName
+      userVisibleUrl
+      baseUrl
+      machineId
+    }
+  }
+}`;
+
+export const authProviderRuntimeSettingsQuery = `query AuthProviderRuntimeSettings {
+  authProviderRuntimeSettings {
+    allowedProviders
+    providerLoginEnabled
+    providerLinkingEnabled
+    allowedJellyfinConnectionIds
+    allowedPlexConnectionIds
+    allowedJellyfinConnections {
+      id
+      displayName
+      userVisibleUrl
+      baseUrl
+      machineId
+    }
+    allowedPlexConnections {
+      id
+      displayName
+      userVisibleUrl
+      baseUrl
+      machineId
+    }
+  }
+}`;
+
+export const linkedAccountsQuery = `query LinkedAccounts($userId: String) {
+  linkedAccounts(userId: $userId) {
+    id
+    userId
+    provider
+    connectionId
+    externalUserId
+    username
+    displayName
+    avatarUrl
+    status
+    verifiedAt
+    createdAt
+    updatedAt
   }
 }`;
 
@@ -2260,6 +2338,7 @@ export const metadataSeriesQuery = `query MetadataSeries($id: String!, $includeE
       aired
       runtimeMinutes
       isFiller
+      imageUrl
     }
   }
 }`;
@@ -2390,6 +2469,37 @@ export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilter
       createdAt
     }
     totalCount
+  }
+}`;
+
+export const mediaRequestsQuery = `query MediaRequests($facet: MediaFacetValue, $libraryIds: [String!], $status: MediaRequestStatusValue) {
+  mediaRequests(facet: $facet, libraryIds: $libraryIds, status: $status) {
+    id
+    libraryId
+    facet
+    status
+    identityFingerprint
+    title
+    sortTitle
+    slug
+    posterUrl
+    year
+    overview
+    runtimeMinutes
+    language
+    contentStatus
+    externalIds {
+      source
+      value
+    }
+    requesters {
+      userId
+      username
+      requestedAt
+    }
+    createdByUserId
+    createdAt
+    updatedAt
   }
 }`;
 

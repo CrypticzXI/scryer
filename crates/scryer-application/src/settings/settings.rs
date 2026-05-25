@@ -1437,7 +1437,7 @@ impl AppUseCase {
         .await
     }
 
-    async fn emit_settings_saved(
+    pub(crate) async fn emit_settings_saved(
         &self,
         actor: &User,
         resource_type: &str,
@@ -1520,7 +1520,7 @@ impl AppUseCase {
             .await
     }
 
-    async fn upsert_system_setting_json<T: Serialize>(
+    pub(crate) async fn upsert_system_setting_json<T: Serialize>(
         &self,
         key_name: &str,
         value: &T,

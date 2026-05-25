@@ -141,6 +141,7 @@ fn base_episode() -> Episode {
         absolute_number: None,
         overview: None,
         tvdb_id: None,
+        image_url: None,
         monitored: true,
         created_at: now_utc(),
     }

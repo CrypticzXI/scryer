@@ -165,7 +165,7 @@ fn walk_scan_batches_blocking(
             .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
     } else {
         FilesystemWalker::new()
-            .skip_library_scan_junk()
+            .skip_episodic_scan_junk_and_trailers()
             .supported_video_files_only()
             .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
     };
@@ -290,7 +290,7 @@ fn scan_directory_with_metrics_blocking(
     let mut files = Vec::new();
 
     FilesystemWalker::new()
-        .skip_library_scan_junk()
+        .skip_episodic_scan_junk_and_trailers()
         .supported_video_files_only()
         .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH)
         .walk_with(&root_path, |walked_dir| {
@@ -748,6 +748,53 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 show_dir
+                    .join("Episode.S01E01.mkv")
+                    .to_string_lossy()
+                    .to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_directory_for_progress_with_metrics_skips_episodic_trailer_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let show_dir = dir.path().join("Anime Show");
+        let season_dir = show_dir.join("Season 1");
+        let trailers_dir = show_dir.join("trailers");
+        let titled_trailers_dir = show_dir.join("12 Years a Slave (Trailers)");
+        tokio::fs::create_dir_all(&season_dir)
+            .await
+            .expect("season dir");
+        tokio::fs::create_dir_all(&trailers_dir)
+            .await
+            .expect("trailers dir");
+        tokio::fs::create_dir_all(&titled_trailers_dir)
+            .await
+            .expect("titled trailers dir");
+        tokio::fs::write(season_dir.join("Episode.S01E01.mkv"), b"video")
+            .await
+            .expect("episode");
+        tokio::fs::write(trailers_dir.join("Episode.S00E01.mkv"), b"video")
+            .await
+            .expect("trailer");
+        tokio::fs::write(titled_trailers_dir.join("Feature.Trailer.mkv"), b"video")
+            .await
+            .expect("titled trailer");
+
+        let scanner = FileSystemLibraryScanner::new();
+        let result = scanner
+            .scan_directory_for_progress_with_metrics(show_dir.to_string_lossy().as_ref())
+            .await
+            .expect("scan directory");
+
+        assert_eq!(
+            result
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                season_dir
                     .join("Episode.S01E01.mkv")
                     .to_string_lossy()
                     .to_string()

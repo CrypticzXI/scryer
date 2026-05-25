@@ -619,9 +619,7 @@ impl TestContext {
         // so reload_plugins works in integration tests)
         let plugin_provider: Arc<dyn IndexerPluginProvider> =
             Arc::new(scryer_plugins::DynamicPluginProvider::new(
-                scryer_plugins::WasmIndexerPluginProvider::empty()
-                    .with_builtin_asset(scryer_plugins::builtins::NZBGEEK)
-                    .with_builtin_asset(scryer_plugins::builtins::NEWZNAB),
+                scryer_plugins::build_indexer_plugin_provider(&[], &[]),
             ));
         let indexer_stats: Arc<dyn scryer_application::IndexerStatsTracker> = Arc::new(
             scryer_infrastructure::InMemoryIndexerStatsTracker::new(None),

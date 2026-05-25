@@ -6,6 +6,7 @@ edition.workspace = true
 [features]
 default = ["image-processing"]
 image-processing = ["dep:fast_image_resize", "dep:image", "dep:kamadak-exif", "dep:ravif"]
+runtime-backups = ["scryer-application/runtime-backups"]
 
 [dependencies]
 scryer-domain = { path = "../scryer-domain" }

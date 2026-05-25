@@ -515,6 +515,20 @@ impl MultiIndexerSearchClient {
         )))
     }
 
+    async fn record_indexer_last_error(
+        indexer_configs: &Arc<dyn IndexerConfigRepository>,
+        indexer_id: &str,
+        indexer_name: &str,
+    ) {
+        if let Err(error) = indexer_configs.touch_last_error(indexer_id).await {
+            warn!(
+                indexer = indexer_name,
+                error = %error,
+                "failed to update indexer last_error_at"
+            );
+        }
+    }
+
     fn is_rss_sync_request(
         query: &str,
         ids_present: bool,
@@ -986,8 +1000,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             // Skip indexers that can't contribute to this facet.
             // - Indexers with declared facets that don't include the current facet are skipped.
             // - Indexers that have the facet but only for ID-based search (deduplicates_aliases)
-            //   are skipped when none of their supported IDs are available — freetext on
-            //   AnimeTosho for "Lattice Zero" is pointless when there's no anidb_id.
+            //   are skipped when none of their supported IDs are available.
             let has_facet_entry = caps.has_facet(&facet);
             let has_declared_facets = !caps.supported_ids.is_empty();
             let skip_no_facet = !has_facet_entry
@@ -1078,6 +1091,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let rate_limit_seconds = config.rate_limit_seconds;
                     let stats_tracker = self.stats_tracker.clone();
                     let backoff_tracker = self.backoff_tracker.clone();
+                    let indexer_configs = self.indexer_configs.clone();
                     let facet = facet.clone();
                     let should_rate_limit = !pre_acquired_rss_categories;
 
@@ -1119,11 +1133,23 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     Ok(Err(err)) => {
                                         warn!(indexer = indexer_name.as_str(), error = %err, "RSS feed fetch failed");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                        Self::record_indexer_last_error(
+                                            &indexer_configs,
+                                            &indexer_id,
+                                            &indexer_name,
+                                        )
+                                        .await;
                                         vec![]
                                     }
                                     Err(_) => {
                                         warn!(indexer = indexer_name.as_str(), "RSS feed fetch timed out");
                                         stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                        Self::record_indexer_last_error(
+                                            &indexer_configs,
+                                            &indexer_id,
+                                            &indexer_name,
+                                        )
+                                        .await;
                                         vec![]
                                     }
                                 }
@@ -1208,6 +1234,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let tagged_aliases_for_indexer = tagged_aliases.clone();
                 let stats_tracker = self.stats_tracker.clone();
                 let backoff_tracker = self.backoff_tracker.clone();
+                let indexer_configs = self.indexer_configs.clone();
                 let client = client.clone();
                 let primary_strategies = primary_strategies.clone();
                 let fallback_strategies = fallback_strategies.clone();
@@ -1281,6 +1308,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     "indexer search failed"
                                 );
                                 stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                Self::record_indexer_last_error(
+                                    &indexer_configs,
+                                    &indexer_id,
+                                    &indexer_name,
+                                )
+                                .await;
 
                                 record_strategy_metrics(
                                     &indexer_name,
@@ -1368,6 +1401,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         "indexer fallback search failed"
                                     );
                                     stats_tracker.record_query(&indexer_id, &indexer_name, false);
+                                    Self::record_indexer_last_error(
+                                        &indexer_configs,
+                                        &indexer_id,
+                                        &indexer_name,
+                                    )
+                                    .await;
 
                                     record_strategy_metrics(
                                         &indexer_name,
@@ -1934,6 +1973,45 @@ mod tests {
         }
     }
 
+    struct RecordingTouchIndexerConfigRepository {
+        configs: Vec<IndexerConfig>,
+        touched_ids: StdArc<StdMutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl IndexerConfigRepository for RecordingTouchIndexerConfigRepository {
+        async fn list(&self, _provider_type: Option<String>) -> AppResult<Vec<IndexerConfig>> {
+            Ok(self.configs.clone())
+        }
+
+        async fn get_by_id(&self, _id: &str) -> AppResult<Option<IndexerConfig>> {
+            Ok(None)
+        }
+
+        async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig> {
+            Ok(config)
+        }
+
+        async fn touch_last_error(&self, id: &str) -> AppResult<()> {
+            self.touched_ids
+                .lock()
+                .expect("touched ids mutex")
+                .push(id.to_string());
+            Ok(())
+        }
+
+        async fn update(
+            &self,
+            _update: scryer_application::IndexerConfigUpdate,
+        ) -> AppResult<IndexerConfig> {
+            Err(AppError::Validation("not implemented in test".into()))
+        }
+
+        async fn delete(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
     struct MockIndexerStatsTracker;
 
     impl IndexerStatsTracker for MockIndexerStatsTracker {
@@ -2332,6 +2410,57 @@ mod tests {
             }),
             ..IndexerCapsSnapshot::default()
         }
+    }
+
+    #[tokio::test]
+    async fn indexer_failure_records_last_error_for_config_id() {
+        let touched_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: StdArc::new(StdMutex::new(Vec::new())),
+            responder: StdArc::new(|_| Err(AppError::Repository("upstream status 503".into()))),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(RecordingTouchIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+                touched_ids: touched_ids.clone(),
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: IndexerProviderCapabilities {
+                    rss: true,
+                    search: false,
+                    imdb_search: false,
+                    tvdb_search: false,
+                    anidb_search: false,
+                    supported_ids: HashMap::new(),
+                    ..Default::default()
+                },
+            }),
+        );
+
+        let response = multi
+            .search(
+                String::new(),
+                HashMap::new(),
+                None,
+                Some("series".to_string()),
+                None,
+                None,
+                SearchMode::Auto,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("RSS failure is isolated to the indexer");
+
+        assert!(response.results.is_empty());
+        assert_eq!(
+            *touched_ids.lock().expect("touched ids mutex"),
+            vec!["idx-1".to_string()]
+        );
     }
 
     #[tokio::test]

@@ -210,6 +210,7 @@ pub struct EpisodeMetadata {
     pub overview: String,
     pub absolute_number: String,
     pub season_number: i32,
+    pub image_url: String,
 }
 
 #[async_trait]
