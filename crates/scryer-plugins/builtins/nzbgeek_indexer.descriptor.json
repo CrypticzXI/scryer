@@ -127,5 +127,5 @@
   },
   "sdk_constraint": ">=1.6.0, <1.7.0",
   "sdk_version": "1.6.0",
-  "version": "0.2.10"
+  "version": "0.2.11"
 }

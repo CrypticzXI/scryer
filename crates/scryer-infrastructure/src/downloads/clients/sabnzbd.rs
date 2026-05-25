@@ -1332,11 +1332,13 @@ fn sab_api_mode_matches_response(request_mode: Option<&str>, json: &Value) -> bo
         Some("queue") => {
             json.get("queue").is_some()
                 || json.get("slots").is_some()
+                || json.get("status").is_some()
                 || sab_api_status_is_false(json)
         }
         Some("history") => {
             json.get("history").is_some()
                 || json.get("slots").is_some()
+                || json.get("status").is_some()
                 || sab_api_status_is_false(json)
         }
         Some("get_config") => json.get("config").is_some() || sab_api_status_is_false(json),

@@ -1642,6 +1642,20 @@ async fn sabnzbd_test_connection_accepts_username_password_auth() {
 
     Mock::given(method("POST"))
         .and(path("/api"))
+        .and(body_string_contains("mode=version"))
+        .and(body_string_contains("ma_username=test-user"))
+        .and(body_string_contains("ma_password=test-pass"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/version.json")),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_string_contains("mode=queue"))
+        .and(body_string_contains("ma_username=test-user"))
+        .and(body_string_contains("ma_password=test-pass"))
         .respond_with(
             ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
         )
@@ -1659,7 +1673,7 @@ async fn sabnzbd_test_connection_accepts_username_password_auth() {
         .find(|request| request.method.as_str() == "POST" && request.url.path() == "/api")
         .expect("credential auth request should be posted");
     let body = String::from_utf8_lossy(&auth_request.body);
-    assert!(body.contains("mode=queue"));
+    assert!(body.contains("mode=version"));
     assert!(body.contains("ma_username=test-user"));
     assert!(body.contains("ma_password=test-pass"));
 }
@@ -2336,6 +2350,12 @@ async fn sabnzbd_submit_download_deletes_self_staged_nzb_on_failure() {
         .mount(&server)
         .await;
 
+    Mock::given(method("POST"))
+        .and(path("/sabnzbd/api"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("addfile failed"))
+        .mount(&server)
+        .await;
+
     let client = SabnzbdDownloadClient::with_staged_nzb_store(
         server.uri(),
         "test-api-key".to_string(),
@@ -2398,9 +2418,17 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
     assert_eq!(result.client_type, "sabnzbd");
     let requests = server.received_requests().await.unwrap();
     let request_body = String::from_utf8_lossy(&requests[0].body);
-    assert_eq!(
-        requests[0].url.query(),
-        Some("apikey=test-api-key"),
+    let query = requests[0].url.query().unwrap_or_default();
+    assert!(
+        query.contains("mode=addfile"),
+        "sabnzbd upload should use addfile mode"
+    );
+    assert!(
+        query.contains("output=json"),
+        "sabnzbd upload should request json output"
+    );
+    assert!(
+        query.contains("apikey=test-api-key"),
         "sabnzbd upload should authenticate with the API key in the query string"
     );
     assert!(
@@ -2507,18 +2535,34 @@ async fn sabnzbd_submit_download_accepts_username_password_auth() {
 
     let requests = server.received_requests().await.unwrap();
     let request_body = String::from_utf8_lossy(&requests[0].body);
-    assert_eq!(
-        requests[0].url.query(),
-        None,
+    let query = requests[0].url.query().unwrap_or_default();
+    assert!(
+        query.contains("mode=addfile"),
+        "credential-auth SAB upload should use addfile mode"
+    );
+    assert!(
+        query.contains("output=json"),
+        "credential-auth SAB upload should request json output"
+    );
+    assert!(
+        query.contains("ma_username=test-user"),
+        "credential-auth SAB upload should include ma_username in the query string"
+    );
+    assert!(
+        query.contains("ma_password=test-pass"),
+        "credential-auth SAB upload should include ma_password in the query string"
+    );
+    assert!(
+        !query.contains("apikey="),
         "credential-auth SAB upload should not send an API key in the query string"
     );
     assert!(
-        request_body.contains("name=\"ma_username\"") && request_body.contains("test-user"),
-        "credential-auth SAB upload should include ma_username in the multipart body: {request_body}"
+        !request_body.contains("name=\"ma_username\"") && !request_body.contains("test-user"),
+        "credential-auth SAB upload should not include ma_username in the multipart body: {request_body}"
     );
     assert!(
-        request_body.contains("name=\"ma_password\"") && request_body.contains("test-pass"),
-        "credential-auth SAB upload should include ma_password in the multipart body: {request_body}"
+        !request_body.contains("name=\"ma_password\"") && !request_body.contains("test-pass"),
+        "credential-auth SAB upload should not include ma_password in the multipart body: {request_body}"
     );
     assert!(
         !request_body.contains("name=\"apikey\""),
