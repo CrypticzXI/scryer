@@ -5,7 +5,9 @@ mod common;
 use std::sync::Arc;
 
 use common::TestContext;
-use scryer_application::recycle_bin::RecycleBinConfig;
+use scryer_application::recycle_bin::{
+    RECYCLE_STATUS_COMMITTED, RECYCLE_STATUS_PENDING, RecycleBinConfig, RecycleManifest,
+};
 use scryer_application::testing::{
     AppUseCaseTestExt, UpgradeForTestInput, execute_upgrade_for_test,
 };
@@ -75,6 +77,8 @@ fn make_recycle_config(base: &std::path::Path) -> RecycleBinConfig {
         enabled: true,
         base_path: base.to_path_buf(),
         retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
     }
 }
 
@@ -171,6 +175,7 @@ async fn upgrade_replaces_old_file_with_new() {
             parsed,
             final_score: 650,
             target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
             recycle_config: &recycle_config,
         },
     )
@@ -183,6 +188,10 @@ async fn upgrade_replaces_old_file_with_new() {
 
     assert_eq!(outcome.old_score, 400);
     assert_eq!(outcome.new_score, 650);
+    assert!(
+        outcome.recycle_entry_committed,
+        "successful upgrade should commit recycle proof"
+    );
 
     // New file should exist at destination
     assert!(new_dest.exists(), "new file should exist");
@@ -190,11 +199,39 @@ async fn upgrade_replaces_old_file_with_new() {
     // Old file should be gone from original location (recycled)
     assert!(!old_path.exists(), "old file should be recycled");
 
-    // Recycle dir should contain the recycled file
-    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path()).unwrap().collect();
+    // Recycle dir should contain a committed entry for the replaced file.
+    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(
+        recycle_entries.len(),
+        1,
+        "recycle bin should have one entry"
+    );
+    let manifest_bytes = std::fs::read(recycle_entries[0].path().join("manifest.json")).unwrap();
+    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
     assert!(
-        !recycle_entries.is_empty(),
-        "recycle bin should have entries"
+        manifest.entry_id.is_some(),
+        "committed entry should have an id"
+    );
+    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    assert_eq!(
+        manifest.original_file_id.as_deref(),
+        Some(existing.id.as_str())
+    );
+    assert_eq!(
+        manifest.media_root.as_deref(),
+        Some(media_dir.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        manifest.replacement_file_id.as_deref(),
+        Some(outcome.new_file_id.as_str())
+    );
+    assert_eq!(
+        manifest.replacement_path.as_deref(),
+        Some(new_dest.to_string_lossy().as_ref())
     );
 
     // DB should have the new file, not the old one
@@ -256,6 +293,7 @@ async fn upgrade_restores_old_file_on_import_failure() {
             parsed,
             final_score: 700,
             target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
             recycle_config: &recycle_config,
         },
     )
@@ -276,10 +314,28 @@ async fn upgrade_restores_old_file_on_import_failure() {
     // Content should match original
     let content = std::fs::read_to_string(&old_path).unwrap();
     assert_eq!(content, "old video content");
+
+    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(
+        recycle_entries.len(),
+        1,
+        "failed upgrade leaves audit entry"
+    );
+    let manifest_bytes = std::fs::read(recycle_entries[0].path().join("manifest.json")).unwrap();
+    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
+    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_PENDING));
+    assert!(
+        manifest.replacement_file_id.is_none(),
+        "failed upgrade must not commit replacement proof"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Disabled recycle bin (direct delete)
+// Disabled recycle bin (safe refusal)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -307,9 +363,11 @@ async fn upgrade_with_disabled_recycle_bin() {
         enabled: false,
         base_path: std::path::PathBuf::from("/tmp/unused"),
         retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
     };
 
-    let outcome = execute_upgrade_for_test(
+    let result = execute_upgrade_for_test(
         &app,
         UpgradeForTestInput {
             actor: &actor,
@@ -320,21 +378,16 @@ async fn upgrade_with_disabled_recycle_bin() {
             parsed,
             final_score: 600,
             target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
             recycle_config: &disabled_config,
         },
     )
-    .await
-    .expect("execute_upgrade");
+    .await;
 
-    let UpgradeResult::Upgraded(outcome) = outcome else {
-        panic!("expected upgrade to succeed");
-    };
-
-    assert_eq!(outcome.new_score, 600);
-
-    // Old file should be deleted (not recycled)
-    assert!(!old_path.exists(), "old file should be deleted");
-
-    // New file should exist
-    assert!(new_dest.exists(), "new file should exist");
+    assert!(
+        result.is_err(),
+        "upgrade should fail when recycle bin is disabled"
+    );
+    assert!(old_path.exists(), "old file should be preserved");
+    assert!(!new_dest.exists(), "new file should not be imported");
 }

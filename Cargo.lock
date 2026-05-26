@@ -3622,9 +3622,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.29"
+version = "0.4.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
 name = "loom"
@@ -4855,9 +4855,9 @@ dependencies = [
 
 [[package]]
 name = "prost-reflect"
-version = "0.16.3"
+version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b89455ef41ed200cafc47c76c552ee7792370ac420497e551f16123a9135f76e"
+checksum = "590aa145fee8f7a26b5a6055365e7c5e89a5c1caae9869de76ec0ee73181a2f9"
 dependencies = [
  "base64 0.22.1",
  "prost",
@@ -5314,9 +5314,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "regorus"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63642e663bb81698ab7160735bdc831f580022194922d3f24d5c40a913ff3fab"
+checksum = "419a0413adeece71e4d4a64fb75adc359cb807496f0dfd10f429517be908b807"
 dependencies = [
  "anyhow",
  "indexmap 2.14.0",
@@ -5737,7 +5737,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scryer"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-graphql",
  "async-graphql-axum",
@@ -5784,7 +5784,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-application"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "argon2",
  "async-trait",
@@ -5842,7 +5842,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-domain"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "chrono",
  "serde",
@@ -5853,7 +5853,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-infrastructure"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -5903,7 +5903,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5925,7 +5925,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-core"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-graphql",
  "scryer-application",
@@ -5935,7 +5935,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-media"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-graphql",
  "scryer-application",
@@ -5950,7 +5950,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-media-types"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-graphql",
  "scryer-domain",
@@ -5959,7 +5959,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-metadata"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-graphql",
  "scryer-application",
@@ -5969,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-settings"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5981,14 +5981,14 @@ dependencies = [
 
 [[package]]
 name = "scryer-launcher"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "scryer-mediainfo"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "bytes",
  "criterion",
@@ -6005,7 +6005,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-mock-apis"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "axum",
  "serde",
@@ -6017,7 +6017,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-outbound-http"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "chrono",
  "metrics",
@@ -6044,7 +6044,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-plugins"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6072,7 +6072,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-release-parser"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -6087,7 +6087,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-rules"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "regorus",
  "serde",
@@ -8614,9 +8614,9 @@ checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
 name = "windows-native-keyring-store"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5fd986f648459dd29aa252ed3a5ad11a60c0b1251bf81625fb03a86c69d274e"
+checksum = "063426e76fdec7438d56bb777f67e318a84a25c707b07e575cb8b78e10c028f8"
 dependencies = [
  "byteorder",
  "keyring-core",
@@ -9029,7 +9029,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9047,7 +9047,7 @@ dependencies = [
 
 [[package]]
 name = "xtask-migrations"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -9059,7 +9059,7 @@ dependencies = [
 
 [[package]]
 name = "xtask-release"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9091,7 +9091,7 @@ dependencies = [
 
 [[package]]
 name = "xtask-support"
-version = "0.15.6"
+version = "0.15.8"
 dependencies = [
  "anyhow",
 ]

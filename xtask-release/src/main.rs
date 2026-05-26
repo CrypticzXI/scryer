@@ -62,6 +62,21 @@ const SCRYER_PROD_PACKAGES: &[&str] = &[
     "scryer-release-parser",
     "scryer-rules",
 ];
+const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
+    "scryer",
+    "scryer-application",
+    "scryer-domain",
+    "scryer-infrastructure",
+    "scryer-interface",
+    "scryer-interface-core",
+    "scryer-interface-media",
+    "scryer-interface-metadata",
+    "scryer-interface-settings",
+    "scryer-mediainfo",
+    "scryer-plugins",
+    "scryer-release-parser",
+    "scryer-rules",
+];
 const RELEASE_DRY_RUN_CACHE_FILE: &str = "tmp/xtask-release-dry-run.json";
 const RELEASE_DRY_RUN_BUILTINS_DIR: &str = "tmp/xtask-release-dry-run-builtins";
 const OFFICIAL_PLUGIN_CATALOG_URL: &str =
@@ -186,6 +201,7 @@ enum Commands {
     Release(ReleaseArgs),
     Builtins(BuiltinsArgs),
     Sdk(SdkArgs),
+    Ci(CiArgs),
 }
 
 #[derive(Args)]
@@ -399,6 +415,9 @@ fn main() -> Result<()> {
         },
         Commands::Sdk(args) => match args.command {
             SdkCommand::Release(args) => run_sdk_release(&ctx, args),
+        },
+        Commands::Ci(args) => match args.command {
+            CiCommand::Clippy(args) => run_clippy_ci(&ctx, args),
         },
     }
 }
@@ -1245,7 +1264,7 @@ fn scryer_release_member_tomls(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
         .into_iter()
         .filter_map(|path| match package_name(&path) {
             Ok(name) if !is_scryer_app_release_package(&name) => {
-                println!("   excluded independent SDK crate: {name}");
+                println!("   excluded non-app release package: {name}");
                 None
             }
             Ok(_) => Some(Ok(path)),
@@ -1255,7 +1274,10 @@ fn scryer_release_member_tomls(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
 }
 
 fn is_scryer_app_release_package(name: &str) -> bool {
-    name != PLUGIN_SDK_PACKAGE
+    !matches!(
+        name,
+        PLUGIN_SDK_PACKAGE | "xtask" | "xtask-release" | "xtask-migrations" | "xtask-support"
+    )
 }
 
 fn write_package_version(path: &Path, version: &Version) -> Result<()> {
@@ -1459,6 +1481,12 @@ fn commit_tracked_changes(
 
 fn add_prod_package_args(command: &mut Command) {
     for package in SCRYER_PROD_PACKAGES {
+        command.args(["-p", package]);
+    }
+}
+
+fn add_ci_clippy_package_args(command: &mut Command) {
+    for package in SCRYER_CI_CLIPPY_PACKAGES {
         command.args(["-p", package]);
     }
 }
@@ -2040,76 +2068,106 @@ fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
 }
 
 fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
-    let linux_target = "x86_64-unknown-linux-gnu";
-    let mut rustc = ctx.command("rustc");
-    rustc.arg("-vV");
-    let host_target = run_capture(&mut rustc)?
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .ok_or_else(|| anyhow!("failed to determine host target"))?
-        .trim()
-        .to_string();
     let linux_image = std::env::var("SCRYER_LINUX_CLIPPY_IMAGE")
         .unwrap_or_else(|_| "rust:1.95.0-bookworm".to_string());
-    let linux_platform =
-        std::env::var("SCRYER_LINUX_CLIPPY_PLATFORM").unwrap_or_else(|_| "linux/arm64".to_string());
+    let linux_platform = std::env::var("SCRYER_LINUX_CLIPPY_PLATFORM").ok();
 
     if !args.linux_only {
-        println!("Running cargo clippy for host target: {host_target}");
+        println!("Running cargo clippy for host target");
         let mut command = ctx.command_in("cargo", &ctx.repo_root);
-        command.args(["clippy", "--workspace", "--", "-D", "warnings"]);
+        command.arg("clippy");
+        add_ci_clippy_package_args(&mut command);
+        command.args(["--", "-D", "warnings"]);
         run_checked(&mut command)?;
     }
 
-    if args.linux_only || host_target != linux_target {
-        if command_available("docker")? {
-            println!("Running cargo clippy in Linux container: {linux_image}");
-            let mut command = ctx.command("docker");
-            command.args([
-                "run",
-                "--rm",
-                "--platform",
-                &linux_platform,
-                "-v",
-                &format!("{}:/work", ctx.repo_root.display()),
-                "-w",
-                "/work",
-                "-e",
-                "CARGO_HOME=/tmp/cargo",
-                "-e",
-                "CARGO_TARGET_DIR=/tmp/target",
-                "-e",
-                "CARGO_TERM_COLOR=always",
-                &linux_image,
-                "bash",
-                "-lc",
-                "set -euo pipefail; /usr/local/cargo/bin/rustup component add clippy; toolchain=\"$('/usr/local/cargo/bin/rustup' show active-toolchain | cut -d' ' -f1)\"; toolchain_bin=\"/usr/local/rustup/toolchains/${toolchain}/bin\"; export PATH=\"${toolchain_bin}:$PATH\"; \"${toolchain_bin}/cargo-clippy\" clippy --workspace --locked -- -D warnings",
-            ]);
-            run_checked(&mut command)?;
-        } else if command_available("x86_64-linux-gnu-gcc")? {
-            println!("Ensuring Linux CI target is installed: {linux_target}");
-            let mut target_add = ctx.command("rustup");
-            target_add.args(["target", "add", linux_target]);
-            run_checked(&mut target_add)?;
-
-            println!("Running cargo clippy for Linux CI target: {linux_target}");
-            let mut command = ctx.command_in("cargo", &ctx.repo_root);
-            command.args([
-                "clippy",
-                "--workspace",
-                "--target",
-                linux_target,
-                "--",
-                "-D",
-                "warnings",
-            ]);
-            run_checked(&mut command)?;
-        } else {
-            bail!("cannot run Linux CI clippy locally; install Docker or x86_64-linux-gnu-gcc");
+    if command_available("docker")? {
+        println!("Running cargo clippy in Linux container: {linux_image}");
+        let repo_cache_key = release_cache_key(&ctx.repo_root);
+        let platform_key = linux_platform.as_deref().unwrap_or("native");
+        let cargo_volume = format!("scryer-clippy-cargo-{repo_cache_key}");
+        let target_volume = format!(
+            "scryer-clippy-target-{repo_cache_key}-{}",
+            docker_cache_key_component(platform_key)
+        );
+        let work_mount = format!("{}:/work", ctx.repo_root.display());
+        let cargo_mount = format!("{cargo_volume}:/cargo");
+        let target_mount = format!("{target_volume}:/target");
+        let clippy_shell = ci_clippy_shell();
+        let mut command = ctx.command("docker");
+        command.args(["run", "--rm"]);
+        if let Some(platform) = linux_platform.as_deref().filter(|value| !value.is_empty()) {
+            command.args(["--platform", platform]);
         }
+        command.args([
+            "-v",
+            &work_mount,
+            "-v",
+            &cargo_mount,
+            "-v",
+            &target_mount,
+            "-w",
+            "/work",
+            "-e",
+            "CARGO_HOME=/cargo",
+            "-e",
+            "CARGO_TARGET_DIR=/target",
+            "-e",
+            "CARGO_INCREMENTAL=0",
+            "-e",
+            "CARGO_PROFILE_DEV_DEBUG=0",
+            "-e",
+            "CARGO_PROFILE_DEV_STRIP=debuginfo",
+            "-e",
+            "CARGO_PROFILE_TEST_DEBUG=0",
+            "-e",
+            "CARGO_PROFILE_TEST_STRIP=debuginfo",
+            "-e",
+            "CARGO_TERM_COLOR=always",
+            &linux_image,
+            "bash",
+            "-lc",
+            &clippy_shell,
+        ]);
+        run_checked(&mut command)?;
+    } else {
+        bail!("cannot run Linux clippy locally; install Docker");
     }
 
     Ok(())
+}
+
+fn ci_clippy_shell() -> String {
+    let package_args = SCRYER_CI_CLIPPY_PACKAGES
+        .iter()
+        .map(|package| format!(" -p {package}"))
+        .collect::<String>();
+    let mut shell = String::from(
+        "set -euo pipefail; /usr/local/cargo/bin/rustup component add clippy; toolchain=\"$('/usr/local/cargo/bin/rustup' show active-toolchain | cut -d' ' -f1)\"; toolchain_bin=\"/usr/local/rustup/toolchains/${toolchain}/bin\"; export PATH=\"${toolchain_bin}:$PATH\"; \"${toolchain_bin}/cargo-clippy\" clippy --locked",
+    );
+    shell.push_str(&package_args);
+    shell.push_str(" -- -D warnings");
+    shell
+}
+
+fn release_cache_key(path: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(path.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    format!("{digest:x}").chars().take(12).collect()
+}
+
+fn docker_cache_key_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn sync_trash_guides_for_release(ctx: &TaskContext) -> Result<()> {
@@ -2705,24 +2763,6 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
 
     let mut failures = Vec::new();
     let release_checks_result: Result<()> = (|| {
-        prefixed_step(
-            prefix,
-            "Running cargo clippy --fix for scryer production binary packages",
-        );
-        let mut clippy_fix = ctx.release_command_in("cargo", &ctx.repo_root);
-        clippy_fix.arg("clippy");
-        add_prod_package_args(&mut clippy_fix);
-        clippy_fix.args([
-            "--fix",
-            "--allow-dirty",
-            "--allow-staged",
-            "--",
-            "-D",
-            "warnings",
-        ]);
-        run_streaming(&mut clippy_fix, prefix)?;
-        prefixed_ok(prefix, "cargo clippy --fix complete");
-
         prefixed_step(prefix, "Updating Cargo.lock (cargo update)");
         let mut update = ctx.release_command_in("cargo", &ctx.repo_root);
         update.arg("update");
@@ -3287,8 +3327,12 @@ mod tests {
     }
 
     #[test]
-    fn app_release_package_filter_excludes_plugin_sdk() {
+    fn app_release_package_filter_excludes_non_app_release_crates() {
         assert!(!is_scryer_app_release_package("scryer-plugin-sdk"));
+        assert!(!is_scryer_app_release_package("xtask"));
+        assert!(!is_scryer_app_release_package("xtask-release"));
+        assert!(!is_scryer_app_release_package("xtask-migrations"));
+        assert!(!is_scryer_app_release_package("xtask-support"));
         assert!(is_scryer_app_release_package("scryer"));
     }
 

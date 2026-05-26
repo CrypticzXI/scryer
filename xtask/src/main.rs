@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use xtask_support::{TaskContext, command_available, ok, run_status, step, warn};
+use xtask_support::{TaskContext, ok, run_status, step, warn};
 
 mod profile;
 mod seed;
@@ -316,9 +316,7 @@ fn main() -> Result<()> {
         Commands::TrashGuides(args) => delegate_trash_guides(&ctx, &args),
         Commands::Migrations(args) => delegate_migrations(&ctx, &args),
         Commands::Sdk(args) => delegate_sdk(&ctx, &args),
-        Commands::Ci(args) => match args.command {
-            CiCommand::Clippy(args) => run_clippy_ci(&ctx, args),
-        },
+        Commands::Ci(args) => delegate_ci(&ctx, &args),
         Commands::Stack(args) => match args.command {
             StackCommand::Up(args) => stack_up(&ctx, args),
             StackCommand::Down(args) => stack_down(&ctx, args),
@@ -384,6 +382,19 @@ fn delegate_sdk(ctx: &TaskContext, args: &SdkArgs) -> Result<()> {
             forwarded.push(release.version.clone());
             if release.dry_run {
                 forwarded.push("--dry-run".to_string());
+            }
+        }
+    }
+    delegate_to_package(ctx, "xtask-release", &forwarded)
+}
+
+fn delegate_ci(ctx: &TaskContext, args: &CiArgs) -> Result<()> {
+    let mut forwarded = vec!["ci".to_string()];
+    match &args.command {
+        CiCommand::Clippy(clippy) => {
+            forwarded.push("clippy".to_string());
+            if clippy.linux_only {
+                forwarded.push("--linux-only".to_string());
             }
         }
     }
@@ -1179,79 +1190,6 @@ fn signal_process_group(process_id: u32, signal: i32) -> io::Result<()> {
         return Ok(());
     }
     Err(error)
-}
-
-fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
-    let linux_target = "x86_64-unknown-linux-gnu";
-    let mut rustc = ctx.command("rustc");
-    rustc.arg("-vV");
-    let host_target = run_capture(&mut rustc)?
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .ok_or_else(|| anyhow!("failed to determine host target"))?
-        .trim()
-        .to_string();
-    let linux_image = std::env::var("SCRYER_LINUX_CLIPPY_IMAGE")
-        .unwrap_or_else(|_| "rust:1.95.0-bookworm".to_string());
-    let linux_platform =
-        std::env::var("SCRYER_LINUX_CLIPPY_PLATFORM").unwrap_or_else(|_| "linux/arm64".to_string());
-
-    if !args.linux_only {
-        println!("Running cargo clippy for host target: {host_target}");
-        let mut command = ctx.command_in("cargo", &ctx.repo_root);
-        command.args(["clippy", "--workspace", "--", "-D", "warnings"]);
-        run_checked(&mut command)?;
-    }
-
-    if args.linux_only || host_target != linux_target {
-        if command_available("docker")? {
-            println!("Running cargo clippy in Linux container: {linux_image}");
-            let mut command = ctx.command("docker");
-            command.args([
-                "run",
-                "--rm",
-                "--platform",
-                &linux_platform,
-                "-v",
-                &format!("{}:/work", ctx.repo_root.display()),
-                "-w",
-                "/work",
-                "-e",
-                "CARGO_HOME=/tmp/cargo",
-                "-e",
-                "CARGO_TARGET_DIR=/tmp/target",
-                "-e",
-                "CARGO_TERM_COLOR=always",
-                &linux_image,
-                "bash",
-                "-lc",
-                "set -euo pipefail; /usr/local/cargo/bin/rustup component add clippy; toolchain=\"$('/usr/local/cargo/bin/rustup' show active-toolchain | cut -d' ' -f1)\"; toolchain_bin=\"/usr/local/rustup/toolchains/${toolchain}/bin\"; export PATH=\"${toolchain_bin}:$PATH\"; \"${toolchain_bin}/cargo-clippy\" clippy --workspace --locked -- -D warnings",
-            ]);
-            run_checked(&mut command)?;
-        } else if command_available("x86_64-linux-gnu-gcc")? {
-            println!("Ensuring Linux CI target is installed: {linux_target}");
-            let mut target_add = ctx.command("rustup");
-            target_add.args(["target", "add", linux_target]);
-            run_checked(&mut target_add)?;
-
-            println!("Running cargo clippy for Linux CI target: {linux_target}");
-            let mut command = ctx.command_in("cargo", &ctx.repo_root);
-            command.args([
-                "clippy",
-                "--workspace",
-                "--target",
-                linux_target,
-                "--",
-                "-D",
-                "warnings",
-            ]);
-            run_checked(&mut command)?;
-        } else {
-            bail!("cannot run Linux CI clippy locally; install Docker or x86_64-linux-gnu-gcc");
-        }
-    }
-
-    Ok(())
 }
 
 fn compose_command(ctx: &TaskContext) -> Result<(Vec<String>, PathBuf, String)> {

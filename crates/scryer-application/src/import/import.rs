@@ -1503,6 +1503,7 @@ async fn import_movie_download(
                     new_score,
                     old_score,
                     &[],
+                    media_root_opt.as_deref(),
                     &recycle_config,
                 )
                 .await
@@ -2034,6 +2035,7 @@ async fn import_interstitial_movie_download(
                     new_score,
                     old_score,
                     &[],
+                    media_root_opt.as_deref(),
                     &recycle_config,
                 )
                 .await
@@ -2871,28 +2873,33 @@ async fn cleanup_superseded_episode_incumbents(
     app: &AppUseCase,
     title: &scryer_domain::Title,
     superseded: &[crate::EpisodeScopedMediaFile],
+    replacement_file_id: &str,
+    replacement_path: &Path,
+    media_root: Option<&str>,
     recycle_config: &crate::recycle_bin::RecycleBinConfig,
 ) {
     for incumbent in superseded {
+        let mut recycle_result = None;
         let old_path = PathBuf::from(&incumbent.media_file.file_path);
         if old_path.exists() {
-            let manifest = crate::recycle_bin::RecycleManifest {
-                recycled_at: chrono::Utc::now().to_rfc3339(),
-                original_path: incumbent.media_file.file_path.clone(),
-                size_bytes: incumbent.media_file.size_bytes as u64,
-                title_id: Some(title.id.clone()),
-                reason: "upgrade_replaced".to_string(),
-            };
+            let manifest = crate::recycle_bin::RecycleManifest::pending_upgrade(
+                incumbent.media_file.file_path.clone(),
+                incumbent.media_file.id.clone(),
+                incumbent.media_file.size_bytes as u64,
+                title.id.clone(),
+                media_root.map(str::to_string),
+            );
 
-            if let Err(error) =
-                crate::recycle_bin::recycle_file(recycle_config, &old_path, manifest).await
-            {
-                tracing::warn!(
-                    error = %error,
-                    path = %old_path.display(),
-                    file_id = %incumbent.media_file.id,
-                    "failed to recycle superseded episode incumbent; deleting stale database record anyway"
-                );
+            match crate::recycle_bin::recycle_file(recycle_config, &old_path, manifest).await {
+                Ok(result) => recycle_result = result,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        path = %old_path.display(),
+                        file_id = %incumbent.media_file.id,
+                        "failed to recycle superseded episode incumbent; deleting stale database record anyway"
+                    );
+                }
             }
         }
 
@@ -2919,17 +2926,36 @@ async fn cleanup_superseded_episode_incumbents(
             );
         }
 
-        if let Err(error) = app
+        let deleted_record = match app
             .services
             .library
             .media_files
             .delete_media_file(&incumbent.media_file.id)
             .await
         {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    file_id = %incumbent.media_file.id,
+                    "failed to delete superseded episode media file record"
+                );
+                false
+            }
+        };
+
+        if deleted_record
+            && let Err(error) = crate::recycle_bin::commit_recycle_entry(
+                &recycle_result,
+                replacement_file_id,
+                replacement_path,
+            )
+            .await
+        {
             tracing::warn!(
                 error = %error,
                 file_id = %incumbent.media_file.id,
-                "failed to delete superseded episode media file record"
+                "superseded recycle entry could not be committed; it will not auto-purge"
             );
         }
     }
@@ -3351,18 +3377,31 @@ async fn execute_resolved_episode_import(
             new_score,
             upgrade_plan.previous_best_score,
             &target_episode_ids,
+            recycle_root,
             &recycle_config,
         )
         .await
         {
             Ok(crate::upgrade::UpgradeResult::Upgraded(outcome)) => {
-                cleanup_superseded_episode_incumbents(
-                    app,
-                    title,
-                    &upgrade_plan.additional_superseded,
-                    &recycle_config,
-                )
-                .await;
+                if outcome.recycle_entry_committed {
+                    cleanup_superseded_episode_incumbents(
+                        app,
+                        title,
+                        &upgrade_plan.additional_superseded,
+                        &outcome.new_file_id,
+                        &dest_path,
+                        recycle_root,
+                        &recycle_config,
+                    )
+                    .await;
+                } else if !upgrade_plan.additional_superseded.is_empty() {
+                    tracing::warn!(
+                        title_id = %title.id,
+                        replacement_file_id = %outcome.new_file_id,
+                        superseded_files = upgrade_plan.additional_superseded.len(),
+                        "skipping superseded episode cleanup because primary recycle entry was not committed"
+                    );
+                }
                 tracing::info!(
                     title = %title.name,
                     old_score = outcome.old_score,

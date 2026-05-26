@@ -20,6 +20,7 @@ pub struct UpgradeOutcome {
     pub old_score: i32,
     pub new_score: i32,
     pub new_file_id: String,
+    pub recycle_entry_committed: bool,
 }
 
 pub enum UpgradeResult {
@@ -47,6 +48,7 @@ pub(crate) async fn execute_upgrade(
     final_score: i32,
     old_score: i32,
     target_episode_ids: &[String],
+    media_root: Option<&str>,
     recycle_config: &RecycleBinConfig,
 ) -> AppResult<UpgradeResult> {
     let old_path = stored_path_to_path_buf(&existing_file.file_path);
@@ -66,13 +68,13 @@ pub(crate) async fn execute_upgrade(
     );
 
     // 3. Recycle the old file
-    let manifest = RecycleManifest {
-        recycled_at: chrono::Utc::now().to_rfc3339(),
-        original_path: existing_file.file_path.clone(),
-        size_bytes: existing_file.size_bytes as u64,
-        title_id: Some(title.id.clone()),
-        reason: "upgrade_replaced".to_string(),
-    };
+    let manifest = RecycleManifest::pending_upgrade(
+        existing_file.file_path.clone(),
+        existing_file.id.clone(),
+        existing_file.size_bytes as u64,
+        title.id.clone(),
+        media_root.map(str::to_string),
+    );
     let recycle_result = recycle_bin::recycle_file(recycle_config, &old_path, manifest).await?;
 
     // 4. Import the new file
@@ -138,12 +140,22 @@ pub(crate) async fn execute_upgrade(
         scoring_log: Some(scoring_log.clone()),
         ..Default::default()
     };
-    let new_file_id = app
+    let new_file_id = match app
         .services
         .library
         .media_files
         .insert_media_file(&media_file_input)
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            remove_imported_replacement(dest_path).await;
+            restore_old_file(&recycle_result, &old_path).await;
+            return Err(AppError::Repository(format!(
+                "failed to insert replacement media file during upgrade: {err}"
+            )));
+        }
+    };
     crate::post_download_gate::persist_media_analysis_result(
         &app.services.library.media_files,
         &new_file_id,
@@ -152,23 +164,56 @@ pub(crate) async fn execute_upgrade(
     .await;
 
     // 7. Re-link episode mappings.
+    let mut links_written = true;
     if target_episode_ids.is_empty() {
-        if let Some(ref episode_id) = old_episode_id {
-            let _ = app
+        if let Some(ref episode_id) = old_episode_id
+            && let Err(error) = app
                 .services
                 .library
                 .media_files
                 .link_file_to_episode(&new_file_id, episode_id)
-                .await;
+                .await
+        {
+            links_written = false;
+            tracing::warn!(
+                error = %error,
+                file_id = %new_file_id,
+                episode_id,
+                "failed to link replacement file to episode; recycle entry remains pending"
+            );
         }
     } else {
         for episode_id in target_episode_ids {
-            let _ = app
+            if let Err(error) = app
                 .services
                 .library
                 .media_files
                 .link_file_to_episode(&new_file_id, episode_id)
-                .await;
+                .await
+            {
+                links_written = false;
+                tracing::warn!(
+                    error = %error,
+                    file_id = %new_file_id,
+                    episode_id,
+                    "failed to link replacement file to episode; recycle entry remains pending"
+                );
+            }
+        }
+    }
+
+    let mut recycle_entry_committed = false;
+    if links_written {
+        if let Err(error) =
+            recycle_bin::commit_recycle_entry(&recycle_result, &new_file_id, dest_path).await
+        {
+            tracing::warn!(
+                error = %error,
+                file_id = %new_file_id,
+                "replacement imported but recycle entry could not be committed; it will not auto-purge"
+            );
+        } else {
+            recycle_entry_committed = true;
         }
     }
 
@@ -200,6 +245,7 @@ pub(crate) async fn execute_upgrade(
         old_score,
         new_score: final_score,
         new_file_id,
+        recycle_entry_committed,
     }))
 }
 
