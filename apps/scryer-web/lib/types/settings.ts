@@ -76,7 +76,7 @@ export type LinkedAccount = {
   userId: string;
   provider: ExternalAccountProvider;
   connectionId: string;
-  externalUserId: string;
+  externalUserId: string | null;
   username: string;
   displayName: string | null;
   avatarUrl: string | null;

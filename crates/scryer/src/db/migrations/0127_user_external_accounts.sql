@@ -3,7 +3,7 @@ CREATE TABLE user_external_accounts (
     user_id TEXT NOT NULL,
     provider TEXT NOT NULL,
     connection_id TEXT NOT NULL,
-    external_user_id TEXT NOT NULL,
+    external_user_id TEXT,
     username TEXT NOT NULL,
     display_name TEXT,
     avatar_url TEXT,
@@ -18,6 +18,10 @@ CREATE TABLE user_external_accounts (
 
 CREATE UNIQUE INDEX idx_user_external_accounts_provider_identity
     ON user_external_accounts (provider, connection_id, external_user_id);
+
+CREATE UNIQUE INDEX idx_user_external_accounts_pending_username
+    ON user_external_accounts (provider, connection_id, LOWER(username))
+    WHERE status = 'pending_claim' AND external_user_id IS NULL;
 
 CREATE UNIQUE INDEX idx_user_external_accounts_user_provider_connection
     ON user_external_accounts (user_id, provider, connection_id);

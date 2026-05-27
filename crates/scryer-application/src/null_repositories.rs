@@ -1575,6 +1575,15 @@ impl UserExternalAccountRepository for NullUserExternalAccountRepository {
         Ok(None)
     }
 
+    async fn get_pending_claim_by_provider_username(
+        &self,
+        _: scryer_domain::ExternalAccountProvider,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<scryer_domain::UserExternalAccount>> {
+        Ok(None)
+    }
+
     async fn update(
         &self,
         _: scryer_domain::UserExternalAccount,

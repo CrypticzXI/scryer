@@ -181,8 +181,7 @@ impl UserMutations {
             &input.user_id,
             input.provider.into_domain(),
             input.connection_id,
-            input.external_user_id,
-            input.username,
+            input.provider_user_identifier,
         )
         .await
         .map(from_linked_account)

@@ -37,8 +37,7 @@ const DEFAULT_EXTERNAL_INVITE_DRAFT: ExternalInviteDraft = {
   userId: "",
   provider: "jellyfin",
   connectionId: "",
-  externalUserId: "",
-  username: "",
+  providerUserIdentifier: "",
 };
 
 function connectionIdsForProvider(
@@ -361,10 +360,9 @@ export function SettingsUsersContainer() {
     event.preventDefault();
     const userId = externalInviteDraft.userId.trim();
     const connectionId = externalInviteDraft.connectionId.trim();
-    const externalUserId = externalInviteDraft.externalUserId.trim();
-    const username = externalInviteDraft.username.trim();
+    const providerUserIdentifier = externalInviteDraft.providerUserIdentifier.trim();
 
-    if (!userId || !connectionId || !externalUserId || !username) {
+    if (!userId || !connectionId || !providerUserIdentifier) {
       setGlobalStatus(t("settings.externalAccountInviteRequired"));
       return;
     }
@@ -377,16 +375,14 @@ export function SettingsUsersContainer() {
             userId,
             provider: externalInviteDraft.provider,
             connectionId,
-            externalUserId,
-            username,
+            providerUserIdentifier,
           },
         })
         .toPromise();
       if (error) throw error;
       setExternalInviteDraft((previous) => ({
         ...previous,
-        externalUserId: "",
-        username: "",
+        providerUserIdentifier: "",
       }));
       setGlobalStatus(t("settings.externalAccountInviteCreated"));
     } catch (error) {

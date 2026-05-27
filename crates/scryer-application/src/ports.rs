@@ -383,6 +383,12 @@ pub trait UserExternalAccountRepository: Send + Sync {
         connection_id: &str,
         external_user_id: &str,
     ) -> AppResult<Option<scryer_domain::UserExternalAccount>>;
+    async fn get_pending_claim_by_provider_username(
+        &self,
+        provider: scryer_domain::ExternalAccountProvider,
+        connection_id: &str,
+        username: &str,
+    ) -> AppResult<Option<scryer_domain::UserExternalAccount>>;
     async fn update(
         &self,
         account: scryer_domain::UserExternalAccount,

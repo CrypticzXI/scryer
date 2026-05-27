@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Loader2 } from "lucide-react";
+import { Fingerprint, KeyRound, Loader2 } from "lucide-react";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { useLanguage } from "@/lib/hooks/use-language";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,8 @@ import { loginWithJellyfinMutation, loginWithPlexMutation } from "@/lib/graphql/
 import type { AuthProviderSettings } from "@/lib/types/settings";
 import { authenticateWithPasskey, PasskeyClientError } from "@/lib/utils/passkeys";
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
+
+type LoginMethod = "password" | "jellyfin" | null;
 
 function resolveRedirectTarget(value: string | null): string {
   if (!value || !value.startsWith("/") || value.startsWith("//")) {
@@ -35,7 +37,15 @@ export default function LoginPage() {
   const [searchParams] = useSearchParams();
   const { serviceRestarting } = useBackendRestarting();
   const { t } = useLanguage(searchParams);
-  const { login, adoptSession, user, loading: authLoading, passkeyEnabled } = useAuth();
+  const {
+    login,
+    adoptSession,
+    user,
+    loading: authLoading,
+    effectiveFormLoginEnabled,
+    passkeyEnabled,
+  } = useAuth();
+  const [activeMethod, setActiveMethod] = useState<LoginMethod>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +90,10 @@ export default function LoginPage() {
       ? availablePlexConnections
       : [];
   const plexLoginAvailable = plexConnections.length > 0;
+  const localPasswordAvailable = effectiveFormLoginEnabled !== false;
+  const jellyfinLoginAvailable = jellyfinConnections.length > 0;
+  const anySubmitting =
+    submitting || passkeySubmitting || jellyfinSubmitting || plexSubmitting;
 
   // Redirect to home if already authenticated
   useEffect(() => {
@@ -264,137 +278,171 @@ export default function LoginPage() {
           <div className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300">{error}</div>
         )}
 
-        <form id="login-form" onSubmit={handleSubmit} className="space-y-5">
-          <div className="space-y-1.5">
-            <label htmlFor="username" className="block text-sm font-medium text-muted-foreground">
-              {t("auth.username")}
-            </label>
-            <Input
-              id="username"
-              type="text"
-              autoComplete="username"
-              autoFocus
-              required
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder={t("auth.username")}
-            />
-          </div>
+        <div className="space-y-3">
+          {localPasswordAvailable ? (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveMethod((current) =>
+                    current === "password" ? null : "password",
+                  )
+                }
+                disabled={anySubmitting}
+                aria-controls="login-form"
+                aria-expanded={activeMethod === "password"}
+                className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+              >
+                <KeyRound className="h-4 w-4" aria-hidden="true" />
+                {t("auth.signInWithScryerPassword")}
+              </button>
 
-          <div className="space-y-1.5">
-            <label htmlFor="password" className="block text-sm font-medium text-muted-foreground">
-              {t("auth.password")}
-            </label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t("auth.password")}
-            />
-          </div>
+              {activeMethod === "password" ? (
+                <form id="login-form" onSubmit={handleSubmit} className="space-y-5">
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="username"
+                      className="block text-sm font-medium text-muted-foreground"
+                    >
+                      {t("auth.username")}
+                    </label>
+                    <Input
+                      id="username"
+                      type="text"
+                      autoComplete="username"
+                      autoFocus
+                      required
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder={t("auth.username")}
+                    />
+                  </div>
 
-          <button
-            id="login-submit"
-            type="submit"
-            disabled={submitting || passkeySubmitting || plexSubmitting}
-            className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
-          >
-            {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-            {submitting ? t("auth.signingIn") : t("auth.signIn")}
-          </button>
-        </form>
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="password"
+                      className="block text-sm font-medium text-muted-foreground"
+                    >
+                      {t("auth.password")}
+                    </label>
+                    <Input
+                      id="password"
+                      type="password"
+                      autoComplete="current-password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={t("auth.password")}
+                    />
+                  </div>
 
-        {passkeyEnabled ? (
-          <>
-            <div className="flex items-center gap-3 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              <div className="h-px flex-1 bg-border" />
-              <span>{t("label.or")}</span>
-              <div className="h-px flex-1 bg-border" />
-            </div>
+                  <button
+                    id="login-submit"
+                    type="submit"
+                    disabled={anySubmitting}
+                    className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {submitting ? t("auth.signingIn") : t("auth.signIn")}
+                  </button>
+                </form>
+              ) : null}
+            </>
+          ) : null}
+
+          {passkeyEnabled ? (
             <button
               type="button"
               onClick={handlePasskeySignIn}
-              disabled={submitting || passkeySubmitting || plexSubmitting}
+              disabled={anySubmitting}
               className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
             >
-              {passkeySubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {passkeySubmitting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Fingerprint className="h-4 w-4" aria-hidden="true" />
+              )}
               {passkeySubmitting ? t("auth.passkeySigningIn") : t("auth.signInWithPasskey")}
             </button>
-          </>
-        ) : null}
+          ) : null}
 
-        {jellyfinConnections.length > 0 ? (
-          <>
-            <div className="flex items-center gap-3 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              <div className="h-px flex-1 bg-border" />
-              <span>{t("label.or")}</span>
-              <div className="h-px flex-1 bg-border" />
-            </div>
-            <div className="space-y-3 rounded-md border border-border bg-background/60 p-3">
-              <div className="text-sm font-medium">{t("auth.signInWithJellyfin")}</div>
-              <div className="space-y-3">
-                {jellyfinConnections.length > 1 ? (
-                  <select
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                    value={jellyfinConnectionId}
-                    onChange={(event) => setJellyfinConnectionId(event.target.value)}
+          {jellyfinLoginAvailable ? (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveMethod((current) =>
+                    current === "jellyfin" ? null : "jellyfin",
+                  )
+                }
+                disabled={anySubmitting}
+                aria-controls="jellyfin-login-form"
+                aria-expanded={activeMethod === "jellyfin"}
+                className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+              >
+                <img
+                  src="/auth-providers/jellyfin.svg"
+                  alt=""
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                />
+                {t("auth.signInWithJellyfin")}
+              </button>
+
+              {activeMethod === "jellyfin" ? (
+                <div id="jellyfin-login-form" className="space-y-3">
+                  {jellyfinConnections.length > 1 ? (
+                    <select
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                      value={jellyfinConnectionId}
+                      onChange={(event) => setJellyfinConnectionId(event.target.value)}
+                    >
+                      {jellyfinConnections.map((connection) => (
+                        <option key={connection.id} value={connection.id}>
+                          {connectionOptionLabel(connection)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                  <Input
+                    id="jellyfin-username"
+                    type="text"
+                    autoComplete="username"
+                    value={jellyfinUsername}
+                    onChange={(event) => setJellyfinUsername(event.target.value)}
+                    placeholder={t("auth.username")}
+                  />
+                  <Input
+                    id="jellyfin-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={jellyfinPassword}
+                    onChange={(event) => setJellyfinPassword(event.target.value)}
+                    placeholder={t("auth.password")}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleJellyfinSignIn}
+                    disabled={
+                      anySubmitting ||
+                      !jellyfinConnectionId ||
+                      !jellyfinUsername ||
+                      !jellyfinPassword
+                    }
+                    className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
                   >
-                    {jellyfinConnections.map((connection) => (
-                      <option key={connection.id} value={connection.id}>
-                        {connectionOptionLabel(connection)}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                {jellyfinConnections.length === 1 ? (
-                  <div className="rounded-md border border-border/70 bg-card/50 px-3 py-2 text-xs text-muted-foreground">
-                    <div className="font-medium text-foreground">
-                      {jellyfinConnections[0].displayName}
-                    </div>
-                    {jellyfinConnections[0].userVisibleUrl ? (
-                      <div>{jellyfinConnections[0].userVisibleUrl}</div>
+                    {jellyfinSubmitting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
                     ) : null}
-                  </div>
-                ) : null}
-                <Input
-                  type="text"
-                  autoComplete="username"
-                  value={jellyfinUsername}
-                  onChange={(event) => setJellyfinUsername(event.target.value)}
-                  placeholder={t("auth.username")}
-                />
-                <Input
-                  type="password"
-                  autoComplete="current-password"
-                  value={jellyfinPassword}
-                  onChange={(event) => setJellyfinPassword(event.target.value)}
-                  placeholder={t("auth.password")}
-                />
-                <button
-                  type="button"
-                  onClick={handleJellyfinSignIn}
-                  disabled={submitting || passkeySubmitting || jellyfinSubmitting || plexSubmitting}
-                  className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
-                >
-                  {jellyfinSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                  {jellyfinSubmitting ? t("auth.signingIn") : t("auth.signInWithJellyfin")}
-                </button>
-              </div>
-            </div>
-          </>
-        ) : null}
+                    {jellyfinSubmitting ? t("auth.signingIn") : t("auth.signIn")}
+                  </button>
+                </div>
+              ) : null}
+            </>
+          ) : null}
 
-        {plexLoginAvailable ? (
-          <>
-            <div className="flex items-center gap-3 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              <div className="h-px flex-1 bg-border" />
-              <span>{t("label.or")}</span>
-              <div className="h-px flex-1 bg-border" />
-            </div>
-            <div className="space-y-3 rounded-md border border-border bg-background/60 p-3">
+          {plexLoginAvailable ? (
+            <div className="space-y-3">
               {plexConnections.length > 1 ? (
                 <select
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
@@ -408,29 +456,28 @@ export default function LoginPage() {
                   ))}
                 </select>
               ) : null}
-              {plexConnections.length === 1 ? (
-                <div className="rounded-md border border-border/70 bg-card/50 px-3 py-2 text-xs text-muted-foreground">
-                  <div className="font-medium text-foreground">
-                    {plexConnections[0].displayName}
-                  </div>
-                  {plexConnections[0].userVisibleUrl ? (
-                    <div>{plexConnections[0].userVisibleUrl}</div>
-                  ) : null}
-                </div>
-              ) : null}
               <button
                 type="button"
                 onClick={handlePlexSignIn}
-                disabled={submitting || passkeySubmitting || jellyfinSubmitting || plexSubmitting}
+                disabled={anySubmitting || !plexConnectionId}
                 className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
                 title={plexSubmitting ? t("auth.plexPinFlowPending") : undefined}
               >
-                {plexSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {plexSubmitting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <img
+                    src="/auth-providers/plex.svg"
+                    alt=""
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                  />
+                )}
                 {plexSubmitting ? t("auth.plexPinFlowPending") : t("auth.signInWithPlex")}
               </button>
             </div>
-          </>
-        ) : null}
+          ) : null}
+        </div>
       </div>
     </div>
   );

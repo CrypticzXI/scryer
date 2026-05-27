@@ -28,8 +28,7 @@ export type ExternalInviteDraft = {
   userId: string;
   provider: ExternalAccountProvider;
   connectionId: string;
-  externalUserId: string;
-  username: string;
+  providerUserIdentifier: string;
 };
 
 type SettingsUsersSectionProps = {
@@ -158,6 +157,12 @@ function providerConnectionLabel(connection: AuthProviderConnection): string {
   return connection.userVisibleUrl
     ? `${connection.displayName} (${connection.userVisibleUrl})`
     : connection.displayName;
+}
+
+function providerIdentifierLabel(provider: ExternalAccountProvider, t: ReturnType<typeof useTranslate>): string {
+  return provider === "jellyfin"
+    ? t("settings.jellyfinUsername")
+    : t("settings.plexUserId");
 }
 
 function inviteProviderOptions(settings: AuthProviderSettings): ExternalAccountProvider[] {
@@ -299,6 +304,7 @@ export function SettingsUsersSection({
   const t = useTranslate();
   const inviteProviders = inviteProviderOptions(authProviderSettings);
   const inviteConnections = providerConnections(authProviderSettings, externalInviteDraft.provider);
+  const providerIdentifierLabelText = providerIdentifierLabel(externalInviteDraft.provider, t);
   const inviteUnavailable = inviteProviders.length === 0 || settingsUsers.length === 0;
   return (
     <div id="settings-users-section" className="space-y-4 text-sm">
@@ -406,81 +412,68 @@ export function SettingsUsersSection({
                     ))}
                   </select>
                 </div>
+                {inviteProviders.length > 1 ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="settings-external-invite-provider">
+                      {t("settings.provider")}
+                    </Label>
+                    <select
+                      id="settings-external-invite-provider"
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                      value={externalInviteDraft.provider}
+                      onChange={(event) => {
+                        const provider = event.target.value as ExternalAccountProvider;
+                        updateExternalInviteDraft({
+                          provider,
+                          connectionId: providerConnections(authProviderSettings, provider)[0]?.id ?? "",
+                        });
+                      }}
+                      disabled={externalInviteSubmitting}
+                      required
+                    >
+                      {inviteProviders.map((provider) => (
+                        <option key={provider} value={provider}>
+                          {providerLabel(provider)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+                {inviteConnections.length > 1 ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="settings-external-invite-connection">
+                      {t("profile.linkedAccountConnection")}
+                    </Label>
+                    <select
+                      id="settings-external-invite-connection"
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                      value={externalInviteDraft.connectionId}
+                      onChange={(event) =>
+                        updateExternalInviteDraft({ connectionId: event.target.value })
+                      }
+                      disabled={externalInviteSubmitting}
+                      required
+                    >
+                      {inviteConnections.map((connection) => (
+                        <option key={connection.id} value={connection.id}>
+                          {providerConnectionLabel(connection)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
                 <div className="space-y-1.5">
-                  <Label htmlFor="settings-external-invite-provider">
-                    {t("settings.provider")}
-                  </Label>
-                  <select
-                    id="settings-external-invite-provider"
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                    value={externalInviteDraft.provider}
-                    onChange={(event) => {
-                      const provider = event.target.value as ExternalAccountProvider;
-                      updateExternalInviteDraft({
-                        provider,
-                        connectionId: providerConnections(authProviderSettings, provider)[0]?.id ?? "",
-                      });
-                    }}
-                    disabled={externalInviteSubmitting}
-                    required
-                  >
-                    {inviteProviders.map((provider) => (
-                      <option key={provider} value={provider}>
-                        {providerLabel(provider)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="settings-external-invite-connection">
-                    {t("profile.linkedAccountConnection")}
-                  </Label>
-                  <select
-                    id="settings-external-invite-connection"
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                    value={externalInviteDraft.connectionId}
-                    onChange={(event) =>
-                      updateExternalInviteDraft({ connectionId: event.target.value })
-                    }
-                    disabled={externalInviteSubmitting}
-                    required
-                  >
-                    {inviteConnections.map((connection) => (
-                      <option key={connection.id} value={connection.id}>
-                        {providerConnectionLabel(connection)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="settings-external-invite-username">
-                    {t("settings.providerUsername")}
-                  </Label>
-                  <Input
-                    id="settings-external-invite-username"
-                    value={externalInviteDraft.username}
-                    onChange={(event) =>
-                      updateExternalInviteDraft({ username: event.target.value })
-                    }
-                    disabled={externalInviteSubmitting}
-                    placeholder={t("settings.providerUsername")}
-                    required
-                  />
-                </div>
-              </div>
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                <div className="space-y-1.5">
-                  <Label htmlFor="settings-external-invite-external-id">
-                    {t("settings.providerExternalUserId")}
+                  <Label htmlFor="settings-external-invite-provider-identifier">
+                    {providerIdentifierLabelText}
                   </Label>
                   <Input
-                    id="settings-external-invite-external-id"
-                    value={externalInviteDraft.externalUserId}
+                    id="settings-external-invite-provider-identifier"
+                    value={externalInviteDraft.providerUserIdentifier}
                     onChange={(event) =>
-                      updateExternalInviteDraft({ externalUserId: event.target.value })
+                      updateExternalInviteDraft({ providerUserIdentifier: event.target.value })
                     }
                     disabled={externalInviteSubmitting}
-                    placeholder="provider-user-id"
+                    placeholder={providerIdentifierLabelText}
                     required
                   />
                 </div>

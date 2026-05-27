@@ -39,6 +39,8 @@ type JsonCredentialRequestOptions = {
   mediation?: CredentialMediationRequirement;
 };
 
+type RequestOptionsMode = "manual" | "conditional";
+
 type LoginPayload = {
   token: string;
   user: AuthUser | null;
@@ -142,21 +144,56 @@ function parseCreationOptions(optionsJson: string): CredentialCreationOptions {
   };
 }
 
-function parseRequestOptions(optionsJson: string): CredentialRequestOptions {
+function normalizeRequestOptionsForMode(
+  publicKey: JsonRequestOptions,
+  mediation: CredentialMediationRequirement | undefined,
+  mode: RequestOptionsMode,
+): JsonCredentialRequestOptions {
+  const normalizedPublicKey = { ...publicKey };
+  let normalizedMediation = mediation;
+
+  if (mode === "manual") {
+    if (normalizedMediation === "conditional") {
+      normalizedMediation = undefined;
+    }
+
+    if (
+      Array.isArray(normalizedPublicKey.allowCredentials) &&
+      normalizedPublicKey.allowCredentials.length === 0
+    ) {
+      delete normalizedPublicKey.allowCredentials;
+    }
+  }
+
+  return {
+    publicKey: normalizedPublicKey,
+    mediation: normalizedMediation,
+  };
+}
+
+function parseRequestOptions(
+  optionsJson: string,
+  mode: RequestOptionsMode = "manual",
+): CredentialRequestOptions {
   const parsed = JSON.parse(optionsJson) as JsonCredentialRequestOptions;
-  const publicKey = parsed.publicKey;
-  if (!publicKey?.challenge) {
+  if (!parsed.publicKey?.challenge) {
     throw new PasskeyClientError(
       "invalid_response",
       "Passkey authentication options were malformed.",
     );
   }
 
+  const { publicKey, mediation } = normalizeRequestOptionsForMode(
+    parsed.publicKey,
+    parsed.mediation,
+    mode,
+  );
+
   const helper = credentialHelpers();
   if (typeof helper.parseRequestOptionsFromJSON === "function") {
     return {
       publicKey: helper.parseRequestOptionsFromJSON(publicKey),
-      mediation: parsed.mediation,
+      mediation,
     };
   }
 
@@ -169,7 +206,7 @@ function parseRequestOptions(optionsJson: string): CredentialRequestOptions {
         id: base64UrlToBuffer(credential.id),
       })),
     },
-    mediation: parsed.mediation,
+    mediation,
   };
 }
 
@@ -276,7 +313,9 @@ export async function authenticateWithPasskey(
       "webauthnAuthenticateStart",
     );
 
-    const credential = await navigator.credentials.get(parseRequestOptions(start.optionsJson));
+    const credential = await navigator.credentials.get(
+      parseRequestOptions(start.optionsJson, "manual"),
+    );
     if (!(credential instanceof PublicKeyCredential)) {
       throw new PasskeyClientError("invalid_response", "No passkey assertion was returned.");
     }

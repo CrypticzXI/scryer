@@ -145,6 +145,32 @@ impl UserExternalAccountRepository for UserStore {
         row.as_ref().map(row_to_external_account).transpose()
     }
 
+    async fn get_pending_claim_by_provider_username(
+        &self,
+        provider: ExternalAccountProvider,
+        connection_id: &str,
+        username: &str,
+    ) -> AppResult<Option<UserExternalAccount>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT id, user_id, provider, connection_id, external_user_id, username,
+                    display_name, avatar_url, status, verified_at, created_at, updated_at
+               FROM user_external_accounts
+              WHERE provider = {}
+                AND connection_id = {}
+                AND status = 'pending_claim'
+                AND external_user_id IS NULL
+                AND LOWER(username) = LOWER({})",
+            &[
+                SqlArg::Text(provider.as_str().to_string()),
+                SqlArg::Text(connection_id.to_string()),
+                SqlArg::Text(username.trim().to_string()),
+            ],
+        )
+        .await?;
+        row.as_ref().map(row_to_external_account).transpose()
+    }
+
     async fn update(&self, account: UserExternalAccount) -> AppResult<UserExternalAccount> {
         SqlRuntime::run_in_transaction(&self.datastore, "update_user_external_account", move |tx| {
             let account = account.clone();
@@ -167,7 +193,7 @@ impl UserExternalAccountRepository for UserStore {
                             SqlArg::Text(account.user_id.clone()),
                             SqlArg::Text(account.provider.as_str().to_string()),
                             SqlArg::Text(account.connection_id.clone()),
-                            SqlArg::Text(account.external_user_id.clone()),
+                            SqlArg::OptText(account.external_user_id.clone()),
                             SqlArg::Text(account.username.clone()),
                             SqlArg::OptText(account.display_name.clone()),
                             SqlArg::OptText(account.avatar_url.clone()),
@@ -298,7 +324,7 @@ async fn insert_external_account_tx(
             SqlArg::Text(account.user_id.clone()),
             SqlArg::Text(account.provider.as_str().to_string()),
             SqlArg::Text(account.connection_id.clone()),
-            SqlArg::Text(account.external_user_id.clone()),
+            SqlArg::OptText(account.external_user_id.clone()),
             SqlArg::Text(account.username.clone()),
             SqlArg::OptText(account.display_name.clone()),
             SqlArg::OptText(account.avatar_url.clone()),
@@ -322,7 +348,7 @@ fn row_to_external_account(row: &SqlRow) -> AppResult<UserExternalAccount> {
         user_id: row.text("user_id")?,
         provider,
         connection_id: row.text("connection_id")?,
-        external_user_id: row.text("external_user_id")?,
+        external_user_id: row.opt_text("external_user_id")?,
         username: row.text("username")?,
         display_name: row.opt_text("display_name")?,
         avatar_url: row.opt_text("avatar_url")?,
@@ -372,7 +398,7 @@ mod tests {
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 provider TEXT NOT NULL,
                 connection_id TEXT NOT NULL,
-                external_user_id TEXT NOT NULL,
+                external_user_id TEXT,
                 username TEXT NOT NULL,
                 display_name TEXT,
                 avatar_url TEXT,
@@ -392,6 +418,14 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create provider identity index");
+        sqlx::query(
+            "CREATE UNIQUE INDEX idx_user_external_accounts_pending_username
+               ON user_external_accounts(provider, connection_id, LOWER(username))
+               WHERE status = 'pending_claim' AND external_user_id IS NULL",
+        )
+        .execute(&pool)
+        .await
+        .expect("create pending username index");
         sqlx::query(
             "CREATE UNIQUE INDEX idx_user_external_accounts_user_provider_connection
                ON user_external_accounts(user_id, provider, connection_id)",
@@ -433,7 +467,7 @@ mod tests {
             user_id: user_id.to_string(),
             provider,
             connection_id: connection_id.to_string(),
-            external_user_id: external_user_id.to_string(),
+            external_user_id: Some(external_user_id.to_string()),
             username: format!("{external_user_id}_name"),
             display_name: None,
             avatar_url: None,
@@ -480,6 +514,77 @@ mod tests {
         .await;
 
         assert!(duplicate.is_err());
+    }
+
+    #[tokio::test]
+    async fn pending_external_account_username_is_unique_for_connection() {
+        let store = test_store().await;
+        UserRepository::create(&store, test_user("user_a"))
+            .await
+            .expect("create first user");
+        UserRepository::create(&store, test_user("user_b"))
+            .await
+            .expect("create second user");
+
+        let mut first = test_account(
+            "account_a",
+            "user_a",
+            ExternalAccountProvider::Jellyfin,
+            "server_1",
+            "external_1",
+        );
+        first.external_user_id = None;
+        first.username = "JellyUser".to_string();
+        UserExternalAccountRepository::create(&store, first)
+            .await
+            .expect("create pending account");
+
+        let mut duplicate = test_account(
+            "account_b",
+            "user_b",
+            ExternalAccountProvider::Jellyfin,
+            "server_1",
+            "external_2",
+        );
+        duplicate.external_user_id = None;
+        duplicate.username = "jellyuser".to_string();
+        let duplicate = UserExternalAccountRepository::create(&store, duplicate).await;
+
+        assert!(duplicate.is_err());
+    }
+
+    #[tokio::test]
+    async fn pending_external_account_can_be_found_by_username() {
+        let store = test_store().await;
+        UserRepository::create(&store, test_user("user_a"))
+            .await
+            .expect("create user");
+
+        let mut account = test_account(
+            "account_a",
+            "user_a",
+            ExternalAccountProvider::Jellyfin,
+            "server_1",
+            "external_1",
+        );
+        account.external_user_id = None;
+        account.username = "JellyUser".to_string();
+        UserExternalAccountRepository::create(&store, account)
+            .await
+            .expect("create pending account");
+
+        let found = UserExternalAccountRepository::get_pending_claim_by_provider_username(
+            &store,
+            ExternalAccountProvider::Jellyfin,
+            "server_1",
+            "jellyuser",
+        )
+        .await
+        .expect("lookup pending account")
+        .expect("pending account exists");
+
+        assert_eq!(found.id, "account_a");
+        assert_eq!(found.external_user_id, None);
     }
 
     #[tokio::test]

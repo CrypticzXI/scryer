@@ -1052,7 +1052,7 @@ pub struct LinkedAccountPayload {
     pub user_id: String,
     pub provider: ExternalAccountProviderValue,
     pub connection_id: String,
-    pub external_user_id: String,
+    pub external_user_id: Option<String>,
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
@@ -2249,8 +2249,7 @@ pub struct CreateExternalAccountInviteInput {
     pub user_id: String,
     pub connection_id: String,
     pub provider: ExternalAccountProviderValue,
-    pub external_user_id: String,
-    pub username: String,
+    pub provider_user_identifier: String,
 }
 
 #[derive(InputObject, Clone)]

@@ -2658,7 +2658,7 @@ pub struct UserExternalAccount {
     pub user_id: String,
     pub provider: ExternalAccountProvider,
     pub connection_id: String,
-    pub external_user_id: String,
+    pub external_user_id: Option<String>,
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
@@ -2673,7 +2673,7 @@ impl UserExternalAccount {
         user_id: impl Into<String>,
         provider: ExternalAccountProvider,
         connection_id: impl Into<String>,
-        external_user_id: impl Into<String>,
+        external_user_id: Option<String>,
         username: impl Into<String>,
     ) -> Self {
         let now = Utc::now();
@@ -2682,7 +2682,7 @@ impl UserExternalAccount {
             user_id: user_id.into(),
             provider,
             connection_id: connection_id.into(),
-            external_user_id: external_user_id.into(),
+            external_user_id,
             username: username.into(),
             display_name: None,
             avatar_url: None,
