@@ -539,7 +539,12 @@ async fn resolve_movie_scan_candidate(
         ));
     }
 
-    if let Some(new_title) = build_new_movie_title_from_nfo(&candidate, facet) {
+    if !candidate
+        .identity_hint
+        .as_ref()
+        .is_some_and(|hint| hint.has_external_ids())
+        && let Some(new_title) = build_new_movie_title_from_nfo(&candidate, facet)
+    {
         match create_title_without_hydration_for_library_scan(app, actor, library_id, new_title)
             .await
         {
@@ -858,7 +863,12 @@ pub(super) async fn process_series_full_scan_candidate(
         return Ok(None);
     }
 
-    if let Some(new_title) = build_new_series_title_from_nfo(&candidate, facet) {
+    if !candidate
+        .identity_hint
+        .as_ref()
+        .is_some_and(|hint| hint.has_external_ids())
+        && let Some(new_title) = build_new_series_title_from_nfo(&candidate, facet)
+    {
         match create_title_without_hydration_for_library_scan(app, actor, library_id, new_title)
             .await
         {

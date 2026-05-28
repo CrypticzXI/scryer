@@ -863,21 +863,33 @@ async fn smg_search_tvdb_batch_uses_dedicated_post_query() {
                     query: "  Test Movie  ".to_string(),
                     type_hint: "movie".to_string(),
                     year: Some(2024),
+                    imdb_id: None,
+                    tmdb_id: None,
+                    tvdb_id: None,
                 },
                 MetadataSearchQuery {
                     query: "Test Movie".to_string(),
                     type_hint: "movie".to_string(),
                     year: Some(2024),
+                    imdb_id: None,
+                    tmdb_id: None,
+                    tvdb_id: None,
                 },
                 MetadataSearchQuery {
                     query: "Test Series".to_string(),
                     type_hint: "series".to_string(),
                     year: None,
+                    imdb_id: None,
+                    tmdb_id: None,
+                    tvdb_id: None,
                 },
                 MetadataSearchQuery {
                     query: "   ".to_string(),
                     type_hint: "movie".to_string(),
                     year: None,
+                    imdb_id: None,
+                    tmdb_id: None,
+                    tvdb_id: None,
                 },
             ],
             "spa",
@@ -891,11 +903,17 @@ async fn smg_search_tvdb_batch_uses_dedicated_post_query() {
         query: "Test Movie".to_string(),
         type_hint: "movie".to_string(),
         year: Some(2024),
+        imdb_id: None,
+        tmdb_id: None,
+        tvdb_id: None,
     };
     let series_key = MetadataSearchQuery {
         query: "Test Series".to_string(),
         type_hint: "series".to_string(),
         year: None,
+        imdb_id: None,
+        tmdb_id: None,
+        tvdb_id: None,
     };
 
     assert_eq!(results[&movie_key].len(), 2);

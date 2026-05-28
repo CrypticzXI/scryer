@@ -1387,6 +1387,9 @@ fn build_search_tvdb_batch_query(queries: &[MetadataSearchQuery]) -> Vec<Metadat
             query: trimmed_query.to_string(),
             type_hint: trimmed_type.to_string(),
             year: query.year,
+            imdb_id: query.imdb_id.clone(),
+            tmdb_id: query.tmdb_id.clone(),
+            tvdb_id: query.tvdb_id.clone(),
         };
 
         if seen.insert(normalized_query.clone()) {
@@ -1404,6 +1407,12 @@ struct SearchTvdbBatchRequestInput {
     type_hint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     year: Option<i32>,
+    #[serde(rename = "imdbId", skip_serializing_if = "Option::is_none")]
+    imdb_id: Option<String>,
+    #[serde(rename = "tmdbId", skip_serializing_if = "Option::is_none")]
+    tmdb_id: Option<String>,
+    #[serde(rename = "tvdbId", skip_serializing_if = "Option::is_none")]
+    tvdb_id: Option<String>,
     limit: i32,
 }
 
@@ -1649,26 +1658,41 @@ mod tests {
                 query: "  Lantern Tide  ".to_string(),
                 type_hint: "movie".to_string(),
                 year: Some(2001),
+                imdb_id: Some("tt1234567".to_string()),
+                tmdb_id: None,
+                tvdb_id: None,
             },
             MetadataSearchQuery {
                 query: "Lantern Tide".to_string(),
                 type_hint: "movie".to_string(),
                 year: Some(2001),
+                imdb_id: Some("tt1234567".to_string()),
+                tmdb_id: None,
+                tvdb_id: None,
             },
             MetadataSearchQuery {
                 query: "   ".to_string(),
                 type_hint: "series".to_string(),
                 year: None,
+                imdb_id: None,
+                tmdb_id: None,
+                tvdb_id: None,
             },
             MetadataSearchQuery {
                 query: "Velvet Comet".to_string(),
                 type_hint: "anime".to_string(),
                 year: None,
+                imdb_id: None,
+                tmdb_id: None,
+                tvdb_id: Some("999".to_string()),
             },
             MetadataSearchQuery {
                 query: "Lantern Tide".to_string(),
                 type_hint: "movie".to_string(),
                 year: Some(2002),
+                imdb_id: None,
+                tmdb_id: None,
+                tvdb_id: None,
             },
         ];
 
@@ -1678,9 +1702,11 @@ mod tests {
         assert_eq!(normalized[0].query, "Lantern Tide");
         assert_eq!(normalized[0].type_hint, "movie");
         assert_eq!(normalized[0].year, Some(2001));
+        assert_eq!(normalized[0].imdb_id.as_deref(), Some("tt1234567"));
         assert_eq!(normalized[1].query, "Velvet Comet");
         assert_eq!(normalized[1].type_hint, "anime");
         assert_eq!(normalized[1].year, None);
+        assert_eq!(normalized[1].tvdb_id.as_deref(), Some("999"));
         assert_eq!(normalized[2].query, "Lantern Tide");
         assert_eq!(normalized[2].type_hint, "movie");
         assert_eq!(normalized[2].year, Some(2002));
@@ -1839,10 +1865,6 @@ struct SearchTvdbBatchResponse {
 
 #[derive(Deserialize)]
 struct SearchTvdbBatchResult {
-    query: String,
-    #[serde(rename = "type")]
-    type_hint: String,
-    year: Option<i32>,
     results: Vec<SearchTvdbItem>,
 }
 
@@ -2217,6 +2239,9 @@ impl MetadataGateway for MetadataGatewayClient {
                     query: query.query.clone(),
                     type_hint: query.type_hint.clone(),
                     year: query.year,
+                    imdb_id: query.imdb_id.clone(),
+                    tmdb_id: query.tmdb_id.clone(),
+                    tvdb_id: query.tvdb_id.clone(),
                     limit: 10,
                 })
                 .collect::<Vec<_>>();
@@ -2233,12 +2258,7 @@ impl MetadataGateway for MetadataGatewayClient {
                 elapsed_ms = request_started_at.elapsed().as_millis() as u64,
                 "metadata gateway batched search complete"
             );
-            for item in data.search_tvdb_batch {
-                let query_spec = MetadataSearchQuery {
-                    query: item.query,
-                    type_hint: item.type_hint,
-                    year: item.year,
-                };
+            for (query_spec, item) in chunk.iter().cloned().zip(data.search_tvdb_batch) {
                 let items = item
                     .results
                     .into_iter()

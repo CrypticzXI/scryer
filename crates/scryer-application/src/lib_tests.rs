@@ -7330,7 +7330,7 @@ async fn movie_title_scan_removes_missing_tracked_movie_file() {
 }
 
 #[tokio::test]
-async fn movie_full_scan_title_create_failure_from_nfo_persists_unmatched_item() {
+async fn movie_full_scan_external_id_nfo_without_gateway_match_persists_unmatched_item() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_path = tempdir.path().join("Broken.Movie.2020.mkv");
     let nfo_path = tempdir.path().join("movie.nfo");
@@ -7361,7 +7361,7 @@ async fn movie_full_scan_title_create_failure_from_nfo_persists_unmatched_item()
         }])
         .await;
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
-    let (app, user, titles) = bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
+    let (app, user, _titles) = bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
         settings,
         library_scanner,
         unmatched_items.clone(),
@@ -7370,10 +7370,6 @@ async fn movie_full_scan_title_create_failure_from_nfo_persists_unmatched_item()
     app.reconcile_default_library_roots()
         .await
         .expect("reconcile legacy movie root");
-    titles
-        .fail_create_or_get_existing("forced movie title creation failure from nfo")
-        .await;
-
     let summary = app
         .scan_library(&user, MediaFacet::Movie)
         .await
@@ -7390,11 +7386,8 @@ async fn movie_full_scan_title_create_failure_from_nfo_persists_unmatched_item()
 
     let items = unmatched_items.items().await;
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].reason_code, "title_create_from_nfo_failed");
-    assert_eq!(
-        items[0].error_message.as_deref(),
-        Some("repository: forced movie title creation failure from nfo")
-    );
+    assert_eq!(items[0].reason_code, "no_metadata_search_results");
+    assert_eq!(items[0].error_message, None);
     assert_eq!(items[0].item_path, movie_path.to_string_lossy());
 }
 

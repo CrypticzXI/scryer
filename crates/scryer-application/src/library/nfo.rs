@@ -17,6 +17,21 @@ pub(crate) struct NfoMetadata {
     pub year: Option<i32>,
 }
 
+impl NfoMetadata {
+    pub(crate) fn has_external_ids(&self) -> bool {
+        self.tvdb_id.is_some() || self.imdb_id.is_some() || self.tmdb_id.is_some()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.has_external_ids()
+            && self
+                .title
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            && self.year.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NfoRootKind {
     Movie,
@@ -50,17 +65,8 @@ pub(crate) fn parse_nfo(content: &str) -> NfoMetadata {
 
     if trimmed.starts_with('<') {
         parse_xml_nfo(normalized, &mut meta);
-    }
-
-    // URL fallback (works for both XML and plain-text NFO files)
-    if meta.imdb_id.is_none() {
-        meta.imdb_id = extract_imdb_url_id(normalized);
-    }
-    if meta.tvdb_id.is_none() {
-        meta.tvdb_id = extract_tvdb_url_id(normalized);
-    }
-    if meta.tmdb_id.is_none() {
-        meta.tmdb_id = extract_tmdb_url_id(normalized);
+    } else {
+        apply_url_ids_from_text(normalized, &mut meta);
     }
 
     meta
@@ -92,6 +98,7 @@ pub(crate) fn detect_nfo_root_kind(content: &str) -> NfoRootKind {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn looks_like_movie_nfo(content: &str) -> bool {
     detect_nfo_root_kind(content) == NfoRootKind::Movie
 }
@@ -102,9 +109,12 @@ fn strip_utf8_bom(content: &str) -> &str {
 
 fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     let mut reader = Reader::from_str(content);
+    let root_kind = detect_nfo_root_kind(content);
 
     let mut current_tag = String::new();
     let mut current_text = String::new();
+    let mut current_depth = 0usize;
+    let mut depth = 0usize;
     let mut uniqueid_type: Option<String> = None;
 
     // Legacy <id> is lowest priority — only used if uniqueid/jellyfin tags don't
@@ -114,39 +124,54 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
+                depth = depth.saturating_add(1);
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_lowercase();
-                current_tag = name.clone();
-                current_text.clear();
-
-                if name == "uniqueid" {
+                if depth == 2 {
+                    current_tag = name.clone();
+                    current_text.clear();
+                    current_depth = depth;
                     uniqueid_type = e
                         .attributes()
                         .filter_map(|a| a.ok())
                         .find(|a| a.key.as_ref() == b"type")
                         .and_then(|a| String::from_utf8(a.value.to_vec()).ok())
-                        .map(|v| v.to_lowercase());
+                        .map(|v| v.to_lowercase())
+                        .filter(|_| name == "uniqueid");
                 }
             }
             Ok(Event::Text(ref e)) => {
-                if let Some(decoded) = e.decode().ok().and_then(|decoded| {
-                    quick_xml::escape::unescape(&decoded)
-                        .ok()
-                        .map(|text| text.into_owned())
-                }) {
+                if current_depth == depth
+                    && let Some(decoded) = e.decode().ok().and_then(|decoded| {
+                        quick_xml::escape::unescape(&decoded)
+                            .ok()
+                            .map(|text| text.into_owned())
+                    })
+                {
                     current_text.push_str(&decoded);
                 }
             }
             Ok(Event::GeneralRef(ref e)) => {
-                if let Ok(Some(ch)) = e.resolve_char_ref() {
-                    current_text.push(ch);
-                } else if let Ok(decoded) = e.decode()
-                    && let Some(entity) =
-                        quick_xml::escape::resolve_predefined_entity(decoded.as_ref())
-                {
-                    current_text.push_str(entity);
+                if current_depth == depth {
+                    if let Ok(Some(ch)) = e.resolve_char_ref() {
+                        current_text.push(ch);
+                    } else if let Ok(decoded) = e.decode()
+                        && let Some(entity) =
+                            quick_xml::escape::resolve_predefined_entity(decoded.as_ref())
+                    {
+                        current_text.push_str(entity);
+                    }
+                }
+            }
+            Ok(Event::Comment(ref e)) if depth <= 1 => {
+                if let Ok(decoded) = e.decode() {
+                    apply_url_ids_from_text(&decoded, meta);
                 }
             }
             Ok(Event::End(_)) => {
+                if current_depth != depth {
+                    depth = depth.saturating_sub(1);
+                    continue;
+                }
                 let text = current_text.trim().to_string();
                 if !text.is_empty() {
                     match current_tag.as_str() {
@@ -172,7 +197,7 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                         "tvdbid" if meta.tvdb_id.is_none() && looks_like_numeric_id(&text) => {
                             meta.tvdb_id = Some(text);
                         }
-                        "imdbid" if meta.imdb_id.is_none() => {
+                        "imdbid" | "imdb_id" if meta.imdb_id.is_none() => {
                             meta.imdb_id = normalize_imdb(&text);
                         }
                         "tmdbid" if meta.tmdb_id.is_none() && looks_like_numeric_id(&text) => {
@@ -195,7 +220,9 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                 }
                 current_tag.clear();
                 current_text.clear();
+                current_depth = 0;
                 uniqueid_type = None;
+                depth = depth.saturating_sub(1);
             }
             Ok(Event::Eof) => break,
             Err(_) => break, // graceful on malformed XML
@@ -207,9 +234,68 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     if let Some(id_val) = legacy_id {
         if id_val.starts_with("tt") && meta.imdb_id.is_none() {
             meta.imdb_id = normalize_imdb(&id_val);
-        } else if looks_like_numeric_id(&id_val) && meta.tvdb_id.is_none() {
-            meta.tvdb_id = Some(id_val);
+        } else if looks_like_numeric_id(&id_val) {
+            match root_kind {
+                NfoRootKind::Movie if meta.tmdb_id.is_none() => meta.tmdb_id = Some(id_val),
+                NfoRootKind::TvShow | NfoRootKind::Episode if meta.tvdb_id.is_none() => {
+                    meta.tvdb_id = Some(id_val);
+                }
+                _ => {}
+            }
         }
+    }
+}
+
+pub(crate) fn parse_plexmatch(content: &str) -> NfoMetadata {
+    let mut meta = NfoMetadata::default();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((raw_key, raw_value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = raw_key.trim().to_ascii_lowercase();
+        let value = raw_value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match key.as_str() {
+            "title" | "show" if meta.title.is_none() => meta.title = Some(value.to_string()),
+            "year" if meta.year.is_none() => {
+                meta.year = value
+                    .parse::<i32>()
+                    .ok()
+                    .filter(|&year| (1888..=2100).contains(&year));
+            }
+            "imdbid" if meta.imdb_id.is_none() => meta.imdb_id = normalize_imdb(value),
+            "tmdbid" if meta.tmdb_id.is_none() => {
+                meta.tmdb_id = crate::normalize::normalize_numeric_id(value);
+            }
+            "tvdbid" if meta.tvdb_id.is_none() => {
+                meta.tvdb_id = crate::normalize::normalize_numeric_id(value);
+            }
+            "guid" => apply_plexmatch_guid(value, &mut meta),
+            _ => {}
+        }
+    }
+    meta
+}
+
+fn apply_plexmatch_guid(value: &str, meta: &mut NfoMetadata) {
+    let Some((scheme, raw_id)) = value.trim().split_once("://") else {
+        return;
+    };
+    match scheme.trim().to_ascii_lowercase().as_str() {
+        "imdb" if meta.imdb_id.is_none() => meta.imdb_id = normalize_imdb(raw_id),
+        "tmdb" if meta.tmdb_id.is_none() => {
+            meta.tmdb_id = crate::normalize::normalize_numeric_id(raw_id);
+        }
+        "tvdb" if meta.tvdb_id.is_none() => {
+            meta.tvdb_id = crate::normalize::normalize_numeric_id(raw_id);
+        }
+        _ => {}
     }
 }
 
@@ -408,11 +494,18 @@ fn looks_like_numeric_id(s: &str) -> bool {
 
 /// Normalize a raw string to a canonical IMDb ID (tt-prefixed, 7+ digits).
 fn normalize_imdb(raw: &str) -> Option<String> {
-    let s = raw.trim().trim_matches('"').trim();
-    if s.starts_with("tt") && s.len() > 2 {
-        Some(s.to_string())
-    } else {
-        None
+    crate::normalize::normalize_imdb_id(raw.trim().trim_matches('"').trim())
+}
+
+fn apply_url_ids_from_text(content: &str, meta: &mut NfoMetadata) {
+    if meta.imdb_id.is_none() {
+        meta.imdb_id = extract_imdb_url_id(content);
+    }
+    if meta.tvdb_id.is_none() {
+        meta.tvdb_id = extract_tvdb_url_id(content);
+    }
+    if meta.tmdb_id.is_none() {
+        meta.tmdb_id = extract_tmdb_url_id(content);
     }
 }
 
@@ -450,20 +543,22 @@ fn extract_tvdb_url_id(content: &str) -> Option<String> {
     }
 }
 
-/// Extract TMDB ID from URL pattern: `themoviedb.org/movie/(\d+)`
+/// Extract TMDB ID from URL patterns like `themoviedb.org/movie/(\d+)` or `/tv/(\d+)`.
 fn extract_tmdb_url_id(content: &str) -> Option<String> {
     let lower = content.to_ascii_lowercase();
-    let marker = "themoviedb.org/movie/";
-    let pos = lower.find(marker)? + marker.len();
-    let digits: String = content[pos..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    if digits.is_empty() {
-        None
-    } else {
-        Some(digits)
+    for marker in ["themoviedb.org/movie/", "themoviedb.org/tv/"] {
+        let Some(pos) = lower.find(marker).map(|pos| pos + marker.len()) else {
+            continue;
+        };
+        let digits: String = content[pos..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return Some(digits);
+        }
     }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -731,11 +826,42 @@ mod tests {
     }
 
     #[test]
-    fn parse_legacy_id_tvdb() {
-        let nfo = "<movie><id>12345</id></movie>";
+    fn parse_legacy_id_tvdb_for_tvshow_root() {
+        let nfo = "<tvshow><id>12345</id></tvshow>";
         let meta = parse_nfo(nfo);
         assert_eq!(meta.tvdb_id, Some("12345".into()));
         assert_eq!(meta.imdb_id, None);
+    }
+
+    #[test]
+    fn parse_legacy_id_tmdb_for_movie_root() {
+        let nfo = "<movie><id>438631</id></movie>";
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.tmdb_id, Some("438631".into()));
+        assert_eq!(meta.tvdb_id, None);
+    }
+
+    #[test]
+    fn parse_imdb_underscore_tag() {
+        let nfo = "<tvshow><imdb_id>tt1160419</imdb_id></tvshow>";
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.imdb_id, Some("tt1160419".into()));
+    }
+
+    #[test]
+    fn parse_ignores_nested_provider_ids() {
+        let nfo = r#"<movie>
+  <title>Outer Movie</title>
+  <actor>
+    <name>Actor Name</name>
+    <imdbid>tt0000001</imdbid>
+    <tmdbid>999</tmdbid>
+  </actor>
+</movie>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.title, Some("Outer Movie".into()));
+        assert_eq!(meta.imdb_id, None);
+        assert_eq!(meta.tmdb_id, None);
     }
 
     #[test]
@@ -772,6 +898,69 @@ mod tests {
         let nfo = "https://www.themoviedb.org/movie/438631-glass-harbor";
         let meta = parse_nfo(nfo);
         assert_eq!(meta.tmdb_id, Some("438631".into()));
+    }
+
+    #[test]
+    fn parse_url_only_tmdb_tv() {
+        let nfo = "https://www.themoviedb.org/tv/94997-house-of-the-dragon";
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.tmdb_id, Some("94997".into()));
+    }
+
+    #[test]
+    fn parse_xml_top_level_comment_url() {
+        let nfo = r#"<movie><!-- https://www.imdb.com/title/tt1234567/ --></movie>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.imdb_id, Some("tt1234567".into()));
+    }
+
+    #[test]
+    fn parse_xml_ignores_nested_comment_url() {
+        let nfo = r#"<movie>
+  <actor>
+    <name>Actor Name</name>
+    <!-- https://www.imdb.com/title/tt0000001/ -->
+  </actor>
+</movie>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.imdb_id, None);
+    }
+
+    #[test]
+    fn parse_xml_does_not_scan_nested_text_urls() {
+        let nfo = r#"<movie>
+  <actor>
+    <name>https://www.themoviedb.org/movie/999-nested-person-url</name>
+  </actor>
+</movie>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.tmdb_id, None);
+    }
+
+    #[test]
+    fn parse_plexmatch_provider_ids_and_guid() {
+        let meta = parse_plexmatch(
+            r#"
+# comment
+Show: Example Show
+Year: 2024
+Guid: imdb://tt1160419
+tmdbid: 438631
+tvdbid: 12345
+bad line
+"#,
+        );
+        assert_eq!(meta.title, Some("Example Show".into()));
+        assert_eq!(meta.year, Some(2024));
+        assert_eq!(meta.imdb_id, Some("tt1160419".into()));
+        assert_eq!(meta.tmdb_id, Some("438631".into()));
+        assert_eq!(meta.tvdb_id, Some("12345".into()));
+    }
+
+    #[test]
+    fn parse_plexmatch_ignores_unknown_guid() {
+        let meta = parse_plexmatch("guid: plex://show/5d9c088e705e7d001f32b8f8");
+        assert_eq!(meta, NfoMetadata::default());
     }
 
     #[test]
