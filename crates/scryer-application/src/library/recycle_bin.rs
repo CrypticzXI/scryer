@@ -536,7 +536,7 @@ pub async fn resolve_recycle_config(
     let enabled = app
         .read_setting_string_value_for_scope(
             crate::SETTINGS_SCOPE_MEDIA,
-            "recycle_bin.enabled",
+            crate::RECYCLE_BIN_ENABLED_KEY,
             None,
         )
         .await

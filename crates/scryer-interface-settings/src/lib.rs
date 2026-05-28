@@ -44,6 +44,14 @@ fn from_subtitle_settings(
     }
 }
 
+fn from_recycle_bin_settings(
+    settings: scryer_application::RecycleBinSettings,
+) -> RecycleBinSettingsPayload {
+    RecycleBinSettingsPayload {
+        enabled: settings.enabled,
+    }
+}
+
 fn from_acquisition_settings(
     settings: scryer_application::AcquisitionSettings,
 ) -> AcquisitionSettingsPayload {
@@ -162,6 +170,19 @@ impl SettingsQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_general_settings(settings))
+    }
+
+    async fn recycle_bin_settings(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<RecycleBinSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_recycle_bin_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_recycle_bin_settings(settings))
     }
 
     async fn auto_backup_settings(

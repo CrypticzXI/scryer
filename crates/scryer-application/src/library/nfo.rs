@@ -120,6 +120,7 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     // Legacy <id> is lowest priority — only used if uniqueid/jellyfin tags don't
     // provide the same ID. Defer until after the full parse.
     let mut legacy_id: Option<String> = None;
+    let mut url_fallback_text = String::new();
 
     loop {
         match reader.read_event() {
@@ -164,7 +165,7 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
             }
             Ok(Event::Comment(ref e)) if depth <= 1 => {
                 if let Ok(decoded) = e.decode() {
-                    apply_url_ids_from_text(&decoded, meta);
+                    push_url_fallback_text(&mut url_fallback_text, &decoded);
                 }
             }
             Ok(Event::End(_)) => {
@@ -174,6 +175,7 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                 }
                 let text = current_text.trim().to_string();
                 if !text.is_empty() {
+                    push_url_fallback_text(&mut url_fallback_text, &text);
                     match current_tag.as_str() {
                         "uniqueid" => {
                             if let Some(ref uid_type) = uniqueid_type {
@@ -231,12 +233,13 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     }
 
     // Apply legacy <id> only if higher-priority tags didn't provide the value.
+    // Numeric movie <id> values are intentionally ignored: too many tools have
+    // used that field for different providers, so it is not safe identity.
     if let Some(id_val) = legacy_id {
         if id_val.starts_with("tt") && meta.imdb_id.is_none() {
             meta.imdb_id = normalize_imdb(&id_val);
         } else if looks_like_numeric_id(&id_val) {
             match root_kind {
-                NfoRootKind::Movie if meta.tmdb_id.is_none() => meta.tmdb_id = Some(id_val),
                 NfoRootKind::TvShow | NfoRootKind::Episode if meta.tvdb_id.is_none() => {
                     meta.tvdb_id = Some(id_val);
                 }
@@ -244,6 +247,8 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
             }
         }
     }
+
+    apply_url_ids_from_text(&url_fallback_text, meta);
 }
 
 pub(crate) fn parse_plexmatch(content: &str) -> NfoMetadata {
@@ -269,7 +274,9 @@ pub(crate) fn parse_plexmatch(content: &str) -> NfoMetadata {
                     .ok()
                     .filter(|&year| (1888..=2100).contains(&year));
             }
-            "imdbid" if meta.imdb_id.is_none() => meta.imdb_id = normalize_imdb(value),
+            "imdbid" if meta.imdb_id.is_none() => {
+                meta.imdb_id = normalize_plexmatch_imdb(value);
+            }
             "tmdbid" if meta.tmdb_id.is_none() => {
                 meta.tmdb_id = crate::normalize::normalize_numeric_id(value);
             }
@@ -288,7 +295,7 @@ fn apply_plexmatch_guid(value: &str, meta: &mut NfoMetadata) {
         return;
     };
     match scheme.trim().to_ascii_lowercase().as_str() {
-        "imdb" if meta.imdb_id.is_none() => meta.imdb_id = normalize_imdb(raw_id),
+        "imdb" if meta.imdb_id.is_none() => meta.imdb_id = normalize_plexmatch_imdb(raw_id),
         "tmdb" if meta.tmdb_id.is_none() => {
             meta.tmdb_id = crate::normalize::normalize_numeric_id(raw_id);
         }
@@ -303,7 +310,7 @@ fn apply_plexmatch_guid(value: &str, meta: &mut NfoMetadata) {
 // Writer
 // ---------------------------------------------------------------------------
 
-/// Render a Kodi-compatible `<movie>` NFO for the given Title.
+/// Render a Jellyfin/Kodi-compatible `<movie>` NFO for the given Title.
 pub(crate) fn render_movie_nfo(title: &Title) -> String {
     let mut buf = Cursor::new(Vec::new());
     let mut w = Writer::new_with_indent(&mut buf, b' ', 2);
@@ -328,13 +335,13 @@ pub(crate) fn render_movie_nfo(title: &Title) -> String {
     }
     write_optional_non_empty_element(&mut w, "studio", title.studio.as_deref());
 
-    write_uniqueids(&mut w, title);
+    write_movie_uniqueids(&mut w, title);
 
     w.write_event(Event::End(BytesEnd::new("movie"))).ok();
     finish_xml(buf)
 }
 
-/// Render a Kodi-compatible `<tvshow>` NFO for the given series Title.
+/// Render a Jellyfin/Kodi-compatible `<tvshow>` NFO for the given series Title.
 pub(crate) fn render_tvshow_nfo(title: &Title) -> String {
     let mut buf = Cursor::new(Vec::new());
     let mut w = Writer::new_with_indent(&mut buf, b' ', 2);
@@ -356,7 +363,7 @@ pub(crate) fn render_tvshow_nfo(title: &Title) -> String {
     }
     write_optional_non_empty_element(&mut w, "studio", title.network.as_deref());
 
-    write_uniqueids(&mut w, title);
+    write_tvshow_uniqueids(&mut w, title);
 
     w.write_event(Event::End(BytesEnd::new("tvshow"))).ok();
     finish_xml(buf)
@@ -371,6 +378,7 @@ pub(crate) fn render_episode_nfo(title: &Title, episode: &Episode) -> String {
     let tag = BytesStart::new("episodedetails");
     w.write_event(Event::Start(tag)).ok();
 
+    write_element(&mut w, "showtitle", &title.name);
     write_optional_non_empty_element(&mut w, "title", episode.title.as_deref());
     if let Some(ref season) = episode.season_number {
         write_element(&mut w, "season", season);
@@ -464,20 +472,21 @@ fn airs_before_season_from_collection_index(index: &str) -> Option<i32> {
     Some(after_season + 1)
 }
 
-/// Render a Plex `.plexmatch` hint file for the given series Title.
+/// Render a Plex/Sonarr-style `.plexmatch` hint file for the given series Title.
 ///
 /// Plain text key-value format. Lines are omitted when the value is empty.
-/// Only applicable to TV series — Plex does not support `.plexmatch` for movies.
+/// Only applicable to TV series — Plex and Radarr do not define a movie
+/// `.plexmatch` format.
 pub(crate) fn render_plexmatch(title: &Title) -> String {
-    let mut out = format!("title: {}\n", title.name);
+    let mut out = format!("Title: {}\n", title.name);
 
     if let Some(year) = title.year {
-        out.push_str(&format!("year: {year}\n"));
+        out.push_str(&format!("Year: {year}\n"));
     }
 
-    push_optional_non_empty_line(&mut out, "tvdbid", title_external_id_value(title, "tvdb"));
-    push_optional_non_empty_line(&mut out, "imdbid", title.imdb_id.as_deref());
-    push_optional_non_empty_line(&mut out, "tmdbid", title_external_id_value(title, "tmdb"));
+    push_optional_non_empty_line(&mut out, "TvdbId", title_external_id_value(title, "tvdb"));
+    push_optional_non_empty_line(&mut out, "ImdbId", title.imdb_id.as_deref());
+    push_optional_non_empty_line(&mut out, "TmdbId", title_external_id_value(title, "tmdb"));
 
     out
 }
@@ -492,9 +501,28 @@ fn looks_like_numeric_id(s: &str) -> bool {
     !t.is_empty() && t.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Normalize a raw string to a canonical IMDb ID (tt-prefixed, 7+ digits).
+/// Normalize a raw string to a canonical IMDb ID. NFO provider fields must carry
+/// a real `tt...` IMDb ID; all-digit values are often mislabeled TMDB/TVDB IDs.
 fn normalize_imdb(raw: &str) -> Option<String> {
+    let value = raw.trim().trim_matches('"').trim();
+    if !value.to_ascii_lowercase().contains("tt") {
+        return None;
+    }
+    crate::normalize::normalize_imdb_id(value)
+}
+
+fn normalize_plexmatch_imdb(raw: &str) -> Option<String> {
     crate::normalize::normalize_imdb_id(raw.trim().trim_matches('"').trim())
+}
+
+fn push_url_fallback_text(out: &mut String, text: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(text);
 }
 
 fn apply_url_ids_from_text(content: &str, meta: &mut NfoMetadata) {
@@ -601,16 +629,44 @@ fn write_uniqueid<W: std::io::Write>(w: &mut Writer<W>, id_type: &str, value: &s
     w.write_event(Event::End(BytesEnd::new("uniqueid"))).ok();
 }
 
-fn write_uniqueids<W: std::io::Write>(w: &mut Writer<W>, title: &Title) {
-    if let Some(tvdb_id) = title_external_id_value(title, "tvdb") {
+fn write_movie_uniqueids<W: std::io::Write>(w: &mut Writer<W>, title: &Title) {
+    let tmdb_id = title_external_id_value(title, "tmdb");
+    let imdb_id = title.imdb_id.as_deref().filter(|imdb| !imdb.is_empty());
+    let tvdb_id = title_external_id_value(title, "tvdb");
+
+    if let Some(tmdb_id) = tmdb_id {
+        write_uniqueid(w, "tmdb", tmdb_id, true);
+    }
+    if let Some(imdb_id) = imdb_id {
+        write_uniqueid(w, "imdb", imdb_id, tmdb_id.is_none());
+    }
+    if let Some(tvdb_id) = tvdb_id {
+        write_uniqueid(w, "tvdb", tvdb_id, false);
+    }
+
+    write_optional_non_empty_element(w, "tmdbid", tmdb_id);
+    write_optional_non_empty_element(w, "imdbid", imdb_id);
+    write_optional_non_empty_element(w, "tvdbid", tvdb_id);
+}
+
+fn write_tvshow_uniqueids<W: std::io::Write>(w: &mut Writer<W>, title: &Title) {
+    let tvdb_id = title_external_id_value(title, "tvdb");
+    let tmdb_id = title_external_id_value(title, "tmdb");
+    let imdb_id = title.imdb_id.as_deref().filter(|imdb| !imdb.is_empty());
+
+    if let Some(tvdb_id) = tvdb_id {
         write_uniqueid(w, "tvdb", tvdb_id, true);
     }
-    if let Some(imdb_id) = title.imdb_id.as_deref().filter(|imdb| !imdb.is_empty()) {
+    if let Some(tmdb_id) = tmdb_id {
+        write_uniqueid(w, "tmdb", tmdb_id, tvdb_id.is_none());
+    }
+    if let Some(imdb_id) = imdb_id {
         write_uniqueid(w, "imdb", imdb_id, false);
     }
-    if let Some(tmdb_id) = title_external_id_value(title, "tmdb") {
-        write_uniqueid(w, "tmdb", tmdb_id, false);
-    }
+
+    write_optional_non_empty_element(w, "tvdbid", tvdb_id);
+    write_optional_non_empty_element(w, "tmdbid", tmdb_id);
+    write_optional_non_empty_element(w, "imdb_id", imdb_id);
 }
 
 fn title_external_id_value<'a>(title: &'a Title, source: &str) -> Option<&'a str> {
@@ -834,10 +890,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_legacy_id_tmdb_for_movie_root() {
+    fn parse_legacy_numeric_id_for_movie_root_is_not_authoritative() {
         let nfo = "<movie><id>438631</id></movie>";
         let meta = parse_nfo(nfo);
-        assert_eq!(meta.tmdb_id, Some("438631".into()));
+        assert_eq!(meta.tmdb_id, None);
         assert_eq!(meta.tvdb_id, None);
     }
 
@@ -846,6 +902,13 @@ mod tests {
         let nfo = "<tvshow><imdb_id>tt1160419</imdb_id></tvshow>";
         let meta = parse_nfo(nfo);
         assert_eq!(meta.imdb_id, Some("tt1160419".into()));
+    }
+
+    #[test]
+    fn parse_imdb_tag_rejects_numeric_only_values() {
+        let nfo = "<movie><imdbid>438631</imdbid></movie>";
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.imdb_id, None);
     }
 
     #[test]
@@ -915,6 +978,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_xml_body_text_url() {
+        let nfo =
+            r#"<movie><plot>See https://www.imdb.com/title/tt1234567/ for details.</plot></movie>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.imdb_id, Some("tt1234567".into()));
+    }
+
+    #[test]
+    fn parse_xml_explicit_provider_tag_overrides_comment_url() {
+        let nfo = r#"<movie>
+  <!-- https://www.imdb.com/title/tt0000001/ -->
+  <imdbid>tt9999999</imdbid>
+</movie>"#;
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.imdb_id, Some("tt9999999".into()));
+    }
+
+    #[test]
     fn parse_xml_ignores_nested_comment_url() {
         let nfo = r#"<movie>
   <actor>
@@ -955,6 +1036,25 @@ bad line
         assert_eq!(meta.imdb_id, Some("tt1160419".into()));
         assert_eq!(meta.tmdb_id, Some("438631".into()));
         assert_eq!(meta.tvdb_id, Some("12345".into()));
+    }
+
+    #[test]
+    fn parse_plexmatch_matches_plex_sonarr_series_shape() {
+        let meta = parse_plexmatch(
+            r#"
+Title: Example Show
+Year: 2024
+TvdbId: 12345
+ImdbId: 1160419
+Episode: S01E01: Season 01/Pilot.mkv
+Pattern: Bonus/Bonus {sp,1-3,+4}.mp4
+"#,
+        );
+        assert_eq!(meta.title, Some("Example Show".into()));
+        assert_eq!(meta.year, Some(2024));
+        assert_eq!(meta.tvdb_id, Some("12345".into()));
+        assert_eq!(meta.imdb_id, Some("tt1160419".into()));
+        assert_eq!(meta.tmdb_id, None);
     }
 
     #[test]
@@ -1157,9 +1257,13 @@ bad line
         assert!(xml.contains("<genre>Action</genre>"));
         assert!(xml.contains("<genre>Sci-Fi</genre>"));
         assert!(xml.contains("<studio>Aurora Gate</studio>"));
-        assert!(xml.contains(r#"<uniqueid type="tvdb" default="true">12345</uniqueid>"#));
+        assert!(xml.contains(r#"<uniqueid type="tmdb" default="true">603</uniqueid>"#));
         assert!(xml.contains(r#"<uniqueid type="imdb">tt0133093</uniqueid>"#));
-        assert!(xml.contains(r#"<uniqueid type="tmdb">603</uniqueid>"#));
+        assert!(xml.contains(r#"<uniqueid type="tvdb">12345</uniqueid>"#));
+        assert!(xml.contains("<tmdbid>603</tmdbid>"));
+        assert!(xml.contains("<imdbid>tt0133093</imdbid>"));
+        assert!(!xml.contains(r#"<uniqueid type="tvdb" default="true">"#));
+        assert!(!xml.contains("<id>"));
         assert!(xml.contains("</movie>"));
     }
 
@@ -1171,6 +1275,11 @@ bad line
         let xml = render_tvshow_nfo(&title);
         assert!(xml.contains("<tvshow>"));
         assert!(xml.contains("<studio>AMC</studio>"));
+        assert!(xml.contains(r#"<uniqueid type="tvdb" default="true">12345</uniqueid>"#));
+        assert!(xml.contains(r#"<uniqueid type="tmdb">603</uniqueid>"#));
+        assert!(xml.contains("<tvdbid>12345</tvdbid>"));
+        assert!(xml.contains("<tmdbid>603</tmdbid>"));
+        assert!(xml.contains("<imdb_id>tt0133093</imdb_id>"));
         assert!(xml.contains("</tvshow>"));
     }
 
@@ -1180,6 +1289,7 @@ bad line
         let episode = make_episode();
         let xml = render_episode_nfo(&title, &episode);
         assert!(xml.contains("<episodedetails>"));
+        assert!(xml.contains("<showtitle>Glass Harbor</showtitle>"));
         assert!(xml.contains("<title>Pilot</title>"));
         assert!(xml.contains("<season>1</season>"));
         assert!(xml.contains("<episode>1</episode>"));
@@ -1201,10 +1311,11 @@ bad line
     fn render_plexmatch() {
         let title = make_title();
         let plex = super::render_plexmatch(&title);
-        assert!(plex.contains("title: Glass Harbor"));
-        assert!(plex.contains("year: 1999"));
-        assert!(plex.contains("tvdbid: 12345"));
-        assert!(plex.contains("imdbid: tt0133093"));
-        assert!(plex.contains("tmdbid: 603"));
+        assert!(plex.contains("Title: Glass Harbor"));
+        assert!(plex.contains("Year: 1999"));
+        assert!(plex.contains("TvdbId: 12345"));
+        assert!(plex.contains("ImdbId: tt0133093"));
+        assert!(plex.contains("TmdbId: 603"));
+        assert!(!plex.contains("Movie:"));
     }
 }

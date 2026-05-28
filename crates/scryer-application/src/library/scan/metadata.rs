@@ -52,12 +52,45 @@ impl MetadataIdentityHint {
         self.imdb_id.is_some() || self.tmdb_id.is_some() || self.tvdb_id.is_some()
     }
 
-    fn has_id_backed_match_signal(&self, item: &MetadataSearchItem) -> bool {
+    fn accepts_safe_match(&self, item: &MetadataSearchItem) -> bool {
         !self.has_external_ids()
-            || item
-                .auto_match_signals
-                .iter()
-                .any(|signal| signal.starts_with("external_id:"))
+            || self.has_matching_external_id_signal(item)
+            || self.allows_sidecar_exact_title_year_fallback(item)
+    }
+
+    fn has_matching_external_id_signal(&self, item: &MetadataSearchItem) -> bool {
+        (self.imdb_id.is_some() && item.has_auto_match_signal("external_id:imdb"))
+            || (self.tmdb_id.is_some() && item.has_auto_match_signal("external_id:tmdb"))
+            || (self.tvdb_id.is_some() && item.has_auto_match_signal("external_id:tvdb"))
+    }
+
+    fn allows_sidecar_exact_title_year_fallback(&self, item: &MetadataSearchItem) -> bool {
+        matches!(
+            self.source,
+            MetadataIdentitySource::Nfo | MetadataIdentitySource::Plexmatch
+        ) && self.title.is_some()
+            && self.year.is_some()
+            && self.year.and_then(|year| i32::try_from(year).ok()) == item.year
+            && !item.has_any_external_id_signal()
+            && item.has_auto_match_signal("exact_title")
+            && item.has_auto_match_signal("exact_year")
+    }
+}
+
+trait MetadataSearchItemSignals {
+    fn has_auto_match_signal(&self, signal: &str) -> bool;
+    fn has_any_external_id_signal(&self) -> bool;
+}
+
+impl MetadataSearchItemSignals for MetadataSearchItem {
+    fn has_auto_match_signal(&self, signal: &str) -> bool {
+        self.auto_match_signals.iter().any(|value| value == signal)
+    }
+
+    fn has_any_external_id_signal(&self) -> bool {
+        self.auto_match_signals
+            .iter()
+            .any(|value| value.starts_with("external_id:"))
     }
 }
 
@@ -241,7 +274,11 @@ fn candidate_sidecar_folder(file_path: &str, library_path: &str) -> Option<PathB
     let path = stored_path_to_path_buf(file_path);
     let folder = path.parent()?.to_path_buf();
     let root = stored_path_to_path_buf(library_path);
-    (folder != root).then_some(folder)
+    (!same_path_components(&folder, &root)).then_some(folder)
+}
+
+fn same_path_components(left: &Path, right: &Path) -> bool {
+    left.components().eq(right.components())
 }
 
 fn normalized_non_empty(value: Option<&str>) -> Option<String> {
@@ -1096,7 +1133,7 @@ fn select_safe_batch_match(
     results
         .first()
         .filter(|item| item.auto_match_safe)
-        .filter(|item| identity_hint.is_none_or(|hint| hint.has_id_backed_match_signal(item)))
+        .filter(|item| identity_hint.is_none_or(|hint| hint.accepts_safe_match(item)))
         .cloned()
 }
 
@@ -2453,10 +2490,87 @@ mod tests {
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_requires_external_signal_for_id_hint() {
+    fn select_movie_metadata_from_batch_results_allows_sidecar_exact_title_year_fallback() {
         let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Nfo,
+            imdb_id: Some("tt1234567".into()),
+            tmdb_id: None,
+            tvdb_id: None,
+            title: Some("Glass Harbor".into()),
+            year: Some(2021),
+        });
+        let key = BatchMetadataSearchKey::new(
+            METADATA_TYPE_MOVIE,
+            "Glass Harbor",
+            None,
+            candidate.identity_hint.as_ref(),
+        )
+        .expect("metadata search key");
+        let mut results = HashMap::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "movie-1".into(),
+                name: "Glass Harbor".into(),
+                year: Some(2021),
+                auto_match_safe: true,
+                auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
+            }]),
+        );
+
+        let selected = select_movie_metadata_from_batch_results(&candidate, &results)
+            .expect("movie batch selection")
+            .expect("sidecar exact title/year fallback");
+
+        assert_eq!(selected.tvdb_id, "movie-1");
+    }
+
+    #[test]
+    fn select_movie_metadata_from_batch_results_rejects_provider_mismatch_for_id_hint() {
+        let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
+        candidate.identity_hint = Some(MetadataIdentityHint {
+            source: MetadataIdentitySource::Nfo,
+            imdb_id: Some("tt1234567".into()),
+            tmdb_id: None,
+            tvdb_id: None,
+            title: Some("Glass Harbor".into()),
+            year: Some(2021),
+        });
+        let key = BatchMetadataSearchKey::new(
+            METADATA_TYPE_MOVIE,
+            "Glass Harbor",
+            None,
+            candidate.identity_hint.as_ref(),
+        )
+        .expect("metadata search key");
+        let mut results = HashMap::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "movie-1".into(),
+                name: "Glass Harbor".into(),
+                year: Some(2021),
+                auto_match_safe: true,
+                auto_match_signals: vec![
+                    "external_id:tvdb".into(),
+                    "exact_title".into(),
+                    "exact_year".into(),
+                ],
+            }]),
+        );
+
+        let selected = select_movie_metadata_from_batch_results(&candidate, &results)
+            .expect("movie batch selection");
+
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn select_movie_metadata_from_batch_results_rejects_filename_id_without_external_signal() {
+        let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
+        candidate.identity_hint = Some(MetadataIdentityHint {
+            source: MetadataIdentitySource::Filename,
             imdb_id: Some("tt1234567".into()),
             tmdb_id: None,
             tvdb_id: None,
@@ -2842,6 +2956,18 @@ mod tests {
                 .any(|value| value == "Correct Series Title"),
             "search candidates should include the .plexmatch title: {:?}",
             candidate.search_candidates
+        );
+    }
+
+    #[test]
+    fn candidate_sidecar_folder_ignores_library_root_with_trailing_separator() {
+        assert_eq!(
+            candidate_sidecar_folder("/library/movie.mkv", "/library/"),
+            None
+        );
+        assert_eq!(
+            candidate_sidecar_folder("/library/Movie/movie.mkv", "/library/"),
+            Some(PathBuf::from("/library/Movie"))
         );
     }
 

@@ -5,6 +5,7 @@ use scryer_application::{
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
     UpdateGeneralSettings as AppUpdateGeneralSettings,
+    UpdateRecycleBinSettings as AppUpdateRecycleBinSettings,
     UpdateSecuritySettings as AppUpdateSecuritySettings,
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
@@ -43,6 +44,14 @@ fn from_subtitle_settings(
         sync_threshold_series: settings.sync_threshold_series,
         sync_threshold_movie: settings.sync_threshold_movie,
         sync_max_offset_seconds: settings.sync_max_offset_seconds,
+    }
+}
+
+fn from_recycle_bin_settings(
+    settings: scryer_application::RecycleBinSettings,
+) -> RecycleBinSettingsPayload {
+    RecycleBinSettingsPayload {
+        enabled: settings.enabled,
     }
 }
 
@@ -364,6 +373,27 @@ impl SettingsMutations {
             .map_err(to_gql_error)?;
 
         Ok(from_general_settings(settings))
+    }
+
+    async fn update_recycle_bin_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateRecycleBinSettingsInput,
+    ) -> GqlResult<RecycleBinSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+
+        let settings = app
+            .update_recycle_bin_settings(
+                &actor,
+                AppUpdateRecycleBinSettings {
+                    enabled: input.enabled,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_recycle_bin_settings(settings))
     }
 
     async fn update_auto_backup_settings(

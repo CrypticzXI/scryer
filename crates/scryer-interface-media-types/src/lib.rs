@@ -1579,6 +1579,11 @@ pub struct SubtitleSettingsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct RecycleBinSettingsPayload {
+    pub enabled: bool,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct AcquisitionSettingsPayload {
     pub enabled: bool,
     pub upgrade_cooldown_hours: i32,
@@ -2023,6 +2028,11 @@ pub struct UpdateSubtitleSettingsInput {
     pub sync_threshold_series: i32,
     pub sync_threshold_movie: i32,
     pub sync_max_offset_seconds: i32,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateRecycleBinSettingsInput {
+    pub enabled: bool,
 }
 
 #[derive(InputObject, Clone)]
@@ -2964,6 +2974,8 @@ pub struct RecycledItemPayload {
     pub reason: String,
     pub recycled_at: String,
     pub media_root: String,
+    pub library_id: String,
+    pub library_name: String,
 }
 
 #[derive(SimpleObject, Clone)]

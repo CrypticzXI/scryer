@@ -1813,19 +1813,31 @@ const es: LocaleDictionary = {
   "convenience.requiredAudioHelp":
     "Las releases sin estos idiomas de audio serán bloqueadas. Crea una regla gestionada visible en Ajustes > Reglas.",
   "settings.recycleBin": "Papelera de reciclaje",
+  "settings.recycleBinEnabled": "Activar papelera de reciclaje",
+  "settings.recycleBinEnabledHelp":
+    "Los archivos multimedia eliminados y reemplazados se mueven a la papelera antes de la eliminación permanente.",
+  "settings.recycleBinEnabledReadonly":
+    "El estado de la papelera lo controlan los usuarios que pueden administrar la configuración.",
   "settings.recycleBinSection": "Administrar archivos multimedia reciclados",
+  "settings.recycleBinLibraryFilter": "Bibliotecas",
   "settings.recycleBinEmpty": "La papelera de reciclaje está vacía.",
+  "settings.recycleBinNoManageableLibraries":
+    "No hay bibliotecas disponibles para administrar elementos de la papelera.",
   "settings.recycleBinRestore": "Restaurar",
   "settings.recycleBinDelete": "Eliminar",
   "settings.recycleBinEmptyAll": "Papelera de reciclaje vacía",
   "settings.recycleBinEmptyConfirm":
-    "¿Eliminar permanentemente todos los elementos {count} de la papelera de reciclaje? Esto no se puede deshacer.",
+    "¿Eliminar permanentemente {count} elementos de la vista actual de la papelera? Esto no se puede deshacer.",
   "settings.recycleBinDeleteConfirm":
     "¿Eliminar permanentemente este archivo? Esto no se puede deshacer.",
+  "settings.recycleBinReason": "Motivo",
+  "settings.recycleBinSize": "Tamaño",
+  "settings.recycleBinRecycled": "Reciclado",
   "status.recycleBinRestored": "Archivo restaurado en {path}.",
   "status.recycleBinDeleted": "Archivo eliminado permanentemente.",
   "status.recycleBinEmptied":
     "Papelera de reciclaje vaciada ({count} elementos eliminados).",
+  "status.recycleBinSettingsSaved": "Configuración de papelera guardada.",
   "settings.pp.animeScript": "Script de anime",
   "settings.pp.envVarsDescription":
     "Las siguientes variables están disponibles en tu script:",

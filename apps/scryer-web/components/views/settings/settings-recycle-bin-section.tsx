@@ -1,5 +1,8 @@
 import { Loader2, RotateCcw, Trash2 } from "lucide-react";
+import { LibraryMultiSelect } from "@/components/common/library-multi-select";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -15,6 +18,7 @@ import {
   boxedActionButtonToneClass,
 } from "@/lib/utils/action-button-styles";
 import { selectorId } from "@/lib/utils/dom-ids";
+import type { LibraryRecord } from "@/lib/types";
 
 export type RecycledItem = {
   id: string;
@@ -25,12 +29,25 @@ export type RecycledItem = {
   reason: string;
   recycledAt: string;
   mediaRoot: string;
+  libraryId: string;
+  libraryName: string;
 };
 
 type Props = {
+  enabled: boolean;
+  settingsLoading: boolean;
+  settingsSaving: boolean;
+  canManageConfig: boolean;
+  canManageItems: boolean;
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryIds: string[];
   items: RecycledItem[];
+  totalCount: number;
   loading: boolean;
   mutatingId: string | null;
+  onEnabledChange: (enabled: boolean) => void;
+  onSelectedLibraryIdsChange: (libraryIds: string[]) => void;
   onRestore: (item: RecycledItem) => void;
   onDelete: (item: RecycledItem) => void;
   onEmptyAll: () => void;
@@ -75,16 +92,28 @@ function ReasonBadge({ reason }: { reason: string }) {
 }
 
 export function SettingsRecycleBinSection({
+  enabled,
+  settingsLoading,
+  settingsSaving,
+  canManageConfig,
+  canManageItems,
+  libraries,
+  librariesLoading,
+  selectedLibraryIds,
   items,
+  totalCount,
   loading,
   mutatingId,
+  onEnabledChange,
+  onSelectedLibraryIdsChange,
   onRestore,
   onDelete,
   onEmptyAll,
 }: Props) {
   const t = useTranslate();
+  const isBusy = settingsSaving || mutatingId !== null;
 
-  if (loading) {
+  if (settingsLoading) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -95,100 +124,155 @@ export function SettingsRecycleBinSection({
 
   return (
     <div id="settings-recycle-bin-section" className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{t("settings.recycleBinSection")}</p>
-        <Button
-          id="settings-recycle-bin-empty-all"
-          variant="outline"
-          size="sm"
-          disabled={items.length === 0 || mutatingId !== null}
-          onClick={onEmptyAll}
-          className="text-red-400 hover:text-red-300"
-        >
-          <Trash2 className="mr-2 h-4 w-4" />
-          {t("settings.recycleBinEmptyAll")}
-        </Button>
+      <div className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-1">
+          <Label htmlFor="settings-recycle-bin-enabled">
+            {t("settings.recycleBinEnabled")}
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              canManageConfig
+                ? "settings.recycleBinEnabledHelp"
+                : "settings.recycleBinEnabledReadonly",
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {settingsSaving ? (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : null}
+          <SettingsToggleSwitch
+            id="settings-recycle-bin-enabled"
+            checked={enabled}
+            disabled={!canManageConfig || settingsSaving}
+            ariaLabel={t("settings.recycleBinEnabled")}
+            onChange={onEnabledChange}
+          />
+        </div>
       </div>
 
-      {items.length === 0 ? (
-        <p className="py-4 text-sm text-muted-foreground">{t("settings.recycleBinEmpty")}</p>
+      {!enabled ? null : !canManageItems ? (
+        <p className="py-2 text-sm text-muted-foreground">
+          {t("settings.recycleBinNoManageableLibraries")}
+        </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("label.name")}</TableHead>
-              <TableHead>Reason</TableHead>
-              <TableHead>Size</TableHead>
-              <TableHead>Recycled</TableHead>
-              <TableHead className="text-right">{t("label.actions")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {items.map((item) => {
-              const isBusy = mutatingId === item.id || mutatingId === "__empty__";
-              return (
-                <TableRow
-                  key={item.id}
-                  id={selectorId("settings-recycle-bin-row", item.id)}
-                >
-                  <TableCell>
-                    <div>
-                      <div className="font-medium">{item.fileName}</div>
-                      <div className="max-w-[300px] truncate text-xs text-muted-foreground" title={item.originalPath}>
-                        {item.originalPath}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <ReasonBadge reason={item.reason} />
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                    {formatSize(item.sizeBytes)}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                    {formatDate(item.recycledAt)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <Button
-                        id={selectorId("settings-recycle-bin-restore", item.id)}
-                        type="button"
-                        size="icon-sm"
-                        variant="secondary"
-                        title={t("settings.recycleBinRestore")}
-                        aria-label={t("settings.recycleBinRestore")}
-                        disabled={isBusy}
-                        onClick={() => onRestore(item)}
-                        className={cn(
-                          boxedActionButtonBaseClass,
-                          boxedActionButtonToneClass.enabled,
-                        )}
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        id={selectorId("settings-recycle-bin-delete", item.id)}
-                        type="button"
-                        size="icon-sm"
-                        variant="secondary"
-                        title={t("settings.recycleBinDelete")}
-                        aria-label={t("settings.recycleBinDelete")}
-                        disabled={isBusy}
-                        onClick={() => onDelete(item)}
-                        className={cn(
-                          boxedActionButtonBaseClass,
-                          boxedActionButtonToneClass.delete,
-                        )}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
+        <>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div className="space-y-1">
+              <Label>{t("settings.recycleBinLibraryFilter")}</Label>
+              <LibraryMultiSelect
+                libraries={libraries}
+                selectedLibraryIds={selectedLibraryIds}
+                onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+                disabled={librariesLoading || isBusy}
+                triggerClassName="w-full min-w-56 sm:w-72"
+              />
+            </div>
+            <Button
+              id="settings-recycle-bin-empty-all"
+              variant="outline"
+              size="sm"
+              disabled={totalCount === 0 || isBusy || librariesLoading}
+              onClick={onEmptyAll}
+              className="text-red-400 hover:text-red-300"
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              {t("settings.recycleBinEmptyAll")}
+            </Button>
+          </div>
+
+          <p className="text-sm text-muted-foreground">{t("settings.recycleBinSection")}</p>
+
+          {loading || librariesLoading ? (
+            <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t("label.loading")}
+            </div>
+          ) : items.length === 0 ? (
+            <p className="py-4 text-sm text-muted-foreground">{t("settings.recycleBinEmpty")}</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("label.name")}</TableHead>
+                  <TableHead>{t("nav.library")}</TableHead>
+                  <TableHead>{t("settings.recycleBinReason")}</TableHead>
+                  <TableHead>{t("settings.recycleBinSize")}</TableHead>
+                  <TableHead>{t("settings.recycleBinRecycled")}</TableHead>
+                  <TableHead className="text-right">{t("label.actions")}</TableHead>
                 </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+              </TableHeader>
+              <TableBody>
+                {items.map((item) => {
+                  const rowBusy = mutatingId === item.id || mutatingId === "__empty__";
+                  return (
+                    <TableRow
+                      key={item.id}
+                      id={selectorId("settings-recycle-bin-row", item.id)}
+                    >
+                      <TableCell>
+                        <div>
+                          <div className="font-medium">{item.fileName}</div>
+                          <div className="max-w-[300px] truncate text-xs text-muted-foreground" title={item.originalPath}>
+                            {item.originalPath}
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {item.libraryName}
+                      </TableCell>
+                      <TableCell>
+                        <ReasonBadge reason={item.reason} />
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                        {formatSize(item.sizeBytes)}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                        {formatDate(item.recycledAt)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            id={selectorId("settings-recycle-bin-restore", item.id)}
+                            type="button"
+                            size="icon-sm"
+                            variant="secondary"
+                            title={t("settings.recycleBinRestore")}
+                            aria-label={t("settings.recycleBinRestore")}
+                            disabled={rowBusy}
+                            onClick={() => onRestore(item)}
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.enabled,
+                            )}
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            id={selectorId("settings-recycle-bin-delete", item.id)}
+                            type="button"
+                            size="icon-sm"
+                            variant="secondary"
+                            title={t("settings.recycleBinDelete")}
+                            aria-label={t("settings.recycleBinDelete")}
+                            disabled={rowBusy}
+                            onClick={() => onDelete(item)}
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.delete,
+                            )}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </>
       )}
     </div>
   );

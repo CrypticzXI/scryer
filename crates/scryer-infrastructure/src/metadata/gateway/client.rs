@@ -1630,9 +1630,11 @@ fn build_bulk_mixed_query(movie_ids: &[i64], series_ids: &[i64], language: &str)
 #[cfg(test)]
 mod tests {
     use super::{
-        MetadataSearchQuery, build_bulk_mixed_query, build_search_tvdb_batch_query,
-        compatibility_poll_phase, enrollment_retry_delay, next_version_compatibility_poll_delay_at,
-        normalize_artwork_url, normalize_optional_artwork_url, parse_version_compatibility_success,
+        MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_mixed_query,
+        build_search_tvdb_batch_query, compatibility_poll_phase, enrollment_retry_delay,
+        next_version_compatibility_poll_delay_at, normalize_artwork_url,
+        normalize_optional_artwork_url, parse_version_compatibility_success,
+        validate_search_tvdb_batch_echo,
     };
     use std::time::{Duration, SystemTime};
 
@@ -1716,8 +1718,51 @@ mod tests {
     fn search_tvdb_batch_query_uses_dedicated_field() {
         assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("searchTvdbBatch"));
         assert!(!graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("searchTvdb(query:"));
+        assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("query"));
+        assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("type"));
+        assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("year"));
         assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("auto_match_safe"));
         assert!(graphql_docs::SEARCH_TVDB_BATCH_QUERY.contains("auto_match_signals"));
+    }
+
+    #[test]
+    fn search_tvdb_batch_echo_validation_accepts_matching_response() {
+        let expected = MetadataSearchQuery {
+            query: "Lantern Tide".to_string(),
+            type_hint: "movie".to_string(),
+            year: Some(2001),
+            imdb_id: Some("tt1234567".to_string()),
+            tmdb_id: None,
+            tvdb_id: None,
+        };
+        let actual = SearchTvdbBatchResult {
+            query: "Lantern Tide".to_string(),
+            type_hint: Some("movie".to_string()),
+            year: Some(2001),
+            results: Vec::new(),
+        };
+
+        validate_search_tvdb_batch_echo(&expected, &actual).expect("matching echo");
+    }
+
+    #[test]
+    fn search_tvdb_batch_echo_validation_rejects_mismatched_response() {
+        let expected = MetadataSearchQuery {
+            query: "Lantern Tide".to_string(),
+            type_hint: "movie".to_string(),
+            year: Some(2001),
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: None,
+        };
+        let actual = SearchTvdbBatchResult {
+            query: "Wrong Tide".to_string(),
+            type_hint: Some("movie".to_string()),
+            year: Some(2001),
+            results: Vec::new(),
+        };
+
+        assert!(validate_search_tvdb_batch_echo(&expected, &actual).is_err());
     }
 
     #[test]
@@ -1865,6 +1910,10 @@ struct SearchTvdbBatchResponse {
 
 #[derive(Deserialize)]
 struct SearchTvdbBatchResult {
+    query: String,
+    #[serde(rename = "type")]
+    type_hint: Option<String>,
+    year: Option<i32>,
     results: Vec<SearchTvdbItem>,
 }
 
@@ -1883,6 +1932,28 @@ struct SearchTvdbItem {
     auto_match_safe: bool,
     #[serde(default)]
     auto_match_signals: Vec<String>,
+}
+
+fn validate_search_tvdb_batch_echo(
+    expected: &MetadataSearchQuery,
+    actual: &SearchTvdbBatchResult,
+) -> AppResult<()> {
+    if actual.query != expected.query
+        || actual.type_hint.as_deref() != Some(expected.type_hint.as_str())
+        || actual.year != expected.year
+    {
+        return Err(AppError::Repository(format!(
+            "metadata gateway batch response mismatch: expected query={:?} type={:?} year={:?}, got query={:?} type={:?} year={:?}",
+            expected.query,
+            expected.type_hint,
+            expected.year,
+            actual.query,
+            actual.type_hint,
+            actual.year
+        )));
+    }
+
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -2258,7 +2329,16 @@ impl MetadataGateway for MetadataGatewayClient {
                 elapsed_ms = request_started_at.elapsed().as_millis() as u64,
                 "metadata gateway batched search complete"
             );
+            if data.search_tvdb_batch.len() != chunk.len() {
+                return Err(AppError::Repository(format!(
+                    "metadata gateway batch response length mismatch: requested {}, got {}",
+                    chunk.len(),
+                    data.search_tvdb_batch.len()
+                )));
+            }
+
             for (query_spec, item) in chunk.iter().cloned().zip(data.search_tvdb_batch) {
+                validate_search_tvdb_batch_echo(&query_spec, &item)?;
                 let items = item
                     .results
                     .into_iter()

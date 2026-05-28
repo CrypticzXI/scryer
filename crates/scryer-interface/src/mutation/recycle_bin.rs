@@ -25,11 +25,15 @@ impl RecycleBinMutations {
             .map_err(to_gql_error)
     }
 
-    /// Empty all recycle bins. Returns the number of items purged.
-    async fn empty_recycle_bin(&self, ctx: &Context<'_>) -> GqlResult<i32> {
+    /// Empty recycle bins for the selected libraries. Returns the number of items purged.
+    async fn empty_recycle_bin(
+        &self,
+        ctx: &Context<'_>,
+        library_ids: Option<Vec<String>>,
+    ) -> GqlResult<i32> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        app.empty_recycle_bin(&actor)
+        app.empty_recycle_bin(&actor, library_ids)
             .await
             .map(|n| n as i32)
             .map_err(to_gql_error)

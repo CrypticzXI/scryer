@@ -327,7 +327,8 @@ impl SabnzbdDownloadClient {
                     );
                     last_retryable_error = Some(error);
                 }
-                SabApiResponseEvaluation::Retry(error) | SabApiResponseEvaluation::Failure(error) => {
+                SabApiResponseEvaluation::Retry(error)
+                | SabApiResponseEvaluation::Failure(error) => {
                     return Err(error);
                 }
             }
@@ -465,15 +466,13 @@ impl SabnzbdDownloadClient {
                         .text("priority", queue_priority)
                         .part("nzbfile", nzb_part);
                     let request_builder = match auth {
-                        SabApiAuth::ApiKey(api_key) => self
-                            .outbound_http
-                            .client()
-                            .post(&url)
-                            .query(&[
+                        SabApiAuth::ApiKey(api_key) => {
+                            self.outbound_http.client().post(&url).query(&[
                                 ("mode", "addfile"),
                                 ("output", "json"),
                                 ("apikey", api_key.as_str()),
-                            ]),
+                            ])
+                        }
                         SabApiAuth::Credentials { username, password } => {
                             form = form
                                 .text("ma_username", username.clone())

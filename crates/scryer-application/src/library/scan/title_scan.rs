@@ -1108,6 +1108,16 @@ impl AppUseCase {
                         ep
                     }
                     _ => {
+                        debug!(
+                            title_id = %title.id,
+                            title_name = %title.name,
+                            file_path = %file.path,
+                            display_name = %file.display_name,
+                            title_dir = %title_dir_str,
+                            discovered_files = discovered_files.len(),
+                            parsed_episode = ?parsed.episode,
+                            "title scan: episode identity missing"
+                        );
                         let unmatched_item = build_title_bound_unmatched_scan_item(
                             &title.facet,
                             &title.library_id,
@@ -1143,6 +1153,18 @@ impl AppUseCase {
                     resolve_target_episodes_from_lookup(ep_meta, &season_str, &episode_lookup);
 
                 if target_episodes.is_empty() {
+                    debug!(
+                        title_id = %title.id,
+                        title_name = %title.name,
+                        file_path = %file.path,
+                        display_name = %file.display_name,
+                        title_dir = %title_dir_str,
+                        discovered_files = discovered_files.len(),
+                        parsed_episode = ?ep_meta,
+                        lookup_keys = episode_lookup.key_count(),
+                        attempted_season = %season_str,
+                        "title scan: episode lookup failed"
+                    );
                     let unmatched_item = build_title_bound_unmatched_scan_item(
                         &title.facet,
                         &title.library_id,
@@ -1517,4 +1539,105 @@ pub(crate) struct LibraryScanTitleWalkRequest {
     pub(crate) work: LibraryScanTitleWork,
     pub(crate) session_id: Option<String>,
     pub(crate) cancel_token: Option<CancellationToken>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use scryer_domain::{Episode, ExternalId, MediaFacet, Title};
+    use std::path::Path;
+
+    fn numeric_series_title() -> Title {
+        Title {
+            id: "title-13".into(),
+            name: "13".into(),
+            facet: MediaFacet::Series,
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![ExternalId {
+                source: "tvdb".into(),
+                value: "131313".into(),
+            }],
+            created_by: None,
+            created_at: Utc::now(),
+            year: Some(2024),
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            banner_url: None,
+            banner_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: vec![],
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: vec![],
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    fn numeric_series_episode(season: &str, episode: &str) -> Episode {
+        Episode {
+            id: format!("episode-{season}-{episode}"),
+            title_id: "title-13".into(),
+            collection_id: None,
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some(episode.into()),
+            season_number: Some(season.into()),
+            episode_label: Some(format!("S{season:0>2}E{episode:0>2}")),
+            title: Some(format!("Day {season} 800 A.M. 900 A.M.")),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            monitored: true,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn parses_anonymized_numeric_series_season_two_filename_for_title_scan() {
+        let title = numeric_series_title();
+        let episodes = vec![
+            numeric_series_episode("1", "1"),
+            numeric_series_episode("2", "1"),
+        ];
+        let parse_context = crate::build_release_parse_context_for_title(&title, &episodes, None);
+        let path = Path::new(
+            "/library/13 (2024)/Season 02/13 (2024) - S02E01 - Day 2 800 A.M. 900 A.M. [WEBDL-1080p] [EAC3 5.1] [h265].mkv",
+        );
+
+        let parsed = parse_title_scan_release_metadata(
+            path,
+            "13 (2024) - S02E01",
+            &title.facet,
+            &parse_context,
+        )
+        .await;
+        let episode = parsed.episode.as_ref().expect("episode metadata");
+
+        assert_eq!(parsed.normalized_title, "13");
+        assert_eq!(episode.season, Some(2));
+        assert_eq!(episode.episode_numbers, vec![1]);
+    }
 }

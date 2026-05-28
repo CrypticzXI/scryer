@@ -18,9 +18,9 @@ use crate::{
     AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
     AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL,
     FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, LibraryRootDraft,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, RECYCLE_BIN_ENABLED_KEY, REQUIRED_AUDIO_LANGUAGES_KEY,
+    SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
+    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
 use super::keys::default_indexer_routing_categories_for_scope;
@@ -1542,6 +1542,28 @@ impl AppUseCase {
             .await
     }
 
+    async fn upsert_media_setting_json<T: Serialize>(
+        &self,
+        key_name: &str,
+        value: &T,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        let value_json = serde_json::to_string(value)
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_MEDIA,
+                key_name,
+                None,
+                value_json,
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                updated_by_user_id,
+            )
+            .await
+    }
+
     async fn delete_system_setting(&self, key_name: &str) -> AppResult<()> {
         self.services
             .config
@@ -2866,6 +2888,20 @@ impl AppUseCase {
         })
     }
 
+    async fn load_recycle_bin_settings(&self) -> AppResult<RecycleBinSettings> {
+        let enabled = self
+            .read_setting_string_value_for_scope(
+                SETTINGS_SCOPE_MEDIA,
+                RECYCLE_BIN_ENABLED_KEY,
+                None,
+            )
+            .await?
+            .map(|value| value != "false")
+            .unwrap_or(true);
+
+        Ok(RecycleBinSettings { enabled })
+    }
+
     pub(crate) async fn subtitle_settings(&self) -> AppResult<SubtitleSettings> {
         self.load_subtitle_settings().await
     }
@@ -2915,6 +2951,25 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         self.load_general_settings().await
+    }
+
+    pub async fn get_recycle_bin_settings(&self, actor: &User) -> AppResult<RecycleBinSettings> {
+        if !self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?
+            && !self
+                .has_any_granted_library_permission(
+                    actor,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                )
+                .await?
+        {
+            return Err(AppError::Unauthorized(
+                "You do not have permission to view recycle bin settings".to_string(),
+            ));
+        }
+
+        self.load_recycle_bin_settings().await
     }
 
     pub async fn get_auto_backup_settings(&self, actor: &User) -> AppResult<AutoBackupSettings> {
@@ -3932,6 +3987,37 @@ impl AppUseCase {
             plugin_http_ca_bundle_pem,
             plugin_http_trusted_certificates,
         })
+    }
+
+    pub async fn update_recycle_bin_settings(
+        &self,
+        actor: &User,
+        input: UpdateRecycleBinSettings,
+    ) -> AppResult<RecycleBinSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        self.upsert_media_setting_json(
+            RECYCLE_BIN_ENABLED_KEY,
+            &input.enabled,
+            Some(actor.id.clone()),
+        )
+        .await?;
+
+        self.emit_configuration_changed_event(
+            Some(actor.id.clone()),
+            "recycle_bin_settings",
+            None,
+            scryer_domain::ConfigurationChangeAction::Updated,
+        )
+        .await;
+        let _ = self
+            .runtime
+            .events
+            .settings_changed_broadcast
+            .send(vec![RECYCLE_BIN_ENABLED_KEY.to_string()]);
+
+        self.load_recycle_bin_settings().await
     }
 
     pub async fn update_auto_backup_settings(

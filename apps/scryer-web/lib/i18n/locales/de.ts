@@ -1797,18 +1797,30 @@ const de: LocaleDictionary = {
   "convenience.requiredAudioHelp":
     "Releases ohne diese Audiosprachen werden blockiert. Erstellt eine verwaltete Regel, sichtbar unter Einstellungen > Regeln.",
   "settings.recycleBin": "Papierkorb",
+  "settings.recycleBinEnabled": "Papierkorb aktivieren",
+  "settings.recycleBinEnabledHelp":
+    "Gelöschte und ersetzte Mediendateien werden vor der endgültigen Entfernung in den Papierkorb verschoben.",
+  "settings.recycleBinEnabledReadonly":
+    "Der Papierkorbstatus wird von Benutzern verwaltet, die die Konfiguration verwalten dürfen.",
   "settings.recycleBinSection": "Verwalten Sie recycelte Mediendateien",
+  "settings.recycleBinLibraryFilter": "Bibliotheken",
   "settings.recycleBinEmpty": "Der Papierkorb ist leer.",
+  "settings.recycleBinNoManageableLibraries":
+    "Für die Verwaltung von Papierkorbelementen sind keine Bibliotheken verfügbar.",
   "settings.recycleBinRestore": "Wiederherstellen",
   "settings.recycleBinDelete": "Löschen",
   "settings.recycleBinEmptyAll": "Leeren Sie den Papierkorb",
   "settings.recycleBinEmptyConfirm":
-    "Alle {count} Elemente im Papierkorb dauerhaft löschen? Dies kann nicht rückgängig gemacht werden.",
+    "{count} Elemente in der aktuellen Papierkorbansicht dauerhaft löschen? Dies kann nicht rückgängig gemacht werden.",
   "settings.recycleBinDeleteConfirm":
     "Diese Datei dauerhaft löschen? Dies kann nicht rückgängig gemacht werden.",
+  "settings.recycleBinReason": "Grund",
+  "settings.recycleBinSize": "Größe",
+  "settings.recycleBinRecycled": "Recycelt",
   "status.recycleBinRestored": "Datei auf {path} wiederhergestellt.",
   "status.recycleBinDeleted": "Datei dauerhaft gelöscht.",
   "status.recycleBinEmptied": "Papierkorb geleert ({count} Elemente entfernt).",
+  "status.recycleBinSettingsSaved": "Papierkorbeinstellungen gespeichert.",
   "settings.pp.animeScript": "Anime-Skript",
   "settings.pp.envVarsDescription":
     "Folgende Variablen stehen in deinem Skript zur Verfügung:",
