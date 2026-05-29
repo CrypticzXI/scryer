@@ -78,6 +78,11 @@ Scryer publishes a first-party container image:
 - `ghcr.io/scryer-media/scryer:<minor>-latest` tracks a stable release line without moving to the next breaking branch, for example `15-latest` for the `0.15.x` line
 - `ghcr.io/scryer-media/scryer:pr-<number>-rc` and `ghcr.io/scryer-media/scryer:pr-<number>-<shortsha>` are PR candidate images; they never move `latest`
 
+Persist Scryer data by mounting `/path/to/scryer/config:/config`. The image
+supports non-root execution with `--user=1000:1000`, or entrypoint-managed
+ownership with `PUID=1000`, `PGID=1000`, and `UMASK=022`; it also supports
+`--read-only=true` when `/config` is writable.
+
 For Docker installation, Compose examples, environment variables, volumes, and
 deployment notes, see the [Docker install
 docs](https://www.scryer.media/scryer/docs/getting-started/#docker-compose).

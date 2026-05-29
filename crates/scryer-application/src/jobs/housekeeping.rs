@@ -254,6 +254,183 @@ impl AppUseCase {
             .collect())
     }
 
+    async fn purge_expired_recycle_entries(
+        &self,
+        media_root: &str,
+        config: &crate::recycle_bin::RecycleBinConfig,
+    ) -> AppResult<u32> {
+        let mut purged = 0u32;
+        for entry in crate::recycle_bin::list_expired_committed_entries(config).await? {
+            if self
+                .purge_recycle_entry_after_validation(
+                    media_root,
+                    config,
+                    &entry.entry_dir,
+                    &entry.manifest,
+                )
+                .await?
+            {
+                purged += 1;
+            }
+        }
+        Ok(purged)
+    }
+
+    async fn purge_recycle_entry_after_validation(
+        &self,
+        media_root: &str,
+        config: &crate::recycle_bin::RecycleBinConfig,
+        entry_dir: &std::path::Path,
+        manifest: &crate::recycle_bin::RecycleManifest,
+    ) -> AppResult<bool> {
+        if let Err(reason) = self
+            .validate_recycle_entry_before_permanent_delete(manifest)
+            .await
+        {
+            warn!(
+                media_root = %media_root,
+                path = %entry_dir.display(),
+                reason = %reason,
+                "quarantining recycle entry that failed purge validation"
+            );
+            if let Err(error) =
+                crate::recycle_bin::quarantine_entry(entry_dir, manifest, &reason).await
+            {
+                warn!(
+                    media_root = %media_root,
+                    path = %entry_dir.display(),
+                    error = %error,
+                    "failed to quarantine unsafe recycle entry"
+                );
+            }
+            return Ok(false);
+        }
+
+        crate::recycle_bin::purge_committed_entry(config, entry_dir, manifest).await
+    }
+
+    async fn purge_all_validated_recycle_entries(
+        &self,
+        media_root: &str,
+        config: &crate::recycle_bin::RecycleBinConfig,
+    ) -> AppResult<u32> {
+        let mut purged = 0u32;
+        for entry in crate::recycle_bin::list_committed_entries(config).await? {
+            if self
+                .purge_recycle_entry_after_validation(
+                    media_root,
+                    config,
+                    &entry.entry_dir,
+                    &entry.manifest,
+                )
+                .await?
+            {
+                purged += 1;
+            }
+        }
+        Ok(purged)
+    }
+
+    async fn validate_recycle_entry_before_permanent_delete(
+        &self,
+        manifest: &crate::recycle_bin::RecycleManifest,
+    ) -> Result<(), String> {
+        if manifest.reason != "upgrade_replaced" {
+            return Ok(());
+        }
+
+        let title_id = manifest
+            .title_id
+            .as_deref()
+            .ok_or_else(|| "missing title id".to_string())?;
+        let original_file_id = manifest
+            .original_file_id
+            .as_deref()
+            .ok_or_else(|| "missing original media file id".to_string())?;
+        let media_root = manifest
+            .media_root
+            .as_deref()
+            .ok_or_else(|| "missing media root".to_string())?;
+        if media_root.trim().is_empty() {
+            return Err("missing media root".to_string());
+        }
+        if !std::path::Path::new(&manifest.original_path).starts_with(media_root) {
+            return Err(format!(
+                "original path is outside manifest media root: original={} root={}",
+                manifest.original_path, media_root
+            ));
+        }
+
+        let replacement_file_id = manifest
+            .replacement_file_id
+            .as_deref()
+            .ok_or_else(|| "missing replacement media file id".to_string())?;
+        let replacement_path = manifest
+            .replacement_path
+            .as_deref()
+            .ok_or_else(|| "missing replacement media file path".to_string())?;
+        let replacement = self
+            .services
+            .library
+            .media_files
+            .get_media_file_by_id(replacement_file_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "replacement media file row is missing".to_string())?;
+
+        if replacement.file_path != replacement_path {
+            return Err(format!(
+                "replacement media file path mismatch: manifest={} db={}",
+                replacement_path, replacement.file_path
+            ));
+        }
+        if !std::path::Path::new(&replacement.file_path).exists() {
+            return Err(format!(
+                "replacement media file does not exist on disk: {}",
+                replacement.file_path
+            ));
+        }
+        if replacement.title_id != title_id {
+            return Err(format!(
+                "replacement title mismatch: manifest={} db={}",
+                title_id, replacement.title_id
+            ));
+        }
+        if !std::path::Path::new(&replacement.file_path).starts_with(media_root) {
+            return Err(format!(
+                "replacement path is outside manifest media root: replacement={} root={}",
+                replacement.file_path, media_root
+            ));
+        }
+        if self
+            .services
+            .library
+            .media_files
+            .get_media_file_by_id(original_file_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err("original media file row is still active".to_string());
+        }
+        if let Some(active_at_original_path) = self
+            .services
+            .library
+            .media_files
+            .get_media_file_by_path(&manifest.original_path)
+            .await
+            .map_err(|error| error.to_string())?
+            && active_at_original_path.id != replacement_file_id
+        {
+            return Err(format!(
+                "original path is active for a different media file: {}",
+                active_at_original_path.id
+            ));
+        }
+
+        Ok(())
+    }
+
     pub async fn run_housekeeping(&self, actor: &User) -> AppResult<HousekeepingReport> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
@@ -389,7 +566,10 @@ impl AppUseCase {
         // 5. Purge expired recycle bin entries (per media root)
         let mut recycled_purged = 0u32;
         for (media_root, config) in self.resolve_all_recycle_configs().await {
-            match crate::recycle_bin::purge_expired(&config).await {
+            match self
+                .purge_expired_recycle_entries(&media_root, &config)
+                .await
+            {
                 Ok(n) => recycled_purged += n,
                 Err(e) => info!(error = %e, media_root = %media_root, "recycle bin purge failed"),
             }
@@ -541,8 +721,8 @@ impl AppUseCase {
             {
                 let entry = crate::recycle_bin::RecycleEntry {
                     entry_id: entry_id.to_string(),
-                    manifest,
-                    media_root,
+                    manifest: manifest.clone(),
+                    media_root: media_root.clone(),
                 };
                 let library = self
                     .resolve_recycle_entry_library(&entry, &roots)
@@ -557,14 +737,14 @@ impl AppUseCase {
                 )
                 .await?;
 
-                tokio::fs::remove_dir_all(&entry_dir).await.map_err(|e| {
-                    AppError::Repository(format!(
-                        "failed to delete recycle entry {}: {}",
-                        entry_dir.display(),
-                        e
-                    ))
-                })?;
-                return Ok(true);
+                return self
+                    .purge_recycle_entry_after_validation(
+                        &media_root,
+                        &config,
+                        &entry_dir,
+                        &manifest,
+                    )
+                    .await;
             }
         }
 
@@ -589,24 +769,41 @@ impl AppUseCase {
 
         let mut total = 0u32;
         for (media_root, config) in self.resolve_all_recycle_configs().await {
-            match crate::recycle_bin::list_entries(&config, &media_root).await {
+            match crate::recycle_bin::list_committed_entries(&config).await {
                 Ok(entries) => {
                     for entry in entries {
+                        let entry_id = entry
+                            .entry_dir
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let recycle_entry = crate::recycle_bin::RecycleEntry {
+                            entry_id,
+                            manifest: entry.manifest.clone(),
+                            media_root: media_root.clone(),
+                        };
                         let Some(library) =
-                            self.resolve_recycle_entry_library(&entry, &roots).await?
+                            self.resolve_recycle_entry_library(&recycle_entry, &roots).await?
                         else {
                             continue;
                         };
                         if !selected_library_ids.contains(&library.id) {
                             continue;
                         }
-                        crate::recycle_bin::validate_recycle_entry_id(&entry.entry_id)?;
-                        let entry_dir = config.base_path.join(&entry.entry_id);
-                        match tokio::fs::remove_dir_all(&entry_dir).await {
-                            Ok(()) => total += 1,
-                            Err(e) => warn!(
-                                path = %entry_dir.display(),
-                                error = %e,
+                        match self
+                            .purge_recycle_entry_after_validation(
+                                &media_root,
+                                &config,
+                                &entry.entry_dir,
+                                &entry.manifest,
+                            )
+                            .await
+                        {
+                            Ok(true) => total += 1,
+                            Ok(false) => {}
+                            Err(error) => warn!(
+                                path = %entry.entry_dir.display(),
+                                error = %error,
                                 "failed to empty recycle entry"
                             ),
                         }

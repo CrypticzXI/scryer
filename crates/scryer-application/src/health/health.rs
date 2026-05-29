@@ -116,6 +116,7 @@ impl AppUseCase {
         results.extend(self.check_download_clients().await);
         results.extend(self.check_indexers().await);
         results.extend(self.check_root_folders().await);
+        results.extend(self.check_recycle_bin_config().await);
         results.extend(self.check_disk_space_health().await);
         results
     }
@@ -317,6 +318,52 @@ impl AppUseCase {
                         source: "RootFolder".into(),
                         status: HealthCheckStatus::Warning,
                         message: format!("{label} root folder is read-only: {path}"),
+                    });
+                }
+            }
+        }
+
+        results
+    }
+
+    async fn check_recycle_bin_config(&self) -> Vec<HealthCheckResult> {
+        let mut seen = HashSet::new();
+        let mut results = Vec::new();
+
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            let label = health_root_label(&facet);
+            let root_folders = match self.root_folders_for_facet(&facet).await {
+                Ok(root_folders) => root_folders,
+                Err(error) => {
+                    results.push(HealthCheckResult {
+                        source: "RecycleBin".into(),
+                        status: HealthCheckStatus::Error,
+                        message: format!(
+                            "Failed to resolve {label} roots while validating recycle bin config: {error}"
+                        ),
+                    });
+                    continue;
+                }
+            };
+
+            for root in root_folders {
+                let path = root.path.trim();
+                if path.is_empty() || !seen.insert(path.to_string()) {
+                    continue;
+                }
+
+                let config = crate::recycle_bin::resolve_recycle_config(self, Some(path)).await;
+                if config.enabled && !config.cleanup_enabled {
+                    results.push(HealthCheckResult {
+                        source: "RecycleBin".into(),
+                        status: HealthCheckStatus::Error,
+                        message: format!(
+                            "Recycle bin cleanup is disabled for {label} root {path}: {}",
+                            config
+                                .validation_error
+                                .as_deref()
+                                .unwrap_or("invalid recycle bin configuration")
+                        ),
                     });
                 }
             }
