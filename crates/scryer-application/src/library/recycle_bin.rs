@@ -247,6 +247,32 @@ fn trusted_committed_entry(
     Ok(())
 }
 
+async fn quarantine_untrusted_committed_entry(
+    config: &RecycleBinConfig,
+    entry_dir: &Path,
+    manifest: &RecycleManifest,
+    reason: &str,
+) -> AppResult<bool> {
+    if !cleanup_ready(config) || !manifest.is_committed() {
+        return Ok(false);
+    }
+
+    let Some(parent) = entry_dir.parent() else {
+        return Ok(false);
+    };
+    if normalize_path(parent) != normalize_path(&config.base_path) {
+        return Ok(false);
+    }
+
+    warn!(
+        path = %entry_dir.display(),
+        reason = %reason,
+        "quarantining untrusted committed recycle entry"
+    );
+    quarantine_entry(entry_dir, manifest, reason).await?;
+    Ok(true)
+}
+
 async fn read_manifest(entry_dir: &Path) -> AppResult<Option<RecycleManifest>> {
     let path = manifest_path(entry_dir);
     if !path.exists() {
@@ -530,7 +556,16 @@ pub async fn list_committed_entries(
             continue;
         };
 
-        if trusted_committed_entry(config, &entry_dir, &manifest).is_err() {
+        if let Err(reason) = trusted_committed_entry(config, &entry_dir, &manifest) {
+            if let Err(error) =
+                quarantine_untrusted_committed_entry(config, &entry_dir, &manifest, &reason).await
+            {
+                warn!(
+                    path = %entry_dir.display(),
+                    error = %error,
+                    "failed to quarantine untrusted recycle entry"
+                );
+            }
             continue;
         }
 
@@ -570,6 +605,15 @@ pub async fn purge_committed_entry(
 ) -> AppResult<bool> {
     if let Err(reason) = trusted_committed_entry(config, entry_dir, manifest) {
         warn!(path = %entry_dir.display(), reason = %reason, "skipping untrusted recycle entry purge");
+        if let Err(error) =
+            quarantine_untrusted_committed_entry(config, entry_dir, manifest, &reason).await
+        {
+            warn!(
+                path = %entry_dir.display(),
+                error = %error,
+                "failed to quarantine untrusted recycle entry"
+            );
+        }
         return Ok(false);
     }
 
@@ -907,6 +951,140 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    async fn write_test_entry(
+        recycle_dir: &Path,
+        entry_id: &str,
+        manifest: &RecycleManifest,
+    ) -> PathBuf {
+        let entry_dir = recycle_dir.join(entry_id);
+        tokio::fs::create_dir_all(&entry_dir).await.unwrap();
+        tokio::fs::write(
+            entry_dir.join("manifest.json"),
+            serde_json::to_string(manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(entry_dir.join("media.mkv"), b"media")
+            .await
+            .unwrap();
+        entry_dir
+    }
+
+    async fn read_test_manifest(entry_dir: &Path) -> RecycleManifest {
+        let bytes = tokio::fs::read(entry_dir.join("manifest.json"))
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn committed_untrusted_entry_is_quarantined_when_listed() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        tokio::fs::create_dir_all(&recycle_dir).await.unwrap();
+        write_test_sentinel(&recycle_dir).await;
+
+        let entry_id = "20260205_120000000_bad111";
+        let mut manifest = committed_manifest(
+            entry_id,
+            Utc::now().to_rfc3339(),
+            "/data/movies/Movie/Movie.mkv",
+            Some("title-123"),
+            "file_deleted",
+        );
+        manifest.schema = None;
+        let entry_dir = write_test_entry(&recycle_dir, entry_id, &manifest).await;
+
+        let config = test_config(&recycle_dir);
+        let entries = list_committed_entries(&config).await.unwrap();
+
+        assert!(entries.is_empty());
+        let quarantined = read_test_manifest(&entry_dir).await;
+        assert_eq!(
+            quarantined.status.as_deref(),
+            Some(RECYCLE_STATUS_QUARANTINED)
+        );
+        assert!(quarantined.reason.contains("quarantine:"));
+    }
+
+    #[tokio::test]
+    async fn pending_untrusted_entry_is_not_quarantined_or_purged() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        tokio::fs::create_dir_all(&recycle_dir).await.unwrap();
+        write_test_sentinel(&recycle_dir).await;
+
+        let entry_id = "20260205_120000000_pen111";
+        let mut manifest = pending_manifest(entry_id, Utc::now().to_rfc3339());
+        manifest.schema = None;
+        let entry_dir = write_test_entry(&recycle_dir, entry_id, &manifest).await;
+
+        let config = test_config(&recycle_dir);
+        let purged = purge_expired(&config).await.unwrap();
+
+        assert_eq!(purged, 0);
+        assert!(entry_dir.exists());
+        let pending = read_test_manifest(&entry_dir).await;
+        assert_eq!(pending.status.as_deref(), Some(RECYCLE_STATUS_PENDING));
+    }
+
+    #[tokio::test]
+    async fn cleanup_not_ready_does_not_quarantine_committed_entries() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        tokio::fs::create_dir_all(&recycle_dir).await.unwrap();
+
+        let entry_id = "20260205_120000000_nos111";
+        let mut manifest = committed_manifest(
+            entry_id,
+            Utc::now().to_rfc3339(),
+            "/data/movies/Movie/Movie.mkv",
+            Some("title-123"),
+            "file_deleted",
+        );
+        manifest.schema = None;
+        let entry_dir = write_test_entry(&recycle_dir, entry_id, &manifest).await;
+
+        let config = test_config(&recycle_dir);
+        let entries = list_committed_entries(&config).await.unwrap();
+
+        assert!(entries.is_empty());
+        let unchanged = read_test_manifest(&entry_dir).await;
+        assert_eq!(unchanged.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    }
+
+    #[tokio::test]
+    async fn purge_committed_entry_quarantines_untrusted_entry() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        tokio::fs::create_dir_all(&recycle_dir).await.unwrap();
+        write_test_sentinel(&recycle_dir).await;
+
+        let entry_id = "20260205_120000000_pur111";
+        let mut manifest = committed_manifest(
+            entry_id,
+            Utc::now().to_rfc3339(),
+            "/data/movies/Movie/Movie.mkv",
+            Some("title-123"),
+            "file_deleted",
+        );
+        manifest.entry_id = Some("different-entry".to_string());
+        let entry_dir = write_test_entry(&recycle_dir, entry_id, &manifest).await;
+
+        let config = test_config(&recycle_dir);
+        let purged = purge_committed_entry(&config, &entry_dir, &manifest)
+            .await
+            .unwrap();
+
+        assert!(!purged);
+        assert!(entry_dir.exists());
+        let quarantined = read_test_manifest(&entry_dir).await;
+        assert_eq!(
+            quarantined.status.as_deref(),
+            Some(RECYCLE_STATUS_QUARANTINED)
+        );
     }
 
     #[tokio::test]

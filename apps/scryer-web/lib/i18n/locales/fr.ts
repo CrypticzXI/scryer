@@ -1832,15 +1832,15 @@ const fr: LocaleDictionary = {
   "settings.recycleBinDelete": "Supprimer",
   "settings.recycleBinEmptyAll": "Corbeille vide",
   "settings.recycleBinEmptyConfirm":
-    "Supprimer définitivement {count} éléments de la vue actuelle de la corbeille ? Cela ne peut pas être annulé.",
+    "Supprimer définitivement {{count}} éléments de la vue actuelle de la corbeille ? Cela ne peut pas être annulé.",
   "settings.recycleBinDeleteConfirm":
     "Supprimer définitivement ce fichier ? Cela ne peut pas être annulé.",
   "settings.recycleBinReason": "Raison",
   "settings.recycleBinSize": "Taille",
   "settings.recycleBinRecycled": "Recyclé",
-  "status.recycleBinRestored": "Fichier restauré dans {path}.",
+  "status.recycleBinRestored": "Fichier restauré dans {{path}}.",
   "status.recycleBinDeleted": "Fichier définitivement supprimé.",
-  "status.recycleBinEmptied": "Corbeille vidée ({count} éléments supprimés).",
+  "status.recycleBinEmptied": "Corbeille vidée ({{count}} éléments supprimés).",
   "status.recycleBinSettingsSaved": "Paramètres de la corbeille enregistrés.",
   "settings.pp.animeScript": "Script anime",
   "settings.pp.envVarsDescription":

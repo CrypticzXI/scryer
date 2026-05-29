@@ -2437,14 +2437,14 @@ const en: LocaleDictionary = {
   "settings.recycleBinRestore": "Restore",
   "settings.recycleBinDelete": "Delete",
   "settings.recycleBinEmptyAll": "Empty Recycle Bin",
-  "settings.recycleBinEmptyConfirm": "Permanently delete {count} items in the current recycle bin view? This cannot be undone.",
+  "settings.recycleBinEmptyConfirm": "Permanently delete {{count}} items in the current recycle bin view? This cannot be undone.",
   "settings.recycleBinDeleteConfirm": "Permanently delete this file? This cannot be undone.",
   "settings.recycleBinReason": "Reason",
   "settings.recycleBinSize": "Size",
   "settings.recycleBinRecycled": "Recycled",
-  "status.recycleBinRestored": "File restored to {path}.",
+  "status.recycleBinRestored": "File restored to {{path}}.",
   "status.recycleBinDeleted": "File permanently deleted.",
-  "status.recycleBinEmptied": "Recycle bin emptied ({count} items removed).",
+  "status.recycleBinEmptied": "Recycle bin emptied ({{count}} items removed).",
   "status.recycleBinSettingsSaved": "Recycle bin settings saved.",
 };
 

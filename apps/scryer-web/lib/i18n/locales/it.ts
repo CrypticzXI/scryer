@@ -1808,15 +1808,15 @@ const it: LocaleDictionary = {
   "settings.recycleBinDelete": "Cancella",
   "settings.recycleBinEmptyAll": "Cestino vuoto",
   "settings.recycleBinEmptyConfirm":
-    "Eliminare definitivamente {count} elementi nella vista corrente del cestino? Questa operazione non può essere annullata.",
+    "Eliminare definitivamente {{count}} elementi nella vista corrente del cestino? Questa operazione non può essere annullata.",
   "settings.recycleBinDeleteConfirm":
     "Eliminare definitivamente questo file? Questa operazione non può essere annullata.",
   "settings.recycleBinReason": "Motivo",
   "settings.recycleBinSize": "Dimensione",
   "settings.recycleBinRecycled": "Riciclato",
-  "status.recycleBinRestored": "File ripristinato in {path}.",
+  "status.recycleBinRestored": "File ripristinato in {{path}}.",
   "status.recycleBinDeleted": "File eliminato definitivamente.",
-  "status.recycleBinEmptied": "Cestino svuotato ({count} elementi rimossi).",
+  "status.recycleBinEmptied": "Cestino svuotato ({{count}} elementi rimossi).",
   "status.recycleBinSettingsSaved": "Impostazioni del cestino salvate.",
   "settings.pp.animeScript": "Script anime",
   "settings.pp.envVarsDescription":

@@ -1744,15 +1744,15 @@ const ko: LocaleDictionary = {
   "settings.recycleBinDelete": "삭제",
   "settings.recycleBinEmptyAll": "휴지통 비우기",
   "settings.recycleBinEmptyConfirm":
-    "현재 휴지통 보기의 {count}개 항목을 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
+    "현재 휴지통 보기의 {{count}}개 항목을 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
   "settings.recycleBinDeleteConfirm":
     "이 파일을 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
   "settings.recycleBinReason": "이유",
   "settings.recycleBinSize": "크기",
   "settings.recycleBinRecycled": "휴지통 이동 시간",
-  "status.recycleBinRestored": "{path}에 파일이 복원되었습니다.",
+  "status.recycleBinRestored": "{{path}}에 파일이 복원되었습니다.",
   "status.recycleBinDeleted": "파일이 영구적으로 삭제되었습니다.",
-  "status.recycleBinEmptied": "휴지통을 비웠습니다({count}개 항목이 제거됨).",
+  "status.recycleBinEmptied": "휴지통을 비웠습니다({{count}}개 항목이 제거됨).",
   "status.recycleBinSettingsSaved": "휴지통 설정이 저장되었습니다.",
   "settings.pp.animeScript": "애니메이션 스크립트",
   "settings.pp.envVarsDescription":

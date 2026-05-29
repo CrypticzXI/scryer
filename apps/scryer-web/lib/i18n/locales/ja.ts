@@ -1789,16 +1789,16 @@ const ja: LocaleDictionary = {
   "settings.recycleBinDelete": "消去",
   "settings.recycleBinEmptyAll": "ごみ箱を空にする",
   "settings.recycleBinEmptyConfirm":
-    "現在のごみ箱ビューにある {count} アイテムを完全に削除しますか?これを元に戻すことはできません。",
+    "現在のごみ箱ビューにある {{count}} アイテムを完全に削除しますか?これを元に戻すことはできません。",
   "settings.recycleBinDeleteConfirm":
     "このファイルを完全に削除しますか?これを元に戻すことはできません。",
   "settings.recycleBinReason": "理由",
   "settings.recycleBinSize": "サイズ",
   "settings.recycleBinRecycled": "リサイクル日時",
-  "status.recycleBinRestored": "ファイルは {path} に復元されました。",
+  "status.recycleBinRestored": "ファイルは {{path}} に復元されました。",
   "status.recycleBinDeleted": "ファイルは完全に削除されました。",
   "status.recycleBinEmptied":
-    "ごみ箱が空になりました ({count} 項目が削除されました)。",
+    "ごみ箱が空になりました ({{count}} 項目が削除されました)。",
   "status.recycleBinSettingsSaved": "ごみ箱設定を保存しました。",
   "settings.pp.animeScript": "アニメスクリプト",
   "settings.pp.envVarsDescription": "スクリプトで以下の変数が利用可能です:",

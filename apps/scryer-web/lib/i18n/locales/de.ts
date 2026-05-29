@@ -1811,15 +1811,15 @@ const de: LocaleDictionary = {
   "settings.recycleBinDelete": "Löschen",
   "settings.recycleBinEmptyAll": "Leeren Sie den Papierkorb",
   "settings.recycleBinEmptyConfirm":
-    "{count} Elemente in der aktuellen Papierkorbansicht dauerhaft löschen? Dies kann nicht rückgängig gemacht werden.",
+    "{{count}} Elemente in der aktuellen Papierkorbansicht dauerhaft löschen? Dies kann nicht rückgängig gemacht werden.",
   "settings.recycleBinDeleteConfirm":
     "Diese Datei dauerhaft löschen? Dies kann nicht rückgängig gemacht werden.",
   "settings.recycleBinReason": "Grund",
   "settings.recycleBinSize": "Größe",
   "settings.recycleBinRecycled": "Recycelt",
-  "status.recycleBinRestored": "Datei auf {path} wiederhergestellt.",
+  "status.recycleBinRestored": "Datei auf {{path}} wiederhergestellt.",
   "status.recycleBinDeleted": "Datei dauerhaft gelöscht.",
-  "status.recycleBinEmptied": "Papierkorb geleert ({count} Elemente entfernt).",
+  "status.recycleBinEmptied": "Papierkorb geleert ({{count}} Elemente entfernt).",
   "status.recycleBinSettingsSaved": "Papierkorbeinstellungen gespeichert.",
   "settings.pp.animeScript": "Anime-Skript",
   "settings.pp.envVarsDescription":

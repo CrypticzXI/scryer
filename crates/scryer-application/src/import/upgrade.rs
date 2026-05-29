@@ -485,30 +485,33 @@ async fn finalize_same_path_disabled_recycle_upgrade(
     media_root: Option<&str>,
 ) -> AppResult<()> {
     let backup_path = sibling_guard_path(old_path, "old");
-    swap_staged_replacement_into_place(old_path, staged_replacement_path, &backup_path).await?;
 
-    delete_old_media_file_row_or_rollback(
-        app,
-        &existing_file.id,
-        replacement_file_id,
-        Some((old_path, &backup_path)),
-    )
-    .await?;
+    if let Err(error) =
+        swap_staged_replacement_into_place(old_path, staged_replacement_path, &backup_path).await
+    {
+        rollback_new_replacement(app, replacement_file_id, staged_replacement_path).await;
+        return Err(error);
+    }
 
     if let Err(error) = app
         .services
         .library
         .media_files
-        .update_media_file_path(replacement_file_id, final_replacement_path)
+        .replace_media_file_for_upgrade(
+            &existing_file.id,
+            replacement_file_id,
+            final_replacement_path,
+        )
         .await
     {
+        restore_same_path_backup(old_path, &backup_path).await;
+        rollback_new_replacement(app, replacement_file_id, staged_replacement_path).await;
         return Err(AppError::Repository(format!(
-            "failed to point replacement media file at final path; old file kept at {}: {error}",
-            backup_path.display()
+            "failed to replace same-path media file record after guarded swap: {error}"
         )));
     }
 
-    validate_replacement_media_file(
+    if let Err(reason) = validate_replacement_media_file(
         app,
         replacement_file_id,
         final_replacement_path,
@@ -516,12 +519,12 @@ async fn finalize_same_path_disabled_recycle_upgrade(
         media_root,
     )
     .await
-    .map_err(|reason| {
-        AppError::Repository(format!(
+    {
+        return Err(AppError::Repository(format!(
             "replacement validation failed after same-path swap; old file kept at {}: {reason}",
             backup_path.display()
-        ))
-    })?;
+        )));
+    }
     validate_original_inactive_for_delete(
         app,
         &existing_file.id,
@@ -663,35 +666,6 @@ async fn validate_original_inactive_for_delete(
         ));
     }
 
-    Ok(())
-}
-
-async fn delete_old_media_file_row_or_rollback(
-    app: &AppUseCase,
-    old_file_id: &str,
-    replacement_file_id: &str,
-    same_path_swap: Option<(&Path, &Path)>,
-) -> AppResult<()> {
-    if let Err(error) = app
-        .services
-        .library
-        .media_files
-        .delete_media_file(old_file_id)
-        .await
-    {
-        if let Some((final_path, backup_path)) = same_path_swap {
-            restore_same_path_backup(final_path, backup_path).await;
-        }
-        let _ = app
-            .services
-            .library
-            .media_files
-            .delete_media_file(replacement_file_id)
-            .await;
-        return Err(AppError::Repository(format!(
-            "failed to delete old media file record after replacement validation: {error}"
-        )));
-    }
     Ok(())
 }
 

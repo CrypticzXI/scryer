@@ -1810,15 +1810,15 @@ const pt_BR: LocaleDictionary = {
   "settings.recycleBinDelete": "Excluir",
   "settings.recycleBinEmptyAll": "Esvaziar Lixeira",
   "settings.recycleBinEmptyConfirm":
-    "Excluir permanentemente {count} itens na visualização atual da lixeira? Isto não pode ser desfeito.",
+    "Excluir permanentemente {{count}} itens na visualização atual da lixeira? Isto não pode ser desfeito.",
   "settings.recycleBinDeleteConfirm":
     "Excluir este arquivo permanentemente? Isto não pode ser desfeito.",
   "settings.recycleBinReason": "Motivo",
   "settings.recycleBinSize": "Tamanho",
   "settings.recycleBinRecycled": "Reciclado",
-  "status.recycleBinRestored": "Arquivo restaurado para {path}.",
+  "status.recycleBinRestored": "Arquivo restaurado para {{path}}.",
   "status.recycleBinDeleted": "Arquivo excluído permanentemente.",
-  "status.recycleBinEmptied": "Lixeira esvaziada ({count} itens removidos).",
+  "status.recycleBinEmptied": "Lixeira esvaziada ({{count}} itens removidos).",
   "status.recycleBinSettingsSaved": "Configurações da lixeira salvas.",
   "settings.pp.animeScript": "Script de anime",
   "settings.pp.envVarsDescription":

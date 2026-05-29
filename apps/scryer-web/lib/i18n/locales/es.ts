@@ -1827,16 +1827,16 @@ const es: LocaleDictionary = {
   "settings.recycleBinDelete": "Eliminar",
   "settings.recycleBinEmptyAll": "Papelera de reciclaje vacía",
   "settings.recycleBinEmptyConfirm":
-    "¿Eliminar permanentemente {count} elementos de la vista actual de la papelera? Esto no se puede deshacer.",
+    "¿Eliminar permanentemente {{count}} elementos de la vista actual de la papelera? Esto no se puede deshacer.",
   "settings.recycleBinDeleteConfirm":
     "¿Eliminar permanentemente este archivo? Esto no se puede deshacer.",
   "settings.recycleBinReason": "Motivo",
   "settings.recycleBinSize": "Tamaño",
   "settings.recycleBinRecycled": "Reciclado",
-  "status.recycleBinRestored": "Archivo restaurado en {path}.",
+  "status.recycleBinRestored": "Archivo restaurado en {{path}}.",
   "status.recycleBinDeleted": "Archivo eliminado permanentemente.",
   "status.recycleBinEmptied":
-    "Papelera de reciclaje vaciada ({count} elementos eliminados).",
+    "Papelera de reciclaje vaciada ({{count}} elementos eliminados).",
   "status.recycleBinSettingsSaved": "Configuración de papelera guardada.",
   "settings.pp.animeScript": "Script de anime",
   "settings.pp.envVarsDescription":

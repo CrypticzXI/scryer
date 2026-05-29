@@ -873,6 +873,17 @@ pub trait MediaFileRepository: Send + Sync {
 
     async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()>;
 
+    async fn replace_media_file_for_upgrade(
+        &self,
+        old_file_id: &str,
+        replacement_file_id: &str,
+        replacement_file_path: &str,
+    ) -> AppResult<()> {
+        self.delete_media_file(old_file_id).await?;
+        self.update_media_file_path(replacement_file_id, replacement_file_path)
+            .await
+    }
+
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()>;
 
     async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>>;

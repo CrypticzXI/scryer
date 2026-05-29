@@ -4,6 +4,7 @@ mod common;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use common::TestContext;
 use scryer_application::recycle_bin::{
     RECYCLE_STATUS_COMMITTED, RECYCLE_STATUS_PENDING, RecycleBinConfig, RecycleManifest,
@@ -13,10 +14,13 @@ use scryer_application::testing::{
 };
 use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
-    ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, TitleRepository,
+    ActivityKind, ActivitySeverity, AppError, AppResult, CutoffUnmetQualitySummary,
+    EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
+    TitleRepository,
 };
 use scryer_domain::{LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization};
-use scryer_infrastructure::FsFileImporter;
+use scryer_infrastructure::{FsFileImporter, MediaFileStore};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,6 +32,152 @@ fn app_with_real_fs(ctx: &TestContext) -> scryer_application::AppUseCase {
             .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_file_importer(Arc::new(FsFileImporter))
     })
+}
+
+fn app_with_failing_media_path_update(
+    ctx: &TestContext,
+    fail_path: String,
+) -> scryer_application::AppUseCase {
+    ctx.app.with_test_overrides(|builder| {
+        builder
+            .with_media_files(Arc::new(FailingPathUpdateMediaFileRepo {
+                inner: ctx.media_files.clone(),
+                fail_path,
+            }))
+            .with_file_importer(Arc::new(FsFileImporter))
+    })
+}
+
+struct FailingPathUpdateMediaFileRepo {
+    inner: MediaFileStore,
+    fail_path: String,
+}
+
+#[async_trait]
+impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
+    async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
+        self.inner.insert_media_file(input).await
+    }
+
+    async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
+        self.inner.link_file_to_episode(file_id, episode_id).await
+    }
+
+    async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
+        self.inner.list_media_files_for_title(title_id).await
+    }
+
+    async fn list_live_media_files_for_episode_ids(
+        &self,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
+        self.inner
+            .list_live_media_files_for_episode_ids(title_id, episode_ids)
+            .await
+    }
+
+    async fn list_title_media_size_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMediaSizeSummary>> {
+        self.inner.list_title_media_size_summaries(title_ids).await
+    }
+
+    async fn list_title_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>> {
+        self.inner.list_title_quality_summaries(title_ids).await
+    }
+
+    async fn list_cutoff_unmet_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
+        self.inner
+            .list_cutoff_unmet_quality_summaries(title_ids)
+            .await
+    }
+
+    async fn list_title_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
+        self.inner
+            .list_title_episode_progress_summaries(title_ids)
+            .await
+    }
+
+    async fn update_media_file_analysis(
+        &self,
+        file_id: &str,
+        analysis: MediaFileAnalysis,
+    ) -> AppResult<()> {
+        self.inner
+            .update_media_file_analysis(file_id, analysis)
+            .await
+    }
+
+    async fn update_media_file_source_signature(
+        &self,
+        file_id: &str,
+        size_bytes: i64,
+        source_signature_scheme: Option<String>,
+        source_signature_value: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_media_file_source_signature(
+                file_id,
+                size_bytes,
+                source_signature_scheme,
+                source_signature_value,
+            )
+            .await
+    }
+
+    async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()> {
+        if file_path == self.fail_path {
+            return Err(AppError::Repository(format!(
+                "injected media file path failure for {file_id} -> {file_path}"
+            )));
+        }
+
+        self.inner.update_media_file_path(file_id, file_path).await
+    }
+
+    async fn replace_media_file_for_upgrade(
+        &self,
+        old_file_id: &str,
+        replacement_file_id: &str,
+        replacement_file_path: &str,
+    ) -> AppResult<()> {
+        if replacement_file_path == self.fail_path {
+            return Err(AppError::Repository(format!(
+                "injected media file replacement failure for {old_file_id} -> {replacement_file_id} at {replacement_file_path}"
+            )));
+        }
+
+        self.inner
+            .replace_media_file_for_upgrade(old_file_id, replacement_file_id, replacement_file_path)
+            .await
+    }
+
+    async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
+        self.inner.mark_scan_failed(file_id, error).await
+    }
+
+    async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
+        self.inner.get_media_file_by_id(file_id).await
+    }
+
+    async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
+        self.inner.get_media_file_by_path(file_path).await
+    }
+
+    async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
+        self.inner.delete_media_file(file_id).await
+    }
 }
 
 async fn seed_title(ctx: &TestContext, id: &str) -> Title {
@@ -468,6 +618,76 @@ async fn disabled_recycle_bin_same_path_upgrade_keeps_backup_until_verified() {
         .expect("list media files");
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].id, outcome.new_file_id);
+    assert_eq!(files[0].file_path, old_path.to_string_lossy());
+}
+
+#[tokio::test]
+async fn disabled_recycle_bin_same_path_path_update_failure_preserves_old_file() {
+    let ctx = TestContext::new().await;
+    let title = seed_title(&ctx, "title-4b").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.mkv");
+    std::fs::write(&old_path, b"old same-path content").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new same-path content").expect("write new");
+
+    let existing = seed_media_file(&ctx, "title-4b", &old_path, 21, 300).await;
+    let app = app_with_failing_media_path_update(&ctx, old_path.to_string_lossy().to_string());
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let disabled_config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
+    };
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &old_path,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &disabled_config,
+        },
+    )
+    .await;
+
+    assert!(result.is_err(), "path update failure should abort upgrade");
+    assert_eq!(
+        std::fs::read(&old_path).expect("read original path"),
+        b"old same-path content"
+    );
+    let leftovers = std::fs::read_dir(media_dir.path())
+        .expect("read media dir")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".scryer-upgrade-")
+        })
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "guard files should be cleaned up");
+
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-4b")
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, existing.id);
     assert_eq!(files[0].file_path, old_path.to_string_lossy());
 }
 
