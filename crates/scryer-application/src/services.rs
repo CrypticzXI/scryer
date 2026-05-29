@@ -748,6 +748,8 @@ pub struct AppRuntimeCatalogState {
     pub poster_wake: Arc<tokio::sync::Notify>,
     pub banner_wake: Arc<tokio::sync::Notify>,
     pub fanart_wake: Arc<tokio::sync::Notify>,
+    pub title_image_maintenance_lock: Arc<tokio::sync::RwLock<()>>,
+    pub title_image_cache_clear_scheduled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -837,6 +839,10 @@ impl Default for AppRuntimeState {
                 poster_wake: Arc::new(tokio::sync::Notify::new()),
                 banner_wake: Arc::new(tokio::sync::Notify::new()),
                 fanart_wake: Arc::new(tokio::sync::Notify::new()),
+                title_image_maintenance_lock: Arc::new(tokio::sync::RwLock::new(())),
+                title_image_cache_clear_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(
+                    false,
+                )),
             },
             acquisition: AppRuntimeAcquisitionState {
                 acquisition_wake: Arc::new(tokio::sync::Notify::new()),

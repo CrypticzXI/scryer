@@ -2327,6 +2327,9 @@ const en: LocaleDictionary = {
     "Enter the Prowlarr API key for {{name}} before importing.",
   "setup.prowlarrApiKeyHelpLink": "Find it in Prowlarr → Settings → General",
 
+  "settings.manageConfiguration": "Manage configuration",
+  "settings.clearTitleImageCache": "Clear Title Image Cache",
+  "settings.titleImageCacheClearQueued": "Title image cache reset queued.",
   "settings.runSetupWizard": "Run setup wizard",
 
   "history.title": "History",

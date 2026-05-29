@@ -2407,6 +2407,24 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
     let requests = server.received_requests().await.unwrap();
     let request_body = String::from_utf8_lossy(&requests[0].body);
     let query_pairs = requests[0].url.query_pairs().collect::<Vec<_>>();
+    for (key, expected) in [
+        ("mode", "addfile"),
+        ("output", "json"),
+        ("nzbname", "Staged.SAB.Release"),
+        ("priority", "-1"),
+        ("cat", "movies"),
+        ("apikey", "test-api-key"),
+    ] {
+        assert_eq!(
+            query_pairs
+                .iter()
+                .filter(|(candidate, value)| candidate == key && value == expected)
+                .count(),
+            1,
+            "sabnzbd upload should send query param {key}={expected} exactly once: {:?}",
+            requests[0].url.query()
+        );
+    }
     assert!(
         query_pairs
             .iter()
@@ -2426,6 +2444,12 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
         !request_body.contains("name=\"apikey\""),
         "sabnzbd upload should not duplicate API-key auth in the multipart body: {request_body}"
     );
+    for forbidden_field in ["mode", "output", "nzbname", "priority", "cat"] {
+        assert!(
+            !request_body.contains(&format!("name=\"{forbidden_field}\"")),
+            "sabnzbd upload should not duplicate {forbidden_field} in the multipart body: {request_body}"
+        );
+    }
     assert_eq!(
         requests
             .iter()
@@ -2519,6 +2543,25 @@ async fn sabnzbd_submit_download_accepts_username_password_auth() {
     let requests = server.received_requests().await.unwrap();
     let request_body = String::from_utf8_lossy(&requests[0].body);
     let query_pairs = requests[0].url.query_pairs().collect::<Vec<_>>();
+    for (key, expected) in [
+        ("mode", "addfile"),
+        ("output", "json"),
+        ("nzbname", "Credential.SAB.Release"),
+        ("priority", "-1"),
+        ("cat", "movies"),
+        ("ma_username", "test-user"),
+        ("ma_password", "test-pass"),
+    ] {
+        assert_eq!(
+            query_pairs
+                .iter()
+                .filter(|(candidate, value)| candidate == key && value == expected)
+                .count(),
+            1,
+            "credential-auth SAB upload should send query param {key}={expected} exactly once: {:?}",
+            requests[0].url.query()
+        );
+    }
     assert!(
         query_pairs
             .iter()
@@ -2542,6 +2585,20 @@ async fn sabnzbd_submit_download_accepts_username_password_auth() {
         !request_body.contains("name=\"apikey\""),
         "credential-auth SAB upload should not include API-key fields in the multipart body: {request_body}"
     );
+    for forbidden_field in [
+        "mode",
+        "output",
+        "nzbname",
+        "priority",
+        "cat",
+        "ma_username",
+        "ma_password",
+    ] {
+        assert!(
+            !request_body.contains(&format!("name=\"{forbidden_field}\"")),
+            "credential-auth SAB upload should not duplicate {forbidden_field} in the multipart body: {request_body}"
+        );
+    }
 }
 
 // ===========================================================================

@@ -426,6 +426,10 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   }
 }`;
 
+export const clearTitleImageCacheMutation = `mutation ClearTitleImageCache {
+  clearTitleImageCache
+}`;
+
 export const createBackupMutation = `mutation CreateBackup($password: String) {
   createBackup(password: $password) {${BACKUP_INFO_FIELDS}
   }

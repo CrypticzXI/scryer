@@ -459,39 +459,35 @@ impl SabnzbdDownloadClient {
                         AppError::Repository(format!("sabnzbd multipart build failed: {err}"))
                     })?;
 
-                    let mut form = multipart::Form::new()
-                        .text("output", "json")
-                        .text("mode", "addfile")
-                        .text("nzbname", nzb_name)
-                        .text("priority", queue_priority)
-                        .part("nzbfile", nzb_part);
-                    let request_builder = match auth {
+                    let mut query_params = vec![
+                        ("mode".to_string(), "addfile".to_string()),
+                        ("output".to_string(), "json".to_string()),
+                        ("nzbname".to_string(), nzb_name),
+                        ("priority".to_string(), queue_priority),
+                    ];
+                    match auth {
                         SabApiAuth::ApiKey(api_key) => {
-                            self.outbound_http.client().post(&url).query(&[
-                                ("mode", "addfile"),
-                                ("output", "json"),
-                                ("apikey", api_key.as_str()),
-                            ])
+                            query_params.push(("apikey".to_string(), api_key));
                         }
-                        SabApiAuth::Credentials { username, password } => {
-                            form = form
-                                .text("ma_username", username.clone())
-                                .text("ma_password", password.clone());
-                            self.outbound_http.client().post(&url).query(&[
-                                ("mode", "addfile"),
-                                ("output", "json"),
-                                ("ma_username", username.as_str()),
-                                ("ma_password", password.as_str()),
-                            ])
+                        SabApiAuth::Credentials {
+                            username,
+                            password: auth_password,
+                        } => {
+                            query_params.push(("ma_username".to_string(), username));
+                            query_params.push(("ma_password".to_string(), auth_password));
                         }
-                    };
+                    }
 
                     if let Some(cat) = cat {
-                        form = form.text("cat", cat);
+                        query_params.push(("cat".to_string(), cat));
                     }
                     if let Some(password) = password {
-                        form = form.text("password", password);
+                        query_params.push(("password".to_string(), password));
                     }
+
+                    let form = multipart::Form::new().part("nzbfile", nzb_part);
+                    let request_builder =
+                        self.outbound_http.client().post(&url).query(&query_params);
 
                     Ok::<_, AppError>(request_builder.multipart(form))
                 }

@@ -76,12 +76,26 @@ async fn process_image_refresh_chunk(
         join_set.spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore should not be closed");
             let started_at = std::time::Instant::now();
-            debug!(
-                title_id = %task.title_id,
-                source_url = %task.source_url,
-                kind = %label,
-                "image loop: refreshing"
-            );
+            match kind {
+                TitleImageKind::Poster => debug!(
+                    title_id = %task.title_id,
+                    poster_url = %task.source_url,
+                    kind = %label,
+                    "image loop: refreshing"
+                ),
+                TitleImageKind::Banner => debug!(
+                    title_id = %task.title_id,
+                    banner_url = %task.source_url,
+                    kind = %label,
+                    "image loop: refreshing"
+                ),
+                TitleImageKind::Fanart => debug!(
+                    title_id = %task.title_id,
+                    background_url = %task.source_url,
+                    kind = %label,
+                    "image loop: refreshing"
+                ),
+            }
             match app
                 .services
                 .library
@@ -139,14 +153,32 @@ async fn process_image_refresh_chunk(
                         {
                             Ok(event) => Some(event),
                             Err(error) => {
-                                warn!(
-                                    error = %error,
-                                    elapsed_ms = started_at.elapsed().as_millis(),
-                                    title_id = %task.title_id,
-                                    source_url = %task.source_url,
-                                    kind = %label,
-                                    "image loop: failed to store processed image and append refresh event"
-                                );
+                                match kind {
+                                    TitleImageKind::Poster => warn!(
+                                        error = %error,
+                                        elapsed_ms = started_at.elapsed().as_millis(),
+                                        title_id = %task.title_id,
+                                        poster_url = %task.source_url,
+                                        kind = %label,
+                                        "image loop: failed to store processed image and append refresh event"
+                                    ),
+                                    TitleImageKind::Banner => warn!(
+                                        error = %error,
+                                        elapsed_ms = started_at.elapsed().as_millis(),
+                                        title_id = %task.title_id,
+                                        banner_url = %task.source_url,
+                                        kind = %label,
+                                        "image loop: failed to store processed image and append refresh event"
+                                    ),
+                                    TitleImageKind::Fanart => warn!(
+                                        error = %error,
+                                        elapsed_ms = started_at.elapsed().as_millis(),
+                                        title_id = %task.title_id,
+                                        background_url = %task.source_url,
+                                        kind = %label,
+                                        "image loop: failed to store processed image and append refresh event"
+                                    ),
+                                }
                                 return false;
                             }
                         }
@@ -158,14 +190,32 @@ async fn process_image_refresh_chunk(
                             .replace_title_image(&task.title_id, replacement)
                             .await
                         {
-                            warn!(
-                                error = %error,
-                                elapsed_ms = started_at.elapsed().as_millis(),
-                                title_id = %task.title_id,
-                                source_url = %task.source_url,
-                                kind = %label,
-                                "image loop: failed to store processed image"
-                            );
+                            match kind {
+                                TitleImageKind::Poster => warn!(
+                                    error = %error,
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    title_id = %task.title_id,
+                                    poster_url = %task.source_url,
+                                    kind = %label,
+                                    "image loop: failed to store processed image"
+                                ),
+                                TitleImageKind::Banner => warn!(
+                                    error = %error,
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    title_id = %task.title_id,
+                                    banner_url = %task.source_url,
+                                    kind = %label,
+                                    "image loop: failed to store processed image"
+                                ),
+                                TitleImageKind::Fanart => warn!(
+                                    error = %error,
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    title_id = %task.title_id,
+                                    background_url = %task.source_url,
+                                    kind = %label,
+                                    "image loop: failed to store processed image"
+                                ),
+                            }
                             return false;
                         }
                         None
@@ -183,13 +233,29 @@ async fn process_image_refresh_chunk(
                     true
                 }
                 Err(error) => {
-                    warn!(
-                        error = %error,
-                        title_id = %task.title_id,
-                        source_url = %task.source_url,
-                        kind = %label,
-                        "image loop: fetch/process failed"
-                    );
+                    match kind {
+                        TitleImageKind::Poster => warn!(
+                            error = %error,
+                            title_id = %task.title_id,
+                            poster_url = %task.source_url,
+                            kind = %label,
+                            "image loop: fetch/process failed"
+                        ),
+                        TitleImageKind::Banner => warn!(
+                            error = %error,
+                            title_id = %task.title_id,
+                            banner_url = %task.source_url,
+                            kind = %label,
+                            "image loop: fetch/process failed"
+                        ),
+                        TitleImageKind::Fanart => warn!(
+                            error = %error,
+                            title_id = %task.title_id,
+                            background_url = %task.source_url,
+                            kind = %label,
+                            "image loop: fetch/process failed"
+                        ),
+                    }
                     false
                 }
             }
@@ -263,55 +329,65 @@ async fn start_background_image_loop(
                 return;
             }
 
-            let batch = match app
-                .services
-                .library
-                .title_images
-                .list_titles_requiring_image_refresh(kind, IMAGE_MAX_BATCH)
-                .await
-            {
-                Ok(batch) => batch,
-                Err(error) => {
-                    warn!(error = %error, kind = label, "image loop: failed to list pending image sync work");
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    continue 'drain;
+            let (batch_len, succeeded, failed) = {
+                let _maintenance_guard = tokio::select! {
+                    _ = token.cancelled() => return,
+                    guard = app.runtime.catalog.title_image_maintenance_lock.read() => guard,
+                };
+
+                let batch = match app
+                    .services
+                    .library
+                    .title_images
+                    .list_titles_requiring_image_refresh(kind, IMAGE_MAX_BATCH)
+                    .await
+                {
+                    Ok(batch) => batch,
+                    Err(error) => {
+                        warn!(error = %error, kind = label, "image loop: failed to list pending image sync work");
+                        drop(_maintenance_guard);
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue 'drain;
+                    }
+                };
+
+                if batch.is_empty() {
+                    debug!(kind = label, "image loop: no pending work");
+                    break 'drain;
                 }
+
+                let batch_len = batch.len();
+                debug!(
+                    count = batch_len,
+                    kind = label,
+                    "image loop: processing batch"
+                );
+
+                let mut succeeded = 0usize;
+                let mut failed = 0usize;
+                for chunk in batch.chunks(IMAGE_WRITE_CHUNK_SIZE) {
+                    if !wait_for_image_loop_to_resume(&app, &token, kind).await {
+                        return;
+                    }
+
+                    let (chunk_succeeded, chunk_failed) =
+                        process_image_refresh_chunk(&app, kind, label, chunk).await;
+                    succeeded += chunk_succeeded;
+                    failed += chunk_failed;
+                }
+
+                debug!(
+                    processed = batch_len,
+                    succeeded,
+                    failed,
+                    kind = label,
+                    "image loop: batch complete"
+                );
+
+                (batch_len, succeeded, failed)
             };
 
-            if batch.is_empty() {
-                debug!(kind = label, "image loop: no pending work");
-                break 'drain;
-            }
-
-            let batch_len = batch.len();
-            debug!(
-                count = batch_len,
-                kind = label,
-                "image loop: processing batch"
-            );
-
-            let mut succeeded = 0usize;
-            let mut failed = 0usize;
-            for chunk in batch.chunks(IMAGE_WRITE_CHUNK_SIZE) {
-                if !wait_for_image_loop_to_resume(&app, &token, kind).await {
-                    return;
-                }
-
-                let (chunk_succeeded, chunk_failed) =
-                    process_image_refresh_chunk(&app, kind, label, chunk).await;
-                succeeded += chunk_succeeded;
-                failed += chunk_failed;
-            }
-
             let had_failures = failed > 0;
-
-            debug!(
-                processed = batch_len,
-                succeeded,
-                failed,
-                kind = label,
-                "image loop: batch complete"
-            );
 
             if had_failures {
                 info!(

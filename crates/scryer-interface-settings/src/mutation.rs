@@ -375,6 +375,14 @@ impl SettingsMutations {
         Ok(from_general_settings(settings))
     }
 
+    async fn clear_title_image_cache(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.clear_title_image_cache(&actor)
+            .await
+            .map_err(to_gql_error)
+    }
+
     async fn update_recycle_bin_settings(
         &self,
         ctx: &Context<'_>,

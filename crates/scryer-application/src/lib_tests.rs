@@ -34,6 +34,67 @@ impl MockTitleRepo {
     }
 }
 
+#[derive(Default)]
+struct BlockingTitleImageRepo {
+    clear_calls: AtomicUsize,
+    release_clear: Notify,
+}
+
+#[async_trait]
+impl TitleImageRepository for BlockingTitleImageRepo {
+    async fn list_titles_requiring_image_refresh(
+        &self,
+        _kind: TitleImageKind,
+        _limit: usize,
+    ) -> AppResult<Vec<TitleImageSyncTask>> {
+        Ok(Vec::new())
+    }
+
+    async fn clear_title_image_cache(&self) -> AppResult<()> {
+        self.clear_calls.fetch_add(1, Ordering::SeqCst);
+        self.release_clear.notified().await;
+        Ok(())
+    }
+
+    async fn replace_title_image(
+        &self,
+        _title_id: &str,
+        _replacement: TitleImageReplacement,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn replace_title_image_and_append_event(
+        &self,
+        _title_id: &str,
+        _replacement: TitleImageReplacement,
+        event: NewDomainEvent,
+    ) -> AppResult<DomainEvent> {
+        Ok(DomainEvent {
+            sequence: 1,
+            event_id: event.event_id,
+            occurred_at: event.occurred_at,
+            actor_user_id: event.actor_user_id,
+            title_id: event.title_id,
+            facet: event.facet,
+            correlation_id: event.correlation_id,
+            causation_id: event.causation_id,
+            schema_version: event.schema_version,
+            stream: event.stream,
+            payload: event.payload,
+        })
+    }
+
+    async fn get_title_image_blob(
+        &self,
+        _title_id: &str,
+        _kind: TitleImageKind,
+        _variant_key: &str,
+    ) -> AppResult<Option<TitleImageBlob>> {
+        Ok(None)
+    }
+}
+
 #[async_trait]
 impl TitleRepository for MockTitleRepo {
     async fn list(
@@ -5440,6 +5501,102 @@ fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
     );
 
     (app, test_admin_user())
+}
+
+async fn wait_for_title_image_clear_calls(repo: &BlockingTitleImageRepo, expected: usize) {
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if repo.clear_calls.load(Ordering::SeqCst) >= expected {
+                return;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("title image clear call count should reach expected value");
+}
+
+async fn wait_for_title_image_cache_clear_idle(app: &AppUseCase) {
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if !app
+                .runtime
+                .catalog
+                .title_image_cache_clear_scheduled
+                .load(Ordering::Acquire)
+            {
+                return;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("title image cache clear should become idle");
+}
+
+#[tokio::test]
+async fn clear_title_image_cache_collapses_duplicate_requests_and_waits_for_scans() {
+    let (app, admin) = bootstrap_with_user_repo(Arc::new(MockUserRepo::default()));
+    let title_images = Arc::new(BlockingTitleImageRepo::default());
+    let app = app.with_test_overrides(|services| services.with_title_images(title_images.clone()));
+
+    let scan = app
+        .runtime
+        .library
+        .library_scan_tracker
+        .start_session(MediaFacet::Movie)
+        .await
+        .expect("scan should start");
+
+    assert!(
+        app.clear_title_image_cache(&admin)
+            .await
+            .expect("queue reset")
+    );
+    assert!(
+        app.clear_title_image_cache(&admin)
+            .await
+            .expect("collapse queued reset")
+    );
+
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        title_images.clear_calls.load(Ordering::SeqCst),
+        0,
+        "cache clear should wait behind active library scans"
+    );
+
+    app.runtime
+        .library
+        .library_scan_tracker
+        .fail_session(&scan.session_id)
+        .await
+        .expect("scan should finish");
+    wait_for_title_image_clear_calls(&title_images, 1).await;
+
+    assert!(
+        app.clear_title_image_cache(&admin)
+            .await
+            .expect("collapse running reset")
+    );
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        title_images.clear_calls.load(Ordering::SeqCst),
+        1,
+        "running cache clear should collapse duplicate requests"
+    );
+
+    title_images.release_clear.notify_waiters();
+    wait_for_title_image_cache_clear_idle(&app).await;
+
+    assert!(
+        app.clear_title_image_cache(&admin)
+            .await
+            .expect("queue reset after previous reset completes")
+    );
+    wait_for_title_image_clear_calls(&title_images, 2).await;
+    title_images.release_clear.notify_waiters();
+    wait_for_title_image_cache_clear_idle(&app).await;
 }
 
 fn bootstrap_with_metadata_gateway_and_titles(

@@ -1725,14 +1725,13 @@ impl AppUseCase {
         if should_sync_managed_children {
             if updated.is_enabled {
                 self.queue_managed_indexer_sync(actor, &updated.id);
-            } else if existing.is_enabled != updated.is_enabled {
-                if let Err(error) = self
+            } else if existing.is_enabled != updated.is_enabled
+                && let Err(error) = self
                     .set_managed_child_indexers_enabled_state(&updated.id, false)
                     .await
-                {
-                    self.publish_indexers_changed();
-                    return Err(error);
-                }
+            {
+                self.publish_indexers_changed();
+                return Err(error);
             }
         }
         self.publish_indexers_changed();

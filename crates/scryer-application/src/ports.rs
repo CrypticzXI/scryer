@@ -183,6 +183,8 @@ pub trait TitleImageRepository: Send + Sync {
         limit: usize,
     ) -> AppResult<Vec<TitleImageSyncTask>>;
 
+    async fn clear_title_image_cache(&self) -> AppResult<()>;
+
     async fn replace_title_image(
         &self,
         title_id: &str,
