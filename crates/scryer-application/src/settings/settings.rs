@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use aws_lc_rs::digest as aws_lc_digest;
@@ -18,9 +18,10 @@ use crate::{
     AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
     AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL,
     FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, LibraryRootDraft,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, RECYCLE_BIN_ENABLED_KEY, REQUIRED_AUDIO_LANGUAGES_KEY,
-    SCORING_PERSONA_KEY, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
-    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, RECYCLE_BIN_ENABLED_KEY, RECYCLE_BIN_PATH_KEY,
+    RECYCLE_BIN_RETENTION_DAYS_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
+    SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
+    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
 
 use super::keys::default_indexer_routing_categories_for_scope;
@@ -2900,6 +2901,113 @@ impl AppUseCase {
             .unwrap_or(true);
 
         Ok(RecycleBinSettings { enabled })
+    }
+
+    async fn recycle_bin_config_values(&self) -> (bool, Option<String>, u32) {
+        let enabled = self
+            .read_setting_string_value_for_scope(
+                SETTINGS_SCOPE_MEDIA,
+                RECYCLE_BIN_ENABLED_KEY,
+                None,
+            )
+            .await
+            .ok()
+            .flatten()
+            .map(|value| value != "false")
+            .unwrap_or(true);
+
+        let custom_path = self
+            .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, RECYCLE_BIN_PATH_KEY, None)
+            .await
+            .ok()
+            .flatten()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        let retention_days = self
+            .read_setting_string_value_for_scope(
+                SETTINGS_SCOPE_MEDIA,
+                RECYCLE_BIN_RETENTION_DAYS_KEY,
+                None,
+            )
+            .await
+            .ok()
+            .flatten()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(7);
+
+        (enabled, custom_path, retention_days)
+    }
+
+    fn recycle_bin_config_from_values(
+        enabled: bool,
+        custom_path: Option<&str>,
+        retention_days: u32,
+        media_root: Option<&str>,
+    ) -> crate::recycle_bin::RecycleBinConfig {
+        let base_path = if let Some(path) = custom_path {
+            PathBuf::from(path)
+        } else if let Some(root) = media_root {
+            PathBuf::from(root).join(".scryer-recycle")
+        } else {
+            PathBuf::from("/tmp/.scryer-recycle")
+        };
+
+        crate::recycle_bin::RecycleBinConfig {
+            enabled,
+            base_path,
+            retention_days,
+        }
+    }
+
+    pub async fn recycle_bin_config_for_media_root(
+        &self,
+        media_root: Option<&str>,
+    ) -> crate::recycle_bin::RecycleBinConfig {
+        let (enabled, custom_path, retention_days) = self.recycle_bin_config_values().await;
+        Self::recycle_bin_config_from_values(
+            enabled,
+            custom_path.as_deref(),
+            retention_days,
+            media_root,
+        )
+    }
+
+    pub async fn recycle_bin_configs_for_media_roots<I>(
+        &self,
+        media_roots: I,
+    ) -> Vec<(String, crate::recycle_bin::RecycleBinConfig)>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let (enabled, custom_path, retention_days) = self.recycle_bin_config_values().await;
+        let mut configs = Vec::new();
+        let mut seen_paths = HashSet::new();
+
+        for media_root in media_roots {
+            let media_root = media_root.trim().to_string();
+            if media_root.is_empty() {
+                continue;
+            }
+            let config = Self::recycle_bin_config_from_values(
+                enabled,
+                custom_path.as_deref(),
+                retention_days,
+                Some(media_root.as_str()),
+            );
+            if !seen_paths.insert(config.base_path.clone()) {
+                continue;
+            }
+
+            let entry_media_root = if custom_path.is_some() {
+                String::new()
+            } else {
+                media_root
+            };
+            configs.push((entry_media_root, config));
+        }
+
+        configs
     }
 
     pub(crate) async fn subtitle_settings(&self) -> AppResult<SubtitleSettings> {

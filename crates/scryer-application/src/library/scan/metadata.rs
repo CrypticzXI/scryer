@@ -7,8 +7,9 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::library::library::library_scan_cancel_requested;
 use crate::library_discovery::{
-    MovieTopLevelEntry, MovieTopLevelEntryBatchReceiver, extract_library_queries,
-    matching_movie_nfo_path_async, normalize_folder_name, strip_year_suffix,
+    LibraryTitleWalk, MovieTopLevelEntry, MovieTopLevelEntryBatchReceiver,
+    extract_library_query_evidence, library_title_walk, matching_movie_nfo_path_async,
+    normalize_folder_name, strip_year_suffix,
 };
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::nfo::{NfoMetadata, NfoRootKind, detect_nfo_root_kind, parse_nfo, parse_plexmatch};
@@ -340,9 +341,26 @@ fn metadata_identity_hint_from_filename(
     (hint.has_external_ids() || hint.title.is_some()).then_some(hint)
 }
 
+fn metadata_identity_hint_from_title_walk(
+    walk: Option<&LibraryTitleWalk>,
+) -> Option<MetadataIdentityHint> {
+    let walk = walk?;
+    let hint = MetadataIdentityHint {
+        source: MetadataIdentitySource::Filename,
+        imdb_id: walk.imdb_id.clone(),
+        tmdb_id: walk.tmdb_id.clone(),
+        tvdb_id: walk.tvdb_id.clone(),
+        title: normalized_non_empty(walk.title.as_deref()),
+        year: walk.year,
+    };
+    (hint.has_external_ids() || hint.title.is_some()).then_some(hint)
+}
+
 fn select_metadata_identity_hint(
     nfo_meta: Option<&NfoMetadata>,
     plexmatch_meta: Option<&NfoMetadata>,
+    file_walk: Option<&LibraryTitleWalk>,
+    folder_walk: Option<&LibraryTitleWalk>,
     parsed: &crate::ParsedReleaseMetadata,
     fallback_query: &str,
     fallback_year: Option<u32>,
@@ -360,6 +378,8 @@ fn select_metadata_identity_hint(
                 )
             })
         })
+        .or_else(|| metadata_identity_hint_from_title_walk(file_walk))
+        .or_else(|| metadata_identity_hint_from_title_walk(folder_walk))
         .or_else(|| metadata_identity_hint_from_filename(parsed, fallback_query, fallback_year))
 }
 
@@ -1489,13 +1509,17 @@ async fn build_prepared_movie_library_scan_candidate(
     let parsed_release = parse_release_metadata(&parsed_release_name);
 
     let nfo_meta = read_valid_movie_nfo_metadata(file.nfo_path.as_deref()).await;
-    let (query_variants, extracted_year_hint) = extract_library_queries(&file.path, &library_path);
+    let query_evidence = extract_library_query_evidence(&file.path, &library_path);
+    let query_variants = query_evidence.queries.clone();
+    let extracted_year_hint = query_evidence.year;
     let fallback_query = query_variants.first().cloned().unwrap_or_default();
     let plexmatch_meta =
         read_plexmatch_metadata(candidate_sidecar_folder(&file.path, &library_path)).await;
     let identity_hint = select_metadata_identity_hint(
         nfo_meta.as_ref(),
         plexmatch_meta.as_ref(),
+        query_evidence.file_walk.as_ref(),
+        query_evidence.folder_walk.as_ref(),
         &parsed_release,
         &fallback_query,
         extracted_year_hint,
@@ -1571,11 +1595,23 @@ async fn prepare_series_library_scan_candidate(
     let plexmatch_meta = read_plexmatch_metadata(Some(folder.clone())).await;
     let clean_name = normalize_folder_name(&folder_name_value);
     let (fallback_query, extracted_year_hint) = strip_year_suffix(&clean_name);
-    let fallback_query = fallback_query.trim().to_string();
+    let folder_walk = library_title_walk(folder_name_value.as_str());
+    let fallback_query = folder_walk
+        .as_ref()
+        .and_then(|walk| walk.title.clone())
+        .unwrap_or(fallback_query)
+        .trim()
+        .to_string();
+    let extracted_year_hint = folder_walk
+        .as_ref()
+        .and_then(|walk| walk.year)
+        .or(extracted_year_hint);
     let parsed_release = parse_release_metadata(&folder_name_value);
     let identity_hint = select_metadata_identity_hint(
         nfo_meta.as_ref(),
         plexmatch_meta.as_ref(),
+        None,
+        folder_walk.as_ref(),
         &parsed_release,
         &fallback_query,
         extracted_year_hint,
@@ -1626,7 +1662,9 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
     file: LibraryFile,
     library_path: &str,
 ) -> AppResult<PreparedSeriesLibraryScanCandidate> {
-    let (raw_queries, year_hint) = extract_library_queries(&file.path, library_path);
+    let query_evidence = extract_library_query_evidence(&file.path, library_path);
+    let raw_queries = query_evidence.queries.clone();
+    let year_hint = query_evidence.year;
     let fallback_query = raw_queries
         .first()
         .cloned()
@@ -1637,6 +1675,8 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
     let identity_hint = select_metadata_identity_hint(
         None,
         plexmatch_meta.as_ref(),
+        query_evidence.file_walk.as_ref(),
+        query_evidence.folder_walk.as_ref(),
         &parsed_release,
         &fallback_query,
         year_hint,
@@ -1834,12 +1874,13 @@ pub(crate) fn select_best_match(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library_discovery::extract_library_queries;
     use crate::{
         BulkMetadataResult, LibraryFileBatchReceiver, MovieMetadata, MultiMetadataSearchResult,
         RichMetadataSearchItem, SeriesMetadata,
     };
     use async_trait::async_trait;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -2165,6 +2206,8 @@ mod tests {
         let hint = select_metadata_identity_hint(
             Some(&nfo),
             Some(&plexmatch),
+            None,
+            None,
             &parsed,
             "Filename Title",
             Some(2020),
@@ -2193,6 +2236,8 @@ mod tests {
         let hint = select_metadata_identity_hint(
             Some(&empty_nfo),
             Some(&plexmatch),
+            None,
+            None,
             &parsed,
             "Filename Title",
             None,
@@ -2303,6 +2348,95 @@ mod tests {
                 "MY COUSIN".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn extract_library_queries_prefers_simple_file_title_walk() {
+        let (queries, year) = extract_library_queries(
+            "/Volumes/Media/Movies/Furiosa A Mad Max Saga (2024)/Furiosa A Mad Max Saga (2024) Remux-2160p.mkv",
+            "/Volumes/Media/Movies",
+        );
+
+        assert_eq!(
+            queries.first().map(String::as_str),
+            Some("Furiosa A Mad Max Saga")
+        );
+        assert!(queries.iter().any(|query| query == "FURIOSA A MAD"));
+        assert_eq!(year, Some(2024));
+    }
+
+    #[test]
+    fn extract_library_queries_keeps_release_style_names_on_release_parser_path() {
+        let (queries, year) = extract_library_queries(
+            "/library/Example.Movie.2024.MAX.WEB-DL.2160p-GRP.mkv",
+            "/library",
+        );
+
+        assert_eq!(queries.first().map(String::as_str), Some("EXAMPLE MOVIE"));
+        assert!(!queries.iter().any(|query| query == "Example Movie"));
+        assert_eq!(year, Some(2024));
+    }
+
+    #[test]
+    fn extract_library_query_evidence_prefers_file_walk_over_folder_walk() {
+        let evidence = extract_library_query_evidence(
+            "/library/Wrong Folder (2020)/Correct Movie (2024) [imdb-tt6263850] 2160p.mkv",
+            "/library",
+        );
+
+        assert_eq!(
+            evidence.queries.first().map(String::as_str),
+            Some("Correct Movie")
+        );
+        assert_eq!(evidence.year, Some(2024));
+        assert_eq!(
+            evidence
+                .file_walk
+                .as_ref()
+                .and_then(|walk| walk.imdb_id.as_deref()),
+            Some("tt6263850")
+        );
+        assert_eq!(
+            evidence
+                .folder_walk
+                .as_ref()
+                .and_then(|walk| walk.title.as_deref()),
+            Some("Wrong Folder")
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_series_folder_candidate_uses_simple_title_walk() {
+        let candidate = prepare_series_library_scan_candidate(PathBuf::from(
+            "/Volumes/Media/TV/Foundation (2021)",
+        ))
+        .await
+        .expect("prepared candidate");
+
+        assert_eq!(candidate.query, "Foundation");
+        assert_eq!(candidate.year_hint, Some(2021));
+        assert_eq!(
+            candidate.search_candidates.first().map(String::as_str),
+            Some("Foundation")
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_series_file_candidate_uses_file_canonical_id() {
+        let candidate = prepare_series_library_scan_candidate_from_file(
+            build_library_file(
+                "/Volumes/Media/TV/Folder Name (2020)/Some Show (2024) [tvdbid=12345].mkv",
+            ),
+            "/Volumes/Media/TV",
+        )
+        .await
+        .expect("prepared candidate");
+
+        let hint = candidate.identity_hint.expect("identity hint");
+        assert_eq!(hint.source, MetadataIdentitySource::Filename);
+        assert_eq!(hint.title.as_deref(), Some("Some Show"));
+        assert_eq!(hint.year, Some(2024));
+        assert_eq!(hint.tvdb_id.as_deref(), Some("12345"));
     }
 
     #[test]

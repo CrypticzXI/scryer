@@ -735,6 +735,7 @@ pub struct AppRuntimeEventState {
     /// operational bursts from waking it, while persisted filtered replay remains authoritative.
     pub notification_event_broadcast: broadcast::Sender<i64>,
     pub import_history_broadcast: broadcast::Sender<()>,
+    pub indexers_changed_broadcast: broadcast::Sender<()>,
     pub provider_catalog_changed_broadcast: broadcast::Sender<Vec<ProviderCatalogFamily>>,
     pub settings_changed_broadcast: broadcast::Sender<Vec<String>>,
 }
@@ -791,6 +792,11 @@ pub struct AppRuntimePluginState {
 }
 
 #[derive(Clone)]
+pub struct AppRuntimeIntegrationState {
+    pub managed_indexer_sync_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Clone)]
 pub struct AppRuntimeState {
     pub events: AppRuntimeEventState,
     pub catalog: AppRuntimeCatalogState,
@@ -800,6 +806,7 @@ pub struct AppRuntimeState {
     pub jobs: AppRuntimeJobState,
     pub health: AppRuntimeHealthState,
     pub plugins: AppRuntimePluginState,
+    pub integrations: AppRuntimeIntegrationState,
 }
 
 impl Default for AppRuntimeState {
@@ -809,6 +816,7 @@ impl Default for AppRuntimeState {
         // while the dispatcher catches up from persisted offsets.
         let (notification_event_tx, _notification_event_rx) = broadcast::channel(256);
         let (import_history_tx, _) = broadcast::channel::<()>(16);
+        let (indexers_changed_tx, _) = broadcast::channel::<()>(16);
         let (provider_catalog_changed_tx, _) = broadcast::channel::<Vec<ProviderCatalogFamily>>(16);
         let (settings_changed_tx, _) = broadcast::channel::<Vec<String>>(16);
 
@@ -817,6 +825,7 @@ impl Default for AppRuntimeState {
                 domain_event_broadcast: domain_event_tx,
                 notification_event_broadcast: notification_event_tx,
                 import_history_broadcast: import_history_tx,
+                indexers_changed_broadcast: indexers_changed_tx,
                 provider_catalog_changed_broadcast: provider_catalog_changed_tx,
                 settings_changed_broadcast: settings_changed_tx,
             },
@@ -858,6 +867,9 @@ impl Default for AppRuntimeState {
             plugins: AppRuntimePluginState {
                 plugin_operation_guards: PluginOperationGuardTable::default(),
                 plugin_install_orchestrator: PluginInstallOrchestrator::default(),
+            },
+            integrations: AppRuntimeIntegrationState {
+                managed_indexer_sync_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         }
     }
@@ -1951,6 +1963,10 @@ impl AppUseCase {
             .events
             .settings_changed_broadcast
             .send(changed_keys);
+    }
+
+    pub fn publish_indexers_changed(&self) {
+        let _ = self.runtime.events.indexers_changed_broadcast.send(());
     }
 
     pub fn publish_provider_catalog_changed(&self, families: Vec<ProviderCatalogFamily>) {

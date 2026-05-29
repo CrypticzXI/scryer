@@ -18,6 +18,8 @@ type LibraryMultiSelectProps = {
   selectedLibraryIds: string[];
   onSelectedLibraryIdsChange: (libraryIds: string[]) => void;
   disabled?: boolean;
+  triggerId?: string;
+  allLibrariesButtonId?: string;
   triggerClassName?: string;
   contentClassName?: string;
 };
@@ -36,6 +38,8 @@ export function LibraryMultiSelect({
   selectedLibraryIds,
   onSelectedLibraryIdsChange,
   disabled = false,
+  triggerId,
+  allLibrariesButtonId,
   triggerClassName,
   contentClassName,
 }: LibraryMultiSelectProps) {
@@ -120,6 +124,7 @@ export function LibraryMultiSelect({
     <Popover>
       <PopoverTrigger asChild>
         <Button
+          id={triggerId}
           type="button"
           variant="outline"
           className={cn(
@@ -145,6 +150,7 @@ export function LibraryMultiSelect({
       >
         <div className="flex max-h-80 flex-col gap-1 overflow-y-auto">
           <button
+            id={allLibrariesButtonId}
             type="button"
             onClick={toggleAllLibraries}
             className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"

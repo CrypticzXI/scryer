@@ -4058,7 +4058,9 @@ impl AppUseCase {
         if purge_recycle_bin_entries
             && let Some(media_root) = crate::recycle_bin::media_root_for_title(self, title).await
         {
-            let config = crate::recycle_bin::resolve_recycle_config(self, Some(&media_root)).await;
+            let config = self
+                .recycle_bin_config_for_media_root(Some(&media_root))
+                .await;
             match crate::recycle_bin::purge_for_title(&config, title_id).await {
                 Ok(n) if n > 0 => info!(
                     purged = n,

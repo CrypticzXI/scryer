@@ -19,6 +19,7 @@ struct RecycleEntryLibrary {
 
 #[derive(Clone, Debug)]
 struct RecycleRootLibrary {
+    media_root: String,
     normalized_media_root: String,
     library: RecycleEntryLibrary,
 }
@@ -41,6 +42,22 @@ fn normalize_recycle_media_root(path: &str) -> String {
     {
         trimmed.replace('\\', "/").trim_end_matches('/').to_string()
     }
+}
+
+fn recycle_path_is_under_root(path: &str, root: &str) -> bool {
+    let normalized_path = normalize_recycle_media_root(path);
+    let normalized_root = normalize_recycle_media_root(root);
+    if normalized_path.is_empty() || normalized_root.is_empty() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    let separator = "\\";
+    #[cfg(not(windows))]
+    let separator = "/";
+
+    normalized_path == normalized_root
+        || normalized_path.starts_with(&format!("{normalized_root}{separator}"))
 }
 
 fn recycled_item_from_entry(
@@ -71,7 +88,29 @@ impl AppUseCase {
     async fn resolve_all_recycle_configs(
         &self,
     ) -> Vec<(String, crate::recycle_bin::RecycleBinConfig)> {
-        let mut configs = Vec::new();
+        let mut media_roots = Vec::new();
+        let mut seen_roots = HashSet::new();
+
+        match self.recycle_root_libraries().await {
+            Ok(roots) => {
+                for root in roots {
+                    if seen_roots.insert(root.normalized_media_root) {
+                        media_roots.push(root.media_root);
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "failed to resolve library roots for recycle bin housekeeping"
+                );
+            }
+        }
+
+        if !media_roots.is_empty() {
+            return self.recycle_bin_configs_for_media_roots(media_roots).await;
+        }
+
         for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
             let root_folders = match self.root_folders_for_facet(&facet).await {
                 Ok(root_folders) => root_folders,
@@ -90,12 +129,14 @@ impl AppUseCase {
                 if media_root.is_empty() {
                     continue;
                 }
-                let config =
-                    crate::recycle_bin::resolve_recycle_config(self, Some(media_root)).await;
-                configs.push((media_root.to_string(), config));
+                let normalized_media_root = normalize_recycle_media_root(media_root);
+                if !seen_roots.insert(normalized_media_root) {
+                    continue;
+                }
+                media_roots.push(media_root.to_string());
             }
         }
-        configs
+        self.recycle_bin_configs_for_media_roots(media_roots).await
     }
 
     async fn recycle_root_libraries(&self) -> AppResult<Vec<RecycleRootLibrary>> {
@@ -109,11 +150,13 @@ impl AppUseCase {
             };
 
             for root in library.roots {
-                let normalized_media_root = normalize_recycle_media_root(&root.path);
+                let media_root = root.path.trim().to_string();
+                let normalized_media_root = normalize_recycle_media_root(&media_root);
                 if normalized_media_root.is_empty() {
                     continue;
                 }
                 roots.push(RecycleRootLibrary {
+                    media_root,
                     normalized_media_root,
                     library: library_context.clone(),
                 });
@@ -134,6 +177,15 @@ impl AppUseCase {
                 .iter()
                 .find(|root| root.library.id == title.library_id)
         {
+            return Ok(Some(root.library.clone()));
+        }
+
+        if let Some(root) = roots.iter().find(|root| {
+            recycle_path_is_under_root(
+                &entry.manifest.original_path,
+                root.normalized_media_root.as_str(),
+            )
+        }) {
             return Ok(Some(root.library.clone()));
         }
 

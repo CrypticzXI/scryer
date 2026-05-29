@@ -851,6 +851,7 @@ async fn smg_search_tvdb_batch_uses_dedicated_post_query() {
         .respond_with(
             ResponseTemplate::new(200).set_body_string(load_fixture("smg/search_tvdb_batch.json")),
         )
+        .with_priority(1)
         .mount(&ctx.smg_server)
         .await;
 

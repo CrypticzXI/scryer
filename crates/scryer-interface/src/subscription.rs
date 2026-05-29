@@ -547,6 +547,55 @@ impl SubscriptionRoot {
         guard_subscription_stream(ctx, Box::pin(stream))
     }
 
+    async fn indexers_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, bool> {
+        let app = match app_from_ctx(ctx) {
+            Ok(app) => app,
+            Err(e) => {
+                tracing::warn!("indexers_changed: app_from_ctx failed: {e:?}");
+                return empty_box_stream();
+            }
+        };
+
+        let actor = match actor_from_ctx(ctx) {
+            Ok(actor) => actor,
+            Err(e) => {
+                tracing::warn!("indexers_changed: actor_from_ctx failed: {e:?}");
+                return empty_box_stream();
+            }
+        };
+
+        let receiver = match app.subscribe_indexers_changed(&actor).await {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                tracing::warn!("indexers_changed: subscribe failed: {e}");
+                return empty_box_stream();
+            }
+        };
+
+        tracing::debug!(
+            "indexers_changed: subscription started for user {}",
+            actor.id
+        );
+
+        let stream = unfold(receiver, move |mut receiver| async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(()) => return Some((true, receiver)),
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::debug!("indexers_changed: receiver lagged, skipped {n} messages");
+                        continue;
+                    }
+                    Err(RecvError::Closed) => {
+                        tracing::debug!("indexers_changed: broadcast channel closed");
+                        return None;
+                    }
+                }
+            }
+        });
+
+        guard_subscription_stream(ctx, Box::pin(stream))
+    }
+
     async fn provider_catalog_changed(&self, ctx: &Context<'_>) -> BoxStream<'static, Vec<String>> {
         let app = match app_from_ctx(ctx) {
             Ok(app) => app,

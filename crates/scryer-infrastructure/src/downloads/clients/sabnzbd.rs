@@ -1337,11 +1337,13 @@ fn sab_api_mode_matches_response(request_mode: Option<&str>, json: &Value) -> bo
         Some("queue") => {
             json.get("queue").is_some()
                 || json.get("slots").is_some()
+                || sab_api_status_is_true(json)
                 || sab_api_status_is_false(json)
         }
         Some("history") => {
             json.get("history").is_some()
                 || json.get("slots").is_some()
+                || sab_api_status_is_true(json)
                 || sab_api_status_is_false(json)
         }
         Some("get_config") => json.get("config").is_some() || sab_api_status_is_false(json),
@@ -1367,6 +1369,14 @@ fn sab_api_status_is_false(json: &Value) -> bool {
     match json.get("status") {
         Some(Value::Bool(false)) => true,
         Some(Value::String(value)) => value.eq_ignore_ascii_case("false"),
+        _ => false,
+    }
+}
+
+fn sab_api_status_is_true(json: &Value) -> bool {
+    match json.get("status") {
+        Some(Value::Bool(true)) => true,
+        Some(Value::String(value)) => value.eq_ignore_ascii_case("true"),
         _ => false,
     }
 }
@@ -1612,6 +1622,13 @@ mod tests {
     }
 
     #[test]
+    fn sab_api_mode_match_accepts_success_status_for_queue_mutations() {
+        let json = json!({"status": true});
+        assert!(sab_api_mode_matches_response(Some("queue"), &json));
+        assert!(sab_api_mode_matches_response(Some("history"), &json));
+    }
+
+    #[test]
     fn evaluate_sab_api_response_marks_non_sab_shape_retryable() {
         let outcome = evaluate_sab_api_response(
             "sabnzbd api",
@@ -1621,5 +1638,20 @@ mod tests {
         );
 
         assert!(matches!(outcome, SabApiResponseEvaluation::Retry(_)));
+    }
+
+    #[test]
+    fn evaluate_sab_api_response_retries_non_auth_unsuccessful_statuses() {
+        let not_found =
+            evaluate_sab_api_response("sabnzbd api", Some("queue"), StatusCode::NOT_FOUND, "");
+        let server_error = evaluate_sab_api_response(
+            "sabnzbd api",
+            Some("queue"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed",
+        );
+
+        assert!(matches!(not_found, SabApiResponseEvaluation::Retry(_)));
+        assert!(matches!(server_error, SabApiResponseEvaluation::Retry(_)));
     }
 }

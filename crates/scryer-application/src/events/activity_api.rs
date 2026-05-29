@@ -1245,6 +1245,15 @@ impl AppUseCase {
         Ok(self.runtime.events.settings_changed_broadcast.subscribe())
     }
 
+    pub async fn subscribe_indexers_changed(
+        &self,
+        actor: &User,
+    ) -> AppResult<broadcast::Receiver<()>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        Ok(self.runtime.events.indexers_changed_broadcast.subscribe())
+    }
+
     pub async fn subscribe_provider_catalog_changed(
         &self,
         actor: &User,

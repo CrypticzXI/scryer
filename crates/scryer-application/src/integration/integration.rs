@@ -1437,6 +1437,25 @@ impl AppUseCase {
         Ok((synced_count, failures))
     }
 
+    pub fn queue_managed_indexer_sync(&self, actor: &User, config_id: &str) {
+        let config_id = config_id.trim().to_string();
+        if config_id.is_empty() {
+            return;
+        }
+
+        let app = self.clone();
+        let actor = actor.clone();
+        tokio::spawn(async move {
+            if let Err(error) = app.sync_indexer_config(&actor, &config_id).await {
+                tracing::warn!(
+                    config_id = %config_id,
+                    error = %error,
+                    "background managed indexer sync failed"
+                );
+            }
+        });
+    }
+
     pub async fn get_indexer_config(
         &self,
         actor: &User,
@@ -1521,19 +1540,10 @@ impl AppUseCase {
             .await?;
         self.ensure_indexer_routing_entry_for_indexer(actor, &created.id)
             .await?;
-        if management_capabilities.supports_managed_children_sync
-            && let Err(error) = self.sync_indexer_config(actor, &created.id).await
-        {
-            if let Err(cleanup_error) = self.delete_indexer_config(actor, &created.id).await {
-                tracing::warn!(
-                    config_id = %created.id,
-                    sync_error = %error,
-                    cleanup_error = %cleanup_error,
-                    "failed to roll back managed indexer after auto-sync failure"
-                );
-            }
-            return Err(error);
+        if management_capabilities.supports_managed_children_sync && created.is_enabled {
+            self.queue_managed_indexer_sync(actor, &created.id);
         }
+        self.publish_indexers_changed();
         Ok(created)
     }
 
@@ -1714,12 +1724,18 @@ impl AppUseCase {
             .await?;
         if should_sync_managed_children {
             if updated.is_enabled {
-                self.sync_indexer_config(actor, &updated.id).await?;
+                self.queue_managed_indexer_sync(actor, &updated.id);
             } else if existing.is_enabled != updated.is_enabled {
-                self.set_managed_child_indexers_enabled_state(&updated.id, false)
-                    .await?;
+                if let Err(error) = self
+                    .set_managed_child_indexers_enabled_state(&updated.id, false)
+                    .await
+                {
+                    self.publish_indexers_changed();
+                    return Err(error);
+                }
             }
         }
+        self.publish_indexers_changed();
         Ok(updated)
     }
 
@@ -1769,6 +1785,7 @@ impl AppUseCase {
         remove_indexer_routing_entries(&mut routing_by_scope, &config.id);
         self.save_indexer_routing_by_scope(actor, routing_by_scope)
             .await?;
+        self.publish_indexers_changed();
         Ok(())
     }
 
@@ -1783,6 +1800,28 @@ impl AppUseCase {
         let config_id = config_id.trim();
         if config_id.is_empty() {
             return Err(AppError::Validation("indexer config id is required".into()));
+        }
+
+        let _sync_guard = self
+            .runtime
+            .integrations
+            .managed_indexer_sync_lock
+            .clone()
+            .lock_owned()
+            .await;
+        let mut indexers_changed = false;
+        macro_rules! try_sync_step {
+            ($expr:expr) => {
+                match $expr {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if indexers_changed {
+                            self.publish_indexers_changed();
+                        }
+                        return Err(error);
+                    }
+                }
+            };
         }
 
         let parent = self
@@ -1814,7 +1853,8 @@ impl AppUseCase {
         }
 
         let parent = if parent.enable_interactive_search || parent.enable_auto_search {
-            self.services
+            let updated = self
+                .services
                 .integrations
                 .indexer_configs
                 .update(IndexerConfigUpdate {
@@ -1823,35 +1863,32 @@ impl AppUseCase {
                     enable_auto_search: Some(false),
                     ..Default::default()
                 })
-                .await?
+                .await?;
+            indexers_changed = true;
+            updated
         } else {
             parent
         };
 
-        let client = provider
-            .management_client_for_provider(&parent)
-            .ok_or_else(|| {
+        let client = try_sync_step!(provider.management_client_for_provider(&parent).ok_or_else(
+            || {
                 AppError::Validation(format!(
                     "no indexer management client available for provider type '{}'",
                     parent.provider_type
                 ))
-            })?;
+            }
+        ));
 
-        let plan = client.plan_sync(&parent.id).await?;
-        let desired_children = self
-            .prepare_managed_indexer_sync_plan(&parent, plan)
-            .await?;
-        let existing_children = self
-            .services
-            .integrations
-            .indexer_configs
-            .list(None)
-            .await?
-            .into_iter()
-            .filter(|candidate| {
-                candidate.managed_parent_config_id.as_deref() == Some(parent.id.as_str())
-            })
-            .collect::<Vec<_>>();
+        let plan = try_sync_step!(client.plan_sync(&parent.id).await);
+        let desired_children =
+            try_sync_step!(self.prepare_managed_indexer_sync_plan(&parent, plan).await);
+        let existing_children =
+            try_sync_step!(self.services.integrations.indexer_configs.list(None).await)
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.managed_parent_config_id.as_deref() == Some(parent.id.as_str())
+                })
+                .collect::<Vec<_>>();
         let mut existing_by_key = existing_children
             .into_iter()
             .filter_map(|candidate| {
@@ -1861,7 +1898,7 @@ impl AppUseCase {
                     .map(|child_key| (child_key, candidate))
             })
             .collect::<HashMap<_, _>>();
-        let mut routing_by_scope = self.load_indexer_routing_by_scope(actor).await?;
+        let mut routing_by_scope = try_sync_step!(self.load_indexer_routing_by_scope(actor).await);
         let mut result = IndexerConfigSyncResult {
             parent_config_id: parent.id.clone(),
             ..Default::default()
@@ -1874,27 +1911,29 @@ impl AppUseCase {
                     desired.managed_metadata_json.as_deref(),
                 )
                 .or_else(|| desired.managed_metadata_json.clone());
-                let updated = self
-                    .services
-                    .integrations
-                    .indexer_configs
-                    .update(IndexerConfigUpdate {
-                        id: existing.id.clone(),
-                        name: Some(desired.name.clone()),
-                        provider_type: Some(desired.provider_type.clone()),
-                        derived_base_url: Some(desired.base_url.clone()),
-                        rate_limit_seconds: None,
-                        rate_limit_burst: None,
-                        is_enabled: Some(desired.is_enabled),
-                        enable_interactive_search: Some(desired.enable_interactive_search),
-                        enable_auto_search: Some(desired.enable_auto_search),
-                        managed_parent_config_id: Some(Some(parent.id.clone())),
-                        managed_child_key: Some(Some(desired.child_key.clone())),
-                        managed_metadata_json: Some(managed_metadata_json),
-                        caps_snapshot_json: Some(desired.caps_snapshot_json.clone()),
-                        config_json: Some(desired.config_json.clone()),
-                    })
-                    .await?;
+                let updated = try_sync_step!(
+                    self.services
+                        .integrations
+                        .indexer_configs
+                        .update(IndexerConfigUpdate {
+                            id: existing.id.clone(),
+                            name: Some(desired.name.clone()),
+                            provider_type: Some(desired.provider_type.clone()),
+                            derived_base_url: Some(desired.base_url.clone()),
+                            rate_limit_seconds: None,
+                            rate_limit_burst: None,
+                            is_enabled: Some(desired.is_enabled),
+                            enable_interactive_search: Some(desired.enable_interactive_search),
+                            enable_auto_search: Some(desired.enable_auto_search),
+                            managed_parent_config_id: Some(Some(parent.id.clone())),
+                            managed_child_key: Some(Some(desired.child_key.clone())),
+                            managed_metadata_json: Some(managed_metadata_json),
+                            caps_snapshot_json: Some(desired.caps_snapshot_json.clone()),
+                            config_json: Some(desired.config_json.clone()),
+                        })
+                        .await
+                );
+                indexers_changed = true;
                 apply_managed_child_routing(
                     &mut routing_by_scope,
                     &updated.id,
@@ -1902,33 +1941,35 @@ impl AppUseCase {
                 );
                 result.updated_ids.push(updated.id);
             } else {
-                let created = self
-                    .services
-                    .integrations
-                    .indexer_configs
-                    .create(IndexerConfig {
-                        id: Id::new().0,
-                        name: desired.name.clone(),
-                        provider_type: desired.provider_type.clone(),
-                        base_url: desired.base_url.clone(),
-                        api_key_encrypted: None,
-                        rate_limit_seconds: None,
-                        rate_limit_burst: None,
-                        disabled_until: None,
-                        is_enabled: desired.is_enabled,
-                        enable_interactive_search: desired.enable_interactive_search,
-                        enable_auto_search: desired.enable_auto_search,
-                        managed_parent_config_id: Some(parent.id.clone()),
-                        managed_child_key: Some(desired.child_key.clone()),
-                        managed_metadata_json: desired.managed_metadata_json.clone(),
-                        caps_snapshot_json: desired.caps_snapshot_json.clone(),
-                        last_health_status: None,
-                        last_error_at: None,
-                        config_json: Some(desired.config_json.clone()),
-                        created_at: Utc::now(),
-                        updated_at: Utc::now(),
-                    })
-                    .await?;
+                let created = try_sync_step!(
+                    self.services
+                        .integrations
+                        .indexer_configs
+                        .create(IndexerConfig {
+                            id: Id::new().0,
+                            name: desired.name.clone(),
+                            provider_type: desired.provider_type.clone(),
+                            base_url: desired.base_url.clone(),
+                            api_key_encrypted: None,
+                            rate_limit_seconds: None,
+                            rate_limit_burst: None,
+                            disabled_until: None,
+                            is_enabled: desired.is_enabled,
+                            enable_interactive_search: desired.enable_interactive_search,
+                            enable_auto_search: desired.enable_auto_search,
+                            managed_parent_config_id: Some(parent.id.clone()),
+                            managed_child_key: Some(desired.child_key.clone()),
+                            managed_metadata_json: desired.managed_metadata_json.clone(),
+                            caps_snapshot_json: desired.caps_snapshot_json.clone(),
+                            last_health_status: None,
+                            last_error_at: None,
+                            config_json: Some(desired.config_json.clone()),
+                            created_at: Utc::now(),
+                            updated_at: Utc::now(),
+                        })
+                        .await
+                );
+                indexers_changed = true;
                 apply_managed_child_routing(
                     &mut routing_by_scope,
                     &created.id,
@@ -1939,17 +1980,25 @@ impl AppUseCase {
         }
 
         for (_, obsolete) in existing_by_key {
-            self.services
-                .integrations
-                .indexer_configs
-                .delete(&obsolete.id)
-                .await?;
+            try_sync_step!(
+                self.services
+                    .integrations
+                    .indexer_configs
+                    .delete(&obsolete.id)
+                    .await
+            );
+            indexers_changed = true;
             remove_indexer_routing_entries(&mut routing_by_scope, &obsolete.id);
             result.deleted_ids.push(obsolete.id);
         }
 
-        self.save_indexer_routing_by_scope(actor, routing_by_scope)
-            .await?;
+        try_sync_step!(
+            self.save_indexer_routing_by_scope(actor, routing_by_scope)
+                .await
+        );
+        if indexers_changed {
+            self.publish_indexers_changed();
+        }
         Ok(result)
     }
 

@@ -1793,6 +1793,10 @@ export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
 }`;
 
+export const indexersChangedSubscription = `subscription IndexersChanged {
+  indexersChanged
+}`;
+
 export const systemHealthQuery = `query SystemHealth {
   systemHealth {
     serviceReady

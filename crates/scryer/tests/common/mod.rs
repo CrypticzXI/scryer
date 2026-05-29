@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_graphql_axum::GraphQLRequest;
 use async_trait::async_trait;
@@ -9,10 +9,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use scryer_application::{
     AppResult, AppServices, AppUseCase, BlocklistRepository, FacetRegistry, HousekeepingRepository,
@@ -878,6 +878,21 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
 
     Mock::given(method("GET"))
         .and(path("/graphql"))
+        .and(is_search_tvdb_batch_request)
+        .respond_with(search_tvdb_batch_response)
+        .with_priority(2)
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(is_search_tvdb_batch_request)
+        .respond_with(search_tvdb_batch_response)
+        .with_priority(2)
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/graphql"))
         .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
         .with_priority(100)
         .mount(server)
@@ -888,6 +903,136 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
         .with_priority(100)
         .mount(server)
         .await;
+}
+
+fn is_search_tvdb_batch_request(request: &Request) -> bool {
+    search_tvdb_batch_inputs(request).is_some()
+}
+
+fn search_tvdb_batch_response(request: &Request) -> ResponseTemplate {
+    let inputs = search_tvdb_batch_inputs(request).unwrap_or_default();
+    let mut query_counts = HashMap::new();
+    for input in &inputs {
+        if let (Some(query), Some(type_hint)) = (
+            input.get("query").and_then(Value::as_str),
+            input.get("type").and_then(Value::as_str),
+        ) {
+            let year = input.get("year").and_then(Value::as_i64);
+            *query_counts
+                .entry(search_tvdb_query_key(type_hint, query, year))
+                .or_insert(0) += 1;
+        }
+    }
+
+    let batch = inputs
+        .iter()
+        .map(|input| {
+            let query = input
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or("Test Title");
+            let type_hint = input
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("series");
+            let year = input.get("year").and_then(Value::as_i64);
+            let tvdb_id = input
+                .get("tvdbId")
+                .and_then(json_i64)
+                .unwrap_or_else(|| stable_search_tvdb_id(type_hint, query, year));
+            let key = search_tvdb_query_key(type_hint, query, year);
+            let name = if query_counts.get(&key).copied().unwrap_or_default() > 1 {
+                format!("{query} {tvdb_id}")
+            } else {
+                query.to_string()
+            };
+            let mut signals = vec!["exact_title".to_string()];
+            if year.is_some() {
+                signals.push("exact_year".to_string());
+            }
+            if input.get("tvdbId").and_then(json_i64).is_some() {
+                signals.push("external_id:tvdb".to_string());
+            }
+            if input.get("imdbId").and_then(Value::as_str).is_some() {
+                signals.push("external_id:imdb".to_string());
+            }
+            if input.get("tmdbId").and_then(Value::as_str).is_some() {
+                signals.push("external_id:tmdb".to_string());
+            }
+
+            json!({
+                "query": query,
+                "type": type_hint,
+                "year": year,
+                "results": [{
+                    "tvdb_id": tvdb_id,
+                    "name": name,
+                    "year": year,
+                    "auto_match_safe": true,
+                    "auto_match_signals": signals
+                }]
+            })
+        })
+        .collect::<Vec<_>>();
+
+    ResponseTemplate::new(200).set_body_json(json!({
+        "data": {
+            "searchTvdbBatch": batch
+        }
+    }))
+}
+
+fn search_tvdb_batch_inputs(request: &Request) -> Option<Vec<Value>> {
+    let variables = if let Ok(payload) = request.body_json::<Value>() {
+        payload.get("variables").cloned()
+    } else {
+        request.url.query_pairs().find_map(|(key, value)| {
+            (key == "variables")
+                .then(|| serde_json::from_str::<Value>(&value).ok())
+                .flatten()
+        })
+    }?;
+
+    let language = variables.get("language").and_then(Value::as_str)?;
+    if language.trim().is_empty() {
+        return None;
+    }
+    let requests = variables.get("requests")?.as_array()?;
+    if requests.is_empty()
+        || !requests.iter().all(|input| {
+            input.get("query").and_then(Value::as_str).is_some()
+                && input.get("type").and_then(Value::as_str).is_some()
+        })
+    {
+        return None;
+    }
+
+    Some(requests.clone())
+}
+
+fn search_tvdb_query_key(type_hint: &str, query: &str, year: Option<i64>) -> String {
+    format!("{type_hint}\0{query}\0{}", year.unwrap_or_default())
+}
+
+fn stable_search_tvdb_id(type_hint: &str, query: &str, year: Option<i64>) -> i64 {
+    let key = format!("{type_hint}\0{query}\0{}", year.unwrap_or_default());
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in key.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let base = if type_hint.eq_ignore_ascii_case("movie") {
+        800_000_000_i64
+    } else {
+        900_000_000_i64
+    };
+    base + i64::try_from(hash % 100_000_000).unwrap_or(0)
+}
+
+fn json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
 }
 
 /// Load a fixture file relative to the workspace `tests/fixtures/` directory.

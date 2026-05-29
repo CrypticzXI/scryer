@@ -306,6 +306,13 @@ export function SettingsRecycleBinContainer() {
             : t("settings.recycleBinDelete")
         }
         cancelLabel={t("label.cancel")}
+        contentId="settings-recycle-bin-confirm-dialog"
+        confirmButtonId={
+          pendingAction?.type === "empty"
+            ? "settings-recycle-bin-empty-confirm"
+            : "settings-recycle-bin-delete-confirm"
+        }
+        cancelButtonId="settings-recycle-bin-confirm-cancel"
         isBusy={mutatingId !== null}
         onConfirm={pendingAction?.type === "empty" ? confirmEmpty : confirmDelete}
         onCancel={() => setPendingAction(null)}

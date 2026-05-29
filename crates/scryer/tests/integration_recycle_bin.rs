@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod common;
 
 use std::collections::HashMap;
@@ -5,14 +7,16 @@ use std::path::Path;
 
 use chrono::Utc;
 use common::TestContext;
-use scryer_application::recycle_bin::{
-    RecycleBinConfig, RecycleManifest, recycle_file, resolve_recycle_config,
+use scryer_application::recycle_bin::{RecycleBinConfig, RecycleManifest, recycle_file};
+use scryer_application::{
+    LibraryRootDraft, RECYCLE_BIN_ENABLED_KEY, RECYCLE_BIN_PATH_KEY, SETTINGS_SCOPE_MEDIA,
+    SETTINGS_SOURCE_TYPED_GRAPHQL, TitleRepository, UpdateRecycleBinSettings,
 };
-use scryer_application::{LibraryRootDraft, TitleRepository, UpdateRecycleBinSettings};
 use scryer_domain::{
     AppPermission, AppPermissionMask, Library, LibraryPermission, LibraryPermissionMask,
     MediaFacet, Title, User, UserAuthorization,
 };
+use scryer_infrastructure::SettingDefinitionSeed;
 use serde_json::{Value, json};
 
 async fn gql(ctx: &TestContext, query: &str, variables: Value) -> Value {
@@ -82,6 +86,46 @@ fn no_permission_actor() -> User {
     actor("none", std::iter::empty(), std::iter::empty())
 }
 
+async fn seed_recycle_bin_setting_definition(ctx: &TestContext) {
+    ctx.settings_store
+        .batch_ensure_setting_definitions(vec![
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: SETTINGS_SCOPE_MEDIA.into(),
+                key_name: RECYCLE_BIN_ENABLED_KEY.into(),
+                data_type: "boolean".into(),
+                default_value_json: "true".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: SETTINGS_SCOPE_MEDIA.into(),
+                key_name: RECYCLE_BIN_PATH_KEY.into(),
+                data_type: "string".into(),
+                default_value_json: "\"\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+        ])
+        .await
+        .expect("seed recycle bin setting definition");
+}
+
+async fn set_custom_recycle_bin_path(ctx: &TestContext, path: &Path) {
+    ctx.settings_store
+        .upsert_setting_value(
+            SETTINGS_SCOPE_MEDIA,
+            RECYCLE_BIN_PATH_KEY,
+            None,
+            json!(path.to_string_lossy().to_string()).to_string(),
+            SETTINGS_SOURCE_TYPED_GRAPHQL,
+            None,
+        )
+        .await
+        .expect("set custom recycle bin path");
+}
+
 async fn seed_library(ctx: &TestContext, name: &str, root: &Path) -> Library {
     ctx.app
         .create_library(
@@ -142,11 +186,20 @@ async fn seed_title(ctx: &TestContext, id: &str, library: &Library) {
 }
 
 async fn seed_recycled_file(root: &Path, title_id: &str, name: &str) -> String {
+    seed_recycled_file_in_bin(root, &root.join(".scryer-recycle"), title_id, name).await
+}
+
+async fn seed_recycled_file_in_bin(
+    root: &Path,
+    recycle_base_path: &Path,
+    title_id: &str,
+    name: &str,
+) -> String {
     let source_path = root.join(format!("{name}.mkv"));
     std::fs::write(&source_path, format!("{name} content")).expect("write source file");
     let config = RecycleBinConfig {
         enabled: true,
-        base_path: root.join(".scryer-recycle"),
+        base_path: recycle_base_path.to_path_buf(),
         retention_days: 7,
     };
     let result = recycle_file(
@@ -175,6 +228,7 @@ async fn seed_recycled_file(root: &Path, title_id: &str, name: &str) -> String {
 #[tokio::test]
 async fn recycle_bin_settings_permissions_are_split_between_read_and_update() {
     let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
     let root = tempfile::tempdir().expect("library root");
     let library = seed_library(&ctx, "Movies A", root.path()).await;
     let manage_actor = manage_titles_actor("manager", std::slice::from_ref(&library.id));
@@ -223,6 +277,7 @@ async fn recycle_bin_settings_permissions_are_split_between_read_and_update() {
 #[tokio::test]
 async fn graphql_recycle_bin_settings_and_scoped_item_args_work() {
     let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
 
     let body = gql(&ctx, "query { recycleBinSettings { enabled } }", json!({})).await;
     assert_no_errors(&body);
@@ -268,6 +323,7 @@ async fn graphql_recycle_bin_settings_and_scoped_item_args_work() {
 #[tokio::test]
 async fn recycled_items_are_filtered_to_manage_title_libraries() {
     let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
     let root_a = tempfile::tempdir().expect("library root a");
     let root_b = tempfile::tempdir().expect("library root b");
     let library_a = seed_library(&ctx, "Movies A", root_a.path()).await;
@@ -318,6 +374,7 @@ async fn recycled_items_are_filtered_to_manage_title_libraries() {
 #[tokio::test]
 async fn empty_recycle_bin_only_purges_selected_authorized_libraries() {
     let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
     let root_a = tempfile::tempdir().expect("library root a");
     let root_b = tempfile::tempdir().expect("library root b");
     let library_a = seed_library(&ctx, "Movies A", root_a.path()).await;
@@ -348,8 +405,95 @@ async fn empty_recycle_bin_only_purges_selected_authorized_libraries() {
 }
 
 #[tokio::test]
+async fn custom_recycle_bin_path_lists_entries_once_across_libraries() {
+    let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
+    let root_a = tempfile::tempdir().expect("library root a");
+    let root_b = tempfile::tempdir().expect("library root b");
+    let recycle_root = tempfile::tempdir().expect("custom recycle root");
+    set_custom_recycle_bin_path(&ctx, recycle_root.path()).await;
+
+    let library_a = seed_library(&ctx, "Movies A", root_a.path()).await;
+    let library_b = seed_library(&ctx, "Movies B", root_b.path()).await;
+    seed_title(&ctx, "title-a", &library_a).await;
+    seed_title(&ctx, "title-b", &library_b).await;
+    seed_recycled_file_in_bin(root_a.path(), recycle_root.path(), "title-a", "movie-a").await;
+    seed_recycled_file_in_bin(root_b.path(), recycle_root.path(), "title-b", "movie-b").await;
+
+    let manager_both = manage_titles_actor(
+        "manager-both",
+        &[library_a.id.clone(), library_b.id.clone()],
+    );
+    let items = ctx
+        .app
+        .list_recycled_items(&manager_both, None)
+        .await
+        .expect("list custom recycle bin");
+    assert_eq!(items.len(), 2);
+
+    let removed = ctx
+        .app
+        .empty_recycle_bin(&manager_both, Some(vec![library_a.id.clone()]))
+        .await
+        .expect("empty selected library");
+    assert_eq!(removed, 1);
+
+    let remaining = ctx
+        .app
+        .list_recycled_items(&manager_both, None)
+        .await
+        .expect("list remaining custom recycle bin");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].library_id, library_b.id);
+}
+
+#[tokio::test]
+async fn recycle_bin_config_resolution_deduplicates_roots_by_base_path() {
+    let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
+    let root = tempfile::tempdir().expect("library root");
+    let root_path = root.path().to_string_lossy().to_string();
+
+    let configs = ctx
+        .app
+        .recycle_bin_configs_for_media_roots(vec![root_path.clone(), format!("{root_path}/")])
+        .await;
+    assert_eq!(configs.len(), 1);
+    assert_eq!(configs[0].0, root_path);
+    assert_eq!(configs[0].1.base_path, root.path().join(".scryer-recycle"));
+}
+
+#[tokio::test]
+async fn recycle_bin_config_resolution_keeps_distinct_default_roots() {
+    let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
+    let root_a = tempfile::tempdir().expect("library root a");
+    let root_b = tempfile::tempdir().expect("library root b");
+
+    let configs = ctx
+        .app
+        .recycle_bin_configs_for_media_roots(vec![
+            root_a.path().to_string_lossy().to_string(),
+            root_b.path().to_string_lossy().to_string(),
+        ])
+        .await;
+    assert_eq!(configs.len(), 2);
+    assert!(
+        configs
+            .iter()
+            .any(|(_, config)| { config.base_path == root_a.path().join(".scryer-recycle") })
+    );
+    assert!(
+        configs
+            .iter()
+            .any(|(_, config)| { config.base_path == root_b.path().join(".scryer-recycle") })
+    );
+}
+
+#[tokio::test]
 async fn disabled_recycle_bin_paths_are_inert_and_direct_delete_new_files() {
     let ctx = TestContext::new().await;
+    seed_recycle_bin_setting_definition(&ctx).await;
     let root = tempfile::tempdir().expect("library root");
     let library = seed_library(&ctx, "Movies A", root.path()).await;
     seed_title(&ctx, "title-a", &library).await;
@@ -385,8 +529,10 @@ async fn disabled_recycle_bin_paths_are_inert_and_direct_delete_new_files() {
 
     let new_source = root.path().join("new-delete.mkv");
     std::fs::write(&new_source, b"delete directly").expect("write new source");
-    let config =
-        resolve_recycle_config(&ctx.app, Some(root.path().to_string_lossy().as_ref())).await;
+    let config = ctx
+        .app
+        .recycle_bin_config_for_media_root(Some(root.path().to_string_lossy().as_ref()))
+        .await;
     let result = recycle_file(
         &config,
         &new_source,

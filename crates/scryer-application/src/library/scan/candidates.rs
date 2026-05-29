@@ -241,7 +241,7 @@ async fn load_existing_title_for_media_file_path(
 }
 
 enum MovieCandidateResolution {
-    Ready(Title),
+    Ready(Box<Title>),
     Skipped,
     Unresolved(Box<PreparedMovieLibraryScanCandidate>),
 }
@@ -432,7 +432,7 @@ async fn append_series_title_and_merge_work(
 
 async fn resolve_movie_scan_candidate(
     candidate: PreparedMovieLibraryScanCandidate,
-    existing_titles: &mut Vec<Title>,
+    existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
@@ -446,9 +446,9 @@ async fn resolve_movie_scan_candidate(
         existing_titles_by_imdb_id,
         existing_titles_by_tmdb_id,
     ) {
-        return Ok(MovieCandidateResolution::Ready(
+        return Ok(MovieCandidateResolution::Ready(Box::new(
             existing_titles[index].clone(),
-        ));
+        )));
     }
 
     if candidate.query.trim().is_empty() {
@@ -537,7 +537,7 @@ pub(super) async fn process_movie_full_scan_candidate(
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedMovieLibraryScanCandidate,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
-    existing_titles: &mut Vec<Title>,
+    existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
@@ -579,7 +579,8 @@ pub(super) async fn process_movie_full_scan_candidate(
     )
     .await?
     {
-        MovieCandidateResolution::Ready(mut title) => {
+        MovieCandidateResolution::Ready(title) => {
+            let mut title = *title;
             sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
                 .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
@@ -618,7 +619,7 @@ pub(super) async fn process_series_full_scan_candidate(
     _session_id: &str,
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedSeriesLibraryScanCandidate,
-    existing_titles: &mut Vec<Title>,
+    existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
@@ -1001,7 +1002,7 @@ pub(super) async fn process_series_refresh_candidate(
     app: &AppUseCase,
     candidate: PreparedSeriesLibraryScanCandidate,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
-    existing_titles: &mut Vec<Title>,
+    existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_folder_path: &mut HashMap<String, usize>,
@@ -1140,7 +1141,7 @@ pub(super) async fn process_movie_refresh_candidate(
     _library_id: &str,
     candidate: PreparedMovieLibraryScanCandidate,
     workset: &mut HashMap<String, LibraryScanTitleWork>,
-    existing_titles: &mut Vec<Title>,
+    existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
@@ -1162,7 +1163,8 @@ pub(super) async fn process_movie_refresh_candidate(
     )
     .await?
     {
-        MovieCandidateResolution::Ready(mut title) => {
+        MovieCandidateResolution::Ready(title) => {
+            let mut title = *title;
             sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
                 .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);

@@ -151,16 +151,14 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                     current_text.push_str(&decoded);
                 }
             }
-            Ok(Event::GeneralRef(ref e)) => {
-                if current_depth == depth {
-                    if let Ok(Some(ch)) = e.resolve_char_ref() {
-                        current_text.push(ch);
-                    } else if let Ok(decoded) = e.decode()
-                        && let Some(entity) =
-                            quick_xml::escape::resolve_predefined_entity(decoded.as_ref())
-                    {
-                        current_text.push_str(entity);
-                    }
+            Ok(Event::GeneralRef(ref e)) if current_depth == depth => {
+                if let Ok(Some(ch)) = e.resolve_char_ref() {
+                    current_text.push(ch);
+                } else if let Ok(decoded) = e.decode()
+                    && let Some(entity) =
+                        quick_xml::escape::resolve_predefined_entity(decoded.as_ref())
+                {
+                    current_text.push_str(entity);
                 }
             }
             Ok(Event::Comment(ref e)) if depth <= 1 => {

@@ -126,7 +126,7 @@ export function SettingsRecycleBinSection({
     <div id="settings-recycle-bin-section" className="space-y-4">
       <div className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
-          <Label htmlFor="settings-recycle-bin-enabled">
+          <Label htmlFor="settings-recycle-bin-enabled-toggle">
             {t("settings.recycleBinEnabled")}
           </Label>
           <p className="text-xs text-muted-foreground">
@@ -142,7 +142,7 @@ export function SettingsRecycleBinSection({
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           ) : null}
           <SettingsToggleSwitch
-            id="settings-recycle-bin-enabled"
+            id="settings-recycle-bin-enabled-toggle"
             checked={enabled}
             disabled={!canManageConfig || settingsSaving}
             ariaLabel={t("settings.recycleBinEnabled")}
@@ -165,6 +165,8 @@ export function SettingsRecycleBinSection({
                 selectedLibraryIds={selectedLibraryIds}
                 onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
                 disabled={librariesLoading || isBusy}
+                triggerId="settings-recycle-bin-library-filter-trigger"
+                allLibrariesButtonId="settings-recycle-bin-library-filter-all"
                 triggerClassName="w-full min-w-56 sm:w-72"
               />
             </div>

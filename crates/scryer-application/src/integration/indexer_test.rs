@@ -106,9 +106,6 @@ impl AppUseCase {
                 let result = client.validate_connection().await?;
                 validate_indexer_connection_result(result)?;
             }
-            if management_capabilities.supports_managed_children_sync {
-                client.plan_sync("test-connection").await?;
-            }
             return Ok(());
         }
 
@@ -384,7 +381,11 @@ mod tests {
     };
     use async_trait::async_trait;
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
     use tokio::sync::Mutex;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -537,6 +538,16 @@ mod tests {
     #[derive(Default)]
     struct RecordingSettingsRepository {
         values: RecordingSettingsValues,
+        fail_upsert: bool,
+    }
+
+    impl RecordingSettingsRepository {
+        fn with_upsert_failure() -> Self {
+            Self {
+                values: Default::default(),
+                fail_upsert: true,
+            }
+        }
     }
 
     type RecordingSettingsKey = (String, String, Option<String>);
@@ -567,6 +578,9 @@ mod tests {
             _source: &str,
             _updated_by_user_id: Option<String>,
         ) -> AppResult<()> {
+            if self.fail_upsert {
+                return Err(AppError::Repository("forced settings write failure".into()));
+            }
             self.values
                 .lock()
                 .await
@@ -609,6 +623,9 @@ mod tests {
         plan_sync_error: Option<String>,
         plan_sync_fail_on_call: Option<usize>,
         plan_sync_calls: Arc<std::sync::Mutex<usize>>,
+        plan_sync_delay: Option<Duration>,
+        active_plan_sync_calls: Arc<AtomicUsize>,
+        max_concurrent_plan_sync_calls: Arc<AtomicUsize>,
     }
 
     impl RecordingPluginProvider {
@@ -636,6 +653,9 @@ mod tests {
                 plan_sync_error: None,
                 plan_sync_fail_on_call: None,
                 plan_sync_calls: Arc::new(std::sync::Mutex::new(0)),
+                plan_sync_delay: None,
+                active_plan_sync_calls: Arc::new(AtomicUsize::new(0)),
+                max_concurrent_plan_sync_calls: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -678,17 +698,16 @@ mod tests {
             provider
         }
 
+        fn with_delayed_sync_plan(sync_plan: crate::IndexerSyncPlan, delay: Duration) -> Self {
+            let mut provider = Self::with_sync_plan(sync_plan);
+            provider.plan_sync_delay = Some(delay);
+            provider
+        }
+
         fn with_plan_sync_error(message: &str) -> Self {
             let mut provider = Self::with_sync_plan(crate::IndexerSyncPlan::default());
             provider.plan_sync_error = Some(message.to_string());
             provider.plan_sync_fail_on_call = Some(1);
-            provider
-        }
-
-        fn with_plan_sync_error_on_call(message: &str, fail_on_call: usize) -> Self {
-            let mut provider = Self::with_sync_plan(crate::IndexerSyncPlan::default());
-            provider.plan_sync_error = Some(message.to_string());
-            provider.plan_sync_fail_on_call = Some(fail_on_call);
             provider
         }
     }
@@ -699,6 +718,9 @@ mod tests {
         plan_sync_error: Option<String>,
         plan_sync_fail_on_call: Option<usize>,
         plan_sync_calls: Arc<std::sync::Mutex<usize>>,
+        plan_sync_delay: Option<Duration>,
+        active_plan_sync_calls: Arc<AtomicUsize>,
+        max_concurrent_plan_sync_calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -708,6 +730,14 @@ mod tests {
         }
 
         async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<crate::IndexerSyncPlan> {
+            let active = self.active_plan_sync_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_concurrent_plan_sync_calls
+                .fetch_max(active, Ordering::SeqCst);
+            if let Some(delay) = self.plan_sync_delay {
+                tokio::time::sleep(delay).await;
+            }
+            self.active_plan_sync_calls.fetch_sub(1, Ordering::SeqCst);
+
             let mut calls = self.plan_sync_calls.lock().unwrap();
             *calls += 1;
             if let Some(message) = &self.plan_sync_error
@@ -745,6 +775,9 @@ mod tests {
                 plan_sync_error: self.plan_sync_error.clone(),
                 plan_sync_fail_on_call: self.plan_sync_fail_on_call,
                 plan_sync_calls: self.plan_sync_calls.clone(),
+                plan_sync_delay: self.plan_sync_delay,
+                active_plan_sync_calls: self.active_plan_sync_calls.clone(),
+                max_concurrent_plan_sync_calls: self.max_concurrent_plan_sync_calls.clone(),
             }))
         }
 
@@ -892,6 +925,33 @@ mod tests {
         )
     }
 
+    async fn wait_for_plan_sync_calls(provider: &RecordingPluginProvider, expected_calls: usize) {
+        for _ in 0..50 {
+            if *provider.plan_sync_calls.lock().unwrap() == expected_calls {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                assert_eq!(*provider.plan_sync_calls.lock().unwrap(), expected_calls);
+                return;
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), expected_calls);
+    }
+
+    async fn expect_indexers_changed(
+        receiver: &mut tokio::sync::broadcast::Receiver<()>,
+        context: &str,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for indexersChanged: {context}"))
+            .unwrap_or_else(|error| {
+                panic!("indexersChanged receiver failed for {context}: {error}")
+            });
+    }
+
     fn test_admin() -> User {
         let mut user = User::new_admin("admin");
         user.authorization = scryer_domain::UserAuthorization {
@@ -978,6 +1038,47 @@ mod tests {
             .unwrap();
 
         assert_eq!(created.base_url, "https://ipt.beelyrics.net");
+    }
+
+    #[tokio::test]
+    async fn create_indexer_config_publishes_indexers_changed() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let client = Arc::new(RecordingIndexerClient::new(false));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(Arc::new(RecordingPluginProvider::new(
+                "torrent_rss",
+                vec![string_field(
+                    "feed_url",
+                    "Feed URL",
+                    Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+                )],
+                rss_only_capabilities(),
+                client,
+            ))),
+            Arc::new(NullSettingsRepository),
+        );
+        let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
+
+        app.create_indexer_config(
+            &test_admin(),
+            NewIndexerConfig {
+                name: "RSS".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: true,
+                config_json: Some(
+                    r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#.to_string(),
+                ),
+            },
+        )
+        .await
+        .unwrap();
+
+        expect_indexers_changed(&mut receiver, "create_indexer_config").await;
     }
 
     #[tokio::test]
@@ -1250,7 +1351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_indexer_config_rejects_managed_sync_preflight_failures() {
+    async fn create_indexer_config_saves_managed_parent_before_background_sync_failure() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error(
             "managed sync preflight failed",
@@ -1261,7 +1362,7 @@ mod tests {
             Arc::new(NullSettingsRepository),
         );
 
-        let error = app
+        let created = app
             .create_indexer_config(
                 &test_admin(),
                 NewIndexerConfig {
@@ -1276,18 +1377,18 @@ mod tests {
                 },
             )
             .await
-            .expect_err("managed sync preflight should fail save");
+            .expect("managed parent should save before background sync failure");
 
-        assert_eq!(
-            error.to_string(),
-            "validation: managed sync preflight failed"
-        );
-        assert!(indexer_repo.created.lock().await.is_empty());
+        wait_for_plan_sync_calls(&provider, 1).await;
+        let configs = indexer_repo.list(None).await.unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].id, created.id);
+        assert!(configs[0].is_enabled);
         assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
     #[tokio::test]
-    async fn update_indexer_config_rejects_managed_sync_preflight_failures() {
+    async fn update_indexer_config_enables_managed_parent_even_if_background_sync_fails() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         indexer_repo.created.lock().await.push(IndexerConfig {
             id: "cfg-1".to_string(),
@@ -1320,7 +1421,7 @@ mod tests {
             Arc::new(NullSettingsRepository),
         );
 
-        let error = app
+        let updated = app
             .update_indexer_config(
                 &test_admin(),
                 crate::IndexerConfigUpdate {
@@ -1341,18 +1442,16 @@ mod tests {
                 },
             )
             .await
-            .expect_err("managed sync preflight should fail enable");
+            .expect("managed parent should enable before background sync failure");
 
-        assert_eq!(
-            error.to_string(),
-            "validation: managed sync preflight failed"
-        );
+        wait_for_plan_sync_calls(&provider, 1).await;
+        assert!(updated.is_enabled);
         let stored = indexer_repo
             .get_by_id("cfg-1")
             .await
             .unwrap()
             .expect("existing config");
-        assert!(!stored.is_enabled);
+        assert!(stored.is_enabled);
         assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
@@ -1566,10 +1665,11 @@ mod tests {
         let seen_management = provider.seen_management_configs.lock().unwrap();
         assert_eq!(seen_management.len(), 1);
         assert_eq!(seen_management[0].base_url, "https://ipt.beelyrics.net");
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 0);
     }
 
     #[tokio::test]
-    async fn create_indexer_config_auto_syncs_managed_children() {
+    async fn create_indexer_config_queues_background_sync_for_managed_children() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let sync_plan = crate::IndexerSyncPlan {
             children: vec![crate::ManagedIndexerChildPlan {
@@ -1610,8 +1710,9 @@ mod tests {
                 },
             )
             .await
-            .expect("managed parent should auto-sync");
+            .expect("managed parent should queue background sync");
 
+        wait_for_plan_sync_calls(&provider, 1).await;
         let configs = indexer_repo.list(None).await.unwrap();
         assert_eq!(configs.len(), 2);
         assert!(configs.iter().any(|config| config.id == created.id));
@@ -1623,15 +1724,14 @@ mod tests {
             child.managed_parent_config_id.as_deref(),
             Some(created.id.as_str())
         );
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
     #[tokio::test]
-    async fn create_indexer_config_rolls_back_when_auto_sync_fails() {
+    async fn create_indexer_config_keeps_managed_parent_when_background_sync_fails() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
-        let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error_on_call(
+        let provider = Arc::new(RecordingPluginProvider::with_plan_sync_error(
             "managed sync failed after create",
-            2,
         ));
         let app = test_app(
             indexer_repo.clone(),
@@ -1639,7 +1739,7 @@ mod tests {
             Arc::new(RecordingSettingsRepository::default()),
         );
 
-        let error = app
+        let created = app
             .create_indexer_config(
                 &test_admin(),
                 NewIndexerConfig {
@@ -1654,14 +1754,13 @@ mod tests {
                 },
             )
             .await
-            .expect_err("create should roll back if auto-sync fails");
+            .expect("create should keep parent when background sync fails");
 
-        assert_eq!(
-            error.to_string(),
-            "validation: managed sync failed after create"
-        );
-        assert!(indexer_repo.list(None).await.unwrap().is_empty());
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+        wait_for_plan_sync_calls(&provider, 1).await;
+        let configs = indexer_repo.list(None).await.unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].id, created.id);
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
     #[tokio::test]
@@ -1885,15 +1984,16 @@ mod tests {
             .unwrap();
 
         assert!(updated.is_enabled);
+        wait_for_plan_sync_calls(&provider, 1).await;
         let child = indexer_repo.get_by_id("child").await.unwrap().unwrap();
         assert!(child.is_enabled);
         assert!(child.enable_interactive_search);
         assert!(!child.enable_auto_search);
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
     #[tokio::test]
-    async fn updating_enabled_managed_parent_config_triggers_immediate_sync() {
+    async fn updating_enabled_managed_parent_config_queues_background_sync() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let now = Utc::now();
         indexer_repo
@@ -1946,7 +2046,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(updated.base_url, "https://manager.changed.example");
-        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+        wait_for_plan_sync_calls(&provider, 1).await;
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 1);
     }
 
     #[tokio::test]
@@ -2029,6 +2130,161 @@ mod tests {
         let seen = provider.seen_management_configs.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].id, "enabled-parent");
+    }
+
+    #[tokio::test]
+    async fn sync_indexer_config_serializes_concurrent_runs_globally() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "parent-a".to_string(),
+                name: "Parent Manager A".to_string(),
+                provider_type: "manager".to_string(),
+                base_url: "https://manager.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        indexer_repo
+            .create(IndexerConfig {
+                id: "parent-b".to_string(),
+                name: "Parent Manager B".to_string(),
+                provider_type: "manager".to_string(),
+                base_url: "https://manager.example".to_string(),
+                api_key_encrypted: None,
+                rate_limit_seconds: None,
+                rate_limit_burst: None,
+                disabled_until: None,
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: false,
+                managed_parent_config_id: None,
+                managed_child_key: None,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                last_health_status: None,
+                last_error_at: None,
+                config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let provider = Arc::new(RecordingPluginProvider::with_delayed_sync_plan(
+            crate::IndexerSyncPlan::default(),
+            Duration::from_millis(50),
+        ));
+        let app = test_app(
+            indexer_repo,
+            Some(provider.clone()),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+        let actor = test_admin();
+
+        let (first, second) = tokio::join!(
+            app.sync_indexer_config(&actor, "parent-a"),
+            app.sync_indexer_config(&actor, "parent-b"),
+        );
+
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(*provider.plan_sync_calls.lock().unwrap(), 2);
+        assert_eq!(
+            provider
+                .max_concurrent_plan_sync_calls
+                .load(Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_indexer_config_publishes_indexers_changed_after_partial_failure() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        let parent = IndexerConfig {
+            id: "parent".to_string(),
+            name: "Parent Manager".to_string(),
+            provider_type: "manager".to_string(),
+            base_url: "https://manager.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: false,
+            enable_auto_search: false,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        indexer_repo.create(parent.clone()).await.unwrap();
+
+        let sync_plan = crate::IndexerSyncPlan {
+            children: vec![crate::ManagedIndexerChildPlan {
+                child_key: "new".to_string(),
+                name: "Managed New".to_string(),
+                provider_type: "torrent_rss".to_string(),
+                config_json: r#"{"feed_url":"https://new.example/rss"}"#.to_string(),
+                is_enabled: true,
+                enable_interactive_search: false,
+                enable_auto_search: true,
+                managed_metadata_json: Some("{\"source\":\"new\"}".to_string()),
+                caps_snapshot_json: None,
+                routing_scopes: vec![crate::ManagedIndexerRoutingScope {
+                    scope_id: "movie".to_string(),
+                    categories: vec!["2000".to_string()],
+                }],
+            }],
+        };
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan(sync_plan));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider),
+            Arc::new(RecordingSettingsRepository::with_upsert_failure()),
+        );
+        let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
+
+        let error = app
+            .sync_indexer_config(&test_admin(), &parent.id)
+            .await
+            .expect_err("routing save should fail after child reconciliation");
+
+        assert_eq!(
+            error.to_string(),
+            "repository: forced settings write failure"
+        );
+        expect_indexers_changed(&mut receiver, "partial sync failure").await;
+        assert!(
+            indexer_repo
+                .list(None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|config| config.managed_child_key.as_deref() == Some("new"))
+        );
     }
 
     #[tokio::test]
@@ -2196,11 +2452,13 @@ mod tests {
         .await
         .unwrap();
 
+        let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
         let result = app
             .sync_indexer_config(&test_admin(), &parent.id)
             .await
             .unwrap();
 
+        expect_indexers_changed(&mut receiver, "sync_indexer_config").await;
         assert_eq!(result.parent_config_id, parent.id);
         assert_eq!(result.created_ids.len(), 1);
         assert_eq!(result.updated_ids, vec!["managed-keep".to_string()]);

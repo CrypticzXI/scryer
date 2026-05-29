@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures_util::{StreamExt, stream};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use reqwest::StatusCode;
@@ -30,6 +31,7 @@ use tracing::{debug, warn};
 pub const PROWLARR_PROVIDER_TYPE: &str = "prowlarr";
 
 const USER_AGENT: &str = "scryer-prowlarr/0.1";
+const PROWLARR_CHILD_CAPS_FETCH_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProwlarrApiBucket {
@@ -580,42 +582,53 @@ impl IndexerManagementClient for ProwlarrManagementClient {
             .map(|profile| (profile.id, profile))
             .collect::<HashMap<_, _>>();
 
-        let mut children = Vec::new();
-        for indexer in indexers {
-            let child_key = indexer.id.to_string();
-            let caps_snapshot = if indexer.enable {
-                match self.fetch_child_caps_snapshot(&config, indexer.id).await {
-                    Ok(snapshot) => {
+        let mut planned_children = stream::iter(indexers.into_iter().enumerate())
+            .map(|(position, indexer)| {
+                let config = config.clone();
+                async move {
+                    let child_key = indexer.id.to_string();
+                    let caps_snapshot = if indexer.enable {
+                        match self.fetch_child_caps_snapshot(&config, indexer.id).await {
+                            Ok(snapshot) => {
+                                debug!(
+                                    child_key,
+                                    movie_params = ?snapshot.movie_search.supported_params,
+                                    tv_params = ?snapshot.tv_search.supported_params,
+                                    "fetched managed child caps snapshot"
+                                );
+                                Some(snapshot)
+                            }
+                            Err(error) => {
+                                warn!(
+                                    child_key,
+                                    error = ?error,
+                                    "failed to fetch managed child caps snapshot; child will fall back to query-only search"
+                                );
+                                None
+                            }
+                        }
+                    } else {
                         debug!(
                             child_key,
-                            movie_params = ?snapshot.movie_search.supported_params,
-                            tv_params = ?snapshot.tv_search.supported_params,
-                            "fetched managed child caps snapshot"
-                        );
-                        Some(snapshot)
-                    }
-                    Err(error) => {
-                        warn!(
-                            child_key,
-                            error = ?error,
-                            "failed to fetch managed child caps snapshot; child will fall back to query-only search"
+                            "skipping managed child caps fetch because the upstream Prowlarr indexer is disabled"
                         );
                         None
-                    }
+                    };
+
+                    (position, indexer, caps_snapshot)
                 }
-            } else {
-                debug!(
-                    child_key,
-                    "skipping managed child caps fetch because the upstream Prowlarr indexer is disabled"
-                );
-                None
-            };
-            if let Some(child) =
+            })
+            .buffer_unordered(PROWLARR_CHILD_CAPS_FETCH_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        planned_children.sort_by_key(|(position, _, _)| *position);
+
+        let children = planned_children
+            .into_iter()
+            .filter_map(|(_, indexer, caps_snapshot)| {
                 build_managed_child_plan(&config, indexer, &app_profiles_by_id, caps_snapshot)
-            {
-                children.push(child);
-            }
-        }
+            })
+            .collect();
 
         Ok(IndexerSyncPlan { children })
     }
@@ -1546,6 +1559,118 @@ mod tests {
             caps.movie_search.supported_params,
             vec!["q", "imdbid", "genre"]
         );
+    }
+
+    #[tokio::test]
+    async fn plan_sync_fetches_child_caps_concurrently_and_preserves_child_order() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "2.0.0"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(INDEXER_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 10,
+                    "name": "First",
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                },
+                {
+                    "id": 7,
+                    "name": "Second",
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                },
+                {
+                    "id": 42,
+                    "name": "Third",
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                },
+                {
+                    "id": 3,
+                    "name": "Fourth",
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(APP_PROFILE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 1,
+                "enableRss": true,
+                "enableAutomaticSearch": true,
+                "enableInteractiveSearch": true
+            }])))
+            .mount(&server)
+            .await;
+
+        let caps_body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+  <server title="Prowlarr" />
+  <searching>
+    <search available="yes" supportedParams="q" />
+  </searching>
+</caps>"#;
+        for (indexer_id, delay_ms) in [(10, 1200), (7, 300), (42, 600), (3, 450)] {
+            Mock::given(method("GET"))
+                .and(path(format!("/{indexer_id}/api")))
+                .and(query_param("t", "caps"))
+                .and(query_param("apikey", "secret"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(caps_body)
+                        .set_delay(std::time::Duration::from_millis(delay_ms)),
+                )
+                .mount(&server)
+                .await;
+        }
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let started = std::time::Instant::now();
+        let plan = client.plan_sync("parent").await.expect("sync plan");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(2000),
+            "caps fetch should be concurrent; elapsed {elapsed:?}"
+        );
+        let child_ids = plan
+            .children
+            .iter()
+            .map(|child| {
+                serde_json::from_str::<ManagedChildMetadata>(
+                    child.managed_metadata_json.as_deref().unwrap(),
+                )
+                .unwrap()
+                .indexer_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(child_ids, vec![10, 7, 42, 3]);
     }
 
     #[tokio::test]

@@ -524,62 +524,6 @@ pub async fn media_root_for_title(
         .ok()
 }
 
-/// Resolve recycle bin configuration from application settings.
-///
-/// Reads settings with hardcoded defaults (same pattern as `nfo.write_on_import.*`).
-/// When `media_root` is provided and no custom path is configured, defaults to
-/// `{media_root}/.scryer-recycle/`.
-pub async fn resolve_recycle_config(
-    app: &crate::AppUseCase,
-    media_root: Option<&str>,
-) -> RecycleBinConfig {
-    let enabled = app
-        .read_setting_string_value_for_scope(
-            crate::SETTINGS_SCOPE_MEDIA,
-            crate::RECYCLE_BIN_ENABLED_KEY,
-            None,
-        )
-        .await
-        .ok()
-        .flatten()
-        .map(|v| v != "false")
-        .unwrap_or(true);
-
-    let custom_path = app
-        .read_setting_string_value_for_scope(crate::SETTINGS_SCOPE_MEDIA, "recycle_bin.path", None)
-        .await
-        .ok()
-        .flatten()
-        .filter(|s| !s.is_empty());
-
-    let base_path = if let Some(p) = custom_path {
-        PathBuf::from(p)
-    } else if let Some(root) = media_root {
-        PathBuf::from(root).join(".scryer-recycle")
-    } else {
-        // Fallback: use a temp-ish location; shouldn't normally happen
-        PathBuf::from("/tmp/.scryer-recycle")
-    };
-
-    let retention_days = app
-        .read_setting_string_value_for_scope(
-            crate::SETTINGS_SCOPE_MEDIA,
-            "recycle_bin.retention_days",
-            None,
-        )
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(7);
-
-    RecycleBinConfig {
-        enabled,
-        base_path,
-        retention_days,
-    }
-}
-
 /// Build a recycle bin config from a file path by walking up to find the media root.
 ///
 /// For use in contexts where `AppUseCase` is not available (e.g., standalone async functions).
