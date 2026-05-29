@@ -303,10 +303,16 @@ pub async fn recycle_file(
     }
 
     if !config.enabled {
-        return Err(AppError::Validation(format!(
-            "refusing to recycle {} because the recycle bin is disabled",
-            source_path.display()
-        )));
+        if let Err(err) = tokio::fs::remove_file(source_path).await
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(AppError::Repository(format!(
+                "failed to delete file {}: {}",
+                source_path.display(),
+                err
+            )));
+        }
+        return Ok(None);
     }
 
     if !config.cleanup_enabled {
@@ -343,7 +349,7 @@ pub async fn recycle_file(
         .get_or_insert_with(|| scryer_domain::Id::new().0);
     manifest
         .status
-        .get_or_insert_with(|| RECYCLE_STATUS_PENDING.to_string());
+        .get_or_insert_with(|| RECYCLE_STATUS_COMMITTED.to_string());
     write_manifest(&recycle_dir, &manifest).await?;
 
     // Move the file into the recycle directory
@@ -925,12 +931,12 @@ mod tests {
         let bytes = tokio::fs::read(&r.manifest_path).await.unwrap();
         let m: RecycleManifest = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(m.schema.as_deref(), Some(RECYCLE_MANIFEST_SCHEMA));
-        assert_eq!(m.status.as_deref(), Some(RECYCLE_STATUS_PENDING));
+        assert_eq!(m.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
         assert_eq!(m.reason, "title_deleted");
     }
 
     #[tokio::test]
-    async fn test_recycle_disabled_refuses_to_delete_directly() {
+    async fn test_recycle_disabled_deletes_directly() {
         let tmp = TempDir::new().unwrap();
         let source = tmp.path().join("test.mkv");
         tokio::fs::write(&source, b"video data").await.unwrap();
@@ -945,10 +951,10 @@ mod tests {
 
         let result = recycle_file(&config, &source, test_manifest())
             .await
-            .expect_err("disabled recycle bin should refuse direct delete");
+            .unwrap();
 
-        assert!(result.to_string().contains("recycle bin is disabled"));
-        assert!(source.exists());
+        assert!(result.is_none());
+        assert!(!source.exists());
     }
 
     #[tokio::test]

@@ -352,7 +352,7 @@ impl AppUseCase {
                     continue;
                 }
 
-                let config = crate::recycle_bin::resolve_recycle_config(self, Some(path)).await;
+                let config = self.recycle_bin_config_for_media_root(Some(path)).await;
                 if config.enabled && !config.cleanup_enabled {
                     results.push(HealthCheckResult {
                         source: "RecycleBin".into(),

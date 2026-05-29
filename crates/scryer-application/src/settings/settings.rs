@@ -2950,12 +2950,60 @@ impl AppUseCase {
         (enabled, custom_path, retention_days)
     }
 
+    fn normalize_recycle_config_path(path: &Path) -> PathBuf {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+                std::path::Component::RootDir => normalized.push(component.as_os_str()),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                std::path::Component::Normal(segment) => normalized.push(segment),
+            }
+        }
+        normalized
+    }
+
+    fn recycle_bin_validation_error(
+        base_path: &Path,
+        custom_path: bool,
+        configured_roots: &[PathBuf],
+    ) -> Option<String> {
+        if custom_path && !base_path.is_absolute() {
+            return Some(format!(
+                "custom recycle bin path must be absolute: {}",
+                base_path.display()
+            ));
+        }
+
+        let normalized_base = Self::normalize_recycle_config_path(base_path);
+        for root in configured_roots {
+            if custom_path
+                && (normalized_base == *root
+                    || normalized_base.starts_with(root)
+                    || root.starts_with(&normalized_base))
+            {
+                return Some(format!(
+                    "custom recycle bin path {} must be outside configured media root {}",
+                    normalized_base.display(),
+                    root.display()
+                ));
+            }
+        }
+
+        None
+    }
+
     fn recycle_bin_config_from_values(
         enabled: bool,
         custom_path: Option<&str>,
         retention_days: u32,
         media_root: Option<&str>,
+        configured_roots: &[PathBuf],
     ) -> crate::recycle_bin::RecycleBinConfig {
+        let custom_path_configured = custom_path.is_some();
         let base_path = if let Some(path) = custom_path {
             PathBuf::from(path)
         } else if let Some(root) = media_root {
@@ -2963,11 +3011,19 @@ impl AppUseCase {
         } else {
             PathBuf::from("/tmp/.scryer-recycle")
         };
+        let validation_error = Self::recycle_bin_validation_error(
+            &base_path,
+            custom_path_configured,
+            configured_roots,
+        );
+        let cleanup_enabled = validation_error.is_none();
 
         crate::recycle_bin::RecycleBinConfig {
             enabled,
             base_path,
             retention_days,
+            cleanup_enabled,
+            validation_error,
         }
     }
 
@@ -2976,11 +3032,17 @@ impl AppUseCase {
         media_root: Option<&str>,
     ) -> crate::recycle_bin::RecycleBinConfig {
         let (enabled, custom_path, retention_days) = self.recycle_bin_config_values().await;
+        let configured_roots = media_root
+            .into_iter()
+            .map(|root| Self::normalize_recycle_config_path(Path::new(root.trim())))
+            .filter(|root| !root.as_os_str().is_empty())
+            .collect::<Vec<_>>();
         Self::recycle_bin_config_from_values(
             enabled,
             custom_path.as_deref(),
             retention_days,
             media_root,
+            &configured_roots,
         )
     }
 
@@ -2992,21 +3054,28 @@ impl AppUseCase {
         I: IntoIterator<Item = String>,
     {
         let (enabled, custom_path, retention_days) = self.recycle_bin_config_values().await;
+        let media_roots = media_roots
+            .into_iter()
+            .map(|media_root| media_root.trim().to_string())
+            .filter(|media_root| !media_root.is_empty())
+            .collect::<Vec<_>>();
+        let configured_roots = media_roots
+            .iter()
+            .map(|media_root| Self::normalize_recycle_config_path(Path::new(media_root)))
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect::<Vec<_>>();
         let mut configs = Vec::new();
         let mut seen_paths = HashSet::new();
 
         for media_root in media_roots {
-            let media_root = media_root.trim().to_string();
-            if media_root.is_empty() {
-                continue;
-            }
             let config = Self::recycle_bin_config_from_values(
                 enabled,
                 custom_path.as_deref(),
                 retention_days,
                 Some(media_root.as_str()),
+                &configured_roots,
             );
-            if !seen_paths.insert(config.base_path.clone()) {
+            if !seen_paths.insert(Self::normalize_recycle_config_path(&config.base_path)) {
                 continue;
             }
 

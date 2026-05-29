@@ -201,16 +201,26 @@ async fn seed_recycled_file_in_bin(
         enabled: true,
         base_path: recycle_base_path.to_path_buf(),
         retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
     };
     let result = recycle_file(
         &config,
         &source_path,
         RecycleManifest {
+            schema: None,
+            entry_id: None,
+            source_operation_id: None,
             recycled_at: Utc::now().to_rfc3339(),
             original_path: source_path.to_string_lossy().to_string(),
+            original_file_id: None,
             size_bytes: 128,
             title_id: Some(title_id.to_string()),
+            media_root: None,
             reason: "file_deleted".to_string(),
+            status: None,
+            replacement_file_id: None,
+            replacement_path: None,
         },
     )
     .await
@@ -537,11 +547,19 @@ async fn disabled_recycle_bin_paths_are_inert_and_direct_delete_new_files() {
         &config,
         &new_source,
         RecycleManifest {
+            schema: None,
+            entry_id: None,
+            source_operation_id: None,
             recycled_at: Utc::now().to_rfc3339(),
             original_path: new_source.to_string_lossy().to_string(),
+            original_file_id: None,
             size_bytes: 64,
             title_id: Some("title-a".to_string()),
+            media_root: None,
             reason: "file_deleted".to_string(),
+            status: None,
+            replacement_file_id: None,
+            replacement_path: None,
         },
     )
     .await

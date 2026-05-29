@@ -309,28 +309,6 @@ impl AppUseCase {
         crate::recycle_bin::purge_committed_entry(config, entry_dir, manifest).await
     }
 
-    async fn purge_all_validated_recycle_entries(
-        &self,
-        media_root: &str,
-        config: &crate::recycle_bin::RecycleBinConfig,
-    ) -> AppResult<u32> {
-        let mut purged = 0u32;
-        for entry in crate::recycle_bin::list_committed_entries(config).await? {
-            if self
-                .purge_recycle_entry_after_validation(
-                    media_root,
-                    config,
-                    &entry.entry_dir,
-                    &entry.manifest,
-                )
-                .await?
-            {
-                purged += 1;
-            }
-        }
-        Ok(purged)
-    }
-
     async fn validate_recycle_entry_before_permanent_delete(
         &self,
         manifest: &crate::recycle_bin::RecycleManifest,
@@ -782,8 +760,9 @@ impl AppUseCase {
                             manifest: entry.manifest.clone(),
                             media_root: media_root.clone(),
                         };
-                        let Some(library) =
-                            self.resolve_recycle_entry_library(&recycle_entry, &roots).await?
+                        let Some(library) = self
+                            .resolve_recycle_entry_library(&recycle_entry, &roots)
+                            .await?
                         else {
                             continue;
                         };
