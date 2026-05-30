@@ -55,6 +55,7 @@ pub async fn execute_upgrade_for_test(
         target_episode_ids,
         media_root,
         recycle_config,
+        scryer_domain::ImportMode::HardlinkOrCopy,
     )
     .await
 }

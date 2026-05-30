@@ -136,6 +136,10 @@ async fn execute_resolved_episode_import(
         });
     }
 
+    let import_mode = app
+        .resolve_import_mode(Some(&title.library_id), &title.facet)
+        .await?;
+
     if !existing_incumbents.is_empty() {
         let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
@@ -180,6 +184,7 @@ async fn execute_resolved_episode_import(
             &target_episode_ids,
             recycle_root,
             &recycle_config,
+            import_mode,
         )
         .await
         {
@@ -218,6 +223,8 @@ async fn execute_resolved_episode_import(
                     episode_ids: target_episode_ids,
                     imported_media_file_id: None,
                     reason_code: Some("upgrade".to_string()),
+                    link_type: (import_mode == scryer_domain::ImportMode::Move)
+                        .then_some(scryer_domain::ImportStrategy::Move),
                 });
             }
             Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
@@ -238,7 +245,7 @@ async fn execute_resolved_episode_import(
         .services
         .workflow
         .file_importer
-        .import_file(source_video, &dest_path)
+        .import_file(source_video, &dest_path, import_mode)
         .await?;
 
     let has_existing = existing_files
@@ -324,6 +331,7 @@ async fn execute_resolved_episode_import(
         episode_ids: target_episode_ids,
         imported_media_file_id: Some(media_file_id),
         reason_code: None,
+        link_type: Some(file_result.strategy),
     })
 }
 /// Mark a wanted item as completed for a title (and optionally a specific episode).

@@ -29,6 +29,8 @@ pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local
 pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";
 pub const FORM_LOGIN_ENABLED_KEY: &str = "auth.form_login_enabled";
 pub const SKIP_LOGIN_FOR_LOCAL_IPS_KEY: &str = "auth.skip_login_for_local_ips";
+pub const TOTP_REQUIRE_CONFIG_STEP_UP_KEY: &str = "auth.totp.require_config_step_up";
+pub const TOTP_REQUIRE_JELLYFIN_LOGIN_KEY: &str = "auth.totp.require_jellyfin_login";
 pub const AUTH_ALLOWED_PROVIDERS_KEY: &str = "auth.providers.allowed";
 pub const AUTH_PROVIDER_LOGIN_ENABLED_KEY: &str = "auth.providers.login_enabled";
 pub const AUTH_PROVIDER_LINKING_ENABLED_KEY: &str = "auth.providers.linking_enabled";
@@ -95,6 +97,7 @@ pub const NFO_WRITE_ON_IMPORT_SERIES_KEY: &str = "nfo.write_on_import.series";
 pub const NFO_WRITE_ON_IMPORT_ANIME_KEY: &str = "nfo.write_on_import.anime";
 pub const PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY: &str = "plexmatch.write_on_import.series";
 pub const PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY: &str = "plexmatch.write_on_import.anime";
+pub const IMPORT_MODE_KEY: &str = "import.mode";
 
 pub const POST_PROCESSING_SCRIPT_MOVIE_KEY: &str = "post_processing.script.movie";
 pub const POST_PROCESSING_SCRIPT_SERIES_KEY: &str = "post_processing.script.series";

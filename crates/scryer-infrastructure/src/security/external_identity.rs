@@ -230,17 +230,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         let base_url = connection.base_url.as_deref().ok_or_else(|| {
             AppError::Validation("Jellyfin connection does not have a base URL configured".into())
         })?;
-        let mut base_url = Url::parse(base_url).map_err(|error| {
-            AppError::Validation(format!("Jellyfin base URL is invalid: {error}"))
-        })?;
-        if base_url.query().is_some() || base_url.fragment().is_some() {
-            return Err(AppError::Validation(
-                "Jellyfin connection base URL must not include a query or fragment".into(),
-            ));
-        }
-        if !base_url.path().ends_with('/') {
-            base_url.set_path(&format!("{}/", base_url.path()));
-        }
+        let base_url = jellyfin_base_url(base_url)?;
         let auth_url = base_url.join("Users/AuthenticateByName").map_err(|error| {
             AppError::Validation(format!("Jellyfin authentication URL is invalid: {error}"))
         })?;
@@ -306,6 +296,31 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             avatar_url,
         })
     }
+
+    async fn test_jellyfin_connection(&self, base_url: &str) -> AppResult<()> {
+        let base_url = jellyfin_base_url(base_url)?;
+        let info_url = base_url.join("System/Info/Public").map_err(|error| {
+            AppError::Validation(format!("Jellyfin system info URL is invalid: {error}"))
+        })?;
+        let response = self
+            .client
+            .get(info_url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to reach Jellyfin connection: {error}"))
+            })?;
+
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        Err(AppError::Repository(format!(
+            "Jellyfin connection test failed with status {}",
+            response.status()
+        )))
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -366,6 +381,20 @@ fn normalize_connection(mut connection: AuthProviderConnection) -> Option<AuthPr
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     Some(connection)
+}
+
+fn jellyfin_base_url(base_url: &str) -> AppResult<Url> {
+    let mut base_url = Url::parse(base_url)
+        .map_err(|error| AppError::Validation(format!("Jellyfin base URL is invalid: {error}")))?;
+    if base_url.query().is_some() || base_url.fragment().is_some() {
+        return Err(AppError::Validation(
+            "Jellyfin connection base URL must not include a query or fragment".into(),
+        ));
+    }
+    if !base_url.path().ends_with('/') {
+        base_url.set_path(&format!("{}/", base_url.path()));
+    }
+    Ok(base_url)
 }
 
 fn jellyfin_authorization_header(connection_id: &str) -> String {
@@ -577,6 +606,39 @@ mod tests {
             verified.avatar_url.as_deref(),
             Some(expected_avatar_url.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn jellyfin_connection_test_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info/Public"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ProductName": "Jellyfin Server"
+            })))
+            .mount(&server)
+            .await;
+        let (verifier, _) = verifier_with_jellyfin(server.uri()).await;
+
+        verifier
+            .test_jellyfin_connection(&server.uri())
+            .await
+            .expect("test jellyfin connection");
+    }
+
+    #[tokio::test]
+    async fn jellyfin_connection_test_reports_failure_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info/Public"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let (verifier, _) = verifier_with_jellyfin(server.uri()).await;
+
+        let result = verifier.test_jellyfin_connection(&server.uri()).await;
+
+        assert!(matches!(result, Err(AppError::Repository(_))));
     }
 
     #[tokio::test]

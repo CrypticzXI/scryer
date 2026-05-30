@@ -1,7 +1,10 @@
 import type * as React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
-import { ExternalAccountInvitesContainer } from "@/components/containers/settings/external-account-invites-container";
+import {
+  ExternalAccountInvitesContainer,
+  notifyExternalAccountInviteSourcesChanged,
+} from "@/components/containers/settings/external-account-invites-container";
 import { SettingsUsersSection } from "@/components/views/settings/settings-users-section";
 import {
   createUserMutation,
@@ -162,6 +165,7 @@ export function SettingsUsersContainer() {
       setNewLibraryPermissionDrafts({});
       setGlobalStatus(t("user.created"));
       await refreshUsers();
+      notifyExternalAccountInviteSourcesChanged();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToCreate"));
     }

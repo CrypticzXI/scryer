@@ -8,6 +8,7 @@ pub(crate) struct ResolvedAnalysisReleaseLabels {
 }
 
 pub(crate) fn resolve_release_labels_from_analysis(
+    video_width: Option<i32>,
     video_height: Option<i32>,
     video_codec: Option<&crate::release_parser::VideoCodec>,
     primary_audio_codec: Option<&str>,
@@ -15,7 +16,7 @@ pub(crate) fn resolve_release_labels_from_analysis(
     primary_audio_channels: Option<i32>,
     audio_streams: &[crate::AudioStreamDetail],
 ) -> ResolvedAnalysisReleaseLabels {
-    let quality = quality_from_video_height(video_height).map(str::to_string);
+    let quality = quality_from_video_dimensions(video_width, video_height).map(str::to_string);
     let video_codec = video_codec
         .and_then(normalize_video_codec_for_release)
         .map(str::to_string);
@@ -61,12 +62,20 @@ pub(crate) fn resolve_release_labels_from_analysis(
     }
 }
 
-pub(crate) fn quality_from_video_height(height: Option<i32>) -> Option<&'static str> {
-    match height? {
-        h if h >= 2100 => Some("2160p"),
-        h if h >= 1000 => Some("1080p"),
-        h if h >= 700 => Some("720p"),
-        h if h >= 480 => Some("480p"),
+pub(crate) fn quality_from_video_dimensions(
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Option<&'static str> {
+    let width = width.unwrap_or_default();
+    let height = height.unwrap_or_default();
+    match (width, height) {
+        (w, h) if w >= 7680 || h >= 4200 => Some("4320p"),
+        (w, h) if w >= 3840 || h >= 2100 => Some("2160p"),
+        (_, h) if h >= 1300 => Some("1440p"),
+        (w, h) if w >= 1920 || h >= 1000 => Some("1080p"),
+        (w, h) if w >= 1280 || h >= 700 => Some("720p"),
+        (w, h) if w >= 854 || h >= 480 => Some("480p"),
+        (_, h) if h >= 300 => Some("360p"),
         _ => None,
     }
 }
@@ -214,5 +223,17 @@ mod tests {
         assert_eq!(format_audio_channels_for_release(8), "7.1");
         assert_eq!(format_audio_channels_for_release(6), "5.1");
         assert_eq!(format_audio_channels_for_release(2), "2.0");
+    }
+
+    #[test]
+    fn quality_uses_width_for_widescreen_files() {
+        assert_eq!(
+            quality_from_video_dimensions(Some(1920), Some(800)),
+            Some("1080p")
+        );
+        assert_eq!(
+            quality_from_video_dimensions(Some(3840), Some(1600)),
+            Some("2160p")
+        );
     }
 }

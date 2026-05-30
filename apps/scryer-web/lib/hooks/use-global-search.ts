@@ -11,6 +11,7 @@ import {
   globalSearchInitQuery,
   metadataMovieQuery,
   metadataSeriesQuery,
+  requestableLibrariesQuery,
   searchMetadataMultiQuery,
   searchMetadataQuery,
   titlesByExternalIdsQuery,
@@ -278,6 +279,39 @@ function normalizeCatalogAddRequestKey(
   return `${facet}|${normalizedIds}`;
 }
 
+function librariesByFacetFromList(libraries: LibraryRecord[]): Record<Facet, LibraryRecord[]> {
+  return libraries.reduce(
+    (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
+      acc[library.facet]?.push(library);
+      return acc;
+    },
+    { movie: [], series: [], anime: [] },
+  );
+}
+
+function sameLibrariesByFacet(
+  previous: Record<Facet, LibraryRecord[]>,
+  next: Record<Facet, LibraryRecord[]>,
+): boolean {
+  return (["movie", "series", "anime"] as Facet[]).every((facet) => {
+    const previousFacetLibraries = previous[facet];
+    const nextFacetLibraries = next[facet];
+    return (
+      previousFacetLibraries.length === nextFacetLibraries.length &&
+      previousFacetLibraries.every((entry, index) => {
+        const candidate = nextFacetLibraries[index];
+        return (
+          candidate &&
+          entry.id === candidate.id &&
+          entry.name === candidate.name &&
+          entry.slug === candidate.slug &&
+          entry.roots.length === candidate.roots.length
+        );
+      })
+    );
+  });
+}
+
 export function useGlobalSearch({
   queueFacet: initialQueueFacet,
   uiLanguage,
@@ -402,9 +436,15 @@ export function useGlobalSearch({
 
   const isCatalogConfigReady = useCallback(
     (facet: Facet) =>
-      catalogQualityProfileOptions.length > 0 &&
-      (librariesByFacet[facet].length > 0 || rootFoldersByFacet[facet].length > 0),
-    [catalogQualityProfileOptions, librariesByFacet, rootFoldersByFacet],
+      requestableLibrariesByFacet[facet].length > 0 ||
+      (catalogQualityProfileOptions.length > 0 &&
+        (librariesByFacet[facet].length > 0 || rootFoldersByFacet[facet].length > 0)),
+    [
+      catalogQualityProfileOptions,
+      librariesByFacet,
+      requestableLibrariesByFacet,
+      rootFoldersByFacet,
+    ],
   );
 
   const refreshCatalogQualityProfileState = useCallback(async () => {
@@ -480,43 +520,39 @@ export function useGlobalSearch({
           return same ? previous : nextRootFolders;
         });
 
-        const nextLibrariesByFacet = (data.manageableLibraries ?? []).reduce(
-          (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
-            acc[library.facet]?.push(library);
-            return acc;
-          },
-          { movie: [], series: [], anime: [] },
+        const nextLibrariesByFacet = librariesByFacetFromList(
+          data.manageableLibraries ?? [],
         );
-        const nextRequestableLibrariesByFacet = (data.requestableLibraries ?? []).reduce(
-          (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
-            acc[library.facet]?.push(library);
-            return acc;
-          },
-          { movie: [], series: [], anime: [] },
+        const nextRequestableLibrariesByFacet = librariesByFacetFromList(
+          data.requestableLibraries ?? [],
         );
         setLibrariesByFacet((previous) => {
-          const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
-            const prev = previous[f];
-            const next = nextLibrariesByFacet[f];
-            return prev.length === next.length && prev.every((entry, index) => {
-              const candidate = next[index];
-              return candidate && entry.id === candidate.id && entry.name === candidate.name && entry.slug === candidate.slug && entry.roots.length === candidate.roots.length;
-            });
-          });
-          return same ? previous : nextLibrariesByFacet;
+          return sameLibrariesByFacet(previous, nextLibrariesByFacet)
+            ? previous
+            : nextLibrariesByFacet;
         });
         setRequestableLibrariesByFacet((previous) => {
-          const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
-            const prev = previous[f];
-            const next = nextRequestableLibrariesByFacet[f];
-            return prev.length === next.length && prev.every((entry, index) => {
-              const candidate = next[index];
-              return candidate && entry.id === candidate.id && entry.name === candidate.name && entry.slug === candidate.slug && entry.roots.length === candidate.roots.length;
-            });
-          });
-          return same ? previous : nextRequestableLibrariesByFacet;
+          return sameLibrariesByFacet(previous, nextRequestableLibrariesByFacet)
+            ? previous
+            : nextRequestableLibrariesByFacet;
         });
       } catch {
+        try {
+          const { data, error } = await client
+            .query(requestableLibrariesQuery, {}, { requestPolicy: "network-only" })
+            .toPromise();
+          if (error) throw error;
+          const nextRequestableLibrariesByFacet = librariesByFacetFromList(
+            data?.requestableLibraries ?? [],
+          );
+          setRequestableLibrariesByFacet((previous) => {
+            return sameLibrariesByFacet(previous, nextRequestableLibrariesByFacet)
+              ? previous
+              : nextRequestableLibrariesByFacet;
+          });
+        } catch {
+          // ignore requestable library fallback failures here; search remains functional
+        }
         // ignore settings fetch failures here; search remains functional
       } finally {
         setCatalogConfigLoading(false);

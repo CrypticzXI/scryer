@@ -316,6 +316,7 @@ pub use storage::types::{
     SettingsValueRecord, WorkflowOperationRecord,
 };
 pub use users::store::UserStore;
+pub use users::totp_store::TotpStore;
 pub use users::webauthn_store::WebauthnStore;
 pub use workflow::file_importer::FsFileImporter;
 pub use workflow::release_store::ReleaseStore;

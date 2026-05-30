@@ -91,18 +91,13 @@ const MKV_METADATA_AGGREGATE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
 fn normalize_mkv_track_language(
     kind: TrackKind,
-    language_bcp47: Option<&str>,
+    _language_bcp47: Option<&str>,
     language: Option<&str>,
 ) -> Option<String> {
     if let Some(language) = language {
         return normalize_explicit_mkv_language_tag(language);
     }
-    if kind == TrackKind::Video {
-        return None;
-    }
-    language_bcp47
-        .and_then(normalize_bcp47_mkv_language_tag)
-        .or_else(|| Some("eng".to_owned()))
+    (kind != TrackKind::Video).then_some("eng".to_owned())
 }
 
 /// Parse an MKV/WebM file into a [`RawContainer`].
@@ -756,40 +751,10 @@ fn parse_mkv_track_type(value: u64) -> Option<TrackKind> {
 
 fn normalize_explicit_mkv_language_tag(language: &str) -> Option<String> {
     let trimmed = language.trim();
-    if !is_sonarr_visible_mkv_language(trimmed) {
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("und") {
         return None;
     }
     Some(trimmed.to_owned())
-}
-
-fn normalize_bcp47_mkv_language_tag(language: &str) -> Option<String> {
-    let trimmed = language.trim();
-    if !is_sonarr_visible_mkv_language(trimmed) {
-        return None;
-    }
-
-    let primary = trimmed
-        .split(['-', '_'])
-        .next()
-        .unwrap_or(trimmed)
-        .to_ascii_lowercase();
-    match primary.as_str() {
-        "en" => Some("eng".to_owned()),
-        "ja" => Some("jpn".to_owned()),
-        "pt" => Some("por".to_owned()),
-        "zh" => Some("chi".to_owned()),
-        "und" => None,
-        other if is_sonarr_visible_mkv_language(other) => Some(other.to_owned()),
-        _ => None,
-    }
-}
-
-fn is_sonarr_visible_mkv_language(language: &str) -> bool {
-    !language.is_empty()
-        && !language.eq_ignore_ascii_case("und")
-        && language
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn merge_scanned_audio_channels(existing: Option<i32>, scanned: Option<i32>) -> Option<i32> {
@@ -2615,7 +2580,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_track_language_matches_ffmpeg_matroska_metadata_rules() {
+    fn normalize_track_language_preserves_scryer_mkv_policy() {
         assert_eq!(
             normalize_mkv_track_language(TrackKind::Video, None, None),
             None
@@ -2646,7 +2611,7 @@ mod tests {
         );
         assert_eq!(
             normalize_mkv_track_language(TrackKind::Audio, None, Some("???")),
-            None
+            Some("???".to_string())
         );
         assert_eq!(
             normalize_mkv_track_language(TrackKind::Audio, Some("ja-JP"), Some("eng")),

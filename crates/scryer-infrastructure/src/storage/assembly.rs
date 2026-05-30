@@ -8,8 +8,8 @@ use scryer_application::{
     LibraryRepository, LogicalBackupExporter, MediaRequestRepository, PluginInstallationRepository,
     PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
     SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, UserExternalAccountRepository, UserRepository,
-    WebauthnRepository,
+    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
+    UserRepository, WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
@@ -29,7 +29,7 @@ use crate::{
     PendingReleaseStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore,
     RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter,
     SqliteServices, SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore,
-    TitleStore, WantedStore, WebauthnStore, WorkflowOperationStore,
+    TitleStore, TotpStore, WantedStore, WebauthnStore, WorkflowOperationStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -609,6 +609,7 @@ enum DatastoreStores {
         media_request_store: Arc<MediaRequestStore>,
         user_store: Arc<UserStore>,
         webauthn_store: Arc<WebauthnStore>,
+        totp_store: Arc<TotpStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
@@ -645,6 +646,7 @@ enum DatastoreStores {
         media_request_store: Arc<MediaRequestStore>,
         user_store: Arc<UserStore>,
         webauthn_store: Arc<WebauthnStore>,
+        totp_store: Arc<TotpStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
@@ -693,6 +695,7 @@ impl DatastoreAssembly {
         let media_request_store = Arc::new(MediaRequestStore::new(datastore.clone()));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
         let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
+        let totp_store = Arc::new(TotpStore::new(datastore.clone(), db.encryption_key_state()));
         let indexer_config_store = Arc::new(IndexerConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -750,6 +753,7 @@ impl DatastoreAssembly {
             media_request_store,
             user_store,
             webauthn_store,
+            totp_store,
             indexer_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
@@ -793,6 +797,7 @@ impl DatastoreAssembly {
         let media_request_store = Arc::new(MediaRequestStore::new(datastore.clone()));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
         let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
+        let totp_store = Arc::new(TotpStore::new(datastore.clone(), db.encryption_key_state()));
         let indexer_config_store = Arc::new(IndexerConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -848,6 +853,7 @@ impl DatastoreAssembly {
             media_request_store,
             user_store,
             webauthn_store,
+            totp_store,
             indexer_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
@@ -1101,6 +1107,7 @@ impl DatastoreAssembly {
                 media_request_store,
                 user_store,
                 webauthn_store,
+                totp_store,
                 release_store,
                 library_probe_store,
                 library_scan_unmatched_store,
@@ -1130,6 +1137,7 @@ impl DatastoreAssembly {
                 let users: Arc<dyn UserRepository> = user_store.clone();
                 let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
+                let totp: Arc<dyn TotpRepository> = totp_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = library_store.clone();
                 let media_requests: Arc<dyn MediaRequestRepository> = media_request_store.clone();
 
@@ -1153,6 +1161,7 @@ impl DatastoreAssembly {
                     self.settings(),
                 )))
                 .with_webauthn_store(webauthn)
+                .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
                 .with_wanted_items(wanted_store.clone())
                 .with_pending_releases(pending_release_store.clone())
@@ -1186,6 +1195,7 @@ impl DatastoreAssembly {
                 media_request_store,
                 user_store,
                 webauthn_store,
+                totp_store,
                 rule_set_store,
                 post_processing_script_store,
                 plugin_store,
@@ -1215,6 +1225,7 @@ impl DatastoreAssembly {
                 let users: Arc<dyn UserRepository> = user_store.clone();
                 let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
+                let totp: Arc<dyn TotpRepository> = totp_store.clone();
                 let libraries: Arc<dyn LibraryRepository> = library_store.clone();
                 let media_requests: Arc<dyn MediaRequestRepository> = media_request_store.clone();
 
@@ -1238,6 +1249,7 @@ impl DatastoreAssembly {
                     self.settings(),
                 )))
                 .with_webauthn_store(webauthn)
+                .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
                 .with_wanted_items(wanted_store.clone())
                 .with_pending_releases(pending_release_store.clone())

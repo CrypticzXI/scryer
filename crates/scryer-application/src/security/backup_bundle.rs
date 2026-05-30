@@ -664,6 +664,22 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "totp_credentials",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "totp_enrollment_challenges",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "totp_failed_attempts",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "totp_recovery_codes",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "user_app_permission_masks",
         classification: BackupTableClassification::Export,
     },

@@ -293,6 +293,16 @@ fn normalize_context_imdb_id(token: &str) -> Option<String> {
     (!imdb.is_empty() && imdb.chars().all(|ch| ch.is_ascii_digit())).then(|| format!("tt{imdb}"))
 }
 
+pub(crate) fn looks_like_release_provenance_token(token: &str) -> bool {
+    let normalized = token
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase();
+
+    looks_like_release_provenance_normalized(&normalized)
+}
+
 fn looks_like_release_metadata_token(token: &str, tokens: &[String]) -> bool {
     let normalized = token
         .chars()
@@ -305,76 +315,79 @@ fn looks_like_release_metadata_token(token: &str, tokens: &[String]) -> bool {
         || looks_like_daily_token(&normalized)
         || looks_like_absolute_episode_token(&normalized)
         || looks_like_season_pack_marker(&normalized, tokens)
-        || matches!(
-            normalized.as_str(),
-            "WEB"
-                | "WEBDL"
-                | "WEBRIP"
-                | "BLURAY"
-                | "BDRIP"
-                | "BRRIP"
-                | "HDTV"
-                | "CAM"
-                | "HQCAM"
-                | "TS"
-                | "TC"
-                | "TELESYNC"
-                | "TELECINE"
-                | "DVDSCR"
-                | "WORKPRINT"
-                | "DVDRIP"
-                | "NF"
-                | "AMZN"
-                | "DSNP"
-                | "CR"
-                | "HULU"
-                | "MAX"
-                | "HEVC"
-                | "AVC"
-                | "X265"
-                | "X264"
-                | "H265"
-                | "H264"
-                | "AAC"
-                | "DDP"
-                | "DTS"
-                | "DTSX"
-                | "DTSHD"
-                | "DTSMA"
-                | "TRUEHD"
-                | "FLAC"
-                | "DUAL"
-                | "DUALAUDIO"
-                | "AUDIO"
-                | "DUB"
-                | "DUBS"
-                | "DUBBED"
-                | "SUB"
-                | "SUBS"
-                | "MULTI"
-                | "MULTIAUDIO"
-                | "MULTISUB"
-                | "MULTISUBS"
-                | "EN"
-                | "ENG"
-                | "ENGLISH"
-                | "JP"
-                | "JPN"
-                | "JAPANESE"
-                | "HDR"
-                | "HDR10"
-                | "HDR10PLUS"
-                | "HDR10P"
-                | "HLG"
-                | "DV"
-                | "DOVI"
-                | "ATMOS"
-                | "PROPER"
-                | "REPACK"
-                | "REMUX"
-                | "UNCENSORED"
-        )
-        || normalized.contains("2160")
+        || looks_like_release_provenance_normalized(&normalized)
+}
+
+fn looks_like_release_provenance_normalized(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "WEB"
+            | "WEBDL"
+            | "WEBRIP"
+            | "BLURAY"
+            | "BDRIP"
+            | "BRRIP"
+            | "HDTV"
+            | "CAM"
+            | "HQCAM"
+            | "TS"
+            | "TC"
+            | "TELESYNC"
+            | "TELECINE"
+            | "DVDSCR"
+            | "WORKPRINT"
+            | "DVDRIP"
+            | "NF"
+            | "AMZN"
+            | "DSNP"
+            | "CR"
+            | "HULU"
+            | "MAX"
+            | "HEVC"
+            | "AVC"
+            | "X265"
+            | "X264"
+            | "H265"
+            | "H264"
+            | "AAC"
+            | "DDP"
+            | "DTS"
+            | "DTSX"
+            | "DTSHD"
+            | "DTSMA"
+            | "TRUEHD"
+            | "FLAC"
+            | "DUAL"
+            | "DUALAUDIO"
+            | "AUDIO"
+            | "DUB"
+            | "DUBS"
+            | "DUBBED"
+            | "SUB"
+            | "SUBS"
+            | "MULTI"
+            | "MULTIAUDIO"
+            | "MULTISUB"
+            | "MULTISUBS"
+            | "EN"
+            | "ENG"
+            | "ENGLISH"
+            | "JP"
+            | "JPN"
+            | "JAPANESE"
+            | "HDR"
+            | "HDR10"
+            | "HDR10PLUS"
+            | "HDR10P"
+            | "HLG"
+            | "DV"
+            | "DOVI"
+            | "ATMOS"
+            | "PROPER"
+            | "REPACK"
+            | "REMUX"
+            | "UNCENSORED"
+    ) || normalized.contains("2160")
         || normalized.contains("1080")
         || normalized.contains("720")
         || normalized.contains("480")

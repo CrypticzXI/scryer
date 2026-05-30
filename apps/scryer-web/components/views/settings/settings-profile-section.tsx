@@ -3,8 +3,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
+import QRCode from "react-qr-code";
 import { useTranslate } from "@/lib/context/translate-context";
-import type { LinkedAccount, PasskeySummary } from "@/lib/types/settings";
+import type {
+  LinkedAccount,
+  PasskeySummary,
+  TotpEnrollmentStart,
+  TotpStatus,
+} from "@/lib/types/settings";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
@@ -19,14 +25,28 @@ type Props = {
   onChangePassword: () => void;
   showPasskeys: boolean;
   passkeys: PasskeySummary[];
+  totpStatus: TotpStatus | null;
+  totpEnrollment: TotpEnrollmentStart | null;
+  totpEnrollmentCode: string;
+  totpActionCode: string;
+  totpRecoveryCodes: string[];
   linkedAccounts: LinkedAccount[];
   loadingPasskeys: boolean;
+  loadingTotp: boolean;
   loadingLinkedAccounts: boolean;
   addingPasskey: boolean;
+  totpBusy: boolean;
   deletingPasskeyId: string | null;
   unlinkingAccountId: string | null;
   onAddPasskey: () => void;
   onDeletePasskey: (id: string) => void;
+  onStartTotpEnrollment: () => void;
+  onTotpEnrollmentCodeChange: (value: string) => void;
+  onCompleteTotpEnrollment: () => void;
+  onTotpActionCodeChange: (value: string) => void;
+  onVerifyTotpStepUp: () => void;
+  onDisableTotp: () => void;
+  onRegenerateTotpRecoveryCodes: () => void;
   onUnlinkExternalAccount: (id: string) => void;
 };
 
@@ -66,14 +86,28 @@ export function SettingsProfileSection({
   onChangePassword,
   showPasskeys,
   passkeys,
+  totpStatus,
+  totpEnrollment,
+  totpEnrollmentCode,
+  totpActionCode,
+  totpRecoveryCodes,
   linkedAccounts,
   loadingPasskeys,
+  loadingTotp,
   loadingLinkedAccounts,
   addingPasskey,
+  totpBusy,
   deletingPasskeyId,
   unlinkingAccountId,
   onAddPasskey,
   onDeletePasskey,
+  onStartTotpEnrollment,
+  onTotpEnrollmentCodeChange,
+  onCompleteTotpEnrollment,
+  onTotpActionCodeChange,
+  onVerifyTotpStepUp,
+  onDisableTotp,
+  onRegenerateTotpRecoveryCodes,
   onUnlinkExternalAccount,
 }: Props) {
   const t = useTranslate();
@@ -207,6 +241,146 @@ export function SettingsProfileSection({
           </div>
         </>
       ) : null}
+
+      <Separator />
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-base font-medium">{t("profile.totp")}</h3>
+          <p className="text-sm text-muted-foreground">{t("profile.totpDescription")}</p>
+        </div>
+
+        {loadingTotp ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{t("label.loading")}</span>
+          </div>
+        ) : totpStatus?.enabled ? (
+          <div className="space-y-3 rounded-md border border-border bg-background/60 p-4">
+            <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-3">
+              <div>
+                <span className="text-foreground">{t("profile.totpEnabledAt")}: </span>
+                {formatTimestamp(totpStatus.createdAt)}
+              </div>
+              <div>
+                <span className="text-foreground">{t("profile.totpLastUsedAt")}: </span>
+                {formatTimestamp(totpStatus.lastUsedAt)}
+              </div>
+              <div>
+                <span className="text-foreground">{t("profile.totpRecoveryRemaining")}: </span>
+                {totpStatus.recoveryCodesRemaining}
+              </div>
+            </div>
+
+            {totpRecoveryCodes.length > 0 ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                <div className="mb-2 text-sm font-medium">{t("profile.totpRecoveryCodes")}</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {totpRecoveryCodes.map((code) => (
+                    <code
+                      key={code}
+                      className="rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                    >
+                      {code}
+                    </code>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="grid max-w-sm gap-2">
+              <Label htmlFor="totp-action-code">{t("profile.totpCode")}</Label>
+              <Input
+                id="totp-action-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={totpActionCode}
+                onChange={(event) => onTotpActionCodeChange(event.target.value)}
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={totpBusy || !totpActionCode.trim()}
+                  onClick={onVerifyTotpStepUp}
+                >
+                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {t("profile.totpVerifyStepUp")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={totpBusy || !totpActionCode.trim()}
+                  onClick={onRegenerateTotpRecoveryCodes}
+                >
+                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {t("profile.totpRegenerateRecoveryCodes")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={totpBusy || !totpActionCode.trim()}
+                  onClick={onDisableTotp}
+                >
+                  {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {t("profile.totpDisable")}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : totpEnrollment ? (
+          <div className="space-y-4 rounded-md border border-border bg-background/60 p-4">
+            <div className="flex flex-col gap-4 sm:flex-row">
+              <div className="w-fit rounded-md bg-white p-3">
+                <QRCode value={totpEnrollment.otpauthUrl} size={168} />
+              </div>
+              <div className="min-w-0 space-y-3">
+                <a
+                  className="break-all text-sm font-medium text-primary underline-offset-4 hover:underline"
+                  href={totpEnrollment.otpauthUrl}
+                >
+                  {t("profile.totpOpenSetupLink")}
+                </a>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">{t("profile.totpSecret")}</div>
+                  <code className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs">
+                    {totpEnrollment.secretBase32}
+                  </code>
+                </div>
+              </div>
+            </div>
+            <div className="grid max-w-sm gap-2">
+              <Label htmlFor="totp-enrollment-code">{t("profile.totpCode")}</Label>
+              <Input
+                id="totp-enrollment-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={totpEnrollmentCode}
+                onChange={(event) => onTotpEnrollmentCodeChange(event.target.value)}
+              />
+              <Button
+                type="button"
+                disabled={totpBusy || !totpEnrollmentCode.trim()}
+                onClick={onCompleteTotpEnrollment}
+                className="w-fit"
+              >
+                {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.totpVerifyAndEnable")}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button
+            id={selectorId("settings-profile-start-totp")}
+            type="button"
+            onClick={onStartTotpEnrollment}
+            disabled={totpBusy}
+            className="w-fit"
+          >
+            {totpBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {t("profile.totpStartEnrollment")}
+          </Button>
+        )}
+      </div>
 
       <Separator />
       <div className="space-y-4">

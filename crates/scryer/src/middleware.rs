@@ -9,7 +9,7 @@ use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase};
 use scryer_domain::AppPermission;
-use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch};
+use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification};
 use std::net::{IpAddr, SocketAddr};
 
 use crate::admin_routes::ErrorResponse;
@@ -335,7 +335,10 @@ pub(crate) async fn graphql_handler(
     let mut batch = body.into_inner();
     let response_status = graphql_response_status(&mut batch);
     let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
-    let rate_limit_key = RateLimitKey::new(client_ip, actor.as_ref().map(|user| user.id.as_str()));
+    let rate_limit_key = RateLimitKey::new(
+        client_ip,
+        actor.as_ref().map(|actor| actor.user.id.as_str()),
+    );
     let rate_limit_class = classify_graphql(&batch);
     if rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login
         && let Err(decision) = state
@@ -350,13 +353,15 @@ pub(crate) async fn graphql_handler(
             .body(Body::from(body))
             .unwrap();
     }
-    let batch = if let Some(user) = actor {
+    let batch = if let Some(actor) = actor {
         match batch {
-            async_graphql::BatchRequest::Single(req) => {
-                async_graphql::BatchRequest::Single(req.data(user))
-            }
+            async_graphql::BatchRequest::Single(req) => async_graphql::BatchRequest::Single(
+                req.data(actor.mfa_verification()).data(actor.user),
+            ),
             async_graphql::BatchRequest::Batch(reqs) => async_graphql::BatchRequest::Batch(
-                reqs.into_iter().map(|req| req.data(user.clone())).collect(),
+                reqs.into_iter()
+                    .map(|req| req.data(actor.mfa_verification()).data(actor.user.clone()))
+                    .collect(),
             ),
         }
     } else {
@@ -392,11 +397,26 @@ fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCod
     StatusCode::OK
 }
 
-fn graphql_ws_connection_data(connection_epoch: u64, actor: Option<scryer_domain::User>) -> Data {
+#[derive(Clone)]
+struct ResolvedActor {
+    user: scryer_domain::User,
+    mfa_verified_until: Option<i64>,
+}
+
+impl ResolvedActor {
+    fn mfa_verification(&self) -> MfaVerification {
+        MfaVerification {
+            verified_until: self.mfa_verified_until,
+        }
+    }
+}
+
+fn graphql_ws_connection_data(connection_epoch: u64, actor: Option<ResolvedActor>) -> Data {
     let mut data = Data::default();
     data.insert(ConnectionAuthEpoch(connection_epoch));
-    if let Some(user) = actor {
-        data.insert(user);
+    if let Some(actor) = actor {
+        data.insert(actor.mfa_verification());
+        data.insert(actor.user);
     }
     data
 }
@@ -405,9 +425,9 @@ async fn resolve_ws_connection_init_actor(
     app: &AppUseCase,
     auth_enabled: bool,
     local_bypass_active: bool,
-    initial_actor: Option<scryer_domain::User>,
+    initial_actor: Option<ResolvedActor>,
     auth_value: Option<&str>,
-) -> Result<Option<scryer_domain::User>, async_graphql::Error> {
+) -> Result<Option<ResolvedActor>, async_graphql::Error> {
     if !auth_enabled {
         return Ok(initial_actor);
     }
@@ -417,11 +437,16 @@ async fn resolve_ws_connection_init_actor(
     };
 
     match parse_bearer_token(raw) {
-        Some(token) => match app.authenticate_token(token).await {
-            Ok(user) => app
+        Some(token) => match app.authenticate_token_with_claims(token).await {
+            Ok((user, mfa_verified_until)) => app
                 .attach_user_authorization(user)
                 .await
-                .map(Some)
+                .map(|user| {
+                    Some(ResolvedActor {
+                        user,
+                        mfa_verified_until,
+                    })
+                })
                 .map_err(|e| async_graphql::Error::new(format!("authentication failed: {e}"))),
             Err(_) if local_bypass_active => Ok(initial_actor),
             Err(e) => Err(async_graphql::Error::new(format!(
@@ -437,25 +462,39 @@ async fn resolve_actor(
     state: &AuthState,
     headers: &HeaderMap,
     remote_addr: Option<SocketAddr>,
-) -> Option<scryer_domain::User> {
+) -> Option<ResolvedActor> {
     let snapshot = state.auth_runtime.snapshot();
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
     let actor = if !snapshot.effective_form_login_enabled {
-        resolve_default_user(&state.app).await
+        resolve_default_user(&state.app)
+            .await
+            .map(|user| (user, None))
     } else {
         match authorization_token_from_headers(headers) {
-            Ok(Some(token)) => match state.app.authenticate_token(token).await {
-                Ok(user) => Some(user),
-                Err(_) if local_bypass => resolve_default_user(&state.app).await,
+            Ok(Some(token)) => match state.app.authenticate_token_with_claims(token).await {
+                Ok((user, mfa_verified_until)) => Some((user, mfa_verified_until)),
+                Err(_) if local_bypass => resolve_default_user(&state.app)
+                    .await
+                    .map(|user| (user, None)),
                 Err(_) => None,
             },
-            Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app).await,
+            Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app)
+                .await
+                .map(|user| (user, None)),
             Ok(None) | Err(_) => None,
         }
     };
 
     match actor {
-        Some(user) => state.app.attach_user_authorization(user).await.ok(),
+        Some((user, mfa_verified_until)) => state
+            .app
+            .attach_user_authorization(user)
+            .await
+            .ok()
+            .map(|user| ResolvedActor {
+                user,
+                mfa_verified_until,
+            }),
         None => None,
     }
 }
@@ -690,7 +729,10 @@ pub(crate) async fn rate_limit_http_api(
     let client_ip =
         request_client_ip(request.headers(), Some(remote_addr)).unwrap_or(remote_addr.ip());
     let actor = resolve_actor(&auth_state, request.headers(), Some(remote_addr)).await;
-    let key = RateLimitKey::new(client_ip, actor.as_ref().map(|user| user.id.as_str()));
+    let key = RateLimitKey::new(
+        client_ip,
+        actor.as_ref().map(|actor| actor.user.id.as_str()),
+    );
     match auth_state.rate_limiter.check_http_api(&key) {
         Ok(()) => next.run(request).await,
         Err(decision) => {
@@ -746,6 +788,14 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             .into_response(),
         AppError::DownloadFeedbackTimeout(message) => (
             StatusCode::GATEWAY_TIMEOUT,
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
+        AppError::TotpStepUpRequired(message)
+        | AppError::TotpEnrollmentRequired(message)
+        | AppError::TotpInvalidCode(message)
+        | AppError::TotpRecoveryCodeUsed(message) => (
+            StatusCode::UNAUTHORIZED,
             Json(ErrorResponse { error: message }),
         )
             .into_response(),

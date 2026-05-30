@@ -543,6 +543,7 @@ pub(crate) fn rescore_from_mediainfo(
     let mut merged = parsed.clone();
     let mut changes = Vec::new();
     let resolved = resolve_release_labels_from_analysis(
+        analysis.video_width,
         analysis.video_height,
         analysis.video_codec.as_ref(),
         analysis.audio_codec.as_deref(),

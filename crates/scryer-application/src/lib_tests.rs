@@ -948,6 +948,7 @@ impl FileImporter for BlockingFileImporter {
         &self,
         source: &Path,
         dest: &Path,
+        _mode: scryer_domain::ImportMode,
     ) -> AppResult<scryer_domain::ImportFileResult> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         self.release.notified().await;
@@ -5272,6 +5273,96 @@ async fn library_sidecar_settings_resolve_facet_defaults_and_library_overrides()
     assert_eq!(overridden.plexmatch_write_on_import, Some(false));
 }
 
+#[tokio::test]
+async fn import_mode_settings_resolve_default_facet_override_and_library_override() {
+    let (app, user) = bootstrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let default_media_settings = app
+        .get_media_settings(&user, MediaFacet::Movie)
+        .await
+        .expect("movie media settings should load");
+    assert_eq!(
+        default_media_settings.import_mode,
+        ImportMode::HardlinkOrCopy
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        UpdateMediaSettings {
+            import_mode: Some(ImportMode::Move),
+            ..empty_update_media_settings()
+        },
+    )
+    .await
+    .expect("movie import mode should update");
+
+    let facet_override = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("movie library settings should load");
+    assert_eq!(facet_override.import_mode_override, None);
+    assert_eq!(facet_override.import_mode, ImportMode::Move);
+
+    app.update_library_settings(
+        &user,
+        &movie_library_id,
+        LibrarySettingsOverrideDraft {
+            import_mode: Some(ImportMode::HardlinkOrCopy),
+            ..empty_library_settings_override()
+        },
+    )
+    .await
+    .expect("movie library import mode override should save");
+
+    let library_override = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("movie library settings should reload");
+    assert_eq!(
+        library_override.import_mode_override,
+        Some(ImportMode::HardlinkOrCopy)
+    );
+    assert_eq!(library_override.import_mode, ImportMode::HardlinkOrCopy);
+
+    app.update_library_settings(&user, &movie_library_id, empty_library_settings_override())
+        .await
+        .expect("movie library import mode override should clear");
+
+    let inherited_again = app
+        .get_library_settings(&user, &movie_library_id)
+        .await
+        .expect("movie library settings should reload after reset");
+    assert_eq!(inherited_again.import_mode_override, None);
+    assert_eq!(inherited_again.import_mode, ImportMode::Move);
+}
+
+#[tokio::test]
+async fn import_mode_settings_reject_invalid_stored_value() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_scoped_value(SETTINGS_SCOPE_SYSTEM, IMPORT_MODE_KEY, "movie", "\"auto\"")
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        Arc::new(StoredQualityProfileRepo::default()),
+        Arc::new(MockIndexerClient),
+    );
+
+    let error = app
+        .get_media_settings(&user, MediaFacet::Movie)
+        .await
+        .expect_err("invalid import mode should be rejected");
+
+    match error {
+        AppError::Validation(message) => {
+            assert!(message.contains("invalid import.mode setting value"));
+        }
+        other => panic!("expected validation error, got {other:?}"),
+    }
+}
+
 fn test_quality_profile(id: &str) -> QualityProfile {
     QualityProfile {
         id: id.to_string(),
@@ -7843,6 +7934,7 @@ fn empty_update_media_settings_with_roots(
         monitor_filler_movies: None,
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
+        import_mode: None,
     }
 }
 
@@ -7862,6 +7954,7 @@ fn empty_update_media_settings() -> UpdateMediaSettings {
         monitor_filler_movies: None,
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
+        import_mode: None,
     }
 }
 
@@ -7877,6 +7970,7 @@ fn empty_library_settings_override() -> LibrarySettingsOverrideDraft {
         monitor_filler_movies: None,
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
+        import_mode: None,
         indexer_routing: None,
         download_client_routing: None,
     }
@@ -22456,6 +22550,7 @@ async fn expired_token_returns_unauthorized() {
         username: user.username.clone(),
         app_permissions: vec![],
         library_permissions: vec![],
+        mfa_verified_until: None,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -22488,6 +22583,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         username: user.username.clone(),
         app_permissions: vec![],
         library_permissions: vec![],
+        mfa_verified_until: None,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -22678,6 +22774,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         username: user.username.clone(),
         app_permissions: vec!["manageSystemSettings".to_string()],
         library_permissions: vec![],
+        mfa_verified_until: None,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);

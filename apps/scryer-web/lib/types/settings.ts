@@ -45,6 +45,8 @@ export type TrustedCertificateEntry = {
 export type SecuritySettings = {
   formLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
+  totpRequireConfigStepUp: boolean;
+  totpRequireJellyfinLogin: boolean;
   effectiveFormLoginEnabled: boolean;
   envOverrideActive: boolean;
   envOverrideDescription: string | null;
@@ -107,6 +109,27 @@ export type PasskeySummary = {
   lastUsedAt: string | null;
 };
 
+export type TotpStatus = {
+  enabled: boolean;
+  createdAt: string | null;
+  lastUsedAt: string | null;
+  recoveryCodesRemaining: number;
+};
+
+export type TotpEnrollmentStart = {
+  challengeId: string;
+  otpauthUrl: string;
+  secretBase32: string;
+  expiresAt: string;
+};
+
+export type TotpEnrollmentComplete = {
+  status: TotpStatus;
+  recoveryCodes: string[];
+};
+
+export type ImportMode = "hardlink_or_copy" | "move";
+
 export type MediaSettings = {
   scope: "movie" | "series" | "anime";
   libraryPath: string;
@@ -123,6 +146,7 @@ export type MediaSettings = {
   monitorFillerMovies: boolean | null;
   nfoWriteOnImport: boolean;
   plexmatchWriteOnImport: boolean | null;
+  importMode: ImportMode;
 };
 
 export type LibraryPaths = {

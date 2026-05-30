@@ -39,6 +39,8 @@ use crate::{
     VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
     WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
     WorkflowOperationRepository, ports::DatastoreInfo, ports::LogicalBackupExporter,
+    ports::TotpRepository, types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
+    types::TotpFailedAttemptRecord, types::TotpRecoveryCodeRecord,
 };
 
 #[derive(Default)]
@@ -312,7 +314,12 @@ pub struct NullFileImporter;
 
 #[async_trait]
 impl FileImporter for NullFileImporter {
-    async fn import_file(&self, _source: &Path, _dest: &Path) -> AppResult<ImportFileResult> {
+    async fn import_file(
+        &self,
+        _source: &Path,
+        _dest: &Path,
+        _mode: scryer_domain::ImportMode,
+    ) -> AppResult<ImportFileResult> {
         Err(AppError::Repository(
             "file importer is not configured".to_string(),
         ))
@@ -1551,6 +1558,78 @@ impl WebauthnRepository for NullWebauthnRepository {
 }
 
 #[derive(Default)]
+pub struct NullTotpRepository;
+
+#[async_trait]
+impl TotpRepository for NullTotpRepository {
+    async fn get_credential_for_user(&self, _: &str) -> AppResult<Option<TotpCredentialRecord>> {
+        Ok(None)
+    }
+
+    async fn upsert_credential(&self, _: TotpCredentialRecord) -> AppResult<TotpCredentialRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete_credential_for_user(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn create_enrollment_challenge(
+        &self,
+        _: TotpEnrollmentChallengeRecord,
+    ) -> AppResult<TotpEnrollmentChallengeRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_enrollment_challenge(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> AppResult<Option<TotpEnrollmentChallengeRecord>> {
+        Ok(None)
+    }
+
+    async fn delete_enrollment_challenge(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_expired_enrollment_challenges(&self, _: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn replace_recovery_codes(
+        &self,
+        _: &str,
+        _: Vec<TotpRecoveryCodeRecord>,
+    ) -> AppResult<()> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn list_recovery_codes_for_user(
+        &self,
+        _: &str,
+    ) -> AppResult<Vec<TotpRecoveryCodeRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn mark_recovery_code_used(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn record_failed_attempt(&self, _: TotpFailedAttemptRecord) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn count_failed_attempts_since(&self, _: &str, _: &str) -> AppResult<i64> {
+        Ok(0)
+    }
+
+    async fn clear_failed_attempts(&self, _: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+}
+
+#[derive(Default)]
 pub struct NullUserExternalAccountRepository;
 
 #[async_trait]
@@ -1617,6 +1696,12 @@ impl ExternalIdentityVerifier for NullExternalIdentityVerifier {
         _: &str,
         _: &str,
     ) -> AppResult<VerifiedExternalIdentity> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn test_jellyfin_connection(&self, _: &str) -> AppResult<()> {
         Err(AppError::Repository(
             "external identity verification is not configured".into(),
         ))

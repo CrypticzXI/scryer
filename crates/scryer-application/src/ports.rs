@@ -412,6 +412,8 @@ pub trait ExternalIdentityVerifier: Send + Sync {
         username: &str,
         password: &str,
     ) -> AppResult<VerifiedExternalIdentity>;
+
+    async fn test_jellyfin_connection(&self, base_url: &str) -> AppResult<()>;
 }
 
 #[async_trait]
@@ -449,6 +451,48 @@ pub trait WebauthnRepository: Send + Sync {
     async fn get_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>>;
     async fn delete_challenge(&self, id: &str) -> AppResult<()>;
     async fn delete_expired_challenges(&self, now: &str) -> AppResult<u64>;
+}
+
+#[async_trait]
+pub trait TotpRepository: Send + Sync {
+    async fn get_credential_for_user(
+        &self,
+        user_id: &str,
+    ) -> AppResult<Option<TotpCredentialRecord>>;
+    async fn upsert_credential(
+        &self,
+        credential: TotpCredentialRecord,
+    ) -> AppResult<TotpCredentialRecord>;
+    async fn delete_credential_for_user(&self, user_id: &str) -> AppResult<()>;
+    async fn create_enrollment_challenge(
+        &self,
+        challenge: TotpEnrollmentChallengeRecord,
+    ) -> AppResult<TotpEnrollmentChallengeRecord>;
+    async fn get_enrollment_challenge(
+        &self,
+        id: &str,
+        user_id: &str,
+    ) -> AppResult<Option<TotpEnrollmentChallengeRecord>>;
+    async fn delete_enrollment_challenge(&self, id: &str, user_id: &str) -> AppResult<()>;
+    async fn delete_expired_enrollment_challenges(&self, now: &str) -> AppResult<u64>;
+    async fn replace_recovery_codes(
+        &self,
+        user_id: &str,
+        codes: Vec<TotpRecoveryCodeRecord>,
+    ) -> AppResult<()>;
+    async fn list_recovery_codes_for_user(
+        &self,
+        user_id: &str,
+    ) -> AppResult<Vec<TotpRecoveryCodeRecord>>;
+    async fn mark_recovery_code_used(
+        &self,
+        id: &str,
+        user_id: &str,
+        used_at: &str,
+    ) -> AppResult<()>;
+    async fn record_failed_attempt(&self, attempt: TotpFailedAttemptRecord) -> AppResult<()>;
+    async fn count_failed_attempts_since(&self, user_id: &str, since: &str) -> AppResult<i64>;
+    async fn clear_failed_attempts(&self, user_id: &str) -> AppResult<u64>;
 }
 
 #[async_trait]
@@ -950,7 +994,12 @@ pub trait WorkflowOperationRepository: Send + Sync {
 
 #[async_trait]
 pub trait FileImporter: Send + Sync {
-    async fn import_file(&self, source: &Path, dest: &Path) -> AppResult<ImportFileResult>;
+    async fn import_file(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+    ) -> AppResult<ImportFileResult>;
 }
 
 #[async_trait]

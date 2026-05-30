@@ -381,6 +381,15 @@ async fn fetch_plugin_bytes_from_locations(
         ))
     }))
 }
+
+async fn decode_signature_bundle(bundle: Vec<u8>, actual_url: &str) -> AppResult<Vec<u8>> {
+    match artifact_encoding_from_url(actual_url) {
+        Some("zst") => decompress_zstd(bundle).await,
+        Some("br") => decompress_brotli(bundle).await,
+        _ => Ok(bundle),
+    }
+}
+
 impl AppUseCase {
     fn validate_catalog_downloaded_plugin_release(
         &self,
@@ -561,12 +570,13 @@ impl AppUseCase {
         let scope = format!("verified_blob:{}", blake3_digest(label.as_bytes()));
         let (raw, actual_url) =
             fetch_plugin_bytes_from_locations(data_urls, label, &format!("{scope}:blob")).await?;
-        let (bundle, _) = fetch_plugin_bytes_from_locations(
+        let (bundle, bundle_url) = fetch_plugin_bytes_from_locations(
             signature_urls,
             &format!("{label} signature"),
             &format!("{scope}:signature"),
         )
         .await?;
+        let bundle = decode_signature_bundle(bundle, &bundle_url).await?;
         verify_signed_blob(raw.clone(), bundle, signer.clone()).await?;
         Ok((raw, actual_url))
     }

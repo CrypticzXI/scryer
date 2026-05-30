@@ -35,6 +35,8 @@ type SettingsSecuritySectionProps = {
   onConfirmDisable: () => Promise<void> | void;
   onCancelDisable: () => void;
   onSkipLocalIpsChange: (enabled: boolean) => void;
+  onTotpConfigStepUpChange: (enabled: boolean) => void;
+  onTotpJellyfinLoginChange: (enabled: boolean) => void;
   onAuthProviderSettingsChange: (settings: AuthProviderSettings) => void;
   onAuthProviderSettingsSave: () => Promise<void> | void;
   externalAccountInvitesPanel: React.ReactNode;
@@ -100,6 +102,8 @@ export function SettingsSecuritySection({
   onConfirmDisable,
   onCancelDisable,
   onSkipLocalIpsChange,
+  onTotpConfigStepUpChange,
+  onTotpJellyfinLoginChange,
   onAuthProviderSettingsChange,
   onAuthProviderSettingsSave,
   externalAccountInvitesPanel,
@@ -217,6 +221,52 @@ export function SettingsSecuritySection({
                   />
                 </div>
               </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
+                  <Checkbox
+                    checked={settings.totpRequireConfigStepUp}
+                    disabled={busy}
+                    id="security-totp-config-step-up"
+                    onCheckedChange={(checked) => onTotpConfigStepUpChange(checked === true)}
+                  />
+                  <div className="grid gap-1">
+                    <div className="flex items-center gap-2">
+                      <Label
+                        className="cursor-pointer text-sm font-medium"
+                        htmlFor="security-totp-config-step-up"
+                      >
+                        {t("settings.securityTotpConfigStepUp")}
+                      </Label>
+                      <InfoHelp
+                        ariaLabel={t("settings.securityTotpConfigStepUp")}
+                        text={t("settings.securityTotpConfigStepUpHelp")}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
+                  <Checkbox
+                    checked={settings.totpRequireJellyfinLogin}
+                    disabled={busy}
+                    id="security-totp-jellyfin-login"
+                    onCheckedChange={(checked) => onTotpJellyfinLoginChange(checked === true)}
+                  />
+                  <div className="grid gap-1">
+                    <div className="flex items-center gap-2">
+                      <Label
+                        className="cursor-pointer text-sm font-medium"
+                        htmlFor="security-totp-jellyfin-login"
+                      >
+                        {t("settings.securityTotpJellyfinLogin")}
+                      </Label>
+                      <InfoHelp
+                        ariaLabel={t("settings.securityTotpJellyfinLogin")}
+                        text={t("settings.securityTotpJellyfinLoginHelp")}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -329,6 +379,7 @@ export function SettingsSecuritySection({
                   endpointLabel: t("settings.connectionBaseUrl"),
                   endpointPlaceholder: "https://jellyfin.example.test",
                   endpointField: "baseUrl" as const,
+                  showConnectionId: false,
                 },
                 {
                   key: "allowedPlexConnections" as const,
@@ -339,6 +390,7 @@ export function SettingsSecuritySection({
                   endpointLabel: t("settings.plexMachineId"),
                   endpointPlaceholder: "optional machineIdentifier",
                   endpointField: "machineId" as const,
+                  showConnectionId: true,
                 },
               ].map((group) => (
                 <div key={group.key} className="space-y-3">
@@ -366,23 +418,31 @@ export function SettingsSecuritySection({
                         key={`${group.key}-${index}`}
                         className="space-y-3 rounded-md border border-border/70 bg-background/40 p-3"
                       >
-                        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                          <div className="space-y-1.5">
-                            <Label htmlFor={`${group.idPrefix}-connection-id-${index}`}>
-                              {t("settings.connectionId")}
-                            </Label>
-                            <Input
-                              id={`${group.idPrefix}-connection-id-${index}`}
-                              value={connection.id}
-                              disabled={busy}
-                              placeholder={group.servicePlaceholder}
-                              onChange={(event) =>
-                                updateConnection(group.key, index, {
-                                  id: event.target.value,
-                                })
-                              }
-                            />
-                          </div>
+                        <div
+                          className={
+                            group.showConnectionId
+                              ? "grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
+                              : "grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]"
+                          }
+                        >
+                          {group.showConnectionId ? (
+                            <div className="space-y-1.5">
+                              <Label htmlFor={`${group.idPrefix}-connection-id-${index}`}>
+                                {t("settings.connectionId")}
+                              </Label>
+                              <Input
+                                id={`${group.idPrefix}-connection-id-${index}`}
+                                value={connection.id}
+                                disabled={busy}
+                                placeholder={group.servicePlaceholder}
+                                onChange={(event) =>
+                                  updateConnection(group.key, index, {
+                                    id: event.target.value,
+                                  })
+                                }
+                              />
+                            </div>
+                          ) : null}
                           <div className="space-y-1.5">
                             <Label htmlFor={`${group.idPrefix}-connection-name-${index}`}>
                               {t("settings.connectionName")}
@@ -461,6 +521,8 @@ export function SettingsSecuritySection({
         cancelLabel={t("label.cancel")}
         confirmButtonId="settings-security-enable-confirm"
         cancelButtonId="settings-security-enable-cancel"
+        confirmButtonVariant="default"
+        confirmButtonClassName="bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-600 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400"
         isBusy={confirmBusy}
         confirmDisabled={confirmDisabled}
         onConfirm={onConfirmEnable}

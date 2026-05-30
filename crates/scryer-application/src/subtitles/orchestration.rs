@@ -1162,6 +1162,7 @@ fn build_subtitle_query(
 
     let (imdb_id, series_imdb_id) = title_imdb_ids(title, preferred_release);
     let analysis_labels = resolve_release_labels_from_analysis(
+        media_file.video_width,
         media_file.video_height,
         media_file.video_codec.as_ref(),
         media_file.audio_codec.as_deref(),

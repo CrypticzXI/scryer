@@ -65,6 +65,30 @@ impl AppUseCase {
         self.load_auth_provider_settings().await
     }
 
+    pub async fn test_jellyfin_connection(
+        &self,
+        actor: &User,
+        connection: AuthProviderConnection,
+    ) -> AppResult<()> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        let mut connections = normalize_auth_provider_connections(
+            vec![connection],
+            scryer_domain::ExternalAccountProvider::Jellyfin,
+        )?;
+        let connection = connections.pop().ok_or_else(|| {
+            AppError::Validation("Jellyfin connection requires a base URL".into())
+        })?;
+        let base_url = connection.base_url.as_deref().ok_or_else(|| {
+            AppError::Validation("Jellyfin connection requires a base URL".into())
+        })?;
+        self.services
+            .integrations
+            .external_identity_verifier
+            .test_jellyfin_connection(base_url)
+            .await
+    }
+
     pub async fn update_auth_provider_settings(
         &self,
         actor: &User,
@@ -78,7 +102,10 @@ impl AppUseCase {
             scryer_domain::ExternalAccountProvider::Jellyfin,
         )?;
         let allowed_jellyfin_connections = if allowed_jellyfin_connections.is_empty() {
-            auth_provider_connections_from_ids(input.allowed_jellyfin_connection_ids)
+            auth_provider_connections_from_ids(
+                input.allowed_jellyfin_connection_ids,
+                scryer_domain::ExternalAccountProvider::Jellyfin,
+            )
         } else {
             allowed_jellyfin_connections
         };
@@ -87,7 +114,10 @@ impl AppUseCase {
             scryer_domain::ExternalAccountProvider::Plex,
         )?;
         let allowed_plex_connections = if allowed_plex_connections.is_empty() {
-            auth_provider_connections_from_ids(input.allowed_plex_connection_ids)
+            auth_provider_connections_from_ids(
+                input.allowed_plex_connection_ids,
+                scryer_domain::ExternalAccountProvider::Plex,
+            )
         } else {
             allowed_plex_connections
         };
@@ -177,7 +207,10 @@ impl AppUseCase {
             )
             .await?;
         let allowed_jellyfin_connections = if allowed_jellyfin_connections.is_empty() {
-            auth_provider_connections_from_ids(legacy_jellyfin_connection_ids)
+            auth_provider_connections_from_ids(
+                legacy_jellyfin_connection_ids,
+                scryer_domain::ExternalAccountProvider::Jellyfin,
+            )
         } else {
             allowed_jellyfin_connections
         };
@@ -191,7 +224,10 @@ impl AppUseCase {
             )
             .await?;
         let allowed_plex_connections = if allowed_plex_connections.is_empty() {
-            auth_provider_connections_from_ids(legacy_plex_connection_ids)
+            auth_provider_connections_from_ids(
+                legacy_plex_connection_ids,
+                scryer_domain::ExternalAccountProvider::Plex,
+            )
         } else {
             allowed_plex_connections
         };
@@ -800,11 +836,17 @@ fn normalize_connection_ids(values: Vec<String>) -> Vec<String> {
     normalized
 }
 
-fn auth_provider_connections_from_ids(values: Vec<String>) -> Vec<AuthProviderConnection> {
+fn auth_provider_connections_from_ids(
+    values: Vec<String>,
+    provider: scryer_domain::ExternalAccountProvider,
+) -> Vec<AuthProviderConnection> {
     normalize_connection_ids(values)
         .into_iter()
         .map(|id| AuthProviderConnection {
-            display_name: id.clone(),
+            display_name: match provider {
+                scryer_domain::ExternalAccountProvider::Jellyfin => "Jellyfin".to_string(),
+                scryer_domain::ExternalAccountProvider::Plex => id.clone(),
+            },
             id,
             base_url: None,
             machine_id: None,
@@ -828,6 +870,13 @@ fn normalize_auth_provider_connections(
     let mut normalized = Vec::new();
     for value in values {
         let id = normalize_connection_id(value.id);
+        let id = if id.is_empty()
+            && matches!(provider, scryer_domain::ExternalAccountProvider::Jellyfin)
+        {
+            scryer_domain::Id::new().0
+        } else {
+            id
+        };
         if id.is_empty()
             || normalized
                 .iter()
@@ -839,7 +888,10 @@ fn normalize_auth_provider_connections(
         normalized.push(AuthProviderConnection {
             id: id.clone(),
             display_name: if display_name.is_empty() {
-                id
+                match provider {
+                    scryer_domain::ExternalAccountProvider::Jellyfin => "Jellyfin".to_string(),
+                    scryer_domain::ExternalAccountProvider::Plex => id,
+                }
             } else {
                 display_name.to_string()
             },
@@ -1264,12 +1316,14 @@ mod tests {
                 provider_linking_enabled: vec![],
                 allowed_jellyfin_connection_ids: vec![],
                 allowed_plex_connection_ids: vec![],
-                allowed_jellyfin_connections: auth_provider_connections_from_ids(vec![
-                    "jellyfin-main".to_string(),
-                ]),
-                allowed_plex_connections: auth_provider_connections_from_ids(vec![
-                    "plex-main".to_string(),
-                ]),
+                allowed_jellyfin_connections: auth_provider_connections_from_ids(
+                    vec!["jellyfin-main".to_string()],
+                    scryer_domain::ExternalAccountProvider::Jellyfin,
+                ),
+                allowed_plex_connections: auth_provider_connections_from_ids(
+                    vec!["plex-main".to_string()],
+                    scryer_domain::ExternalAccountProvider::Plex,
+                ),
             },
         )
         .await
@@ -1515,6 +1569,75 @@ mod tests {
             .await
             .expect("load settings");
         assert_eq!(loaded, saved);
+    }
+
+    #[tokio::test]
+    async fn jellyfin_connection_id_is_generated_when_missing() {
+        let app = test_app(Arc::new(TestSettingsRepository::default()));
+        let admin = admin_user();
+
+        let saved = app
+            .update_auth_provider_settings(
+                &admin,
+                UpdateAuthProviderSettings {
+                    allowed_providers: vec![ExternalAccountProvider::Jellyfin],
+                    provider_login_enabled: vec![ExternalAccountProvider::Jellyfin],
+                    provider_linking_enabled: vec![],
+                    allowed_jellyfin_connection_ids: vec![],
+                    allowed_plex_connection_ids: vec![],
+                    allowed_jellyfin_connections: vec![AuthProviderConnection {
+                        id: String::new(),
+                        display_name: "Home Jellyfin".to_string(),
+                        base_url: Some("https://jellyfin.example.test".to_string()),
+                        machine_id: None,
+                    }],
+                    allowed_plex_connections: vec![],
+                },
+            )
+            .await
+            .expect("save settings");
+
+        assert_eq!(saved.allowed_jellyfin_connections.len(), 1);
+        assert!(!saved.allowed_jellyfin_connections[0].id.is_empty());
+        assert_eq!(
+            saved.allowed_jellyfin_connection_ids,
+            vec![saved.allowed_jellyfin_connections[0].id.clone()]
+        );
+        assert_eq!(
+            saved.allowed_jellyfin_connections[0].display_name,
+            "Home Jellyfin"
+        );
+    }
+
+    #[tokio::test]
+    async fn jellyfin_connection_default_name_does_not_expose_generated_id() {
+        let app = test_app(Arc::new(TestSettingsRepository::default()));
+        let admin = admin_user();
+
+        let saved = app
+            .update_auth_provider_settings(
+                &admin,
+                UpdateAuthProviderSettings {
+                    allowed_providers: vec![ExternalAccountProvider::Jellyfin],
+                    provider_login_enabled: vec![ExternalAccountProvider::Jellyfin],
+                    provider_linking_enabled: vec![],
+                    allowed_jellyfin_connection_ids: vec![],
+                    allowed_plex_connection_ids: vec![],
+                    allowed_jellyfin_connections: vec![AuthProviderConnection {
+                        id: String::new(),
+                        display_name: String::new(),
+                        base_url: Some("https://jellyfin.example.test".to_string()),
+                        machine_id: None,
+                    }],
+                    allowed_plex_connections: vec![],
+                },
+            )
+            .await
+            .expect("save settings");
+
+        let connection = &saved.allowed_jellyfin_connections[0];
+        assert!(!connection.id.is_empty());
+        assert_eq!(connection.display_name, "Jellyfin");
     }
 
     #[tokio::test]
@@ -1772,9 +1895,10 @@ mod tests {
             provider_linking_enabled: vec![ExternalAccountProvider::Jellyfin],
             allowed_jellyfin_connection_ids: vec!["jellyfin-main".to_string()],
             allowed_plex_connection_ids: vec![],
-            allowed_jellyfin_connections: auth_provider_connections_from_ids(vec![
-                "jellyfin-main".to_string(),
-            ]),
+            allowed_jellyfin_connections: auth_provider_connections_from_ids(
+                vec!["jellyfin-main".to_string()],
+                scryer_domain::ExternalAccountProvider::Jellyfin,
+            ),
             allowed_plex_connections: vec![],
         };
 
@@ -1816,12 +1940,14 @@ mod tests {
             ],
             allowed_jellyfin_connection_ids: vec!["jellyfin-main".to_string()],
             allowed_plex_connection_ids: vec!["plex-main".to_string()],
-            allowed_jellyfin_connections: auth_provider_connections_from_ids(vec![
-                "jellyfin-main".to_string(),
-            ]),
-            allowed_plex_connections: auth_provider_connections_from_ids(vec![
-                "plex-main".to_string(),
-            ]),
+            allowed_jellyfin_connections: auth_provider_connections_from_ids(
+                vec!["jellyfin-main".to_string()],
+                scryer_domain::ExternalAccountProvider::Jellyfin,
+            ),
+            allowed_plex_connections: auth_provider_connections_from_ids(
+                vec!["plex-main".to_string()],
+                scryer_domain::ExternalAccountProvider::Plex,
+            ),
         };
 
         let result = app.ensure_verified_identity_matches_request(

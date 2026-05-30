@@ -314,6 +314,44 @@ mod catalog_artifact_selection_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod signature_bundle_decode_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn plain_signature_bundle_is_left_unchanged() {
+        let bundle = br#"{"base64Signature":"signature"}"#.to_vec();
+
+        let decoded = decode_signature_bundle(
+            bundle.clone(),
+            "https://example.test/plugin.tar.zst.bundle",
+        )
+        .await
+        .expect("plain bundle should decode");
+
+        assert_eq!(decoded, bundle);
+    }
+
+    #[cfg(feature = "runtime-plugin-trust")]
+    #[tokio::test]
+    async fn zstd_signature_bundle_is_decoded_from_url() {
+        let bundle = br#"{"base64Signature":"signature"}"#.to_vec();
+        let compressed = compress_zstd(bundle.clone(), 3)
+            .await
+            .expect("bundle should compress");
+
+        let decoded = decode_signature_bundle(
+            compressed,
+            "https://example.test/catalog.json.bundle.zst",
+        )
+        .await
+        .expect("zstd bundle should decode");
+
+        assert_eq!(decoded, bundle);
+    }
+}
+
 #[cfg(test)]
 mod plugin_http_client_tests {
     use super::{PluginHttpClientProfile, plugin_http_client};

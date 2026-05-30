@@ -255,7 +255,7 @@ impl MediaFileRepository for MediaFileStore {
                   FROM media_files
                  WHERE media_files.title_id IN ({placeholders})
                    AND {}
-                   AND trim(COALESCE(media_files.quality_id, '')) <> ''
+                   AND {normalized_quality} IS NOT NULL
              ) ranked
              WHERE quality_row = 1
                AND quality_tier IS NOT NULL",
@@ -312,7 +312,7 @@ impl MediaFileRepository for MediaFileStore {
                   LEFT JOIN episodes e ON e.id = fem.episode_id
                  WHERE media_files.title_id IN ({placeholders})
                    AND {}
-                   AND trim(COALESCE(media_files.quality_id, '')) <> ''
+                   AND {normalized_quality} IS NOT NULL
                    AND (fem.episode_id IS NULL OR {})
              ) ranked
              WHERE quality_row = 1
@@ -395,13 +395,10 @@ impl MediaFileRepository for MediaFileStore {
         analysis: MediaFileAnalysis,
     ) -> AppResult<()> {
         let analysis_json = serialized_media_analysis(&analysis)?;
-        let analysis_quality_label = quality_label_from_media_analysis(&analysis);
         execute_write(
             &self.datastore,
             "update_media_file_analysis",
             "UPDATE media_files SET
-                quality_id = COALESCE({}, quality_id),
-                resolution = COALESCE({}, resolution),
                 video_codec = {},
                 video_width = {},
                 video_height = {},
@@ -422,8 +419,6 @@ impl MediaFileRepository for MediaFileStore {
                 scan_status = 'scanned'
              WHERE id = {}",
             vec![
-                SqlArg::OptText(analysis_quality_label.clone()),
-                SqlArg::OptText(analysis_quality_label),
                 SqlArg::OptText(analysis.video_codec.as_ref().map(ToString::to_string)),
                 SqlArg::OptI32(analysis.video_width),
                 SqlArg::OptI32(analysis.video_height),
@@ -629,38 +624,40 @@ fn total_size_bytes_sum_expression(dialect: SqlDialect, expr: &str) -> String {
 fn normalized_quality_expression(alias: &str) -> String {
     format!(
         "CASE
+            WHEN {alias}.video_width >= 7680 OR {alias}.video_height >= 4200 THEN '4320P'
+            WHEN {alias}.video_width >= 3840 OR {alias}.video_height >= 2100 THEN '2160P'
+            WHEN {alias}.video_height >= 1300 THEN '1440P'
+            WHEN {alias}.video_width >= 1920 OR {alias}.video_height >= 1000 THEN '1080P'
+            WHEN {alias}.video_width >= 1280 OR {alias}.video_height >= 700 THEN '720P'
+            WHEN {alias}.video_width >= 854 OR {alias}.video_height >= 480 THEN '480P'
+            WHEN {alias}.video_height >= 300 THEN '360P'
             WHEN trim(COALESCE({alias}.quality_id, '')) = '' THEN NULL
             ELSE upper(trim({alias}.quality_id))
          END"
     )
 }
 
-fn quality_label_from_media_analysis(analysis: &MediaFileAnalysis) -> Option<String> {
-    quality_label_from_video_height(analysis.video_height).map(str::to_string)
-}
-
-fn quality_label_from_video_height(height: Option<i32>) -> Option<&'static str> {
-    match height? {
-        h if h >= 2100 => Some("2160p"),
-        h if h >= 1000 => Some("1080p"),
-        h if h >= 700 => Some("720p"),
-        h if h >= 480 => Some("480p"),
-        _ => None,
-    }
-}
-
 fn quality_rank_expression(alias: &str) -> String {
     format!(
-        "CASE upper(trim(COALESCE({alias}.quality_id, '')))
-            WHEN '4320P' THEN 0
-            WHEN '2160P' THEN 1
-            WHEN '1440P' THEN 2
-            WHEN '1080P' THEN 3
-            WHEN '1080I' THEN 4
-            WHEN '720P' THEN 5
-            WHEN '480P' THEN 6
-            WHEN '360P' THEN 7
-            ELSE 999
+        "CASE
+            WHEN {alias}.video_width >= 7680 OR {alias}.video_height >= 4200 THEN 0
+            WHEN {alias}.video_width >= 3840 OR {alias}.video_height >= 2100 THEN 1
+            WHEN {alias}.video_height >= 1300 THEN 2
+            WHEN {alias}.video_width >= 1920 OR {alias}.video_height >= 1000 THEN 3
+            WHEN {alias}.video_width >= 1280 OR {alias}.video_height >= 700 THEN 5
+            WHEN {alias}.video_width >= 854 OR {alias}.video_height >= 480 THEN 6
+            WHEN {alias}.video_height >= 300 THEN 7
+            ELSE CASE upper(trim(COALESCE({alias}.quality_id, '')))
+                WHEN '4320P' THEN 0
+                WHEN '2160P' THEN 1
+                WHEN '1440P' THEN 2
+                WHEN '1080P' THEN 3
+                WHEN '1080I' THEN 4
+                WHEN '720P' THEN 5
+                WHEN '480P' THEN 6
+                WHEN '360P' THEN 7
+                ELSE 999
+            END
          END"
     )
 }
@@ -1329,6 +1326,35 @@ mod tests {
                 .await
                 .expect("season pack should link");
         }
+        media_files
+            .update_media_file_analysis(
+                &pack_file_id,
+                MediaFileAnalysis {
+                    video_codec: None,
+                    video_width: Some(1920),
+                    video_height: Some(800),
+                    video_bitrate_kbps: None,
+                    video_bit_depth: None,
+                    video_hdr_format: None,
+                    video_frame_rate: None,
+                    video_profile: None,
+                    audio_codec: None,
+                    audio_profile: None,
+                    audio_channels: None,
+                    audio_bitrate_kbps: None,
+                    audio_languages: vec![],
+                    audio_streams: vec![],
+                    subtitle_languages: vec![],
+                    subtitle_codecs: vec![],
+                    subtitle_streams: vec![],
+                    has_multiaudio: false,
+                    duration_seconds: None,
+                    num_chapters: None,
+                    container_format: None,
+                },
+            )
+            .await
+            .expect("season pack analysis should update");
 
         let summaries = media_files
             .list_cutoff_unmet_quality_summaries(std::slice::from_ref(&title.id))
@@ -1337,9 +1363,10 @@ mod tests {
 
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].title_id, title.id);
-        assert_eq!(summaries[0].quality_tier, "720P");
+        assert_eq!(summaries[0].quality_tier, "1080P");
         assert_eq!(summaries[0].season_number.as_deref(), Some("1"));
         assert_eq!(summaries[0].episode_number.as_deref(), Some("1"));
+        assert_eq!(summaries[1].quality_tier, "1080P");
         assert_eq!(summaries[1].season_number.as_deref(), Some("1"));
         assert_eq!(summaries[1].episode_number.as_deref(), Some("2"));
 
@@ -1562,8 +1589,8 @@ mod tests {
                     video_codec: Some(
                         scryer_application::VideoCodec::parse("hevc").expect("parse codec"),
                     ),
-                    video_width: Some(3840),
-                    video_height: Some(2160),
+                    video_width: Some(1920),
+                    video_height: Some(800),
                     video_bitrate_kbps: None,
                     video_bit_depth: Some(10),
                     video_hdr_format: Some("HDR10".to_string()),
@@ -1599,8 +1626,8 @@ mod tests {
             .expect("list media files should succeed");
 
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].quality_label.as_deref(), Some("2160p"));
-        assert_eq!(files[0].resolution.as_deref(), Some("2160p"));
+        assert_eq!(files[0].quality_label.as_deref(), Some("720p"));
+        assert_eq!(files[0].resolution.as_deref(), Some("720p"));
         assert_eq!(files[0].source_type.as_deref(), Some("WEB-DL"));
         assert_eq!(
             files[0].audio_profile.as_deref(),
@@ -1611,6 +1638,12 @@ mod tests {
             files[0].audio_streams[0].profile.as_deref(),
             Some("DTS-HD MA + DTS:X IMAX")
         );
+        let quality_summaries = media_files
+            .list_title_quality_summaries(std::slice::from_ref(&title.id))
+            .await
+            .expect("quality summaries should succeed");
+        assert_eq!(quality_summaries.len(), 1);
+        assert_eq!(quality_summaries[0].quality_tier, "1080P");
 
         let _ = std::fs::remove_file(db);
     }

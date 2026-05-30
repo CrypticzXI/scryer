@@ -1,5 +1,5 @@
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 
@@ -12,6 +12,8 @@ type ConfirmDialogProps = {
   contentId?: string;
   confirmButtonId?: string;
   cancelButtonId?: string;
+  confirmButtonVariant?: ComponentProps<typeof Button>["variant"];
+  confirmButtonClassName?: string;
   isBusy?: boolean;
   confirmDisabled?: boolean;
   children?: ReactNode;
@@ -28,6 +30,8 @@ export function ConfirmDialog({
   contentId,
   confirmButtonId,
   cancelButtonId,
+  confirmButtonVariant = "destructive",
+  confirmButtonClassName,
   isBusy = false,
   confirmDisabled = false,
   children,
@@ -82,7 +86,8 @@ export function ConfirmDialog({
           <Button
             id={confirmButtonId}
             type="button"
-            variant="destructive"
+            variant={confirmButtonVariant}
+            className={confirmButtonClassName}
             onClick={onConfirm}
             disabled={isBusy || confirmDisabled}
           >

@@ -14,6 +14,7 @@ pub struct MediaSettings {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: bool,
     pub plexmatch_write_on_import: Option<bool>,
+    pub import_mode: ImportMode,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateMediaSettings {
@@ -31,6 +32,7 @@ pub struct UpdateMediaSettings {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
+    pub import_mode: Option<ImportMode>,
 }
 fn rename_template_global_key(facet: &MediaFacet) -> &'static str {
     match facet {
@@ -73,6 +75,17 @@ fn nfo_write_on_import_key(facet: &MediaFacet) -> &'static str {
         MediaFacet::Series => NFO_WRITE_ON_IMPORT_SERIES_KEY,
         MediaFacet::Anime => NFO_WRITE_ON_IMPORT_ANIME_KEY,
     }
+}
+fn parse_import_mode_setting(raw: Option<String>) -> AppResult<Option<ImportMode>> {
+    raw.map(|value| {
+        ImportMode::from_setting(&value).map_err(|message| {
+            AppError::Validation(format!(
+                "invalid {IMPORT_MODE_KEY} setting value '{}': {message}",
+                value.trim()
+            ))
+        })
+    })
+    .transpose()
 }
 fn extract_languages_from_required_audio_rego(rego: &str) -> Vec<String> {
     for line in rego.lines() {
@@ -162,6 +175,38 @@ impl AppUseCase {
         }
 
         Ok(Vec::new())
+    }
+}
+impl AppUseCase {
+    pub(crate) async fn resolve_import_mode(
+        &self,
+        library_id: Option<&str>,
+        facet: &MediaFacet,
+    ) -> AppResult<ImportMode> {
+        if let Some(library_id) = library_id
+            && let Some(value) = parse_import_mode_setting(
+                self.read_setting_string_value_explicit(IMPORT_MODE_KEY, Some(library_id))
+                    .await?,
+            )?
+        {
+            return Ok(value);
+        }
+
+        if let Some(value) = parse_import_mode_setting(
+            self.read_setting_string_value_explicit(IMPORT_MODE_KEY, Some(facet.as_str()))
+                .await?,
+        )? {
+            return Ok(value);
+        }
+
+        if let Some(value) = parse_import_mode_setting(
+            self.read_setting_string_value(IMPORT_MODE_KEY, None)
+                .await?,
+        )? {
+            return Ok(value);
+        }
+
+        Ok(ImportMode::HardlinkOrCopy)
     }
 }
 impl AppUseCase {
@@ -374,6 +419,7 @@ impl AppUseCase {
                 ),
                 None => None,
             },
+            import_mode: self.resolve_import_mode(None, &facet).await?,
         })
     }
 }
@@ -539,6 +585,22 @@ impl AppUseCase {
                 )
                 .await?;
             changed_keys.push(key.to_string());
+        }
+
+        if let Some(value) = input.import_mode {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    IMPORT_MODE_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&value.as_str())?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(IMPORT_MODE_KEY.to_string());
         }
 
         if facet == MediaFacet::Anime {

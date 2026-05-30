@@ -33,6 +33,7 @@ import type {
   RootFolderOption,
   ScoringPersonaId,
 } from "@/lib/types";
+import type { ImportMode } from "@/lib/types/settings";
 import type { DownloadClientRoutingSettingsByClient } from "@/lib/types/download-clients";
 import {
   buildDownloadClientRoutingState,
@@ -59,6 +60,11 @@ const BOOLEAN_OVERRIDE_OPTIONS = [
   { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
   { value: BOOLEAN_TRUE_VALUE, labelKey: "label.enabled" },
   { value: BOOLEAN_FALSE_VALUE, labelKey: "label.disabled" },
+] as const;
+const IMPORT_MODE_OPTIONS = [
+  { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
+  { value: "hardlink_or_copy", labelKey: "settings.importModeHardlinkCopy" },
+  { value: "move", labelKey: "settings.importModeMove" },
 ] as const;
 
 type LibraryMutationInput = {
@@ -172,6 +178,12 @@ function recapPolicyLabelKey(value: string | null | undefined): string {
     : "settings.recapPolicyDownloadAll";
 }
 
+function importModeLabelKey(value: ImportMode | null | undefined): string {
+  return value === "move"
+    ? "settings.importModeMove"
+    : "settings.importModeHardlinkCopy";
+}
+
 export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySettingsPanel({
   facet,
   settingsTitle,
@@ -213,6 +225,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [draftMonitorFillerMovies, setDraftMonitorFillerMovies] = React.useState(INHERIT_VALUE);
   const [draftNfoWriteOnImport, setDraftNfoWriteOnImport] = React.useState(INHERIT_VALUE);
   const [draftPlexmatchWriteOnImport, setDraftPlexmatchWriteOnImport] = React.useState(INHERIT_VALUE);
+  const [draftImportMode, setDraftImportMode] = React.useState(INHERIT_VALUE);
   const [draftDownloadClientRoutingMode, setDraftDownloadClientRoutingMode] =
     React.useState<"inherit" | "custom">("inherit");
   const [draftDownloadClientRouting, setDraftDownloadClientRouting] =
@@ -266,6 +279,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftPlexmatchWriteOnImport(
         booleanOverrideSelectValue(settings?.plexmatchWriteOnImportOverride),
       );
+      setDraftImportMode(settings?.importModeOverride ?? INHERIT_VALUE);
     },
     [],
   );
@@ -306,6 +320,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftMonitorFillerMovies(INHERIT_VALUE);
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+      setDraftImportMode(INHERIT_VALUE);
       setDraftDownloadClientRoutingMode("inherit");
       setDraftDownloadClientRouting({});
       setDraftDownloadClientRoutingOrder([]);
@@ -476,12 +491,15 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       plexmatchWriteOnImport: showPlexmatch
         ? booleanOverrideFromSelectValue(draftPlexmatchWriteOnImport)
         : null,
+      importMode:
+        draftImportMode === INHERIT_VALUE ? null : (draftImportMode as ImportMode),
       indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
       downloadClientRouting: draftDownloadClientRoutingEntries,
     }),
     [
       draftDownloadClientRoutingEntries,
       draftFillerPolicy,
+      draftImportMode,
       draftInterSeasonMovies,
       draftMonitorFillerMovies,
       draftMonitorSpecials,
@@ -512,6 +530,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         settingsDraft.nfoWriteOnImport !== savedSettings.nfoWriteOnImportOverride ||
         settingsDraft.plexmatchWriteOnImport !==
           savedSettings.plexmatchWriteOnImportOverride ||
+        settingsDraft.importMode !== savedSettings.importModeOverride ||
         (draftDownloadClientRoutingMode === "custom") !==
           Boolean(savedDownloadClientRoutingEntries) ||
         (draftDownloadClientRoutingMode === "custom" &&
@@ -547,6 +566,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftMonitorFillerMovies(INHERIT_VALUE);
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+      setDraftImportMode(INHERIT_VALUE);
       setDraftDownloadClientRoutingMode("inherit");
       setDraftDownloadClientRouting({});
       setDraftDownloadClientRoutingOrder([]);
@@ -625,6 +645,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setDraftMonitorFillerMovies(INHERIT_VALUE);
     setDraftNfoWriteOnImport(INHERIT_VALUE);
     setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
+    setDraftImportMode(INHERIT_VALUE);
     setDraftDownloadClientRoutingMode("inherit");
     setDraftDownloadClientRouting({});
     setDraftDownloadClientRoutingOrder([]);
@@ -1061,6 +1082,38 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             (choice) => choice.value === savedSettings.scoringPersona,
                           )?.labelKey ?? "qualityProfile.personaBalanced",
                         ),
+                      })}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
+                <div className="max-w-md space-y-2">
+                  <Label>{t("settings.importModeLabel")}</Label>
+                  <Select
+                    value={draftImportMode}
+                    onValueChange={setDraftImportMode}
+                    disabled={settingsBusy}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {IMPORT_MODE_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {t(option.labelKey)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.importModeDescription")}
+                  </p>
+                  {savedSettings ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.libraryEffectiveProfile", {
+                        value: t(importModeLabelKey(savedSettings.importMode)),
                       })}
                     </p>
                   ) : null}

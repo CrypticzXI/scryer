@@ -113,6 +113,11 @@ impl AuthRuntimeStateHandle {
 #[derive(Clone, Copy)]
 pub struct ConnectionAuthEpoch(pub u64);
 
+#[derive(Clone, Copy, Default)]
+pub struct MfaVerification {
+    pub verified_until: Option<i64>,
+}
+
 #[derive(Clone)]
 pub struct ApiContext {
     pub app: AppUseCase,
@@ -236,6 +241,24 @@ pub fn to_gql_error(err: AppError) -> Error {
                 extensions.set("code", "PLUGIN_INSTALL_IN_PROGRESS");
             })
         }
+        AppError::TotpStepUpRequired(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "TOTP_STEP_UP_REQUIRED");
+            })
+        }
+        AppError::TotpEnrollmentRequired(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "TOTP_ENROLLMENT_REQUIRED");
+            })
+        }
+        AppError::TotpInvalidCode(message) => Error::new(message).extend_with(|_, extensions| {
+            extensions.set("code", "TOTP_INVALID_CODE");
+        }),
+        AppError::TotpRecoveryCodeUsed(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "TOTP_RECOVERY_CODE_USED");
+            })
+        }
         _ => Error::new(err.to_string()),
     }
 }
@@ -286,4 +309,10 @@ pub fn current_user_from_ctx(ctx: &Context<'_>) -> Option<User> {
     }
 
     ctx.data_opt::<User>().cloned()
+}
+
+pub fn mfa_verification_from_ctx(ctx: &Context<'_>) -> MfaVerification {
+    ctx.data_opt::<MfaVerification>()
+        .copied()
+        .unwrap_or_default()
 }

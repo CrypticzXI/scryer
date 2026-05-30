@@ -37,6 +37,7 @@ export const NFO_WRITE_ON_IMPORT_ANIME_KEY = "nfo.write_on_import.anime";
 // Plexmatch hint writing on import (series/anime only)
 export const PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY = "plexmatch.write_on_import.series";
 export const PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY = "plexmatch.write_on_import.anime";
+export const IMPORT_MODE_KEY = "import.mode";
 
 // --- Derived from registry ---
 

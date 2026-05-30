@@ -73,7 +73,7 @@ function providerConnections(
 
   return ids.map((id) => ({
     id,
-    displayName: id,
+    displayName: provider === "jellyfin" ? "Jellyfin" : id,
     userVisibleUrl: null,
     baseUrl: null,
     machineId: null,
@@ -84,6 +84,22 @@ function providerConnectionLabel(connection: AuthProviderConnection): string {
   return connection.userVisibleUrl
     ? `${connection.displayName} (${connection.userVisibleUrl})`
     : connection.displayName;
+}
+
+function inviteConnectionLabel(
+  settings: AuthProviderSettings,
+  invite: LinkedAccount,
+): string {
+  const connection = providerConnections(settings, invite.provider).find(
+    (candidate) => candidate.id === invite.connectionId,
+  );
+  if (connection) {
+    return providerConnectionLabel(connection);
+  }
+
+  return invite.provider === "jellyfin"
+    ? providerLabel(invite.provider)
+    : invite.connectionId;
 }
 
 function providerIdentifierLabel(provider: ExternalAccountProvider, t: ReturnType<typeof useTranslate>): string {
@@ -325,7 +341,7 @@ export function ExternalAccountInvitesPanel({
                   <TableRow key={invite.id}>
                     <TableCell>{usersById.get(invite.userId) ?? invite.userId}</TableCell>
                     <TableCell>{providerLabel(invite.provider)}</TableCell>
-                    <TableCell>{invite.connectionId}</TableCell>
+                    <TableCell>{inviteConnectionLabel(authProviderSettings, invite)}</TableCell>
                     <TableCell>{providerIdentityLabel(invite)}</TableCell>
                     <TableCell>
                       <span

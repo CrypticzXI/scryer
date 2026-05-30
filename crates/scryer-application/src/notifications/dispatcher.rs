@@ -1050,10 +1050,13 @@ fn media_file_payload_from_record(
         previous_path: media_file.original_file_path.clone(),
         recycle_bin_path: None,
         size_bytes: Some(media_file.size_bytes),
-        quality: crate::media::release_labels::quality_from_video_height(media_file.video_height)
-            .map(str::to_string)
-            .or_else(|| media_file.quality_label.clone())
-            .or_else(|| media_file.resolution.clone()),
+        quality: crate::media::release_labels::quality_from_video_dimensions(
+            media_file.video_width,
+            media_file.video_height,
+        )
+        .map(str::to_string)
+        .or_else(|| media_file.quality_label.clone())
+        .or_else(|| media_file.resolution.clone()),
         release_group: media_file.release_group.clone(),
         scene_name: media_file.scene_name.clone(),
         audio_languages: media_file.audio_languages.clone(),

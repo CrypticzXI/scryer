@@ -114,8 +114,8 @@ use scryer_domain::{
     AppPermission, AppPermissionMask, BlocklistEntry, CalendarEpisode, Collection, CollectionType,
     CompletedDownload, DomainEvent, DomainEventFilter, DomainEventType, DownloadClientConfig,
     DownloadQueueItem, DownloadQueueState, Episode, ExternalId, HistoryEvent, Id, ImportFileResult,
-    ImportRecord, ImportResult, ImportStatus, IndexerConfig, Library, LibraryGrant, MediaFacet,
-    MediaRequest, NewDomainEvent, NewDownloadClientConfig, NewIndexerConfig, NewTitle,
+    ImportMode, ImportRecord, ImportResult, ImportStatus, IndexerConfig, Library, LibraryGrant,
+    MediaFacet, MediaRequest, NewDomainEvent, NewDownloadClientConfig, NewIndexerConfig, NewTitle,
     PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput,
     RuleSet, SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord,
     User,
@@ -318,9 +318,9 @@ pub use ports::{
     RuleSetRepository, RuntimePluginLoad, SettingsRepository, ShowRepository, StagedNzbStore,
     SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
     SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, UserExternalAccountRepository, UserRepository,
-    VerifiedExternalIdentity, WantedItemRepository, WebauthnRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository,
+    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
+    UserRepository, VerifiedExternalIdentity, WantedItemRepository, WebauthnRepository,
+    WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
@@ -361,16 +361,16 @@ pub use settings::keys::{
     DEFAULT_RENAME_TEMPLATE_ANIME, DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES,
     DEFAULT_SERIES_LIBRARY_PATH, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
     DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
-    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, INDEXER_ROUTING_SETTINGS_KEY,
-    LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
-    METADATA_LANGUAGE_KEY, MOVIES_PATH_KEY, MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY,
-    NFO_WRITE_ON_IMPORT_MOVIE_KEY, NFO_WRITE_ON_IMPORT_SERIES_KEY,
-    NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY,
-    PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY, PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, POST_PROCESSING_SCRIPT_ANIME_KEY,
-    POST_PROCESSING_SCRIPT_MOVIE_KEY, POST_PROCESSING_SCRIPT_SERIES_KEY,
-    POST_PROCESSING_TIMEOUT_KEY, RECYCLE_BIN_ENABLED_KEY, RECYCLE_BIN_PATH_KEY,
-    RECYCLE_BIN_RETENTION_DAYS_KEY, RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
+    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
+    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
+    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY, MOVIES_PATH_KEY,
+    MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY, NFO_WRITE_ON_IMPORT_MOVIE_KEY,
+    NFO_WRITE_ON_IMPORT_SERIES_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY,
+    NZBGET_RECENT_PRIORITY_SETTING_KEY, PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY,
+    PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+    POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
+    POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, RECYCLE_BIN_ENABLED_KEY,
+    RECYCLE_BIN_PATH_KEY, RECYCLE_BIN_RETENTION_DAYS_KEY, RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
     RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
     RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY,
     RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY,
@@ -380,7 +380,7 @@ pub use settings::keys::{
     REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_PATH_KEY, SERIES_ROOT_FOLDERS_KEY,
     SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
     SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY,
-    TLS_KEY_PATH_KEY,
+    TLS_KEY_PATH_KEY, TOTP_REQUIRE_CONFIG_STEP_UP_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
 pub(crate) use types::JwtClaims;
 pub use types::SmgVersionCompatibilityNotice;
@@ -403,6 +403,8 @@ pub use types::{
     TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
     TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord, TitleMediaFile,
     TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary, TitleReleaseBlocklistEntry,
+    TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
+    TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,
     UpdateRecycleBinSettings, WantedCompleteTransition, WantedGrabTransition, WantedItem,
     WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
     WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
@@ -434,6 +436,18 @@ pub enum AppError {
 
     #[error("{0}")]
     DownloadFeedbackTimeout(String),
+
+    #[error("{0}")]
+    TotpStepUpRequired(String),
+
+    #[error("{0}")]
+    TotpEnrollmentRequired(String),
+
+    #[error("{0}")]
+    TotpInvalidCode(String),
+
+    #[error("{0}")]
+    TotpRecoveryCodeUsed(String),
 
     #[error("repository: {0}")]
     Repository(String),

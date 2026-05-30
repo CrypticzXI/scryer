@@ -82,6 +82,7 @@ async fn import_series_download(
     let mut last_rejection_skip_reason: Option<ImportSkipReason> = None;
     let mut imported_updates: Vec<NotificationMediaUpdate> = Vec::new();
     let mut imported_episode_ids: Vec<String> = Vec::new();
+    let mut imported_link_type: Option<scryer_domain::ImportStrategy> = None;
     let expected_episode_ids =
         expected_episode_ids_for_completed_download(app, title, completed).await;
 
@@ -105,11 +106,15 @@ async fn import_series_download(
             Ok(EpisodeImportOutcome::Imported {
                 dest_path,
                 episode_ids,
+                link_type,
                 ..
             }) => {
                 imported_count += 1;
                 imported_updates.push(NotificationMediaUpdate::created(dest_path));
                 imported_episode_ids.extend(episode_ids);
+                if link_type == Some(scryer_domain::ImportStrategy::Move) {
+                    imported_link_type = link_type;
+                }
             }
             Ok(EpisodeImportOutcome::Skipped { .. }) => skipped_count += 1,
             Ok(EpisodeImportOutcome::Rejected { rejection, .. }) => {
@@ -176,7 +181,7 @@ async fn import_series_download(
         quality: None,
         episode_ids: imported_episode_ids.clone(),
         file_size_bytes: None,
-        link_type: None,
+        link_type: imported_link_type,
         error_message,
         started_at,
         completed_at: Utc::now(),
@@ -218,6 +223,7 @@ enum EpisodeImportOutcome {
         episode_ids: Vec<String>,
         imported_media_file_id: Option<String>,
         reason_code: Option<String>,
+        link_type: Option<scryer_domain::ImportStrategy>,
     },
     Skipped {
         message: String,

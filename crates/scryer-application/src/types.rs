@@ -1118,6 +1118,67 @@ pub struct PasskeySummary {
     pub last_used_at: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpCredentialRecord {
+    pub id: String,
+    pub user_id: String,
+    pub secret_base32: String,
+    pub algorithm: String,
+    pub digits: i32,
+    pub period_seconds: i32,
+    pub last_accepted_step: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpEnrollmentChallengeRecord {
+    pub id: String,
+    pub user_id: String,
+    pub secret_base32: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpRecoveryCodeRecord {
+    pub id: String,
+    pub user_id: String,
+    pub code_hash: String,
+    pub created_at: String,
+    pub used_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpFailedAttemptRecord {
+    pub id: String,
+    pub user_id: String,
+    pub attempted_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpStatus {
+    pub enabled: bool,
+    pub created_at: Option<String>,
+    pub last_used_at: Option<String>,
+    pub recovery_codes_remaining: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpEnrollmentStart {
+    pub challenge_id: String,
+    pub otpauth_url: String,
+    pub secret_base32: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpEnrollmentComplete {
+    pub status: TotpStatus,
+    pub recovery_codes: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct JwtClaims {
     pub sub: String,
@@ -1130,6 +1191,8 @@ pub(crate) struct JwtClaims {
     pub app_permissions: Vec<String>,
     #[serde(default, rename = "libraryPermissions")]
     pub library_permissions: Vec<JwtLibraryPermissionClaim>,
+    #[serde(default, rename = "mfaVerifiedUntil")]
+    pub mfa_verified_until: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

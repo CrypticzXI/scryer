@@ -219,14 +219,19 @@ pub(crate) fn parse_library_filename(
             .linked_episode
             .as_ref()
             .map(parsed_episode_metadata_from_episode);
-        parsed_release = synthesize_release_metadata(&raw_name, input, episode_identity.clone());
+        parsed_release = synthesize_release_metadata_with_optional_provenance(
+            &raw_name,
+            input,
+            episode_identity.clone(),
+            &mut release_fallback_used,
+        );
         return LibraryFilenameParse {
             query_evidence: query_build.evidence,
             parsed_release,
             episode_identity,
             target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
             strategy: LibraryFilenameParseStrategy::CanonicalEpisode,
-            release_fallback_used: false,
+            release_fallback_used,
         };
     }
 
@@ -234,15 +239,19 @@ pub(crate) fn parse_library_filename(
         if let Some(interstitial) =
             resolve_interstitial_movie_from_episode_identity(input, &episode_identity)
         {
-            parsed_release =
-                synthesize_release_metadata(&raw_name, input, Some(episode_identity.clone()));
+            parsed_release = synthesize_release_metadata_with_optional_provenance(
+                &raw_name,
+                input,
+                Some(episode_identity.clone()),
+                &mut release_fallback_used,
+            );
             return LibraryFilenameParse {
                 query_evidence: query_build.evidence,
                 parsed_release,
                 episode_identity: Some(episode_identity),
                 target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
                 strategy: LibraryFilenameParseStrategy::CanonicalEpisode,
-                release_fallback_used: false,
+                release_fallback_used,
             };
         }
 
@@ -250,10 +259,11 @@ pub(crate) fn parse_library_filename(
         let episodes =
             resolve_episodes_from_identity(&episode_identity, input.collections, input.episodes);
         if !episodes.is_empty() {
-            parsed_release = synthesize_release_metadata(
+            parsed_release = synthesize_release_metadata_with_optional_provenance(
                 &raw_name,
                 input,
                 Some(target_episode_identity.clone()),
+                &mut release_fallback_used,
             );
             return LibraryFilenameParse {
                 query_evidence: query_build.evidence,
@@ -1488,77 +1498,30 @@ fn synthesize_release_metadata(
         parsed.tmdb_id = walk.tmdb_id;
         parsed.tvdb_id = walk.tvdb_id;
     }
-    enrich_synthetic_release_provenance_from_filename(&mut parsed, raw_name);
     parsed.episode = episode_identity;
     parsed
 }
 
-fn enrich_synthetic_release_provenance_from_filename(
-    parsed: &mut crate::ParsedReleaseMetadata,
+fn synthesize_release_metadata_with_optional_provenance(
     raw_name: &str,
-) {
-    if parsed.source.is_none() {
-        parsed.source = detect_filename_source(raw_name);
+    input: &LibraryFilenameParseInput<'_>,
+    episode_identity: Option<crate::ParsedEpisodeMetadata>,
+    release_fallback_used: &mut bool,
+) -> crate::ParsedReleaseMetadata {
+    let mut parsed = synthesize_release_metadata(raw_name, input, episode_identity);
+    if should_parse_release_provenance(input, raw_name) {
+        let fallback = parse_release_fallback(input, raw_name);
+        fill_missing_release_metadata(&mut parsed, &fallback, input.facet);
+        *release_fallback_used = true;
     }
-    if !parsed.is_remux && filename_remux_regex().is_match(raw_name) {
-        parsed.is_remux = true;
-    }
+    parsed
 }
 
-fn detect_filename_source(raw_name: &str) -> Option<crate::ReleaseSource> {
-    filename_source_regex()
-        .captures(raw_name)
-        .and_then(|captures| captures.name("source"))
-        .and_then(|source| crate::ReleaseSource::parse(source.as_str()))
-}
-
-fn filename_remux_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ix)
-            (?:^|[^A-Z0-9])
-            (?:BD[-._\s]?REMUX|REMUX)
-            (?:[^A-Z0-9]|$)
-            ",
-        )
-        .expect("valid filename remux regex")
-    })
-}
-
-fn filename_source_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ix)
-            (?:^|[^A-Z0-9])
-            (?P<source>
-                WEB[-._\s]?DL
-                | WEB[-._\s]?RIP
-                | WEBDL
-                | WEBRIP
-                | REMUX
-                | BLU[-._\s]?RAY
-                | BDREMUX
-                | BDRIP
-                | BRRIP
-                | BDMV
-                | BDIS?O
-                | BRDISK
-                | HDTV
-                | DVD(?:RIP)?
-                | HQCAM
-                | CAM
-                | TELESYNC
-                | TELECINE
-                | DVDSCR(?:EENER)?
-                | WORKPRINT
-            )
-            (?:[^A-Z0-9]|$)
-            ",
-        )
-        .expect("valid filename source regex")
-    })
+fn should_parse_release_provenance(input: &LibraryFilenameParseInput<'_>, raw_name: &str) -> bool {
+    input.fallback_policy == LibraryFilenameFallbackPolicy::NeedReleaseMetadata
+        && raw_name
+            .split(|ch: char| ch.is_whitespace() || matches!(ch, '[' | ']' | '(' | ')' | '{' | '}'))
+            .any(crate::release_parser::looks_like_release_provenance_token)
 }
 
 fn parsed_episode_metadata_from_episode(episode: &Episode) -> crate::ParsedEpisodeMetadata {
@@ -1908,7 +1871,7 @@ mod tests {
         let episodes = vec![episode("ep-2-3", "2", "3")];
         let input = LibraryFilenameParseInput {
             path: Path::new(
-                "/library/Example Show/Season 02/Example Show - S02E03 - The Episode WEBDL-1080p.mkv",
+                "/library/Example Show/Season 02/Example Show - S02E03 - The Episode.mkv",
             ),
             display_name: None,
             library_root: Some(Path::new("/library")),
@@ -1930,10 +1893,7 @@ mod tests {
         );
         assert!(!parse.release_fallback_used);
         assert_eq!(parse.parsed_release.quality, None);
-        assert_eq!(
-            parse.parsed_release.source,
-            Some(crate::ReleaseSource::WebDl)
-        );
+        assert_eq!(parse.parsed_release.source, None);
         assert_eq!(
             parse
                 .target_episodes()
@@ -1945,12 +1905,12 @@ mod tests {
     }
 
     #[test]
-    fn canonical_new_episode_keeps_remux_source_without_quality_fallback() {
+    fn canonical_new_episode_uses_release_parser_for_provenance_tokens() {
         let title = title("Example Show", MediaFacet::Series);
         let episodes = vec![episode("ep-2-3", "2", "3")];
         let input = LibraryFilenameParseInput {
             path: Path::new(
-                "/library/Example Show/Season 02/Example Show - S02E03 - The Episode 2160p BluRay Remux.mkv",
+                "/library/Example Show/Season 02/Example Show - S02E03 - The Episode 1080p WEB-DL-GROUP.mkv",
             ),
             display_name: None,
             library_root: Some(Path::new("/library")),
@@ -1970,13 +1930,48 @@ mod tests {
             parse.strategy,
             LibraryFilenameParseStrategy::CanonicalEpisode
         );
-        assert!(!parse.release_fallback_used);
-        assert_eq!(parse.parsed_release.quality, None);
+        assert!(parse.release_fallback_used);
+        assert_eq!(
+            parse.parsed_release.source,
+            Some(crate::ReleaseSource::WebDl)
+        );
+        assert_eq!(parse.parsed_release.release_group.as_deref(), Some("GROUP"));
+        assert_eq!(parse.target_episodes()[0].id, "ep-2-3");
+    }
+
+    #[test]
+    fn canonical_new_episode_preserves_remux_provenance_from_fallback() {
+        let title = title("Example Show", MediaFacet::Series);
+        let episodes = vec![episode("ep-2-3", "2", "3")];
+        let input = LibraryFilenameParseInput {
+            path: Path::new(
+                "/library/Example Show/Season 02/Example Show - S02E03 - The Episode 2160p BluRay Remux-GRP.mkv",
+            ),
+            display_name: None,
+            library_root: Some(Path::new("/library")),
+            title_root: Some(Path::new("/library/Example Show")),
+            title: Some(&title),
+            facet: Some(&title.facet),
+            collections: &[],
+            episodes: &episodes,
+            existing_record: None,
+            mode: LibraryFilenameParseMode::TitleScan,
+            fallback_policy: LibraryFilenameFallbackPolicy::NeedReleaseMetadata,
+        };
+
+        let parse = parse_library_filename(&input);
+
+        assert_eq!(
+            parse.strategy,
+            LibraryFilenameParseStrategy::CanonicalEpisode
+        );
+        assert!(parse.release_fallback_used);
         assert!(parse.parsed_release.is_remux);
         assert_eq!(
             crate::release_parser::parsed_release_source_type(&parse.parsed_release).as_deref(),
             Some("Remux")
         );
+        assert_eq!(parse.parsed_release.release_group.as_deref(), Some("GRP"));
     }
 
     #[test]
@@ -2119,7 +2114,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_title_stays_target_aware_on_cheap_path() {
+    fn numeric_title_stays_target_aware_with_provenance_fallback() {
         let title = title("13", MediaFacet::Series);
         let episodes = vec![episode("ep-2-1", "2", "1")];
         let input = LibraryFilenameParseInput {
@@ -2144,9 +2139,9 @@ mod tests {
             parse.strategy,
             LibraryFilenameParseStrategy::CanonicalEpisode
         );
-        assert!(!parse.release_fallback_used);
+        assert!(parse.release_fallback_used);
         assert_eq!(parse.parsed_release.normalized_title, "13");
-        assert_eq!(parse.parsed_release.quality, None);
+        assert_eq!(parse.parsed_release.quality.as_deref(), Some("1080p"));
         assert_eq!(
             parse.parsed_release.source,
             Some(crate::ReleaseSource::WebDl)

@@ -1311,10 +1311,35 @@ impl ImportSkipReason {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    HardlinkOrCopy,
+    Move,
+}
+
+impl ImportMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::HardlinkOrCopy => "hardlink_or_copy",
+            Self::Move => "move",
+        }
+    }
+
+    pub fn from_setting(value: &str) -> Result<Self, String> {
+        match value.trim() {
+            "hardlink_or_copy" => Ok(Self::HardlinkOrCopy),
+            "move" => Ok(Self::Move),
+            other => Err(format!("unsupported import mode: {other}")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ImportStrategy {
     HardLink,
     Copy,
     Symlink,
+    Move,
 }
 
 impl ImportStrategy {
@@ -1323,6 +1348,7 @@ impl ImportStrategy {
             Self::HardLink => "hardlink",
             Self::Copy => "copy",
             Self::Symlink => "symlink",
+            Self::Move => "move",
         }
     }
 }

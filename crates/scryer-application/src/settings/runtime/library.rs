@@ -698,6 +698,13 @@ impl AppUseCase {
         let plexmatch_write_on_import = self
             .resolve_plexmatch_write_on_import(Some(&library.id), &library.facet)
             .await?;
+        let import_mode_override = parse_import_mode_setting(
+            self.read_setting_string_value_explicit(IMPORT_MODE_KEY, Some(&library.id))
+                .await?,
+        )?;
+        let import_mode = self
+            .resolve_import_mode(Some(&library.id), &library.facet)
+            .await?;
         let indexer_routing_override = self.load_indexer_routing_override(&library.id).await?;
         let download_client_routing_override = self
             .load_download_client_routing_override(&library.id)
@@ -724,6 +731,8 @@ impl AppUseCase {
             nfo_write_on_import,
             plexmatch_write_on_import_override,
             plexmatch_write_on_import,
+            import_mode_override,
+            import_mode,
             indexer_routing_override,
             download_client_routing_override,
         })
@@ -905,6 +914,19 @@ impl AppUseCase {
             }
         }
 
+        if let Some(value) = settings.import_mode {
+            self.upsert_scoped_system_setting_json(
+                IMPORT_MODE_KEY,
+                &library.id,
+                &value.as_str(),
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(IMPORT_MODE_KEY, &library.id)
+                .await?;
+        }
+
         if let Some(entries) = settings.indexer_routing {
             let payload = indexer_routing_payload(entries)?;
             self.upsert_scoped_system_setting_json(
@@ -956,6 +978,7 @@ impl AppUseCase {
             ANIME_INTER_SEASON_MOVIES_KEY.to_string(),
             ANIME_MONITOR_FILLER_MOVIES_KEY.to_string(),
             nfo_write_on_import_key(&library.facet).to_string(),
+            IMPORT_MODE_KEY.to_string(),
             INDEXER_ROUTING_SETTINGS_KEY.to_string(),
             DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY.to_string(),
         ];

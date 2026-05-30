@@ -12,17 +12,22 @@ pub(crate) struct UserMutations;
 async fn login_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
+    mfa_verified_until: Option<chrono::DateTime<Utc>>,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .attach_user_authorization(user)
         .await
         .map_err(to_gql_error)?;
-    let token = app.issue_access_token(&user).await.map_err(to_gql_error)?;
+    let token = app
+        .issue_access_token_with_mfa(&user, mfa_verified_until)
+        .await
+        .map_err(to_gql_error)?;
     let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
     Ok(LoginPayload {
         token,
         user: from_user(user),
         expires_at,
+        mfa_verified_until: mfa_verified_until.map(|value| value.to_rfc3339()),
     })
 }
 
@@ -237,7 +242,7 @@ impl UserMutations {
             .federated_login_with_plex(input.connection_id, input.plex_auth_token)
             .await
             .map_err(to_gql_error)?;
-        login_payload_from_user(&app, user).await
+        login_payload_from_user(&app, user, None).await
     }
 
     async fn login_with_jellyfin(
@@ -250,6 +255,25 @@ impl UserMutations {
             .federated_login_with_jellyfin(input.connection_id, input.username, input.password)
             .await
             .map_err(to_gql_error)?;
-        login_payload_from_user(&app, user).await
+        let mfa_verified_until = if app
+            .security_settings()
+            .await
+            .map_err(to_gql_error)?
+            .totp_require_jellyfin_login
+        {
+            let code = input.totp_code.as_deref().ok_or_else(|| {
+                to_gql_error(AppError::TotpStepUpRequired(
+                    "TOTP code is required for Jellyfin login".into(),
+                ))
+            })?;
+            Some(
+                app.verify_totp_for_user(&user, code)
+                    .await
+                    .map_err(to_gql_error)?,
+            )
+        } else {
+            None
+        };
+        login_payload_from_user(&app, user, mfa_verified_until).await
     }
 }

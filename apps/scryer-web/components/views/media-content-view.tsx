@@ -21,6 +21,7 @@ import type {
   Release,
   TitleRecord,
 } from "@/lib/types";
+import type { ImportMode } from "@/lib/types/settings";
 import type { ViewCategoryId } from "./media-content/indexer-category-picker";
 import { MediaLibrarySettingsPanel } from "./media-content/media-library-settings-panel";
 import { IndexerRoutingPanel } from "./media-content/indexer-routing-panel";
@@ -175,6 +176,10 @@ export function MediaContentView({
     setPlexmatchWriteOnImport: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
     >;
+    importMode: Record<ViewCategoryId, ImportMode>;
+    setImportMode: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, ImportMode>>
+    >;
     qualityProfileInheritValue: string;
     toProfileOptions: (profiles: ParsedQualityProfile[]) => QualityProfileOption[];
     handleFacetPersonaSave: (persona: ScoringPersonaId | null) => Promise<void> | void;
@@ -316,6 +321,8 @@ export function MediaContentView({
     setNfoWriteOnImport,
     plexmatchWriteOnImport,
     setPlexmatchWriteOnImport,
+    importMode,
+    setImportMode,
     qualityProfileInheritValue,
     toProfileOptions,
     handleFacetPersonaSave,
@@ -571,6 +578,14 @@ export function MediaContentView({
     [activeQualityScopeId, setPlexmatchWriteOnImport, saveSetting],
   );
 
+  const handleImportModeChange = React.useCallback(
+    (value: ImportMode) => {
+      setImportMode((previous) => ({ ...previous, [activeQualityScopeId]: value }));
+      saveSetting("system", activeQualityScopeId, "import.mode", value);
+    },
+    [activeQualityScopeId, saveSetting, setImportMode],
+  );
+
   const handleIndexerCategoriesChange = React.useCallback(
     (indexerId: string, categories: string[]) => {
       void updateIndexerRoutingForScope(indexerId, {
@@ -749,6 +764,8 @@ export function MediaContentView({
           handleNfoWriteChange={handleNfoWriteChange}
           plexmatchWriteOnImport={plexmatchWriteOnImport}
           handlePlexmatchWriteChange={handlePlexmatchWriteChange}
+          importMode={importMode}
+          handleImportModeChange={handleImportModeChange}
         />
       ) : (
         view === "movies" || view === "series" || view === "anime" ? (

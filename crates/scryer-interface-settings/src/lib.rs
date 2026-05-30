@@ -143,6 +143,8 @@ fn from_security_settings(
     SecuritySettingsPayload {
         form_login_enabled: settings.form_login_enabled,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
+        totp_require_config_step_up: settings.totp_require_config_step_up,
+        totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
@@ -260,6 +262,15 @@ fn from_passkey_summary(summary: scryer_application::PasskeySummary) -> PasskeyS
         friendly_name: summary.friendly_name,
         created_at: summary.created_at,
         last_used_at: summary.last_used_at,
+    }
+}
+
+fn from_totp_status(status: scryer_application::TotpStatus) -> TotpStatusPayload {
+    TotpStatusPayload {
+        enabled: status.enabled,
+        created_at: status.created_at,
+        last_used_at: status.last_used_at,
+        recovery_codes_remaining: status.recovery_codes_remaining,
     }
 }
 
@@ -394,6 +405,15 @@ impl SettingsQueries {
         app.list_my_passkeys(&actor, auth_runtime.snapshot().effective_form_login_enabled)
             .await
             .map(|passkeys| passkeys.into_iter().map(from_passkey_summary).collect())
+            .map_err(to_gql_error)
+    }
+
+    async fn my_totp(&self, ctx: &Context<'_>) -> GqlResult<TotpStatusPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.totp_status(&actor)
+            .await
+            .map(from_totp_status)
             .map_err(to_gql_error)
     }
 

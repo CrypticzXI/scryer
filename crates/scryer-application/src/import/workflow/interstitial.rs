@@ -397,6 +397,10 @@ async fn import_movie_download(
         return Ok(result);
     }
 
+    let import_mode = app
+        .resolve_import_mode(Some(&title.library_id), &title.facet)
+        .await?;
+
     if !existing_files.is_empty() {
         let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
@@ -436,6 +440,7 @@ async fn import_movie_download(
                     &[],
                     media_root_opt.as_deref(),
                     &recycle_config,
+                    import_mode,
                 )
                 .await
                 {
@@ -466,7 +471,8 @@ async fn import_movie_download(
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
-                            link_type: None,
+                            link_type: (import_mode == scryer_domain::ImportMode::Move)
+                                .then_some(scryer_domain::ImportStrategy::Move),
                             error_message: None,
                             started_at,
                             completed_at: Utc::now(),
@@ -530,6 +536,10 @@ async fn import_movie_download(
                         return Ok(result);
                     }
                     Err(err) => {
+                        if import_mode == scryer_domain::ImportMode::Move {
+                            tracing::error!(error = %err, "movie upgrade failed in move mode");
+                            return Err(err);
+                        }
                         tracing::error!(
                             error = %err,
                             "upgrade failed, falling through to normal import"
@@ -544,7 +554,7 @@ async fn import_movie_download(
         .services
         .workflow
         .file_importer
-        .import_file(&source_video, &dest_path)
+        .import_file(&source_video, &dest_path, import_mode)
         .await?;
     persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
 
@@ -928,6 +938,10 @@ async fn import_interstitial_movie_download(
     };
 
     // Upgrade check: if there's an existing file for this interstitial, score and compare
+    let import_mode = app
+        .resolve_import_mode(Some(&title.library_id), &title.facet)
+        .await?;
+
     if !collection_files.is_empty() {
         let (required_audio_languages, persona) = resolve_import_audio_persona(app, title).await;
         let new_decision = crate::post_download_gate::build_import_profile_decision(
@@ -967,6 +981,7 @@ async fn import_interstitial_movie_download(
                     &[],
                     media_root_opt.as_deref(),
                     &recycle_config,
+                    import_mode,
                 )
                 .await
                 {
@@ -1006,7 +1021,8 @@ async fn import_interstitial_movie_download(
                             quality: prepared.parsed.quality.clone(),
                             episode_ids: Vec::new(),
                             file_size_bytes: Some(source_size),
-                            link_type: None,
+                            link_type: (import_mode == scryer_domain::ImportMode::Move)
+                                .then_some(scryer_domain::ImportStrategy::Move),
                             error_message: None,
                             started_at,
                             completed_at: Utc::now(),
@@ -1060,6 +1076,13 @@ async fn import_interstitial_movie_download(
                         return Ok(result);
                     }
                     Err(err) => {
+                        if import_mode == scryer_domain::ImportMode::Move {
+                            tracing::error!(
+                                error = %err,
+                                "interstitial upgrade failed in move mode"
+                            );
+                            return Err(err);
+                        }
                         tracing::error!(
                             error = %err,
                             "interstitial upgrade failed, falling through to normal import"
@@ -1121,7 +1144,7 @@ async fn import_interstitial_movie_download(
         .services
         .workflow
         .file_importer
-        .import_file(&source_video, &dest_path)
+        .import_file(&source_video, &dest_path, import_mode)
         .await?;
     persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
 

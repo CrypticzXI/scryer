@@ -64,6 +64,7 @@ impl AppUseCase {
                     monitor_filler_movies: None,
                     nfo_write_on_import: None,
                     plexmatch_write_on_import: None,
+                    import_mode: None,
                 },
             )
             .await?;

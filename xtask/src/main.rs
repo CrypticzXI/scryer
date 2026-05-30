@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use xtask_support::{TaskContext, ok, run_status, step, warn};
 
+mod media_fixtures;
 mod profile;
 mod seed;
 
@@ -81,6 +82,7 @@ enum Commands {
     Builtins(BuiltinsArgs),
     TrashGuides(TrashGuidesArgs),
     Migrations(MigrationsArgs),
+    MediaFixtures(media_fixtures::MediaFixturesArgs),
     Sdk(SdkArgs),
     Ci(CiArgs),
     Stack(StackArgs),
@@ -315,6 +317,11 @@ fn main() -> Result<()> {
         Commands::Builtins(args) => delegate_builtins(&ctx, &args),
         Commands::TrashGuides(args) => delegate_trash_guides(&ctx, &args),
         Commands::Migrations(args) => delegate_migrations(&ctx, &args),
+        Commands::MediaFixtures(args) => match args.command {
+            media_fixtures::MediaFixturesCommand::Generate(args) => {
+                media_fixtures::generate(&ctx, &args)
+            }
+        },
         Commands::Sdk(args) => delegate_sdk(&ctx, &args),
         Commands::Ci(args) => delegate_ci(&ctx, &args),
         Commands::Stack(args) => match args.command {

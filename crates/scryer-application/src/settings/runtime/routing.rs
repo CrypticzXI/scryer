@@ -27,6 +27,7 @@ pub struct LibrarySettingsOverrideDraft {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
+    pub import_mode: Option<ImportMode>,
     pub indexer_routing: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }
@@ -52,6 +53,8 @@ pub struct LibrarySettings {
     pub nfo_write_on_import: bool,
     pub plexmatch_write_on_import_override: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
+    pub import_mode_override: Option<ImportMode>,
+    pub import_mode: ImportMode,
     pub indexer_routing_override: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing_override: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }

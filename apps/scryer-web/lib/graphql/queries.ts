@@ -810,6 +810,8 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) 
     nfoWriteOnImport
     plexmatchWriteOnImportOverride
     plexmatchWriteOnImport
+    importModeOverride
+    importMode
     indexerRoutingOverride {
       indexerId
       enabled
@@ -1470,7 +1472,8 @@ const mediaSettingsFieldSelection = `
     interSeasonMovies
     monitorFillerMovies
     nfoWriteOnImport
-    plexmatchWriteOnImport`;
+    plexmatchWriteOnImport
+    importMode`;
 
 const libraryPathsFieldSelection = `
     moviePath
@@ -1591,6 +1594,21 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
   }
 }`;
 
+export const requestableLibrariesQuery = `query RequestableLibraries {
+  requestableLibraries: libraries(permission: request) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    roots {
+      id
+      path
+      isDefault
+    }
+  }
+}`;
+
 // Batched query for routing page bootstrap.
 export const routingPageInitQuery = `query RoutingPageInit($scopeId: ContentScopeValue!) {
   downloadClientConfigs {${downloadClientFieldSelection}
@@ -1639,6 +1657,8 @@ export const securitySettingsQuery = `query SecuritySettings {
   securitySettings {
     formLoginEnabled
     skipLoginForLocalIps
+    totpRequireConfigStepUp
+    totpRequireJellyfinLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
@@ -1830,6 +1850,15 @@ export const myPasskeysQuery = `query MyPasskeys {
     friendlyName
     createdAt
     lastUsedAt
+  }
+}`;
+
+export const myTotpQuery = `query MyTotp {
+  myTotp {
+    enabled
+    createdAt
+    lastUsedAt
+    recoveryCodesRemaining
   }
 }`;
 

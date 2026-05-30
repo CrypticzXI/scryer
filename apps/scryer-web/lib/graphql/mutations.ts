@@ -19,7 +19,8 @@ const LOGIN_PAYLOAD_FIELDS = `
     token
     user {${AUTH_USER_FIELDS}
     }
-    expiresAt`;
+    expiresAt
+    mfaVerifiedUntil`;
 
 export const loginMutation = `mutation Login($input: LoginInput!) {
   login(input: $input) {
@@ -58,6 +59,54 @@ ${LOGIN_PAYLOAD_FIELDS}
 
 export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: String!) {
   deleteMyPasskey(id: $id)
+}`;
+
+export const totpEnrollmentStartMutation = `mutation TotpEnrollmentStart {
+  totpEnrollmentStart {
+    challengeId
+    otpauthUrl
+    secretBase32
+    expiresAt
+  }
+}`;
+
+export const totpEnrollmentCompleteMutation = `mutation TotpEnrollmentComplete($input: TotpEnrollmentCompleteInput!) {
+  totpEnrollmentComplete(input: $input) {
+    status {
+      enabled
+      createdAt
+      lastUsedAt
+      recoveryCodesRemaining
+    }
+    recoveryCodes
+  }
+}`;
+
+export const totpVerifyStepUpMutation = `mutation TotpVerifyStepUp($input: TotpVerifyInput!) {
+  totpVerifyStepUp(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const totpDisableMutation = `mutation TotpDisable($input: TotpVerifyInput!) {
+  totpDisable(input: $input) {
+    enabled
+    createdAt
+    lastUsedAt
+    recoveryCodesRemaining
+  }
+}`;
+
+export const totpRegenerateRecoveryCodesMutation = `mutation TotpRegenerateRecoveryCodes($input: TotpVerifyInput!) {
+  totpRegenerateRecoveryCodes(input: $input) {
+    status {
+      enabled
+      createdAt
+      lastUsedAt
+      recoveryCodesRemaining
+    }
+    recoveryCodes
+  }
 }`;
 
 export const createUserMutation = `mutation CreateUser($input: CreateUserInput!) {
@@ -503,6 +552,8 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
   updateSecuritySettings(input: $input) {
     formLoginEnabled
     skipLoginForLocalIps
+    totpRequireConfigStepUp
+    totpRequireJellyfinLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
@@ -546,6 +597,10 @@ export const updateAuthProviderSettingsMutation = `mutation UpdateAuthProviderSe
       machineId
     }
   }
+}`;
+
+export const testJellyfinConnectionMutation = `mutation TestJellyfinConnection($input: TestJellyfinConnectionInput!) {
+  testJellyfinConnection(input: $input)
 }`;
 
 export const createExternalAccountInviteMutation = `mutation CreateExternalAccountInvite($input: CreateExternalAccountInviteInput!) {
@@ -680,7 +735,8 @@ const mediaSettingsFieldSelection = `
     interSeasonMovies
     monitorFillerMovies
     nfoWriteOnImport
-    plexmatchWriteOnImport`;
+    plexmatchWriteOnImport
+    importMode`;
 
 const libraryPathsFieldSelection = `
     moviePath

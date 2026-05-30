@@ -249,6 +249,10 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import_override: settings.plexmatch_write_on_import_override,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
+        import_mode_override: settings
+            .import_mode_override
+            .map(|mode| mode.as_str().to_string()),
+        import_mode: settings.import_mode.as_str().to_string(),
         indexer_routing_override: settings.indexer_routing_override.map(|entries| {
             entries
                 .into_iter()
@@ -325,6 +329,7 @@ pub fn from_media_settings(
         monitor_filler_movies: settings.monitor_filler_movies,
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
+        import_mode: settings.import_mode.as_str().to_string(),
     }
 }
 

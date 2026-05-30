@@ -260,6 +260,14 @@ impl AppUseCase {
     }
 
     pub async fn issue_access_token(&self, actor: &User) -> AppResult<String> {
+        self.issue_access_token_with_mfa(actor, None).await
+    }
+
+    pub async fn issue_access_token_with_mfa(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+    ) -> AppResult<String> {
         let actor = self.user_with_authorization(actor).await?;
         let signing_seed = actor
             .password_hash
@@ -281,6 +289,7 @@ impl AppUseCase {
             username: actor.username.clone(),
             app_permissions,
             library_permissions,
+            mfa_verified_until: mfa_verified_until.map(|value| value.timestamp()),
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -644,6 +653,15 @@ impl AppUseCase {
     }
 
     pub async fn authenticate_token(&self, token: &str) -> AppResult<User> {
+        self.authenticate_token_with_claims(token)
+            .await
+            .map(|(user, _)| user)
+    }
+
+    pub async fn authenticate_token_with_claims(
+        &self,
+        token: &str,
+    ) -> AppResult<(User, Option<i64>)> {
         // Decode claims without signature verification to extract the subject (user ID).
         let unverified = jsonwebtoken::dangerous::insecure_decode::<JwtClaims>(token)
             .map_err(|err| AppError::Unauthorized(format!("malformed token: {err}")))?;
@@ -675,7 +693,7 @@ impl AppUseCase {
             .await?
             .map(|mut user| {
                 user.password_hash = None;
-                user
+                (user, claims.mfa_verified_until)
             })
             .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))
     }

@@ -7,11 +7,15 @@ pub struct ServiceSettings {
 pub struct SecuritySettings {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
+    pub totp_require_config_step_up: bool,
+    pub totp_require_jellyfin_login: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateSecuritySettings {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
+    pub totp_require_config_step_up: bool,
+    pub totp_require_jellyfin_login: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateServiceSettings {
@@ -28,10 +32,20 @@ impl AppUseCase {
             .read_setting_bool_value(SKIP_LOGIN_FOR_LOCAL_IPS_KEY, None)
             .await?
             .unwrap_or(false);
+        let totp_require_config_step_up = self
+            .read_setting_bool_value(TOTP_REQUIRE_CONFIG_STEP_UP_KEY, None)
+            .await?
+            .unwrap_or(false);
+        let totp_require_jellyfin_login = self
+            .read_setting_bool_value(TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, None)
+            .await?
+            .unwrap_or(false);
 
         Ok(SecuritySettings {
             form_login_enabled,
             skip_login_for_local_ips,
+            totp_require_config_step_up,
+            totp_require_jellyfin_login,
         })
     }
 }
@@ -102,6 +116,21 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
             .await?;
 
+        if input.totp_require_config_step_up
+            && self
+                .services
+                .identity
+                .totp
+                .get_credential_for_user(&actor.id)
+                .await?
+                .is_none()
+        {
+            return Err(AppError::TotpEnrollmentRequired(
+                "enable TOTP for your account before requiring TOTP for system configuration"
+                    .into(),
+            ));
+        }
+
         self.upsert_system_setting_json(
             FORM_LOGIN_ENABLED_KEY,
             &input.form_login_enabled,
@@ -114,6 +143,18 @@ impl AppUseCase {
             Some(actor.id.clone()),
         )
         .await?;
+        self.upsert_system_setting_json(
+            TOTP_REQUIRE_CONFIG_STEP_UP_KEY,
+            &input.totp_require_config_step_up,
+            Some(actor.id.clone()),
+        )
+        .await?;
+        self.upsert_system_setting_json(
+            TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+            &input.totp_require_jellyfin_login,
+            Some(actor.id.clone()),
+        )
+        .await?;
 
         self.emit_settings_saved(
             actor,
@@ -122,6 +163,8 @@ impl AppUseCase {
             vec![
                 FORM_LOGIN_ENABLED_KEY.to_string(),
                 SKIP_LOGIN_FOR_LOCAL_IPS_KEY.to_string(),
+                TOTP_REQUIRE_CONFIG_STEP_UP_KEY.to_string(),
+                TOTP_REQUIRE_JELLYFIN_LOGIN_KEY.to_string(),
             ],
         )
         .await;
@@ -129,6 +172,8 @@ impl AppUseCase {
         Ok(SecuritySettings {
             form_login_enabled: input.form_login_enabled,
             skip_login_for_local_ips: input.skip_login_for_local_ips,
+            totp_require_config_step_up: input.totp_require_config_step_up,
+            totp_require_jellyfin_login: input.totp_require_jellyfin_login,
         })
     }
 }

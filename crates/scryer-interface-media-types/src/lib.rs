@@ -874,6 +874,7 @@ pub struct LoginWithJellyfinInput {
     pub connection_id: String,
     pub username: String,
     pub password: String,
+    pub totp_code: Option<String>,
     pub persist_session: Option<bool>,
 }
 
@@ -895,6 +896,40 @@ pub struct LoginPayload {
     pub token: String,
     pub user: UserPayload,
     pub expires_at: String,
+    pub mfa_verified_until: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct TotpEnrollmentCompleteInput {
+    pub challenge_id: String,
+    pub code: String,
+}
+
+#[derive(InputObject)]
+pub struct TotpVerifyInput {
+    pub code: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TotpStatusPayload {
+    pub enabled: bool,
+    pub created_at: Option<String>,
+    pub last_used_at: Option<String>,
+    pub recovery_codes_remaining: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TotpEnrollmentStartPayload {
+    pub challenge_id: String,
+    pub otpauth_url: String,
+    pub secret_base32: String,
+    pub expires_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TotpEnrollmentCompletePayload {
+    pub status: TotpStatusPayload,
+    pub recovery_codes: Vec<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1429,6 +1464,8 @@ pub struct LibrarySettingsPayload {
     pub nfo_write_on_import: bool,
     pub plexmatch_write_on_import_override: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
+    pub import_mode_override: Option<String>,
+    pub import_mode: String,
     pub indexer_routing_override: Option<Vec<IndexerRoutingEntryPayload>>,
     pub download_client_routing_override: Option<Vec<DownloadClientRoutingEntryPayload>>,
 }
@@ -1787,6 +1824,8 @@ pub struct AutoBackupSettingsPayload {
 pub struct SecuritySettingsPayload {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
+    pub totp_require_config_step_up: bool,
+    pub totp_require_jellyfin_login: bool,
     pub effective_form_login_enabled: bool,
     pub env_override_active: bool,
     pub env_override_description: Option<String>,
@@ -1917,6 +1956,7 @@ pub struct MediaSettingsPayload {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: bool,
     pub plexmatch_write_on_import: Option<bool>,
+    pub import_mode: String,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2175,6 +2215,7 @@ pub struct UpdateMediaSettingsInput {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
+    pub import_mode: Option<String>,
 }
 
 #[derive(InputObject, Clone)]
@@ -2209,6 +2250,8 @@ pub struct UpdateAutoBackupSettingsInput {
 pub struct UpdateSecuritySettingsInput {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
+    pub totp_require_config_step_up: bool,
+    pub totp_require_jellyfin_login: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2233,10 +2276,15 @@ pub struct AuthProviderSettingsPayload {
 
 #[derive(InputObject, Clone)]
 pub struct AuthProviderConnectionInput {
-    pub id: String,
+    pub id: Option<String>,
     pub display_name: Option<String>,
     pub base_url: Option<String>,
     pub machine_id: Option<String>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct TestJellyfinConnectionInput {
+    pub connection: AuthProviderConnectionInput,
 }
 
 #[derive(InputObject, Clone)]
@@ -2636,6 +2684,7 @@ pub struct LibrarySettingsInput {
     pub monitor_filler_movies: Option<bool>,
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
+    pub import_mode: Option<String>,
     pub indexer_routing: Option<Vec<IndexerRoutingEntryInput>>,
     pub download_client_routing: Option<Vec<DownloadClientRoutingEntryInput>>,
 }

@@ -58,6 +58,7 @@ export default function LoginPage() {
   const [plexConnectionId, setPlexConnectionId] = useState("");
   const [jellyfinUsername, setJellyfinUsername] = useState("");
   const [jellyfinPassword, setJellyfinPassword] = useState("");
+  const [jellyfinTotpCode, setJellyfinTotpCode] = useState("");
   const [plexSubmitting, setPlexSubmitting] = useState(false);
   const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
   const availableJellyfinConnections =
@@ -65,7 +66,7 @@ export default function LoginPage() {
       ? authProviderSettings.allowedJellyfinConnections
       : (authProviderSettings?.allowedJellyfinConnectionIds ?? []).map((id) => ({
           id,
-          displayName: id,
+          displayName: "Jellyfin",
           userVisibleUrl: null,
           baseUrl: null,
           machineId: null,
@@ -200,6 +201,7 @@ export default function LoginPage() {
               connectionId: jellyfinConnectionId,
               username: jellyfinUsername,
               password: jellyfinPassword,
+              totpCode: jellyfinTotpCode.trim() || null,
               persistSession: true,
             },
           })
@@ -219,6 +221,7 @@ export default function LoginPage() {
       adoptSession,
       jellyfinConnectionId,
       jellyfinPassword,
+      jellyfinTotpCode,
       jellyfinUsername,
       navigate,
       redirectTarget,
@@ -419,6 +422,14 @@ export default function LoginPage() {
                     value={jellyfinPassword}
                     onChange={(event) => setJellyfinPassword(event.target.value)}
                     placeholder={t("auth.password")}
+                  />
+                  <Input
+                    id="jellyfin-totp-code"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={jellyfinTotpCode}
+                    onChange={(event) => setJellyfinTotpCode(event.target.value)}
+                    placeholder={t("auth.totpCode")}
                   />
                   <button
                     type="button"

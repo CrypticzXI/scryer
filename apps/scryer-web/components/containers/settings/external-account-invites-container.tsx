@@ -38,6 +38,15 @@ const DEFAULT_EXTERNAL_INVITE_DRAFT: ExternalInviteDraft = {
   providerUserIdentifier: "",
 };
 
+const EXTERNAL_ACCOUNT_INVITE_SOURCES_CHANGED_EVENT =
+  "scryer:external-account-invite-sources-changed";
+
+export function notifyExternalAccountInviteSourcesChanged() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(EXTERNAL_ACCOUNT_INVITE_SOURCES_CHANGED_EVENT));
+  }
+}
+
 function connectionIdsForProvider(
   settings: AuthProviderSettings,
   provider: ExternalAccountProvider,
@@ -62,7 +71,7 @@ function connectionDescriptorsForProvider(
 
   return connectionIdsForProvider(settings, provider).map((id) => ({
     id,
-    displayName: id,
+    displayName: provider === "jellyfin" ? "Jellyfin" : id,
     userVisibleUrl: null,
     baseUrl: null,
     machineId: null,
@@ -95,7 +104,9 @@ export function ExternalAccountInvitesContainer() {
   }, []);
 
   const refreshExternalInvites = useCallback(async () => {
-    const { data, error } = await client.query(externalAccountInvitesQuery, {}).toPromise();
+    const { data, error } = await client
+      .query(externalAccountInvitesQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
     if (error) throw error;
     setInvites((data?.externalAccountInvites ?? []) as LinkedAccount[]);
   }, [client]);
@@ -104,9 +115,13 @@ export function ExternalAccountInvitesContainer() {
     setLoading(true);
     try {
       const [usersResult, authProviderResult, invitesResult] = await Promise.all([
-        client.query(usersQuery, {}).toPromise(),
-        client.query(authProviderRuntimeSettingsQuery, {}).toPromise(),
-        client.query(externalAccountInvitesQuery, {}).toPromise(),
+        client.query(usersQuery, {}, { requestPolicy: "network-only" }).toPromise(),
+        client
+          .query(authProviderRuntimeSettingsQuery, {}, { requestPolicy: "network-only" })
+          .toPromise(),
+        client
+          .query(externalAccountInvitesQuery, {}, { requestPolicy: "network-only" })
+          .toPromise(),
       ]);
       if (usersResult.error) throw usersResult.error;
       if (authProviderResult.error) throw authProviderResult.error;
@@ -133,6 +148,27 @@ export function ExternalAccountInvitesContainer() {
 
   useEffect(() => {
     void refreshInviteData();
+  }, [refreshInviteData]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleInviteSourcesChanged = () => {
+      void refreshInviteData();
+    };
+
+    window.addEventListener(
+      EXTERNAL_ACCOUNT_INVITE_SOURCES_CHANGED_EVENT,
+      handleInviteSourcesChanged,
+    );
+    return () => {
+      window.removeEventListener(
+        EXTERNAL_ACCOUNT_INVITE_SOURCES_CHANGED_EVENT,
+        handleInviteSourcesChanged,
+      );
+    };
   }, [refreshInviteData]);
 
   useEffect(() => {

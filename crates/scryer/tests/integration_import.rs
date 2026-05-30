@@ -182,6 +182,7 @@ async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &st
                 monitor_filler_movies: None,
                 nfo_write_on_import: None,
                 plexmatch_write_on_import: None,
+                import_mode: None,
             },
         )
         .await

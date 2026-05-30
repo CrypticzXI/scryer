@@ -1,22 +1,33 @@
 import * as React from "react";
 import { useClient } from "urql";
 import { toast } from "sonner";
-import { ExternalAccountInvitesContainer } from "@/components/containers/settings/external-account-invites-container";
+import {
+  ExternalAccountInvitesContainer,
+  notifyExternalAccountInviteSourcesChanged,
+} from "@/components/containers/settings/external-account-invites-container";
 import { SettingsSecuritySection } from "@/components/views/settings/settings-security-section";
 import { disposeWsClient } from "@/lib/graphql/ws-client";
 import {
+  testJellyfinConnectionMutation,
   updateAuthProviderSettingsMutation,
   updateSecuritySettingsMutation,
 } from "@/lib/graphql/mutations";
 import { authProviderSettingsQuery, securitySettingsQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useAuth } from "@/lib/hooks/use-auth";
 import type { AuthProviderSettings, SecuritySettings } from "@/lib/types/settings";
+import {
+  isReportedConnectionFeedbackError,
+  runConnectionFeedback,
+} from "@/lib/utils/connection-feedback";
 import { APP_PERMISSIONS, hasAppPermission } from "@/lib/utils/permissions";
 
 const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   formLoginEnabled: false,
   skipLoginForLocalIps: false,
+  totpRequireConfigStepUp: false,
+  totpRequireJellyfinLogin: false,
   effectiveFormLoginEnabled: false,
   envOverrideActive: false,
   envOverrideDescription: null,
@@ -41,6 +52,7 @@ function errorMessage(error: unknown, fallback: string) {
 export function SettingsSecurityContainer() {
   const client = useClient();
   const t = useTranslate();
+  const setGlobalStatus = useGlobalStatus();
   const { token, user, login, adoptSession, logout } = useAuth();
   const [settings, setSettings] = React.useState<SecuritySettings>(
     DEFAULT_SECURITY_SETTINGS,
@@ -99,10 +111,17 @@ export function SettingsSecurityContainer() {
   const applySecuritySettings = React.useCallback(async (
     formLoginEnabled: boolean,
     skipLoginForLocalIps: boolean,
+    totpRequireConfigStepUp: boolean,
+    totpRequireJellyfinLogin: boolean,
   ) => {
     const { data, error } = await client
       .mutation(updateSecuritySettingsMutation, {
-        input: { formLoginEnabled, skipLoginForLocalIps },
+        input: {
+          formLoginEnabled,
+          skipLoginForLocalIps,
+          totpRequireConfigStepUp,
+          totpRequireJellyfinLogin,
+        },
       })
       .toPromise();
 
@@ -161,6 +180,8 @@ export function SettingsSecurityContainer() {
       const nextSettings = await applySecuritySettings(
         true,
         settings.skipLoginForLocalIps,
+        settings.totpRequireConfigStepUp,
+        settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
       toast.success(
@@ -195,6 +216,8 @@ export function SettingsSecurityContainer() {
     settings.effectiveFormLoginEnabled,
     settings.envOverrideActive,
     settings.skipLoginForLocalIps,
+    settings.totpRequireConfigStepUp,
+    settings.totpRequireJellyfinLogin,
     t,
   ]);
 
@@ -218,6 +241,8 @@ export function SettingsSecurityContainer() {
       const nextSettings = await applySecuritySettings(
         false,
         settings.skipLoginForLocalIps,
+        settings.totpRequireConfigStepUp,
+        settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
       toast.success(
@@ -245,6 +270,8 @@ export function SettingsSecurityContainer() {
     settings.effectiveFormLoginEnabled,
     settings.envOverrideActive,
     settings.skipLoginForLocalIps,
+    settings.totpRequireConfigStepUp,
+    settings.totpRequireJellyfinLogin,
     t,
   ]);
 
@@ -265,6 +292,8 @@ export function SettingsSecurityContainer() {
       const nextSettings = await applySecuritySettings(
         settings.formLoginEnabled,
         enabled,
+        settings.totpRequireConfigStepUp,
+        settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
       toast.success(t("settings.securityPreferenceSaved"));
@@ -288,8 +317,64 @@ export function SettingsSecurityContainer() {
     settings.effectiveFormLoginEnabled,
     settings.formLoginEnabled,
     settings.skipLoginForLocalIps,
+    settings.totpRequireConfigStepUp,
+    settings.totpRequireJellyfinLogin,
     t,
     token,
+  ]);
+
+  const handleTotpConfigStepUpChange = React.useCallback(async (enabled: boolean) => {
+    if (confirmBusy || enabled === settings.totpRequireConfigStepUp) {
+      return;
+    }
+
+    try {
+      const nextSettings = await applySecuritySettings(
+        settings.formLoginEnabled,
+        settings.skipLoginForLocalIps,
+        enabled,
+        settings.totpRequireJellyfinLogin,
+      );
+      setSettings(nextSettings);
+      toast.success(t("settings.securityPreferenceSaved"));
+    } catch (error) {
+      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+    }
+  }, [
+    applySecuritySettings,
+    confirmBusy,
+    settings.formLoginEnabled,
+    settings.skipLoginForLocalIps,
+    settings.totpRequireConfigStepUp,
+    settings.totpRequireJellyfinLogin,
+    t,
+  ]);
+
+  const handleTotpJellyfinLoginChange = React.useCallback(async (enabled: boolean) => {
+    if (confirmBusy || enabled === settings.totpRequireJellyfinLogin) {
+      return;
+    }
+
+    try {
+      const nextSettings = await applySecuritySettings(
+        settings.formLoginEnabled,
+        settings.skipLoginForLocalIps,
+        settings.totpRequireConfigStepUp,
+        enabled,
+      );
+      setSettings(nextSettings);
+      toast.success(t("settings.securityPreferenceSaved"));
+    } catch (error) {
+      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+    }
+  }, [
+    applySecuritySettings,
+    confirmBusy,
+    settings.formLoginEnabled,
+    settings.skipLoginForLocalIps,
+    settings.totpRequireConfigStepUp,
+    settings.totpRequireJellyfinLogin,
+    t,
   ]);
 
   const handleAuthProviderSettingsSave = React.useCallback(async () => {
@@ -309,6 +394,52 @@ export function SettingsSecurityContainer() {
           baseUrl: null,
           machineId: connection.machineId,
         }));
+
+      for (const connection of allowedJellyfinConnections) {
+        if (!connection.baseUrl?.trim()) {
+          continue;
+        }
+
+        const connectionLabel =
+          connection.displayName.trim() || connection.baseUrl.trim() || "Jellyfin";
+
+        await runConnectionFeedback({
+          setGlobalStatus,
+          startMessage: t("status.testingJellyfinConnection", {
+            connection: connectionLabel,
+          }),
+          successMessage: t("status.jellyfinConnectionTestPassed", {
+            connection: connectionLabel,
+          }),
+          failureFallbackMessage: t("status.jellyfinConnectionTestFailed", {
+            connection: connectionLabel,
+          }),
+          announceSuccess: false,
+          run: async () => {
+            const { data: testData, error: testError } = await client
+              .mutation(testJellyfinConnectionMutation, {
+                input: {
+                  connection: {
+                    id: connection.id.trim() || null,
+                    displayName: connection.displayName,
+                    baseUrl: connection.baseUrl,
+                    machineId: null,
+                  },
+                },
+              })
+              .toPromise();
+            if (testError) throw testError;
+            if (!testData?.testJellyfinConnection) {
+              throw new Error(
+                t("status.jellyfinConnectionTestFailed", {
+                  connection: connectionLabel,
+                }),
+              );
+            }
+          },
+        });
+      }
+
       const { data, error } = await client
         .mutation(updateAuthProviderSettingsMutation, {
           input: {
@@ -333,13 +464,17 @@ export function SettingsSecurityContainer() {
         ...DEFAULT_AUTH_PROVIDER_SETTINGS,
         ...data.updateAuthProviderSettings,
       });
+      notifyExternalAccountInviteSourcesChanged();
+      setGlobalStatus(t("settings.securityPreferenceSaved"));
       toast.success(t("settings.securityPreferenceSaved"));
     } catch (error) {
-      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+      if (!isReportedConnectionFeedbackError(error)) {
+        toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+      }
     } finally {
       setAuthProviderSaving(false);
     }
-  }, [authProviderSettings, client, t]);
+  }, [authProviderSettings, client, setGlobalStatus, t]);
 
   return (
     <SettingsSecuritySection
@@ -361,6 +496,8 @@ export function SettingsSecurityContainer() {
       onConfirmDisable={handleConfirmDisable}
       onCancelDisable={handleCancelDisable}
       onSkipLocalIpsChange={handleSkipLocalIpsChange}
+      onTotpConfigStepUpChange={handleTotpConfigStepUpChange}
+      onTotpJellyfinLoginChange={handleTotpJellyfinLoginChange}
       onAuthProviderSettingsChange={setAuthProviderSettings}
       onAuthProviderSettingsSave={handleAuthProviderSettingsSave}
       externalAccountInvitesPanel={

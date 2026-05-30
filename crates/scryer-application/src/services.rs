@@ -1006,6 +1006,7 @@ pub struct AppIdentityServices {
     pub(crate) users: Arc<dyn UserRepository>,
     pub(crate) external_accounts: Arc<dyn UserExternalAccountRepository>,
     pub(crate) webauthn: Arc<dyn WebauthnRepository>,
+    pub(crate) totp: Arc<dyn TotpRepository>,
 }
 
 #[derive(Clone)]
@@ -1246,6 +1247,7 @@ impl AppServices {
                 users,
                 external_accounts: Arc::new(null_repositories::NullUserExternalAccountRepository),
                 webauthn: Arc::new(null_repositories::NullWebauthnRepository),
+                totp: Arc::new(null_repositories::NullTotpRepository),
             },
             events: AppEventServices {
                 domain_events: Arc::new(NullDomainEventRepository),
@@ -1512,6 +1514,11 @@ impl AppServicesBuilder {
         with_webauthn_store,
         identity.webauthn,
         Arc<dyn WebauthnRepository>
+    );
+    app_services_builder_setter!(
+        with_totp_store,
+        identity.totp,
+        Arc<dyn TotpRepository>
     );
     app_services_builder_setter!(
         with_external_account_store,

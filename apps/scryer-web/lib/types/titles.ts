@@ -1,4 +1,5 @@
 import type { DownloadClientRoutingEntry } from "./download-clients";
+import type { ImportMode } from "./settings";
 
 export type Facet = "movie" | "series" | "anime";
 
@@ -126,6 +127,8 @@ export type LibrarySettingsRecord = {
   nfoWriteOnImport: boolean;
   plexmatchWriteOnImportOverride: boolean | null;
   plexmatchWriteOnImport: boolean | null;
+  importModeOverride: ImportMode | null;
+  importMode: ImportMode;
   indexerRoutingOverride: unknown[] | null;
   downloadClientRoutingOverride: DownloadClientRoutingEntry[] | null;
 };
@@ -141,6 +144,7 @@ export type LibrarySettingsDraft = {
   monitorFillerMovies: boolean | null;
   nfoWriteOnImport: boolean | null;
   plexmatchWriteOnImport: boolean | null;
+  importMode: ImportMode | null;
   indexerRouting?: unknown[] | null;
   downloadClientRouting?: DownloadClientRoutingEntry[] | null;
 };
