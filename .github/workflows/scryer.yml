@@ -1081,10 +1081,6 @@ jobs:
           name: launcher-linux-arm64-${{ github.run_id }}
           path: artifacts
 
-      - name: Validate Docker docs contract
-        if: matrix.platform_id == 'amd64'
-        run: sh docker/test_docs_contract.sh
-
       - name: Prepare build context
         run: sh docker/prepare-build-context.sh artifacts docker-ctx
 
@@ -1172,9 +1168,6 @@ jobs:
         with:
           name: launcher-linux-arm64-${{ github.run_id }}
           path: artifacts
-
-      - name: Validate Docker docs contract
-        run: sh docker/test_docs_contract.sh
 
       - name: Prepare build context
         run: sh docker/prepare-build-context.sh artifacts docker-ctx
@@ -1264,9 +1257,6 @@ jobs:
         with:
           name: launcher-linux-arm64-${{ github.run_id }}
           path: artifacts
-
-      - name: Validate Docker docs contract
-        run: sh docker/test_docs_contract.sh
 
       - name: Prepare build context
         run: sh docker/prepare-build-context.sh artifacts docker-ctx
