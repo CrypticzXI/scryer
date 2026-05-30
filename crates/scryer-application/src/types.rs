@@ -101,6 +101,30 @@ pub struct CutoffUnmetItem {
     pub target_tier: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecycleBinSettings {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateRecycleBinSettings {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecycledItem {
+    pub id: String,
+    pub original_path: String,
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub title_id: Option<String>,
+    pub reason: String,
+    pub recycled_at: String,
+    pub media_root: String,
+    pub library_id: String,
+    pub library_name: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct PendingTitleHydration {
     /// Title queued for background metadata hydration.

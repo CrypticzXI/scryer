@@ -4,6 +4,7 @@ use scryer_domain::Title;
 pub enum PersistedTitleReadMode {
     #[default]
     Presentation,
+    Canonical,
     Matching,
 }
 

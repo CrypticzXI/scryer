@@ -2260,6 +2260,10 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn clear_title_image_cache(&self) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn replace_title_image(
             &self,
             _title_id: &str,

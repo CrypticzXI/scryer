@@ -37,6 +37,9 @@ pub const AUTH_ALLOWED_JELLYFIN_CONNECTION_IDS_KEY: &str =
 pub const AUTH_ALLOWED_PLEX_CONNECTION_IDS_KEY: &str = "auth.providers.plex.allowed_connection_ids";
 pub const AUTH_JELLYFIN_CONNECTIONS_KEY: &str = "auth.providers.jellyfin.connections";
 pub const AUTH_PLEX_CONNECTIONS_KEY: &str = "auth.providers.plex.connections";
+pub const RECYCLE_BIN_ENABLED_KEY: &str = "recycle_bin.enabled";
+pub const RECYCLE_BIN_PATH_KEY: &str = "recycle_bin.path";
+pub const RECYCLE_BIN_RETENTION_DAYS_KEY: &str = "recycle_bin.retention_days";
 
 pub(crate) fn default_indexer_routing_categories_for_scope(scope_id: &str) -> Vec<String> {
     match scope_id {

@@ -225,6 +225,8 @@ pub trait TitleImageRepository: Send + Sync {
         limit: usize,
     ) -> AppResult<Vec<TitleImageSyncTask>>;
 
+    async fn clear_title_image_cache(&self) -> AppResult<()>;
+
     async fn replace_title_image(
         &self,
         title_id: &str,
@@ -1005,6 +1007,17 @@ pub trait MediaFileRepository: Send + Sync {
     ) -> AppResult<()>;
 
     async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()>;
+
+    async fn replace_media_file_for_upgrade(
+        &self,
+        old_file_id: &str,
+        replacement_file_id: &str,
+        replacement_file_path: &str,
+    ) -> AppResult<()> {
+        self.delete_media_file(old_file_id).await?;
+        self.update_media_file_path(replacement_file_id, replacement_file_path)
+            .await
+    }
 
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()>;
 

@@ -1487,9 +1487,9 @@ async fn import_movie_download(
             let old_score = existing_file.acquisition_score.unwrap_or(0);
             if new_score > old_score {
                 let media_root_opt = crate::recycle_bin::media_root_for_title(app, title).await;
-                let recycle_config =
-                    crate::recycle_bin::resolve_recycle_config(app, media_root_opt.as_deref())
-                        .await;
+                let recycle_config = app
+                    .recycle_bin_config_for_media_root(media_root_opt.as_deref())
+                    .await;
 
                 match crate::upgrade::execute_upgrade(
                     app,
@@ -2019,9 +2019,9 @@ async fn import_interstitial_movie_download(
             let old_score = existing_file.acquisition_score.unwrap_or(0);
             if new_score > old_score {
                 let media_root_opt = crate::recycle_bin::media_root_for_title(app, title).await;
-                let recycle_config =
-                    crate::recycle_bin::resolve_recycle_config(app, media_root_opt.as_deref())
-                        .await;
+                let recycle_config = app
+                    .recycle_bin_config_for_media_root(media_root_opt.as_deref())
+                    .await;
 
                 match crate::upgrade::execute_upgrade(
                     app,
@@ -3363,7 +3363,7 @@ async fn execute_resolved_episode_import(
             }
         };
         let recycle_root = title_folder_path.parent().and_then(|path| path.to_str());
-        let recycle_config = crate::recycle_bin::resolve_recycle_config(app, recycle_root).await;
+        let recycle_config = app.recycle_bin_config_for_media_root(recycle_root).await;
 
         match crate::upgrade::execute_upgrade(
             app,

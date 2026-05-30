@@ -1775,19 +1775,31 @@ const ja: LocaleDictionary = {
   "convenience.requiredAudioHelp":
     "これらのオーディオ言語を含まないリリースはブロックされます。設定 > ルールに表示される管理ルールを作成します。",
   "settings.recycleBin": "ごみ箱",
+  "settings.recycleBinEnabled": "ごみ箱を有効にする",
+  "settings.recycleBinEnabledHelp":
+    "削除または置き換えられたメディア ファイルは、完全に削除される前にごみ箱へ移動されます。",
+  "settings.recycleBinEnabledReadonly":
+    "ごみ箱の状態は、構成を管理できるユーザーが制御します。",
   "settings.recycleBinSection": "リサイクルされたメディア ファイルを管理する",
+  "settings.recycleBinLibraryFilter": "ライブラリ",
   "settings.recycleBinEmpty": "ごみ箱が空です。",
+  "settings.recycleBinNoManageableLibraries":
+    "ごみ箱アイテムを管理できるライブラリがありません。",
   "settings.recycleBinRestore": "復元する",
   "settings.recycleBinDelete": "消去",
   "settings.recycleBinEmptyAll": "ごみ箱を空にする",
   "settings.recycleBinEmptyConfirm":
-    "ごみ箱内のすべての {count} アイテムを完全に削除しますか?これを元に戻すことはできません。",
+    "現在のごみ箱ビューにある {{count}} アイテムを完全に削除しますか?これを元に戻すことはできません。",
   "settings.recycleBinDeleteConfirm":
     "このファイルを完全に削除しますか?これを元に戻すことはできません。",
-  "status.recycleBinRestored": "ファイルは {path} に復元されました。",
+  "settings.recycleBinReason": "理由",
+  "settings.recycleBinSize": "サイズ",
+  "settings.recycleBinRecycled": "リサイクル日時",
+  "status.recycleBinRestored": "ファイルは {{path}} に復元されました。",
   "status.recycleBinDeleted": "ファイルは完全に削除されました。",
   "status.recycleBinEmptied":
-    "ごみ箱が空になりました ({count} 項目が削除されました)。",
+    "ごみ箱が空になりました ({{count}} 項目が削除されました)。",
+  "status.recycleBinSettingsSaved": "ごみ箱設定を保存しました。",
   "settings.pp.animeScript": "アニメスクリプト",
   "settings.pp.envVarsDescription": "スクリプトで以下の変数が利用可能です:",
   "settings.pp.envVarsHeading": "環境変数",

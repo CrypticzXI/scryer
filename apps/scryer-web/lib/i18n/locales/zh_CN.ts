@@ -1665,17 +1665,29 @@ const zh_CN: LocaleDictionary = {
   "convenience.requiredAudioHelp":
     "不包含这些音频语言的发布将被屏蔽。会创建一条托管规则，可在设置 > 规则中查看。",
   "settings.recycleBin": "回收站",
+  "settings.recycleBinEnabled": "启用回收站",
+  "settings.recycleBinEnabledHelp":
+    "已删除和已替换的媒体文件会先移入回收站，再永久移除。",
+  "settings.recycleBinEnabledReadonly":
+    "回收站状态由可管理配置的用户控制。",
   "settings.recycleBinSection": "管理回收的媒体文件",
+  "settings.recycleBinLibraryFilter": "媒体库",
   "settings.recycleBinEmpty": "回收站是空的。",
+  "settings.recycleBinNoManageableLibraries":
+    "没有可用于管理回收站项目的媒体库。",
   "settings.recycleBinRestore": "恢复",
   "settings.recycleBinDelete": "删除",
   "settings.recycleBinEmptyAll": "清空回收站",
   "settings.recycleBinEmptyConfirm":
-    "永久删除回收站中的所有 {count} 项目？此操作无法撤消。",
+    "永久删除当前回收站视图中的 {{count}} 个项目？此操作无法撤消。",
   "settings.recycleBinDeleteConfirm": "永久删除该文件？此操作无法撤消。",
-  "status.recycleBinRestored": "文件恢复到{path}。",
+  "settings.recycleBinReason": "原因",
+  "settings.recycleBinSize": "大小",
+  "settings.recycleBinRecycled": "回收时间",
+  "status.recycleBinRestored": "文件恢复到{{path}}。",
   "status.recycleBinDeleted": "文件永久删除。",
-  "status.recycleBinEmptied": "回收站已清空（{count} 项目已删除）。",
+  "status.recycleBinEmptied": "回收站已清空（{{count}} 项目已删除）。",
+  "status.recycleBinSettingsSaved": "回收站设置已保存。",
   "settings.pp.animeScript": "动漫脚本",
   "settings.pp.envVarsDescription": "以下变量可在脚本中使用：",
   "settings.pp.envVarsHeading": "环境变量",

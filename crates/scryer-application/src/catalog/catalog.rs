@@ -33,6 +33,83 @@ const REMATCH_DERIVED_TAG_PREFIXES: &[&str] = &[
 pub(crate) const HYDRATION_BULK_BATCH_SIZE: usize = 20;
 const EXTERNAL_IMPORT_MONITOR_SNAPSHOT_APPLY_CHUNK_BATCH_SIZE: i32 = 4;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LibraryRootFolder {
+    pub library_id: String,
+    pub library_name: String,
+    pub facet: MediaFacet,
+    pub path: String,
+    pub normalized_path: String,
+}
+
+pub(crate) fn normalize_library_root_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    #[cfg(windows)]
+    {
+        trimmed
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+
+    #[cfg(not(windows))]
+    {
+        trimmed.replace('\\', "/").trim_end_matches('/').to_string()
+    }
+}
+
+pub(crate) fn library_path_is_under_root(path: &str, root: &str) -> bool {
+    let normalized_path = normalize_library_root_path(path);
+    let normalized_root = normalize_library_root_path(root);
+    if normalized_path.is_empty() || normalized_root.is_empty() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    let separator = "\\";
+    #[cfg(not(windows))]
+    let separator = "/";
+
+    normalized_path == normalized_root
+        || normalized_path.starts_with(&format!("{normalized_root}{separator}"))
+}
+
+pub(crate) fn library_root_paths_overlap(left: &str, right: &str) -> bool {
+    library_path_is_under_root(left, right) || library_path_is_under_root(right, left)
+}
+
+pub(crate) fn library_root_folders_from_libraries(
+    libraries: &[Library],
+    facet: Option<&MediaFacet>,
+) -> Vec<LibraryRootFolder> {
+    let mut roots = Vec::new();
+    for library in libraries {
+        if facet.is_some_and(|facet| library.facet != *facet) {
+            continue;
+        }
+
+        for root in &library.roots {
+            let path = root.path.trim();
+            let normalized_path = normalize_library_root_path(path);
+            if normalized_path.is_empty() {
+                continue;
+            }
+            roots.push(LibraryRootFolder {
+                library_id: library.id.clone(),
+                library_name: library.name.clone(),
+                facet: library.facet.clone(),
+                path: path.to_string(),
+                normalized_path,
+            });
+        }
+    }
+    roots
+}
+
 fn blocklist_episode_ids(data_json: Option<&str>) -> Vec<String> {
     let Some(raw) = data_json else {
         return Vec::new();
@@ -1182,6 +1259,21 @@ impl AppUseCase {
             path: default_path.to_string(),
             is_default: true,
         }])
+    }
+
+    /// Return every configured library root for a facet across all libraries.
+    pub(crate) async fn all_library_root_folders_for_facet(
+        &self,
+        facet: &scryer_domain::MediaFacet,
+    ) -> AppResult<Vec<LibraryRootFolder>> {
+        let libraries = self.services.catalog.libraries.list(None).await?;
+        Ok(library_root_folders_from_libraries(&libraries, Some(facet)))
+    }
+
+    /// Return every configured library root across all facets and libraries.
+    pub(crate) async fn all_library_root_folders(&self) -> AppResult<Vec<LibraryRootFolder>> {
+        let libraries = self.services.catalog.libraries.list(None).await?;
+        Ok(library_root_folders_from_libraries(&libraries, None))
     }
 
     /// Return the configured root folders for a concrete library.
@@ -4067,7 +4159,9 @@ impl AppUseCase {
         if purge_recycle_bin_entries
             && let Some(media_root) = crate::recycle_bin::media_root_for_title(self, title).await
         {
-            let config = crate::recycle_bin::resolve_recycle_config(self, Some(&media_root)).await;
+            let config = self
+                .recycle_bin_config_for_media_root(Some(&media_root))
+                .await;
             match crate::recycle_bin::purge_for_title(&config, title_id).await {
                 Ok(n) if n > 0 => info!(
                     purged = n,

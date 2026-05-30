@@ -1818,18 +1818,30 @@ const it: LocaleDictionary = {
   "convenience.requiredAudioHelp":
     "Le release senza queste lingue audio verranno bloccate. Crea una regola gestita visibile in Impostazioni > Regole.",
   "settings.recycleBin": "Cestino",
+  "settings.recycleBinEnabled": "Abilita cestino",
+  "settings.recycleBinEnabledHelp":
+    "I file multimediali eliminati e sostituiti vengono spostati nel cestino prima della rimozione definitiva.",
+  "settings.recycleBinEnabledReadonly":
+    "Lo stato del cestino è controllato dagli utenti che possono gestire la configurazione.",
   "settings.recycleBinSection": "Gestisci i file multimediali riciclati",
+  "settings.recycleBinLibraryFilter": "Librerie",
   "settings.recycleBinEmpty": "Il cestino è vuoto.",
+  "settings.recycleBinNoManageableLibraries":
+    "Non sono disponibili librerie per la gestione degli elementi del cestino.",
   "settings.recycleBinRestore": "Ripristina",
   "settings.recycleBinDelete": "Cancella",
   "settings.recycleBinEmptyAll": "Cestino vuoto",
   "settings.recycleBinEmptyConfirm":
-    "Eliminare definitivamente tutti gli {count} elementi nel cestino? Questa operazione non può essere annullata.",
+    "Eliminare definitivamente {{count}} elementi nella vista corrente del cestino? Questa operazione non può essere annullata.",
   "settings.recycleBinDeleteConfirm":
     "Eliminare definitivamente questo file? Questa operazione non può essere annullata.",
-  "status.recycleBinRestored": "File ripristinato in {path}.",
+  "settings.recycleBinReason": "Motivo",
+  "settings.recycleBinSize": "Dimensione",
+  "settings.recycleBinRecycled": "Riciclato",
+  "status.recycleBinRestored": "File ripristinato in {{path}}.",
   "status.recycleBinDeleted": "File eliminato definitivamente.",
-  "status.recycleBinEmptied": "Cestino svuotato ({count} elementi rimossi).",
+  "status.recycleBinEmptied": "Cestino svuotato ({{count}} elementi rimossi).",
+  "status.recycleBinSettingsSaved": "Impostazioni del cestino salvate.",
   "settings.pp.animeScript": "Script anime",
   "settings.pp.envVarsDescription":
     "Le seguenti variabili sono disponibili nel tuo script:",

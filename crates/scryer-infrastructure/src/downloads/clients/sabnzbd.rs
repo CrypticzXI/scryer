@@ -459,34 +459,35 @@ impl SabnzbdDownloadClient {
                         AppError::Repository(format!("sabnzbd multipart build failed: {err}"))
                     })?;
 
-                    let mut form = multipart::Form::new()
-                        .text("nzbname", nzb_name)
-                        .text("priority", queue_priority)
-                        .part("nzbfile", nzb_part);
-                    let request_builder = match auth {
+                    let mut query_params = vec![
+                        ("mode".to_string(), "addfile".to_string()),
+                        ("output".to_string(), "json".to_string()),
+                        ("nzbname".to_string(), nzb_name),
+                        ("priority".to_string(), queue_priority),
+                    ];
+                    match auth {
                         SabApiAuth::ApiKey(api_key) => {
-                            self.outbound_http.client().post(&url).query(&[
-                                ("mode", "addfile"),
-                                ("output", "json"),
-                                ("apikey", api_key.as_str()),
-                            ])
+                            query_params.push(("apikey".to_string(), api_key));
                         }
-                        SabApiAuth::Credentials { username, password } => {
-                            self.outbound_http.client().post(&url).query(&[
-                                ("mode", "addfile"),
-                                ("output", "json"),
-                                ("ma_username", username.as_str()),
-                                ("ma_password", password.as_str()),
-                            ])
+                        SabApiAuth::Credentials {
+                            username,
+                            password: auth_password,
+                        } => {
+                            query_params.push(("ma_username".to_string(), username));
+                            query_params.push(("ma_password".to_string(), auth_password));
                         }
-                    };
+                    }
 
                     if let Some(cat) = cat {
-                        form = form.text("cat", cat);
+                        query_params.push(("cat".to_string(), cat));
                     }
                     if let Some(password) = password {
-                        form = form.text("password", password);
+                        query_params.push(("password".to_string(), password));
                     }
+
+                    let form = multipart::Form::new().part("nzbfile", nzb_part);
+                    let request_builder =
+                        self.outbound_http.client().post(&url).query(&query_params);
 
                     Ok::<_, AppError>(request_builder.multipart(form))
                 }
@@ -1332,13 +1333,13 @@ fn sab_api_mode_matches_response(request_mode: Option<&str>, json: &Value) -> bo
         Some("queue") => {
             json.get("queue").is_some()
                 || json.get("slots").is_some()
-                || json.get("status").is_some()
+                || sab_api_status_is_true(json)
                 || sab_api_status_is_false(json)
         }
         Some("history") => {
             json.get("history").is_some()
                 || json.get("slots").is_some()
-                || json.get("status").is_some()
+                || sab_api_status_is_true(json)
                 || sab_api_status_is_false(json)
         }
         Some("get_config") => json.get("config").is_some() || sab_api_status_is_false(json),
@@ -1364,6 +1365,14 @@ fn sab_api_status_is_false(json: &Value) -> bool {
     match json.get("status") {
         Some(Value::Bool(false)) => true,
         Some(Value::String(value)) => value.eq_ignore_ascii_case("false"),
+        _ => false,
+    }
+}
+
+fn sab_api_status_is_true(json: &Value) -> bool {
+    match json.get("status") {
+        Some(Value::Bool(true)) => true,
+        Some(Value::String(value)) => value.eq_ignore_ascii_case("true"),
         _ => false,
     }
 }
@@ -1609,6 +1618,13 @@ mod tests {
     }
 
     #[test]
+    fn sab_api_mode_match_accepts_success_status_for_queue_mutations() {
+        let json = json!({"status": true});
+        assert!(sab_api_mode_matches_response(Some("queue"), &json));
+        assert!(sab_api_mode_matches_response(Some("history"), &json));
+    }
+
+    #[test]
     fn evaluate_sab_api_response_marks_non_sab_shape_retryable() {
         let outcome = evaluate_sab_api_response(
             "sabnzbd api",
@@ -1618,5 +1634,20 @@ mod tests {
         );
 
         assert!(matches!(outcome, SabApiResponseEvaluation::Retry(_)));
+    }
+
+    #[test]
+    fn evaluate_sab_api_response_retries_non_auth_unsuccessful_statuses() {
+        let not_found =
+            evaluate_sab_api_response("sabnzbd api", Some("queue"), StatusCode::NOT_FOUND, "");
+        let server_error = evaluate_sab_api_response(
+            "sabnzbd api",
+            Some("queue"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed",
+        );
+
+        assert!(matches!(not_found, SabApiResponseEvaluation::Retry(_)));
+        assert!(matches!(server_error, SabApiResponseEvaluation::Retry(_)));
     }
 }

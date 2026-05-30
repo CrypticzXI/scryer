@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use aws_lc_rs::digest as aws_lc_digest;
@@ -18,7 +18,8 @@ use crate::{
     AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
     AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL,
     FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, LibraryRootDraft,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
+    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, RECYCLE_BIN_ENABLED_KEY, RECYCLE_BIN_PATH_KEY,
+    RECYCLE_BIN_RETENTION_DAYS_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
     SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
     TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
 };
@@ -46,6 +47,17 @@ const SUBTITLES_SYNC_ENABLED_KEY: &str = "subtitles.sync_enabled";
 const SUBTITLES_SYNC_THRESHOLD_SERIES_KEY: &str = "subtitles.sync_threshold_series";
 const SUBTITLES_SYNC_THRESHOLD_MOVIE_KEY: &str = "subtitles.sync_threshold_movie";
 const SUBTITLES_SYNC_MAX_OFFSET_SECONDS_KEY: &str = "subtitles.sync_max_offset_seconds";
+
+struct TitleImageCacheClearScheduledGuard {
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for TitleImageCacheClearScheduledGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
 static PEM_CERT_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----")
@@ -1542,6 +1554,28 @@ impl AppUseCase {
             .await
     }
 
+    async fn upsert_media_setting_json<T: Serialize>(
+        &self,
+        key_name: &str,
+        value: &T,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        let value_json = serde_json::to_string(value)
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_MEDIA,
+                key_name,
+                None,
+                value_json,
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                updated_by_user_id,
+            )
+            .await
+    }
+
     async fn delete_system_setting(&self, key_name: &str) -> AppResult<()> {
         self.services
             .config
@@ -2866,6 +2900,196 @@ impl AppUseCase {
         })
     }
 
+    async fn load_recycle_bin_settings(&self) -> AppResult<RecycleBinSettings> {
+        let enabled = self
+            .read_setting_string_value_for_scope(
+                SETTINGS_SCOPE_MEDIA,
+                RECYCLE_BIN_ENABLED_KEY,
+                None,
+            )
+            .await?
+            .map(|value| value != "false")
+            .unwrap_or(true);
+
+        Ok(RecycleBinSettings { enabled })
+    }
+
+    async fn recycle_bin_config_values(&self) -> (bool, Option<String>, u32) {
+        let enabled = self
+            .read_setting_string_value_for_scope(
+                SETTINGS_SCOPE_MEDIA,
+                RECYCLE_BIN_ENABLED_KEY,
+                None,
+            )
+            .await
+            .ok()
+            .flatten()
+            .map(|value| value != "false")
+            .unwrap_or(true);
+
+        let custom_path = self
+            .read_setting_string_value_for_scope(SETTINGS_SCOPE_MEDIA, RECYCLE_BIN_PATH_KEY, None)
+            .await
+            .ok()
+            .flatten()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        let retention_days = self
+            .read_setting_string_value_for_scope(
+                SETTINGS_SCOPE_MEDIA,
+                RECYCLE_BIN_RETENTION_DAYS_KEY,
+                None,
+            )
+            .await
+            .ok()
+            .flatten()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(7);
+
+        (enabled, custom_path, retention_days)
+    }
+
+    fn normalize_recycle_config_path(path: &Path) -> PathBuf {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+                std::path::Component::RootDir => normalized.push(component.as_os_str()),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                std::path::Component::Normal(segment) => normalized.push(segment),
+            }
+        }
+        normalized
+    }
+
+    fn recycle_bin_validation_error(
+        base_path: &Path,
+        custom_path: bool,
+        configured_roots: &[PathBuf],
+    ) -> Option<String> {
+        if custom_path && !base_path.is_absolute() {
+            return Some(format!(
+                "custom recycle bin path must be absolute: {}",
+                base_path.display()
+            ));
+        }
+
+        let normalized_base = Self::normalize_recycle_config_path(base_path);
+        for root in configured_roots {
+            if custom_path
+                && (normalized_base == *root
+                    || normalized_base.starts_with(root)
+                    || root.starts_with(&normalized_base))
+            {
+                return Some(format!(
+                    "custom recycle bin path {} must be outside configured media root {}",
+                    normalized_base.display(),
+                    root.display()
+                ));
+            }
+        }
+
+        None
+    }
+
+    fn recycle_bin_config_from_values(
+        enabled: bool,
+        custom_path: Option<&str>,
+        retention_days: u32,
+        media_root: Option<&str>,
+        configured_roots: &[PathBuf],
+    ) -> crate::recycle_bin::RecycleBinConfig {
+        let custom_path_configured = custom_path.is_some();
+        let base_path = if let Some(path) = custom_path {
+            PathBuf::from(path)
+        } else if let Some(root) = media_root {
+            PathBuf::from(root).join(".scryer-recycle")
+        } else {
+            PathBuf::from("/tmp/.scryer-recycle")
+        };
+        let validation_error = Self::recycle_bin_validation_error(
+            &base_path,
+            custom_path_configured,
+            configured_roots,
+        );
+        let cleanup_enabled = validation_error.is_none();
+
+        crate::recycle_bin::RecycleBinConfig {
+            enabled,
+            base_path,
+            retention_days,
+            cleanup_enabled,
+            validation_error,
+        }
+    }
+
+    pub async fn recycle_bin_config_for_media_root(
+        &self,
+        media_root: Option<&str>,
+    ) -> crate::recycle_bin::RecycleBinConfig {
+        let (enabled, custom_path, retention_days) = self.recycle_bin_config_values().await;
+        let configured_roots = media_root
+            .into_iter()
+            .map(|root| Self::normalize_recycle_config_path(Path::new(root.trim())))
+            .filter(|root| !root.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        Self::recycle_bin_config_from_values(
+            enabled,
+            custom_path.as_deref(),
+            retention_days,
+            media_root,
+            &configured_roots,
+        )
+    }
+
+    pub async fn recycle_bin_configs_for_media_roots<I>(
+        &self,
+        media_roots: I,
+    ) -> Vec<(String, crate::recycle_bin::RecycleBinConfig)>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let (enabled, custom_path, retention_days) = self.recycle_bin_config_values().await;
+        let media_roots = media_roots
+            .into_iter()
+            .map(|media_root| media_root.trim().to_string())
+            .filter(|media_root| !media_root.is_empty())
+            .collect::<Vec<_>>();
+        let configured_roots = media_roots
+            .iter()
+            .map(|media_root| Self::normalize_recycle_config_path(Path::new(media_root)))
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        let mut configs = Vec::new();
+        let mut seen_paths = HashSet::new();
+
+        for media_root in media_roots {
+            let config = Self::recycle_bin_config_from_values(
+                enabled,
+                custom_path.as_deref(),
+                retention_days,
+                Some(media_root.as_str()),
+                &configured_roots,
+            );
+            if !seen_paths.insert(Self::normalize_recycle_config_path(&config.base_path)) {
+                continue;
+            }
+
+            let entry_media_root = if custom_path.is_some() {
+                String::new()
+            } else {
+                media_root
+            };
+            configs.push((entry_media_root, config));
+        }
+
+        configs
+    }
+
     pub(crate) async fn subtitle_settings(&self) -> AppResult<SubtitleSettings> {
         self.load_subtitle_settings().await
     }
@@ -2915,6 +3139,25 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         self.load_general_settings().await
+    }
+
+    pub async fn get_recycle_bin_settings(&self, actor: &User) -> AppResult<RecycleBinSettings> {
+        if !self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?
+            && !self
+                .has_any_granted_library_permission(
+                    actor,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                )
+                .await?
+        {
+            return Err(AppError::Unauthorized(
+                "You do not have permission to view recycle bin settings".to_string(),
+            ));
+        }
+
+        self.load_recycle_bin_settings().await
     }
 
     pub async fn get_auto_backup_settings(&self, actor: &User) -> AppResult<AutoBackupSettings> {
@@ -3932,6 +4175,104 @@ impl AppUseCase {
             plugin_http_ca_bundle_pem,
             plugin_http_trusted_certificates,
         })
+    }
+
+    pub async fn clear_title_image_cache(&self, actor: &User) -> AppResult<bool> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let scheduled = self
+            .runtime
+            .catalog
+            .title_image_cache_clear_scheduled
+            .clone();
+        if scheduled.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Ok(true);
+        }
+
+        let app = self.clone();
+        tokio::spawn(async move {
+            let _scheduled_guard = TitleImageCacheClearScheduledGuard { flag: scheduled };
+            let _maintenance_guard = loop {
+                let active_scans = app.runtime.library.library_scan_tracker.list_active().await;
+                if !active_scans.is_empty() {
+                    info!(
+                        active_scans = active_scans.len(),
+                        "title image cache reset pausing while library scan is active"
+                    );
+                    app.runtime
+                        .library
+                        .library_scan_tracker
+                        .wait_until_idle()
+                        .await;
+                    info!("title image cache reset resuming after library scan");
+                }
+                let guard = app
+                    .runtime
+                    .catalog
+                    .title_image_maintenance_lock
+                    .write()
+                    .await;
+                if app
+                    .runtime
+                    .library
+                    .library_scan_tracker
+                    .list_active()
+                    .await
+                    .is_empty()
+                {
+                    break guard;
+                }
+            };
+            match app
+                .services
+                .library
+                .title_images
+                .clear_title_image_cache()
+                .await
+            {
+                Ok(()) => {
+                    info!("title image cache reset completed");
+                }
+                Err(error) => {
+                    warn!(error = %error, "title image cache reset failed");
+                }
+            }
+            app.wake_title_image_loops();
+        });
+
+        Ok(true)
+    }
+
+    pub async fn update_recycle_bin_settings(
+        &self,
+        actor: &User,
+        input: UpdateRecycleBinSettings,
+    ) -> AppResult<RecycleBinSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        self.upsert_media_setting_json(
+            RECYCLE_BIN_ENABLED_KEY,
+            &input.enabled,
+            Some(actor.id.clone()),
+        )
+        .await?;
+
+        self.emit_configuration_changed_event(
+            Some(actor.id.clone()),
+            "recycle_bin_settings",
+            None,
+            scryer_domain::ConfigurationChangeAction::Updated,
+        )
+        .await;
+        let _ = self
+            .runtime
+            .events
+            .settings_changed_broadcast
+            .send(vec![RECYCLE_BIN_ENABLED_KEY.to_string()]);
+
+        self.load_recycle_bin_settings().await
     }
 
     pub async fn update_auto_backup_settings(

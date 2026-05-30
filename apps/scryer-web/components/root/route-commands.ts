@@ -363,14 +363,20 @@ export function buildRouteCommands({
           keywords: ["settings", "plugins", "wasm", "extensions"],
           icon: Puzzle,
           onSelect: buildNavigate(onNavigate, "settings", "plugins"),
-        } satisfies RouteCommand, {
+        } satisfies RouteCommand]
+      : []),
+    ...(canManageSystemSettings || canManageTitle
+      ? [{
           id: "settings-recycle-bin",
           label: t("settings.recycleBin"),
           description: t("settings.recycleBin"),
           keywords: ["settings", "recycle", "bin", "trash", "deleted"],
           icon: Trash2,
           onSelect: buildNavigate(onNavigate, "settings", "recycleBin"),
-        } satisfies RouteCommand, {
+        } satisfies RouteCommand]
+      : []),
+    ...(canManageSystemSettings
+      ? [{
           id: "system",
           label: t("nav.system"),
           description: t("nav.system"),

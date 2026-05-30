@@ -4113,6 +4113,33 @@ async fn graphql_typed_general_settings_rejects_invalid_days() {
 }
 
 #[tokio::test]
+async fn graphql_clear_title_image_cache_returns_opaque_success() {
+    let ctx = TestContext::new().await;
+
+    let mutation = r#"
+        mutation ClearTitleImageCache {
+          clearTitleImageCache
+        }
+    "#;
+
+    let first = gql(&ctx, mutation, json!({})).await;
+    assert_no_errors(&first);
+    assert_eq!(first["data"]["clearTitleImageCache"], true);
+
+    let second = gql(&ctx, mutation, json!({})).await;
+    assert_no_errors(&second);
+    assert_eq!(second["data"]["clearTitleImageCache"], true);
+
+    let unauthorized = schema_exec(&ctx, mutation, None).await;
+    assert!(
+        unauthorized["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected authorization error: {unauthorized}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_auth_runtime_state_is_public() {
     let ctx = TestContext::new().await;
 

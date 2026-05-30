@@ -142,6 +142,7 @@ function canAccessSettingsSection(
   section: SettingsSection,
   canManageUsers: boolean,
   canManageConfig: boolean,
+  canAccessRecycleBin: boolean,
 ): boolean {
   if (section === "profile") {
     return true;
@@ -149,6 +150,10 @@ function canAccessSettingsSection(
 
   if (section === "security" || section === "users") {
     return canManageUsers;
+  }
+
+  if (section === "recycleBin") {
+    return canAccessRecycleBin;
   }
 
   return canManageConfig;
@@ -338,6 +343,7 @@ function MainContent({
   handleOpenOverview,
   handleImportRouteEmpty,
   canAccessActivity,
+  canAccessRecycleBin,
   canManageTitle,
   canManageUsers,
   canManageConfig,
@@ -366,6 +372,7 @@ function MainContent({
   ) => void;
   handleImportRouteEmpty: () => void;
   canAccessActivity: boolean;
+  canAccessRecycleBin: boolean;
   canManageTitle: boolean;
   canManageUsers: boolean;
   canManageConfig: boolean;
@@ -448,6 +455,7 @@ function MainContent({
       settingsSection,
       canManageUsers,
       canManageConfig,
+      canAccessRecycleBin,
     )
       ? settingsSection
       : defaultSettingsSection(canManageUsers, canManageConfig);
@@ -1122,6 +1130,7 @@ function AuthenticatedHomePage({
   const canManageCatalogSettings = hasAppPermission(authenticatedUser, APP_PERMISSIONS.manageCatalogSettings);
   const canManageUsers = canManageUserAccounts || canManagePermissions;
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
+  const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
 
   const routeCommandPalette = useMemo(
     () => buildRouteCommands({
@@ -1218,7 +1227,14 @@ function AuthenticatedHomePage({
       return;
     }
 
-    if (canAccessSettingsSection(settingsSection, canManageUsers, canManageConfig)) {
+    if (
+      canAccessSettingsSection(
+        settingsSection,
+        canManageUsers,
+        canManageConfig,
+        canAccessRecycleBin,
+      )
+    ) {
       return;
     }
 
@@ -1229,6 +1245,7 @@ function AuthenticatedHomePage({
   }, [
     canManageConfig,
     canManageUsers,
+    canAccessRecycleBin,
     navigateTo,
     settingsSection,
     view,
@@ -1372,6 +1389,7 @@ function AuthenticatedHomePage({
                           handleOpenOverview={handleOpenOverview}
                           handleImportRouteEmpty={handleBackToList}
                           canAccessActivity={canAccessActivity}
+                          canAccessRecycleBin={canAccessRecycleBin}
                           canManageTitle={canManageTitle}
                           canManageUsers={canManageUsers}
                           canManageConfig={canManageConfig}

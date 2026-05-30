@@ -1561,6 +1561,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_sync_fetches_child_caps_concurrently_and_preserves_child_order() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "2.0.0"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(INDEXER_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 10,
+                    "name": "First",
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                },
+                {
+                    "id": 7,
+                    "name": "Second",
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                },
+                {
+                    "id": 42,
+                    "name": "Third",
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                },
+                {
+                    "id": 3,
+                    "name": "Fourth",
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(APP_PROFILE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 1,
+                "enableRss": true,
+                "enableAutomaticSearch": true,
+                "enableInteractiveSearch": true
+            }])))
+            .mount(&server)
+            .await;
+
+        let caps_body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+  <server title="Prowlarr" />
+  <searching>
+    <search available="yes" supportedParams="q" />
+  </searching>
+</caps>"#;
+        for (indexer_id, delay_ms) in [(10, 1200), (7, 300), (42, 600), (3, 450)] {
+            Mock::given(method("GET"))
+                .and(path(format!("/{indexer_id}/api")))
+                .and(query_param("t", "caps"))
+                .and(query_param("apikey", "secret"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(caps_body)
+                        .set_delay(std::time::Duration::from_millis(delay_ms)),
+                )
+                .mount(&server)
+                .await;
+        }
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let started = std::time::Instant::now();
+        let plan = client.plan_sync("parent").await.expect("sync plan");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(2000),
+            "caps fetch should be concurrent; elapsed {elapsed:?}"
+        );
+        let child_ids = plan
+            .children
+            .iter()
+            .map(|child| {
+                serde_json::from_str::<ManagedChildMetadata>(
+                    child.managed_metadata_json.as_deref().unwrap(),
+                )
+                .unwrap()
+                .indexer_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(child_ids, vec![10, 7, 42, 3]);
+    }
+
+    #[tokio::test]
     async fn plan_sync_skips_caps_fetch_for_upstream_disabled_children() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))

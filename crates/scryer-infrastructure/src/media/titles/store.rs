@@ -547,7 +547,7 @@ impl TitleRepository for TitleStore {
                 Ok(PendingTitleHydration {
                     title: decode_optional_runtime_title_row(
                         Some(&row),
-                        PersistedTitleReadMode::Presentation,
+                        PersistedTitleReadMode::Canonical,
                         true,
                     )?
                     .ok_or_else(|| {
@@ -718,10 +718,10 @@ impl TitleRepository for TitleStore {
         SqlRuntime::run_in_transaction(&self.datastore, "update_title_monitored", move |tx| {
             let id = id.clone();
             Box::pin(async move {
-                let mut title = load_title_tx_or_not_found(tx, &id, true).await?;
+                let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                 title.monitored = monitored;
                 persist_title_tx(tx, &title, HydrationStateWrite::Preserve).await?;
-                Ok(title)
+                load_title_tx_or_not_found(tx, &id, true).await
             })
         })
         .await
@@ -747,7 +747,7 @@ impl TitleRepository for TitleStore {
             let facet = facet.clone();
             let tags = tags.clone();
             Box::pin(async move {
-                let mut title = load_title_tx_or_not_found(tx, &id, true).await?;
+                let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                 if let Some(name) = name {
                     let normalized = name.trim();
                     if normalized.is_empty() {
@@ -764,7 +764,7 @@ impl TitleRepository for TitleStore {
                     title.tags = tags;
                 }
                 persist_title_tx(tx, &title, HydrationStateWrite::Preserve).await?;
-                Ok(title)
+                load_title_tx_or_not_found(tx, &id, true).await
             })
         })
         .await
@@ -787,7 +787,7 @@ impl TitleRepository for TitleStore {
                 let id = id.clone();
                 let metadata = metadata.clone();
                 Box::pin(async move {
-                    let mut title = load_title_tx_or_not_found(tx, &id, true).await?;
+                    let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                     apply_title_metadata_update(&mut title, metadata)?;
                     let hydration_state = if metadata_marks_fetched {
                         HydrationStateWrite::Clear
@@ -795,7 +795,7 @@ impl TitleRepository for TitleStore {
                         HydrationStateWrite::Preserve
                     };
                     persist_title_tx(tx, &title, hydration_state).await?;
-                    Ok(title)
+                    load_title_tx_or_not_found(tx, &id, true).await
                 })
             },
         )
@@ -814,7 +814,7 @@ impl TitleRepository for TitleStore {
             let external_ids = external_ids.clone();
             let tags = tags.clone();
             Box::pin(async move {
-                let mut title = load_title_tx_or_not_found(tx, &id, true).await?;
+                let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                 title.external_ids = external_ids;
                 title.tags = tags;
                 title.year = None;
@@ -842,7 +842,7 @@ impl TitleRepository for TitleStore {
                 title.metadata_fetched_at = None;
                 title.digital_release_date = None;
                 persist_title_tx(tx, &title, HydrationStateWrite::Reschedule).await?;
-                Ok(title)
+                load_title_tx_or_not_found(tx, &id, true).await
             })
         })
         .await
@@ -1447,14 +1447,25 @@ async fn load_title_tx(
     id: &str,
     include_external_ids: bool,
 ) -> AppResult<Option<Title>> {
+    load_title_tx_with_mode(
+        tx,
+        id,
+        include_external_ids,
+        PersistedTitleReadMode::Presentation,
+    )
+    .await
+}
+
+async fn load_title_tx_with_mode(
+    tx: &mut SqlTx<'_>,
+    id: &str,
+    include_external_ids: bool,
+    mode: PersistedTitleReadMode,
+) -> AppResult<Option<Title>> {
     let sql = format!("SELECT {TITLE_COLUMNS} FROM titles WHERE id = {{}}");
     let row =
         SqlRuntime::fetch_optional(SqlExec::Tx(tx), &sql, &[SqlArg::Text(id.to_string())]).await?;
-    decode_optional_runtime_title_row(
-        row.as_ref(),
-        PersistedTitleReadMode::Presentation,
-        include_external_ids,
-    )
+    decode_optional_runtime_title_row(row.as_ref(), mode, include_external_ids)
 }
 
 async fn load_title_tx_or_not_found(
@@ -1465,6 +1476,21 @@ async fn load_title_tx_or_not_found(
     load_title_tx(tx, id, include_external_ids)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("title {id}")))
+}
+
+async fn load_title_canonical_tx_or_not_found(
+    tx: &mut SqlTx<'_>,
+    id: &str,
+    include_external_ids: bool,
+) -> AppResult<Title> {
+    load_title_tx_with_mode(
+        tx,
+        id,
+        include_external_ids,
+        PersistedTitleReadMode::Canonical,
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("title {id}")))
 }
 
 async fn list_existing_title_ids_for_external_ids_tx(

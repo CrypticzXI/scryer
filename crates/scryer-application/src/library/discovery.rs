@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Instant, UNIX_EPOCH};
 
 use super::*;
@@ -7,6 +8,7 @@ use crate::helpers::{
     has_usable_release_title_signal, normalize_release_title_signal, parse_usable_release_title,
 };
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
+use regex::Regex;
 use scryer_domain::VIDEO_EXTENSIONS;
 use unicode_normalization::UnicodeNormalization;
 
@@ -42,15 +44,55 @@ pub(crate) struct MovieTopLevelEntry {
     pub(crate) is_dir: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LibraryTitleWalk {
+    pub(crate) title: Option<String>,
+    pub(crate) year: Option<u32>,
+    pub(crate) imdb_id: Option<String>,
+    pub(crate) tmdb_id: Option<String>,
+    pub(crate) tvdb_id: Option<String>,
+}
+
+impl LibraryTitleWalk {
+    pub(crate) fn has_external_ids(&self) -> bool {
+        self.imdb_id.is_some() || self.tmdb_id.is_some() || self.tvdb_id.is_some()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.year.is_none()
+            && self.imdb_id.is_none()
+            && self.tmdb_id.is_none()
+            && self.tvdb_id.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LibraryQueryEvidence {
+    pub(crate) queries: Vec<String>,
+    pub(crate) year: Option<u32>,
+    pub(crate) file_walk: Option<LibraryTitleWalk>,
+    pub(crate) folder_walk: Option<LibraryTitleWalk>,
+}
+
 type LibraryPathBatch = Vec<PathBuf>;
 pub(crate) type LibraryPathBatchReceiver = tokio::sync::mpsc::Receiver<AppResult<LibraryPathBatch>>;
 pub(crate) type MovieTopLevelEntryBatchReceiver =
     tokio::sync::mpsc::Receiver<AppResult<Vec<MovieTopLevelEntry>>>;
 
+#[cfg(test)]
 pub(crate) fn extract_library_queries(
     path: &str,
     library_root: &str,
 ) -> (Vec<String>, Option<u32>) {
+    let evidence = extract_library_query_evidence(path, library_root);
+    (evidence.queries, evidence.year)
+}
+
+pub(crate) fn extract_library_query_evidence(
+    path: &str,
+    library_root: &str,
+) -> LibraryQueryEvidence {
     let path = stored_path_to_path_buf(path);
     let root = stored_path_to_path_buf(library_root);
 
@@ -58,6 +100,7 @@ pub(crate) fn extract_library_queries(
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let file_walk = library_title_walk(stem.as_str());
     let parsed = normalize_release_title_signal(parse_release_metadata(stem.as_str()));
     let parsed_has_usable_title_signal = has_usable_release_title_signal(&parsed);
     let parsed_queries = if parsed_has_usable_title_signal {
@@ -74,6 +117,7 @@ pub(crate) fn extract_library_queries(
     let mut seen_normalized = HashSet::new();
     let mut folder_year = None;
     let mut folder_queries = Vec::new();
+    let mut folder_walk = None;
     let mut raw_folder_query = None;
 
     if let Some(parent) = path.parent()
@@ -84,6 +128,7 @@ pub(crate) fn extract_library_queries(
             .filter(|name| !name.trim().is_empty())
     {
         let clean = normalize_folder_name(&folder_name);
+        folder_walk = library_title_walk(folder_name.as_str());
         let (clean_title, clean_year) = strip_year_suffix(&clean);
         if let Some(parsed_folder) = parse_usable_release_title(&folder_name) {
             let looks_human_named = !folder_name.contains('.') && !folder_name.contains('_');
@@ -133,6 +178,10 @@ pub(crate) fn extract_library_queries(
         }
     }
 
+    if let Some(title) = file_walk.as_ref().and_then(|walk| walk.title.clone()) {
+        push_unique_query(&mut queries, &mut seen_normalized, title);
+    }
+
     if !parsed_has_usable_title_signal {
         for folder_query in folder_queries.iter().cloned() {
             push_unique_query(&mut queries, &mut seen_normalized, folder_query);
@@ -153,18 +202,146 @@ pub(crate) fn extract_library_queries(
         }
     }
 
+    if let Some(title) = folder_walk.as_ref().and_then(|walk| walk.title.clone()) {
+        push_unique_query(&mut queries, &mut seen_normalized, title);
+    }
+
     if let Some(raw_folder_query) = raw_folder_query {
         push_unique_literal_query(&mut queries, raw_folder_query);
     }
 
-    (
+    let year = file_walk
+        .as_ref()
+        .and_then(|walk| walk.year)
+        .or_else(|| {
+            parsed_has_usable_title_signal
+                .then_some(parsed.year)
+                .flatten()
+                .and_then(|year| u32::try_from(year).ok())
+        })
+        .or_else(|| folder_walk.as_ref().and_then(|walk| walk.year))
+        .or(folder_year);
+
+    LibraryQueryEvidence {
         queries,
-        parsed_has_usable_title_signal
-            .then_some(parsed.year)
-            .flatten()
-            .and_then(|year| u32::try_from(year).ok())
-            .or(folder_year),
-    )
+        year,
+        file_walk,
+        folder_walk,
+    }
+}
+
+pub(crate) fn library_title_walk(raw: &str) -> Option<LibraryTitleWalk> {
+    let (without_ids, mut walk) = extract_library_title_ids(raw);
+    let normalized = normalize_library_title_text(&without_ids);
+
+    if let Some((title, year)) = parse_simple_library_title_year(normalized.as_str()) {
+        walk.title = Some(title);
+        walk.year = Some(year);
+    } else if walk.has_external_ids() {
+        walk.title = fallback_title_from_id_text(normalized.as_str());
+    }
+
+    (!walk.is_empty()).then_some(walk)
+}
+
+fn extract_library_title_ids(raw: &str) -> (String, LibraryTitleWalk) {
+    let mut walk = LibraryTitleWalk::default();
+
+    for captures in library_id_token_regex().captures_iter(raw) {
+        if walk.imdb_id.is_none()
+            && let Some(value) = captures.name("imdb")
+        {
+            walk.imdb_id = crate::normalize::normalize_imdb_id(value.as_str());
+        }
+        if walk.tmdb_id.is_none()
+            && let Some(value) = captures.name("tmdb")
+        {
+            walk.tmdb_id = crate::normalize::normalize_numeric_id(value.as_str());
+        }
+        if walk.tvdb_id.is_none()
+            && let Some(value) = captures.name("tvdb")
+        {
+            walk.tvdb_id = crate::normalize::normalize_numeric_id(value.as_str());
+        }
+    }
+
+    let without_ids = library_id_token_regex().replace_all(raw, " ").to_string();
+    (without_ids, walk)
+}
+
+fn library_id_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?ix)
+            (?:[\[\{\(]\s*)?
+            (?:
+                imdb(?:id)?\s*(?:://|:|-|=)\s*\(?(?P<imdb>tt[0-9]{5,})\)?
+              | tmdb(?:id)?\s*(?:://|:|-|=)\s*\(?(?P<tmdb>[0-9]+)\)?
+              | tvdb(?:id)?\s*(?:://|:|-|=)\s*\(?(?P<tvdb>[0-9]+)\)?
+            )
+            (?:\s*[\]\}\)])?
+            ",
+        )
+        .expect("valid library id token regex")
+    })
+}
+
+fn parse_simple_library_title_year(value: &str) -> Option<(String, u32)> {
+    let captures = simple_library_title_year_regex().captures(value)?;
+    let title = clean_library_title_candidate(captures.name("title")?.as_str())?;
+    let year = captures.name("year")?.as_str().parse::<u32>().ok()?;
+    (1888..=2100).contains(&year).then_some((title, year))
+}
+
+fn simple_library_title_year_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+            ^\s*
+            (?P<title>.+?)
+            \s*[\(\[]\s*
+            (?P<year>[0-9]{4})
+            \s*[\)\]]
+            (?:\s+.*)?
+            \s*$
+            ",
+        )
+        .expect("valid simple library title regex")
+    })
+}
+
+fn fallback_title_from_id_text(value: &str) -> Option<String> {
+    let title = clean_library_title_candidate(value)?;
+    let normalized = title.to_ascii_uppercase();
+    if matches!(
+        normalized.as_str(),
+        "MOVIE" | "VIDEO" | "FILE" | "DOWNLOAD" | "UNKNOWN"
+    ) {
+        return None;
+    }
+    if !title.chars().any(|ch| ch.is_alphabetic()) {
+        return None;
+    }
+    Some(title)
+}
+
+fn clean_library_title_candidate(value: &str) -> Option<String> {
+    let normalized = normalize_library_title_text(value);
+    let trimmed = normalized
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, '-' | '.' | '_' | '[' | ']' | '(' | ')' | '{' | '}'))
+        .trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn normalize_library_title_text(value: &str) -> String {
+    let separated = value
+        .chars()
+        .map(|ch| if matches!(ch, '.' | '_') { ' ' } else { ch })
+        .collect::<String>();
+    normalize_folder_name(separated.as_str())
 }
 
 pub(crate) fn normalize_folder_name(name: &str) -> String {
@@ -877,6 +1054,47 @@ fn metadata_probe_marker(metadata: &std::fs::Metadata) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn library_title_walk_extracts_simple_title_year_and_ids() {
+        let walk = library_title_walk(
+            "Correct Movie (2024) [imdb:(tt6263850)] {tmdbid=12345} tvdb://67890 2160p",
+        )
+        .expect("title walk");
+
+        assert_eq!(walk.title.as_deref(), Some("Correct Movie"));
+        assert_eq!(walk.year, Some(2024));
+        assert_eq!(walk.imdb_id.as_deref(), Some("tt6263850"));
+        assert_eq!(walk.tmdb_id.as_deref(), Some("12345"));
+        assert_eq!(walk.tvdb_id.as_deref(), Some("67890"));
+    }
+
+    #[test]
+    fn library_title_walk_rejects_numeric_only_imdb_values() {
+        let walk = library_title_walk("Mislabelled Movie (2024) [imdbid=438631]")
+            .expect("title/year should still parse");
+
+        assert_eq!(walk.title.as_deref(), Some("Mislabelled Movie"));
+        assert_eq!(walk.year, Some(2024));
+        assert_eq!(walk.imdb_id, None);
+    }
+
+    #[test]
+    fn library_title_walk_preserves_max_inside_title() {
+        let walk = library_title_walk("Mad Max Fury Road (2015) 2160p").expect("title walk");
+
+        assert_eq!(walk.title.as_deref(), Some("Mad Max Fury Road"));
+        assert_eq!(walk.year, Some(2015));
+    }
+
+    #[test]
+    fn library_title_walk_extracts_tvdb_uri_from_series_folder() {
+        let walk = library_title_walk("Foundation (2021) tvdb://366972").expect("title walk");
+
+        assert_eq!(walk.title.as_deref(), Some("Foundation"));
+        assert_eq!(walk.year, Some(2021));
+        assert_eq!(walk.tvdb_id.as_deref(), Some("366972"));
+    }
 
     #[tokio::test]
     async fn list_child_directories_skips_library_junk_directories() {

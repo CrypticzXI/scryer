@@ -60,6 +60,9 @@ pub struct MetadataSearchQuery {
     pub query: String,
     pub type_hint: String,
     pub year: Option<i32>,
+    pub imdb_id: Option<String>,
+    pub tmdb_id: Option<String>,
+    pub tvdb_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -247,6 +247,32 @@ fn trusted_committed_entry(
     Ok(())
 }
 
+async fn quarantine_untrusted_committed_entry(
+    config: &RecycleBinConfig,
+    entry_dir: &Path,
+    manifest: &RecycleManifest,
+    reason: &str,
+) -> AppResult<bool> {
+    if !cleanup_ready(config) || !manifest.is_committed() {
+        return Ok(false);
+    }
+
+    let Some(parent) = entry_dir.parent() else {
+        return Ok(false);
+    };
+    if normalize_path(parent) != normalize_path(&config.base_path) {
+        return Ok(false);
+    }
+
+    warn!(
+        path = %entry_dir.display(),
+        reason = %reason,
+        "quarantining untrusted committed recycle entry"
+    );
+    quarantine_entry(entry_dir, manifest, reason).await?;
+    Ok(true)
+}
+
 async fn read_manifest(entry_dir: &Path) -> AppResult<Option<RecycleManifest>> {
     let path = manifest_path(entry_dir);
     if !path.exists() {
@@ -303,10 +329,16 @@ pub async fn recycle_file(
     }
 
     if !config.enabled {
-        return Err(AppError::Validation(format!(
-            "refusing to recycle {} because the recycle bin is disabled",
-            source_path.display()
-        )));
+        if let Err(err) = tokio::fs::remove_file(source_path).await
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(AppError::Repository(format!(
+                "failed to delete file {}: {}",
+                source_path.display(),
+                err
+            )));
+        }
+        return Ok(None);
     }
 
     if !config.cleanup_enabled {
@@ -343,12 +375,13 @@ pub async fn recycle_file(
         .get_or_insert_with(|| scryer_domain::Id::new().0);
     manifest
         .status
-        .get_or_insert_with(|| RECYCLE_STATUS_PENDING.to_string());
+        .get_or_insert_with(|| RECYCLE_STATUS_COMMITTED.to_string());
     write_manifest(&recycle_dir, &manifest).await?;
 
     // Move the file into the recycle directory
-    let file_name = source_path
+    let file_name = Path::new(&manifest.original_path)
         .file_name()
+        .or_else(|| source_path.file_name())
         .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
     let recycled_path = recycle_dir.join(file_name);
 
@@ -524,7 +557,16 @@ pub async fn list_committed_entries(
             continue;
         };
 
-        if trusted_committed_entry(config, &entry_dir, &manifest).is_err() {
+        if let Err(reason) = trusted_committed_entry(config, &entry_dir, &manifest) {
+            if let Err(error) =
+                quarantine_untrusted_committed_entry(config, &entry_dir, &manifest, &reason).await
+            {
+                warn!(
+                    path = %entry_dir.display(),
+                    error = %error,
+                    "failed to quarantine untrusted recycle entry"
+                );
+            }
             continue;
         }
 
@@ -564,6 +606,15 @@ pub async fn purge_committed_entry(
 ) -> AppResult<bool> {
     if let Err(reason) = trusted_committed_entry(config, entry_dir, manifest) {
         warn!(path = %entry_dir.display(), reason = %reason, "skipping untrusted recycle entry purge");
+        if let Err(error) =
+            quarantine_untrusted_committed_entry(config, entry_dir, manifest, &reason).await
+        {
+            warn!(
+                path = %entry_dir.display(),
+                error = %error,
+                "failed to quarantine untrusted recycle entry"
+            );
+        }
         return Ok(false);
     }
 
@@ -804,127 +855,6 @@ pub async fn media_root_for_title(
         .ok()
 }
 
-async fn configured_media_roots(app: &crate::AppUseCase) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for facet in [
-        scryer_domain::MediaFacet::Movie,
-        scryer_domain::MediaFacet::Series,
-        scryer_domain::MediaFacet::Anime,
-    ] {
-        let Ok(root_folders) = app.root_folders_for_facet(&facet).await else {
-            continue;
-        };
-        roots.extend(
-            root_folders
-                .into_iter()
-                .map(|entry| normalize_path(Path::new(entry.path.trim())))
-                .filter(|path| !path.as_os_str().is_empty()),
-        );
-    }
-    roots.sort();
-    roots.dedup();
-    roots
-}
-
-fn validate_recycle_base_path(
-    base_path: &Path,
-    custom_path: bool,
-    configured_roots: &[PathBuf],
-) -> Option<String> {
-    if custom_path && !base_path.is_absolute() {
-        return Some(format!(
-            "custom recycle bin path must be absolute: {}",
-            base_path.display()
-        ));
-    }
-
-    let normalized_base = normalize_path(base_path);
-    for root in configured_roots {
-        if custom_path
-            && (normalized_base == *root
-                || normalized_base.starts_with(root)
-                || root.starts_with(&normalized_base))
-        {
-            return Some(format!(
-                "custom recycle bin path {} must be outside configured media root {}",
-                normalized_base.display(),
-                root.display()
-            ));
-        }
-    }
-
-    None
-}
-
-/// Resolve recycle bin configuration from application settings.
-///
-/// Reads settings with hardcoded defaults (same pattern as `nfo.write_on_import.*`).
-/// When `media_root` is provided and no custom path is configured, defaults to
-/// `{media_root}/.scryer-recycle/`.
-pub async fn resolve_recycle_config(
-    app: &crate::AppUseCase,
-    media_root: Option<&str>,
-) -> RecycleBinConfig {
-    let enabled = app
-        .read_setting_string_value_for_scope(
-            crate::SETTINGS_SCOPE_MEDIA,
-            "recycle_bin.enabled",
-            None,
-        )
-        .await
-        .ok()
-        .flatten()
-        .map(|v| v != "false")
-        .unwrap_or(true);
-
-    let custom_path = app
-        .read_setting_string_value_for_scope(crate::SETTINGS_SCOPE_MEDIA, "recycle_bin.path", None)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let custom_path_configured = custom_path.is_some();
-
-    let base_path = if let Some(p) = custom_path {
-        PathBuf::from(p)
-    } else if let Some(root) = media_root {
-        PathBuf::from(root).join(RECYCLE_DIR_NAME)
-    } else {
-        // Fallback: use a temp-ish location; shouldn't normally happen
-        PathBuf::from("/tmp").join(RECYCLE_DIR_NAME)
-    };
-
-    let retention_days = app
-        .read_setting_string_value_for_scope(
-            crate::SETTINGS_SCOPE_MEDIA,
-            "recycle_bin.retention_days",
-            None,
-        )
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .filter(|days| *days >= 1)
-        .unwrap_or(DEFAULT_RETENTION_DAYS);
-
-    let configured_roots = configured_media_roots(app).await;
-    let validation_error =
-        validate_recycle_base_path(&base_path, custom_path_configured, &configured_roots);
-    let cleanup_enabled = validation_error.is_none();
-    if let Some(error) = &validation_error {
-        warn!(error = %error, path = %base_path.display(), "recycle bin configuration is unsafe; cleanup disabled");
-    }
-
-    RecycleBinConfig {
-        enabled,
-        base_path,
-        retention_days,
-        cleanup_enabled,
-        validation_error,
-    }
-}
-
 /// Build a recycle bin config from a file path by walking up to find the media root.
 ///
 /// For use in contexts where `AppUseCase` is not available (e.g., standalone async functions).
@@ -1024,6 +954,140 @@ mod tests {
         .unwrap();
     }
 
+    async fn write_test_entry(
+        recycle_dir: &Path,
+        entry_id: &str,
+        manifest: &RecycleManifest,
+    ) -> PathBuf {
+        let entry_dir = recycle_dir.join(entry_id);
+        tokio::fs::create_dir_all(&entry_dir).await.unwrap();
+        tokio::fs::write(
+            entry_dir.join("manifest.json"),
+            serde_json::to_string(manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(entry_dir.join("media.mkv"), b"media")
+            .await
+            .unwrap();
+        entry_dir
+    }
+
+    async fn read_test_manifest(entry_dir: &Path) -> RecycleManifest {
+        let bytes = tokio::fs::read(entry_dir.join("manifest.json"))
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn committed_untrusted_entry_is_quarantined_when_listed() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        tokio::fs::create_dir_all(&recycle_dir).await.unwrap();
+        write_test_sentinel(&recycle_dir).await;
+
+        let entry_id = "20260205_120000000_bad111";
+        let mut manifest = committed_manifest(
+            entry_id,
+            Utc::now().to_rfc3339(),
+            "/data/movies/Movie/Movie.mkv",
+            Some("title-123"),
+            "file_deleted",
+        );
+        manifest.schema = None;
+        let entry_dir = write_test_entry(&recycle_dir, entry_id, &manifest).await;
+
+        let config = test_config(&recycle_dir);
+        let entries = list_committed_entries(&config).await.unwrap();
+
+        assert!(entries.is_empty());
+        let quarantined = read_test_manifest(&entry_dir).await;
+        assert_eq!(
+            quarantined.status.as_deref(),
+            Some(RECYCLE_STATUS_QUARANTINED)
+        );
+        assert!(quarantined.reason.contains("quarantine:"));
+    }
+
+    #[tokio::test]
+    async fn pending_untrusted_entry_is_not_quarantined_or_purged() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        tokio::fs::create_dir_all(&recycle_dir).await.unwrap();
+        write_test_sentinel(&recycle_dir).await;
+
+        let entry_id = "20260205_120000000_pen111";
+        let mut manifest = pending_manifest(entry_id, Utc::now().to_rfc3339());
+        manifest.schema = None;
+        let entry_dir = write_test_entry(&recycle_dir, entry_id, &manifest).await;
+
+        let config = test_config(&recycle_dir);
+        let purged = purge_expired(&config).await.unwrap();
+
+        assert_eq!(purged, 0);
+        assert!(entry_dir.exists());
+        let pending = read_test_manifest(&entry_dir).await;
+        assert_eq!(pending.status.as_deref(), Some(RECYCLE_STATUS_PENDING));
+    }
+
+    #[tokio::test]
+    async fn cleanup_not_ready_does_not_quarantine_committed_entries() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        tokio::fs::create_dir_all(&recycle_dir).await.unwrap();
+
+        let entry_id = "20260205_120000000_nos111";
+        let mut manifest = committed_manifest(
+            entry_id,
+            Utc::now().to_rfc3339(),
+            "/data/movies/Movie/Movie.mkv",
+            Some("title-123"),
+            "file_deleted",
+        );
+        manifest.schema = None;
+        let entry_dir = write_test_entry(&recycle_dir, entry_id, &manifest).await;
+
+        let config = test_config(&recycle_dir);
+        let entries = list_committed_entries(&config).await.unwrap();
+
+        assert!(entries.is_empty());
+        let unchanged = read_test_manifest(&entry_dir).await;
+        assert_eq!(unchanged.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    }
+
+    #[tokio::test]
+    async fn purge_committed_entry_quarantines_untrusted_entry() {
+        let tmp = TempDir::new().unwrap();
+        let recycle_dir = tmp.path().join("recycle");
+        tokio::fs::create_dir_all(&recycle_dir).await.unwrap();
+        write_test_sentinel(&recycle_dir).await;
+
+        let entry_id = "20260205_120000000_pur111";
+        let mut manifest = committed_manifest(
+            entry_id,
+            Utc::now().to_rfc3339(),
+            "/data/movies/Movie/Movie.mkv",
+            Some("title-123"),
+            "file_deleted",
+        );
+        manifest.entry_id = Some("different-entry".to_string());
+        let entry_dir = write_test_entry(&recycle_dir, entry_id, &manifest).await;
+
+        let config = test_config(&recycle_dir);
+        let purged = purge_committed_entry(&config, &entry_dir, &manifest)
+            .await
+            .unwrap();
+
+        assert!(!purged);
+        assert!(entry_dir.exists());
+        let quarantined = read_test_manifest(&entry_dir).await;
+        assert_eq!(
+            quarantined.status.as_deref(),
+            Some(RECYCLE_STATUS_QUARANTINED)
+        );
+    }
+
     #[tokio::test]
     async fn test_recycle_creates_dir_and_manifest() {
         let tmp = TempDir::new().unwrap();
@@ -1046,12 +1110,12 @@ mod tests {
         let bytes = tokio::fs::read(&r.manifest_path).await.unwrap();
         let m: RecycleManifest = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(m.schema.as_deref(), Some(RECYCLE_MANIFEST_SCHEMA));
-        assert_eq!(m.status.as_deref(), Some(RECYCLE_STATUS_PENDING));
+        assert_eq!(m.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
         assert_eq!(m.reason, "title_deleted");
     }
 
     #[tokio::test]
-    async fn test_recycle_disabled_refuses_to_delete_directly() {
+    async fn test_recycle_disabled_deletes_directly() {
         let tmp = TempDir::new().unwrap();
         let source = tmp.path().join("test.mkv");
         tokio::fs::write(&source, b"video data").await.unwrap();
@@ -1066,10 +1130,10 @@ mod tests {
 
         let result = recycle_file(&config, &source, test_manifest())
             .await
-            .expect_err("disabled recycle bin should refuse direct delete");
+            .unwrap();
 
-        assert!(result.to_string().contains("recycle bin is disabled"));
-        assert!(source.exists());
+        assert!(result.is_none());
+        assert!(!source.exists());
     }
 
     #[tokio::test]
@@ -1287,23 +1351,6 @@ mod tests {
         assert!(legacy_dir.exists(), "legacy entry should be skipped");
         assert!(pending_dir.exists(), "pending entry should be skipped");
         assert!(malformed_dir.exists(), "malformed entry should be skipped");
-    }
-
-    #[test]
-    fn test_custom_recycle_path_must_be_outside_media_roots() {
-        let media_root = normalize_path(Path::new("/data/media"));
-        let roots = vec![media_root.clone()];
-
-        assert!(validate_recycle_base_path(&media_root, true, &roots).is_some());
-        assert!(
-            validate_recycle_base_path(Path::new("/data/media/recycle"), true, &roots).is_some()
-        );
-        assert!(validate_recycle_base_path(Path::new("/data"), true, &roots).is_some());
-        assert!(validate_recycle_base_path(Path::new("/recycle"), true, &roots).is_none());
-        assert!(
-            validate_recycle_base_path(Path::new("/data/media/.scryer-recycle"), false, &roots)
-                .is_none()
-        );
     }
 
     #[tokio::test]

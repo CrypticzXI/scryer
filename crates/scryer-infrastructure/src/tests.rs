@@ -4011,6 +4011,228 @@ async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_m
 }
 
 #[tokio::test]
+async fn title_update_metadata_preserves_provider_image_url_after_local_image_projection() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_provider_preserve_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let source_url = "https://tvdb.example/provider-poster.jpg";
+    let title = make_test_title("title-provider-preserve", Some(source_url));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    title_images
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Poster,
+                source_url: source_url.to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1000,
+                source_height: 1500,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "abababababababababababababababab".to_string(),
+                master_width: 1000,
+                master_height: 1500,
+                master_bytes: vec![1, 2, 3],
+                variants: vec![TitleImageVariantRecord {
+                    variant_key: "w500".to_string(),
+                    format: "avif".to_string(),
+                    width: 500,
+                    height: 750,
+                    bytes: vec![4, 5, 6],
+                    sha256: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("title image should insert");
+
+    let updated = TitleRepository::update_metadata(
+        &catalog,
+        &title.id,
+        None,
+        None,
+        Some(vec!["favorite".to_string()]),
+    )
+    .await
+    .expect("title metadata should update");
+    assert_eq!(updated.poster_source_url.as_deref(), Some(source_url));
+    assert!(
+        updated
+            .poster_url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("/images/titles/"))
+    );
+
+    let row = sqlx::query("SELECT poster_url, poster_local_path FROM titles WHERE id = ?")
+        .bind(&title.id)
+        .fetch_one(&services.pool)
+        .await
+        .expect("title row should load");
+    let stored_source: Option<String> = row.get("poster_url");
+    let stored_local_path: Option<String> = row.get("poster_local_path");
+    assert_eq!(stored_source.as_deref(), Some(source_url));
+    assert!(
+        stored_local_path
+            .as_deref()
+            .is_some_and(|url| url.starts_with("/images/titles/"))
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_titles_requiring_image_refresh_ignores_local_title_image_routes() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_local_route_refresh_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let title = make_test_title(
+        "title-local-route-refresh",
+        Some("/images/titles/title-local-route-refresh/poster/w500?v=deadbeef"),
+    );
+    TitleRepository::create(&catalog, title)
+        .await
+        .expect("title should insert");
+
+    let upstream = make_test_title(
+        "title-http-route-segment-refresh",
+        Some("https://cdn.example/images/titles/upstream-poster.jpg"),
+    );
+    TitleRepository::create(&catalog, upstream.clone())
+        .await
+        .expect("upstream title should insert");
+
+    let pending = title_images
+        .list_titles_requiring_image_refresh(TitleImageKind::Poster, 10)
+        .await
+        .expect("list pending poster refresh should succeed");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].title_id, upstream.id);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn clear_title_image_cache_repairs_polluted_urls_and_clears_db_cache() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_cache_clear_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+
+    let source_url = "https://tvdb.example/cache-clear-poster.jpg";
+    let repaired = make_test_title("title-cache-clear-repair", Some(source_url));
+    TitleRepository::create(&catalog, repaired.clone())
+        .await
+        .expect("repair title should insert");
+    title_images
+        .replace_title_image(
+            &repaired.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Poster,
+                source_url: source_url.to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1000,
+                source_height: 1500,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+                master_width: 1000,
+                master_height: 1500,
+                master_bytes: vec![1, 2, 3],
+                variants: vec![TitleImageVariantRecord {
+                    variant_key: "w500".to_string(),
+                    format: "avif".to_string(),
+                    width: 500,
+                    height: 750,
+                    bytes: vec![4, 5, 6],
+                    sha256: "ffffffffffffffffffffffffffffffff".to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("title image should insert");
+    sqlx::query("UPDATE titles SET poster_url = ? WHERE id = ?")
+        .bind("/images/titles/title-cache-clear-repair/poster/w500?v=ffffffffffffffff")
+        .bind(&repaired.id)
+        .execute(&services.pool)
+        .await
+        .expect("polluted source should update");
+
+    let unrecoverable = make_test_title(
+        "title-cache-clear-unrecoverable",
+        Some("/images/titles/title-cache-clear-unrecoverable/poster/w500?v=badbadbad"),
+    );
+    TitleRepository::create(&catalog, unrecoverable.clone())
+        .await
+        .expect("unrecoverable title should insert");
+
+    title_images
+        .clear_title_image_cache()
+        .await
+        .expect("title image cache should clear");
+
+    let repaired_row = sqlx::query("SELECT poster_url, poster_local_path FROM titles WHERE id = ?")
+        .bind(&repaired.id)
+        .fetch_one(&services.pool)
+        .await
+        .expect("repaired row should load");
+    let repaired_source: Option<String> = repaired_row.get("poster_url");
+    let repaired_local_path: Option<String> = repaired_row.get("poster_local_path");
+    assert_eq!(repaired_source.as_deref(), Some(source_url));
+    assert!(repaired_local_path.is_none());
+
+    let unrecoverable_row = sqlx::query(
+        "SELECT poster_url, metadata_hydration_next_attempt_at FROM titles WHERE id = ?",
+    )
+    .bind(&unrecoverable.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("unrecoverable row should load");
+    let unrecoverable_source: Option<String> = unrecoverable_row.get("poster_url");
+    let next_attempt: Option<String> = unrecoverable_row.get("metadata_hydration_next_attempt_at");
+    assert!(unrecoverable_source.is_none());
+    assert!(next_attempt.is_some());
+
+    let image_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_images")
+        .fetch_one(&services.pool)
+        .await
+        .expect("image count should load");
+    let variant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants")
+        .fetch_one(&services.pool)
+        .await
+        .expect("variant count should load");
+    assert_eq!(image_count, 0);
+    assert_eq!(variant_count, 0);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_image_master_dedup_migration_rewrites_paths_and_deletes_banner_fanart_variants() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_image_master_dedup_{}.db",

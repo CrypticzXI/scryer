@@ -286,7 +286,7 @@ pub(crate) async fn finalize_title_scan_file(
     title: &Title,
     plan: PlannedTitleScanFile,
     analysis_outcome: Option<MediaAnalysisOutcome>,
-    scan_mode: LibraryScanMode,
+    _scan_mode: LibraryScanMode,
     episode_links: &mut HashSet<(String, String)>,
     summary: &mut LibraryScanSummary,
     db_elapsed: &mut Duration,
@@ -332,13 +332,6 @@ pub(crate) async fn finalize_title_scan_file(
     };
     *db_elapsed = db_elapsed.saturating_add(persisted_file.db_elapsed);
 
-    let should_link_target_episodes = !matches!(
-        (&scan_mode, &record),
-        (
-            LibraryScanMode::Additive,
-            PlannedTitleScanRecord::Existing { .. }
-        )
-    );
     let mut title_updated = persisted_file.title_updated;
     let external_subtitle_episode_id = match target_episodes.as_slice() {
         [episode] => Some(episode.id.as_str()),
@@ -346,9 +339,6 @@ pub(crate) async fn finalize_title_scan_file(
     };
 
     for episode in &target_episodes {
-        if !should_link_target_episodes {
-            continue;
-        }
         if episode_links.insert((persisted_file.file_id.clone(), episode.id.clone())) {
             title_updated = true;
             let db_started = Instant::now();

@@ -750,6 +750,8 @@ pub struct AppRuntimeCatalogState {
     pub poster_wake: Arc<tokio::sync::Notify>,
     pub banner_wake: Arc<tokio::sync::Notify>,
     pub fanart_wake: Arc<tokio::sync::Notify>,
+    pub title_image_maintenance_lock: Arc<tokio::sync::RwLock<()>>,
+    pub title_image_cache_clear_scheduled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -874,6 +876,11 @@ where
 }
 
 #[derive(Clone)]
+pub struct AppRuntimeIntegrationState {
+    pub managed_indexer_sync_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Clone)]
 pub struct AppRuntimeState {
     pub environment: AppRuntimeEnvironmentState,
     pub events: AppRuntimeEventState,
@@ -884,6 +891,7 @@ pub struct AppRuntimeState {
     pub jobs: AppRuntimeJobState,
     pub health: AppRuntimeHealthState,
     pub plugins: AppRuntimePluginState,
+    pub integrations: AppRuntimeIntegrationState,
 }
 
 impl AppRuntimeState {
@@ -927,6 +935,10 @@ impl AppRuntimeState {
                 poster_wake: Arc::new(tokio::sync::Notify::new()),
                 banner_wake: Arc::new(tokio::sync::Notify::new()),
                 fanart_wake: Arc::new(tokio::sync::Notify::new()),
+                title_image_maintenance_lock: Arc::new(tokio::sync::RwLock::new(())),
+                title_image_cache_clear_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(
+                    false,
+                )),
             },
             acquisition: AppRuntimeAcquisitionState {
                 acquisition_wake: Arc::new(tokio::sync::Notify::new()),
@@ -957,6 +969,9 @@ impl AppRuntimeState {
             plugins: AppRuntimePluginState {
                 plugin_operation_guards: PluginOperationGuardTable::default(),
                 plugin_install_orchestrator: PluginInstallOrchestrator::default(),
+            },
+            integrations: AppRuntimeIntegrationState {
+                managed_indexer_sync_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
         }
     }

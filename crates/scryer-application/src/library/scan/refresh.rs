@@ -266,9 +266,6 @@ pub(super) async fn background_refresh_series(
         for candidate in prepared_candidates {
             let candidate = process_series_refresh_candidate(
                 app,
-                actor,
-                facet,
-                library_id,
                 candidate,
                 &mut workset,
                 &mut existing_titles,

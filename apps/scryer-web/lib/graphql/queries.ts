@@ -1885,6 +1885,10 @@ export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
 }`;
 
+export const indexersChangedSubscription = `subscription IndexersChanged {
+  indexersChanged
+}`;
+
 export const systemHealthQuery = `query SystemHealth {
   systemHealth {
     serviceReady
@@ -2092,8 +2096,14 @@ export const backupsQuery = `query Backups {
   }
 }`;
 
-export const recycledItemsQuery = `query RecycledItems($limit: Int, $offset: Int) {
-  recycledItems(limit: $limit, offset: $offset) {
+export const recycleBinSettingsQuery = `query RecycleBinSettings {
+  recycleBinSettings {
+    enabled
+  }
+}`;
+
+export const recycledItemsQuery = `query RecycledItems($limit: Int, $offset: Int, $libraryIds: [String!]) {
+  recycledItems(limit: $limit, offset: $offset, libraryIds: $libraryIds) {
     items {
       id
       originalPath
@@ -2103,6 +2113,8 @@ export const recycledItemsQuery = `query RecycledItems($limit: Int, $offset: Int
       reason
       recycledAt
       mediaRoot
+      libraryId
+      libraryName
     }
     totalCount
   }

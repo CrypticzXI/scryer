@@ -40,7 +40,7 @@ import type { PendingImportCounts } from "@/lib/types";
 import { hasImportItemsForView, pendingImportCountForView } from "@/lib/types";
 import type { AuthUser } from "@/lib/hooks/use-auth";
 import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
-import type { AppPermission } from "@/lib/utils/permissions";
+import type { AppPermission, LibraryPermission } from "@/lib/utils/permissions";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 type NavItem = {
@@ -77,6 +77,7 @@ const settingsEntries: Array<{
   id: SettingsSection;
   label: (t: Translate) => string;
   requiredAnyAppPermission?: AppPermission[];
+  requiredAnyLibraryPermission?: LibraryPermission[];
 }> = [
   {
     id: "profile",
@@ -151,6 +152,7 @@ const settingsEntries: Array<{
     id: "recycleBin",
     label: (t) => t("settings.recycleBin"),
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
+    requiredAnyLibraryPermission: [LIBRARY_PERMISSIONS.manageTitles],
   },
 ];
 
@@ -252,8 +254,11 @@ function RootSidebarContent({
     () =>
       settingsEntries.filter(
         (entry) =>
-          !entry.requiredAnyAppPermission ||
-          hasAnyAppPermission(user, entry.requiredAnyAppPermission),
+          (!entry.requiredAnyAppPermission ||
+            hasAnyAppPermission(user, entry.requiredAnyAppPermission)) ||
+          entry.requiredAnyLibraryPermission?.some((permission) =>
+            hasAnyLibraryPermission(user, permission),
+          ),
       ),
     [user],
   );

@@ -15,40 +15,12 @@ fn health_root_label(facet: &MediaFacet) -> &'static str {
     }
 }
 
-fn normalize_health_path(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-
-    #[cfg(windows)]
-    {
-        trimmed
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_ascii_lowercase()
-    }
-
-    #[cfg(not(windows))]
-    {
-        trimmed.replace('\\', "/").trim_end_matches('/').to_string()
-    }
+fn health_library_root_label(root: &crate::catalog_workflow::LibraryRootFolder) -> String {
+    format!("{} ({})", root.library_name, health_root_label(&root.facet))
 }
 
 fn path_overlaps(left: &str, right: &str) -> bool {
-    let left = normalize_health_path(left);
-    let right = normalize_health_path(right);
-    if left.is_empty() || right.is_empty() {
-        return false;
-    }
-
-    left == right
-        || left
-            .strip_prefix(&right)
-            .is_some_and(|suffix| suffix.starts_with('/') || suffix.starts_with('\\'))
-        || right
-            .strip_prefix(&left)
-            .is_some_and(|suffix| suffix.starts_with('/') || suffix.starts_with('\\'))
+    crate::catalog_workflow::library_root_paths_overlap(left, right)
 }
 
 fn download_client_status_health_results(
@@ -121,6 +93,16 @@ impl AppUseCase {
         results
     }
 
+    async fn health_library_roots(
+        &self,
+    ) -> AppResult<Vec<crate::catalog_workflow::LibraryRootFolder>> {
+        let mut roots = Vec::new();
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            roots.extend(self.all_library_root_folders_for_facet(&facet).await?);
+        }
+        Ok(roots)
+    }
+
     async fn check_download_clients(&self) -> Vec<HealthCheckResult> {
         let configs = match self
             .services
@@ -173,29 +155,22 @@ impl AppUseCase {
             }];
         }
 
-        let mut library_roots = Vec::new();
-        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
-            let roots = match self.root_folders_for_facet(&facet).await {
-                Ok(roots) => roots,
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        facet = ?facet,
-                        "health check: failed to resolve library roots while checking download clients"
-                    );
-                    Vec::new()
-                }
-            };
-
-            for root in roots {
-                let path = root.path.trim();
-                if !path.is_empty() {
-                    library_roots.push(path.to_string());
-                }
-            }
-        }
-
         let mut results = Vec::new();
+        let library_roots = match self.health_library_roots().await {
+            Ok(roots) => roots.into_iter().map(|root| root.path).collect::<Vec<_>>(),
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "health check: failed to resolve library roots while checking download clients"
+                );
+                results.push(HealthCheckResult {
+                    source: "DownloadClient".into(),
+                    status: HealthCheckStatus::Error,
+                    message: format!("Failed to resolve library roots: {error}"),
+                });
+                Vec::new()
+            }
+        };
         for config in enabled {
             let has_remote_path_mappings =
                 match crate::has_download_client_remote_path_mappings(&config.config_json) {
@@ -283,43 +258,40 @@ impl AppUseCase {
 
     async fn check_root_folders(&self) -> Vec<HealthCheckResult> {
         let mut results = Vec::new();
-        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
-            let label = health_root_label(&facet);
-            let root_folders = match self.root_folders_for_facet(&facet).await {
-                Ok(root_folders) => root_folders,
-                Err(error) => {
-                    results.push(HealthCheckResult {
-                        source: "RootFolder".into(),
-                        status: HealthCheckStatus::Error,
-                        message: format!("Failed to resolve {label} roots: {error}"),
-                    });
-                    continue;
-                }
-            };
+        let root_folders = match self.health_library_roots().await {
+            Ok(root_folders) => root_folders,
+            Err(error) => {
+                return vec![HealthCheckResult {
+                    source: "RootFolder".into(),
+                    status: HealthCheckStatus::Error,
+                    message: format!("Failed to resolve library roots: {error}"),
+                }];
+            }
+        };
+        let mut seen = HashSet::new();
 
-            for root in root_folders {
-                let path = root.path.trim();
-                if path.is_empty() {
-                    continue;
-                }
-                let p = std::path::Path::new(path);
-                if !p.exists() {
-                    results.push(HealthCheckResult {
-                        source: "RootFolder".into(),
-                        status: HealthCheckStatus::Error,
-                        message: format!("{label} root folder does not exist: {path}"),
-                    });
-                } else if p
-                    .metadata()
-                    .map(|m| m.permissions().readonly())
-                    .unwrap_or(true)
-                {
-                    results.push(HealthCheckResult {
-                        source: "RootFolder".into(),
-                        status: HealthCheckStatus::Warning,
-                        message: format!("{label} root folder is read-only: {path}"),
-                    });
-                }
+        for root in root_folders {
+            if !seen.insert(root.normalized_path.clone()) {
+                continue;
+            }
+            let label = health_library_root_label(&root);
+            let p = std::path::Path::new(&root.path);
+            if !p.exists() {
+                results.push(HealthCheckResult {
+                    source: "RootFolder".into(),
+                    status: HealthCheckStatus::Error,
+                    message: format!("{label} root folder does not exist: {}", root.path),
+                });
+            } else if p
+                .metadata()
+                .map(|m| m.permissions().readonly())
+                .unwrap_or(true)
+            {
+                results.push(HealthCheckResult {
+                    source: "RootFolder".into(),
+                    status: HealthCheckStatus::Warning,
+                    message: format!("{label} root folder is read-only: {}", root.path),
+                });
             }
         }
 
@@ -329,43 +301,42 @@ impl AppUseCase {
     async fn check_recycle_bin_config(&self) -> Vec<HealthCheckResult> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
+        let root_folders = match self.health_library_roots().await {
+            Ok(root_folders) => root_folders,
+            Err(error) => {
+                return vec![HealthCheckResult {
+                    source: "RecycleBin".into(),
+                    status: HealthCheckStatus::Error,
+                    message: format!(
+                        "Failed to resolve library roots while validating recycle bin config: {error}"
+                    ),
+                }];
+            }
+        };
 
-        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
-            let label = health_root_label(&facet);
-            let root_folders = match self.root_folders_for_facet(&facet).await {
-                Ok(root_folders) => root_folders,
-                Err(error) => {
-                    results.push(HealthCheckResult {
-                        source: "RecycleBin".into(),
-                        status: HealthCheckStatus::Error,
-                        message: format!(
-                            "Failed to resolve {label} roots while validating recycle bin config: {error}"
-                        ),
-                    });
-                    continue;
-                }
-            };
+        for root in root_folders {
+            if !seen.insert(root.normalized_path.clone()) {
+                continue;
+            }
+            let label = health_library_root_label(&root);
 
-            for root in root_folders {
-                let path = root.path.trim();
-                if path.is_empty() || !seen.insert(path.to_string()) {
-                    continue;
-                }
-
-                let config = crate::recycle_bin::resolve_recycle_config(self, Some(path)).await;
-                if config.enabled && !config.cleanup_enabled {
-                    results.push(HealthCheckResult {
-                        source: "RecycleBin".into(),
-                        status: HealthCheckStatus::Error,
-                        message: format!(
-                            "Recycle bin cleanup is disabled for {label} root {path}: {}",
-                            config
-                                .validation_error
-                                .as_deref()
-                                .unwrap_or("invalid recycle bin configuration")
-                        ),
-                    });
-                }
+            let config = self
+                .recycle_bin_config_for_media_root(Some(&root.path))
+                .await;
+            if config.enabled && !config.cleanup_enabled {
+                results.push(HealthCheckResult {
+                    source: "RecycleBin".into(),
+                    status: HealthCheckStatus::Error,
+                    message: format!(
+                        "Recycle bin cleanup is disabled for {} root {}: {}",
+                        label,
+                        root.path,
+                        config
+                            .validation_error
+                            .as_deref()
+                            .unwrap_or("invalid recycle bin configuration")
+                    ),
+                });
             }
         }
 
@@ -375,52 +346,51 @@ impl AppUseCase {
     async fn check_disk_space_health(&self) -> Vec<HealthCheckResult> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
+        let root_folders = match self.health_library_roots().await {
+            Ok(root_folders) => root_folders,
+            Err(error) => {
+                return vec![HealthCheckResult {
+                    source: "DiskSpace".into(),
+                    status: HealthCheckStatus::Error,
+                    message: format!("Failed to resolve library roots: {error}"),
+                }];
+            }
+        };
 
-        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
-            let label = health_root_label(&facet);
-            let root_folders = match self.root_folders_for_facet(&facet).await {
-                Ok(root_folders) => root_folders,
-                Err(error) => {
+        for root in root_folders {
+            if !seen.insert(root.normalized_path.clone()) {
+                continue;
+            }
+            let label = health_library_root_label(&root);
+
+            #[cfg(unix)]
+            if let Some(stat) = statvfs_path(&root.path) {
+                let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
+                let mb_100 = 100 * 1024 * 1024;
+                let mb_500 = 500 * 1024 * 1024;
+
+                if free < mb_100 {
                     results.push(HealthCheckResult {
                         source: "DiskSpace".into(),
                         status: HealthCheckStatus::Error,
-                        message: format!("Failed to resolve {label} roots: {error}"),
+                        message: format!(
+                            "{} disk space critically low: {} MB free at {}",
+                            label,
+                            free / (1024 * 1024),
+                            root.path
+                        ),
                     });
-                    continue;
-                }
-            };
-
-            for root in root_folders {
-                let path = root.path.trim();
-                if path.is_empty() || !seen.insert(path.to_string()) {
-                    continue;
-                }
-
-                #[cfg(unix)]
-                if let Some(stat) = statvfs_path(path) {
-                    let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
-                    let mb_100 = 100 * 1024 * 1024;
-                    let mb_500 = 500 * 1024 * 1024;
-
-                    if free < mb_100 {
-                        results.push(HealthCheckResult {
-                            source: "DiskSpace".into(),
-                            status: HealthCheckStatus::Error,
-                            message: format!(
-                                "{label} disk space critically low: {} MB free at {path}",
-                                free / (1024 * 1024)
-                            ),
-                        });
-                    } else if free < mb_500 {
-                        results.push(HealthCheckResult {
-                            source: "DiskSpace".into(),
-                            status: HealthCheckStatus::Warning,
-                            message: format!(
-                                "{label} disk space low: {} MB free at {path}",
-                                free / (1024 * 1024)
-                            ),
-                        });
-                    }
+                } else if free < mb_500 {
+                    results.push(HealthCheckResult {
+                        source: "DiskSpace".into(),
+                        status: HealthCheckStatus::Warning,
+                        message: format!(
+                            "{} disk space low: {} MB free at {}",
+                            label,
+                            free / (1024 * 1024),
+                            root.path
+                        ),
+                    });
                 }
             }
         }
@@ -432,6 +402,75 @@ impl AppUseCase {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_library(
+        id: &str,
+        name: &str,
+        facet: MediaFacet,
+        paths: &[&str],
+    ) -> scryer_domain::Library {
+        let now = chrono::Utc::now();
+        scryer_domain::Library {
+            id: id.to_string(),
+            facet,
+            name: name.to_string(),
+            slug: id.to_string(),
+            is_default: false,
+            roots: paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| scryer_domain::LibraryRoot {
+                    id: format!("{id}-root-{index}"),
+                    library_id: id.to_string(),
+                    path: (*path).to_string(),
+                    is_default: index == 0,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .collect(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn health_library_roots_include_multiple_libraries_per_facet() {
+        let libraries = [
+            test_library("movies", "Movies", MediaFacet::Movie, &["/media/movies"]),
+            test_library(
+                "movies-4k",
+                "Movies 4K",
+                MediaFacet::Movie,
+                &["/media/movies-4k"],
+            ),
+            test_library("series", "Series", MediaFacet::Series, &["/media/series"]),
+        ];
+        let roots = crate::catalog_workflow::library_root_folders_from_libraries(&libraries, None);
+
+        let paths = roots
+            .iter()
+            .map(|root| root.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec!["/media/movies", "/media/movies-4k", "/media/series"]
+        );
+        assert!(
+            roots
+                .iter()
+                .any(|root| health_library_root_label(root) == "Movies 4K (Movies)")
+        );
+
+        let movie_roots = crate::catalog_workflow::library_root_folders_from_libraries(
+            &libraries,
+            Some(&MediaFacet::Movie),
+        );
+        let movie_paths = movie_roots
+            .iter()
+            .map(|root| root.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(movie_paths, vec!["/media/movies", "/media/movies-4k"]);
+    }
 
     #[test]
     fn download_client_health_warns_for_inaccessible_mapped_roots() {

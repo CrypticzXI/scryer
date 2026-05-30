@@ -105,6 +105,89 @@ impl AppUseCase {
         }
     }
 
+    pub async fn require_granted_library_permission(
+        &self,
+        actor: &User,
+        library_id: &str,
+        permission: LibraryPermission,
+    ) -> AppResult<()> {
+        if self
+            .has_granted_library_permission(actor, library_id, permission)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ))
+        }
+    }
+
+    pub async fn has_granted_library_permission(
+        &self,
+        actor: &User,
+        library_id: &str,
+        permission: LibraryPermission,
+    ) -> AppResult<bool> {
+        let authorization = self.authorization_for_actor(actor).await?;
+        let required = LibraryPermissionMask::from_permission(permission);
+        if authorization
+            .library_permissions(library_id)
+            .contains(required)
+        {
+            return Ok(true);
+        }
+
+        if !authorization.default_library.contains(required) {
+            return Ok(false);
+        }
+
+        Ok([MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+            .into_iter()
+            .any(|facet| scryer_domain::default_library_id_for_facet(&facet) == library_id))
+    }
+
+    pub async fn has_any_granted_library_permission(
+        &self,
+        actor: &User,
+        permission: LibraryPermission,
+    ) -> AppResult<bool> {
+        Ok(!self
+            .granted_library_ids_for_permission(actor, None, permission)
+            .await?
+            .is_empty())
+    }
+
+    pub async fn granted_library_ids_for_permission(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        permission: LibraryPermission,
+    ) -> AppResult<Vec<String>> {
+        let libraries = self.services.catalog.libraries.list(facet.clone()).await?;
+        let authorization = self.authorization_for_actor(actor).await?;
+        let required = LibraryPermissionMask::from_permission(permission);
+        if libraries.is_empty() && authorization.default_library.contains(required) {
+            return Ok(match facet {
+                Some(facet) => vec![scryer_domain::default_library_id_for_facet(&facet)],
+                None => [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+                    .into_iter()
+                    .map(|facet| scryer_domain::default_library_id_for_facet(&facet))
+                    .collect(),
+            });
+        }
+
+        Ok(libraries
+            .into_iter()
+            .filter(|library| {
+                authorization
+                    .library_permissions(&library.id)
+                    .contains(required)
+            })
+            .map(|library| library.id)
+            .collect())
+    }
+
     pub async fn has_any_library_permission(
         &self,
         actor: &User,
