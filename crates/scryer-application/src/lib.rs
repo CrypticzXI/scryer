@@ -67,6 +67,7 @@ pub(crate) use import::post_download_gate;
 pub(crate) use import::title_resolution as import_title_resolution;
 pub(crate) use integration::integration as app_usecase_integration;
 pub(crate) use library::discovery as library_discovery;
+pub(crate) use library::filename_parser as library_filename_parser;
 pub(crate) use library::nfo;
 pub(crate) use library::rename as library_rename;
 pub(crate) use library::title_matching;

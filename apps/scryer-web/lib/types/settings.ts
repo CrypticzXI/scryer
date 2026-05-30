@@ -82,6 +82,7 @@ export type LinkedAccount = {
   avatarUrl: string | null;
   status: ExternalAccountStatus;
   verifiedAt: string | null;
+  lastLoginAt: string | null;
   createdAt: string;
   updatedAt: string;
 };

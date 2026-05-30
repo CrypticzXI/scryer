@@ -1050,9 +1050,9 @@ fn media_file_payload_from_record(
         previous_path: media_file.original_file_path.clone(),
         recycle_bin_path: None,
         size_bytes: Some(media_file.size_bytes),
-        quality: media_file
-            .quality_label
-            .clone()
+        quality: crate::media::release_labels::quality_from_video_height(media_file.video_height)
+            .map(str::to_string)
+            .or_else(|| media_file.quality_label.clone())
             .or_else(|| media_file.resolution.clone()),
         release_group: media_file.release_group.clone(),
         scene_name: media_file.scene_name.clone(),
@@ -1072,11 +1072,10 @@ fn media_file_payload_from_record(
             .audio_codec
             .clone()
             .or_else(|| media_file.audio_codec_parsed.clone()),
-        audio_channels: media_file.audio_channels_parsed.clone().or_else(|| {
-            media_file
-                .audio_channels
-                .map(|channels| channels.to_string())
-        }),
+        audio_channels: media_file
+            .audio_channels
+            .map(|channels| channels.to_string())
+            .or_else(|| media_file.audio_channels_parsed.clone()),
         video_width: media_file.video_width,
         video_height: media_file.video_height,
         video_bit_depth: media_file.video_bit_depth,

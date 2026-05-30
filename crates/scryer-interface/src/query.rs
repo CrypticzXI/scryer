@@ -280,6 +280,18 @@ impl AccountQueries {
             .map(|accounts| accounts.into_iter().map(from_linked_account).collect())
             .map_err(to_gql_error)
     }
+
+    async fn external_account_invites(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<LinkedAccountPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_external_account_invites(&actor)
+            .await
+            .map(|accounts| accounts.into_iter().map(from_linked_account).collect())
+            .map_err(to_gql_error)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

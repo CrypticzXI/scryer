@@ -2664,6 +2664,7 @@ pub struct UserExternalAccount {
     pub avatar_url: Option<String>,
     pub status: ExternalAccountStatus,
     pub verified_at: Option<DateTime<Utc>>,
+    pub last_login_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -2688,6 +2689,7 @@ impl UserExternalAccount {
             avatar_url: None,
             status: ExternalAccountStatus::PendingClaim,
             verified_at: None,
+            last_login_at: None,
             created_at: now,
             updated_at: now,
         }

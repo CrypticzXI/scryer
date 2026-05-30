@@ -1,161 +1,10 @@
 use super::*;
+use crate::library_filename_parser::{
+    LibraryFilenameExistingRecord, LibraryFilenameFallbackPolicy, LibraryFilenameParseInput,
+    LibraryFilenameParseMode, parse_library_filename,
+};
 use crate::library_scan_unmatched::build_title_bound_unmatched_scan_item;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
-use scryer_domain::VIDEO_EXTENSIONS;
-
-fn parsed_release_has_title_scan_episode_identity(
-    parsed: &crate::ParsedReleaseMetadata,
-    facet: &scryer_domain::MediaFacet,
-) -> bool {
-    matches!(
-        parsed.episode.as_ref(),
-        Some(ep)
-            if !ep.episode_numbers.is_empty()
-                || ep.air_date.is_some()
-                || !ep.special_absolute_episode_numbers.is_empty()
-                || (ep.absolute_episode.is_some()
-                    && *facet == scryer_domain::MediaFacet::Anime)
-    )
-}
-
-fn parse_release_from_immediate_parent_for_title_scan(
-    source_path: &std::path::Path,
-    parse_context: &crate::ReleaseParseContext,
-) -> Option<crate::ParsedReleaseMetadata> {
-    source_path
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.trim().is_empty())
-        .map(|name| crate::parse_release_metadata_for_target(name.as_str(), parse_context))
-}
-
-async fn immediate_parent_has_single_video_file(source_path: &std::path::Path) -> bool {
-    let Some(parent) = source_path.parent() else {
-        return false;
-    };
-
-    let mut entries = match tokio::fs::read_dir(parent).await {
-        Ok(entries) => entries,
-        Err(_) => return false,
-    };
-    let mut video_count = 0usize;
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type().await else {
-            return false;
-        };
-        if !file_type.is_file() {
-            continue;
-        }
-
-        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if VIDEO_EXTENSIONS
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(extension))
-        {
-            video_count += 1;
-            if video_count > 1 {
-                return false;
-            }
-        }
-    }
-
-    video_count == 1
-}
-
-fn fill_missing_title_scan_release_metadata(
-    target: &mut crate::ParsedReleaseMetadata,
-    fallback: &crate::ParsedReleaseMetadata,
-    facet: &scryer_domain::MediaFacet,
-) {
-    if !parsed_release_has_title_scan_episode_identity(target, facet) && fallback.episode.is_some()
-    {
-        target.episode = fallback.episode.clone();
-    }
-    if target.imdb_id.is_none() {
-        target.imdb_id = fallback.imdb_id.clone();
-    }
-    if target.tmdb_id.is_none() {
-        target.tmdb_id = fallback.tmdb_id.clone();
-    }
-    if target.year.is_none() {
-        target.year = fallback.year;
-    }
-    if target.quality.is_none() {
-        target.quality = fallback.quality.clone();
-    }
-    if target.source.is_none() {
-        target.source = fallback.source;
-    }
-    if target.video_codec.is_none() {
-        target.video_codec = fallback.video_codec;
-    }
-    if target.video_encoding.is_none() {
-        target.video_encoding = fallback.video_encoding.clone();
-    }
-    if target.audio.is_none() {
-        target.audio = fallback.audio;
-    }
-    if target.audio_channels.is_none() {
-        target.audio_channels = fallback.audio_channels.clone();
-    }
-    if target.release_group.is_none() {
-        target.release_group = fallback.release_group.clone();
-    }
-    if target.streaming_service.is_none() {
-        target.streaming_service = fallback.streaming_service;
-    }
-    if target.edition.is_none() {
-        target.edition = fallback.edition.clone();
-    }
-    if target.normalized_title.trim().is_empty() && !fallback.normalized_title.trim().is_empty() {
-        target.normalized_title = fallback.normalized_title.clone();
-    }
-    if target.normalized_title_variants.is_empty() && !fallback.normalized_title_variants.is_empty()
-    {
-        target.normalized_title_variants = fallback.normalized_title_variants.clone();
-    }
-}
-
-async fn parse_title_scan_release_metadata(
-    source_path: &std::path::Path,
-    display_name: &str,
-    facet: &scryer_domain::MediaFacet,
-    parse_context: &crate::ReleaseParseContext,
-) -> crate::ParsedReleaseMetadata {
-    let mut parsed = crate::parse_release_metadata_for_target(
-        source_path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or(display_name),
-        parse_context,
-    );
-    if parsed_release_has_title_scan_episode_identity(&parsed, facet) {
-        return parsed;
-    }
-
-    let Some(parent_release) =
-        parse_release_from_immediate_parent_for_title_scan(source_path, parse_context)
-    else {
-        return parsed;
-    };
-    let Some(parent_episode) = parent_release.episode.as_ref() else {
-        return parsed;
-    };
-    if parent_episode.full_season
-        || !parsed_release_has_title_scan_episode_identity(&parent_release, facet)
-        || !immediate_parent_has_single_video_file(source_path).await
-    {
-        return parsed;
-    }
-
-    fill_missing_title_scan_release_metadata(&mut parsed, &parent_release, facet);
-    parsed
-}
 
 fn hydration_source_for_scan_mode(
     mode: LibraryScanMode,
@@ -1036,13 +885,10 @@ impl AppUseCase {
             title_episodes = title_episodes.len(),
             "title scan stage: db state loaded"
         );
-        let episode_lookup = build_title_episode_lookup(&collections, &title_episodes);
-        let parse_context =
-            crate::build_release_parse_context_for_title(&title, &title_episodes, None);
         debug!(
             title_id = %title.id,
             title_name = %title.name,
-            "title scan stage: episode lookup built"
+            "title scan stage: episode context loaded"
         );
 
         let mut existing_records_by_path: HashMap<String, TitleMediaFile> = HashMap::new();
@@ -1068,6 +914,8 @@ impl AppUseCase {
         let mut pending_progress = TitleScanProgressDelta::default();
         let mut unchanged_file_skips = 0usize;
         let mut analyzed_files = 0usize;
+        let mut external_subtitle_cache =
+            crate::subtitles::ExternalSubtitleDirectoryCache::default();
         let actor_user_id = Some(actor.id.clone());
 
         'file_chunks: for file_chunk in discovered_files.chunks(TITLE_SCAN_FILE_BATCH_SIZE) {
@@ -1089,110 +937,6 @@ impl AppUseCase {
                 summary.scanned += 1;
 
                 let source_path = stored_path_to_path_buf(&file.path);
-                let parsed = parse_title_scan_release_metadata(
-                    &source_path,
-                    file.display_name.as_str(),
-                    &title.facet,
-                    &parse_context,
-                )
-                .await;
-
-                let ep_meta = match parsed.episode.as_ref() {
-                    Some(ep) if !ep.episode_numbers.is_empty() => ep,
-                    Some(ep) if ep.air_date.is_some() => ep,
-                    Some(ep) if !ep.special_absolute_episode_numbers.is_empty() => ep,
-                    Some(ep)
-                        if ep.absolute_episode.is_some()
-                            && title.facet == scryer_domain::MediaFacet::Anime =>
-                    {
-                        ep
-                    }
-                    _ => {
-                        debug!(
-                            title_id = %title.id,
-                            title_name = %title.name,
-                            file_path = %file.path,
-                            display_name = %file.display_name,
-                            title_dir = %title_dir_str,
-                            discovered_files = discovered_files.len(),
-                            parsed_episode = ?parsed.episode,
-                            "title scan: episode identity missing"
-                        );
-                        let unmatched_item = build_title_bound_unmatched_scan_item(
-                            &title.facet,
-                            &title.library_id,
-                            &title.id,
-                            session_id,
-                            &title_dir_str,
-                            &file.path,
-                            &file.display_name,
-                            &title.name,
-                            title.year.map(|value| value as u32),
-                            "episode_identity_missing",
-                        );
-                        if let Err(error) =
-                            persist_library_scan_unmatched_item(self, &unmatched_item).await
-                        {
-                            warn!(
-                                error = %error,
-                                title_id = %title.id,
-                                file_path = %file.path,
-                                "failed to persist unmatched title scan item"
-                            );
-                        }
-                        summary.unmatched += 1;
-                        pending_progress.absorb(TitleScanProgressDelta::completed(1));
-                        flush_title_scan_progress_batch(self, session_id, &mut pending_progress)
-                            .await;
-                        continue;
-                    }
-                };
-
-                let season_str = ep_meta.season.unwrap_or(1).to_string();
-                let target_episodes =
-                    resolve_target_episodes_from_lookup(ep_meta, &season_str, &episode_lookup);
-
-                if target_episodes.is_empty() {
-                    debug!(
-                        title_id = %title.id,
-                        title_name = %title.name,
-                        file_path = %file.path,
-                        display_name = %file.display_name,
-                        title_dir = %title_dir_str,
-                        discovered_files = discovered_files.len(),
-                        parsed_episode = ?ep_meta,
-                        lookup_keys = episode_lookup.key_count(),
-                        attempted_season = %season_str,
-                        "title scan: episode lookup failed"
-                    );
-                    let unmatched_item = build_title_bound_unmatched_scan_item(
-                        &title.facet,
-                        &title.library_id,
-                        &title.id,
-                        session_id,
-                        &title_dir_str,
-                        &file.path,
-                        &file.display_name,
-                        &title.name,
-                        title.year.map(|value| value as u32),
-                        "episode_lookup_failed",
-                    );
-                    if let Err(error) =
-                        persist_library_scan_unmatched_item(self, &unmatched_item).await
-                    {
-                        warn!(
-                            error = %error,
-                            title_id = %title.id,
-                            file_path = %file.path,
-                            "failed to persist unmatched title scan item"
-                        );
-                    }
-                    summary.unmatched += 1;
-                    pending_progress.absorb(TitleScanProgressDelta::completed(1));
-                    flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
-                    continue;
-                }
-
                 let snapshot = if let Some(snapshot) = file_source_snapshot_from_library_file(&file)
                 {
                     snapshot
@@ -1227,12 +971,83 @@ impl AppUseCase {
                     }
                 };
 
+                let existing = existing_records_by_path.get(&file.path);
+                let existing_snapshot_matches = existing
+                    .is_some_and(|existing| title_media_file_matches_snapshot(existing, &snapshot));
+
+                let filename_parse = parse_library_filename(&LibraryFilenameParseInput {
+                    path: &source_path,
+                    display_name: Some(file.display_name.as_str()),
+                    library_root: None,
+                    title_root: Some(title_dir.as_path()),
+                    title: Some(&title),
+                    facet: Some(&title.facet),
+                    collections: &collections,
+                    episodes: &title_episodes,
+                    existing_record: existing.map(|existing| LibraryFilenameExistingRecord {
+                        episode_id: existing.episode_id.as_deref(),
+                        snapshot_matches: existing_snapshot_matches,
+                    }),
+                    mode: LibraryFilenameParseMode::TitleScan,
+                    fallback_policy: if existing.is_none() {
+                        LibraryFilenameFallbackPolicy::NeedReleaseMetadata
+                    } else {
+                        LibraryFilenameFallbackPolicy::WhenNeeded
+                    },
+                });
+                let target_episodes = filename_parse.target_episodes();
+
+                if target_episodes.is_empty() {
+                    let reason = filename_parse
+                        .unmatched_reason()
+                        .unwrap_or("episode_identity_missing");
+                    debug!(
+                        title_id = %title.id,
+                        title_name = %title.name,
+                        file_path = %file.path,
+                        display_name = %file.display_name,
+                        title_dir = %title_dir_str,
+                        discovered_files = discovered_files.len(),
+                        parsed_episode = ?filename_parse.episode_identity,
+                        strategy = ?filename_parse.strategy,
+                        release_fallback_used = filename_parse.release_fallback_used,
+                        reason,
+                        "title scan: episode target missing"
+                    );
+                    let unmatched_item = build_title_bound_unmatched_scan_item(
+                        &title.facet,
+                        &title.library_id,
+                        &title.id,
+                        session_id,
+                        &title_dir_str,
+                        &file.path,
+                        &file.display_name,
+                        &title.name,
+                        title.year.map(|value| value as u32),
+                        reason,
+                    );
+                    if let Err(error) =
+                        persist_library_scan_unmatched_item(self, &unmatched_item).await
+                    {
+                        warn!(
+                            error = %error,
+                            title_id = %title.id,
+                            file_path = %file.path,
+                            "failed to persist unmatched title scan item"
+                        );
+                    }
+                    summary.unmatched += 1;
+                    pending_progress.absorb(TitleScanProgressDelta::completed(1));
+                    flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
+                    continue;
+                }
+
                 summary.matched += 1;
                 let layout_observation =
                     classify_title_scan_layout(&title_dir, &source_path, &target_episodes);
                 layout_summary.observe(layout_observation);
 
-                let record = if let Some(existing) = existing_records_by_path.get(&file.path) {
+                let record = if let Some(existing) = existing {
                     let desired_scheme = snapshot
                         .signature
                         .as_ref()
@@ -1241,9 +1056,7 @@ impl AppUseCase {
                         snapshot.signature.as_ref().map(|value| value.value.clone());
                     PlannedTitleScanRecord::Existing {
                         file_id: existing.id.clone(),
-                        should_skip_analysis: title_media_file_matches_snapshot(
-                            existing, &snapshot,
-                        ),
+                        should_skip_analysis: existing_snapshot_matches,
                         should_refresh_source_signature: existing.size_bytes != snapshot.size_bytes
                             || existing.source_signature_scheme != desired_scheme
                             || existing.source_signature_value != desired_value
@@ -1255,7 +1068,7 @@ impl AppUseCase {
 
                 planned_files.push(PlannedTitleScanFile {
                     file,
-                    parsed,
+                    parsed: filename_parse.parsed_release,
                     target_episodes,
                     snapshot,
                     record,
@@ -1301,6 +1114,7 @@ impl AppUseCase {
                         &mut episode_links,
                         &mut summary,
                         &mut db_elapsed,
+                        &mut external_subtitle_cache,
                     )
                     .await;
                     if outcome.progress.failed == 0
@@ -1401,6 +1215,7 @@ impl AppUseCase {
                     &mut episode_links,
                     &mut summary,
                     &mut db_elapsed,
+                    &mut external_subtitle_cache,
                 )
                 .await;
                 if outcome.progress.failed == 0
@@ -1623,21 +1438,30 @@ mod tests {
             numeric_series_episode("1", "1"),
             numeric_series_episode("2", "1"),
         ];
-        let parse_context = crate::build_release_parse_context_for_title(&title, &episodes, None);
         let path = Path::new(
             "/library/13 (2024)/Season 02/13 (2024) - S02E01 - Day 2 800 A.M. 900 A.M. [WEBDL-1080p] [EAC3 5.1] [h265].mkv",
         );
 
-        let parsed = parse_title_scan_release_metadata(
+        let parsed = parse_library_filename(&LibraryFilenameParseInput {
             path,
-            "13 (2024) - S02E01",
-            &title.facet,
-            &parse_context,
-        )
-        .await;
-        let episode = parsed.episode.as_ref().expect("episode metadata");
+            display_name: Some("13 (2024) - S02E01"),
+            library_root: Some(Path::new("/library")),
+            title_root: Some(Path::new("/library/13 (2024)")),
+            title: Some(&title),
+            facet: Some(&title.facet),
+            collections: &[],
+            episodes: &episodes,
+            existing_record: None,
+            mode: LibraryFilenameParseMode::TitleScan,
+            fallback_policy: LibraryFilenameFallbackPolicy::NeedReleaseMetadata,
+        });
+        let episode = parsed
+            .parsed_release
+            .episode
+            .as_ref()
+            .expect("episode metadata");
 
-        assert_eq!(parsed.normalized_title, "13");
+        assert_eq!(parsed.parsed_release.normalized_title, "13");
         assert_eq!(episode.season, Some(2));
         assert_eq!(episode.episode_numbers, vec![1]);
     }

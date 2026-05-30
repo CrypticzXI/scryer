@@ -315,11 +315,16 @@ fn parse_audio_stream(_strh: &[u8], strf: &[u8]) -> RawTrack {
 
     if strf.len() >= 12 {
         let w_format_tag = read_u16_le(strf, 0);
+        let codec_format_tag = wave_format_extensible_subformat(strf).unwrap_or(w_format_tag);
         let n_channels = read_u16_le(strf, 2);
         let n_avg_bytes_per_sec = read_u32_le(strf, 8);
 
-        codec_id = format!("0x{w_format_tag:04X}");
-        codec_name = Some(map_audio_format_tag(w_format_tag).to_owned());
+        codec_id = if codec_format_tag == w_format_tag {
+            format!("0x{w_format_tag:04X}")
+        } else {
+            format!("0x{w_format_tag:04X}/0x{codec_format_tag:04X}")
+        };
+        codec_name = Some(map_audio_format_tag(codec_format_tag).to_owned());
         channels = Some(n_channels as i32);
         bit_rate_bps = Some(n_avg_bytes_per_sec as i64 * 8);
     }
@@ -391,15 +396,10 @@ fn apply_idx1_stream_sizes<T: Read + Seek>(
         remaining -= read_len;
 
         if tracks.iter().all(|track| track.stream_number < 100) {
+            let mut stream_sizes = [0_u64; 100];
+            scan::accumulate_avi_idx1_stream_sizes(&buf[..read_len], &mut stream_sizes);
             for track in tracks.iter_mut() {
-                let mut cursor = 0;
-                while let Some(entry_offset) =
-                    scan::find_avi_idx1_stream_prefix(&buf[..read_len], cursor, track.stream_number)
-                {
-                    track.index_bytes +=
-                        u64::from(read_u32_le(&buf[..read_len], entry_offset + 12));
-                    cursor = entry_offset + 16;
-                }
+                track.index_bytes += stream_sizes[track.stream_number];
             }
         } else {
             for entry in buf[..read_len].chunks_exact(16) {
@@ -504,6 +504,16 @@ fn map_video_fourcc(fcc: &str) -> &'static str {
         "VP90" | "vp90" => "vp9",
         _ => "unknown",
     }
+}
+
+fn wave_format_extensible_subformat(strf: &[u8]) -> Option<u16> {
+    if read_u16_le(strf, 0) != 0xFFFE || strf.len() < 40 {
+        return None;
+    }
+
+    // WAVEFORMATEXTENSIBLE stores the actual subformat in the first little-endian
+    // word of the GUID extension after WAVEFORMATEX.
+    Some(read_u16_le(strf, 24))
 }
 
 /// Map a WAVEFORMATEX wFormatTag to a canonical codec name.

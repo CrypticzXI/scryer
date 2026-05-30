@@ -187,7 +187,7 @@ async fn prepare_replacement_before_old_removal(
             .or_else(|| prepared.parsed.quality.clone()),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: prepared.parsed.release_group.clone(),
-        source_type: prepared.parsed.source.as_ref().map(ToString::to_string),
+        source_type: crate::release_parser::parsed_release_source_type(&prepared.parsed),
         resolution: stored_quality_label
             .map(str::to_string)
             .or_else(|| prepared.parsed.quality.clone()),

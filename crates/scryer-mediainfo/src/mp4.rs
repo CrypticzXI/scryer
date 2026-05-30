@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use core::range::Range;
+
 use mp4parse::{
     AudioCodecSpecific, CodecType, MediaContext, MediaTimeScale, SampleEntry, TrackTimeScale,
     TrackType, VideoCodecSpecific,
@@ -88,18 +90,9 @@ pub(crate) fn parse_mp4(
         count => Some(count),
     };
 
-    // The movie-level timescale converts track-header durations to seconds.
-    let movie_timescale = ctx.timescale.map(|MediaTimeScale(ts)| ts);
-    let duration_seconds = movie_timescale.and_then(|ts| {
-        if ts == 0 {
-            return None;
-        }
-        ctx.tracks
-            .iter()
-            .filter_map(|t| t.tkhd.as_ref().map(|h| h.duration))
-            .max()
-            .map(|dur| dur as f64 / ts as f64)
-    });
+    let format_duration_seconds = mp4_format_duration_seconds(&ctx);
+    let duration_seconds =
+        sonarr_mp4_duration_seconds(&ctx, &metadata_by_track, format_duration_seconds);
 
     let (mut tracks, seen_track_ids) = build_mp4_tracks(&ctx, &metadata_by_track, duration_seconds);
     append_metadata_only_tracks(&metadata_by_track, &seen_track_ids, &mut tracks);
@@ -123,6 +116,108 @@ pub(crate) fn parse_mp4(
         num_chapters,
         tracks: tracks.into_iter().map(|track| track.raw).collect(),
     })
+}
+
+fn mp4_format_duration_seconds(ctx: &MediaContext) -> Option<f64> {
+    let movie_timescale = ctx.timescale.map(|MediaTimeScale(ts)| ts)?;
+    if movie_timescale == 0 {
+        return None;
+    }
+    ctx.tracks
+        .iter()
+        .filter_map(|t| t.tkhd.as_ref().map(|h| h.duration))
+        .max()
+        .map(|dur| dur as f64 / movie_timescale as f64)
+}
+
+fn sonarr_mp4_duration_seconds(
+    ctx: &MediaContext,
+    metadata_by_track: &HashMap<u32, Mp4TrackMetadata>,
+    format_duration: Option<f64>,
+) -> Option<f64> {
+    let audio = first_mp4_track_duration_seconds(ctx, metadata_by_track, TrackKind::Audio);
+    let video = primary_mp4_video_duration_seconds(ctx, metadata_by_track);
+    best_sonarr_runtime(audio, video, format_duration)
+}
+
+fn first_mp4_track_duration_seconds(
+    ctx: &MediaContext,
+    metadata_by_track: &HashMap<u32, Mp4TrackMetadata>,
+    kind: TrackKind,
+) -> Option<f64> {
+    ctx.tracks.iter().find_map(|track| {
+        let metadata = track.track_id.and_then(|id| metadata_by_track.get(&id));
+        (track_kind_from_mp4_sources(track, metadata) == Some(kind))
+            .then(|| track_duration_seconds(track))
+            .flatten()
+            .filter(|duration| *duration > 0.0)
+    })
+}
+
+fn primary_mp4_video_duration_seconds(
+    ctx: &MediaContext,
+    metadata_by_track: &HashMap<u32, Mp4TrackMetadata>,
+) -> Option<f64> {
+    let video_tracks: Vec<_> = ctx
+        .tracks
+        .iter()
+        .filter_map(|track| {
+            let metadata = track.track_id.and_then(|id| metadata_by_track.get(&id));
+            (track_kind_from_mp4_sources(track, metadata) == Some(TrackKind::Video))
+                .then_some((track, metadata))
+        })
+        .collect();
+
+    let selected = if video_tracks.len() <= 1 {
+        video_tracks.first().copied()
+    } else {
+        let mut selected = None;
+        for (track, metadata) in &video_tracks {
+            if !matches!(
+                mp4_video_codec_name(track, *metadata).as_deref(),
+                Some("mjpeg" | "png")
+            ) {
+                selected = Some((*track, *metadata));
+                break;
+            }
+        }
+        selected.or_else(|| video_tracks.first().copied())
+    };
+
+    selected
+        .and_then(|(track, _)| track_duration_seconds(track))
+        .filter(|duration| *duration > 0.0)
+}
+
+fn mp4_video_codec_name(
+    track: &mp4parse::Track,
+    metadata: Option<&Mp4TrackMetadata>,
+) -> Option<String> {
+    let codec_id = metadata
+        .and_then(|m| m.sample_entry_fourcc.clone())
+        .or_else(|| {
+            track
+                .stsd
+                .as_ref()
+                .and_then(|stsd| stsd.descriptions.first())
+                .and_then(|entry| match entry {
+                    SampleEntry::Video(video) => video_codec_info(&video.codec_specific)
+                        .0
+                        .or_else(|| Some(codec_type_to_fourcc(video.codec_type))),
+                    _ => None,
+                })
+        })?;
+    normalize_codec_name(&codec_id)
+}
+
+fn best_sonarr_runtime(audio: Option<f64>, video: Option<f64>, format: Option<f64>) -> Option<f64> {
+    if video.unwrap_or_default() > 0.0 {
+        video
+    } else if audio.unwrap_or_default() > 0.0 {
+        audio
+    } else {
+        format.filter(|duration| *duration > 0.0)
+    }
 }
 
 fn prepare_mp4_metadata(path: &Path) -> Result<PreparedMp4, MediaInfoError> {
@@ -215,31 +310,34 @@ fn should_copy_top_level_box(name: &[u8; 4]) -> bool {
 }
 
 fn sanitize_prepared_mp4_metadata(data: &mut Vec<u8>) {
-    sanitize_mp4_box_range(data, 0, data.len());
+    let range = Range {
+        start: 0,
+        end: data.len(),
+    };
+    sanitize_mp4_box_range(data, range);
 }
 
-fn sanitize_mp4_box_range(data: &mut Vec<u8>, start: usize, end: usize) -> usize {
-    if !mp4_box_name_present(&data[start..end], &[*b"hdlr"]) {
+fn sanitize_mp4_box_range(data: &mut Vec<u8>, mut range: Range<usize>) -> usize {
+    if !mp4_box_name_present(&data[range.start..range.end], &[*b"hdlr"]) {
         return 0;
     }
 
-    let mut pos = start;
-    let mut range_end = end;
+    let mut pos = range.start;
     let mut total_delta = 0;
 
-    while pos < range_end {
-        let Some(header) = read_box_header_from_bytes(&data[pos..range_end]) else {
+    while pos < range.end {
+        let Some(header) = read_box_header_from_bytes(&data[pos..range.end]) else {
             break;
         };
         let mut box_size = header.size as usize;
-        if box_size < header.header_size || pos + box_size > range_end {
+        if box_size < header.header_size || pos + box_size > range.end {
             break;
         }
 
         let box_delta = if &header.name == b"hdlr" {
             sanitize_hdlr_box(data, pos, header)
-        } else if let Some((child_start, child_end)) = mp4_child_range(pos, header, box_size) {
-            let child_delta = sanitize_mp4_box_range(data, child_start, child_end);
+        } else if let Some(child_range) = mp4_child_range(pos, header, box_size) {
+            let child_delta = sanitize_mp4_box_range(data, child_range);
             if child_delta > 0 {
                 box_size += child_delta;
                 write_box_size_at(data, pos, header.header_size, box_size as u64);
@@ -255,7 +353,7 @@ fn sanitize_mp4_box_range(data: &mut Vec<u8>, start: usize, end: usize) -> usize
             0
         };
         pos += box_size;
-        range_end += box_delta;
+        range.end += box_delta;
         total_delta += box_delta;
     }
 
@@ -266,14 +364,17 @@ fn mp4_child_range(
     box_start: usize,
     header: Mp4BoxHeader,
     box_size: usize,
-) -> Option<(usize, usize)> {
+) -> Option<Range<usize>> {
     let payload_start = match &header.name {
         b"meta" if box_size >= header.header_size + 4 => box_start + header.header_size + 4,
         b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"udta" | b"tref" | b"moof" | b"traf"
         | b"mfra" => box_start + header.header_size,
         _ => return None,
     };
-    Some((payload_start, box_start + box_size))
+    Some(Range {
+        start: payload_start,
+        end: box_start + box_size,
+    })
 }
 
 fn sanitize_hdlr_box(data: &mut Vec<u8>, box_start: usize, header: Mp4BoxHeader) -> usize {
@@ -567,7 +668,7 @@ fn is_audio_sample_entry(sample_entry: &str) -> bool {
 }
 
 fn is_subtitle_sample_entry(sample_entry: &str) -> bool {
-    matches!(sample_entry, "tx3g" | "wvtt" | "stpp" | "c608")
+    matches!(sample_entry, "text" | "tx3g" | "wvtt" | "stpp" | "c608")
 }
 
 fn parse_mp4_metadata(data: &[u8]) -> ParsedMp4Metadata {
@@ -1096,6 +1197,8 @@ fn decode_mdhd_language(code: u16) -> Option<String> {
     if code < 0x400 {
         return match code {
             0 => Some("eng".to_string()),
+            6 => Some("spa".to_string()),
+            11 => Some("jpn".to_string()),
             _ => None,
         };
     }
@@ -1910,7 +2013,22 @@ mod tests {
     }
 
     #[test]
+    fn sonarr_runtime_prefers_video_then_audio_then_format_duration() {
+        assert_eq!(
+            best_sonarr_runtime(Some(1920.96), Some(1919.167), Some(1920.96)),
+            Some(1919.167)
+        );
+        assert_eq!(
+            best_sonarr_runtime(Some(1517.0), Some(0.0), Some(1519.0)),
+            Some(1517.0)
+        );
+        assert_eq!(best_sonarr_runtime(None, None, Some(42.0)), Some(42.0));
+    }
+
+    #[test]
     fn decodes_legacy_mdhd_english_language_code() {
         assert_eq!(decode_mdhd_language(0), Some("eng".to_string()));
+        assert_eq!(decode_mdhd_language(6), Some("spa".to_string()));
+        assert_eq!(decode_mdhd_language(11), Some("jpn".to_string()));
     }
 }

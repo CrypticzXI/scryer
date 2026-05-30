@@ -91,13 +91,18 @@ const MKV_METADATA_AGGREGATE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
 fn normalize_mkv_track_language(
     kind: TrackKind,
-    _language_bcp47: Option<&str>,
+    language_bcp47: Option<&str>,
     language: Option<&str>,
 ) -> Option<String> {
     if let Some(language) = language {
         return normalize_explicit_mkv_language_tag(language);
     }
-    (kind != TrackKind::Video).then_some("eng".to_owned())
+    if kind == TrackKind::Video {
+        return None;
+    }
+    language_bcp47
+        .and_then(normalize_bcp47_mkv_language_tag)
+        .or_else(|| Some("eng".to_owned()))
 }
 
 /// Parse an MKV/WebM file into a [`RawContainer`].
@@ -250,11 +255,8 @@ pub(crate) fn parse_mkv(
     for (track_idx, scanned) in deep_probe.audio {
         merge_audio_profile(&mut tracks[track_idx].audio_profile, scanned.profile);
         if let Some(channels) = scanned.channels {
-            tracks[track_idx].channels = Some(
-                tracks[track_idx]
-                    .channels
-                    .map_or(channels, |existing| existing.max(channels)),
-            );
+            tracks[track_idx].channels =
+                merge_scanned_audio_channels(tracks[track_idx].channels, Some(channels));
         }
         if tracks[track_idx].audio_profile.as_deref() == Some("DTS-ES")
             && tracks[track_idx].channels == Some(6)
@@ -262,6 +264,7 @@ pub(crate) fn parse_mkv(
             tracks[track_idx].channels = Some(7);
         }
     }
+    apply_unique_audio_prefix_channel_fallback(&mut scanner, &mut tracks);
 
     Ok(RawContainer {
         format_name,
@@ -601,13 +604,16 @@ fn parse_mkv_track_entry(payload: &[u8]) -> Option<ParsedMkvTrack> {
     let kind = kind?;
     let codec_id = codec_id?;
     let signals = track_entry_signals(payload);
-    let codec_name = normalize_pcm_codec_name(&codec_id, audio_bit_depth)
+    let mut codec_name = normalize_pcm_codec_name(&codec_id, audio_bit_depth)
         .or_else(|| {
             (codec_id == "V_MS/VFW/FOURCC")
                 .then(|| normalize_vfw_codec_name(codec_private.as_deref()))
                 .flatten()
         })
         .or_else(|| normalize_codec_name(&codec_id));
+    if codec_id == "S_TEXT/WEBVTT" {
+        codec_name = None;
+    }
     if channels.is_none() && codec_name.as_deref() == Some("flac") {
         channels = codec_private
             .as_deref()
@@ -750,10 +756,106 @@ fn parse_mkv_track_type(value: u64) -> Option<TrackKind> {
 
 fn normalize_explicit_mkv_language_tag(language: &str) -> Option<String> {
     let trimmed = language.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("und") {
+    if !is_sonarr_visible_mkv_language(trimmed) {
         return None;
     }
     Some(trimmed.to_owned())
+}
+
+fn normalize_bcp47_mkv_language_tag(language: &str) -> Option<String> {
+    let trimmed = language.trim();
+    if !is_sonarr_visible_mkv_language(trimmed) {
+        return None;
+    }
+
+    let primary = trimmed
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    match primary.as_str() {
+        "en" => Some("eng".to_owned()),
+        "ja" => Some("jpn".to_owned()),
+        "pt" => Some("por".to_owned()),
+        "zh" => Some("chi".to_owned()),
+        "und" => None,
+        other if is_sonarr_visible_mkv_language(other) => Some(other.to_owned()),
+        _ => None,
+    }
+}
+
+fn is_sonarr_visible_mkv_language(language: &str) -> bool {
+    !language.is_empty()
+        && !language.eq_ignore_ascii_case("und")
+        && language
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn merge_scanned_audio_channels(existing: Option<i32>, scanned: Option<i32>) -> Option<i32> {
+    scanned.or(existing)
+}
+
+fn audio_channels_from_probe_bytes(codec_name: &str, data: &[u8]) -> Option<i32> {
+    let mut cursor = 0usize;
+    let mut channels = None;
+
+    while let Some(candidate) = scan::find_audio_sync_candidate(data, cursor) {
+        cursor = candidate.offset.saturating_add(1);
+        let parsed =
+            match (codec_name, candidate.kind) {
+                ("ac3", scan::AudioSyncKind::Ac3) => find_ac3_header(&data[candidate.offset..])
+                    .map(|header| i32::from(header.channels)),
+                ("eac3", scan::AudioSyncKind::Ac3) => find_eac3_header(&data[candidate.offset..])
+                    .map(|header| i32::from(header.channels)),
+                ("dts", scan::AudioSyncKind::Dts) => {
+                    detect_dts_channels_from_probe_bytes(&data[candidate.offset..]).or_else(|| {
+                        find_dts_header(&data[candidate.offset..])
+                            .map(|header| i32::from(header.channels))
+                    })
+                }
+                _ => None,
+            };
+        if let Some(parsed) = parsed {
+            channels = Some(channels.map_or(parsed, |existing: i32| existing.max(parsed)));
+        }
+    }
+
+    channels
+}
+
+fn apply_unique_audio_prefix_channel_fallback<R: Read + Seek>(
+    scanner: &mut MkvRawScanner<R>,
+    tracks: &mut [RawTrack],
+) {
+    for track_idx in 0..tracks.len() {
+        let Some(codec_name) = tracks[track_idx].codec_name.as_deref() else {
+            continue;
+        };
+        if tracks[track_idx].kind != TrackKind::Audio
+            || !matches!(codec_name, "ac3" | "eac3" | "dts")
+            || tracks[track_idx].channels.is_some()
+            || audio_codec_track_count(tracks, codec_name) != 1
+        {
+            continue;
+        }
+
+        if let Ok(Some(channels)) =
+            scanner.scan_prefix_for_audio_channels(codec_name, MKV_CHAPTER_SCAN_MAX_BYTES as u64)
+        {
+            tracks[track_idx].channels =
+                merge_scanned_audio_channels(tracks[track_idx].channels, Some(channels));
+        }
+    }
+}
+
+fn audio_codec_track_count(tracks: &[RawTrack], codec_name: &str) -> usize {
+    tracks
+        .iter()
+        .filter(|track| {
+            track.kind == TrackKind::Audio && track.codec_name.as_deref() == Some(codec_name)
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -1063,8 +1165,8 @@ impl AudioProfileProbeState {
 
 fn audio_profile_max_blocks(codec_name: &str) -> usize {
     match codec_name {
-        // AC-3 channel layout lives in the first syncframe header.
-        "ac3" => 1,
+        // Some AC-3 files start with stereo frames before the main 5.1 cadence.
+        "ac3" => 8,
         // Raw ffprobe stream profiles for MKV E-AC-3 line up with the leading
         // independent syncframe on this corpus. Scanning deeper promotes false
         // positives from later dependent/converted frames.
@@ -1317,6 +1419,20 @@ impl<R: Read + Seek> MkvRawScanner<R> {
             self.seek_to(child_end)?;
         }
         Ok(None)
+    }
+
+    fn scan_prefix_for_audio_channels(
+        &mut self,
+        codec_name: &str,
+        max_bytes: u64,
+    ) -> Result<Option<i32>, MediaInfoError> {
+        let size = self.file_len.min(max_bytes);
+        if size == 0 {
+            return Ok(None);
+        }
+        self.seek_to(0)?;
+        let bytes = self.read_bytes(size)?;
+        Ok(audio_channels_from_probe_bytes(codec_name, &bytes))
     }
 
     #[cfg(test)]
@@ -1624,13 +1740,7 @@ impl<R: Read + Seek> MkvRawScanner<R> {
             codec_name,
             detect_audio_profile_from_probe_bytes(Some(codec_name), &prefix, suffix.as_deref()),
         );
-        let parsed_channels = match codec_name {
-            "ac3" => find_ac3_header(&prefix).map(|header| i32::from(header.channels)),
-            "eac3" => find_eac3_header(&prefix).map(|header| i32::from(header.channels)),
-            "dts" => detect_dts_channels_from_probe_bytes(&prefix)
-                .or_else(|| find_dts_header(&prefix).map(|header| i32::from(header.channels))),
-            _ => None,
-        };
+        let parsed_channels = audio_channels_from_probe_bytes(codec_name, &prefix);
         if parsed_channels.is_some_and(|channels| channels > state.channels.unwrap_or(0)) {
             state.channels = parsed_channels;
         }
@@ -2421,6 +2531,28 @@ mod tests {
         make_ebml_element(&[0xA3], &block)
     }
 
+    fn audio_test_track(codec_name: &str, channels: Option<i32>) -> RawTrack {
+        RawTrack {
+            kind: TrackKind::Audio,
+            codec_id: format!("A_{}", codec_name.to_ascii_uppercase()),
+            codec_name: Some(codec_name.to_owned()),
+            audio_profile: None,
+            codec_private: None,
+            width: None,
+            height: None,
+            channels,
+            bit_rate_bps: None,
+            language: None,
+            name: None,
+            forced: false,
+            default_track: false,
+            frame_rate_fps: None,
+            color_transfer: None,
+            dovi_config: None,
+            has_hdr10plus: false,
+        }
+    }
+
     #[test]
     fn ebml_vint_parsing() {
         // 0x81 = 1 byte VINT, value 1
@@ -2513,6 +2645,10 @@ mod tests {
             Some("zxx".to_string())
         );
         assert_eq!(
+            normalize_mkv_track_language(TrackKind::Audio, None, Some("???")),
+            None
+        );
+        assert_eq!(
             normalize_mkv_track_language(TrackKind::Audio, Some("ja-JP"), Some("eng")),
             Some("eng".to_string())
         );
@@ -2520,6 +2656,60 @@ mod tests {
             normalize_mkv_track_language(TrackKind::Audio, None, None),
             Some("eng".to_string())
         );
+    }
+
+    #[test]
+    fn matroska_webvtt_track_keeps_subtitle_stream_without_codec_name() {
+        let track_entry = [
+            make_uint_element(&[0xD7], 1),
+            make_uint_element(&[0x83], 17),
+            make_ebml_element(&[0x86], b"S_TEXT/WEBVTT"),
+            make_ebml_element(&[0x22, 0xB5, 0x9C], b"eng"),
+        ]
+        .concat();
+
+        let track = parse_mkv_track_entry(&track_entry).unwrap();
+        assert_eq!(track.raw.kind, TrackKind::Subtitle);
+        assert_eq!(track.raw.codec_id, "S_TEXT/WEBVTT");
+        assert_eq!(track.raw.codec_name, None);
+        assert_eq!(track.raw.language.as_deref(), Some("eng"));
+    }
+
+    #[test]
+    fn scanned_audio_channels_replace_container_channels() {
+        assert_eq!(merge_scanned_audio_channels(Some(2), Some(6)), Some(6));
+        assert_eq!(merge_scanned_audio_channels(Some(6), Some(2)), Some(2));
+        assert_eq!(merge_scanned_audio_channels(Some(2), None), Some(2));
+    }
+
+    #[test]
+    fn unique_ac3_prefix_channel_fallback_fills_missing_channels() {
+        let mut scanner = MkvRawScanner::new(Cursor::new(vec![
+            0x1A, 0x45, 0xDF, 0xA3, 0x0B, 0x77, 0x0A, 0xA2, 0x1C, 0x30, 0x43, 0x0B, 0x77, 0x9A,
+            0xE2, 0x1C, 0x30, 0xE1,
+        ]))
+        .unwrap();
+        let mut tracks = vec![audio_test_track("ac3", None)];
+
+        apply_unique_audio_prefix_channel_fallback(&mut scanner, &mut tracks);
+
+        assert_eq!(tracks[0].channels, Some(6));
+    }
+
+    #[test]
+    fn unique_audio_prefix_channel_fallback_skips_same_codec_multi_audio() {
+        let mut scanner =
+            MkvRawScanner::new(Cursor::new(vec![0x0B, 0x77, 0x0A, 0xA2, 0x1C, 0x30, 0x43]))
+                .unwrap();
+        let mut tracks = vec![
+            audio_test_track("ac3", Some(2)),
+            audio_test_track("ac3", Some(2)),
+        ];
+
+        apply_unique_audio_prefix_channel_fallback(&mut scanner, &mut tracks);
+
+        assert_eq!(tracks[0].channels, Some(2));
+        assert_eq!(tracks[1].channels, Some(2));
     }
 
     #[test]

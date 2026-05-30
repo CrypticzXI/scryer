@@ -15,11 +15,11 @@ use scryer_application::{
     TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{
-    Collection, CollectionType, DomainEventPayload, DomainEventStream, DomainExternalIds,
-    DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id, ImportCompletedEventData,
-    Library, LibraryPermission, LibraryPermissionMask, MediaFacet, MediaPathUpdate,
-    MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title, TitleContextSnapshot,
-    User, UserAuthorization,
+    AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
+    DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id,
+    ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask, MediaFacet,
+    MediaPathUpdate, MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title,
+    TitleContextSnapshot, User, UserAuthorization,
 };
 use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
@@ -1081,6 +1081,77 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
         ])
         .await
         .expect("settings definitions should seed");
+}
+
+async fn seed_auth_provider_setting_definitions(ctx: &TestContext) {
+    ctx.settings_store
+        .batch_ensure_setting_definitions(vec![
+            SettingDefinitionSeed {
+                category: "auth".into(),
+                scope: "system".into(),
+                key_name: "auth.providers.allowed".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "auth".into(),
+                scope: "system".into(),
+                key_name: "auth.providers.login_enabled".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "auth".into(),
+                scope: "system".into(),
+                key_name: "auth.providers.linking_enabled".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "auth".into(),
+                scope: "system".into(),
+                key_name: "auth.providers.jellyfin.allowed_connection_ids".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "auth".into(),
+                scope: "system".into(),
+                key_name: "auth.providers.plex.allowed_connection_ids".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "auth".into(),
+                scope: "system".into(),
+                key_name: "auth.providers.jellyfin.connections".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "auth".into(),
+                scope: "system".into(),
+                key_name: "auth.providers.plex.connections".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+        ])
+        .await
+        .expect("auth provider settings definitions should seed");
 }
 
 async fn mount_smg_mocks(ctx: &TestContext, fixture_path: &str) {
@@ -9892,6 +9963,130 @@ async fn graphql_create_user() {
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["createUser"]["username"], "testuser");
+}
+
+#[tokio::test]
+async fn graphql_external_account_invites_expose_last_login() {
+    let ctx = TestContext::new().await;
+    seed_auth_provider_setting_definitions(&ctx).await;
+    let user = gql(
+        &ctx,
+        r#"mutation($input: CreateUserInput!) {
+            createUser(input: $input) { id username }
+        }"#,
+        json!({ "input": { "username": "invitee", "password": "testpass123", "appPermissions": [], "libraryPermissions": [] } }),
+    )
+    .await;
+    assert_no_errors(&user);
+    let user_id = user["data"]["createUser"]["id"]
+        .as_str()
+        .expect("created user id");
+
+    let settings = gql(
+        &ctx,
+        r#"mutation($input: UpdateAuthProviderSettingsInput!) {
+            updateAuthProviderSettings(input: $input) { allowedProviders }
+        }"#,
+        json!({
+            "input": {
+                "allowedProviders": ["jellyfin"],
+                "providerLoginEnabled": ["jellyfin"],
+                "providerLinkingEnabled": [],
+                "allowedJellyfinConnectionIds": [],
+                "allowedPlexConnectionIds": [],
+                "allowedJellyfinConnections": [{
+                    "id": "jellyfin-main",
+                    "displayName": "Main Jellyfin",
+                    "baseUrl": "https://jellyfin.example.test",
+                    "machineId": null
+                }],
+                "allowedPlexConnections": []
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&settings);
+
+    let invite = gql(
+        &ctx,
+        r#"mutation($input: CreateExternalAccountInviteInput!) {
+            createExternalAccountInvite(input: $input) {
+                id
+                userId
+                provider
+                connectionId
+                username
+                status
+                lastLoginAt
+            }
+        }"#,
+        json!({
+            "input": {
+                "userId": user_id,
+                "provider": "jellyfin",
+                "connectionId": "jellyfin-main",
+                "providerUserIdentifier": "jelly-user"
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&invite);
+    assert_eq!(
+        invite["data"]["createExternalAccountInvite"]["lastLoginAt"],
+        Value::Null
+    );
+
+    let invites = gql(
+        &ctx,
+        r#"query {
+            externalAccountInvites {
+                userId
+                provider
+                connectionId
+                username
+                status
+                lastLoginAt
+            }
+        }"#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&invites);
+    let rows = invites["data"]["externalAccountInvites"]
+        .as_array()
+        .expect("invite rows");
+    let row = rows
+        .iter()
+        .find(|row| row["userId"].as_str() == Some(user_id))
+        .expect("created invite row");
+    assert_eq!(row["provider"], "jellyfin");
+    assert_eq!(row["status"], "pending_claim");
+    assert_eq!(row["lastLoginAt"], Value::Null);
+
+    let viewer = User {
+        id: "viewer".to_string(),
+        username: "viewer".to_string(),
+        password_hash: None,
+        authorization: UserAuthorization {
+            app: AppPermissionMask::NONE,
+            libraries: HashMap::new(),
+            default_library: LibraryPermissionMask::NONE,
+            loaded: true,
+        },
+    };
+    let denied = schema_exec(
+        &ctx,
+        "query { externalAccountInvites { id } }",
+        Some(viewer),
+    )
+    .await;
+    assert!(
+        denied
+            .get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected authorization error: {denied}"
+    );
 }
 
 // ---------------------------------------------------------------------------

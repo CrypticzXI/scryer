@@ -109,7 +109,7 @@ impl UserExternalAccountRepository for UserStore {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
             "SELECT id, user_id, provider, connection_id, external_user_id, username,
-                    display_name, avatar_url, status, verified_at, created_at, updated_at
+                    display_name, avatar_url, status, verified_at, last_login_at, created_at, updated_at
                FROM user_external_accounts
               WHERE user_id = {}
               ORDER BY provider, username",
@@ -132,7 +132,7 @@ impl UserExternalAccountRepository for UserStore {
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
             "SELECT id, user_id, provider, connection_id, external_user_id, username,
-                    display_name, avatar_url, status, verified_at, created_at, updated_at
+                    display_name, avatar_url, status, verified_at, last_login_at, created_at, updated_at
                FROM user_external_accounts
               WHERE provider = {} AND connection_id = {} AND external_user_id = {}",
             &[
@@ -154,7 +154,7 @@ impl UserExternalAccountRepository for UserStore {
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
             "SELECT id, user_id, provider, connection_id, external_user_id, username,
-                    display_name, avatar_url, status, verified_at, created_at, updated_at
+                    display_name, avatar_url, status, verified_at, last_login_at, created_at, updated_at
                FROM user_external_accounts
               WHERE provider = {}
                 AND connection_id = {}
@@ -187,8 +187,9 @@ impl UserExternalAccountRepository for UserStore {
                                 avatar_url = {},
                                 status = {},
                                 verified_at = {},
+                                last_login_at = {},
                                 updated_at = {}
-                          WHERE id = {}",
+                           WHERE id = {}",
                         &[
                             SqlArg::Text(account.user_id.clone()),
                             SqlArg::Text(account.provider.as_str().to_string()),
@@ -199,6 +200,7 @@ impl UserExternalAccountRepository for UserStore {
                             SqlArg::OptText(account.avatar_url.clone()),
                             SqlArg::Text(account.status.as_str().to_string()),
                             SqlArg::OptTimestamp(account.verified_at),
+                            SqlArg::OptTimestamp(account.last_login_at),
                             SqlArg::Timestamp(account.updated_at),
                             SqlArg::Text(account.id.clone()),
                         ],
@@ -293,7 +295,7 @@ async fn load_external_account_by_id(
     let row = SqlRuntime::fetch_optional(
         exec,
         "SELECT id, user_id, provider, connection_id, external_user_id, username,
-                display_name, avatar_url, status, verified_at, created_at, updated_at
+                display_name, avatar_url, status, verified_at, last_login_at, created_at, updated_at
            FROM user_external_accounts
           WHERE id = {}",
         &[SqlArg::Text(id.to_string())],
@@ -316,9 +318,9 @@ async fn insert_external_account_tx(
     tx.execute(
         "INSERT INTO user_external_accounts (
              id, user_id, provider, connection_id, external_user_id, username,
-             display_name, avatar_url, status, verified_at, created_at, updated_at
-         )
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+             display_name, avatar_url, status, verified_at, last_login_at, created_at, updated_at
+          )
+          VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
         &[
             SqlArg::Text(account.id.clone()),
             SqlArg::Text(account.user_id.clone()),
@@ -330,6 +332,7 @@ async fn insert_external_account_tx(
             SqlArg::OptText(account.avatar_url.clone()),
             SqlArg::Text(account.status.as_str().to_string()),
             SqlArg::OptTimestamp(account.verified_at),
+            SqlArg::OptTimestamp(account.last_login_at),
             SqlArg::Timestamp(account.created_at),
             SqlArg::Timestamp(account.updated_at),
         ],
@@ -354,6 +357,7 @@ fn row_to_external_account(row: &SqlRow) -> AppResult<UserExternalAccount> {
         avatar_url: row.opt_text("avatar_url")?,
         status,
         verified_at: row.opt_timestamp("verified_at")?,
+        last_login_at: row.opt_timestamp("last_login_at")?,
         created_at: row.timestamp("created_at")?,
         updated_at: row.timestamp("updated_at")?,
     })
@@ -404,6 +408,7 @@ mod tests {
                 avatar_url TEXT,
                 status TEXT NOT NULL DEFAULT 'pending_claim',
                 verified_at TEXT,
+                last_login_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )",
@@ -473,6 +478,7 @@ mod tests {
             avatar_url: None,
             status: ExternalAccountStatus::PendingClaim,
             verified_at: None,
+            last_login_at: None,
             created_at: now,
             updated_at: now,
         }
@@ -628,27 +634,38 @@ mod tests {
         UserRepository::create(&store, test_user("user_a"))
             .await
             .expect("create user");
-        let mut account = UserExternalAccountRepository::create(
-            &store,
-            test_account(
-                "account_a",
-                "user_a",
-                ExternalAccountProvider::Jellyfin,
-                "server_1",
-                "external_1",
-            ),
-        )
-        .await
-        .expect("create account");
+        let mut new_account = test_account(
+            "account_a",
+            "user_a",
+            ExternalAccountProvider::Jellyfin,
+            "server_1",
+            "external_1",
+        );
+        let initial_login_at = Utc::now();
+        new_account.status = ExternalAccountStatus::Active;
+        new_account.verified_at = Some(initial_login_at);
+        new_account.last_login_at = Some(initial_login_at);
+        let mut account = UserExternalAccountRepository::create(&store, new_account)
+            .await
+            .expect("create account");
+        assert_eq!(account.last_login_at, Some(initial_login_at));
+
+        let listed = UserExternalAccountRepository::list_by_user_id(&store, "user_a")
+            .await
+            .expect("list accounts");
+        assert_eq!(listed[0].last_login_at, Some(initial_login_at));
 
         account.status = ExternalAccountStatus::Active;
-        account.verified_at = Some(Utc::now());
+        let now = Utc::now();
+        account.verified_at = Some(now);
+        account.last_login_at = Some(now);
         let updated = UserExternalAccountRepository::update(&store, account)
             .await
             .expect("update account");
 
         assert_eq!(updated.status, ExternalAccountStatus::Active);
         assert!(updated.verified_at.is_some());
+        assert!(updated.last_login_at.is_some());
     }
 
     #[tokio::test]

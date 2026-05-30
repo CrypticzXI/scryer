@@ -744,8 +744,15 @@ impl TsStreamProbeState {
 
     fn finish(&mut self, track: &mut RawTrack) {
         self.probe(track);
-        if self.kind == TrackKind::Video && !is_plausible_frame_rate(track.frame_rate_fps) {
-            track.frame_rate_fps = estimate_frame_rate_from_pts(&self.pts_values);
+        if self.kind == TrackKind::Video
+            && let Some(observed_fps) = estimate_frame_rate_from_pts(&self.pts_values)
+            && should_use_pts_frame_rate(
+                track.codec_name.as_deref(),
+                track.frame_rate_fps,
+                observed_fps,
+            )
+        {
+            track.frame_rate_fps = Some(observed_fps);
         }
     }
 
@@ -770,6 +777,9 @@ impl TsStreamProbeState {
             Some("eac3") => probe_eac3_track(&self.buffer, track),
             Some("truehd") => probe_truehd_track(&self.buffer, track),
             Some("dts") => probe_dts_track(&self.buffer, track),
+            Some("unknown") if self.kind == TrackKind::Audio => {
+                probe_unknown_audio_track(&self.buffer, track)
+            }
             _ => {}
         }
 
@@ -785,9 +795,7 @@ impl TsStreamProbeState {
     fn probe_complete(&self, track: &RawTrack) -> bool {
         match self.codec_name.as_deref() {
             Some("h264") | Some("hevc") | Some("vc1") | Some("mpeg1video") | Some("mpeg2video") => {
-                track.width.is_some()
-                    && track.height.is_some()
-                    && (is_plausible_frame_rate(track.frame_rate_fps) || self.pts_values.len() >= 8)
+                track.width.is_some() && track.height.is_some() && self.pts_values.len() >= 8
             }
             Some("aac") => {
                 track.channels.is_some()
@@ -805,6 +813,9 @@ impl TsStreamProbeState {
                         profile != "DTS"
                             && (!profile.starts_with("DTS-HD") || track.channels.unwrap_or(0) > 6)
                     })
+            }
+            Some("unknown") if self.kind == TrackKind::Audio => {
+                track.codec_name.as_deref() != Some("unknown") && track.channels.is_some()
             }
             _ => false,
         }
@@ -826,6 +837,9 @@ impl TsStreamProbeState {
             Some("mp2") | Some("ac3") => track.channels.is_none(),
             Some("truehd") => track.audio_profile.is_none(),
             Some("dts") => !self.probe_complete(track),
+            Some("unknown") if self.kind == TrackKind::Audio => {
+                track.codec_name.as_deref() == Some("unknown") || track.channels.is_none()
+            }
             _ => true,
         }
     }
@@ -972,8 +986,39 @@ fn probe_mpeg_audio_track(data: &[u8], track: &mut RawTrack) {
     let Some(header) = find_mpeg_audio_header(data) else {
         return;
     };
+    if header.layer == 3 {
+        track.codec_name = Some("mp3".to_owned());
+    } else if header.layer == 2 {
+        track.codec_name = Some("mp2".to_owned());
+    }
     track.channels = Some(header.channels as i32);
     track.bit_rate_bps = header.bit_rate_bps.map(i64::from);
+}
+
+fn probe_unknown_audio_track(data: &[u8], track: &mut RawTrack) {
+    if find_adts_header(data).is_some() {
+        track.codec_name = Some("aac".to_owned());
+        probe_aac_track(data, track);
+        return;
+    }
+    if find_latm_header(data).is_some() {
+        track.codec_name = Some("aac_latm".to_owned());
+        probe_latm_track(data, track);
+        return;
+    }
+    if find_mpeg_audio_header(data).is_some() {
+        probe_mpeg_audio_track(data, track);
+        return;
+    }
+    if find_ac3_header(data).is_some() {
+        track.codec_name = Some("ac3".to_owned());
+        probe_ac3_track(data, track);
+        return;
+    }
+    if find_eac3_header(data).is_some() {
+        track.codec_name = Some("eac3".to_owned());
+        probe_eac3_track(data, track);
+    }
 }
 
 fn probe_ac3_track(data: &[u8], track: &mut RawTrack) {
@@ -1031,28 +1076,80 @@ fn is_plausible_frame_rate(frame_rate_fps: Option<f64>) -> bool {
     frame_rate_fps.is_some_and(|fps| (1.0..=240.0).contains(&fps))
 }
 
+fn should_use_pts_frame_rate(
+    codec_name: Option<&str>,
+    existing: Option<f64>,
+    observed: f64,
+) -> bool {
+    if !is_plausible_frame_rate(Some(observed)) {
+        return false;
+    }
+    if !is_plausible_frame_rate(existing) {
+        return true;
+    }
+    if matches!(codec_name, Some("h264" | "hevc"))
+        && existing.is_some_and(|existing| observed < existing * 0.75)
+    {
+        return false;
+    }
+    true
+}
+
 fn estimate_frame_rate_from_pts(pts_values: &[u64]) -> Option<f64> {
     let mut sorted_pts = pts_values.to_vec();
     sorted_pts.sort_unstable();
     sorted_pts.dedup();
 
-    let mut deltas: Vec<u64> = sorted_pts
+    let deltas: Vec<u64> = sorted_pts
         .windows(2)
         .filter_map(|window| window[1].checked_sub(window[0]))
         .filter(|delta| *delta > 0)
+        .filter(|delta| is_plausible_frame_rate(Some(PTS_HZ / *delta as f64)))
         .collect();
     if deltas.is_empty() {
         return None;
     }
 
-    deltas.sort_unstable();
-    let median_delta = deltas[deltas.len() / 2] as f64;
-    let fps = PTS_HZ / median_delta;
+    let cadence_delta = choose_frame_cadence_delta(&deltas)?;
+    let fps = PTS_HZ / cadence_delta as f64;
     if is_plausible_frame_rate(Some(fps)) {
         Some(fps)
     } else {
         None
     }
+}
+
+fn choose_frame_cadence_delta(deltas: &[u64]) -> Option<u64> {
+    let mut sorted = deltas.to_vec();
+    sorted.sort_unstable();
+
+    let mut best_delta = None;
+    let mut best_count = 0usize;
+    let mut current_delta = sorted[0];
+    let mut current_count = 0usize;
+    for delta in sorted.iter().copied().chain(std::iter::once(u64::MAX)) {
+        if delta == current_delta {
+            current_count += 1;
+            continue;
+        }
+        if current_count > best_count
+            || (current_count == best_count && best_delta.is_none_or(|best| current_delta < best))
+        {
+            best_delta = Some(current_delta);
+            best_count = current_count;
+        }
+        current_delta = delta;
+        current_count = 1;
+    }
+
+    let reliable_count = if deltas.len() >= 4 { 2 } else { 1 };
+    for candidate in sorted.iter().copied() {
+        let count = sorted.iter().filter(|delta| **delta == candidate).count();
+        if count >= reliable_count {
+            return Some(candidate);
+        }
+    }
+    best_delta
 }
 
 struct AdtsHeader {
@@ -1072,6 +1169,7 @@ struct MpegVideoSequenceHeader {
 }
 
 struct MpegAudioHeader {
+    layer: u8,
     channels: u8,
     bit_rate_bps: Option<u32>,
 }
@@ -1294,7 +1392,7 @@ fn find_mpeg_audio_header(data: &[u8]) -> Option<MpegAudioHeader> {
         let layer_index = ((header >> 17) & 0x3) as usize;
         let bitrate_index = ((header >> 12) & 0xF) as usize;
         let sample_rate_index = ((header >> 10) & 0x3) as usize;
-        let padding = ((header >> 9) & 0x1) as u32;
+        let padding = (header >> 9) & 0x1;
         let channel_mode = ((header >> 6) & 0x3) as usize;
 
         if version_id == 1 || layer_index == 0 || bitrate_index == 0 || bitrate_index == 0xF {
@@ -1341,6 +1439,7 @@ fn find_mpeg_audio_header(data: &[u8]) -> Option<MpegAudioHeader> {
         }
 
         return Some(MpegAudioHeader {
+            layer,
             channels: MPEG_AUDIO_CHANNELS[channel_mode],
             bit_rate_bps: Some(bit_rate_bps),
         });
@@ -1619,11 +1718,10 @@ impl<'a> BitReader<'a> {
 
 fn find_annexb_nal(data: &[u8], predicate: impl Fn(&[u8]) -> bool) -> Option<&[u8]> {
     let mut i = 0;
-    while let Some((start_code, start_code_len)) = scan::find_annexb_start_code(data, i) {
-        i = start_code;
-        let nal_start = i + start_code_len;
+    while let Some(start_code) = scan::find_annexb_start_code(data, i) {
+        let nal_start = start_code.end;
         let nal_end = scan::find_annexb_start_code(data, nal_start)
-            .map(|(next_start, _)| next_start)
+            .map(|next_start_code| next_start_code.start)
             .unwrap_or(data.len());
 
         if nal_end > nal_start {
@@ -1967,15 +2065,7 @@ fn packet_layout_score(data: &[u8], layout: TsPacketLayout) -> usize {
         return 0;
     }
 
-    let mut score = 0;
-    let mut offset = 0usize;
-    while offset + layout.raw_packet_size <= data.len() {
-        if data[offset + layout.sync_offset] == SYNC_BYTE {
-            score += 1;
-        }
-        offset += layout.raw_packet_size;
-    }
-    score
+    scan::score_ts_packet_layout(data, layout.raw_packet_size, layout.sync_offset, SYNC_BYTE)
 }
 
 fn first_packet_offset(data: &[u8], layout: TsPacketLayout) -> usize {
@@ -2069,6 +2159,27 @@ mod tests {
         assert_eq!(header.height, 480);
         assert_eq!(header.frame_rate_fps, Some(30000.0 / 1001.0));
         assert!(header.bit_rate_bps.is_some());
+    }
+
+    #[test]
+    fn pts_frame_rate_estimate_prefers_dense_cadence_over_repeated_field_gaps() {
+        let pts = [0, 3003, 12012, 15015, 24024, 27027, 36036, 39039];
+        let fps = estimate_frame_rate_from_pts(&pts).unwrap();
+        assert!((fps - (30000.0 / 1001.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn h264_ts_keeps_plausible_sps_frame_rate_over_sparse_pts_cadence() {
+        assert!(!should_use_pts_frame_rate(
+            Some("h264"),
+            Some(30000.0 / 1001.0),
+            30000.0 / 3003.0
+        ));
+        assert!(should_use_pts_frame_rate(
+            Some("mpeg2video"),
+            Some(24.0),
+            12.0
+        ));
     }
 
     #[test]

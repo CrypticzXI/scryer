@@ -2069,7 +2069,7 @@ fn refresh_builtin_plugins(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
 
 fn run_clippy_ci(ctx: &TaskContext, args: ClippyArgs) -> Result<()> {
     let linux_image = std::env::var("SCRYER_LINUX_CLIPPY_IMAGE")
-        .unwrap_or_else(|_| "rust:1.95.0-bookworm".to_string());
+        .unwrap_or_else(|_| "rust:1.96.0-bookworm".to_string());
     let linux_platform = std::env::var("SCRYER_LINUX_CLIPPY_PLATFORM").ok();
 
     if !args.linux_only {

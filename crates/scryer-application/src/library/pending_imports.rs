@@ -1053,6 +1053,8 @@ impl AppUseCase {
         let mut episode_links = HashSet::new();
         let mut summary = LibraryScanSummary::default();
         let mut db_elapsed = StdDuration::ZERO;
+        let mut external_subtitle_cache =
+            crate::subtitles::ExternalSubtitleDirectoryCache::default();
         finalize_title_scan_file(
             self,
             &title,
@@ -1068,6 +1070,7 @@ impl AppUseCase {
             &mut episode_links,
             &mut summary,
             &mut db_elapsed,
+            &mut external_subtitle_cache,
         )
         .await;
 

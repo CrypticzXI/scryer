@@ -352,6 +352,32 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn list_external_account_invites(
+        &self,
+        actor: &User,
+    ) -> AppResult<Vec<scryer_domain::UserExternalAccount>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
+        let users = self.services.identity.users.list_all().await?;
+        let mut accounts = Vec::new();
+        for user in users {
+            accounts.extend(
+                self.services
+                    .identity
+                    .external_accounts
+                    .list_by_user_id(&user.id)
+                    .await?,
+            );
+        }
+        accounts.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.provider.as_str().cmp(right.provider.as_str()))
+                .then_with(|| left.username.cmp(&right.username))
+        });
+        Ok(accounts)
+    }
+
     pub async fn create_external_account_invite(
         &self,
         actor: &User,
@@ -520,8 +546,9 @@ impl AppUseCase {
             existing.display_name = verified.display_name;
             existing.avatar_url = verified.avatar_url;
             existing.status = scryer_domain::ExternalAccountStatus::Active;
-            existing.verified_at = Some(Utc::now());
-            existing.updated_at = Utc::now();
+            let now = Utc::now();
+            existing.verified_at = Some(now);
+            existing.updated_at = now;
             return self
                 .services
                 .identity
@@ -542,6 +569,7 @@ impl AppUseCase {
             avatar_url: verified.avatar_url,
             status: scryer_domain::ExternalAccountStatus::Active,
             verified_at: Some(now),
+            last_login_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -660,8 +688,10 @@ impl AppUseCase {
         account.username = verified.username;
         account.display_name = verified.display_name;
         account.avatar_url = verified.avatar_url;
-        account.verified_at = Some(Utc::now());
-        account.updated_at = Utc::now();
+        let now = Utc::now();
+        account.verified_at = Some(now);
+        account.last_login_at = Some(now);
+        account.updated_at = now;
         self.services
             .identity
             .external_accounts
@@ -1274,6 +1304,7 @@ mod tests {
         assert_eq!(account.external_user_id, None);
         assert_eq!(account.username, "JellyUser");
         assert_eq!(account.status, ExternalAccountStatus::PendingClaim);
+        assert_eq!(account.last_login_at, None);
     }
 
     #[tokio::test]
@@ -1293,6 +1324,7 @@ mod tests {
                 avatar_url: None,
                 status: ExternalAccountStatus::PendingClaim,
                 verified_at: None,
+                last_login_at: None,
                 created_at: now,
                 updated_at: now,
             },
@@ -1346,6 +1378,54 @@ mod tests {
         assert_eq!(account.external_user_id.as_deref(), Some("plex-user-1"));
         assert_eq!(account.username, "plex-user-1");
         assert_eq!(account.status, ExternalAccountStatus::PendingClaim);
+        assert_eq!(account.last_login_at, None);
+    }
+
+    #[tokio::test]
+    async fn admin_can_list_external_account_invites_across_users() {
+        let admin = admin_user();
+        let first = regular_user("user-1");
+        let second = regular_user("user-2");
+        let external_accounts = Arc::new(TestExternalAccountRepository::default());
+        let app = test_app_with_identity(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![first.clone(), second.clone()])),
+            external_accounts,
+        );
+        enable_external_account_invites(&app, &admin).await;
+
+        app.create_external_account_invite(
+            &admin,
+            &first.id,
+            ExternalAccountProvider::Jellyfin,
+            "jellyfin-main".to_string(),
+            "first-jellyfin".to_string(),
+        )
+        .await
+        .expect("create first invite");
+        app.create_external_account_invite(
+            &admin,
+            &second.id,
+            ExternalAccountProvider::Plex,
+            "plex-main".to_string(),
+            "second-plex".to_string(),
+        )
+        .await
+        .expect("create second invite");
+
+        let invites = app
+            .list_external_account_invites(&admin)
+            .await
+            .expect("list external account invites");
+        let user_ids = invites
+            .iter()
+            .map(|account| account.user_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(user_ids.contains(&first.id.as_str()));
+        assert!(user_ids.contains(&second.id.as_str()));
+
+        let result = app.list_external_account_invites(&first).await;
+        assert!(matches!(result, Err(AppError::Unauthorized(_))));
     }
 
     #[tokio::test]
@@ -1523,6 +1603,7 @@ mod tests {
                     avatar_url: None,
                     status: scryer_domain::ExternalAccountStatus::Disabled,
                     verified_at: None,
+                    last_login_at: None,
                     created_at: now,
                     updated_at: now,
                 },
@@ -1574,6 +1655,7 @@ mod tests {
                 avatar_url: None,
                 status: scryer_domain::ExternalAccountStatus::PendingClaim,
                 verified_at: None,
+                last_login_at: None,
                 created_at: now,
                 updated_at: now,
             },
@@ -1615,6 +1697,7 @@ mod tests {
             Some("https://jellyfin.example.test/avatar")
         );
         assert!(updated.verified_at.is_some());
+        assert!(updated.last_login_at.is_some());
     }
 
     #[tokio::test]
@@ -1643,6 +1726,7 @@ mod tests {
                 avatar_url: None,
                 status: scryer_domain::ExternalAccountStatus::Active,
                 verified_at: Some(now),
+                last_login_at: None,
                 created_at: now,
                 updated_at: now,
             },
@@ -1676,6 +1760,7 @@ mod tests {
             updated.avatar_url.as_deref(),
             Some("https://plex.example.test/avatar")
         );
+        assert!(updated.last_login_at.is_some());
     }
 
     #[tokio::test]

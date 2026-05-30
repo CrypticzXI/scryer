@@ -1705,6 +1705,25 @@ export const linkedAccountsQuery = `query LinkedAccounts($userId: String) {
     avatarUrl
     status
     verifiedAt
+    lastLoginAt
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const externalAccountInvitesQuery = `query ExternalAccountInvites {
+  externalAccountInvites {
+    id
+    userId
+    provider
+    connectionId
+    externalUserId
+    username
+    displayName
+    avatarUrl
+    status
+    verifiedAt
+    lastLoginAt
     createdAt
     updatedAt
   }
@@ -1883,10 +1902,6 @@ export const externalImportMonitorWarmupProgressSubscription = `subscription Ext
 
 export const settingsChangedSubscription = `subscription SettingsChanged {
   settingsChanged
-}`;
-
-export const indexersChangedSubscription = `subscription IndexersChanged {
-  indexersChanged
 }`;
 
 export const systemHealthQuery = `query SystemHealth {

@@ -80,14 +80,14 @@ async fn persist_or_reuse_scanned_media_file(
         size_bytes: snapshot.size_bytes,
         source_signature_scheme,
         source_signature_value,
-        quality_label: parsed.quality.clone(),
+        quality_label: None,
         scene_name: Some(parsed.raw_title.clone()),
         release_group: parsed.release_group.clone(),
-        source_type: parsed.source.as_ref().map(ToString::to_string),
-        resolution: parsed.quality.clone(),
-        video_codec_parsed: parsed.video_codec,
-        audio_codec_parsed: parsed.audio.as_ref().map(ToString::to_string),
-        audio_channels_parsed: parsed.audio_channels.clone(),
+        source_type: crate::release_parser::parsed_release_source_type(parsed),
+        resolution: None,
+        video_codec_parsed: None,
+        audio_codec_parsed: None,
+        audio_channels_parsed: None,
         ..Default::default()
     };
 
@@ -290,6 +290,7 @@ pub(crate) async fn finalize_title_scan_file(
     episode_links: &mut HashSet<(String, String)>,
     summary: &mut LibraryScanSummary,
     db_elapsed: &mut Duration,
+    external_subtitle_cache: &mut crate::subtitles::ExternalSubtitleDirectoryCache,
 ) -> TitleScanFinalizeOutcome {
     let PlannedTitleScanFile {
         file,
@@ -364,12 +365,13 @@ pub(crate) async fn finalize_title_scan_file(
     }
 
     let file_path = stored_path_to_path_buf(&file.path);
-    match crate::subtitles::reconcile_external_subtitles_for_media_file(
+    match crate::subtitles::reconcile_external_subtitles_for_media_file_with_cache(
         app,
         &title.id,
         &persisted_file.file_id,
         external_subtitle_episode_id,
         file_path.as_path(),
+        external_subtitle_cache,
     )
     .await
     {

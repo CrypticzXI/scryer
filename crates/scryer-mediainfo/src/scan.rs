@@ -1,5 +1,8 @@
+use std::borrow::Cow;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use std::sync::atomic::{AtomicU8, Ordering};
+
+use core::range::Range;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const ACCEL_UNSET: u8 = 0;
@@ -86,7 +89,7 @@ pub(crate) fn find_mpeg_start_code(data: &[u8], code: u8) -> Option<usize> {
     scalar::find_mpeg_start_code_from(data, code, 0)
 }
 
-pub(crate) fn find_annexb_start_code(data: &[u8], start: usize) -> Option<(usize, usize)> {
+pub(crate) fn find_annexb_start_code(data: &[u8], start: usize) -> Option<Range<usize>> {
     #[cfg(target_arch = "x86_64")]
     {
         if accel_runtime_enabled() && std::arch::is_x86_feature_detected!("avx2") {
@@ -293,6 +296,7 @@ pub(crate) fn find_mp4_box_name_candidate(
     scalar::find_mp4_box_name_candidate_from(data, start, names)
 }
 
+#[allow(dead_code)]
 pub(crate) fn find_avi_idx1_stream_prefix(
     data: &[u8],
     start: usize,
@@ -307,6 +311,82 @@ pub(crate) fn find_avi_idx1_stream_prefix(
         cursor = offset + 1;
     }
     None
+}
+
+pub(crate) fn accumulate_avi_idx1_stream_sizes(data: &[u8], stream_sizes: &mut [u64]) {
+    scalar::accumulate_avi_idx1_stream_sizes(data, stream_sizes);
+}
+
+pub(crate) fn score_ts_packet_layout(
+    data: &[u8],
+    raw_packet_size: usize,
+    sync_offset: usize,
+    sync_byte: u8,
+) -> usize {
+    if raw_packet_size == 0 || sync_offset >= raw_packet_size || data.len() < raw_packet_size {
+        return 0;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if accel_runtime_enabled() && std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe {
+                x86_64::score_ts_packet_layout_avx2(data, raw_packet_size, sync_offset, sync_byte)
+            };
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if accel_runtime_enabled() && aarch64_neon_available() {
+            return unsafe {
+                aarch64::score_ts_packet_layout_neon(data, raw_packet_size, sync_offset, sync_byte)
+            };
+        }
+    }
+
+    scalar::score_ts_packet_layout(data, raw_packet_size, sync_offset, sync_byte)
+}
+
+pub(crate) fn find_h2645_emulation_prevention_byte(data: &[u8], start: usize) -> Option<usize> {
+    if data.len() < 3 || start >= data.len() {
+        return None;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if accel_runtime_enabled() && std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { x86_64::find_h2645_emulation_prevention_byte_avx2(data, start) };
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if accel_runtime_enabled() && aarch64_neon_available() {
+            return unsafe { aarch64::find_h2645_emulation_prevention_byte_neon(data, start) };
+        }
+    }
+
+    scalar::find_h2645_emulation_prevention_byte_from(data, start)
+}
+
+pub(crate) fn h2645_unescape_rbsp(data: &[u8]) -> Cow<'_, [u8]> {
+    let Some(mut epb_offset) = find_h2645_emulation_prevention_byte(data, 2) else {
+        return Cow::Borrowed(data);
+    };
+
+    let mut out = Vec::with_capacity(data.len());
+    let mut cursor = 0usize;
+    loop {
+        out.extend_from_slice(&data[cursor..epb_offset]);
+        cursor = epb_offset + 1;
+        let Some(next_offset) = find_h2645_emulation_prevention_byte(data, cursor.max(2)) else {
+            break;
+        };
+        epb_offset = next_offset;
+    }
+    out.extend_from_slice(&data[cursor..]);
+    Cow::Owned(out)
 }
 
 fn audio_sync_kind_at(data: &[u8], offset: usize) -> Option<AudioSyncKind> {
@@ -387,11 +467,21 @@ fn mp4_box_name_candidate_at(
     })
 }
 
+#[allow(dead_code)]
 fn avi_idx1_stream_prefix(stream_number: usize) -> Option<[u8; 2]> {
     (stream_number < 100).then_some([
         b'0' + (stream_number / 10) as u8,
         b'0' + (stream_number % 10) as u8,
     ])
+}
+
+fn avi_idx1_decimal_stream_number(first: u8, second: u8) -> Option<usize> {
+    (first.is_ascii_digit() && second.is_ascii_digit())
+        .then(|| usize::from(first - b'0') * 10 + usize::from(second - b'0'))
+}
+
+fn avi_idx1_entry_size(entry: &[u8]) -> u32 {
+    u32::from_le_bytes([entry[12], entry[13], entry[14], entry[15]])
 }
 
 #[allow(dead_code)]
@@ -494,7 +584,7 @@ fn aarch64_neon_available() -> bool {
 
 pub(crate) mod scalar {
     use super::{
-        AudioSyncCandidate, EbmlCandidate, LengthPrefixedNalCandidate, Mp4BoxNameCandidate,
+        AudioSyncCandidate, EbmlCandidate, LengthPrefixedNalCandidate, Mp4BoxNameCandidate, Range,
     };
 
     pub(crate) fn find_byte_from(data: &[u8], needle: u8, start: usize) -> Option<usize> {
@@ -536,11 +626,69 @@ pub(crate) mod scalar {
         None
     }
 
+    pub(crate) fn accumulate_avi_idx1_stream_sizes(data: &[u8], stream_sizes: &mut [u64]) {
+        for entry in data.chunks_exact(16) {
+            let Some(stream_number) = super::avi_idx1_decimal_stream_number(entry[0], entry[1])
+            else {
+                continue;
+            };
+            if let Some(total) = stream_sizes.get_mut(stream_number) {
+                *total = total.saturating_add(u64::from(super::avi_idx1_entry_size(entry)));
+            }
+        }
+    }
+
+    pub(crate) fn score_ts_packet_layout(
+        data: &[u8],
+        raw_packet_size: usize,
+        sync_offset: usize,
+        sync_byte: u8,
+    ) -> usize {
+        score_ts_packet_layout_from(data, raw_packet_size, sync_offset, sync_byte, 0)
+    }
+
+    pub(crate) fn score_ts_packet_layout_from(
+        data: &[u8],
+        raw_packet_size: usize,
+        sync_offset: usize,
+        sync_byte: u8,
+        packet_start: usize,
+    ) -> usize {
+        if raw_packet_size == 0 || sync_offset >= raw_packet_size || data.len() < raw_packet_size {
+            return 0;
+        }
+
+        let mut score = 0usize;
+        let mut offset = packet_start;
+        while offset + raw_packet_size <= data.len() {
+            if data[offset + sync_offset] == sync_byte {
+                score += 1;
+            }
+            offset += raw_packet_size;
+        }
+        score
+    }
+
+    pub(crate) fn find_h2645_emulation_prevention_byte_from(
+        data: &[u8],
+        start: usize,
+    ) -> Option<usize> {
+        let mut pos = start.max(2);
+        while pos < data.len() {
+            let offset = find_byte_from(data, 0x03, pos)?;
+            if offset >= 2 && data[offset - 2] == 0 && data[offset - 1] == 0 {
+                return Some(offset);
+            }
+            pos = offset + 1;
+        }
+        None
+    }
+
     pub(crate) fn find_mpeg_start_code_from(data: &[u8], code: u8, start: usize) -> Option<usize> {
         find_mpeg_start_code_with(data, code, start, find_byte_from)
     }
 
-    pub(crate) fn find_annexb_start_code_from(data: &[u8], start: usize) -> Option<(usize, usize)> {
+    pub(crate) fn find_annexb_start_code_from(data: &[u8], start: usize) -> Option<Range<usize>> {
         find_annexb_start_code_with(data, start, find_byte_from)
     }
 
@@ -730,15 +878,21 @@ pub(crate) mod scalar {
         data: &[u8],
         start: usize,
         mut find_zero: impl FnMut(&[u8], u8, usize) -> Option<usize>,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<Range<usize>> {
         let mut pos = start;
         while pos + 3 <= data.len() {
             let i = find_zero(data, 0, pos)?;
             if i + 3 <= data.len() && data[i + 1] == 0 && data[i + 2] == 1 {
-                return Some((i, 3));
+                return Some(Range {
+                    start: i,
+                    end: i + 3,
+                });
             }
             if i + 4 <= data.len() && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 {
-                return Some((i, 4));
+                return Some(Range {
+                    start: i,
+                    end: i + 4,
+                });
             }
             pos = i + 1;
         }
@@ -748,7 +902,7 @@ pub(crate) mod scalar {
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64 {
-    use super::AudioSyncCandidate;
+    use super::{AudioSyncCandidate, Range};
     use std::arch::x86_64::*;
 
     #[target_feature(enable = "avx2")]
@@ -847,7 +1001,7 @@ mod x86_64 {
     pub(crate) unsafe fn find_annexb_start_code_avx2(
         data: &[u8],
         start: usize,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<Range<usize>> {
         let data = data.get(start..)?;
         let zero = _mm256_setzero_si256();
         let one = _mm256_set1_epi8(1);
@@ -868,12 +1022,18 @@ mod x86_64 {
             if mask != 0 {
                 let found = offset + mask.trailing_zeros() as usize;
                 let len = if data[found + 2] == 1 { 3 } else { 4 };
-                return Some((start + found, len));
+                let range_start = start + found;
+                return Some(Range {
+                    start: range_start,
+                    end: range_start + len,
+                });
             }
             offset += 32;
         }
-        super::scalar::find_annexb_start_code_from(data, offset)
-            .map(|(found, len)| (start + found, len))
+        super::scalar::find_annexb_start_code_from(data, offset).map(|range| Range {
+            start: start + range.start,
+            end: start + range.end,
+        })
     }
 
     #[target_feature(enable = "avx2")]
@@ -1059,6 +1219,100 @@ mod x86_64 {
     }
 
     #[target_feature(enable = "avx2")]
+    pub(crate) unsafe fn score_ts_packet_layout_avx2(
+        data: &[u8],
+        raw_packet_size: usize,
+        sync_offset: usize,
+        sync_byte: u8,
+    ) -> usize {
+        if raw_packet_size == 0
+            || sync_offset >= raw_packet_size
+            || data.len() > i32::MAX as usize
+            || raw_packet_size > i32::MAX as usize / 8
+        {
+            return super::scalar::score_ts_packet_layout(
+                data,
+                raw_packet_size,
+                sync_offset,
+                sync_byte,
+            );
+        }
+
+        let stride = raw_packet_size as i32;
+        let lane_offsets = _mm256_setr_epi32(
+            0,
+            stride,
+            stride * 2,
+            stride * 3,
+            stride * 4,
+            stride * 5,
+            stride * 6,
+            stride * 7,
+        );
+        let byte_mask = _mm256_set1_epi32(0xFF);
+        let sync = _mm256_set1_epi32(i32::from(sync_byte));
+
+        let mut score = 0usize;
+        let mut packet_start = 0usize;
+        while packet_start + raw_packet_size * 8 <= data.len() {
+            let base = packet_start + sync_offset;
+            let last_sync = packet_start + raw_packet_size * 7 + sync_offset;
+            if last_sync + 4 > data.len() {
+                break;
+            }
+
+            let offsets = _mm256_add_epi32(_mm256_set1_epi32(base as i32), lane_offsets);
+            let gathered =
+                unsafe { _mm256_i32gather_epi32::<1>(data.as_ptr().cast::<i32>(), offsets) };
+            let cmp = _mm256_cmpeq_epi32(_mm256_and_si256(gathered, byte_mask), sync);
+            let mask = _mm256_movemask_ps(_mm256_castsi256_ps(cmp)) as u32;
+            score += mask.count_ones() as usize;
+            packet_start += raw_packet_size * 8;
+        }
+
+        score
+            + super::scalar::score_ts_packet_layout_from(
+                data,
+                raw_packet_size,
+                sync_offset,
+                sync_byte,
+                packet_start,
+            )
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(crate) unsafe fn find_h2645_emulation_prevention_byte_avx2(
+        data: &[u8],
+        start: usize,
+    ) -> Option<usize> {
+        let zero = _mm256_setzero_si256();
+        let three = _mm256_set1_epi8(3);
+        let mut offset = start.saturating_sub(2);
+        while offset + 34 <= data.len() {
+            let b0 = unsafe { _mm256_loadu_si256(data.as_ptr().add(offset).cast()) };
+            let b1 = unsafe { _mm256_loadu_si256(data.as_ptr().add(offset + 1).cast()) };
+            let b2 = unsafe { _mm256_loadu_si256(data.as_ptr().add(offset + 2).cast()) };
+            let mut mask = _mm256_movemask_epi8(_mm256_and_si256(
+                _mm256_and_si256(_mm256_cmpeq_epi8(b0, zero), _mm256_cmpeq_epi8(b1, zero)),
+                _mm256_cmpeq_epi8(b2, three),
+            )) as u32;
+            while mask != 0 {
+                let epb_offset = offset + mask.trailing_zeros() as usize + 2;
+                if epb_offset >= start {
+                    return Some(epb_offset);
+                }
+                mask &= mask - 1;
+            }
+            offset += 32;
+        }
+
+        super::scalar::find_h2645_emulation_prevention_byte_from(
+            data,
+            start.max(offset.saturating_sub(2)),
+        )
+    }
+
+    #[target_feature(enable = "avx2")]
     unsafe fn dts_word_mask(b0: __m256i, b1: __m256i, b2: __m256i, b3: __m256i) -> u32 {
         let mut mask = unsafe { word_mask(b0, b1, b2, b3, [0x7F, 0xFE, 0x80, 0x01]) };
         mask |= unsafe { word_mask(b0, b1, b2, b3, [0xFE, 0x7F, 0x01, 0x80]) };
@@ -1114,7 +1368,7 @@ mod x86_64 {
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
-    use super::AudioSyncCandidate;
+    use super::{AudioSyncCandidate, Range};
     use std::arch::aarch64::*;
 
     #[target_feature(enable = "neon")]
@@ -1209,7 +1463,7 @@ mod aarch64 {
     pub(crate) unsafe fn find_annexb_start_code_neon(
         data: &[u8],
         start: usize,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<Range<usize>> {
         let data = data.get(start..)?;
         let zero = vdupq_n_u8(0);
         let one = vdupq_n_u8(1);
@@ -1226,12 +1480,18 @@ mod aarch64 {
             if let Some(index) = first_neon_match(cmp) {
                 let found = offset + index;
                 let len = if data[found + 2] == 1 { 3 } else { 4 };
-                return Some((start + found, len));
+                let range_start = start + found;
+                return Some(Range {
+                    start: range_start,
+                    end: range_start + len,
+                });
             }
             offset += 16;
         }
-        super::scalar::find_annexb_start_code_from(data, offset)
-            .map(|(found, len)| (start + found, len))
+        super::scalar::find_annexb_start_code_from(data, offset).map(|range| Range {
+            start: start + range.start,
+            end: start + range.end,
+        })
     }
 
     #[target_feature(enable = "neon")]
@@ -1408,6 +1668,80 @@ mod aarch64 {
     }
 
     #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn score_ts_packet_layout_neon(
+        data: &[u8],
+        raw_packet_size: usize,
+        sync_offset: usize,
+        sync_byte: u8,
+    ) -> usize {
+        if raw_packet_size == 0
+            || sync_offset >= raw_packet_size
+            || raw_packet_size > usize::MAX / 16
+        {
+            return super::scalar::score_ts_packet_layout(
+                data,
+                raw_packet_size,
+                sync_offset,
+                sync_byte,
+            );
+        }
+
+        let mut score = 0usize;
+        let mut packet_start = 0usize;
+        while packet_start + raw_packet_size * 16 <= data.len() {
+            let mut lanes = [0_u8; 16];
+            for (lane, byte) in lanes.iter_mut().enumerate() {
+                *byte = data[packet_start + raw_packet_size * lane + sync_offset];
+            }
+            let chunk = unsafe { vld1q_u8(lanes.as_ptr()) };
+            score += neon_match_count(vceqq_u8(chunk, vdupq_n_u8(sync_byte)));
+            packet_start += raw_packet_size * 16;
+        }
+
+        score
+            + super::scalar::score_ts_packet_layout_from(
+                data,
+                raw_packet_size,
+                sync_offset,
+                sync_byte,
+                packet_start,
+            )
+    }
+
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn find_h2645_emulation_prevention_byte_neon(
+        data: &[u8],
+        start: usize,
+    ) -> Option<usize> {
+        let zero = vdupq_n_u8(0);
+        let three = vdupq_n_u8(3);
+        let mut offset = start.saturating_sub(2);
+        while offset + 18 <= data.len() {
+            let b0 = unsafe { vld1q_u8(data.as_ptr().add(offset)) };
+            let b1 = unsafe { vld1q_u8(data.as_ptr().add(offset + 1)) };
+            let b2 = unsafe { vld1q_u8(data.as_ptr().add(offset + 2)) };
+            let cmp = vandq_u8(
+                vandq_u8(vceqq_u8(b0, zero), vceqq_u8(b1, zero)),
+                vceqq_u8(b2, three),
+            );
+            if let Some(index) = first_neon_match(cmp) {
+                let epb_offset = offset + index + 2;
+                if epb_offset >= start {
+                    return Some(epb_offset);
+                }
+                offset += index + 1;
+            } else {
+                offset += 16;
+            }
+        }
+
+        super::scalar::find_h2645_emulation_prevention_byte_from(
+            data,
+            start.max(offset.saturating_sub(2)),
+        )
+    }
+
+    #[target_feature(enable = "neon")]
     unsafe fn dts_word_match(
         b0: uint8x16_t,
         b1: uint8x16_t,
@@ -1482,11 +1816,75 @@ mod aarch64 {
         unsafe { vst1q_u8(lanes.as_mut_ptr(), mask) };
         lanes.iter().position(|&lane| lane != 0)
     }
+
+    #[inline]
+    fn neon_match_count(mask: uint8x16_t) -> usize {
+        if unsafe { vmaxvq_u8(mask) } == 0 {
+            return 0;
+        }
+        let mut lanes = [0_u8; 16];
+        unsafe { vst1q_u8(lanes.as_mut_ptr(), mask) };
+        lanes.iter().filter(|&&lane| lane != 0).count()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn avi_idx1_entry(id: &[u8; 4], size: u32) -> [u8; 16] {
+        let mut entry = [0_u8; 16];
+        entry[..4].copy_from_slice(id);
+        entry[12..16].copy_from_slice(&size.to_le_bytes());
+        entry
+    }
+
+    fn avi_idx1_payload_from_fixture(bytes: &[u8]) -> &[u8] {
+        let idx1_offset = bytes
+            .windows(4)
+            .position(|window| window == b"idx1")
+            .expect("fixture should contain idx1");
+        let len_offset = idx1_offset + 4;
+        let payload_offset = idx1_offset + 8;
+        let len = u32::from_le_bytes(
+            bytes[len_offset..payload_offset]
+                .try_into()
+                .expect("idx1 length should be complete"),
+        ) as usize;
+        bytes
+            .get(payload_offset..payload_offset + len)
+            .expect("idx1 payload should be complete")
+    }
+
+    fn simd_scan_fixture() -> &'static [u8] {
+        include_bytes!("../tests/media/simd_scan_dense.bin")
+    }
+
+    fn slice_from_pattern<'a>(data: &'a [u8], pattern: &[u8]) -> &'a [u8] {
+        let offset = data
+            .windows(pattern.len())
+            .position(|window| window == pattern)
+            .expect("fixture should contain pattern");
+        &data[offset..]
+    }
+
+    fn fixture_slice_from_pattern(pattern: &[u8]) -> &'static [u8] {
+        slice_from_pattern(simd_scan_fixture(), pattern)
+    }
+
+    fn ts_layout_probe(raw_packet_size: usize, sync_offset: usize, packets: usize) -> Vec<u8> {
+        let mut data = Vec::with_capacity(raw_packet_size * packets + raw_packet_size - 1);
+        for packet_index in 0..packets {
+            let mut packet = vec![0x21; raw_packet_size];
+            packet[sync_offset] = 0x47;
+            if sync_offset + 1 < raw_packet_size {
+                packet[sync_offset + 1] = packet_index as u8;
+            }
+            data.extend_from_slice(&packet);
+        }
+        data.extend(std::iter::repeat_n(0x33, raw_packet_size.saturating_sub(1)));
+        data
+    }
 
     #[test]
     fn find_byte_matches_scalar() {
@@ -1543,8 +1941,14 @@ mod tests {
     #[test]
     fn finds_annexb_start_code_boundaries() {
         assert_eq!(find_annexb_start_code(&[], 0), None);
-        assert_eq!(find_annexb_start_code(&[0, 0, 1, 7], 0), Some((0, 3)));
-        assert_eq!(find_annexb_start_code(&[9, 0, 0, 0, 1, 7], 0), Some((1, 4)));
+        assert_eq!(
+            find_annexb_start_code(&[0, 0, 1, 7], 0),
+            Some(Range { start: 0, end: 3 })
+        );
+        assert_eq!(
+            find_annexb_start_code(&[9, 0, 0, 0, 1, 7], 0),
+            Some(Range { start: 1, end: 5 })
+        );
         assert_eq!(find_annexb_start_code(&[0, 0, 2, 1], 0), None);
         assert_eq!(find_annexb_start_code(&[0, 0], 0), None);
     }
@@ -1642,6 +2046,273 @@ mod tests {
     }
 
     #[test]
+    fn accumulates_avi_idx1_stream_sizes() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&avi_idx1_entry(b"00db", 7));
+        data.extend_from_slice(&avi_idx1_entry(b"01wb", 11));
+        data.extend_from_slice(&avi_idx1_entry(b"99dc", 13));
+        data.extend_from_slice(&avi_idx1_entry(b"AAwb", 17));
+        data.extend_from_slice(&[b'0', b'2', b'd']);
+
+        let mut totals = [0_u64; 100];
+        accumulate_avi_idx1_stream_sizes(&data, &mut totals);
+        assert_eq!(totals[0], 7);
+        assert_eq!(totals[1], 11);
+        assert_eq!(totals[99], 13);
+        assert_eq!(totals[2], 0);
+
+        let mut short_totals = [0_u64; 2];
+        accumulate_avi_idx1_stream_sizes(&data, &mut short_totals);
+        assert_eq!(short_totals, [7, 11]);
+    }
+
+    #[test]
+    fn scores_ts_packet_layouts_against_scalar() {
+        for (raw_packet_size, sync_offset) in [(188, 0), (192, 4), (204, 0)] {
+            let mut data = ts_layout_probe(raw_packet_size, sync_offset, 97);
+            data[raw_packet_size * 13 + sync_offset] = 0x00;
+
+            assert_eq!(
+                score_ts_packet_layout(&data, raw_packet_size, sync_offset, 0x47),
+                scalar::score_ts_packet_layout(&data, raw_packet_size, sync_offset, 0x47)
+            );
+            assert_eq!(
+                scalar::score_ts_packet_layout(&data, raw_packet_size, sync_offset, 0x47),
+                96
+            );
+            assert_eq!(
+                score_ts_packet_layout(&data, raw_packet_size, sync_offset, 0x00),
+                scalar::score_ts_packet_layout(&data, raw_packet_size, sync_offset, 0x00)
+            );
+        }
+
+        assert_eq!(score_ts_packet_layout(&[0x47; 16], 188, 0, 0x47), 0);
+        assert_eq!(score_ts_packet_layout(&[0x47; 204], 0, 0, 0x47), 0);
+        assert_eq!(score_ts_packet_layout(&[0x47; 204], 188, 188, 0x47), 0);
+    }
+
+    #[test]
+    fn unescapes_h2645_rbsp_and_finds_emulation_prevention_bytes() {
+        let escaped = [0x67, 0x00, 0x00, 0x03, 0x01, 0xAA, 0x00, 0x00, 0x03, 0x00];
+        assert_eq!(find_h2645_emulation_prevention_byte(&escaped, 0), Some(3));
+        assert_eq!(find_h2645_emulation_prevention_byte(&escaped, 4), Some(8));
+        assert_eq!(find_h2645_emulation_prevention_byte(&escaped, 9), None);
+        assert_eq!(
+            h2645_unescape_rbsp(&escaped).as_ref(),
+            &[0x67, 0x00, 0x00, 0x01, 0xAA, 0x00, 0x00, 0x00]
+        );
+
+        let clean = [0x67, 0x00, 0x00, 0x02, 0xAA];
+        assert!(matches!(
+            h2645_unescape_rbsp(&clean),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(find_h2645_emulation_prevention_byte(&[0x00, 0x00], 0), None);
+    }
+
+    #[test]
+    fn dense_avi_fixture_exercises_idx1_accumulator() {
+        let payload = avi_idx1_payload_from_fixture(include_bytes!(
+            "../tests/media/avi_idx1_dense_mpeg4.avi"
+        ));
+        assert!(
+            payload.len() >= 960 * 16,
+            "dense fixture should have at least 960 idx1 entries"
+        );
+
+        let mut dispatched_totals = [0_u64; 100];
+        let mut scalar_totals = [0_u64; 100];
+        accumulate_avi_idx1_stream_sizes(payload, &mut dispatched_totals);
+        scalar::accumulate_avi_idx1_stream_sizes(payload, &mut scalar_totals);
+
+        assert_eq!(dispatched_totals, scalar_totals);
+        assert!(dispatched_totals[0] > 0);
+        assert!(dispatched_totals[1..].iter().all(|&total| total == 0));
+    }
+
+    #[test]
+    fn dense_scan_fixture_exercises_all_simd_dispatchers() {
+        let data = simd_scan_fixture();
+        assert!(data.len() > 8 * 1024);
+
+        assert_eq!(
+            find_byte_from(data, 0xA7, 0),
+            scalar::find_byte_from(data, 0xA7, 0)
+        );
+        assert_eq!(
+            find_any_byte_from(data, &[0x47, 0xA7, 0x0B], 0),
+            scalar::find_any_byte_from(data, &[0x47, 0xA7, 0x0B], 0)
+        );
+        assert_eq!(
+            find_mpeg_start_code(data, 0xB3),
+            scalar::find_mpeg_start_code_from(data, 0xB3, 0)
+        );
+        assert_eq!(
+            find_annexb_start_code(data, 0),
+            scalar::find_annexb_start_code_from(data, 0)
+        );
+        assert_eq!(
+            find_h2645_emulation_prevention_byte(data, 0),
+            scalar::find_h2645_emulation_prevention_byte_from(data, 0)
+        );
+        assert!(matches!(
+            h2645_unescape_rbsp(fixture_slice_from_pattern(&[0x00, 0x00, 0x03, 0x01])),
+            std::borrow::Cow::Owned(_)
+        ));
+        assert_eq!(
+            find_audio_sync_candidate(data, 0),
+            scalar::find_audio_sync_candidate_from(data, 0)
+        );
+        assert_eq!(
+            find_ebml_candidate(data, 0, &[0x1F43_B675, 0xA3, 0x75A1, 0xE7]),
+            scalar::find_ebml_candidate_from(data, 0, &[0x1F43_B675, 0xA3, 0x75A1, 0xE7])
+        );
+        assert_eq!(
+            find_hevc_sei_nal_header_candidate(data, 0),
+            scalar::find_hevc_sei_nal_header_candidate_from(data, 0)
+        );
+        assert_eq!(
+            find_hdr10plus_itu_t35_candidate(data, 0),
+            scalar::find_hdr10plus_itu_t35_candidate_from(data, 0)
+        );
+        assert_eq!(
+            find_mp4_box_name_candidate(data, 0, &[*b"moov", *b"trak", *b"mdat"]),
+            scalar::find_mp4_box_name_candidate_from(data, 0, &[*b"moov", *b"trak", *b"mdat"])
+        );
+        assert_eq!(
+            find_avi_idx1_stream_prefix(data, 0, 2),
+            scalar::find_pair_from(data, 0, b'0', 0xFF, b'2').filter(|offset| offset % 16 == 0)
+        );
+
+        let adts = fixture_slice_from_pattern(&[0xFF, 0xF1, 0x50, 0x80]);
+        let latm = fixture_slice_from_pattern(&[0x56, 0xE0, 0x00, 0x00]);
+        let mpeg_audio = fixture_slice_from_pattern(&[0xFF, 0xE2, 0x00, 0x00]);
+        let ac3 = fixture_slice_from_pattern(&[0x0B, 0x77, 0x00, 0x00]);
+        let dts = fixture_slice_from_pattern(&[0x7F, 0xFE, 0x80, 0x01]);
+
+        assert_eq!(find_adts_sync(adts, 0), Some(0));
+        assert_eq!(find_latm_sync(latm, 0), Some(0));
+        assert_eq!(find_mpeg_audio_sync(mpeg_audio, 0), Some(0));
+        assert_eq!(find_ac3_sync(ac3, 0), Some(0));
+        assert_eq!(find_dts_sync(dts, 0), Some(0));
+        assert_eq!(
+            find_audio_sync_candidate(latm, 0),
+            Some(AudioSyncCandidate {
+                offset: 0,
+                kind: AudioSyncKind::Latm,
+            })
+        );
+        assert_eq!(
+            find_audio_sync_candidate(ac3, 0),
+            Some(AudioSyncCandidate {
+                offset: 0,
+                kind: AudioSyncKind::Ac3,
+            })
+        );
+        assert_eq!(
+            find_audio_sync_candidate(dts, 0),
+            Some(AudioSyncCandidate {
+                offset: 0,
+                kind: AudioSyncKind::Dts,
+            })
+        );
+    }
+
+    #[test]
+    fn dense_media_fixtures_exercise_simd_dispatchers() {
+        let h264_aac_ts = include_bytes!("../tests/media/simd_dense_h264_aac.ts");
+        let h264_aac_m2ts = include_bytes!("../tests/media/simd_dense_h264_aac_192.m2ts");
+        let h264_aac_fec_ts = include_bytes!("../tests/media/simd_dense_h264_aac_204.ts");
+        let mpeg2_mp2_ts = include_bytes!("../tests/media/simd_dense_mpeg2_mp2.ts");
+        let h264_ac3_ts = include_bytes!("../tests/media/simd_dense_h264_ac3.ts");
+        let h264_dts_ts = include_bytes!("../tests/media/simd_dense_h264_dts.ts");
+        let webm = include_bytes!("../tests/media/simd_dense_vp9_opus.webm");
+        let mp4 = include_bytes!("../tests/media/simd_dense_h264_aac.mp4");
+        let avi_idx1 = avi_idx1_payload_from_fixture(include_bytes!(
+            "../tests/media/avi_idx1_dense_mpeg4.avi"
+        ));
+
+        assert!(h264_aac_ts.len() > 200 * 1024);
+        assert!(h264_aac_m2ts.len() > 200 * 1024);
+        assert!(h264_aac_fec_ts.len() > 200 * 1024);
+        assert!(mpeg2_mp2_ts.len() > 300 * 1024);
+        assert!(h264_ac3_ts.len() > 300 * 1024);
+        assert!(h264_dts_ts.len() > 1024 * 1024);
+        assert!(webm.len() > 30 * 1024);
+        assert!(mp4.len() > 30 * 1024);
+
+        assert_eq!(
+            score_ts_packet_layout(h264_aac_ts, 188, 0, 0x47),
+            scalar::score_ts_packet_layout(h264_aac_ts, 188, 0, 0x47)
+        );
+        assert_eq!(
+            score_ts_packet_layout(h264_aac_m2ts, 192, 4, 0x47),
+            scalar::score_ts_packet_layout(h264_aac_m2ts, 192, 4, 0x47)
+        );
+        assert_eq!(
+            score_ts_packet_layout(h264_aac_fec_ts, 204, 0, 0x47),
+            scalar::score_ts_packet_layout(h264_aac_fec_ts, 204, 0, 0x47)
+        );
+        assert_eq!(
+            find_annexb_start_code(h264_aac_ts, 0),
+            scalar::find_annexb_start_code_from(h264_aac_ts, 0)
+        );
+        assert_eq!(
+            find_mpeg_start_code(mpeg2_mp2_ts, 0xB3),
+            scalar::find_mpeg_start_code_from(mpeg2_mp2_ts, 0xB3, 0)
+        );
+        assert_eq!(
+            find_ebml_candidate(webm, 0, &[0x1F43_B675, 0xA3, 0x75A1, 0xE7]),
+            scalar::find_ebml_candidate_from(webm, 0, &[0x1F43_B675, 0xA3, 0x75A1, 0xE7])
+        );
+        assert_eq!(
+            find_mp4_box_name_candidate(mp4, 0, &[*b"moov", *b"trak", *b"mdat"]),
+            scalar::find_mp4_box_name_candidate_from(mp4, 0, &[*b"moov", *b"trak", *b"mdat"])
+        );
+        assert_eq!(find_avi_idx1_stream_prefix(avi_idx1, 0, 0), Some(0));
+
+        let adts = slice_from_pattern(h264_aac_ts, &[0xFF, 0xF1]);
+        let mpeg_audio = slice_from_pattern(mpeg2_mp2_ts, &[0xFF, 0xFC]);
+        let ac3 = slice_from_pattern(h264_ac3_ts, &[0x0B, 0x77]);
+        let dts = slice_from_pattern(h264_dts_ts, &[0x7F, 0xFE, 0x80, 0x01]);
+
+        assert_eq!(
+            find_adts_sync(adts, 0),
+            scalar::find_pair_from(adts, 0, 0xFF, 0xF0, 0xF0)
+        );
+        assert_eq!(
+            find_mpeg_audio_sync(mpeg_audio, 0),
+            scalar::find_pair_from(mpeg_audio, 0, 0xFF, 0xE0, 0xE0)
+        );
+        assert_eq!(
+            find_ac3_sync(ac3, 0),
+            scalar::find_pair_from(ac3, 0, 0x0B, 0xFF, 0x77)
+        );
+        assert_eq!(find_dts_sync(dts, 0), scalar::find_dts_sync_from(dts, 0));
+        assert_eq!(
+            find_audio_sync_candidate(adts, 0),
+            Some(AudioSyncCandidate {
+                offset: 0,
+                kind: AudioSyncKind::Adts,
+            })
+        );
+        assert_eq!(
+            find_audio_sync_candidate(ac3, 0),
+            Some(AudioSyncCandidate {
+                offset: 0,
+                kind: AudioSyncKind::Ac3,
+            })
+        );
+        assert_eq!(
+            find_audio_sync_candidate(dts, 0),
+            Some(AudioSyncCandidate {
+                offset: 0,
+                kind: AudioSyncKind::Dts,
+            })
+        );
+    }
+
+    #[test]
     fn random_buffers_match_scalar() {
         let mut state = 0x1234_5678_9ABC_DEF0_u64;
         for len in [0, 1, 2, 3, 4, 7, 15, 16, 31, 32, 33, 63, 64, 127, 255] {
@@ -1661,6 +2332,10 @@ mod tests {
                 assert_eq!(
                     find_any_byte_from(&data, &[0, 1, 0x47, 0xFF], start),
                     scalar::find_any_byte_from(&data, &[0, 1, 0x47, 0xFF], start)
+                );
+                assert_eq!(
+                    find_h2645_emulation_prevention_byte(&data, start),
+                    scalar::find_h2645_emulation_prevention_byte_from(&data, start)
                 );
                 assert_eq!(
                     find_adts_sync(&data, start),
@@ -1723,6 +2398,12 @@ mod tests {
                     }
                     found
                 });
+
+                let mut dispatched_totals = [0_u64; 100];
+                let mut scalar_totals = [0_u64; 100];
+                accumulate_avi_idx1_stream_sizes(&data[start..], &mut dispatched_totals);
+                scalar::accumulate_avi_idx1_stream_sizes(&data[start..], &mut scalar_totals);
+                assert_eq!(dispatched_totals, scalar_totals);
             }
         }
     }
@@ -1752,6 +2433,16 @@ mod tests {
             assert_eq!(
                 unsafe { super::x86_64::find_dts_sync_avx2(&data) },
                 scalar::find_dts_sync_from(&data, 0)
+            );
+            data[13..16].copy_from_slice(&[0x00, 0x00, 0x03]);
+            assert_eq!(
+                unsafe { super::x86_64::find_h2645_emulation_prevention_byte_avx2(&data, 0) },
+                scalar::find_h2645_emulation_prevention_byte_from(&data, 0)
+            );
+            let ts_probe = ts_layout_probe(192, 4, 64);
+            assert_eq!(
+                unsafe { super::x86_64::score_ts_packet_layout_avx2(&ts_probe, 192, 4, 0x47) },
+                scalar::score_ts_packet_layout(&ts_probe, 192, 4, 0x47)
             );
             assert_eq!(
                 unsafe { super::x86_64::find_audio_sync_candidate_avx2(&data) },
@@ -1783,6 +2474,71 @@ mod tests {
                     super::x86_64::find_mp4_box_name_candidate_avx2(&data, 0, &[*b"moov", *b"trak"])
                 },
                 scalar::find_mp4_box_name_candidate_from(&data, 0, &[*b"moov", *b"trak"])
+            );
+
+            let fixture = simd_scan_fixture();
+            assert_eq!(
+                unsafe { super::x86_64::find_byte_avx2(fixture, 0xA7) },
+                scalar::find_byte_from(fixture, 0xA7, 0)
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_any_byte_avx2(fixture, &[0x47, 0xA7, 0x0B]) },
+                scalar::find_any_byte_from(fixture, &[0x47, 0xA7, 0x0B], 0)
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_pair_avx2(fixture, 0xFF, 0xF0, 0xF0) },
+                scalar::find_pair_from(fixture, 0, 0xFF, 0xF0, 0xF0)
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_mpeg_start_code_avx2(fixture, 0xB3) },
+                scalar::find_mpeg_start_code_from(fixture, 0xB3, 0)
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_annexb_start_code_avx2(fixture, 0) },
+                scalar::find_annexb_start_code_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_h2645_emulation_prevention_byte_avx2(fixture, 0) },
+                scalar::find_h2645_emulation_prevention_byte_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_dts_sync_avx2(fixture) },
+                scalar::find_dts_sync_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_audio_sync_candidate_avx2(fixture) },
+                scalar::find_audio_sync_candidate_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe {
+                    super::x86_64::find_ebml_candidate_avx2(
+                        fixture,
+                        &[0x1F43_B675, 0xA3, 0x75A1, 0xE7],
+                    )
+                },
+                scalar::find_ebml_candidate_from(fixture, 0, &[0x1F43_B675, 0xA3, 0x75A1, 0xE7])
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_hevc_sei_nal_header_candidate_avx2(fixture) },
+                scalar::find_hevc_sei_nal_header_candidate_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe { super::x86_64::find_hdr10plus_itu_t35_candidate_avx2(fixture) },
+                scalar::find_hdr10plus_itu_t35_candidate_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe {
+                    super::x86_64::find_mp4_box_name_candidate_avx2(
+                        fixture,
+                        0,
+                        &[*b"moov", *b"trak", *b"mdat"],
+                    )
+                },
+                scalar::find_mp4_box_name_candidate_from(
+                    fixture,
+                    0,
+                    &[*b"moov", *b"trak", *b"mdat"],
+                )
             );
         } else {
             assert_eq!(
@@ -1822,6 +2578,16 @@ mod tests {
                 unsafe { super::aarch64::find_dts_sync_neon(&data) },
                 scalar::find_dts_sync_from(&data, 0)
             );
+            data[13..16].copy_from_slice(&[0x00, 0x00, 0x03]);
+            assert_eq!(
+                unsafe { super::aarch64::find_h2645_emulation_prevention_byte_neon(&data, 0) },
+                scalar::find_h2645_emulation_prevention_byte_from(&data, 0)
+            );
+            let ts_probe = ts_layout_probe(192, 4, 64);
+            assert_eq!(
+                unsafe { super::aarch64::score_ts_packet_layout_neon(&ts_probe, 192, 4, 0x47) },
+                scalar::score_ts_packet_layout(&ts_probe, 192, 4, 0x47)
+            );
             assert_eq!(
                 unsafe { super::aarch64::find_audio_sync_candidate_neon(&data) },
                 scalar::find_audio_sync_candidate_from(&data, 0)
@@ -1856,6 +2622,71 @@ mod tests {
                     )
                 },
                 scalar::find_mp4_box_name_candidate_from(&data, 0, &[*b"moov", *b"trak"])
+            );
+
+            let fixture = simd_scan_fixture();
+            assert_eq!(
+                unsafe { super::aarch64::find_byte_neon(fixture, 0xA7) },
+                scalar::find_byte_from(fixture, 0xA7, 0)
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_any_byte_neon(fixture, &[0x47, 0xA7, 0x0B]) },
+                scalar::find_any_byte_from(fixture, &[0x47, 0xA7, 0x0B], 0)
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_pair_neon(fixture, 0xFF, 0xF0, 0xF0) },
+                scalar::find_pair_from(fixture, 0, 0xFF, 0xF0, 0xF0)
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_mpeg_start_code_neon(fixture, 0xB3) },
+                scalar::find_mpeg_start_code_from(fixture, 0xB3, 0)
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_annexb_start_code_neon(fixture, 0) },
+                scalar::find_annexb_start_code_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_h2645_emulation_prevention_byte_neon(fixture, 0) },
+                scalar::find_h2645_emulation_prevention_byte_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_dts_sync_neon(fixture) },
+                scalar::find_dts_sync_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_audio_sync_candidate_neon(fixture) },
+                scalar::find_audio_sync_candidate_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe {
+                    super::aarch64::find_ebml_candidate_neon(
+                        fixture,
+                        &[0x1F43_B675, 0xA3, 0x75A1, 0xE7],
+                    )
+                },
+                scalar::find_ebml_candidate_from(fixture, 0, &[0x1F43_B675, 0xA3, 0x75A1, 0xE7])
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_hevc_sei_nal_header_candidate_neon(fixture) },
+                scalar::find_hevc_sei_nal_header_candidate_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe { super::aarch64::find_hdr10plus_itu_t35_candidate_neon(fixture) },
+                scalar::find_hdr10plus_itu_t35_candidate_from(fixture, 0)
+            );
+            assert_eq!(
+                unsafe {
+                    super::aarch64::find_mp4_box_name_candidate_neon(
+                        fixture,
+                        0,
+                        &[*b"moov", *b"trak", *b"mdat"],
+                    )
+                },
+                scalar::find_mp4_box_name_candidate_from(
+                    fixture,
+                    0,
+                    &[*b"moov", *b"trak", *b"mdat"],
+                )
             );
         } else {
             assert_eq!(

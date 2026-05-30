@@ -10,6 +10,13 @@ fn media_dir() -> PathBuf {
         .join("media")
 }
 
+fn is_media_fixture(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("avi" | "mkv" | "webm" | "mp4" | "m4v" | "mov" | "ts" | "m2ts")
+    )
+}
+
 fn ffprobe_bin() -> Option<PathBuf> {
     let candidates = ["ffprobe", "/opt/homebrew/bin/ffprobe"];
     for candidate in candidates {
@@ -241,6 +248,9 @@ fn compare_fixture_corpus_against_ffprobe() {
     for entry in std::fs::read_dir(media_dir()).expect("media dir should exist") {
         let path = entry.expect("fixture entry").path();
         if !path.is_file() {
+            continue;
+        }
+        if !is_media_fixture(&path) {
             continue;
         }
 

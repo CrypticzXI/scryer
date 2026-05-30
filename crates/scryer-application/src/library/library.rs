@@ -79,8 +79,7 @@ pub(crate) use scan_title_files::{
     file_source_signature_from_metadata, file_source_snapshot_from_library_file,
 };
 use scan_title_files::{
-    TitleScanLayoutSummary, build_title_episode_lookup, classify_title_scan_layout,
-    merge_title_scan_option_tags, resolve_target_episodes_from_lookup,
+    TitleScanLayoutSummary, classify_title_scan_layout, merge_title_scan_option_tags,
     title_media_file_matches_snapshot,
 };
 use scan_title_finalize::finalize_movie_scan_file;

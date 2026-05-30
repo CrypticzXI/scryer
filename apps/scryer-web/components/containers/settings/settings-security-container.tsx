@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useClient } from "urql";
 import { toast } from "sonner";
+import { ExternalAccountInvitesContainer } from "@/components/containers/settings/external-account-invites-container";
 import { SettingsSecuritySection } from "@/components/views/settings/settings-security-section";
 import { disposeWsClient } from "@/lib/graphql/ws-client";
 import {
@@ -40,7 +41,7 @@ function errorMessage(error: unknown, fallback: string) {
 export function SettingsSecurityContainer() {
   const client = useClient();
   const t = useTranslate();
-  const { token, login, adoptSession, logout } = useAuth();
+  const { token, user, login, adoptSession, logout } = useAuth();
   const [settings, setSettings] = React.useState<SecuritySettings>(
     DEFAULT_SECURITY_SETTINGS,
   );
@@ -54,6 +55,8 @@ export function SettingsSecurityContainer() {
   const [confirmUsername, setConfirmUsername] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
   const [confirmError, setConfirmError] = React.useState<string | null>(null);
+  const canManageExternalInvites =
+    user != null && hasAppPermission(user, APP_PERMISSIONS.manageUsers);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -360,6 +363,9 @@ export function SettingsSecurityContainer() {
       onSkipLocalIpsChange={handleSkipLocalIpsChange}
       onAuthProviderSettingsChange={setAuthProviderSettings}
       onAuthProviderSettingsSave={handleAuthProviderSettingsSave}
+      externalAccountInvitesPanel={
+        canManageExternalInvites ? <ExternalAccountInvitesContainer /> : null
+      }
     />
   );
 }

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use scryer_domain::{ExternalSubtitleSourceKind, SUBTITLE_EXTENSIONS, SubtitleDownload};
@@ -26,12 +26,50 @@ struct ExternalSubtitleCandidate {
     hearing_impaired: bool,
 }
 
+#[derive(Default)]
+pub(crate) struct ExternalSubtitleDirectoryCache {
+    subtitle_paths_by_parent: BTreeMap<PathBuf, Vec<PathBuf>>,
+}
+
+impl ExternalSubtitleDirectoryCache {
+    async fn subtitle_paths_for_parent(&mut self, parent: &Path) -> AppResult<Vec<PathBuf>> {
+        if let Some(paths) = self.subtitle_paths_by_parent.get(parent) {
+            return Ok(paths.clone());
+        }
+
+        let paths = list_external_subtitle_paths(parent).await?;
+        self.subtitle_paths_by_parent
+            .insert(parent.to_path_buf(), paths.clone());
+        Ok(paths)
+    }
+}
+
 pub(crate) async fn reconcile_external_subtitles_for_media_file(
     app: &AppUseCase,
     title_id: &str,
     media_file_id: &str,
     episode_id: Option<&str>,
     video_path: &Path,
+) -> AppResult<bool> {
+    let mut cache = ExternalSubtitleDirectoryCache::default();
+    reconcile_external_subtitles_for_media_file_with_cache(
+        app,
+        title_id,
+        media_file_id,
+        episode_id,
+        video_path,
+        &mut cache,
+    )
+    .await
+}
+
+pub(crate) async fn reconcile_external_subtitles_for_media_file_with_cache(
+    app: &AppUseCase,
+    title_id: &str,
+    media_file_id: &str,
+    episode_id: Option<&str>,
+    video_path: &Path,
+    directory_cache: &mut ExternalSubtitleDirectoryCache,
 ) -> AppResult<bool> {
     let existing = app
         .services
@@ -50,7 +88,8 @@ pub(crate) async fn reconcile_external_subtitles_for_media_file(
         .into_iter()
         .map(|entry| (entry.file_path.clone(), entry))
         .collect::<BTreeMap<_, _>>();
-    let discovered_candidates = discover_external_subtitles_for_video(video_path).await?;
+    let discovered_candidates =
+        discover_external_subtitles_for_video_with_cache(video_path, directory_cache).await?;
     let downloaded_paths = existing
         .iter()
         .filter(|record| record.source_kind == ExternalSubtitleSourceKind::Downloaded)
@@ -271,8 +310,17 @@ fn subtitle_records_differ(left: &SubtitleDownload, right: &SubtitleDownload) ->
         || left.synced != right.synced
 }
 
+#[cfg(test)]
 async fn discover_external_subtitles_for_video(
     video_path: &Path,
+) -> AppResult<Vec<ExternalSubtitleCandidate>> {
+    let mut cache = ExternalSubtitleDirectoryCache::default();
+    discover_external_subtitles_for_video_with_cache(video_path, &mut cache).await
+}
+
+async fn discover_external_subtitles_for_video_with_cache(
+    video_path: &Path,
+    directory_cache: &mut ExternalSubtitleDirectoryCache,
 ) -> AppResult<Vec<ExternalSubtitleCandidate>> {
     let Some(parent) = video_path.parent() else {
         return Ok(Vec::new());
@@ -284,10 +332,24 @@ async fn discover_external_subtitles_for_video(
         return Ok(Vec::new());
     };
 
+    let paths = directory_cache.subtitle_paths_for_parent(parent).await?;
+    let mut discovered = Vec::new();
+
+    for path in paths {
+        if let Some(subtitle) = parse_discovered_external_subtitle(&video_stem, path.as_path()) {
+            discovered.push(subtitle);
+        }
+    }
+
+    discovered.sort_by(|left, right| left.file_path.cmp(&right.file_path));
+    Ok(discovered)
+}
+
+async fn list_external_subtitle_paths(parent: &Path) -> AppResult<Vec<PathBuf>> {
     let mut entries = fs::read_dir(parent)
         .await
         .map_err(|error| AppError::Repository(error.to_string()))?;
-    let mut discovered = Vec::new();
+    let mut paths = Vec::new();
 
     while let Some(entry) = entries
         .next_entry()
@@ -295,16 +357,13 @@ async fn discover_external_subtitles_for_video(
         .map_err(|error| AppError::Repository(error.to_string()))?
     {
         let path = entry.path();
-        if !path_has_subtitle_extension(&path) {
-            continue;
-        }
-        if let Some(subtitle) = parse_discovered_external_subtitle(&video_stem, &path) {
-            discovered.push(subtitle);
+        if path_has_subtitle_extension(&path) {
+            paths.push(path);
         }
     }
 
-    discovered.sort_by(|left, right| left.file_path.cmp(&right.file_path));
-    Ok(discovered)
+    paths.sort();
+    Ok(paths)
 }
 
 fn path_has_subtitle_extension(path: &Path) -> bool {
@@ -380,7 +439,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::{
-        DiscoveredExternalSubtitle, discover_external_subtitles_for_video,
+        DiscoveredExternalSubtitle, ExternalSubtitleDirectoryCache,
+        discover_external_subtitles_for_video, discover_external_subtitles_for_video_with_cache,
         parse_discovered_external_subtitle, parse_sidecar_suffix_tokens,
         reconcile_external_subtitles_for_media_file, should_preserve_existing_discovered_record,
         should_preserve_existing_probe_cache_entry,
@@ -751,6 +811,34 @@ mod tests {
         assert_eq!(discovered[0].file_path, english.to_string_lossy());
         assert_eq!(discovered[1].language.as_deref(), Some("jpn"));
         assert!(discovered[1].forced);
+    }
+
+    #[tokio::test]
+    async fn cached_discovery_reuses_parent_listing_for_multiple_videos() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let first_video = tempdir.path().join("Example.Show.S01E01.mkv");
+        let second_video = tempdir.path().join("Example.Show.S01E02.mkv");
+        let first_subtitle = tempdir.path().join("Example.Show.S01E01.eng.srt");
+        let second_subtitle = tempdir.path().join("Example.Show.S01E02.jpn.ass");
+
+        fs::write(&first_video, b"video").expect("first video");
+        fs::write(&second_video, b"video").expect("second video");
+        fs::write(&first_subtitle, b"subtitle").expect("first subtitle");
+        fs::write(&second_subtitle, b"subtitle").expect("second subtitle");
+
+        let mut cache = ExternalSubtitleDirectoryCache::default();
+        let first = discover_external_subtitles_for_video_with_cache(&first_video, &mut cache)
+            .await
+            .expect("first discovery");
+        let second = discover_external_subtitles_for_video_with_cache(&second_video, &mut cache)
+            .await
+            .expect("second discovery");
+
+        assert_eq!(cache.subtitle_paths_by_parent.len(), 1);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].file_path, first_subtitle.to_string_lossy());
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].file_path, second_subtitle.to_string_lossy());
     }
 
     #[cfg(unix)]

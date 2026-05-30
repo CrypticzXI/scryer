@@ -1,0 +1,788 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadClientRoutingSettingsEntry {
+    pub client_id: String,
+    pub enabled: bool,
+    pub category: Option<String>,
+    pub recent_queue_priority: Option<String>,
+    pub older_queue_priority: Option<String>,
+    pub remove_completed: bool,
+    pub remove_failed: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexerRoutingSettingsEntry {
+    pub indexer_id: String,
+    pub enabled: bool,
+    pub categories: Vec<String>,
+    pub priority: i32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LibrarySettingsOverrideDraft {
+    pub required_audio_languages: Option<Vec<String>>,
+    pub quality_profile_id: Option<String>,
+    pub scoring_persona: Option<ScoringPersona>,
+    pub filler_policy: Option<String>,
+    pub recap_policy: Option<String>,
+    pub monitor_specials: Option<bool>,
+    pub inter_season_movies: Option<bool>,
+    pub monitor_filler_movies: Option<bool>,
+    pub nfo_write_on_import: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
+    pub indexer_routing: Option<Vec<IndexerRoutingSettingsEntry>>,
+    pub download_client_routing: Option<Vec<DownloadClientRoutingSettingsEntry>>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibrarySettings {
+    pub required_audio_languages_override: Option<Vec<String>>,
+    pub required_audio_languages: Vec<String>,
+    pub quality_profile_id_override: Option<String>,
+    pub quality_profile_id: String,
+    pub scoring_persona_override: Option<ScoringPersona>,
+    pub scoring_persona: ScoringPersona,
+    pub filler_policy_override: Option<String>,
+    pub filler_policy: Option<String>,
+    pub recap_policy_override: Option<String>,
+    pub recap_policy: Option<String>,
+    pub monitor_specials_override: Option<bool>,
+    pub monitor_specials: Option<bool>,
+    pub inter_season_movies_override: Option<bool>,
+    pub inter_season_movies: Option<bool>,
+    pub monitor_filler_movies_override: Option<bool>,
+    pub monitor_filler_movies: Option<bool>,
+    pub nfo_write_on_import_override: Option<bool>,
+    pub nfo_write_on_import: bool,
+    pub plexmatch_write_on_import_override: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
+    pub indexer_routing_override: Option<Vec<IndexerRoutingSettingsEntry>>,
+    pub download_client_routing_override: Option<Vec<DownloadClientRoutingSettingsEntry>>,
+}
+fn download_client_routing_payload(
+    entries: Vec<DownloadClientRoutingSettingsEntry>,
+) -> AppResult<serde_json::Map<String, serde_json::Value>> {
+    let mut payload = serde_json::Map::new();
+    for entry in entries {
+        let client_id = entry.client_id.trim();
+        if client_id.is_empty() {
+            return Err(AppError::Validation(
+                "download client routing entry requires client_id".to_string(),
+            ));
+        }
+
+        payload.insert(
+            client_id.to_string(),
+            serde_json::json!({
+                "enabled": entry.enabled,
+                "category": normalize_optional_string(entry.category),
+                "recentQueuePriority": normalize_optional_string(entry.recent_queue_priority),
+                "olderQueuePriority": normalize_optional_string(entry.older_queue_priority),
+                "removeCompleted": entry.remove_completed,
+                "removeFailed": entry.remove_failed,
+            }),
+        );
+    }
+    Ok(payload)
+}
+fn download_client_routing_settings_entry_from_domain(
+    client_id: String,
+    entry: crate::catalog_helpers::DownloadClientRoutingEntry,
+) -> DownloadClientRoutingSettingsEntry {
+    DownloadClientRoutingSettingsEntry {
+        client_id,
+        enabled: entry.enabled,
+        category: entry.category,
+        recent_queue_priority: entry.recent_queue_priority,
+        older_queue_priority: entry.older_queue_priority,
+        remove_completed: entry.remove_completed,
+        remove_failed: entry.remove_failed,
+    }
+}
+fn disabled_download_client_routing_settings_entry(
+    client_id: String,
+) -> DownloadClientRoutingSettingsEntry {
+    let mut entry = crate::catalog_helpers::default_download_client_routing_entry();
+    entry.enabled = false;
+    download_client_routing_settings_entry_from_domain(client_id, entry)
+}
+fn normalize_download_client_routing_settings_entry(
+    entry: DownloadClientRoutingSettingsEntry,
+) -> AppResult<DownloadClientRoutingSettingsEntry> {
+    let client_id = entry.client_id.trim().to_string();
+    if client_id.is_empty() {
+        return Err(AppError::Validation(
+            "download client routing entry requires client_id".to_string(),
+        ));
+    }
+
+    Ok(DownloadClientRoutingSettingsEntry {
+        client_id,
+        enabled: entry.enabled,
+        category: normalize_optional_string(entry.category),
+        recent_queue_priority: normalize_optional_string(entry.recent_queue_priority),
+        older_queue_priority: normalize_optional_string(entry.older_queue_priority),
+        remove_completed: entry.remove_completed,
+        remove_failed: entry.remove_failed,
+    })
+}
+fn indexer_routing_payload(
+    entries: Vec<IndexerRoutingSettingsEntry>,
+) -> AppResult<serde_json::Map<String, serde_json::Value>> {
+    let mut payload = serde_json::Map::new();
+    for entry in entries {
+        let indexer_id = entry.indexer_id.trim();
+        if indexer_id.is_empty() {
+            return Err(AppError::Validation(
+                "indexer routing entry requires indexer_id".to_string(),
+            ));
+        }
+
+        let categories = entry
+            .categories
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+
+        payload.insert(
+            indexer_id.to_string(),
+            serde_json::json!({
+                "enabled": entry.enabled,
+                "categories": categories,
+                "priority": entry.priority,
+            }),
+        );
+    }
+    Ok(payload)
+}
+fn parse_routing_priority(raw_priority: &serde_json::Value) -> Option<i64> {
+    match raw_priority {
+        serde_json::Value::Number(number) => number.as_i64(),
+        serde_json::Value::String(value) => value.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+fn next_routing_priority(routing_by_id: &serde_json::Map<String, serde_json::Value>) -> i64 {
+    let max_explicit_priority = routing_by_id
+        .values()
+        .filter_map(|value| value.get("priority"))
+        .filter_map(parse_routing_priority)
+        .max();
+
+    match max_explicit_priority {
+        Some(max_priority) => max_priority + 1,
+        None => routing_by_id.len() as i64 + 1,
+    }
+}
+fn default_download_client_routing_entry_json(priority: i64) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": true,
+        "category": "",
+        "recentQueuePriority": "",
+        "olderQueuePriority": "",
+        "removeCompleted": true,
+        "removeFailed": false,
+        "priority": priority,
+    })
+}
+fn default_indexer_routing_entry_json(scope_id: &str, priority: i64) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": true,
+        "categories": default_indexer_routing_categories_for_scope(scope_id),
+        "priority": priority,
+    })
+}
+/// Fill in any fields missing from a stored download-client routing entry with
+/// canonical defaults. Returns `true` if the entry was modified. This is the
+/// single source of truth for what a "complete" entry looks like at rest, used
+/// by both the per-client ensure path and the startup normalization migration.
+fn normalize_download_client_routing_entry_in_place(
+    entry: &mut serde_json::Map<String, serde_json::Value>,
+    fallback_priority: i64,
+) -> bool {
+    let mut changed = false;
+    if !entry.contains_key("enabled") {
+        entry.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        changed = true;
+    }
+    if !entry.contains_key("category") {
+        entry.insert(
+            "category".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        changed = true;
+    }
+    if !entry.contains_key("recentQueuePriority") {
+        entry.insert(
+            "recentQueuePriority".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        changed = true;
+    }
+    if !entry.contains_key("olderQueuePriority") {
+        entry.insert(
+            "olderQueuePriority".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        changed = true;
+    }
+    if !entry.contains_key("removeCompleted") {
+        entry.insert("removeCompleted".to_string(), serde_json::Value::Bool(true));
+        changed = true;
+    }
+    if !entry.contains_key("removeFailed") {
+        entry.insert("removeFailed".to_string(), serde_json::Value::Bool(false));
+        changed = true;
+    }
+    if !entry.contains_key("priority") {
+        entry.insert(
+            "priority".to_string(),
+            serde_json::Value::Number(fallback_priority.into()),
+        );
+        changed = true;
+    }
+    changed
+}
+/// Fill in any fields missing from a stored indexer routing entry with
+/// canonical defaults. Returns `true` if the entry was modified.
+fn normalize_indexer_routing_entry_in_place(
+    scope_id: &str,
+    entry: &mut serde_json::Map<String, serde_json::Value>,
+    fallback_priority: i64,
+) -> bool {
+    let mut changed = false;
+    if !entry.contains_key("enabled") {
+        entry.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        changed = true;
+    }
+    if !entry.contains_key("categories") {
+        entry.insert(
+            "categories".to_string(),
+            serde_json::json!(default_indexer_routing_categories_for_scope(scope_id)),
+        );
+        changed = true;
+    }
+    if !entry.contains_key("priority") {
+        entry.insert(
+            "priority".to_string(),
+            serde_json::Value::Number(fallback_priority.into()),
+        );
+        changed = true;
+    }
+    changed
+}
+impl AppUseCase {
+    async fn load_download_client_routing_json(&self, scope_id: &str) -> AppResult<Option<String>> {
+        if let Some(raw_json) = self
+            .read_setting_string_value(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, Some(scope_id))
+            .await?
+        {
+            return Ok(Some(raw_json));
+        }
+
+        self.read_setting_string_value(LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, Some(scope_id))
+            .await
+    }
+}
+impl AppUseCase {
+    async fn load_explicit_download_client_routing_json(
+        &self,
+        scope_id: &str,
+    ) -> AppResult<Option<String>> {
+        if let Some(raw_json) = self
+            .read_setting_string_value_explicit(
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                Some(scope_id),
+            )
+            .await?
+        {
+            return Ok(Some(raw_json));
+        }
+
+        self.read_setting_string_value_explicit(
+            LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+            Some(scope_id),
+        )
+        .await
+    }
+}
+impl AppUseCase {
+    async fn load_download_client_routing_override(
+        &self,
+        library_id: &str,
+    ) -> AppResult<Option<Vec<DownloadClientRoutingSettingsEntry>>> {
+        let Some(raw_json) = self
+            .load_explicit_download_client_routing_json(library_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(entries) = crate::catalog_helpers::parse_download_client_routing_map(&raw_json)
+        else {
+            warn!(
+                library_id,
+                "ignoring invalid library-scoped download client routing override in settings"
+            );
+            return Ok(None);
+        };
+        let entries = entries
+            .into_iter()
+            .map(|(client_id, config)| {
+                let entry = crate::catalog_helpers::parse_download_client_routing_entry(&config);
+                download_client_routing_settings_entry_from_domain(client_id, entry)
+            })
+            .collect::<Vec<_>>();
+        let routing = self
+            .complete_library_download_client_routing_entries(entries)
+            .await?;
+        Ok(Some(routing))
+    }
+}
+impl AppUseCase {
+    async fn complete_library_download_client_routing_entries(
+        &self,
+        entries: Vec<DownloadClientRoutingSettingsEntry>,
+    ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
+        let mut completed = Vec::new();
+        let mut seen = HashSet::new();
+
+        for entry in entries {
+            let entry = normalize_download_client_routing_settings_entry(entry)?;
+            if seen.insert(entry.client_id.clone()) {
+                completed.push(entry);
+            }
+        }
+
+        for config in self
+            .services
+            .integrations
+            .download_client_configs
+            .list(None)
+            .await?
+        {
+            if seen.insert(config.id.clone()) {
+                completed.push(disabled_download_client_routing_settings_entry(config.id));
+            }
+        }
+
+        Ok(completed)
+    }
+}
+impl AppUseCase {
+    async fn load_indexer_routing_override(
+        &self,
+        library_id: &str,
+    ) -> AppResult<Option<Vec<IndexerRoutingSettingsEntry>>> {
+        let Some(raw_json) = self
+            .read_setting_string_value_explicit(INDEXER_ROUTING_SETTINGS_KEY, Some(library_id))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(plan) = self.parse_indexer_routing_plan(library_id, &raw_json) else {
+            return Ok(Some(Vec::new()));
+        };
+        let mut routing = plan
+            .entries
+            .into_iter()
+            .map(|(indexer_id, entry)| IndexerRoutingSettingsEntry {
+                indexer_id,
+                enabled: entry.enabled,
+                categories: entry.categories,
+                priority: entry.priority as i32,
+            })
+            .collect::<Vec<_>>();
+        routing.sort_by_key(|entry| (entry.priority, entry.indexer_id.clone()));
+        Ok(Some(routing))
+    }
+}
+impl AppUseCase {
+    pub async fn get_download_client_routing(
+        &self,
+        actor: &User,
+        scope_id: &str,
+    ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        let raw_json = self.load_download_client_routing_json(scope_id).await?;
+        let Some(raw_json) = raw_json else {
+            return Ok(Vec::new());
+        };
+        let Some(entries) = crate::catalog_helpers::parse_download_client_routing_map(&raw_json)
+        else {
+            return Ok(Vec::new());
+        };
+
+        let mut routing = entries
+            .into_iter()
+            .map(|(client_id, config)| {
+                let entry = crate::catalog_helpers::parse_download_client_routing_entry(&config);
+                DownloadClientRoutingSettingsEntry {
+                    client_id,
+                    enabled: entry.enabled,
+                    category: entry.category,
+                    recent_queue_priority: entry.recent_queue_priority,
+                    older_queue_priority: entry.older_queue_priority,
+                    remove_completed: entry.remove_completed,
+                    remove_failed: entry.remove_failed,
+                }
+            })
+            .collect::<Vec<_>>();
+        routing.sort_by(|left, right| left.client_id.cmp(&right.client_id));
+        Ok(routing)
+    }
+}
+impl AppUseCase {
+    pub async fn update_download_client_routing(
+        &self,
+        actor: &User,
+        scope_id: &str,
+        entries: Vec<DownloadClientRoutingSettingsEntry>,
+    ) -> AppResult<Vec<DownloadClientRoutingSettingsEntry>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        let mut payload = serde_json::Map::new();
+        for entry in entries {
+            let client_id = entry.client_id.trim();
+            if client_id.is_empty() {
+                return Err(AppError::Validation(
+                    "download client routing entry requires client_id".to_string(),
+                ));
+            }
+
+            payload.insert(
+                client_id.to_string(),
+                serde_json::json!({
+                    "enabled": entry.enabled,
+                    "category": normalize_optional_string(entry.category),
+                    "recentQueuePriority": normalize_optional_string(entry.recent_queue_priority),
+                    "olderQueuePriority": normalize_optional_string(entry.older_queue_priority),
+                    "removeCompleted": entry.remove_completed,
+                    "removeFailed": entry.remove_failed,
+                }),
+            );
+        }
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                Some(scope_id.to_string()),
+                serde_json::Value::Object(payload).to_string(),
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
+
+        self.emit_settings_saved(
+            actor,
+            "download_client_routing",
+            Some(scope_id.to_string()),
+            vec![DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY.to_string()],
+        )
+        .await;
+
+        self.get_download_client_routing(actor, scope_id).await
+    }
+}
+impl AppUseCase {
+    pub async fn ensure_download_client_routing_entry_for_client(
+        &self,
+        actor: &User,
+        client_id: &str,
+    ) -> AppResult<()> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        for scope_id in ["movie", "series", "anime"] {
+            let current = self.load_download_client_routing_json(scope_id).await?;
+            let mut payload = current
+                .as_deref()
+                .and_then(parse_json_object)
+                .unwrap_or_default();
+
+            if payload.contains_key(client_id) {
+                continue;
+            }
+
+            let next_priority = next_routing_priority(&payload);
+            payload.insert(
+                client_id.to_string(),
+                default_download_client_routing_entry_json(next_priority),
+            );
+
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                    Some(scope_id.to_string()),
+                    serde_json::Value::Object(payload).to_string(),
+                    "admin_graphql",
+                    Some(actor.id.clone()),
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+}
+impl AppUseCase {
+    pub async fn ensure_indexer_routing_entry_for_indexer(
+        &self,
+        actor: &User,
+        indexer_id: &str,
+    ) -> AppResult<()> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        self.ensure_indexer_routing_entry_for_indexer_internal(
+            indexer_id,
+            "admin_graphql",
+            Some(actor.id.clone()),
+        )
+        .await
+    }
+}
+impl AppUseCase {
+    async fn ensure_indexer_routing_entry_for_indexer_internal(
+        &self,
+        indexer_id: &str,
+        source: &str,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        let indexer_id = indexer_id.trim();
+        if indexer_id.is_empty() {
+            return Err(AppError::Validation(
+                "indexer routing entry requires indexer_id".to_string(),
+            ));
+        }
+
+        for scope_id in ["movie", "series", "anime"] {
+            let current = self
+                .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(scope_id))
+                .await?;
+            let mut payload = current
+                .as_deref()
+                .and_then(parse_json_object)
+                .unwrap_or_default();
+
+            if payload.contains_key(indexer_id) {
+                continue;
+            }
+
+            let next_priority = next_routing_priority(&payload);
+            payload.insert(
+                indexer_id.to_string(),
+                default_indexer_routing_entry_json(scope_id, next_priority),
+            );
+
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    INDEXER_ROUTING_SETTINGS_KEY,
+                    Some(scope_id.to_string()),
+                    serde_json::Value::Object(payload).to_string(),
+                    source,
+                    updated_by_user_id.clone(),
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+}
+impl AppUseCase {
+    pub async fn ensure_indexer_routing_entries_for_existing_indexers(&self) -> AppResult<()> {
+        let configs = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await?;
+        for config in configs {
+            self.ensure_indexer_routing_entry_for_indexer_internal(
+                &config.id,
+                "startup_reconcile",
+                None,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+}
+impl AppUseCase {
+    pub async fn get_indexer_routing(
+        &self,
+        actor: &User,
+        scope_id: &str,
+    ) -> AppResult<Vec<IndexerRoutingSettingsEntry>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        let Some(plan) = self.resolve_indexer_routing(None, Some(scope_id)).await else {
+            return Ok(Vec::new());
+        };
+
+        let mut routing = plan
+            .entries
+            .into_iter()
+            .map(|(indexer_id, entry)| IndexerRoutingSettingsEntry {
+                indexer_id,
+                enabled: entry.enabled,
+                categories: entry.categories,
+                priority: entry.priority as i32,
+            })
+            .collect::<Vec<_>>();
+        routing.sort_by_key(|entry| (entry.priority, entry.indexer_id.clone()));
+        Ok(routing)
+    }
+}
+impl AppUseCase {
+    pub async fn update_indexer_routing(
+        &self,
+        actor: &User,
+        scope_id: &str,
+        entries: Vec<IndexerRoutingSettingsEntry>,
+    ) -> AppResult<Vec<IndexerRoutingSettingsEntry>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        let mut payload = serde_json::Map::new();
+        for entry in entries {
+            let indexer_id = entry.indexer_id.trim();
+            if indexer_id.is_empty() {
+                return Err(AppError::Validation(
+                    "indexer routing entry requires indexer_id".to_string(),
+                ));
+            }
+
+            let categories = entry
+                .categories
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+
+            payload.insert(
+                indexer_id.to_string(),
+                serde_json::json!({
+                    "enabled": entry.enabled,
+                    "categories": categories,
+                    "priority": entry.priority,
+                }),
+            );
+        }
+
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                INDEXER_ROUTING_SETTINGS_KEY,
+                Some(scope_id.to_string()),
+                serde_json::Value::Object(payload).to_string(),
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                Some(actor.id.clone()),
+            )
+            .await?;
+
+        self.emit_settings_saved(
+            actor,
+            "indexer_routing",
+            Some(scope_id.to_string()),
+            vec![INDEXER_ROUTING_SETTINGS_KEY.to_string()],
+        )
+        .await;
+
+        self.get_indexer_routing(actor, scope_id).await
+    }
+}
+impl AppUseCase {
+    /// Idempotent backfill: walks all persisted routing settings and rewrites
+    /// any entry that is missing canonical fields with explicit defaults.
+    /// Intended to run once per startup so legacy installs converge on the
+    /// fully-materialized JSON shape that the typed write paths now produce.
+    /// Reads stay read-only — this is the single explicit write boundary for
+    /// the migration.
+    pub async fn normalize_routing_settings(&self) -> AppResult<()> {
+        const NORMALIZE_SOURCE: &str = "startup_normalize_routing";
+
+        for scope_id in ["movie", "series", "anime"] {
+            if let Some(raw_json) = self.load_download_client_routing_json(scope_id).await?
+                && let Some(mut payload) = parse_json_object(&raw_json)
+            {
+                let mut changed = false;
+                let mut next_priority = next_routing_priority(&payload);
+                for (_, value) in payload.iter_mut() {
+                    if let Some(entry) = value.as_object_mut() {
+                        let missing_priority = !entry.contains_key("priority");
+                        if normalize_download_client_routing_entry_in_place(entry, next_priority) {
+                            changed = true;
+                            if missing_priority {
+                                next_priority += 1;
+                            }
+                        }
+                    }
+                }
+                if changed {
+                    self.services
+                        .config
+                        .settings
+                        .upsert_setting_json(
+                            SETTINGS_SCOPE_SYSTEM,
+                            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                            Some(scope_id.to_string()),
+                            serde_json::Value::Object(payload).to_string(),
+                            NORMALIZE_SOURCE,
+                            None,
+                        )
+                        .await?;
+                }
+            }
+        }
+
+        for scope_id in ["movie", "series", "anime"] {
+            if let Some(raw_json) = self
+                .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(scope_id))
+                .await?
+                && let Some(mut payload) = parse_json_object(&raw_json)
+            {
+                let mut changed = false;
+                let mut next_priority = next_routing_priority(&payload);
+                for (_, value) in payload.iter_mut() {
+                    if let Some(entry) = value.as_object_mut() {
+                        let missing_priority = !entry.contains_key("priority");
+                        if normalize_indexer_routing_entry_in_place(scope_id, entry, next_priority)
+                        {
+                            changed = true;
+                            if missing_priority {
+                                next_priority += 1;
+                            }
+                        }
+                    }
+                }
+                if changed {
+                    self.services
+                        .config
+                        .settings
+                        .upsert_setting_json(
+                            SETTINGS_SCOPE_SYSTEM,
+                            INDEXER_ROUTING_SETTINGS_KEY,
+                            Some(scope_id.to_string()),
+                            serde_json::Value::Object(payload).to_string(),
+                            NORMALIZE_SOURCE,
+                            None,
+                        )
+                        .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}

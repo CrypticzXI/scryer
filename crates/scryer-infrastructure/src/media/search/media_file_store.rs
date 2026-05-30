@@ -395,10 +395,13 @@ impl MediaFileRepository for MediaFileStore {
         analysis: MediaFileAnalysis,
     ) -> AppResult<()> {
         let analysis_json = serialized_media_analysis(&analysis)?;
+        let analysis_quality_label = quality_label_from_media_analysis(&analysis);
         execute_write(
             &self.datastore,
             "update_media_file_analysis",
             "UPDATE media_files SET
+                quality_id = COALESCE({}, quality_id),
+                resolution = COALESCE({}, resolution),
                 video_codec = {},
                 video_width = {},
                 video_height = {},
@@ -419,6 +422,8 @@ impl MediaFileRepository for MediaFileStore {
                 scan_status = 'scanned'
              WHERE id = {}",
             vec![
+                SqlArg::OptText(analysis_quality_label.clone()),
+                SqlArg::OptText(analysis_quality_label),
                 SqlArg::OptText(analysis.video_codec.as_ref().map(ToString::to_string)),
                 SqlArg::OptI32(analysis.video_width),
                 SqlArg::OptI32(analysis.video_height),
@@ -628,6 +633,20 @@ fn normalized_quality_expression(alias: &str) -> String {
             ELSE upper(trim({alias}.quality_id))
          END"
     )
+}
+
+fn quality_label_from_media_analysis(analysis: &MediaFileAnalysis) -> Option<String> {
+    quality_label_from_video_height(analysis.video_height).map(str::to_string)
+}
+
+fn quality_label_from_video_height(height: Option<i32>) -> Option<&'static str> {
+    match height? {
+        h if h >= 2100 => Some("2160p"),
+        h if h >= 1000 => Some("1080p"),
+        h if h >= 700 => Some("720p"),
+        h if h >= 480 => Some("480p"),
+        _ => None,
+    }
 }
 
 fn quality_rank_expression(alias: &str) -> String {
@@ -1527,6 +1546,9 @@ mod tests {
                 title_id: title.id.clone(),
                 file_path: "/library/Show/Season 01/Show - S01E01.mkv".to_string(),
                 size_bytes: 1_000,
+                quality_label: Some("720p".to_string()),
+                resolution: Some("720p".to_string()),
+                source_type: Some("WEB-DL".to_string()),
                 audio_channels_parsed: Some("7.1".to_string()),
                 ..Default::default()
             })
@@ -1577,6 +1599,9 @@ mod tests {
             .expect("list media files should succeed");
 
         assert_eq!(files.len(), 1);
+        assert_eq!(files[0].quality_label.as_deref(), Some("2160p"));
+        assert_eq!(files[0].resolution.as_deref(), Some("2160p"));
+        assert_eq!(files[0].source_type.as_deref(), Some("WEB-DL"));
         assert_eq!(
             files[0].audio_profile.as_deref(),
             Some("DTS-HD MA + DTS:X IMAX")

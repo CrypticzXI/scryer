@@ -1058,6 +1058,7 @@ pub struct LinkedAccountPayload {
     pub avatar_url: Option<String>,
     pub status: ExternalAccountStatusValue,
     pub verified_at: Option<String>,
+    pub last_login_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

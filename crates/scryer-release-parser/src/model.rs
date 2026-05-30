@@ -1,5 +1,7 @@
 use chrono::NaiveDate;
+use core::range::Range;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use smallvec::SmallVec;
 use std::fmt;
 
@@ -10,6 +12,30 @@ use crate::lex::{ReleaseCst, TextSpan, Token};
 pub struct TokenRange {
     pub start_token: usize,
     pub end_token: usize,
+}
+
+impl TokenRange {
+    pub fn new(start_token: usize, end_token: usize) -> Self {
+        Self {
+            start_token,
+            end_token,
+        }
+    }
+
+    pub fn indices(self) -> Range<usize> {
+        Range {
+            start: self.start_token,
+            end: self.end_token,
+        }
+    }
+
+    pub fn len(self) -> usize {
+        self.end_token.saturating_sub(self.start_token)
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.start_token >= self.end_token
+    }
 }
 
 /// Family selected by the beam parser for a candidate release interpretation.

@@ -15,7 +15,6 @@ pub(crate) mod post_download_gate;
 pub mod post_processing;
 pub(crate) mod title_resolution;
 pub mod upgrade;
-#[path = "import.rs"]
 pub(crate) mod workflow;
 
 pub(crate) use workflow as import;

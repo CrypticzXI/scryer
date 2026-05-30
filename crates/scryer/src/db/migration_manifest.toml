@@ -341,6 +341,23 @@ file = "postgres/migrations/0129_media_requests.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 130
+description = "external account last login"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0130_external_account_last_login.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0130_external_account_last_login.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

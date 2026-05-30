@@ -28,7 +28,10 @@ pub mod sync;
 pub mod sync;
 pub mod wanted;
 
-pub(crate) use external::reconcile_external_subtitles_for_media_file;
+pub(crate) use external::{
+    ExternalSubtitleDirectoryCache, reconcile_external_subtitles_for_media_file,
+    reconcile_external_subtitles_for_media_file_with_cache,
+};
 pub use external_probe::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry};
 pub use language::{normalize_subtitle_language_code, same_subtitle_language};
 pub use provider::{

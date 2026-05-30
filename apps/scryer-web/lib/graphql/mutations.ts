@@ -520,6 +520,7 @@ const LINKED_ACCOUNT_FIELDS = `
     avatarUrl
     status
     verifiedAt
+    lastLoginAt
     createdAt
     updatedAt`;
 

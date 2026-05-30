@@ -706,6 +706,7 @@ impl TestContext {
         .with_housekeeping(Arc::new(housekeeping_store))
         .with_subtitle_downloads(Arc::new(subtitle_download_store))
         .with_libraries(Arc::new(library_store.clone()))
+        .with_external_account_store(Arc::new(user_store.clone()))
         .with_rule_set_store(Arc::new(rule_set_store))
         .with_post_processing_script_store(Arc::new(post_processing_script_store))
         .with_plugin_installation_store(Arc::new(plugin_store.clone()))

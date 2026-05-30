@@ -1455,6 +1455,7 @@ pub fn from_linked_account(account: scryer_domain::UserExternalAccount) -> Linke
         avatar_url: account.avatar_url,
         status: ExternalAccountStatusValue::from_domain(account.status),
         verified_at: account.verified_at.map(|value| value.to_rfc3339()),
+        last_login_at: account.last_login_at.map(|value| value.to_rfc3339()),
         created_at: account.created_at.to_rfc3339(),
         updated_at: account.updated_at.to_rfc3339(),
     }

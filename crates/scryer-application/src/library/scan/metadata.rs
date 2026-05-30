@@ -8,9 +8,10 @@ use unicode_normalization::UnicodeNormalization;
 use crate::library::library::library_scan_cancel_requested;
 use crate::library_discovery::{
     LibraryTitleWalk, MovieTopLevelEntry, MovieTopLevelEntryBatchReceiver,
-    extract_library_query_evidence, library_title_walk, matching_movie_nfo_path_async,
-    normalize_folder_name, strip_year_suffix,
+    extract_library_query_evidence, matching_movie_nfo_path_async, normalize_folder_name,
+    strip_year_suffix,
 };
+use crate::library_filename_parser::{LibraryFilenameParseInput, parse_library_filename};
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::nfo::{NfoMetadata, NfoRootKind, detect_nfo_root_kind, parse_nfo, parse_plexmatch};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
@@ -18,7 +19,7 @@ use crate::title_matching::TitleMatchProfile;
 use crate::{
     AppError, AppResult, LibraryFile, LibraryScanUnmatchedSearchAttempt, LibraryScanner,
     MetadataGateway, MetadataSearchItem, MetadataSearchQuery, await_cancellable,
-    await_cancellable_app_result, parse_release_metadata,
+    await_cancellable_app_result,
 };
 
 pub(crate) const METADATA_TYPE_MOVIE: &str = "movie";
@@ -1501,15 +1502,15 @@ async fn build_prepared_movie_library_scan_candidate(
     discovered_files: Vec<LibraryFile>,
     library_path: String,
 ) -> AppResult<PreparedMovieLibraryScanCandidate> {
-    let parsed_release_name = stored_path_to_path_buf(&file.path)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .filter(|stem| !stem.trim().is_empty())
-        .unwrap_or_else(|| file.display_name.clone());
-    let parsed_release = parse_release_metadata(&parsed_release_name);
-
     let nfo_meta = read_valid_movie_nfo_metadata(file.nfo_path.as_deref()).await;
-    let query_evidence = extract_library_query_evidence(&file.path, &library_path);
+    let file_path = stored_path_to_path_buf(&file.path);
+    let library_root = stored_path_to_path_buf(&library_path);
+    let filename_parse = parse_library_filename(&LibraryFilenameParseInput::title_only(
+        file_path.as_path(),
+        Some(library_root.as_path()),
+    ));
+    let parsed_release = filename_parse.parsed_release.clone();
+    let query_evidence = filename_parse.query_evidence;
     let query_variants = query_evidence.queries.clone();
     let extracted_year_hint = query_evidence.year;
     let fallback_query = query_variants.first().cloned().unwrap_or_default();
@@ -1595,7 +1596,11 @@ async fn prepare_series_library_scan_candidate(
     let plexmatch_meta = read_plexmatch_metadata(Some(folder.clone())).await;
     let clean_name = normalize_folder_name(&folder_name_value);
     let (fallback_query, extracted_year_hint) = strip_year_suffix(&clean_name);
-    let folder_walk = library_title_walk(folder_name_value.as_str());
+    let filename_parse = parse_library_filename(&LibraryFilenameParseInput::title_only(
+        folder.as_path(),
+        folder.parent(),
+    ));
+    let folder_walk = filename_parse.query_evidence.file_walk.clone();
     let fallback_query = folder_walk
         .as_ref()
         .and_then(|walk| walk.title.clone())
@@ -1606,7 +1611,7 @@ async fn prepare_series_library_scan_candidate(
         .as_ref()
         .and_then(|walk| walk.year)
         .or(extracted_year_hint);
-    let parsed_release = parse_release_metadata(&folder_name_value);
+    let parsed_release = filename_parse.parsed_release;
     let identity_hint = select_metadata_identity_hint(
         nfo_meta.as_ref(),
         plexmatch_meta.as_ref(),
@@ -1669,7 +1674,13 @@ pub(crate) async fn prepare_series_library_scan_candidate_from_file(
         .first()
         .cloned()
         .unwrap_or_else(|| file.display_name.clone());
-    let parsed_release = parse_release_metadata(&fallback_query);
+    let file_path = stored_path_to_path_buf(&file.path);
+    let library_root = stored_path_to_path_buf(library_path);
+    let filename_parse = parse_library_filename(&LibraryFilenameParseInput::title_only(
+        file_path.as_path(),
+        Some(library_root.as_path()),
+    ));
+    let parsed_release = filename_parse.parsed_release;
     let plexmatch_meta =
         read_plexmatch_metadata(candidate_sidecar_folder(&file.path, library_path)).await;
     let identity_hint = select_metadata_identity_hint(

@@ -1,3 +1,4 @@
+import type * as React from "react";
 import { InfoHelp } from "@/components/common/info-help";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ type SettingsSecuritySectionProps = {
   onSkipLocalIpsChange: (enabled: boolean) => void;
   onAuthProviderSettingsChange: (settings: AuthProviderSettings) => void;
   onAuthProviderSettingsSave: () => Promise<void> | void;
+  externalAccountInvitesPanel: React.ReactNode;
 };
 
 function providerLabel(provider: ExternalAccountProvider): string {
@@ -100,6 +102,7 @@ export function SettingsSecuritySection({
   onSkipLocalIpsChange,
   onAuthProviderSettingsChange,
   onAuthProviderSettingsSave,
+  externalAccountInvitesPanel,
 }: SettingsSecuritySectionProps) {
   const t = useTranslate();
   const busy = loading || confirmBusy || authProviderSaving;
@@ -446,6 +449,8 @@ export function SettingsSecuritySection({
           </div>
         </div>
       </div>
+
+      {externalAccountInvitesPanel}
 
       <ConfirmDialog
         open={enableConfirmOpen}

@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+#[cfg(feature = "runtime-media-analysis")]
+use std::path::Path;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 

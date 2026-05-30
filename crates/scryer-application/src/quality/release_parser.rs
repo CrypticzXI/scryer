@@ -14,6 +14,14 @@ pub fn parse_release_metadata(raw: &str) -> ParsedReleaseMetadata {
     project_analysis(raw, &analyze_release_for_target(raw, &context))
 }
 
+pub(crate) fn parsed_release_source_type(parsed: &ParsedReleaseMetadata) -> Option<String> {
+    if parsed.is_remux {
+        return Some("Remux".to_string());
+    }
+
+    parsed.source.as_ref().map(ToString::to_string)
+}
+
 pub fn parse_release_metadata_for_target(
     raw: &str,
     context: &ReleaseParseContext,

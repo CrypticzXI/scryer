@@ -370,7 +370,7 @@ fn compare_analysis_to_ffprobe(
     ffprobe: Value,
     stage: StageStatus,
 ) -> FileOutcome {
-    let video = ffprobe_primary_stream(&ffprobe, "video");
+    let video = ffprobe_primary_video_stream(&ffprobe);
     let audio = ffprobe_primary_stream(&ffprobe, "audio");
     let container_format = analysis.container_format.as_deref();
     let mut mismatches = Vec::new();
@@ -436,7 +436,7 @@ fn compare_analysis_to_ffprobe(
         &mut mismatches,
         "duration_seconds",
         analysis.duration_seconds.unwrap_or_default(),
-        ffprobe_duration_seconds(&ffprobe).unwrap_or_default(),
+        ffprobe_sonarr_duration_seconds(&ffprobe).unwrap_or_default(),
         1,
     );
     let native_audio_languages = analysis.audio_languages.clone();
@@ -833,9 +833,9 @@ fn run_sonarr_analysis_json(
         .arg("-show_format")
         .arg("-sexagesimal")
         .arg("-show_streams")
+        .args(custom_args)
         .arg("-show_chapters")
         .arg(file)
-        .args(custom_args)
         .output()
         .map_err(|error| error.to_string())?;
 
@@ -852,6 +852,24 @@ fn ffprobe_primary_stream<'a>(json: &'a Value, codec_type: &str) -> Option<&'a V
         .as_array()?
         .iter()
         .find(|stream| stream.get("codec_type").and_then(Value::as_str) == Some(codec_type))
+}
+
+fn ffprobe_primary_video_stream(json: &Value) -> Option<&Value> {
+    let video_streams = ffprobe_streams(json, "video");
+    if video_streams.len() <= 1 {
+        return video_streams.into_iter().next();
+    }
+
+    video_streams
+        .iter()
+        .copied()
+        .find(|stream| {
+            !matches!(
+                stream.get("codec_name").and_then(Value::as_str),
+                Some("mjpeg" | "png")
+            )
+        })
+        .or_else(|| video_streams.into_iter().next())
 }
 
 fn ffprobe_streams<'a>(json: &'a Value, codec_type: &str) -> Vec<&'a Value> {
@@ -960,12 +978,36 @@ fn ffprobe_frame_rate(stream: Option<&Value>) -> Option<f64> {
     if den == 0.0 { None } else { Some(num / den) }
 }
 
-fn ffprobe_duration_seconds(json: &Value) -> Option<i32> {
-    json.get("format")
+fn ffprobe_sonarr_duration_seconds(json: &Value) -> Option<i32> {
+    let audio = ffprobe_primary_stream(json, "audio").and_then(ffprobe_stream_duration);
+    let video = ffprobe_primary_video_stream(json).and_then(ffprobe_stream_duration);
+    let format = json
+        .get("format")
         .and_then(|format| format.get("duration"))
         .and_then(Value::as_str)
+        .and_then(parse_ffprobe_duration)?;
+
+    Some(best_sonarr_runtime(audio, video, format).round() as i32)
+}
+
+fn ffprobe_stream_duration(stream: &Value) -> Option<f64> {
+    stream
+        .get("duration")
+        .and_then(Value::as_str)
         .and_then(parse_ffprobe_duration)
-        .map(|duration| duration.round() as i32)
+        .filter(|duration| *duration > 0.0)
+}
+
+fn best_sonarr_runtime(audio: Option<f64>, video: Option<f64>, format: f64) -> f64 {
+    if video.unwrap_or_default() == 0.0 {
+        if audio.unwrap_or_default() == 0.0 {
+            format
+        } else {
+            audio.unwrap_or(format)
+        }
+    } else {
+        video.unwrap_or(format)
+    }
 }
 
 fn parse_ffprobe_duration(duration: &str) -> Option<f64> {
@@ -1044,7 +1086,11 @@ fn is_media_file(path: &Path) -> bool {
 
 fn is_ignored_dir_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.starts_with('.') || matches!(lower.as_str(), "@eadir" | ".@__thumb" | "plex versions")
+    lower.starts_with('.')
+        || matches!(
+            lower.as_str(),
+            "@eadir" | ".@__thumb" | "plex" | "plex versions" | "plex media server"
+        )
 }
 
 fn ffprobe_bin() -> Option<PathBuf> {
