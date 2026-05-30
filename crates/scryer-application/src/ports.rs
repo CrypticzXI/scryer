@@ -194,8 +194,21 @@ pub struct NewMediaRequest {
     pub runtime_minutes: Option<i32>,
     pub language: Option<String>,
     pub content_status: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
     pub external_ids: Vec<ExternalId>,
     pub created_by_user_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct MediaRequestResolution {
+    pub status: scryer_domain::MediaRequestStatus,
+    pub resolved_by_user_id: String,
+    pub resolved_at: chrono::DateTime<chrono::Utc>,
+    pub created_title_id: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
+    pub event: NewDomainEvent,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -213,6 +226,17 @@ pub trait MediaRequestRepository: Send + Sync {
         requester: &User,
         submitted_event: NewDomainEvent,
     ) -> AppResult<MediaRequest>;
+
+    async fn get(&self, request_id: &str) -> AppResult<Option<MediaRequest>>;
+
+    async fn resolve_pending_overlapping(
+        &self,
+        request: &MediaRequest,
+        resolution: MediaRequestResolution,
+    ) -> AppResult<u64>;
+
+    async fn count_pending_by_facet(&self, library_ids: &[String])
+    -> AppResult<MediaRequestCounts>;
 
     async fn list(&self, query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>>;
 }
@@ -399,21 +423,64 @@ pub trait UserExternalAccountRepository: Send + Sync {
 }
 
 #[async_trait]
+pub trait MediaServerConnectionRepository: Send + Sync {
+    async fn list(
+        &self,
+        provider: Option<scryer_domain::MediaServerProvider>,
+    ) -> AppResult<Vec<scryer_domain::MediaServerConnection>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::MediaServerConnection>>;
+    async fn create(
+        &self,
+        connection: scryer_domain::MediaServerConnection,
+    ) -> AppResult<scryer_domain::MediaServerConnection>;
+    async fn update(
+        &self,
+        connection: scryer_domain::MediaServerConnection,
+    ) -> AppResult<scryer_domain::MediaServerConnection>;
+    async fn delete(&self, id: &str) -> AppResult<()>;
+    async fn has_external_accounts(&self, id: &str) -> AppResult<bool>;
+    async fn has_notification_channels(&self, id: &str) -> AppResult<bool>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JellyfinServerUser {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+}
+
+#[async_trait]
 pub trait ExternalIdentityVerifier: Send + Sync {
     async fn verify_plex(
         &self,
         connection_id: &str,
+        machine_id: Option<&str>,
         plex_auth_token: &str,
     ) -> AppResult<VerifiedExternalIdentity>;
 
     async fn verify_jellyfin(
         &self,
         connection_id: &str,
+        base_url: &str,
         username: &str,
         password: &str,
     ) -> AppResult<VerifiedExternalIdentity>;
 
     async fn test_jellyfin_connection(&self, base_url: &str) -> AppResult<()>;
+    async fn test_jellyfin_api_key(&self, base_url: &str, api_key: &str) -> AppResult<()>;
+    async fn exchange_jellyfin_admin_api_key(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        username: &str,
+        password: &str,
+    ) -> AppResult<String>;
+    async fn list_jellyfin_users(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        search: Option<&str>,
+    ) -> AppResult<Vec<JellyfinServerUser>>;
 }
 
 #[async_trait]
@@ -1000,6 +1067,12 @@ pub trait FileImporter: Send + Sync {
         dest: &Path,
         mode: scryer_domain::ImportMode,
     ) -> AppResult<ImportFileResult>;
+
+    async fn remove_import_source_after_verified_import(
+        &self,
+        guard: scryer_domain::ImportSourceCleanupGuard,
+        final_dest_path: &Path,
+    ) -> AppResult<()>;
 }
 
 #[async_trait]

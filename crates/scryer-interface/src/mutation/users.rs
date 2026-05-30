@@ -261,6 +261,9 @@ impl UserMutations {
             .map_err(to_gql_error)?
             .totp_require_jellyfin_login
         {
+            if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
+                return login_payload_from_user(&app, user, None).await;
+            }
             let code = input.totp_code.as_deref().ok_or_else(|| {
                 to_gql_error(AppError::TotpStepUpRequired(
                     "TOTP code is required for Jellyfin login".into(),

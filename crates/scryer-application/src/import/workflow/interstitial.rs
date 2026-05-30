@@ -637,9 +637,17 @@ async fn import_movie_download(
                 dest_path = %dest_path.display(),
                 "failed to insert media_files record (import will still succeed)"
             );
+            if import_mode == scryer_domain::ImportMode::Move {
+                return Err(AppError::Repository(format!(
+                    "move import source cleanup blocked because media file insert failed: {err}"
+                )));
+            }
             None
         }
     };
+
+    let link_type =
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
 
     persist_file_import_artifact(
         app,
@@ -723,7 +731,7 @@ async fn import_movie_download(
         quality: prepared.parsed.quality.clone(),
         episode_ids: Vec::new(),
         file_size_bytes: Some(file_result.size_bytes as i64),
-        link_type: Some(file_result.strategy),
+        link_type: Some(link_type),
         error_message: None,
         started_at,
         completed_at: Utc::now(),
@@ -1159,7 +1167,7 @@ async fn import_interstitial_movie_download(
     )
     .await;
 
-    let imported_media_file_id = if let Ok(file_id) = app
+    let imported_media_file_id = match app
         .services
         .library
         .media_files
@@ -1181,30 +1189,47 @@ async fn import_interstitial_movie_download(
         })
         .await
     {
-        crate::post_download_gate::persist_media_analysis_result(
-            &app.services.library.media_files,
-            &file_id,
-            prepared.accepted.as_ref(),
-        )
-        .await;
-        if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
-            app, &title.id, &file_id, None, &dest_path,
-        )
-        .await
-        {
-            tracing::warn!(
-                error = %error,
-                title_id = %title.id,
-                file_id = %file_id,
-                dest_path = %dest_path.display(),
-                "failed to reconcile external subtitles after import"
-            );
+        Ok(file_id) => {
+            crate::post_download_gate::persist_media_analysis_result(
+                &app.services.library.media_files,
+                &file_id,
+                prepared.accepted.as_ref(),
+            )
+            .await;
+            if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
+                app, &title.id, &file_id, None, &dest_path,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    title_id = %title.id,
+                    file_id = %file_id,
+                    dest_path = %dest_path.display(),
+                    "failed to reconcile external subtitles after import"
+                );
+            }
+            maybe_trigger_subtitle_search(app, &title.id, &file_id);
+            Some(file_id)
         }
-        maybe_trigger_subtitle_search(app, &title.id, &file_id);
-        Some(file_id)
-    } else {
-        None
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                title_id = %title.id,
+                dest_path = %dest_path.display(),
+                "failed to insert interstitial media_files record"
+            );
+            if import_mode == scryer_domain::ImportMode::Move {
+                return Err(AppError::Repository(format!(
+                    "move import source cleanup blocked because media file insert failed: {err}"
+                )));
+            }
+            None
+        }
     };
+
+    let link_type =
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
 
     persist_file_import_artifact(
         app,
@@ -1301,7 +1326,7 @@ async fn import_interstitial_movie_download(
         quality: prepared.parsed.quality.clone(),
         episode_ids: Vec::new(),
         file_size_bytes: Some(file_result.size_bytes as i64),
-        link_type: Some(file_result.strategy),
+        link_type: Some(link_type),
         error_message: None,
         started_at,
         completed_at: Utc::now(),

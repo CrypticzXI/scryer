@@ -20,7 +20,10 @@ import {
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
-import type { MetadataCatalogRequestOptions } from "@/lib/hooks/use-global-search";
+import type {
+  CatalogQualityProfileOption,
+  MetadataCatalogRequestOptions,
+} from "@/lib/hooks/use-global-search";
 import type { Facet, LibraryRecord } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 
@@ -30,6 +33,7 @@ type RequestMediaDialogProps = {
   result: MetadataTvdbSearchItem;
   facet: Facet;
   requestableLibraries: LibraryRecord[];
+  qualityProfileOptions: CatalogQualityProfileOption[];
   onRequest: (
     result: MetadataTvdbSearchItem,
     facet: Facet,
@@ -43,10 +47,12 @@ export function RequestMediaDialog({
   result,
   facet,
   requestableLibraries,
+  qualityProfileOptions,
   onRequest,
 }: RequestMediaDialogProps) {
   const t = useTranslate();
   const [libraryId, setLibraryId] = React.useState("");
+  const [qualityProfileId, setQualityProfileId] = React.useState("");
   const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   React.useEffect(() => {
@@ -56,26 +62,58 @@ export function RequestMediaDialog({
         requestableLibraries[0]?.id ||
         "",
     );
+    setQualityProfileId("");
     setIsSubmitting(false);
   }, [open, requestableLibraries]);
 
   const selectedLibrary = requestableLibraries.find((library) => library.id === libraryId) ?? null;
+  const requestProfileOptions = React.useMemo(() => {
+    const requestProfileIds = selectedLibrary?.requestQualityProfileIds?.length
+      ? selectedLibrary.requestQualityProfileIds
+      : selectedLibrary?.requestQualityProfileDefaultId
+        ? [selectedLibrary.requestQualityProfileDefaultId]
+        : [];
+    return requestProfileIds.map((profileId) => {
+      const profile = qualityProfileOptions.find((option) => option.id === profileId);
+      return {
+        id: profileId,
+        name: profile?.name ?? profileId,
+      };
+    });
+  }, [qualityProfileOptions, selectedLibrary]);
   const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
+
+  React.useEffect(() => {
+    if (!open || !selectedLibrary) return;
+    const defaultProfileId =
+      selectedLibrary.requestQualityProfileDefaultId ||
+      requestProfileOptions[0]?.id ||
+      "";
+    setQualityProfileId((current) =>
+      current && requestProfileOptions.some((profile) => profile.id === current)
+        ? current
+        : defaultProfileId,
+    );
+  }, [open, requestProfileOptions, selectedLibrary]);
 
   const handleSubmit = React.useCallback(async () => {
     const selectedLibraryId = selectedLibrary?.id.trim();
-    if (!selectedLibraryId) return;
+    const selectedQualityProfileId = qualityProfileId.trim();
+    if (!selectedLibraryId || !selectedQualityProfileId) return;
 
     setIsSubmitting(true);
     try {
-      const accepted = await onRequest(result, facet, { libraryId: selectedLibraryId });
+      const accepted = await onRequest(result, facet, {
+        libraryId: selectedLibraryId,
+        requestedQualityProfileId: selectedQualityProfileId,
+      });
       if (accepted) {
         onOpenChange(false);
       }
     } finally {
       setIsSubmitting(false);
     }
-  }, [facet, onOpenChange, onRequest, result, selectedLibrary]);
+  }, [facet, onOpenChange, onRequest, qualityProfileId, result, selectedLibrary]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -131,6 +169,28 @@ export function RequestMediaDialog({
           </Select>
         </label>
 
+        <label className="space-y-1">
+          <span className="block text-xs font-medium text-card-foreground">
+            {t("requests.requestedQualityProfile")}
+          </span>
+          <Select
+            value={qualityProfileId}
+            onValueChange={setQualityProfileId}
+            disabled={isSubmitting || requestProfileOptions.length <= 1}
+          >
+            <SelectTrigger id="request-media-quality-profile" className="h-9 w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {requestProfileOptions.map((profile) => (
+                <SelectItem key={profile.id} value={profile.id}>
+                  {profile.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+
         <DialogFooter>
           <Button
             id="request-media-cancel"
@@ -145,7 +205,7 @@ export function RequestMediaDialog({
             id="request-media-submit"
             type="button"
             onClick={() => void handleSubmit()}
-            disabled={isSubmitting || !selectedLibrary}
+            disabled={isSubmitting || !selectedLibrary || !qualityProfileId}
             className="bg-emerald-600 text-foreground hover:bg-emerald-500"
           >
             {isSubmitting ? (

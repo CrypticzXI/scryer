@@ -990,37 +990,40 @@ pub async fn execute_manual_import(
         .collect();
 
     let success_count = results.iter().filter(|r| r.success).count();
-    let episode_ids = results
-        .iter()
-        .filter(|result| result.success)
-        .map(|result| result.episode_id.clone())
-        .collect::<Vec<_>>();
-    app.append_domain_event(new_title_domain_event(
-        Some(actor.id.clone()),
-        &title,
-        DomainEventPayload::ImportCompleted(ImportCompletedEventData {
-            title: title_context_snapshot(&title),
-            media_updates: imported_updates
-                .into_iter()
-                .map(|update| created_media_update(update.path))
-                .collect(),
-            imported_count: success_count as i32,
-            import_id: None,
-            source_system: completed.map(|download| download.client_type.clone()),
-            source_ref: completed.map(|download| download.download_client_item_id.clone()),
-            source_title: completed
-                .map(|download| download.name.clone())
-                .or_else(|| (files.len() == 1).then(|| files[0].file_path.clone())),
-            source_path: (files.len() == 1).then(|| files[0].file_path.clone()),
-            dest_path: results
-                .iter()
-                .find(|result| result.success)
-                .and_then(|result| result.dest_path.clone()),
-            quality: None,
-            episode_ids,
-        }),
-    ))
-    .await?;
+    let (terminal_status, _, _) = manual_import_terminal_status_and_error(&results);
+    if success_count > 0 && terminal_status == ImportStatus::Completed {
+        let episode_ids = results
+            .iter()
+            .filter(|result| result.success)
+            .map(|result| result.episode_id.clone())
+            .collect::<Vec<_>>();
+        app.append_domain_event(new_title_domain_event(
+            Some(actor.id.clone()),
+            &title,
+            DomainEventPayload::ImportCompleted(ImportCompletedEventData {
+                title: title_context_snapshot(&title),
+                media_updates: imported_updates
+                    .into_iter()
+                    .map(|update| created_media_update(update.path))
+                    .collect(),
+                imported_count: success_count as i32,
+                import_id: None,
+                source_system: completed.map(|download| download.client_type.clone()),
+                source_ref: completed.map(|download| download.download_client_item_id.clone()),
+                source_title: completed
+                    .map(|download| download.name.clone())
+                    .or_else(|| (files.len() == 1).then(|| files[0].file_path.clone())),
+                source_path: (files.len() == 1).then(|| files[0].file_path.clone()),
+                dest_path: results
+                    .iter()
+                    .find(|result| result.success)
+                    .and_then(|result| result.dest_path.clone()),
+                quality: None,
+                episode_ids,
+            }),
+        ))
+        .await?;
+    }
 
     Ok(results)
 }

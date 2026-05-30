@@ -2,7 +2,10 @@ use async_graphql::{Context, Object, Result as GqlResult};
 use scryer_domain::ExternalId;
 
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::types::{SubmitMediaRequestInput, SubmitMediaRequestPayload};
+use crate::types::{
+    ApproveMediaRequestInput, ApproveMediaRequestPayload, MediaRequestActionInput,
+    MediaRequestActionPayload, SubmitMediaRequestInput, SubmitMediaRequestPayload,
+};
 
 #[derive(Default)]
 pub(crate) struct MediaRequestMutations;
@@ -31,6 +34,7 @@ impl MediaRequestMutations {
                     runtime_minutes: input.runtime_minutes,
                     language: input.language,
                     content_status: input.content_status,
+                    requested_quality_profile_id: input.requested_quality_profile_id,
                     external_ids: input
                         .external_ids
                         .into_iter()
@@ -47,5 +51,41 @@ impl MediaRequestMutations {
         Ok(SubmitMediaRequestPayload {
             accepted: outcome.accepted,
         })
+    }
+
+    async fn approve_media_request(
+        &self,
+        ctx: &Context<'_>,
+        input: ApproveMediaRequestInput,
+    ) -> GqlResult<ApproveMediaRequestPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let outcome = app
+            .approve_media_request(&actor, &input.request_id, &input.quality_profile_id)
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(ApproveMediaRequestPayload {
+            accepted: outcome.accepted,
+            title_id: outcome.title_id,
+            wanted_search: outcome
+                .wanted_search
+                .map(super::wanted::wanted_search_payload),
+            search_error: outcome.search_error,
+        })
+    }
+
+    async fn dismiss_media_request(
+        &self,
+        ctx: &Context<'_>,
+        input: MediaRequestActionInput,
+    ) -> GqlResult<MediaRequestActionPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.dismiss_media_request(&actor, &input.request_id)
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(MediaRequestActionPayload { accepted: true })
     }
 }

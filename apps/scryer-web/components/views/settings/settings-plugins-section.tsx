@@ -155,7 +155,7 @@ function blockedReasonLabel(plugin: RegistryPluginRecord, t: Translate): string 
   }
 }
 
-function isRunningPluginProgress(
+export function isRunningPluginProgress(
   progress?: PluginInstallProgressRecord,
 ): progress is PluginInstallProgressRecord {
   return progress !== undefined
@@ -177,6 +177,31 @@ function pluginProgressLabel(progress: PluginInstallProgressRecord, t: Translate
     default:
       return progress.label;
   }
+}
+
+export function PluginInstallProgressBar({
+  progress,
+  id,
+  className = "space-y-1 overflow-hidden",
+}: {
+  progress: PluginInstallProgressRecord;
+  id?: string;
+  className?: string;
+}) {
+  const t = useTranslate();
+
+  return (
+    <div className={className}>
+      <div className="truncate text-right text-xs leading-tight text-primary">
+        {pluginProgressLabel(progress, t)}
+      </div>
+      <Progress
+        id={id}
+        value={(progress.stepIndex / Math.max(progress.stepCount, 1)) * 100}
+        className="h-1.5"
+      />
+    </div>
+  );
 }
 
 function normalizePluginLink(url?: string | null): string | null {
@@ -495,31 +520,18 @@ function PluginTable({
                         )}
                       </div>
                       {runningProgress && (
-                        <div className="w-full space-y-1 overflow-hidden">
-                          <div className="truncate text-right text-xs leading-tight text-primary">
-                            {pluginProgressLabel(runningProgress, t)}
-                          </div>
-                          <Progress
-                            id={selectorId("settings-plugin-progress", plugin.name)}
-                            value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
-                            className="h-1.5"
-                          />
-                        </div>
+                        <PluginInstallProgressBar
+                          progress={runningProgress}
+                          id={selectorId("settings-plugin-progress", plugin.name)}
+                          className="w-full space-y-1 overflow-hidden"
+                        />
                       )}
                     </div>
                   ) : (
                     <div className="ml-auto grid w-44 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
                       <div className="min-w-0">
                         {runningProgress ? (
-                          <div className="space-y-1 overflow-hidden">
-                            <div className="truncate text-right text-xs leading-tight text-primary">
-                              {pluginProgressLabel(runningProgress, t)}
-                            </div>
-                            <Progress
-                              value={(runningProgress.stepIndex / Math.max(runningProgress.stepCount, 1)) * 100}
-                              className="h-1.5"
-                            />
-                          </div>
+                          <PluginInstallProgressBar progress={runningProgress} />
                         ) : null}
                       </div>
                       <div className="flex justify-end">

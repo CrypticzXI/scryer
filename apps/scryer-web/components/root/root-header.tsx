@@ -763,6 +763,7 @@ export const RootHeader = React.memo(function RootHeader({
         result={requestDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
         facet={requestDialogTarget?.facet ?? "series"}
         requestableLibraries={requestableLibrariesByFacet[requestDialogTarget?.facet ?? "series"]}
+        qualityProfileOptions={catalogQualityProfileOptions}
         onRequest={handleRequestDialogSubmit}
       />
     </>

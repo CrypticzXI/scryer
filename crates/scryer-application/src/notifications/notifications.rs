@@ -60,6 +60,7 @@ impl AppUseCase {
         name: String,
         channel_type: String,
         config_json: String,
+        media_server_connection_id: Option<String>,
         is_enabled: bool,
     ) -> AppResult<NotificationChannelConfig> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
@@ -79,6 +80,9 @@ impl AppUseCase {
             name,
             channel_type,
             config_json,
+            media_server_connection_id: normalize_notification_media_server_connection_id(
+                media_server_connection_id,
+            ),
             is_enabled,
             created_at: now,
             updated_at: now,
@@ -94,6 +98,7 @@ impl AppUseCase {
         id: String,
         name: Option<String>,
         config_json: Option<String>,
+        media_server_connection_id: Option<Option<String>>,
         is_enabled: Option<bool>,
     ) -> AppResult<NotificationChannelConfig> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
@@ -110,6 +115,10 @@ impl AppUseCase {
         }
         if let Some(c) = config_json {
             channel.config_json = c;
+        }
+        if let Some(media_server_connection_id) = media_server_connection_id {
+            channel.media_server_connection_id =
+                normalize_notification_media_server_connection_id(media_server_connection_id);
         }
         if let Some(e) = is_enabled {
             channel.is_enabled = e;
@@ -152,6 +161,9 @@ impl AppUseCase {
                 AppError::Repository("notification plugin provider is not configured".into())
             })?;
 
+        let channel = self
+            .notification_channel_with_resolved_media_server_config(channel)
+            .await?;
         let client = provider.client_for_channel(&channel).ok_or_else(|| {
             AppError::NotFound(format!(
                 "no notification plugin for channel type '{}'",
@@ -332,6 +344,66 @@ impl AppUseCase {
             .is_some_and(|p| p.supports_test_for_provider(provider_type))
     }
 
+    pub(crate) async fn notification_channel_with_resolved_media_server_config(
+        &self,
+        mut channel: NotificationChannelConfig,
+    ) -> AppResult<NotificationChannelConfig> {
+        let Some(connection_id) = channel.media_server_connection_id.clone() else {
+            return Ok(channel);
+        };
+        if channel.channel_type.as_str() != "jellyfin" {
+            return Ok(channel);
+        }
+        let connection = self
+            .services
+            .integrations
+            .media_server_connections
+            .get_by_id(&connection_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("media server connection {connection_id}"))
+            })?;
+        if connection.provider != scryer_domain::MediaServerProvider::Jellyfin {
+            return Err(AppError::Validation(
+                "Jellyfin notification channels require a Jellyfin media server connection".into(),
+            ));
+        }
+        let api_key = connection.api_key.as_deref().ok_or_else(|| {
+            AppError::Validation(
+                "Jellyfin notification channels require a saved Jellyfin API key".into(),
+            )
+        })?;
+        let existing_config = serde_json::from_str::<serde_json::Value>(&channel.config_json)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        let mut config = serde_json::Map::new();
+        config.insert(
+            "base_url".to_string(),
+            serde_json::Value::String(connection.base_url),
+        );
+        config.insert(
+            "api_key".to_string(),
+            serde_json::Value::String(api_key.to_string()),
+        );
+        if !connection.path_mappings.is_empty() {
+            let rendered = connection
+                .path_mappings
+                .iter()
+                .map(|mapping| format!("{} => {}", mapping.source_path, mapping.destination_path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            config.insert(
+                "path_mappings".to_string(),
+                serde_json::Value::String(rendered),
+            );
+        } else if let Some(path_mappings) = existing_config.get("path_mappings").cloned() {
+            config.insert("path_mappings".to_string(), path_mappings);
+        }
+        channel.config_json = serde_json::Value::Object(config).to_string();
+        Ok(channel)
+    }
+
     pub fn notification_channels_repo(
         &self,
     ) -> AppResult<&std::sync::Arc<dyn crate::NotificationChannelRepository>> {
@@ -369,4 +441,10 @@ impl AppUseCase {
     ) -> AppResult<&std::sync::Arc<dyn crate::NotificationSubscriptionRepository>> {
         self.notification_subscriptions_repo()
     }
+}
+
+fn normalize_notification_media_server_connection_id(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

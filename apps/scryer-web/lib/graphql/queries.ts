@@ -363,8 +363,32 @@ const NOTIFICATION_CHANNEL_FIELDS = `
     id
     name
     channelType
+    mediaServerConnectionId
     configJson
     isEnabled
+    createdAt
+    updatedAt`;
+
+export const MEDIA_SERVER_CONNECTION_FIELDS = `
+    id
+    provider
+    displayName
+    baseUrl
+    enabled
+    loginEnabled
+    linkingEnabled
+    autoAddEnabled
+    defaultAppPermissions
+    defaultLibraryGrants {
+      libraryId
+      permissions
+    }
+    machineId
+    apiKeyPresent
+    pathMappings {
+      sourcePath
+      destinationPath
+    }
     createdAt
     updatedAt`;
 
@@ -788,12 +812,33 @@ export const librariesQuery = `query Libraries($facet: MediaFacetValue, $permiss
   }
 }`;
 
+export const mediaRequestAdminLibrariesQuery = `query MediaRequestAdminLibraries($facet: MediaFacetValue) {
+  libraries(facet: $facet, permission: manageTitles) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    qualityProfileId
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
+    roots {
+      id
+      path
+      isDefault
+    }
+  }
+}`;
+
 export const librarySettingsQuery = `query LibrarySettings($libraryId: String!) {
   librarySettings(libraryId: $libraryId) {
     requiredAudioLanguagesOverride
     requiredAudioLanguages
     qualityProfileIdOverride
     qualityProfileId
+    requestQualityProfileIdsOverride
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
     scoringPersonaOverride
     scoringPersona
     fillerPolicyOverride
@@ -1317,6 +1362,19 @@ export const downloadClientsQuery = `query DownloadClients {
   }
 }`;
 
+export const mediaServerConnectionsQuery = `query MediaServerConnections($provider: MediaServerProviderValue) {
+  mediaServerConnections(provider: $provider) {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
+}`;
+
+export const jellyfinServerUsersQuery = `query JellyfinServerUsers($connectionId: String!, $search: String) {
+  jellyfinServerUsers(connectionId: $connectionId, search: $search) {
+    id
+    username
+    displayName
+  }
+}`;
+
 export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: String, $activityFilter: DownloadActivityFilterValue) {
   downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
@@ -1490,6 +1548,15 @@ export const qualityProfilesInitQuery = `query QualityProfilesInit {
   }
 }`;
 
+export const qualityProfileOptionsQuery = `query QualityProfileOptions {
+  qualityProfileSettings {
+    profiles {
+      id
+      name
+    }
+  }
+}`;
+
 export const movieOverviewSettingsInitQuery = `query MovieOverviewSettingsInit {
   qualityProfileSettings {${qualityProfileSettingsFieldSelection}
   }
@@ -1580,6 +1647,8 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
     name
     slug
     isDefault
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
     roots {
       id
       path
@@ -1601,6 +1670,8 @@ export const requestableLibrariesQuery = `query RequestableLibraries {
     name
     slug
     isDefault
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
     roots {
       id
       path
@@ -1841,6 +1912,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     effectiveFormLoginEnabled
     skipLoginForLocalIps
     passkeyEnabled
+    totpRequireJellyfinLogin
   }
 }`;
 
@@ -1869,6 +1941,10 @@ export const importHistoryQuery = `query ImportHistory($limit: Int) {
 
 export const importHistoryChangedSubscription = `subscription ImportHistoryChanged {
   importHistoryChanged
+}`;
+
+export const mediaRequestsChangedSubscription = `subscription MediaRequestsChanged {
+  mediaRequestsChanged
 }`;
 
 export const indexersChangedSubscription = `subscription IndexersChanged {
@@ -2227,6 +2303,8 @@ export const notificationEventTypesQuery = `query NotificationEventTypes {
 export const notificationsInitQuery = `query NotificationsInit {
   notificationChannels {${NOTIFICATION_CHANNEL_FIELDS}
   }
+  mediaServerConnections {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
   notificationSubscriptions {${NOTIFICATION_SUBSCRIPTION_FIELDS}
   }
   notificationProviderTypes {${PROVIDER_TYPE_FIELDS}
@@ -2267,6 +2345,11 @@ export const pendingImportCountsQuery = `query PendingImportCounts {
 export const navigationBadgeCountsQuery = `query NavigationBadgeCounts {
   navigationBadgeCounts {
     pendingImportCounts {
+      movie
+      series
+      anime
+    }
+    pendingMediaRequestCounts {
       movie
       series
       anime
@@ -2544,6 +2627,13 @@ export const mediaRequestsQuery = `query MediaRequests($facet: MediaFacetValue, 
     runtimeMinutes
     language
     contentStatus
+    requestedQualityProfileId
+    requestedQualityProfileName
+    resolvedByUserId
+    resolvedAt
+    createdTitleId
+    approvedQualityProfileId
+    approvedQualityProfileName
     externalIds {
       source
       value

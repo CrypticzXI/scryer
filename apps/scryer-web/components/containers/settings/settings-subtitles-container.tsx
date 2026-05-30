@@ -6,13 +6,20 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { SettingsSubtitleProvidersSection } from "@/components/views/settings/settings-subtitle-providers-section";
 import { SettingsSubtitlesSection } from "@/components/views/settings/settings-subtitles-section";
+import type {
+  PluginInstallProgressRecord,
+  RegistryPluginRecord,
+} from "@/components/views/settings/settings-plugins-section";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  pluginInstallProgressSubscription,
+  pluginsQuery,
   subtitleProviderConfigsQuery,
   subtitleSettingsInitQuery,
   subtitleProviderTypesQuery,
 } from "@/lib/graphql/queries";
 import {
+  beginInstallPluginMutation,
   createSubtitleProviderConfigMutation,
   deleteSubtitleProviderConfigMutation,
   testSubtitleProviderConnectionMutation,
@@ -21,6 +28,7 @@ import {
 } from "@/lib/graphql/mutations";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { wsClient } from "@/lib/graphql/ws-client";
 import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import type {
   ConfigFieldDef,
@@ -44,6 +52,15 @@ const DEFAULTS: SubtitleSettings = {
   syncThresholdSeries: 90,
   syncThresholdMovie: 70,
   syncMaxOffsetSeconds: 60,
+};
+
+const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID = "enhanced-subtitle-sync";
+const ENHANCED_SUBTITLE_SYNC_PLUGIN_NAME = "Enhanced Subtitle Sync";
+
+type PluginInstallProgressSubscriptionResult = {
+  data?: {
+    pluginInstallProgress?: PluginInstallProgressRecord;
+  };
 };
 
 const DEFAULT_PROVIDER_DRAFT: SubtitleProviderDraft = {
@@ -181,6 +198,14 @@ export function SettingsSubtitlesContainer({
   const [settings, setSettings] = React.useState<SubtitleSettings>(DEFAULTS);
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
+  const [plugins, setPlugins] = React.useState<RegistryPluginRecord[]>([]);
+  const [pluginsLoading, setPluginsLoading] = React.useState(true);
+  const [syncPluginInstallError, setSyncPluginInstallError] = React.useState<string | null>(
+    null,
+  );
+  const [syncPluginProgress, setSyncPluginProgress] =
+    React.useState<PluginInstallProgressRecord | null>(null);
+  const [installingSyncPlugin, setInstallingSyncPlugin] = React.useState(false);
   const [providerTypes, setProviderTypes] = React.useState<SubtitleProviderTypeInfo[]>([]);
   const [providerConfigs, setProviderConfigs] = React.useState<SubtitleProviderConfigRecord[]>([]);
   const [providerDraft, setProviderDraft] = React.useState<SubtitleProviderDraft>(
@@ -206,6 +231,9 @@ export function SettingsSubtitlesContainer({
   const [subtitlesExpanded, setSubtitlesExpanded] = React.useState(true);
   const loadedRef = React.useRef(false);
   const providerCatalogVersionRef = React.useRef(providerCatalogVersion);
+  const syncPluginProgressSubscriptionRef = React.useRef<(() => void) | null>(
+    null,
+  );
 
   const resetProviderDraft = React.useCallback(() => {
     setEditingProviderId(null);
@@ -227,6 +255,24 @@ export function SettingsSubtitlesContainer({
 
   const isProviderDraftDirty =
     JSON.stringify(providerDraft) !== JSON.stringify(providerDraftBaseline);
+
+  const loadPlugins = React.useCallback(async () => {
+    const { data, error } = await client
+      .query(pluginsQuery, {}, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) {
+      throw error;
+    }
+    return (data?.plugins ?? []) as RegistryPluginRecord[];
+  }, [client]);
+
+  const stopSyncPluginProgressSubscription = React.useCallback(() => {
+    const unsubscribe = syncPluginProgressSubscriptionRef.current;
+    if (unsubscribe) {
+      unsubscribe();
+      syncPluginProgressSubscriptionRef.current = null;
+    }
+  }, []);
 
   const refreshProviderConfigs = React.useCallback(async () => {
     const { data, error } = await client
@@ -251,6 +297,44 @@ export function SettingsSubtitlesContainer({
       (data?.subtitleProviderTypes ?? []) as SubtitleProviderTypeInfo[],
     );
   }, [client]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setPluginsLoading(true);
+    loadPlugins()
+      .then((nextPlugins) => {
+        if (cancelled) {
+          return;
+        }
+        setPlugins(nextPlugins);
+        setSyncPluginInstallError(null);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        const message =
+          error instanceof Error ? error.message : t("settings.sub.syncPluginLoadFailed");
+        setPlugins([]);
+        setSyncPluginInstallError(message);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPluginsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadPlugins, t]);
+
+  React.useEffect(
+    () => () => {
+      stopSyncPluginProgressSubscription();
+    },
+    [stopSyncPluginProgressSubscription],
+  );
 
   React.useEffect(() => {
     if (editingProviderId || providerTypes.length === 0) {
@@ -342,6 +426,160 @@ export function SettingsSubtitlesContainer({
       setGlobalStatus(message);
     });
   }, [providerCatalogVersion, refreshProviderTypes, setGlobalStatus, t]);
+
+  const syncPlugin = React.useMemo(
+    () =>
+      plugins.find(
+        (plugin) =>
+          plugin.id === ENHANCED_SUBTITLE_SYNC_PLUGIN_ID ||
+          plugin.providerType === ENHANCED_SUBTITLE_SYNC_PLUGIN_ID,
+      ) ?? null,
+    [plugins],
+  );
+  const syncPluginName = syncPlugin?.name ?? ENHANCED_SUBTITLE_SYNC_PLUGIN_NAME;
+  const syncPluginActive = syncPlugin?.isInstalled === true && syncPlugin.isEnabled;
+  const syncPluginInstallBusy =
+    installingSyncPlugin || syncPlugin?.installInProgress === true;
+  const syncPluginBlockedReason =
+    syncPlugin?.isInstalled === true && !syncPlugin.isEnabled
+      ? t("settings.sub.syncPluginDisabled")
+      : syncPlugin?.blockedReason
+        ? t("settings.sub.syncPluginBlocked", { reason: syncPlugin.blockedReason })
+        : null;
+
+  const beginSyncPluginProgress = React.useCallback(
+    (
+      plugin: RegistryPluginRecord,
+      initialSnapshot: PluginInstallProgressRecord,
+    ) => {
+      stopSyncPluginProgressSubscription();
+      setSyncPluginProgress(initialSnapshot);
+      const unsubscribe = wsClient.subscribe(
+        {
+          query: pluginInstallProgressSubscription,
+          variables: { pluginId: plugin.id },
+        },
+        {
+          next: (result: PluginInstallProgressSubscriptionResult) => {
+            const snapshot = result.data?.pluginInstallProgress;
+            if (!snapshot) {
+              return;
+            }
+            setSyncPluginProgress(snapshot);
+
+            if (snapshot.state === "succeeded" || snapshot.state === "failed") {
+              stopSyncPluginProgressSubscription();
+              void (async () => {
+                try {
+                  if (snapshot.state === "succeeded") {
+                    setSyncPluginInstallError(null);
+                    const nextPlugins = await loadPlugins();
+                    setPlugins(nextPlugins);
+                    await refreshProviderTypes();
+                    setGlobalStatus(
+                      t("settings.sub.syncPluginInstalled", {
+                        plugin: plugin.name,
+                      }),
+                    );
+                  } else {
+                    const detail = snapshot.error ?? snapshot.label;
+                    const message = t("settings.sub.syncPluginInstallFailed", {
+                      plugin: plugin.name,
+                      error: detail,
+                    });
+                    setSyncPluginInstallError(message);
+                    setGlobalStatus(message);
+                  }
+                } catch (error: unknown) {
+                  const detail = error instanceof Error ? error.message : String(error);
+                  const message = t("settings.sub.syncPluginInstallFailed", {
+                    plugin: plugin.name,
+                    error: detail,
+                  });
+                  setSyncPluginInstallError(message);
+                  setGlobalStatus(message);
+                } finally {
+                  setInstallingSyncPlugin(false);
+                  setSyncPluginProgress(null);
+                }
+              })();
+            }
+          },
+          error: (error) => {
+            stopSyncPluginProgressSubscription();
+            setInstallingSyncPlugin(false);
+            setSyncPluginProgress(null);
+            const detail = error instanceof Error ? error.message : String(error);
+            const message = t("settings.sub.syncPluginInstallFailed", {
+              plugin: plugin.name,
+              error: detail,
+            });
+            setSyncPluginInstallError(message);
+            setGlobalStatus(message);
+          },
+          complete: () => {
+            syncPluginProgressSubscriptionRef.current = null;
+          },
+        },
+      );
+      syncPluginProgressSubscriptionRef.current = unsubscribe;
+    },
+    [
+      loadPlugins,
+      refreshProviderTypes,
+      setGlobalStatus,
+      stopSyncPluginProgressSubscription,
+      t,
+    ],
+  );
+
+  const installSyncPlugin = React.useCallback(async () => {
+    if (
+      !syncPlugin ||
+      syncPlugin.blockedReason ||
+      syncPlugin.isInstalled ||
+      syncPlugin.installInProgress
+    ) {
+      return;
+    }
+
+    setInstallingSyncPlugin(true);
+    setSyncPluginInstallError(null);
+    setSyncPluginProgress(null);
+    try {
+      const { data, error } = await client
+        .mutation(beginInstallPluginMutation, {
+          input: { pluginId: syncPlugin.id },
+        })
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      const snapshot = data?.beginInstallPlugin as
+        | PluginInstallProgressRecord
+        | undefined;
+      if (!snapshot) {
+        throw new Error("plugin install did not return progress");
+      }
+      beginSyncPluginProgress(syncPlugin, snapshot);
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const message = t("settings.sub.syncPluginInstallFailed", {
+        plugin: syncPluginName,
+        error: detail,
+      });
+      setSyncPluginInstallError(message);
+      setGlobalStatus(message);
+      setInstallingSyncPlugin(false);
+    }
+  }, [
+    beginSyncPluginProgress,
+    client,
+    setGlobalStatus,
+    syncPlugin,
+    syncPluginName,
+    t,
+  ]);
 
   React.useEffect(() => {
     if (!loadedRef.current) {
@@ -781,6 +1019,15 @@ export function SettingsSubtitlesContainer({
                 settings={settings}
                 setSettings={setSettings}
                 loading={loading}
+                syncPluginActive={syncPluginActive}
+                syncPluginAvailable={syncPlugin !== null}
+                syncPluginBlockedReason={syncPluginBlockedReason}
+                syncPluginError={syncPluginInstallError}
+                syncPluginInstalling={syncPluginInstallBusy}
+                syncPluginLoading={pluginsLoading}
+                syncPluginName={syncPluginName}
+                syncPluginProgress={syncPluginProgress}
+                onInstallSyncPlugin={installSyncPlugin}
               />
               {!loading ? (
                 <SettingsSubtitleProvidersSection

@@ -2,8 +2,8 @@ CREATE TABLE totp_credentials (
     id text PRIMARY KEY,
     user_id text NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
     secret_base32 text NOT NULL,
-    algorithm text NOT NULL CHECK (algorithm IN ('SHA256')),
-    digits integer NOT NULL CHECK (digits BETWEEN 6 AND 10),
+    algorithm text NOT NULL CHECK (algorithm IN ('SHA1', 'SHA256', 'SHA512')),
+    digits integer NOT NULL CHECK (digits IN (6, 8)),
     period_seconds integer NOT NULL CHECK (period_seconds > 0),
     last_accepted_step bigint,
     created_at timestamp with time zone NOT NULL,
@@ -15,6 +15,9 @@ CREATE TABLE totp_enrollment_challenges (
     id text PRIMARY KEY,
     user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     secret_base32 text NOT NULL,
+    algorithm text NOT NULL CHECK (algorithm IN ('SHA1', 'SHA256', 'SHA512')),
+    digits integer NOT NULL CHECK (digits IN (6, 8)),
+    period_seconds integer NOT NULL CHECK (period_seconds > 0),
     created_at timestamp with time zone NOT NULL,
     expires_at timestamp with time zone NOT NULL
 );

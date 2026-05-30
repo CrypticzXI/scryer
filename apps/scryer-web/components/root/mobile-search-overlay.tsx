@@ -453,6 +453,7 @@ export function MobileSearchOverlay({
         result={requestDialogTarget?.result ?? EMPTY_SEARCH_RESULT}
         facet={requestDialogTarget?.facet ?? "series"}
         requestableLibraries={requestableLibrariesByFacet[requestDialogTarget?.facet ?? "series"]}
+        qualityProfileOptions={catalogQualityProfileOptions}
         onRequest={handleRequestDialogSubmit}
       />
     </div>

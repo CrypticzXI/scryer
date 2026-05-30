@@ -242,8 +242,20 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<QualityProfileSettings> {
-        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+        let can_manage_catalog = self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        let can_manage_titles = self
+            .has_any_library_permission(actor, scryer_domain::LibraryPermission::ManageTitles)
+            .await?;
+        let can_request = self
+            .has_any_library_permission(actor, scryer_domain::LibraryPermission::Request)
+            .await?;
+        if !can_manage_catalog && !can_manage_titles && !can_request {
+            return Err(AppError::Unauthorized(
+                "You do not have permission to view quality profiles".to_string(),
+            ));
+        }
         self.load_quality_profile_settings().await
     }
 }

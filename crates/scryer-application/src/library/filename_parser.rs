@@ -28,7 +28,6 @@ pub(crate) enum LibraryFilenameFallbackPolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryFilenameParseStrategy {
     SimplePath,
-    CanonicalEpisode,
     ExistingRecord,
     ReleaseParserFallback,
     Unparseable,
@@ -76,7 +75,6 @@ pub(crate) struct LibraryFilenameParseInput<'a> {
     pub(crate) path: &'a Path,
     pub(crate) display_name: Option<&'a str>,
     pub(crate) library_root: Option<&'a Path>,
-    pub(crate) title_root: Option<&'a Path>,
     pub(crate) title: Option<&'a Title>,
     pub(crate) facet: Option<&'a MediaFacet>,
     pub(crate) collections: &'a [Collection],
@@ -92,7 +90,6 @@ impl<'a> LibraryFilenameParseInput<'a> {
             path,
             display_name: None,
             library_root,
-            title_root: None,
             title: None,
             facet: None,
             collections: &[],
@@ -214,131 +211,38 @@ pub(crate) fn parse_library_filename(
         };
     }
 
-    if let Some(interstitial) = resolve_interstitial_movie_from_name(input, &raw_name) {
-        let episode_identity = interstitial
-            .linked_episode
-            .as_ref()
-            .map(parsed_episode_metadata_from_episode);
-        parsed_release = synthesize_release_metadata_with_optional_provenance(
-            &raw_name,
-            input,
-            episode_identity.clone(),
-            &mut release_fallback_used,
-        );
-        return LibraryFilenameParse {
-            query_evidence: query_build.evidence,
-            parsed_release,
-            episode_identity,
-            target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
-            strategy: LibraryFilenameParseStrategy::CanonicalEpisode,
-            release_fallback_used,
-        };
-    }
-
-    if let Some(episode_identity) = canonical_episode_identity(input, &raw_name) {
+    let mut fallback = parse_release_fallback(input, &raw_name);
+    release_fallback_used = true;
+    let fallback_episode = fallback.episode.clone();
+    if let Some(episode_identity) = fallback_episode.clone() {
         if let Some(interstitial) =
             resolve_interstitial_movie_from_episode_identity(input, &episode_identity)
         {
-            parsed_release = synthesize_release_metadata_with_optional_provenance(
-                &raw_name,
-                input,
-                Some(episode_identity.clone()),
-                &mut release_fallback_used,
-            );
-            return LibraryFilenameParse {
-                query_evidence: query_build.evidence,
-                parsed_release,
-                episode_identity: Some(episode_identity),
-                target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
-                strategy: LibraryFilenameParseStrategy::CanonicalEpisode,
-                release_fallback_used,
-            };
-        }
-
-        let target_episode_identity = episode_identity.clone();
-        let episodes =
-            resolve_episodes_from_identity(&episode_identity, input.collections, input.episodes);
-        if !episodes.is_empty() {
-            parsed_release = synthesize_release_metadata_with_optional_provenance(
-                &raw_name,
-                input,
-                Some(target_episode_identity.clone()),
-                &mut release_fallback_used,
-            );
-            return LibraryFilenameParse {
-                query_evidence: query_build.evidence,
-                parsed_release,
-                episode_identity: Some(target_episode_identity.clone()),
-                target: LibraryFilenameTarget::Episodes {
-                    episode_identity: target_episode_identity,
-                    episodes,
-                },
-                strategy: LibraryFilenameParseStrategy::CanonicalEpisode,
-                release_fallback_used,
-            };
-        }
-
-        if input.fallback_policy == LibraryFilenameFallbackPolicy::Never {
-            parsed_release =
-                synthesize_release_metadata(&raw_name, input, Some(episode_identity.clone()));
-            return LibraryFilenameParse {
-                query_evidence: query_build.evidence,
-                parsed_release,
-                episode_identity: Some(episode_identity),
-                target: LibraryFilenameTarget::Unmatched {
-                    reason: "episode_lookup_failed",
-                },
-                strategy: LibraryFilenameParseStrategy::Unparseable,
-                release_fallback_used: false,
-            };
-        }
-    }
-
-    if input.fallback_policy != LibraryFilenameFallbackPolicy::Never {
-        let fallback = parse_release_fallback(input, &raw_name);
-        release_fallback_used = true;
-        let fallback_episode = fallback.episode.clone();
-        if let Some(episode_identity) = fallback_episode.clone() {
-            if let Some(interstitial) =
-                resolve_interstitial_movie_from_episode_identity(input, &episode_identity)
-            {
-                return LibraryFilenameParse {
-                    query_evidence: query_build.evidence,
-                    parsed_release: fallback,
-                    episode_identity: Some(episode_identity),
-                    target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
-                    strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
-                    release_fallback_used,
-                };
-            }
-
-            let season_str = episode_identity.season.unwrap_or(1).to_string();
-            let episodes = resolve_episodes_from_identity_with_season(
-                &episode_identity,
-                &season_str,
-                input.collections,
-                input.episodes,
-            );
-            if !episodes.is_empty() {
-                return LibraryFilenameParse {
-                    query_evidence: query_build.evidence,
-                    parsed_release: fallback,
-                    episode_identity: Some(episode_identity.clone()),
-                    target: LibraryFilenameTarget::Episodes {
-                        episode_identity,
-                        episodes,
-                    },
-                    strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
-                    release_fallback_used,
-                };
-            }
-
             return LibraryFilenameParse {
                 query_evidence: query_build.evidence,
                 parsed_release: fallback,
                 episode_identity: Some(episode_identity),
-                target: LibraryFilenameTarget::Unmatched {
-                    reason: "episode_lookup_failed",
+                target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
+                strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
+                release_fallback_used,
+            };
+        }
+
+        let season_str = episode_identity.season.unwrap_or(1).to_string();
+        let episodes = resolve_episodes_from_identity_with_season(
+            &episode_identity,
+            &season_str,
+            input.collections,
+            input.episodes,
+        );
+        if !episodes.is_empty() {
+            return LibraryFilenameParse {
+                query_evidence: query_build.evidence,
+                parsed_release: fallback,
+                episode_identity: Some(episode_identity.clone()),
+                target: LibraryFilenameTarget::Episodes {
+                    episode_identity,
+                    episodes,
                 },
                 strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
                 release_fallback_used,
@@ -348,10 +252,28 @@ pub(crate) fn parse_library_filename(
         return LibraryFilenameParse {
             query_evidence: query_build.evidence,
             parsed_release: fallback,
-            episode_identity: None,
+            episode_identity: Some(episode_identity),
             target: LibraryFilenameTarget::Unmatched {
-                reason: "episode_identity_missing",
+                reason: "episode_lookup_failed",
             },
+            strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
+            release_fallback_used,
+        };
+    }
+
+    if let Some(interstitial) = resolve_interstitial_movie_from_name(input, &raw_name) {
+        let episode_identity = interstitial
+            .linked_episode
+            .as_ref()
+            .map(parsed_episode_metadata_from_episode);
+        if fallback.episode.is_none() {
+            fallback.episode = episode_identity.clone();
+        }
+        return LibraryFilenameParse {
+            query_evidence: query_build.evidence,
+            parsed_release: fallback,
+            episode_identity,
+            target: LibraryFilenameTarget::InterstitialMovie(Box::new(interstitial)),
             strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
             release_fallback_used,
         };
@@ -359,12 +281,12 @@ pub(crate) fn parse_library_filename(
 
     LibraryFilenameParse {
         query_evidence: query_build.evidence,
-        parsed_release,
+        parsed_release: fallback,
         episode_identity: None,
         target: LibraryFilenameTarget::Unmatched {
             reason: "episode_identity_missing",
         },
-        strategy: LibraryFilenameParseStrategy::Unparseable,
+        strategy: LibraryFilenameParseStrategy::ReleaseParserFallback,
         release_fallback_used,
     }
 }
@@ -429,9 +351,7 @@ fn build_library_query_evidence(
         .unwrap_or_default();
     let file_walk = library_title_walk(stem.as_str());
     let parsed = allow_release_fallback
-        .then(|| should_use_release_parser_for_title_evidence(stem.as_str(), file_walk.as_ref()))
-        .filter(|should_parse| *should_parse)
-        .map(|_| normalize_release_title_signal(crate::parse_release_metadata(stem.as_str())));
+        .then(|| normalize_release_title_signal(crate::parse_release_metadata(stem.as_str())));
     let parsed_has_usable_title_signal =
         parsed.as_ref().is_some_and(has_usable_release_title_signal);
     let parsed_queries = parsed
@@ -578,205 +498,6 @@ fn filename_parse_raw_name(path: &Path, display_name: Option<&str>) -> String {
         .to_string()
 }
 
-fn should_use_release_parser_for_title_evidence(
-    raw: &str,
-    walk: Option<&LibraryTitleWalk>,
-) -> bool {
-    if release_like_token_regex().is_match(raw) {
-        return true;
-    }
-    if walk.is_none()
-        && raw.contains('.')
-        && raw
-            .split(['.', '_', '-', ' '])
-            .any(|token| token.len() == 4 && token.chars().all(|ch| ch.is_ascii_digit()))
-    {
-        return true;
-    }
-    false
-}
-
-fn release_like_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ix)
-            (?:^|[\s._\-\[\(])
-            (?:
-                2160p|1080p|720p|480p|remux|web[\s._-]?dl|webrip|bluray|bdrip|brrip|hdtv|
-                x264|x265|h264|h265|hevc|avc|eac3|ac3|aac|dts|atmos|hdr|dv|
-                amzn|nf|dsnp|hulu|max|cr|proper|repack
-            )
-            (?:$|[\s._\-\]\)])
-            ",
-        )
-        .expect("valid release-like token regex")
-    })
-}
-
-fn canonical_episode_identity(
-    input: &LibraryFilenameParseInput<'_>,
-    raw_name: &str,
-) -> Option<crate::ParsedEpisodeMetadata> {
-    let season_folder = input
-        .title_root
-        .and_then(|title_root| season_folder_for_path(title_root, input.path));
-
-    parse_standard_episode_identity(raw_name)
-        .or_else(|| parse_x_episode_identity(raw_name))
-        .or_else(|| parse_daily_episode_identity(raw_name))
-        .or_else(|| {
-            season_folder.and_then(|season| parse_season_folder_episode_identity(raw_name, season))
-        })
-        .or_else(|| {
-            (input.facet == Some(&MediaFacet::Anime))
-                .then(|| parse_anime_absolute_episode_identity(raw_name))
-                .flatten()
-        })
-}
-
-fn parse_standard_episode_identity(raw: &str) -> Option<crate::ParsedEpisodeMetadata> {
-    if let Some(captures) = compact_standard_episode_regex().captures(raw)
-        && let Some(episode_numbers) = split_compact_episode_run(captures.name("run")?.as_str())
-    {
-        let season = captures.name("season")?.as_str().parse::<u32>().ok()?;
-        return Some(build_numbered_episode_metadata(
-            raw,
-            season,
-            episode_numbers,
-        ));
-    }
-
-    let captures = standard_episode_regex().captures(raw)?;
-    let season = captures.name("season")?.as_str().parse::<u32>().ok()?;
-    let first = captures.name("first")?.as_str().parse::<u32>().ok()?;
-    let mut episode_numbers = vec![first];
-    if let Some(rest) = captures.name("rest").map(|rest| rest.as_str()) {
-        let rest_numbers = numeric_token_regex()
-            .find_iter(rest)
-            .filter_map(|match_| match_.as_str().parse::<u32>().ok())
-            .collect::<Vec<_>>();
-        if rest_numbers.len() == 1
-            && rest.contains('-')
-            && rest_numbers[0] > first
-            && rest_numbers[0].saturating_sub(first) <= 50
-        {
-            episode_numbers = (first..=rest_numbers[0]).collect();
-        } else {
-            for number in rest_numbers {
-                if !episode_numbers.contains(&number) {
-                    episode_numbers.push(number);
-                }
-            }
-        }
-    }
-
-    Some(build_numbered_episode_metadata(
-        raw,
-        season,
-        episode_numbers,
-    ))
-}
-
-fn parse_x_episode_identity(raw: &str) -> Option<crate::ParsedEpisodeMetadata> {
-    if let Some(captures) = compact_x_episode_regex().captures(raw)
-        && let Some(episode_numbers) = split_compact_episode_run(captures.name("run")?.as_str())
-    {
-        let season = captures.name("season")?.as_str().parse::<u32>().ok()?;
-        return Some(build_numbered_episode_metadata(
-            raw,
-            season,
-            episode_numbers,
-        ));
-    }
-
-    let captures = x_episode_regex().captures(raw)?;
-    let season = captures.name("season")?.as_str().parse::<u32>().ok()?;
-    let first = captures.name("first")?.as_str().parse::<u32>().ok()?;
-    let mut episode_numbers = vec![first];
-    if let Some(rest) = captures.name("rest").map(|rest| rest.as_str()) {
-        let rest_numbers = numeric_token_regex()
-            .find_iter(rest)
-            .filter_map(|match_| match_.as_str().parse::<u32>().ok())
-            .collect::<Vec<_>>();
-        if rest_numbers.len() == 1
-            && rest.contains('-')
-            && rest_numbers[0] > first
-            && rest_numbers[0].saturating_sub(first) <= 50
-        {
-            episode_numbers = (first..=rest_numbers[0]).collect();
-        } else {
-            for number in rest_numbers {
-                if !episode_numbers.contains(&number) {
-                    episode_numbers.push(number);
-                }
-            }
-        }
-    }
-
-    Some(build_numbered_episode_metadata(
-        raw,
-        season,
-        episode_numbers,
-    ))
-}
-
-fn build_numbered_episode_metadata(
-    raw: &str,
-    season: u32,
-    episode_numbers: Vec<u32>,
-) -> crate::ParsedEpisodeMetadata {
-    crate::ParsedEpisodeMetadata {
-        season: Some(season),
-        release_type: if episode_numbers.len() > 1 {
-            crate::ParsedEpisodeReleaseType::MultiEpisode
-        } else {
-            crate::ParsedEpisodeReleaseType::SingleEpisode
-        },
-        episode_numbers,
-        raw: Some(raw.to_string()),
-        ..Default::default()
-    }
-}
-
-fn split_compact_episode_run(run: &str) -> Option<Vec<u32>> {
-    let digits = run.trim();
-    if digits.len() < 4
-        || !digits.len().is_multiple_of(2)
-        || !digits.chars().all(|ch| ch.is_ascii_digit())
-    {
-        return None;
-    }
-
-    let mut episode_numbers = Vec::new();
-    for chunk in digits.as_bytes().chunks(2) {
-        let number = std::str::from_utf8(chunk).ok()?.parse::<u32>().ok()?;
-        if number == 0 {
-            return None;
-        }
-        if !episode_numbers.contains(&number) {
-            episode_numbers.push(number);
-        }
-    }
-
-    (episode_numbers.len() > 1).then_some(episode_numbers)
-}
-
-fn compact_standard_episode_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ix)
-            (?:^|[^A-Z0-9])
-            S(?P<season>[0-9]{1,2})
-            \s*E(?P<run>[0-9]{4,8})
-            (?:[^0-9]|$)
-            ",
-        )
-        .expect("valid compact standard episode regex")
-    })
-}
-
 fn standard_episode_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -791,196 +512,6 @@ fn standard_episode_regex() -> &'static Regex {
         )
         .expect("valid standard episode regex")
     })
-}
-
-fn compact_x_episode_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ix)
-            (?:^|[^A-Z0-9])
-            (?P<season>[0-9]{1,2})
-            \s*x\s*(?P<run>[0-9]{4,8})
-            (?:[^0-9]|$)
-            ",
-        )
-        .expect("valid compact x episode regex")
-    })
-}
-
-fn x_episode_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ix)
-            (?:^|[^A-Z0-9])
-            (?P<season>[0-9]{1,2})
-            \s*x\s*(?P<first>[0-9]{1,3})
-            (?P<rest>(?:\s*(?:-|~|–|—|x)\s*[0-9]{1,3})*)
-            (?:[^0-9]|$)
-            ",
-        )
-        .expect("valid x episode regex")
-    })
-}
-
-fn numeric_token_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"[0-9]{1,4}").expect("valid numeric token regex"))
-}
-
-fn parse_daily_episode_identity(raw: &str) -> Option<crate::ParsedEpisodeMetadata> {
-    let captures = daily_episode_regex().captures(raw)?;
-    let year = captures.name("year")?.as_str().parse::<i32>().ok()?;
-    let month = captures.name("month")?.as_str().parse::<u32>().ok()?;
-    let day = captures.name("day")?.as_str().parse::<u32>().ok()?;
-    let air_date = NaiveDate::from_ymd_opt(year, month, day)?;
-    Some(crate::ParsedEpisodeMetadata {
-        air_date: Some(air_date),
-        release_type: crate::ParsedEpisodeReleaseType::Daily,
-        raw: Some(raw.to_string()),
-        ..Default::default()
-    })
-}
-
-fn daily_episode_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?x)
-            (?P<year>19[0-9]{2}|20[0-9]{2})
-            [._\-\s]
-            (?P<month>[0-9]{1,2})
-            [._\-\s]
-            (?P<day>[0-9]{1,2})
-            ",
-        )
-        .expect("valid daily episode regex")
-    })
-}
-
-fn parse_season_folder_episode_identity(
-    raw: &str,
-    season: u32,
-) -> Option<crate::ParsedEpisodeMetadata> {
-    let episode = season_folder_episode_regex()
-        .captures(raw)
-        .and_then(|captures| captures.name("episode"))
-        .and_then(|episode| episode.as_str().parse::<u32>().ok())
-        .or_else(|| {
-            leading_episode_number_regex()
-                .captures(raw)
-                .and_then(|captures| captures.name("episode"))
-                .and_then(|episode| episode.as_str().parse::<u32>().ok())
-        })?;
-
-    Some(crate::ParsedEpisodeMetadata {
-        season: Some(season),
-        episode_numbers: vec![episode],
-        release_type: crate::ParsedEpisodeReleaseType::SingleEpisode,
-        raw: Some(raw.to_string()),
-        ..Default::default()
-    })
-}
-
-fn season_folder_episode_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?ix)(?:^|[^A-Z0-9])E(?P<episode>[0-9]{1,3})(?:[^0-9]|$)")
-            .expect("valid season folder episode regex")
-    })
-}
-
-fn leading_episode_number_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?ix)^\s*(?:ep(?:isode)?\s*)?(?P<episode>[0-9]{1,3})(?:[^0-9]|$)")
-            .expect("valid leading episode number regex")
-    })
-}
-
-fn parse_anime_absolute_episode_identity(raw: &str) -> Option<crate::ParsedEpisodeMetadata> {
-    let captures = anime_absolute_episode_regex().captures(raw)?;
-    let absolute_episode = captures.name("episode")?.as_str().parse::<u32>().ok()?;
-    if (1900..=2099).contains(&absolute_episode) {
-        return None;
-    }
-    Some(crate::ParsedEpisodeMetadata {
-        absolute_episode: Some(absolute_episode),
-        absolute_episode_numbers: vec![absolute_episode],
-        release_type: crate::ParsedEpisodeReleaseType::SingleEpisode,
-        raw: Some(raw.to_string()),
-        ..Default::default()
-    })
-}
-
-fn anime_absolute_episode_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?ix)(?:^|[\[\s._-])(?P<episode>[0-9]{1,4})(?:[\]\s._-]|$)")
-            .expect("valid anime absolute episode regex")
-    })
-}
-
-fn season_folder_for_path(title_root: &Path, path: &Path) -> Option<u32> {
-    let relative = path.strip_prefix(title_root).ok()?;
-    let parent = relative.parent()?;
-    let first_component = parent
-        .components()
-        .find_map(|component| component.as_os_str().to_str())
-        .filter(|component| !component.is_empty())?;
-    recognize_season_folder_name(first_component)
-}
-
-fn recognize_season_folder_name(name: &str) -> Option<u32> {
-    let normalized = normalize_layout_component(name);
-    if normalized.is_empty() {
-        return None;
-    }
-
-    let compact = normalized.replace(' ', "");
-    if matches!(compact.as_str(), "specials" | "specialepisodes") {
-        return Some(0);
-    }
-
-    for prefix in ["season", "series", "s"] {
-        let Some(rest) = compact.strip_prefix(prefix) else {
-            continue;
-        };
-        if rest.is_empty() || !rest.chars().all(|ch| ch.is_ascii_digit()) {
-            continue;
-        }
-        return rest.parse::<u32>().ok();
-    }
-
-    None
-}
-
-fn normalize_layout_component(name: &str) -> String {
-    let mut normalized = String::with_capacity(name.len());
-    let mut prev_sep = false;
-    for ch in name.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_whitespace() || matches!(lower, '.' | '_' | '-') {
-            if !prev_sep {
-                normalized.push(' ');
-                prev_sep = true;
-            }
-        } else {
-            normalized.push(lower);
-            prev_sep = false;
-        }
-    }
-    normalized.trim().to_string()
-}
-
-fn resolve_episodes_from_identity(
-    ep_meta: &crate::ParsedEpisodeMetadata,
-    collections: &[Collection],
-    episodes: &[Episode],
-) -> Vec<Episode> {
-    let season_str = ep_meta.season.unwrap_or(1).to_string();
-    resolve_episodes_from_identity_with_season(ep_meta, &season_str, collections, episodes)
 }
 
 fn resolve_episodes_from_identity_with_season(
@@ -1173,9 +704,13 @@ fn resolve_interstitial_movie_from_name(
             let movie_matches = interstitial_movie_match_keys(movie)
                 .into_iter()
                 .any(|key| !key.is_empty() && raw_key.contains(&key));
-            movie_matches.then(|| build_interstitial_target(collection, input.episodes))
+            if !movie_matches {
+                return None;
+            }
+
+            build_interstitial_target(collection, input.episodes)
+                .filter(|target| target.linked_episode.is_some())
         })
-        .flatten()
         .next()
 }
 
@@ -1502,28 +1037,6 @@ fn synthesize_release_metadata(
     parsed
 }
 
-fn synthesize_release_metadata_with_optional_provenance(
-    raw_name: &str,
-    input: &LibraryFilenameParseInput<'_>,
-    episode_identity: Option<crate::ParsedEpisodeMetadata>,
-    release_fallback_used: &mut bool,
-) -> crate::ParsedReleaseMetadata {
-    let mut parsed = synthesize_release_metadata(raw_name, input, episode_identity);
-    if should_parse_release_provenance(input, raw_name) {
-        let fallback = parse_release_fallback(input, raw_name);
-        fill_missing_release_metadata(&mut parsed, &fallback, input.facet);
-        *release_fallback_used = true;
-    }
-    parsed
-}
-
-fn should_parse_release_provenance(input: &LibraryFilenameParseInput<'_>, raw_name: &str) -> bool {
-    input.fallback_policy == LibraryFilenameFallbackPolicy::NeedReleaseMetadata
-        && raw_name
-            .split(|ch: char| ch.is_whitespace() || matches!(ch, '[' | ']' | '(' | ')' | '{' | '}'))
-            .any(crate::release_parser::looks_like_release_provenance_token)
-}
-
 fn parsed_episode_metadata_from_episode(episode: &Episode) -> crate::ParsedEpisodeMetadata {
     crate::ParsedEpisodeMetadata {
         season: episode
@@ -1803,6 +1316,53 @@ mod tests {
         }
     }
 
+    fn interstitial_movie(name: &str) -> InterstitialMovieMetadata {
+        InterstitialMovieMetadata {
+            tvdb_id: "movie-1".into(),
+            name: name.into(),
+            slug: name.to_ascii_lowercase().replace(' ', "-"),
+            year: Some(2024),
+            content_status: "released".into(),
+            overview: String::new(),
+            poster_url: String::new(),
+            language: "eng".into(),
+            runtime_minutes: 90,
+            sort_title: name.into(),
+            imdb_id: String::new(),
+            genres: vec![],
+            studio: String::new(),
+            digital_release_date: None,
+            association_confidence: None,
+            continuity_status: None,
+            movie_form: None,
+            confidence: None,
+            signal_summary: None,
+            placement: None,
+            movie_tmdb_id: None,
+            movie_mal_id: None,
+            movie_anidb_id: None,
+        }
+    }
+
+    fn interstitial_collection(name: &str, season_episode: Option<&str>) -> Collection {
+        Collection {
+            id: format!("collection-{}", name.to_ascii_lowercase().replace(' ', "-")),
+            title_id: "title-1".into(),
+            collection_type: CollectionType::Interstitial,
+            collection_index: "special".into(),
+            label: Some(name.into()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: None,
+            last_episode_number: None,
+            interstitial_movie: Some(interstitial_movie(name)),
+            specials_movies: vec![],
+            interstitial_season_episode: season_episode.map(str::to_string),
+            monitored: true,
+            created_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn title_walk_extracts_simple_title_year_and_ids() {
         let walk = library_title_walk("Some Show (2024) [tvdbid=12345]").expect("title walk");
@@ -1831,14 +1391,31 @@ mod tests {
     }
 
     #[test]
-    fn canonical_season_episode_resolves_without_fallback() {
+    fn title_only_plain_dotted_episode_uses_release_parser_evidence() {
+        let parse = parse_library_filename(&LibraryFilenameParseInput::title_only(
+            Path::new("/library/Example.Show.S01E01.mkv"),
+            Some(Path::new("/library")),
+        ));
+
+        assert_eq!(
+            parse.strategy,
+            LibraryFilenameParseStrategy::ReleaseParserFallback
+        );
+        assert!(parse.release_fallback_used);
+        assert_eq!(
+            parse.query_evidence.queries.first().map(String::as_str),
+            Some("EXAMPLE SHOW")
+        );
+    }
+
+    #[test]
+    fn title_scan_release_parser_resolves_standard_episode() {
         let title = title("Example Show", MediaFacet::Series);
         let episodes = vec![episode("ep-2-3", "2", "3")];
         let input = LibraryFilenameParseInput {
             path: Path::new("/library/Example Show/Season 02/Example Show - S02E03.mkv"),
             display_name: None,
             library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/Example Show")),
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
@@ -1852,9 +1429,16 @@ mod tests {
 
         assert_eq!(
             parse.strategy,
-            LibraryFilenameParseStrategy::CanonicalEpisode
+            LibraryFilenameParseStrategy::ReleaseParserFallback
         );
-        assert!(!parse.release_fallback_used);
+        assert!(parse.release_fallback_used);
+        assert_eq!(
+            parse
+                .episode_identity
+                .as_ref()
+                .and_then(|episode| episode.season),
+            Some(2)
+        );
         assert_eq!(
             parse
                 .target_episodes()
@@ -1866,7 +1450,123 @@ mod tests {
     }
 
     #[test]
-    fn canonical_new_episode_needing_metadata_stays_on_cheap_path() {
+    fn title_scan_release_parser_preempts_name_only_interstitial_fallback() {
+        let title = title("Example Animated Saga", MediaFacet::Anime);
+        let episodes = vec![episode("ep-1-1", "1", "1"), episode("ep-0-1", "0", "1")];
+        let collections = vec![interstitial_collection(
+            "Synthetic Bridge Feature",
+            Some("S00E01"),
+        )];
+        let input = LibraryFilenameParseInput {
+            path: Path::new(
+                "/library/Example Animated Saga/Season 01/Example Animated Saga Synthetic Bridge Feature - S01E01.mkv",
+            ),
+            display_name: None,
+            library_root: Some(Path::new("/library")),
+            title: Some(&title),
+            facet: Some(&title.facet),
+            collections: &collections,
+            episodes: &episodes,
+            existing_record: None,
+            mode: LibraryFilenameParseMode::TitleScan,
+            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
+        };
+
+        let parse = parse_library_filename(&input);
+
+        assert_eq!(
+            parse.strategy,
+            LibraryFilenameParseStrategy::ReleaseParserFallback
+        );
+        assert_eq!(
+            parse.episode_identity.as_ref().and_then(|ep| ep.season),
+            Some(1)
+        );
+        assert_eq!(
+            parse
+                .target_episodes()
+                .iter()
+                .map(|episode| episode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ep-1-1"]
+        );
+    }
+
+    #[test]
+    fn title_scan_release_parser_resolves_x_episode_filename() {
+        let title = title("Example Show", MediaFacet::Series);
+        let episodes = vec![episode("ep-1-12", "1", "12")];
+        let input = LibraryFilenameParseInput {
+            path: Path::new(
+                "/library/Example Show/Season 01/Example Show - 01x12 - Finale WEBDL-1080p.mkv",
+            ),
+            display_name: None,
+            library_root: Some(Path::new("/library")),
+            title: Some(&title),
+            facet: Some(&title.facet),
+            collections: &[],
+            episodes: &episodes,
+            existing_record: None,
+            mode: LibraryFilenameParseMode::TitleScan,
+            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
+        };
+
+        let parse = parse_library_filename(&input);
+
+        assert_eq!(
+            parse.strategy,
+            LibraryFilenameParseStrategy::ReleaseParserFallback
+        );
+        assert!(parse.release_fallback_used);
+        assert_eq!(
+            parse
+                .target_episodes()
+                .iter()
+                .map(|episode| episode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ep-1-12"]
+        );
+    }
+
+    #[test]
+    fn name_only_interstitial_resolves_as_final_fallback() {
+        let title = title("Example Animated Saga", MediaFacet::Anime);
+        let episodes = vec![episode("ep-0-1", "0", "1")];
+        let collections = vec![interstitial_collection(
+            "Example Bonus Feature",
+            Some("S00E01"),
+        )];
+        let input = LibraryFilenameParseInput {
+            path: Path::new("/library/Example Animated Saga/Example Bonus Feature.mkv"),
+            display_name: None,
+            library_root: Some(Path::new("/library")),
+            title: None,
+            facet: Some(&title.facet),
+            collections: &collections,
+            episodes: &episodes,
+            existing_record: None,
+            mode: LibraryFilenameParseMode::TitleScan,
+            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
+        };
+
+        let parse = parse_library_filename(&input);
+
+        assert_eq!(
+            parse.strategy,
+            LibraryFilenameParseStrategy::ReleaseParserFallback
+        );
+        assert_eq!(
+            parse
+                .target_episodes()
+                .iter()
+                .map(|episode| episode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ep-0-1"]
+        );
+    }
+
+    #[test]
+    fn title_scan_release_parser_resolves_episode_without_provenance_tokens() {
         let title = title("Example Show", MediaFacet::Series);
         let episodes = vec![episode("ep-2-3", "2", "3")];
         let input = LibraryFilenameParseInput {
@@ -1875,7 +1575,6 @@ mod tests {
             ),
             display_name: None,
             library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/Example Show")),
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
@@ -1889,9 +1588,9 @@ mod tests {
 
         assert_eq!(
             parse.strategy,
-            LibraryFilenameParseStrategy::CanonicalEpisode
+            LibraryFilenameParseStrategy::ReleaseParserFallback
         );
-        assert!(!parse.release_fallback_used);
+        assert!(parse.release_fallback_used);
         assert_eq!(parse.parsed_release.quality, None);
         assert_eq!(parse.parsed_release.source, None);
         assert_eq!(
@@ -1905,7 +1604,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_new_episode_uses_release_parser_for_provenance_tokens() {
+    fn title_scan_release_parser_preserves_quality_source_provenance() {
         let title = title("Example Show", MediaFacet::Series);
         let episodes = vec![episode("ep-2-3", "2", "3")];
         let input = LibraryFilenameParseInput {
@@ -1914,7 +1613,6 @@ mod tests {
             ),
             display_name: None,
             library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/Example Show")),
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
@@ -1928,7 +1626,7 @@ mod tests {
 
         assert_eq!(
             parse.strategy,
-            LibraryFilenameParseStrategy::CanonicalEpisode
+            LibraryFilenameParseStrategy::ReleaseParserFallback
         );
         assert!(parse.release_fallback_used);
         assert_eq!(
@@ -1940,7 +1638,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_new_episode_preserves_remux_provenance_from_fallback() {
+    fn title_scan_release_parser_preserves_remux_provenance() {
         let title = title("Example Show", MediaFacet::Series);
         let episodes = vec![episode("ep-2-3", "2", "3")];
         let input = LibraryFilenameParseInput {
@@ -1949,7 +1647,6 @@ mod tests {
             ),
             display_name: None,
             library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/Example Show")),
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
@@ -1963,7 +1660,7 @@ mod tests {
 
         assert_eq!(
             parse.strategy,
-            LibraryFilenameParseStrategy::CanonicalEpisode
+            LibraryFilenameParseStrategy::ReleaseParserFallback
         );
         assert!(parse.release_fallback_used);
         assert!(parse.parsed_release.is_remux);
@@ -1972,145 +1669,6 @@ mod tests {
             Some("Remux")
         );
         assert_eq!(parse.parsed_release.release_group.as_deref(), Some("GRP"));
-    }
-
-    #[test]
-    fn canonical_multi_episode_resolves_all_targets() {
-        let title = title("Example Show", MediaFacet::Series);
-        let episodes = vec![episode("ep-2-3", "2", "3"), episode("ep-2-4", "2", "4")];
-        let input = LibraryFilenameParseInput {
-            path: Path::new("/library/Example Show/Season 02/Example Show - S02E03-E04.mkv"),
-            display_name: None,
-            library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/Example Show")),
-            title: Some(&title),
-            facet: Some(&title.facet),
-            collections: &[],
-            episodes: &episodes,
-            existing_record: None,
-            mode: LibraryFilenameParseMode::TitleScan,
-            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
-        };
-
-        let parse = parse_library_filename(&input);
-
-        assert_eq!(
-            parse
-                .target_episodes()
-                .iter()
-                .map(|episode| episode.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["ep-2-3", "ep-2-4"]
-        );
-    }
-
-    #[test]
-    fn canonical_compact_standard_multi_episode_resolves_all_targets() {
-        let title = title("Example Show", MediaFacet::Series);
-        let episodes = vec![episode("ep-1-1", "1", "1"), episode("ep-1-2", "1", "2")];
-        let input = LibraryFilenameParseInput {
-            path: Path::new("/library/Example Show/Season 01/Example Show - S1E0102.mkv"),
-            display_name: None,
-            library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/Example Show")),
-            title: Some(&title),
-            facet: Some(&title.facet),
-            collections: &[],
-            episodes: &episodes,
-            existing_record: None,
-            mode: LibraryFilenameParseMode::TitleScan,
-            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
-        };
-
-        let parse = parse_library_filename(&input);
-
-        assert_eq!(
-            parse
-                .target_episodes()
-                .iter()
-                .map(|episode| episode.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["ep-1-1", "ep-1-2"]
-        );
-        assert_eq!(
-            parse.strategy,
-            LibraryFilenameParseStrategy::CanonicalEpisode
-        );
-        assert!(!parse.release_fallback_used);
-    }
-
-    #[test]
-    fn canonical_compact_x_multi_episode_resolves_all_targets() {
-        let title = title("Example Show", MediaFacet::Series);
-        let episodes = vec![episode("ep-1-2", "1", "2"), episode("ep-1-3", "1", "3")];
-        let input = LibraryFilenameParseInput {
-            path: Path::new("/library/Example Show/Season 01/Example Show - 1x0203.mkv"),
-            display_name: None,
-            library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/Example Show")),
-            title: Some(&title),
-            facet: Some(&title.facet),
-            collections: &[],
-            episodes: &episodes,
-            existing_record: None,
-            mode: LibraryFilenameParseMode::TitleScan,
-            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
-        };
-
-        let parse = parse_library_filename(&input);
-
-        assert_eq!(
-            parse
-                .target_episodes()
-                .iter()
-                .map(|episode| episode.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["ep-1-2", "ep-1-3"]
-        );
-        assert_eq!(
-            parse.strategy,
-            LibraryFilenameParseStrategy::CanonicalEpisode
-        );
-        assert!(!parse.release_fallback_used);
-    }
-
-    #[test]
-    fn canonical_range_multi_episode_resolves_all_targets() {
-        let title = title("Example Show", MediaFacet::Series);
-        let episodes = (1..=5)
-            .map(|number| episode(&format!("ep-1-{number}"), "1", &number.to_string()))
-            .collect::<Vec<_>>();
-        let input = LibraryFilenameParseInput {
-            path: Path::new("/library/Example Show/Season 01/Example Show - S1E01-05.mkv"),
-            display_name: None,
-            library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/Example Show")),
-            title: Some(&title),
-            facet: Some(&title.facet),
-            collections: &[],
-            episodes: &episodes,
-            existing_record: None,
-            mode: LibraryFilenameParseMode::TitleScan,
-            fallback_policy: LibraryFilenameFallbackPolicy::WhenNeeded,
-        };
-
-        let parse = parse_library_filename(&input);
-
-        assert_eq!(
-            parse
-                .target_episodes()
-                .iter()
-                .map(|episode| episode.id.clone())
-                .collect::<Vec<_>>(),
-            (1..=5)
-                .map(|number| format!("ep-1-{number}"))
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            parse.strategy,
-            LibraryFilenameParseStrategy::CanonicalEpisode
-        );
-        assert!(!parse.release_fallback_used);
     }
 
     #[test]
@@ -2123,7 +1681,6 @@ mod tests {
             ),
             display_name: None,
             library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/13 (2024)")),
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],
@@ -2137,7 +1694,7 @@ mod tests {
 
         assert_eq!(
             parse.strategy,
-            LibraryFilenameParseStrategy::CanonicalEpisode
+            LibraryFilenameParseStrategy::ReleaseParserFallback
         );
         assert!(parse.release_fallback_used);
         assert_eq!(parse.parsed_release.normalized_title, "13");

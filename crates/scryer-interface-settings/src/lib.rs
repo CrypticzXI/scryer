@@ -6,9 +6,9 @@ use scryer_interface_core::{
 };
 use scryer_interface_media::mappers::{
     from_download_client_config, from_download_client_routing_entry,
-    from_indexer_config_with_fields, from_indexer_routing_entry, from_library_paths_settings,
-    from_media_settings, from_quality_profile_settings, from_service_settings,
-    from_subtitle_provider_config, from_user,
+    from_indexer_config_with_fields, from_indexer_routing_entry, from_jellyfin_server_user,
+    from_library_paths_settings, from_media_server_connection, from_media_settings,
+    from_quality_profile_settings, from_service_settings, from_subtitle_provider_config, from_user,
 };
 use scryer_interface_media::types::*;
 
@@ -248,11 +248,15 @@ fn from_auth_provider_runtime_settings(
     }
 }
 
-fn from_auth_runtime_state(auth_runtime: &AuthRuntimeStateSnapshot) -> AuthRuntimeStatePayload {
+fn from_auth_runtime_state(
+    auth_runtime: &AuthRuntimeStateSnapshot,
+    security_settings: scryer_application::SecuritySettings,
+) -> AuthRuntimeStatePayload {
     AuthRuntimeStatePayload {
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
         passkey_enabled: auth_runtime.passkey_enabled,
+        totp_require_jellyfin_login: security_settings.totp_require_jellyfin_login,
     }
 }
 
@@ -393,9 +397,62 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    async fn media_server_connections(
+        &self,
+        ctx: &Context<'_>,
+        provider: Option<MediaServerProviderValue>,
+    ) -> GqlResult<Vec<MediaServerConnectionPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_media_server_connections(
+            &actor,
+            provider.map(MediaServerProviderValue::into_domain),
+        )
+        .await
+        .map(|connections| {
+            connections
+                .into_iter()
+                .map(from_media_server_connection)
+                .collect()
+        })
+        .map_err(to_gql_error)
+    }
+
+    async fn media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> GqlResult<Option<MediaServerConnectionPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.get_media_server_connection(&actor, &id)
+            .await
+            .map(|connection| connection.map(from_media_server_connection))
+            .map_err(to_gql_error)
+    }
+
+    async fn jellyfin_server_users(
+        &self,
+        ctx: &Context<'_>,
+        connection_id: String,
+        search: Option<String>,
+    ) -> GqlResult<Vec<JellyfinServerUserPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_jellyfin_server_users(&actor, &connection_id, search.as_deref())
+            .await
+            .map(|users| users.into_iter().map(from_jellyfin_server_user).collect())
+            .map_err(to_gql_error)
+    }
+
     async fn auth_runtime_state(&self, ctx: &Context<'_>) -> GqlResult<AuthRuntimeStatePayload> {
+        let app = app_from_ctx(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
-        Ok(from_auth_runtime_state(&auth_runtime.snapshot()))
+        let security_settings = app.security_settings().await.map_err(to_gql_error)?;
+        Ok(from_auth_runtime_state(
+            &auth_runtime.snapshot(),
+            security_settings,
+        ))
     }
 
     async fn my_passkeys(&self, ctx: &Context<'_>) -> GqlResult<Vec<PasskeySummaryPayload>> {

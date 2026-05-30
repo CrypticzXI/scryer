@@ -1059,6 +1059,7 @@ pub struct AppIntegrationServices {
     pub(crate) download_client_configs: Arc<dyn DownloadClientConfigRepository>,
     pub(crate) subtitle_provider_configs: RuntimeFeature<Arc<dyn SubtitleProviderConfigRepository>>,
     pub(crate) external_identity_verifier: Arc<dyn ExternalIdentityVerifier>,
+    pub(crate) media_server_connections: Arc<dyn MediaServerConnectionRepository>,
     pub(crate) indexer_stats: Arc<dyn IndexerStatsTracker>,
     pub(crate) plugin_provider: RuntimeFeature<Arc<dyn IndexerPluginProvider>>,
     pub(crate) download_client_plugin_provider:
@@ -1278,6 +1279,9 @@ impl AppServices {
                 subtitle_provider_configs: RuntimeFeature::Disabled,
                 external_identity_verifier: Arc::new(
                     null_repositories::NullExternalIdentityVerifier,
+                ),
+                media_server_connections: Arc::new(
+                    null_repositories::NullMediaServerConnectionRepository,
                 ),
                 indexer_stats: Arc::new(NullIndexerStatsTracker),
                 plugin_provider: RuntimeFeature::Disabled,
@@ -1515,11 +1519,7 @@ impl AppServicesBuilder {
         identity.webauthn,
         Arc<dyn WebauthnRepository>
     );
-    app_services_builder_setter!(
-        with_totp_store,
-        identity.totp,
-        Arc<dyn TotpRepository>
-    );
+    app_services_builder_setter!(with_totp_store, identity.totp, Arc<dyn TotpRepository>);
     app_services_builder_setter!(
         with_external_account_store,
         identity.external_accounts,
@@ -1619,6 +1619,11 @@ impl AppServicesBuilder {
         with_external_identity_verifier,
         integrations.external_identity_verifier,
         Arc<dyn ExternalIdentityVerifier>
+    );
+    app_services_builder_setter!(
+        with_media_server_connection_store,
+        integrations.media_server_connections,
+        Arc<dyn MediaServerConnectionRepository>
     );
     app_services_builder_required_setter!(
         with_metadata_gateway,

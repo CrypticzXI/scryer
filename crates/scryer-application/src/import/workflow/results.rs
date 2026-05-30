@@ -198,6 +198,32 @@ fn skip_reason_for_import_check_code(code: &str) -> ImportSkipReason {
         _ => ImportSkipReason::PolicyMismatch,
     }
 }
+
+async fn finalize_import_source_cleanup(
+    app: &AppUseCase,
+    import_mode: scryer_domain::ImportMode,
+    file_result: &scryer_domain::ImportFileResult,
+    final_dest_path: &Path,
+) -> AppResult<scryer_domain::ImportStrategy> {
+    if import_mode != scryer_domain::ImportMode::Move {
+        return Ok(file_result.strategy);
+    }
+
+    let guard = file_result.source_cleanup.clone().ok_or_else(|| {
+        AppError::Repository(format!(
+            "move import did not return a source cleanup guard for {}",
+            file_result.source_path.display()
+        ))
+    })?;
+
+    app.services
+        .workflow
+        .file_importer
+        .remove_import_source_after_verified_import(guard, final_dest_path)
+        .await?;
+
+    Ok(scryer_domain::ImportStrategy::Move)
+}
 fn completed_import_status_for_result(
     result: &ImportResult,
     fallback_status: ImportStatus,

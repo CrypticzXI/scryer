@@ -292,6 +292,7 @@ fn jellyfin_channel_config(base_url: &str, path_mappings: &str) -> NotificationC
         name: "Jellyfin".to_string(),
         channel_type: scryer_domain::ChannelType::parse("jellyfin").expect("jellyfin channel"),
         config_json: jellyfin_config_json(base_url, path_mappings),
+        media_server_connection_id: None,
         is_enabled: true,
         created_at: now,
         updated_at: now,

@@ -2,13 +2,28 @@ import * as React from "react";
 import { useClient } from "urql";
 
 import { RequestsView } from "@/components/views/requests-view";
-import { librariesQuery, mediaRequestsQuery } from "@/lib/graphql/queries";
+import {
+  approveMediaRequestMutation,
+  dismissMediaRequestMutation,
+} from "@/lib/graphql/mutations";
+import {
+  mediaRequestAdminLibrariesQuery,
+  mediaRequestsQuery,
+  qualityProfileOptionsQuery,
+} from "@/lib/graphql/queries";
 import type { Facet, LibraryRecord, MediaRequestRecord } from "@/lib/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
+import { useMediaRequestsSubscription } from "@/lib/hooks/use-media-requests-subscription";
 
 type RequestsContainerProps = {
   facet: Facet;
+};
+
+type QualityProfileOption = {
+  id: string;
+  name: string;
 };
 
 function externalIdKey(source: string, value: string): string {
@@ -100,26 +115,39 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const [requests, setRequests] = React.useState<MediaRequestRecord[]>([]);
+  const [qualityProfileOptions, setQualityProfileOptions] = React.useState<
+    QualityProfileOption[]
+  >([]);
   const [loading, setLoading] = React.useState(false);
+  const [actionRequestId, setActionRequestId] = React.useState<string | null>(null);
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [librariesResult, requestsResult] = await Promise.all([
-        client.query(librariesQuery, {
+      const [librariesResult, requestsResult, qualityProfilesResult] = await Promise.all([
+        client.query(mediaRequestAdminLibrariesQuery, {
           facet,
-          permission: "manageTitles",
         }).toPromise(),
         client.query(mediaRequestsQuery, {
           facet,
           libraryIds: selectedLibraryIds.length > 0 ? selectedLibraryIds : null,
           status: "pending",
         }).toPromise(),
+        client.query(qualityProfileOptionsQuery, {}).toPromise(),
       ]);
       if (librariesResult.error) throw librariesResult.error;
       if (requestsResult.error) throw requestsResult.error;
+      if (qualityProfilesResult.error) throw qualityProfilesResult.error;
       setLibraries((librariesResult.data?.libraries ?? []) as LibraryRecord[]);
       setRequests(collapseMediaRequests((requestsResult.data?.mediaRequests ?? []) as MediaRequestRecord[]));
+      setQualityProfileOptions(
+        (
+          qualityProfilesResult.data?.qualityProfileSettings?.profiles ?? []
+        ).map((profile: QualityProfileOption) => ({
+          id: profile.id,
+          name: profile.name || profile.id,
+        })),
+      );
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
     } finally {
@@ -131,9 +159,72 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
     void refresh();
   }, [refresh]);
 
+  useMediaRequestsSubscription(() => {
+    dispatchNavigationBadgesRefresh();
+    void refresh();
+  });
+
   React.useEffect(() => {
     setSelectedLibraryIds([]);
   }, [facet]);
+
+  const approveRequest = React.useCallback(
+    async (request: MediaRequestRecord, qualityProfileId: string) => {
+      if (actionRequestId) {
+        return;
+      }
+
+      setActionRequestId(request.id);
+      try {
+        const { data, error } = await client
+          .mutation(approveMediaRequestMutation, {
+            input: { requestId: request.id, qualityProfileId },
+          })
+          .toPromise();
+        if (error) throw error;
+        const searchError = data?.approveMediaRequest?.searchError;
+        setGlobalStatus(
+          searchError
+            ? t("status.requestApprovedSearchFailed", {
+                name: request.title,
+                error: searchError,
+              })
+            : t("status.requestApproved", { name: request.title }),
+        );
+        dispatchNavigationBadgesRefresh();
+        await refresh();
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+      } finally {
+        setActionRequestId(null);
+      }
+    },
+    [actionRequestId, client, refresh, setGlobalStatus, t],
+  );
+
+  const dismissRequest = React.useCallback(
+    async (request: MediaRequestRecord) => {
+      if (actionRequestId) {
+        return;
+      }
+
+      setActionRequestId(request.id);
+      try {
+        const { error } = await client
+          .mutation(dismissMediaRequestMutation, { input: { requestId: request.id } })
+          .toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.requestDismissed", { name: request.title }));
+        dispatchNavigationBadgesRefresh();
+        await refresh();
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+      } finally {
+        setActionRequestId(null);
+      }
+    },
+    [actionRequestId, client, refresh, setGlobalStatus, t],
+  );
 
   return (
     <RequestsView
@@ -141,8 +232,14 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       selectedLibraryIds={selectedLibraryIds}
       onSelectedLibraryIdsChange={setSelectedLibraryIds}
       requests={requests}
+      qualityProfileOptions={qualityProfileOptions}
       loading={loading}
+      actionRequestId={actionRequestId}
       onRefresh={() => void refresh()}
+      onApprove={(request, qualityProfileId) =>
+        void approveRequest(request, qualityProfileId)
+      }
+      onDismiss={(request) => void dismissRequest(request)}
     />
   );
 }

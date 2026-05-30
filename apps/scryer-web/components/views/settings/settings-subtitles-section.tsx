@@ -1,8 +1,13 @@
 import * as React from "react";
+import { Button } from "@/components/ui/button";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2 } from "lucide-react";
+import { Download, Loader2 } from "lucide-react";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
+import {
+  PluginInstallProgressBar,
+  type PluginInstallProgressRecord,
+} from "@/components/views/settings/settings-plugins-section";
 import { useTranslate } from "@/lib/context/translate-context";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import type { SubtitleSettings } from "@/lib/types/settings";
@@ -13,6 +18,15 @@ type Props = {
   settings: SubtitleSettings;
   setSettings: (s: SubtitleSettings) => void;
   loading: boolean;
+  syncPluginActive: boolean;
+  syncPluginAvailable: boolean;
+  syncPluginBlockedReason?: string | null;
+  syncPluginError?: string | null;
+  syncPluginInstalling: boolean;
+  syncPluginLoading: boolean;
+  syncPluginName: string;
+  syncPluginProgress?: PluginInstallProgressRecord | null;
+  onInstallSyncPlugin: () => void;
 };
 
 function Toggle({
@@ -65,6 +79,15 @@ export function SettingsSubtitlesSection({
   settings,
   setSettings,
   loading,
+  syncPluginActive,
+  syncPluginAvailable,
+  syncPluginBlockedReason,
+  syncPluginError,
+  syncPluginInstalling,
+  syncPluginLoading,
+  syncPluginName,
+  syncPluginProgress,
+  onInstallSyncPlugin,
 }: Props) {
   const t = useTranslate();
   const update = (patch: Partial<SubtitleSettings>) =>
@@ -84,6 +107,13 @@ export function SettingsSubtitlesSection({
 
   const disabled = !settings.enabled;
   const syncDisabled = disabled || !settings.syncEnabled;
+  const syncPluginDescription =
+    syncPluginBlockedReason ??
+    (syncPluginLoading
+      ? t("settings.sub.syncPluginLoadingCatalog")
+      : syncPluginAvailable
+        ? t("settings.sub.syncPluginRequiredDescription", { plugin: syncPluginName })
+        : t("settings.sub.syncPluginUnavailable"));
 
   if (loading) {
     return (
@@ -202,9 +232,11 @@ export function SettingsSubtitlesSection({
           <Toggle id="settings-subtitles-exclude-ai-translated" checked={!settings.includeAiTranslated} onChange={(v) => update({ includeAiTranslated: !v })} label={t("settings.sub.excludeAi")} disabled={disabled} />
           <Toggle id="settings-subtitles-exclude-machine-translated" checked={!settings.includeMachineTranslated} onChange={(v) => update({ includeMachineTranslated: !v })} label={t("settings.sub.excludeMachine")} disabled={disabled} />
         </div>
+      </div>
 
-        {/* Sync */}
-        <div className="space-y-3">
+      {/* Sync */}
+      {syncPluginActive ? (
+        <div className={`space-y-3 ${disabled ? "pointer-events-none select-none opacity-40" : ""}`}>
           <Toggle id="settings-subtitles-sync-enabled" checked={settings.syncEnabled} onChange={(v) => update({ syncEnabled: v })} label={t("settings.sub.syncEnabled")} disabled={disabled} />
           <p className="text-xs text-muted-foreground">{t("settings.sub.syncEnabledHelp")}</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -239,7 +271,50 @@ export function SettingsSubtitlesSection({
           <p className="text-xs text-muted-foreground">{t("settings.sub.syncThresholdHelp")}</p>
           <p className="text-xs text-muted-foreground">{t("settings.sub.syncMaxOffsetHelp")}</p>
         </div>
-      </div>
+      ) : (
+        <div id="settings-subtitles-sync-plugin-required" className="rounded-lg border border-border bg-card/50 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">{t("settings.sub.syncPluginRequiredTitle")}</p>
+              <p className="text-xs text-muted-foreground">
+                {syncPluginDescription}
+              </p>
+              {syncPluginError ? (
+                <p id="settings-subtitles-sync-plugin-error" className="text-xs text-destructive">
+                  {syncPluginError}
+                </p>
+              ) : null}
+              {syncPluginProgress ? (
+                <PluginInstallProgressBar
+                  progress={syncPluginProgress}
+                  id="settings-subtitles-sync-plugin-progress"
+                />
+              ) : null}
+            </div>
+            <Button
+              id="settings-subtitles-install-sync-plugin"
+              type="button"
+              size="sm"
+              disabled={
+                syncPluginInstalling ||
+                syncPluginLoading ||
+                !syncPluginAvailable ||
+                Boolean(syncPluginBlockedReason)
+              }
+              onClick={onInstallSyncPlugin}
+            >
+              {syncPluginInstalling || syncPluginLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              {syncPluginInstalling
+                ? t("settings.sub.syncPluginInstalling")
+                : t("settings.sub.syncPluginInstall")}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

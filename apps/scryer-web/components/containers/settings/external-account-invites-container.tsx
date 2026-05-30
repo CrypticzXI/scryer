@@ -3,12 +3,14 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ExternalAccountInvitesPanel,
   type ExternalInviteDraft,
+  type ExternalInviteProviderUserOption,
   type ExternalInviteUser,
 } from "@/components/views/settings/external-account-invites-panel";
 import { createExternalAccountInviteMutation } from "@/lib/graphql/mutations";
 import {
   authProviderRuntimeSettingsQuery,
   externalAccountInvitesQuery,
+  jellyfinServerUsersQuery,
   usersQuery,
 } from "@/lib/graphql/queries";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -92,6 +94,8 @@ export function ExternalAccountInvitesContainer() {
   const client = useClient();
   const [users, setUsers] = useState<ExternalInviteUser[]>([]);
   const [invites, setInvites] = useState<LinkedAccount[]>([]);
+  const [providerUserOptions, setProviderUserOptions] =
+    useState<ExternalInviteProviderUserOption[]>([]);
   const [authProviderSettings, setAuthProviderSettings] =
     useState<AuthProviderSettings>(DEFAULT_AUTH_PROVIDER_SETTINGS);
   const [externalInviteDraft, setExternalInviteDraft] =
@@ -193,6 +197,45 @@ export function ExternalAccountInvitesContainer() {
     });
   }, [authProviderSettings, users]);
 
+  useEffect(() => {
+    if (
+      externalInviteDraft.provider !== "jellyfin" ||
+      externalInviteDraft.connectionId.trim().length === 0
+    ) {
+      setProviderUserOptions([]);
+      return;
+    }
+
+    let cancelled = false;
+    void client
+      .query(
+        jellyfinServerUsersQuery,
+        { connectionId: externalInviteDraft.connectionId, search: null },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setProviderUserOptions([]);
+          return;
+        }
+        setProviderUserOptions(
+          ((data?.jellyfinServerUsers ?? []) as ExternalInviteProviderUserOption[]).map(
+            (user) => ({
+              id: user.id,
+              username: user.username,
+              displayName: user.displayName,
+            }),
+          ),
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, externalInviteDraft.connectionId, externalInviteDraft.provider]);
+
   const createExternalAccountInvite = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const userId = externalInviteDraft.userId.trim();
@@ -234,6 +277,7 @@ export function ExternalAccountInvitesContainer() {
     <ExternalAccountInvitesPanel
       users={users}
       invites={invites}
+      providerUserOptions={providerUserOptions}
       authProviderSettings={authProviderSettings}
       loading={loading}
       externalInviteDraft={externalInviteDraft}

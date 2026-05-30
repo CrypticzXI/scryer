@@ -1,6 +1,7 @@
 import {
   BACKUP_INFO_FIELDS,
   JOB_RUN_FIELDS,
+  MEDIA_SERVER_CONNECTION_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
   TITLE_CORE_FIELDS,
@@ -318,6 +319,24 @@ export const submitMediaRequestMutation = `mutation SubmitMediaRequest($input: S
   }
 }`;
 
+export const approveMediaRequestMutation = `mutation ApproveMediaRequest($input: ApproveMediaRequestInput!) {
+  approveMediaRequest(input: $input) {
+    accepted
+    titleId
+    wantedSearch {
+      queuedCount
+      skippedInProgressCount
+    }
+    searchError
+  }
+}`;
+
+export const dismissMediaRequestMutation = `mutation DismissMediaRequest($input: MediaRequestActionInput!) {
+  dismissMediaRequest(input: $input) {
+    accepted
+  }
+}`;
+
 export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteMediaFileInput!) {
   deleteMediaFile(input: $input)
 }`;
@@ -597,6 +616,24 @@ export const updateAuthProviderSettingsMutation = `mutation UpdateAuthProviderSe
       machineId
     }
   }
+}`;
+
+export const createMediaServerConnectionMutation = `mutation CreateMediaServerConnection($input: CreateMediaServerConnectionInput!) {
+  createMediaServerConnection(input: $input) {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
+}`;
+
+export const updateMediaServerConnectionMutation = `mutation UpdateMediaServerConnection($input: UpdateMediaServerConnectionInput!) {
+  updateMediaServerConnection(input: $input) {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
+}`;
+
+export const deleteMediaServerConnectionMutation = `mutation DeleteMediaServerConnection($id: String!) {
+  deleteMediaServerConnection(id: $id)
+}`;
+
+export const testMediaServerConnectionMutation = `mutation TestMediaServerConnection($id: String!) {
+  testMediaServerConnection(id: $id)
 }`;
 
 export const testJellyfinConnectionMutation = `mutation TestJellyfinConnection($input: TestJellyfinConnectionInput!) {
@@ -1435,6 +1472,7 @@ export const createNotificationChannelMutation = `mutation CreateNotificationCha
     id
     name
     channelType
+    mediaServerConnectionId
     configJson
     isEnabled
     createdAt
@@ -1447,6 +1485,7 @@ export const updateNotificationChannelMutation = `mutation UpdateNotificationCha
     id
     name
     channelType
+    mediaServerConnectionId
     configJson
     isEnabled
     createdAt

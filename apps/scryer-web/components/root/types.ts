@@ -8,6 +8,7 @@ export type SettingsSection =
   | "backups"
   | "security"
   | "users"
+  | "mediaServers"
   | "indexers"
   | "downloadClients"
   | "qualityProfiles"

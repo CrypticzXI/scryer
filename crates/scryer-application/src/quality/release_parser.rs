@@ -293,16 +293,6 @@ fn normalize_context_imdb_id(token: &str) -> Option<String> {
     (!imdb.is_empty() && imdb.chars().all(|ch| ch.is_ascii_digit())).then(|| format!("tt{imdb}"))
 }
 
-pub(crate) fn looks_like_release_provenance_token(token: &str) -> bool {
-    let normalized = token
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_uppercase();
-
-    looks_like_release_provenance_normalized(&normalized)
-}
-
 fn looks_like_release_metadata_token(token: &str, tokens: &[String]) -> bool {
     let normalized = token
         .chars()

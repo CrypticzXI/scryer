@@ -31,9 +31,16 @@ export type ExternalInviteUser = {
   username: string;
 };
 
+export type ExternalInviteProviderUserOption = {
+  id: string;
+  username: string;
+  displayName: string | null;
+};
+
 type ExternalAccountInvitesPanelProps = {
   users: ExternalInviteUser[];
   invites: LinkedAccount[];
+  providerUserOptions: ExternalInviteProviderUserOption[];
   authProviderSettings: AuthProviderSettings;
   loading: boolean;
   externalInviteDraft: ExternalInviteDraft;
@@ -165,6 +172,7 @@ function inviteStatus(account: LinkedAccount, t: ReturnType<typeof useTranslate>
 export function ExternalAccountInvitesPanel({
   users,
   invites,
+  providerUserOptions,
   authProviderSettings,
   loading,
   externalInviteDraft,
@@ -279,6 +287,11 @@ export function ExternalAccountInvitesPanel({
               </Label>
               <Input
                 id="settings-external-invite-provider-identifier"
+                list={
+                  externalInviteDraft.provider === "jellyfin" && providerUserOptions.length > 0
+                    ? "settings-external-invite-provider-users"
+                    : undefined
+                }
                 value={externalInviteDraft.providerUserIdentifier}
                 onChange={(event) =>
                   updateExternalInviteDraft({ providerUserIdentifier: event.target.value })
@@ -287,6 +300,17 @@ export function ExternalAccountInvitesPanel({
                 placeholder={providerIdentifierLabelText}
                 required
               />
+              {externalInviteDraft.provider === "jellyfin" && providerUserOptions.length > 0 ? (
+                <datalist id="settings-external-invite-provider-users">
+                  {providerUserOptions.map((option) => (
+                    <option
+                      key={option.id}
+                      value={option.username}
+                      label={option.displayName ?? option.id}
+                    />
+                  ))}
+                </datalist>
+              ) : null}
             </div>
             <div className="flex items-end">
               <Button

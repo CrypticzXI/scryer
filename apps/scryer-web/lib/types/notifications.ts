@@ -5,6 +5,7 @@ export type NotificationChannel = {
   id: string;
   name: string;
   channelType: string;
+  mediaServerConnectionId: string | null;
   configJson: string | null;
   isEnabled: boolean;
   createdAt: string;
@@ -14,6 +15,7 @@ export type NotificationChannel = {
 export type NotificationChannelDraft = {
   name: string;
   channelType: string;
+  mediaServerConnectionId: string;
   isEnabled: boolean;
   configValues: Record<string, string>;
 };

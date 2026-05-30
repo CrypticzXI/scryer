@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Fingerprint, KeyRound, Loader2 } from "lucide-react";
+import { QRCode } from "react-qr-code";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { useLanguage } from "@/lib/hooks/use-language";
 import { Input } from "@/components/ui/input";
@@ -8,8 +9,17 @@ import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import { backendClient } from "@/lib/graphql/urql-client";
 import { authProviderRuntimeSettingsQuery } from "@/lib/graphql/queries";
-import { loginWithJellyfinMutation, loginWithPlexMutation } from "@/lib/graphql/mutations";
-import type { AuthProviderSettings } from "@/lib/types/settings";
+import {
+  loginWithJellyfinMutation,
+  loginWithPlexMutation,
+  totpEnrollmentCompleteMutation,
+  totpEnrollmentStartMutation,
+} from "@/lib/graphql/mutations";
+import type {
+  AuthProviderSettings,
+  TotpEnrollmentComplete,
+  TotpEnrollmentStart,
+} from "@/lib/types/settings";
 import { authenticateWithPasskey, PasskeyClientError } from "@/lib/utils/passkeys";
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
 
@@ -32,6 +42,25 @@ function connectionOptionLabel(connection: {
     : connection.displayName;
 }
 
+function graphQlErrorCode(error: unknown): string | null {
+  if (
+    error &&
+    typeof error === "object" &&
+    "graphQLErrors" in error &&
+    Array.isArray((error as { graphQLErrors?: unknown[] }).graphQLErrors)
+  ) {
+    const graphQLErrors = (error as {
+      graphQLErrors?: Array<{ extensions?: { code?: unknown } }>;
+    }).graphQLErrors;
+    const code = graphQLErrors?.find(
+      (entry) => typeof entry.extensions?.code === "string",
+    )?.extensions?.code;
+    return typeof code === "string" ? code : null;
+  }
+
+  return null;
+}
+
 export default function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -44,6 +73,7 @@ export default function LoginPage() {
     loading: authLoading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
+    totpRequireJellyfinLogin,
   } = useAuth();
   const [activeMethod, setActiveMethod] = useState<LoginMethod>(null);
   const [username, setUsername] = useState("");
@@ -59,6 +89,13 @@ export default function LoginPage() {
   const [jellyfinUsername, setJellyfinUsername] = useState("");
   const [jellyfinPassword, setJellyfinPassword] = useState("");
   const [jellyfinTotpCode, setJellyfinTotpCode] = useState("");
+  const [jellyfinTotpPrompted, setJellyfinTotpPrompted] = useState(false);
+  const [jellyfinMfaSetupActive, setJellyfinMfaSetupActive] = useState(false);
+  const [jellyfinMfaEnrollment, setJellyfinMfaEnrollment] =
+    useState<TotpEnrollmentStart | null>(null);
+  const [jellyfinMfaEnrollmentCode, setJellyfinMfaEnrollmentCode] = useState("");
+  const [jellyfinMfaRecoveryCodes, setJellyfinMfaRecoveryCodes] = useState<string[]>([]);
+  const [jellyfinMfaBusy, setJellyfinMfaBusy] = useState(false);
   const [plexSubmitting, setPlexSubmitting] = useState(false);
   const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
   const availableJellyfinConnections =
@@ -93,15 +130,27 @@ export default function LoginPage() {
   const plexLoginAvailable = plexConnections.length > 0;
   const localPasswordAvailable = effectiveFormLoginEnabled !== false;
   const jellyfinLoginAvailable = jellyfinConnections.length > 0;
+  const showJellyfinTotpCode = totpRequireJellyfinLogin || jellyfinTotpPrompted;
   const anySubmitting =
-    submitting || passkeySubmitting || jellyfinSubmitting || plexSubmitting;
+    submitting ||
+    passkeySubmitting ||
+    jellyfinSubmitting ||
+    jellyfinMfaBusy ||
+    plexSubmitting;
 
   // Redirect to home if already authenticated
   useEffect(() => {
-    if (!serviceRestarting && !authLoading && user) {
+    if (!serviceRestarting && !authLoading && user && !jellyfinMfaSetupActive) {
       navigate(redirectTarget, { replace: true });
     }
-  }, [authLoading, user, navigate, redirectTarget, serviceRestarting]);
+  }, [
+    authLoading,
+    jellyfinMfaSetupActive,
+    user,
+    navigate,
+    redirectTarget,
+    serviceRestarting,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,6 +237,66 @@ export default function LoginPage() {
     [adoptSession, navigate, redirectTarget, t],
   );
 
+  const startJellyfinMfaEnrollment = useCallback(async () => {
+    setJellyfinMfaBusy(true);
+    setJellyfinMfaRecoveryCodes([]);
+    setJellyfinMfaEnrollmentCode("");
+    try {
+      const { data, error } = await backendClient
+        .mutation<{ totpEnrollmentStart?: TotpEnrollmentStart }>(
+          totpEnrollmentStartMutation,
+          {},
+        )
+        .toPromise();
+      if (error || !data?.totpEnrollmentStart) {
+        throw error ?? new Error(t("auth.mfaSetupStartFailed"));
+      }
+      setJellyfinMfaEnrollment(data.totpEnrollmentStart);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("auth.mfaSetupStartFailed"));
+    } finally {
+      setJellyfinMfaBusy(false);
+    }
+  }, [t]);
+
+  const completeJellyfinMfaEnrollment = useCallback(async () => {
+    if (!jellyfinMfaEnrollment || !jellyfinMfaEnrollmentCode.trim()) return;
+
+    setError(null);
+    setJellyfinMfaBusy(true);
+    try {
+      const { data, error } = await backendClient
+        .mutation<
+          { totpEnrollmentComplete?: TotpEnrollmentComplete },
+          { input: { challengeId: string; code: string } }
+        >(totpEnrollmentCompleteMutation, {
+          input: {
+            challengeId: jellyfinMfaEnrollment.challengeId,
+            code: jellyfinMfaEnrollmentCode.trim(),
+          },
+        })
+        .toPromise();
+      if (error || !data?.totpEnrollmentComplete) {
+        throw error ?? new Error(t("auth.mfaSetupCompleteFailed"));
+      }
+      setJellyfinMfaRecoveryCodes(data.totpEnrollmentComplete.recoveryCodes);
+      setJellyfinMfaEnrollment(null);
+      setJellyfinMfaEnrollmentCode("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("auth.mfaSetupCompleteFailed"));
+    } finally {
+      setJellyfinMfaBusy(false);
+    }
+  }, [jellyfinMfaEnrollment, jellyfinMfaEnrollmentCode, t]);
+
+  const skipJellyfinMfaEnrollment = useCallback(() => {
+    setJellyfinMfaSetupActive(false);
+    setJellyfinMfaEnrollment(null);
+    setJellyfinMfaEnrollmentCode("");
+    setJellyfinMfaRecoveryCodes([]);
+    navigate(redirectTarget, { replace: true });
+  }, [navigate, redirectTarget]);
+
   const handleJellyfinSignIn = useCallback(
     async () => {
       if (!jellyfinConnectionId || !jellyfinUsername || !jellyfinPassword) return;
@@ -209,10 +318,22 @@ export default function LoginPage() {
         if (error || !data?.loginWithJellyfin) {
           throw error ?? new Error(t("auth.jellyfinFailed"));
         }
-        adoptSession(data.loginWithJellyfin.token, data.loginWithJellyfin.user ?? null);
+        const loginPayload = data.loginWithJellyfin;
+        if (totpRequireJellyfinLogin && !loginPayload.mfaVerifiedUntil) {
+          setJellyfinMfaSetupActive(true);
+          adoptSession(loginPayload.token, loginPayload.user ?? null);
+          await startJellyfinMfaEnrollment();
+          return;
+        }
+        adoptSession(loginPayload.token, loginPayload.user ?? null);
         navigate(redirectTarget, { replace: true });
       } catch (err) {
-        setError(err instanceof Error ? err.message : t("auth.jellyfinFailed"));
+        if (graphQlErrorCode(err) === "TOTP_STEP_UP_REQUIRED") {
+          setJellyfinTotpPrompted(true);
+          setError(t("auth.totpCodeRequired"));
+        } else {
+          setError(err instanceof Error ? err.message : t("auth.jellyfinFailed"));
+        }
       } finally {
         setJellyfinSubmitting(false);
       }
@@ -225,7 +346,9 @@ export default function LoginPage() {
       jellyfinUsername,
       navigate,
       redirectTarget,
+      startJellyfinMfaEnrollment,
       t,
+      totpRequireJellyfinLogin,
     ],
   );
 
@@ -268,6 +391,114 @@ export default function LoginPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-card-foreground">
         <Loader2 className="h-6 w-6 animate-spin text-emerald-700 dark:text-emerald-300" />
+      </div>
+    );
+  }
+
+  if (jellyfinMfaSetupActive) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4 text-foreground">
+        <div className="w-full max-w-md space-y-5 rounded-lg border border-border bg-card/70 p-8">
+          <div className="space-y-2 text-center">
+            <h1 className="text-xl font-semibold tracking-tight">{t("auth.mfaSetupTitle")}</h1>
+            <p className="text-sm text-muted-foreground">{t("auth.mfaSetupDescription")}</p>
+          </div>
+
+          {error ? (
+            <div className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300">
+              {error}
+            </div>
+          ) : null}
+
+          {jellyfinMfaRecoveryCodes.length > 0 ? (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                {t("auth.mfaRecoveryCodesDescription")}
+              </p>
+              <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-background/60 p-3 font-mono text-xs">
+                {jellyfinMfaRecoveryCodes.map((code) => (
+                  <code key={code}>{code}</code>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={skipJellyfinMfaEnrollment}
+                className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500"
+              >
+                {t("auth.continue")}
+              </button>
+            </div>
+          ) : jellyfinMfaEnrollment ? (
+            <div className="space-y-4">
+              <div className="flex flex-col items-center gap-4">
+                <div className="w-fit rounded-md bg-white p-3">
+                  <QRCode value={jellyfinMfaEnrollment.otpauthUrl} size={168} />
+                </div>
+                <a
+                  className="break-all text-sm font-medium text-primary underline-offset-4 hover:underline"
+                  href={jellyfinMfaEnrollment.otpauthUrl}
+                >
+                  {t("profile.totpOpenSetupLink")}
+                </a>
+                <div className="w-full space-y-1">
+                  <div className="text-xs text-muted-foreground">{t("profile.totpSecret")}</div>
+                  <code className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs">
+                    {jellyfinMfaEnrollment.secretBase32}
+                  </code>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Input
+                  id="jellyfin-mfa-enrollment-code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={jellyfinMfaEnrollmentCode}
+                  onChange={(event) => setJellyfinMfaEnrollmentCode(event.target.value)}
+                  placeholder={t("auth.totpCode")}
+                />
+                <button
+                  type="button"
+                  onClick={completeJellyfinMfaEnrollment}
+                  disabled={jellyfinMfaBusy || !jellyfinMfaEnrollmentCode.trim()}
+                  className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  {jellyfinMfaBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  {t("profile.totpVerifyAndEnable")}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={skipJellyfinMfaEnrollment}
+                disabled={jellyfinMfaBusy}
+                className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+              >
+                {t("auth.mfaSetupSkip")}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex justify-center">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+              <button
+                type="button"
+                onClick={startJellyfinMfaEnrollment}
+                disabled={jellyfinMfaBusy}
+                className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+              >
+                {t("auth.mfaSetupRestart")}
+              </button>
+              <button
+                type="button"
+                onClick={skipJellyfinMfaEnrollment}
+                disabled={jellyfinMfaBusy}
+                className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+              >
+                {t("auth.mfaSetupSkip")}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -423,14 +654,16 @@ export default function LoginPage() {
                     onChange={(event) => setJellyfinPassword(event.target.value)}
                     placeholder={t("auth.password")}
                   />
-                  <Input
-                    id="jellyfin-totp-code"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    value={jellyfinTotpCode}
-                    onChange={(event) => setJellyfinTotpCode(event.target.value)}
-                    placeholder={t("auth.totpCode")}
-                  />
+                  {showJellyfinTotpCode ? (
+                    <Input
+                      id="jellyfin-totp-code"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      value={jellyfinTotpCode}
+                      onChange={(event) => setJellyfinTotpCode(event.target.value)}
+                      placeholder={t("auth.totpCode")}
+                    />
+                  ) : null}
                   <button
                     type="button"
                     onClick={handleJellyfinSignIn}

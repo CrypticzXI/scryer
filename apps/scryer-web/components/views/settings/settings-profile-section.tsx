@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Loader2 } from "lucide-react";
-import QRCode from "react-qr-code";
+import { QRCode } from "react-qr-code";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
   LinkedAccount,

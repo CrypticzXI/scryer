@@ -23,6 +23,7 @@ import { useOnlineStatus } from "@/lib/hooks/use-online-status";
 import { useInstallPrompt } from "@/lib/hooks/use-install-prompt";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
+import { useMediaRequestsSubscription } from "@/lib/hooks/use-media-requests-subscription";
 import type {
   ActivitySection,
   ViewId,
@@ -668,10 +669,13 @@ function AuthenticatedHomePage({
   });
   type NavigationBadgeCountsPayload = {
     pendingImportCounts?: PendingImportCounts | null;
+    pendingMediaRequestCounts?: PendingImportCounts | null;
     activityImportCount?: number | null;
     pluginUpdateCount?: number | null;
   };
   const [pendingImportCounts, setPendingImportCounts] = useState<PendingImportCounts | null>(null);
+  const [pendingMediaRequestCounts, setPendingMediaRequestCounts] =
+    useState<PendingImportCounts | null>(null);
   const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
   const [pluginUpdateCount, setPluginUpdateCount] = useState(0);
   const [scryerVersion, setScryerVersion] = useState<string | null>(null);
@@ -795,6 +799,9 @@ function AuthenticatedHomePage({
       const badgeCounts = badgeCountsResult.data?.navigationBadgeCounts as NavigationBadgeCountsPayload | undefined;
       setPendingImportCounts(
         badgeCounts?.pendingImportCounts ?? { movie: 0, series: 0, anime: 0 },
+      );
+      setPendingMediaRequestCounts(
+        badgeCounts?.pendingMediaRequestCounts ?? { movie: 0, series: 0, anime: 0 },
       );
       setManualImportRequiredCount(Number(badgeCounts?.activityImportCount ?? 0));
       setPluginUpdateCount(Number(badgeCounts?.pluginUpdateCount ?? 0));
@@ -1132,6 +1139,10 @@ function AuthenticatedHomePage({
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
   const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
 
+  useMediaRequestsSubscription(() => {
+    void refreshNavigationBadges();
+  }, { pause: !canManageTitle });
+
   const routeCommandPalette = useMemo(
     () => buildRouteCommands({
       t,
@@ -1361,6 +1372,7 @@ function AuthenticatedHomePage({
                     wantedSection={wantedSection}
                     user={authenticatedUser}
                     pendingImportCounts={pendingImportCounts}
+                    pendingMediaRequestCounts={pendingMediaRequestCounts}
                     manualImportRequiredCount={manualImportRequiredCount}
                     pluginUpdateCount={pluginUpdateCount}
                     scryerVersion={scryerVersion}

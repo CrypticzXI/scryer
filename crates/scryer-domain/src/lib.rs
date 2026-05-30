@@ -98,18 +98,24 @@ pub struct Library {
 #[serde(rename_all = "snake_case")]
 pub enum MediaRequestStatus {
     Pending,
+    Approved,
+    Rejected,
 }
 
 impl MediaRequestStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
             "pending" => Some(Self::Pending),
+            "approved" => Some(Self::Approved),
+            "rejected" => Some(Self::Rejected),
             _ => None,
         }
     }
@@ -138,6 +144,13 @@ pub struct MediaRequest {
     pub runtime_minutes: Option<i32>,
     pub language: Option<String>,
     pub content_status: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub resolved_by_user_id: Option<String>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_title_id: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
     pub external_ids: Vec<ExternalId>,
     pub requesters: Vec<MediaRequestRequester>,
     pub created_by_user_id: String,
@@ -1395,6 +1408,49 @@ pub struct ImportFileResult {
     pub source_path: std::path::PathBuf,
     pub dest_path: std::path::PathBuf,
     pub size_bytes: u64,
+    pub source_cleanup: Option<ImportSourceCleanupGuard>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportSourceCleanupGuard {
+    pub source_path: std::path::PathBuf,
+    pub dest_path: std::path::PathBuf,
+    pub size_bytes: u64,
+    pub source_identity: ImportSourceIdentity,
+    pub source_proof: ImportContentProof,
+    pub dest_proof: ImportContentProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportContentProof {
+    pub size_bytes: u64,
+    pub sample_bytes: u64,
+    pub sample_blake3: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportSourceIdentity {
+    pub file: ImportFileIdentity,
+    pub kind: ImportSourceIdentityKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportFileIdentity {
+    pub len: u64,
+    pub modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    pub dev: u64,
+    #[cfg(unix)]
+    pub ino: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportSourceIdentityKind {
+    Regular,
+    Symlink {
+        source_link_target: std::path::PathBuf,
+        resolved_target: std::path::PathBuf,
+    },
 }
 
 // ── Title history ────────────────────────────────────────────────────────────
@@ -1634,6 +1690,8 @@ pub enum EventType {
 #[derive(strum::EnumIter)]
 pub enum DomainEventType {
     MediaRequestSubmitted,
+    MediaRequestApproved,
+    MediaRequestRejected,
     TitleAdded,
     TitleUpdated,
     TitleRematched,
@@ -1678,6 +1736,8 @@ impl DomainEventType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MediaRequestSubmitted => "media_request_submitted",
+            Self::MediaRequestApproved => "media_request_approved",
+            Self::MediaRequestRejected => "media_request_rejected",
             Self::TitleAdded => "title_added",
             Self::TitleUpdated => "title_updated",
             Self::TitleRematched => "title_rematched",
@@ -1722,6 +1782,8 @@ impl DomainEventType {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "media_request_submitted" => Some(Self::MediaRequestSubmitted),
+            "media_request_approved" => Some(Self::MediaRequestApproved),
+            "media_request_rejected" => Some(Self::MediaRequestRejected),
             "title_added" => Some(Self::TitleAdded),
             "title_updated" => Some(Self::TitleUpdated),
             "title_rematched" => Some(Self::TitleRematched),
@@ -1820,6 +1882,22 @@ pub struct MediaRequestSubmittedEventData {
     pub external_ids: Vec<ExternalId>,
     pub poster_url: Option<String>,
     pub year: Option<i32>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaRequestResolvedEventData {
+    pub request_id: String,
+    pub library_id: String,
+    pub facet: MediaFacet,
+    pub title_name: String,
+    pub external_ids: Vec<ExternalId>,
+    pub created_title_id: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2302,6 +2380,8 @@ pub struct DownloadQueueItemRemovedEventData {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum DomainEventPayload {
     MediaRequestSubmitted(MediaRequestSubmittedEventData),
+    MediaRequestApproved(MediaRequestResolvedEventData),
+    MediaRequestRejected(MediaRequestResolvedEventData),
     TitleAdded(TitleAddedEventData),
     TitleUpdated(TitleUpdatedEventData),
     TitleRematched(TitleRematchedEventData),
@@ -2346,6 +2426,8 @@ impl DomainEventPayload {
     pub fn event_type(&self) -> DomainEventType {
         match self {
             Self::MediaRequestSubmitted(_) => DomainEventType::MediaRequestSubmitted,
+            Self::MediaRequestApproved(_) => DomainEventType::MediaRequestApproved,
+            Self::MediaRequestRejected(_) => DomainEventType::MediaRequestRejected,
             Self::TitleAdded(_) => DomainEventType::TitleAdded,
             Self::TitleUpdated(_) => DomainEventType::TitleUpdated,
             Self::TitleRematched(_) => DomainEventType::TitleRematched,
@@ -2625,6 +2707,85 @@ pub struct User {
     pub password_hash: Option<String>,
     #[serde(default)]
     pub authorization: UserAuthorization,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaServerProvider {
+    Jellyfin,
+    Plex,
+    Emby,
+}
+
+impl MediaServerProvider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Jellyfin => "jellyfin",
+            Self::Plex => "plex",
+            Self::Emby => "emby",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "jellyfin" => Some(Self::Jellyfin),
+            "plex" => Some(Self::Plex),
+            "emby" => Some(Self::Emby),
+            _ => None,
+        }
+    }
+
+    pub fn supports_external_auth(&self) -> bool {
+        matches!(self, Self::Jellyfin | Self::Plex)
+    }
+
+    pub fn external_account_provider(&self) -> Option<ExternalAccountProvider> {
+        match self {
+            Self::Jellyfin => Some(ExternalAccountProvider::Jellyfin),
+            Self::Plex => Some(ExternalAccountProvider::Plex),
+            Self::Emby => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaServerPathMapping {
+    pub source_path: String,
+    pub destination_path: String,
+    pub sort_order: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaServerDefaultLibraryGrant {
+    pub library_id: String,
+    pub permissions: LibraryPermissionMask,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaServerConnection {
+    pub id: String,
+    pub provider: MediaServerProvider,
+    pub display_name: String,
+    pub base_url: String,
+    pub enabled: bool,
+    pub login_enabled: bool,
+    pub linking_enabled: bool,
+    pub auto_add_enabled: bool,
+    pub default_app_permissions: AppPermissionMask,
+    pub default_library_grants: Vec<MediaServerDefaultLibraryGrant>,
+    pub machine_id: Option<String>,
+    pub api_key: Option<String>,
+    pub path_mappings: Vec<MediaServerPathMapping>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl MediaServerConnection {
+    pub fn api_key_present(&self) -> bool {
+        self.api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -3183,6 +3344,7 @@ pub struct NotificationChannelConfig {
     pub name: String,
     pub channel_type: ChannelType,
     pub config_json: String,
+    pub media_server_connection_id: Option<String>,
     pub is_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -3193,6 +3355,7 @@ pub struct NewNotificationChannelConfig {
     pub name: String,
     pub channel_type: ChannelType,
     pub config_json: String,
+    pub media_server_connection_id: Option<String>,
     pub is_enabled: bool,
 }
 

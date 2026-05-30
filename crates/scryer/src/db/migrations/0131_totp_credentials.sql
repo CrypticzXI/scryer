@@ -10,8 +10,8 @@ CREATE TABLE totp_credentials (
     updated_at TEXT NOT NULL,
     last_used_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    CHECK (algorithm IN ('SHA256')),
-    CHECK (digits BETWEEN 6 AND 10),
+    CHECK (algorithm IN ('SHA1', 'SHA256', 'SHA512')),
+    CHECK (digits IN (6, 8)),
     CHECK (period_seconds > 0)
 );
 
@@ -19,9 +19,15 @@ CREATE TABLE totp_enrollment_challenges (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     secret_base32 TEXT NOT NULL,
+    algorithm TEXT NOT NULL,
+    digits INTEGER NOT NULL,
+    period_seconds INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CHECK (algorithm IN ('SHA1', 'SHA256', 'SHA512')),
+    CHECK (digits IN (6, 8)),
+    CHECK (period_seconds > 0)
 );
 
 CREATE INDEX idx_totp_enrollment_challenges_expires_at

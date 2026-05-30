@@ -467,6 +467,13 @@ pub struct PendingImportCounts {
     pub anime: i64,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct MediaRequestCounts {
+    pub movie: i64,
+    pub series: i64,
+    pub anime: i64,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingImportStatus {
@@ -1137,6 +1144,9 @@ pub struct TotpEnrollmentChallengeRecord {
     pub id: String,
     pub user_id: String,
     pub secret_base32: String,
+    pub algorithm: String,
+    pub digits: i32,
+    pub period_seconds: i32,
     pub created_at: String,
     pub expires_at: String,
 }

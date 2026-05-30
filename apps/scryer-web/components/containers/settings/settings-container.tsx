@@ -7,6 +7,7 @@ import { SettingsOverviewContainer } from "@/components/containers/settings/sett
 import { SettingsSecurityContainer } from "@/components/containers/settings/settings-security-container";
 import { SettingsUsersContainer } from "@/components/containers/settings/settings-users-container";
 import { SettingsIndexersContainer } from "@/components/containers/settings/settings-indexers-container";
+import { SettingsMediaServersContainer } from "@/components/containers/settings/settings-media-servers-container";
 import { SettingsDownloadClientsContainer } from "@/components/containers/settings/settings-download-clients-container";
 import { SettingsDelayProfilesContainer } from "@/components/containers/settings/settings-delay-profiles-container";
 import { SettingsQualityProfilesContainer } from "@/components/containers/settings/settings-quality-profiles-container";
@@ -96,6 +97,8 @@ export const SettingsContainer = memo(function SettingsContainer({
                   ? t("settings.security")
                 : settingsSection === "users"
                   ? t("settings.users")
+                : settingsSection === "mediaServers"
+                  ? t("settings.mediaServers")
                 : settingsSection === "indexers"
                   ? t("settings.indexers")
                 : settingsSection === "downloadClients"
@@ -144,6 +147,8 @@ export const SettingsContainer = memo(function SettingsContainer({
           <SettingsSecurityContainer />
         ) : settingsSection === "users" ? (
           <SettingsUsersContainer />
+        ) : settingsSection === "mediaServers" ? (
+          <SettingsMediaServersContainer />
         ) : settingsSection === "indexers" ? (
           <SettingsIndexersContainer
             providerCatalogVersion={providerCatalogVersions.indexer}

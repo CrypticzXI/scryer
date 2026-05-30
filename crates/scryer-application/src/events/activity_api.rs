@@ -233,6 +233,12 @@ async fn event_allowed(
         DomainEventPayload::MediaRequestSubmitted(data) => {
             Ok(allowed_library_ids.contains(&data.library_id))
         }
+        DomainEventPayload::MediaRequestApproved(data) => {
+            Ok(allowed_library_ids.contains(&data.library_id))
+        }
+        DomainEventPayload::MediaRequestRejected(data) => {
+            Ok(allowed_library_ids.contains(&data.library_id))
+        }
         DomainEventPayload::LibraryScanStarted(data) => Ok(data
             .library_id
             .as_ref()

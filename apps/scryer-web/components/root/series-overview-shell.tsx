@@ -175,6 +175,7 @@ export function SeriesOverviewShell() {
                   wantedSection="wanted"
                   user={permissionUser}
                   pendingImportCounts={null}
+                  pendingMediaRequestCounts={null}
                   manualImportRequiredCount={0}
                   pluginUpdateCount={0}
                   scryerVersion={null}

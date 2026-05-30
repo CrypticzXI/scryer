@@ -76,6 +76,9 @@ export type LibraryRecord = {
   slug: string;
   isDefault: boolean;
   roots: LibraryRootRecord[];
+  qualityProfileId?: string | null;
+  requestQualityProfileIds?: string[];
+  requestQualityProfileDefaultId?: string | null;
 };
 
 export type MediaRequestRequesterRecord = {
@@ -88,7 +91,7 @@ export type MediaRequestRecord = {
   id: string;
   libraryId: string;
   facet: Facet;
-  status: "pending";
+  status: "pending" | "approved" | "rejected";
   identityFingerprint: string;
   title: string;
   sortTitle?: string | null;
@@ -99,6 +102,13 @@ export type MediaRequestRecord = {
   runtimeMinutes?: number | null;
   language?: string | null;
   contentStatus?: string | null;
+  requestedQualityProfileId?: string | null;
+  requestedQualityProfileName?: string | null;
+  resolvedByUserId?: string | null;
+  resolvedAt?: string | null;
+  createdTitleId?: string | null;
+  approvedQualityProfileId?: string | null;
+  approvedQualityProfileName?: string | null;
   externalIds: ExternalId[];
   requesters: MediaRequestRequesterRecord[];
   createdByUserId: string;
@@ -111,6 +121,9 @@ export type LibrarySettingsRecord = {
   requiredAudioLanguages: string[];
   qualityProfileIdOverride: string | null;
   qualityProfileId: string;
+  requestQualityProfileIdsOverride: string[] | null;
+  requestQualityProfileIds: string[];
+  requestQualityProfileDefaultId: string;
   scoringPersonaOverride: string | null;
   scoringPersona: string;
   fillerPolicyOverride: string | null;
@@ -136,6 +149,7 @@ export type LibrarySettingsRecord = {
 export type LibrarySettingsDraft = {
   requiredAudioLanguages: string[] | null;
   qualityProfileId: string | null;
+  requestQualityProfileIds: string[] | null;
   scoringPersona: string | null;
   fillerPolicy: string | null;
   recapPolicy: string | null;

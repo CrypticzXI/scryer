@@ -50,6 +50,7 @@ fn library_settings_draft(
     Ok(scryer_application::LibrarySettingsOverrideDraft {
         required_audio_languages: input.required_audio_languages,
         quality_profile_id: input.quality_profile_id,
+        request_quality_profile_ids: input.request_quality_profile_ids,
         scoring_persona: input
             .scoring_persona
             .map(ScoringPersonaValue::into_application),

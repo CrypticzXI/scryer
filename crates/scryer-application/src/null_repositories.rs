@@ -13,7 +13,8 @@ use scryer_domain::RuleSet;
 
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
-    AcquisitionStateRepository, InsertMediaFileInput, SuccessfulGrabCommit, WantedItemsQuery,
+    AcquisitionStateRepository, InsertMediaFileInput, JellyfinServerUser,
+    MediaServerConnectionRepository, SuccessfulGrabCommit, WantedItemsQuery,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
@@ -28,14 +29,15 @@ use crate::{
     ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
     JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
     LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
-    LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestQuery,
-    MediaRequestRepository, NewBlocklistEntry, NewMediaRequest, NotificationChannelRepository,
-    NotificationSubscriptionRepository, PendingRelease, PendingReleaseRepository, PendingStagedNzb,
-    PluginDescriptorLoader, PluginInstallationRepository, PostProcessingScriptRepository,
-    ReleaseDecision, RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore,
-    SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
-    TitleImageProcessor, TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
-    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, UserExternalAccountRepository,
+    LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
+    MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
+    NotificationChannelRepository, NotificationSubscriptionRepository, PendingRelease,
+    PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
+    PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
+    RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
+    TitleImageReplacement, TitleImageRepository, TitleImageSyncTask, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary, UserExternalAccountRepository,
     VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
     WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
     WorkflowOperationRepository, ports::DatastoreInfo, ports::LogicalBackupExporter,
@@ -320,6 +322,16 @@ impl FileImporter for NullFileImporter {
         _dest: &Path,
         _mode: scryer_domain::ImportMode,
     ) -> AppResult<ImportFileResult> {
+        Err(AppError::Repository(
+            "file importer is not configured".to_string(),
+        ))
+    }
+
+    async fn remove_import_source_after_verified_import(
+        &self,
+        _guard: scryer_domain::ImportSourceCleanupGuard,
+        _final_dest_path: &Path,
+    ) -> AppResult<()> {
         Err(AppError::Repository(
             "file importer is not configured".to_string(),
         ))
@@ -1493,6 +1505,25 @@ impl MediaRequestRepository for NullMediaRequestRepository {
     async fn list(&self, _query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>> {
         Ok(Vec::new())
     }
+
+    async fn get(&self, _request_id: &str) -> AppResult<Option<MediaRequest>> {
+        Ok(None)
+    }
+
+    async fn resolve_pending_overlapping(
+        &self,
+        _request: &MediaRequest,
+        _resolution: MediaRequestResolution,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn count_pending_by_facet(
+        &self,
+        _library_ids: &[String],
+    ) -> AppResult<MediaRequestCounts> {
+        Ok(MediaRequestCounts::default())
+    }
 }
 
 #[derive(Default)]
@@ -1680,11 +1711,59 @@ impl UserExternalAccountRepository for NullUserExternalAccountRepository {
 }
 
 #[derive(Default)]
+pub struct NullMediaServerConnectionRepository;
+
+#[async_trait]
+impl MediaServerConnectionRepository for NullMediaServerConnectionRepository {
+    async fn list(
+        &self,
+        _: Option<scryer_domain::MediaServerProvider>,
+    ) -> AppResult<Vec<scryer_domain::MediaServerConnection>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _: &str) -> AppResult<Option<scryer_domain::MediaServerConnection>> {
+        Ok(None)
+    }
+
+    async fn create(
+        &self,
+        _: scryer_domain::MediaServerConnection,
+    ) -> AppResult<scryer_domain::MediaServerConnection> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn update(
+        &self,
+        _: scryer_domain::MediaServerConnection,
+    ) -> AppResult<scryer_domain::MediaServerConnection> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn delete(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn has_external_accounts(&self, _: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn has_notification_channels(&self, _: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+}
+
+#[derive(Default)]
 pub struct NullExternalIdentityVerifier;
 
 #[async_trait]
 impl ExternalIdentityVerifier for NullExternalIdentityVerifier {
-    async fn verify_plex(&self, _: &str, _: &str) -> AppResult<VerifiedExternalIdentity> {
+    async fn verify_plex(
+        &self,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+    ) -> AppResult<VerifiedExternalIdentity> {
         Err(AppError::Repository(
             "external identity verification is not configured".into(),
         ))
@@ -1695,6 +1774,7 @@ impl ExternalIdentityVerifier for NullExternalIdentityVerifier {
         _: &str,
         _: &str,
         _: &str,
+        _: &str,
     ) -> AppResult<VerifiedExternalIdentity> {
         Err(AppError::Repository(
             "external identity verification is not configured".into(),
@@ -1702,6 +1782,35 @@ impl ExternalIdentityVerifier for NullExternalIdentityVerifier {
     }
 
     async fn test_jellyfin_connection(&self, _: &str) -> AppResult<()> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn test_jellyfin_api_key(&self, _: &str, _: &str) -> AppResult<()> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn exchange_jellyfin_admin_api_key(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> AppResult<String> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn list_jellyfin_users(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> AppResult<Vec<JellyfinServerUser>> {
         Err(AppError::Repository(
             "external identity verification is not configured".into(),
         ))

@@ -1,13 +1,10 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use reqwest::StatusCode;
 use scryer_application::{
-    AppError, AppResult, AuthProviderConnection, ExternalIdentityVerifier, SettingsRepository,
-    VerifiedExternalIdentity,
+    AppError, AppResult, ExternalIdentityVerifier, JellyfinServerUser, VerifiedExternalIdentity,
 };
 use scryer_domain::ExternalAccountProvider;
 use scryer_outbound_http::generic_reqwest_client;
@@ -20,100 +17,24 @@ const SCRYER_PRODUCT: &str = "Scryer";
 const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct HttpExternalIdentityVerifier {
-    settings: Arc<dyn SettingsRepository>,
     client: reqwest::Client,
     plex_base_url: Url,
 }
 
 impl HttpExternalIdentityVerifier {
-    pub fn new(settings: Arc<dyn SettingsRepository>) -> Self {
+    pub fn new() -> Self {
         Self {
-            settings,
             client: generic_reqwest_client(),
             plex_base_url: Url::parse(PLEX_BASE_URL).expect("valid Plex base URL"),
         }
     }
 
     #[cfg(test)]
-    fn with_plex_base_url(settings: Arc<dyn SettingsRepository>, plex_base_url: Url) -> Self {
+    fn with_plex_base_url(plex_base_url: Url) -> Self {
         Self {
-            settings,
             client: generic_reqwest_client(),
             plex_base_url,
         }
-    }
-
-    async fn configured_connections(
-        &self,
-        connection_key: &str,
-        legacy_ids_key: &str,
-    ) -> AppResult<Vec<AuthProviderConnection>> {
-        let configured = self
-            .read_setting_json::<Vec<AuthProviderConnection>>(connection_key)
-            .await?
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(normalize_connection)
-            .collect::<Vec<_>>();
-        if !configured.is_empty() {
-            return Ok(configured);
-        }
-
-        Ok(self
-            .read_setting_json::<Vec<String>>(legacy_ids_key)
-            .await?
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|id| {
-                let id = id.trim().to_string();
-                (!id.is_empty()).then(|| AuthProviderConnection {
-                    display_name: id.clone(),
-                    id,
-                    base_url: None,
-                    machine_id: None,
-                })
-            })
-            .collect())
-    }
-
-    async fn read_setting_json<T>(&self, key_name: &str) -> AppResult<Option<T>>
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        let Some(raw_value) = self
-            .settings
-            .get_setting_json(scryer_application::SETTINGS_SCOPE_SYSTEM, key_name, None)
-            .await?
-        else {
-            return Ok(None);
-        };
-        serde_json::from_str(&raw_value).map(Some).map_err(|error| {
-            AppError::Repository(format!("invalid auth provider setting: {error}"))
-        })
-    }
-
-    async fn jellyfin_connection(&self, connection_id: &str) -> AppResult<AuthProviderConnection> {
-        find_connection(
-            self.configured_connections(
-                scryer_application::AUTH_JELLYFIN_CONNECTIONS_KEY,
-                scryer_application::AUTH_ALLOWED_JELLYFIN_CONNECTION_IDS_KEY,
-            )
-            .await?,
-            connection_id,
-            "Jellyfin",
-        )
-    }
-
-    async fn plex_connection(&self, connection_id: &str) -> AppResult<AuthProviderConnection> {
-        find_connection(
-            self.configured_connections(
-                scryer_application::AUTH_PLEX_CONNECTIONS_KEY,
-                scryer_application::AUTH_ALLOWED_PLEX_CONNECTION_IDS_KEY,
-            )
-            .await?,
-            connection_id,
-            "Plex",
-        )
     }
 
     fn plex_url(&self, path: &str) -> AppResult<Url> {
@@ -128,9 +49,10 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
     async fn verify_plex(
         &self,
         connection_id: &str,
+        machine_id: Option<&str>,
         plex_auth_token: &str,
     ) -> AppResult<VerifiedExternalIdentity> {
-        let connection = self.plex_connection(connection_id).await?;
+        let connection_id = connection_id.trim();
         let token = plex_auth_token.trim();
         if token.is_empty() {
             return Err(AppError::Unauthorized("Plex auth token is required".into()));
@@ -178,7 +100,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         let display_name = json_value_string(user.get("title")).or_else(|| Some(username.clone()));
         let avatar_url = json_value_string(user.get("thumb"));
 
-        if let Some(machine_id) = connection.machine_id.as_deref() {
+        if let Some(machine_id) = machine_id.map(str::trim).filter(|value| !value.is_empty()) {
             let resources_response = self
                 .client
                 .get(self.plex_url("api/resources?includeHttps=1")?)
@@ -212,7 +134,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
 
         Ok(VerifiedExternalIdentity {
             provider: ExternalAccountProvider::Plex,
-            connection_id: connection.id,
+            connection_id: connection_id.to_string(),
             external_user_id,
             username,
             display_name,
@@ -223,13 +145,10 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
     async fn verify_jellyfin(
         &self,
         connection_id: &str,
+        base_url: &str,
         username: &str,
         password: &str,
     ) -> AppResult<VerifiedExternalIdentity> {
-        let connection = self.jellyfin_connection(connection_id).await?;
-        let base_url = connection.base_url.as_deref().ok_or_else(|| {
-            AppError::Validation("Jellyfin connection does not have a base URL configured".into())
-        })?;
         let base_url = jellyfin_base_url(base_url)?;
         let auth_url = base_url.join("Users/AuthenticateByName").map_err(|error| {
             AppError::Validation(format!("Jellyfin authentication URL is invalid: {error}"))
@@ -240,7 +159,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             .post(auth_url)
             .header(
                 "Authorization",
-                jellyfin_authorization_header(&connection.id),
+                jellyfin_authorization_header(connection_id),
             )
             .header("Accept", "application/json")
             .json(&JellyfinAuthRequest { username, password })
@@ -289,7 +208,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
 
         Ok(VerifiedExternalIdentity {
             provider: ExternalAccountProvider::Jellyfin,
-            connection_id: connection.id,
+            connection_id: connection_id.trim().to_string(),
             external_user_id: auth.user.id,
             username: remote_username.clone(),
             display_name: Some(remote_username),
@@ -312,14 +231,215 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
                 AppError::Repository(format!("failed to reach Jellyfin connection: {error}"))
             })?;
 
-        if response.status().is_success() {
-            return Ok(());
+        if !response.status().is_success() {
+            return Err(AppError::Repository(format!(
+                "Jellyfin connection test failed with status {}",
+                response.status()
+            )));
         }
 
-        Err(AppError::Repository(format!(
-            "Jellyfin connection test failed with status {}",
-            response.status()
-        )))
+        let info = response
+            .json::<JellyfinPublicInfo>()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("invalid Jellyfin system info response: {error}"))
+            })?;
+        if info
+            .product_name
+            .as_deref()
+            .is_some_and(|name| !name.to_ascii_lowercase().contains("jellyfin"))
+        {
+            return Err(AppError::Validation(
+                "the supplied URL did not identify itself as a Jellyfin server".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn test_jellyfin_api_key(&self, base_url: &str, api_key: &str) -> AppResult<()> {
+        let base_url = jellyfin_base_url(base_url)?;
+        let users_url = base_url.join("Users").map_err(|error| {
+            AppError::Validation(format!("Jellyfin users URL is invalid: {error}"))
+        })?;
+        let response = self
+            .client
+            .get(users_url)
+            .header("Accept", "application/json")
+            .header("X-Emby-Token", api_key.trim())
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to validate Jellyfin API key: {error}"))
+            })?;
+
+        match response.status() {
+            StatusCode::OK => Ok(()),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(AppError::Unauthorized(
+                "Jellyfin API key is invalid or does not have user-list access".into(),
+            )),
+            status => Err(AppError::Repository(format!(
+                "Jellyfin API key validation failed with status {status}"
+            ))),
+        }
+    }
+
+    async fn exchange_jellyfin_admin_api_key(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        username: &str,
+        password: &str,
+    ) -> AppResult<String> {
+        let base_url = jellyfin_base_url(base_url)?;
+        let auth_url = base_url.join("Users/AuthenticateByName").map_err(|error| {
+            AppError::Validation(format!("Jellyfin authentication URL is invalid: {error}"))
+        })?;
+        let response = self
+            .client
+            .post(auth_url)
+            .header(
+                "Authorization",
+                jellyfin_authorization_header(connection_id),
+            )
+            .header("Accept", "application/json")
+            .json(&JellyfinAuthRequest { username, password })
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to reach Jellyfin connection: {error}"))
+            })?;
+
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                return Err(AppError::Unauthorized(
+                    "invalid Jellyfin admin credentials".into(),
+                ));
+            }
+            status => {
+                return Err(AppError::Repository(format!(
+                    "Jellyfin admin authentication failed with status {status}"
+                )));
+            }
+        }
+
+        let auth = response
+            .json::<JellyfinAuthResponse>()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("invalid Jellyfin authentication response: {error}"))
+            })?;
+        if !auth
+            .user
+            .policy
+            .as_ref()
+            .is_some_and(|policy| policy.is_administrator)
+        {
+            return Err(AppError::Unauthorized(
+                "Jellyfin account must be an administrator to create a Scryer API key".into(),
+            ));
+        }
+        let Some(token) = auth
+            .access_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(AppError::Repository(
+                "Jellyfin did not return an admin access token; paste an API key manually".into(),
+            ));
+        };
+
+        let keys_url = base_url.join("Auth/Keys").map_err(|error| {
+            AppError::Validation(format!("Jellyfin API key URL is invalid: {error}"))
+        })?;
+        let response = self
+            .client
+            .post(keys_url)
+            .header("Accept", "application/json")
+            .header("X-Emby-Token", token)
+            .query(&[("app", SCRYER_PRODUCT)])
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to create Jellyfin API key: {error}"))
+            })?;
+        if !response.status().is_success() {
+            return Err(AppError::Repository(format!(
+                "Jellyfin did not create a usable API key (status {}); paste an API key manually",
+                response.status()
+            )));
+        }
+        let created = response.json::<Value>().await.unwrap_or(Value::Null);
+        json_value_string(created.get("AccessToken"))
+            .or_else(|| json_value_string(created.get("accessToken")))
+            .or_else(|| json_value_string(created.get("Key")))
+            .or_else(|| json_value_string(created.get("key")))
+            .ok_or_else(|| {
+                AppError::Repository(
+                    "Jellyfin did not return a usable API key; paste an API key manually".into(),
+                )
+            })
+    }
+
+    async fn list_jellyfin_users(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        search: Option<&str>,
+    ) -> AppResult<Vec<JellyfinServerUser>> {
+        let base_url = jellyfin_base_url(base_url)?;
+        let users_url = base_url.join("Users").map_err(|error| {
+            AppError::Validation(format!("Jellyfin users URL is invalid: {error}"))
+        })?;
+        let response = self
+            .client
+            .get(users_url)
+            .header("Accept", "application/json")
+            .header("X-Emby-Token", api_key.trim())
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to list Jellyfin users: {error}"))
+            })?;
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                return Err(AppError::Unauthorized(
+                    "Jellyfin API key is invalid or cannot list users".into(),
+                ));
+            }
+            status => {
+                return Err(AppError::Repository(format!(
+                    "Jellyfin user listing failed with status {status}"
+                )));
+            }
+        }
+
+        let mut users = response
+            .json::<Vec<JellyfinUser>>()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("invalid Jellyfin user list response: {error}"))
+            })?
+            .into_iter()
+            .map(|user| {
+                let username = user.name.unwrap_or_else(|| user.id.clone());
+                JellyfinServerUser {
+                    id: user.id,
+                    username: username.clone(),
+                    display_name: Some(username),
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) {
+            let search = search.to_ascii_lowercase();
+            users.retain(|user| {
+                user.username.to_ascii_lowercase().contains(&search)
+                    || user.id.to_ascii_lowercase().contains(&search)
+            });
+        }
+        Ok(users)
     }
 }
 
@@ -332,9 +452,17 @@ struct JellyfinAuthRequest<'a> {
 }
 
 #[derive(Deserialize)]
+struct JellyfinPublicInfo {
+    #[serde(rename = "ProductName")]
+    product_name: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct JellyfinAuthResponse {
     #[serde(rename = "User")]
     user: JellyfinUser,
+    #[serde(rename = "AccessToken")]
+    access_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -345,42 +473,14 @@ struct JellyfinUser {
     name: Option<String>,
     #[serde(rename = "PrimaryImageTag")]
     primary_image_tag: Option<String>,
+    #[serde(rename = "Policy")]
+    policy: Option<JellyfinUserPolicy>,
 }
 
-fn find_connection(
-    connections: Vec<AuthProviderConnection>,
-    connection_id: &str,
-    provider_name: &str,
-) -> AppResult<AuthProviderConnection> {
-    let connection_id = connection_id.trim();
-    connections
-        .into_iter()
-        .find(|connection| connection.id == connection_id)
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "{provider_name} connection is not configured for external auth"
-            ))
-        })
-}
-
-fn normalize_connection(mut connection: AuthProviderConnection) -> Option<AuthProviderConnection> {
-    connection.id = connection.id.trim().to_string();
-    if connection.id.is_empty() {
-        return None;
-    }
-    connection.display_name = connection.display_name.trim().to_string();
-    if connection.display_name.is_empty() {
-        connection.display_name = connection.id.clone();
-    }
-    connection.base_url = connection
-        .base_url
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty());
-    connection.machine_id = connection
-        .machine_id
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    Some(connection)
+#[derive(Deserialize)]
+struct JellyfinUserPolicy {
+    #[serde(rename = "IsAdministrator")]
+    is_administrator: bool,
 }
 
 fn jellyfin_base_url(base_url: &str) -> AppResult<Url> {

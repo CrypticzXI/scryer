@@ -2,8 +2,9 @@ use async_graphql::{Context, Error, MergedObject, Object, Result as GqlResult};
 
 use chrono::Utc;
 use scryer_application::{
-    DownloadImportFilter, PendingImportCounts, SCRYER_VERSION, TitleHistoryFilter,
-    WantedItemsQuery, is_supported_title_history_event_type, supported_title_history_event_types,
+    DownloadImportFilter, MediaRequestCounts, PendingImportCounts, SCRYER_VERSION,
+    TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
+    supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
@@ -18,10 +19,10 @@ use crate::mappers::{
     from_download_queue_item, from_episode, from_external_import_monitor_warmup_progress,
     from_job_definition, from_job_run, from_library, from_library_scan_session,
     from_library_settings, from_linked_account, from_media_rename_plan, from_media_request,
-    from_pending_import_connection, from_pending_import_counts, from_pending_release,
-    from_provider_type, from_smg_version_compatibility_notice, from_system_health, from_title,
-    from_title_acquisition_diagnostics, from_title_history_page, from_title_history_record,
-    from_title_release_blocklist_entry, from_user, from_wanted_item,
+    from_media_request_counts, from_pending_import_connection, from_pending_import_counts,
+    from_pending_release, from_provider_type, from_smg_version_compatibility_notice,
+    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    from_title_history_record, from_title_release_blocklist_entry, from_user, from_wanted_item,
 };
 use crate::types::*;
 
@@ -787,6 +788,8 @@ impl ActivityQueries {
 
         let can_resolve_imports =
             actor_has_any_library_permission(ctx, LibraryPermission::ResolveImports).await?;
+        let can_manage_titles =
+            actor_has_any_library_permission(ctx, LibraryPermission::ManageTitles).await?;
         let can_manage_system_settings =
             actor_has_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
 
@@ -795,6 +798,13 @@ impl ActivityQueries {
                 app.pending_import_counts(&actor).await
             } else {
                 Ok(PendingImportCounts::default())
+            }
+        };
+        let pending_media_request_counts = async {
+            if can_manage_titles {
+                app.pending_media_request_counts(&actor).await
+            } else {
+                Ok(MediaRequestCounts::default())
             }
         };
         let activity_import_count = async {
@@ -813,8 +823,14 @@ impl ActivityQueries {
             }
         };
 
-        let (pending_import_counts, activity_import_count, plugin_update_count) = tokio::try_join!(
+        let (
             pending_import_counts,
+            pending_media_request_counts,
+            activity_import_count,
+            plugin_update_count,
+        ) = tokio::try_join!(
+            pending_import_counts,
+            pending_media_request_counts,
             activity_import_count,
             plugin_update_count,
         )
@@ -822,6 +838,7 @@ impl ActivityQueries {
 
         Ok(NavigationBadgeCountsPayload {
             pending_import_counts: from_pending_import_counts(pending_import_counts),
+            pending_media_request_counts: from_media_request_counts(pending_media_request_counts),
             activity_import_count: activity_import_count as i32,
             plugin_update_count: plugin_update_count as i32,
         })

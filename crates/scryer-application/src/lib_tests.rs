@@ -959,7 +959,16 @@ impl FileImporter for BlockingFileImporter {
             size_bytes: std::fs::metadata(source)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0),
+            source_cleanup: None,
         })
+    }
+
+    async fn remove_import_source_after_verified_import(
+        &self,
+        _guard: scryer_domain::ImportSourceCleanupGuard,
+        _final_dest_path: &Path,
+    ) -> AppResult<()> {
+        Ok(())
     }
 }
 
@@ -1299,6 +1308,8 @@ impl MediaRequestRepository for MockMediaRequestRepo {
             runtime_minutes: request.runtime_minutes,
             language: request.language,
             content_status: request.content_status,
+            requested_quality_profile_id: request.requested_quality_profile_id,
+            requested_quality_profile_name: request.requested_quality_profile_name,
             external_ids: request.external_ids,
             requesters: vec![MediaRequestRequester {
                 user_id: requester.id.clone(),
@@ -1306,6 +1317,11 @@ impl MediaRequestRepository for MockMediaRequestRepo {
                 requested_at: now,
             }],
             created_by_user_id: request.created_by_user_id,
+            resolved_by_user_id: None,
+            resolved_at: None,
+            created_title_id: None,
+            approved_quality_profile_id: None,
+            approved_quality_profile_name: None,
             created_at: now,
             updated_at: now,
         };
@@ -1315,6 +1331,81 @@ impl MediaRequestRepository for MockMediaRequestRepo {
             domain_events.append(submitted_event).await?;
         }
         Ok(stored)
+    }
+
+    async fn get(&self, request_id: &str) -> AppResult<Option<MediaRequest>> {
+        let requests = self.requests.lock().await;
+        Ok(requests
+            .iter()
+            .find(|request| request.id == request_id)
+            .cloned())
+    }
+
+    async fn resolve_pending_overlapping(
+        &self,
+        request: &MediaRequest,
+        resolution: MediaRequestResolution,
+    ) -> AppResult<u64> {
+        let mut requests = self.requests.lock().await;
+        let mut updated = 0;
+        for candidate in requests.iter_mut().filter(|candidate| {
+            candidate.status == MediaRequestStatus::Pending
+                && candidate.library_id == request.library_id
+                && candidate.facet == request.facet
+                && candidate.external_ids.iter().any(|candidate_id| {
+                    request.external_ids.iter().any(|request_id| {
+                        candidate_id.source == request_id.source
+                            && candidate_id.value == request_id.value
+                    })
+                })
+        }) {
+            candidate.status = resolution.status;
+            candidate.resolved_by_user_id = Some(resolution.resolved_by_user_id.clone());
+            candidate.resolved_at = Some(resolution.resolved_at);
+            candidate.created_title_id = resolution.created_title_id.clone();
+            candidate.approved_quality_profile_id = resolution.approved_quality_profile_id.clone();
+            candidate.approved_quality_profile_name =
+                resolution.approved_quality_profile_name.clone();
+            candidate.updated_at = resolution.resolved_at;
+            updated += 1;
+        }
+        drop(requests);
+
+        if updated > 0
+            && let Some(domain_events) = &self.domain_events
+        {
+            domain_events.append(resolution.event).await?;
+        }
+
+        Ok(updated)
+    }
+
+    async fn count_pending_by_facet(
+        &self,
+        library_ids: &[String],
+    ) -> AppResult<MediaRequestCounts> {
+        let requests = self.requests.lock().await;
+        let mut counts = MediaRequestCounts::default();
+        let mut seen = HashSet::new();
+        for request in requests.iter().filter(|request| {
+            request.status == MediaRequestStatus::Pending
+                && library_ids
+                    .iter()
+                    .any(|library_id| library_id == &request.library_id)
+        }) {
+            if !seen.insert((
+                request.library_id.clone(),
+                request.identity_fingerprint.clone(),
+            )) {
+                continue;
+            }
+            match request.facet {
+                MediaFacet::Movie => counts.movie += 1,
+                MediaFacet::Series => counts.series += 1,
+                MediaFacet::Anime => counts.anime += 1,
+            }
+        }
+        Ok(counts)
     }
 
     async fn list(&self, query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>> {
@@ -5760,6 +5851,7 @@ fn media_request_input(library_id: impl Into<String>, tvdb_id: i64) -> SubmitMed
         runtime_minutes: Some(101),
         language: Some("en".to_string()),
         content_status: Some("Released".to_string()),
+        requested_quality_profile_id: None,
         external_ids: vec![
             ExternalId {
                 source: "TVDB".to_string(),
@@ -5818,6 +5910,11 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
     let request = &requests[0];
     assert_eq!(request.library_id, library_id);
     assert_eq!(request.status, MediaRequestStatus::Pending);
+    assert_eq!(request.requested_quality_profile_id.as_deref(), Some("4k"));
+    assert_eq!(
+        request.requested_quality_profile_name.as_deref(),
+        Some("4K")
+    );
     assert_eq!(request.created_by_user_id, harness.user.id);
     assert_eq!(request.requesters.len(), 1);
     assert_eq!(request.requesters[0].user_id, harness.user.id);
@@ -5847,9 +5944,110 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
             assert_eq!(data.library_id, library_id);
             assert_eq!(data.title_name, "Glass Harbor");
             assert_eq!(data.external_ids, request.external_ids);
+            assert_eq!(data.requested_quality_profile_id.as_deref(), Some("4k"));
+            assert_eq!(data.requested_quality_profile_name.as_deref(), Some("4K"));
         }
         other => panic!("unexpected event payload: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn submit_media_request_uses_library_request_quality_profile_allowlist() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    harness
+        .app
+        .update_library_settings(
+            &harness.user,
+            &library_id,
+            LibrarySettingsOverrideDraft {
+                request_quality_profile_ids: Some(vec!["1080p".to_string(), "4k".to_string()]),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect("request profile allowlist should save");
+
+    let mut input = media_request_input(library_id.clone(), 9026);
+    input.requested_quality_profile_id = Some("1080p".to_string());
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("allowlisted request profile should be accepted");
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].requested_quality_profile_id.as_deref(),
+        Some("1080p")
+    );
+    assert_eq!(
+        requests[0].requested_quality_profile_name.as_deref(),
+        Some("1080P")
+    );
+}
+
+#[tokio::test]
+async fn submit_media_request_rejects_profiles_outside_library_request_allowlist() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    harness
+        .app
+        .update_library_settings(
+            &harness.user,
+            &library_id,
+            LibrarySettingsOverrideDraft {
+                request_quality_profile_ids: Some(vec!["1080p".to_string()]),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect("request profile allowlist should save");
+
+    let mut input = media_request_input(library_id, 9027);
+    input.requested_quality_profile_id = Some("4k".to_string());
+    let error = harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect_err("request profile outside allowlist should fail");
+
+    assert!(
+        matches!(error, AppError::Validation(ref message) if message.contains("not allowed")),
+        "unexpected error: {error:?}"
+    );
+    assert!(harness.media_requests.requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn submit_media_request_defaults_missing_profile_to_library_request_default() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    harness
+        .app
+        .update_library_settings(
+            &harness.user,
+            &library_id,
+            LibrarySettingsOverrideDraft {
+                request_quality_profile_ids: Some(vec!["1080p".to_string(), "4k".to_string()]),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect("request profile allowlist should save");
+
+    harness
+        .app
+        .submit_media_request(&harness.user, media_request_input(library_id, 9028))
+        .await
+        .expect("missing profile should use request default");
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(
+        requests[0].requested_quality_profile_id.as_deref(),
+        Some("1080p")
+    );
 }
 
 #[tokio::test]
@@ -6173,6 +6371,203 @@ async fn list_media_requests_filters_by_facet_and_manageable_libraries() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].library_id, alternate_library_id);
     assert_eq!(requests[0].requesters.len(), 1);
+}
+
+#[tokio::test]
+async fn approve_media_request_creates_title_and_resolves_overlapping_pending_requests() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let input = media_request_input(library_id.clone(), 9022);
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input.clone())
+        .await
+        .expect("first request should succeed");
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("duplicate request should succeed");
+
+    let request_id = harness.media_requests.requests.lock().await[0].id.clone();
+    let outcome = harness
+        .app
+        .approve_media_request(&harness.user, &request_id, "1080p")
+        .await
+        .expect("approval should create the title");
+
+    assert!(outcome.accepted);
+    assert!(outcome.search_error.is_none());
+    let titles = harness.titles.store.lock().await;
+    assert_eq!(titles.len(), 1);
+    let title = &titles[0];
+    assert_eq!(outcome.title_id, title.id);
+    assert_eq!(title.name, "Glass Harbor");
+    assert_eq!(title.library_id, library_id);
+    assert_eq!(title.year, Some(2026));
+    assert_eq!(
+        title.poster_url.as_deref(),
+        Some("https://example.test/glass-harbor.jpg")
+    );
+    assert!(
+        title
+            .tags
+            .iter()
+            .any(|tag| tag == "scryer:quality-profile:1080p")
+    );
+    drop(titles);
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.status == MediaRequestStatus::Approved)
+    );
+    assert!(requests.iter().all(|request| {
+        request.created_title_id.as_deref() == Some(outcome.title_id.as_str())
+            && request.approved_quality_profile_id.as_deref() == Some("1080p")
+            && request.approved_quality_profile_name.as_deref() == Some("1080P")
+            && request.resolved_by_user_id.as_deref() == Some(harness.user.id.as_str())
+            && request.resolved_at.is_some()
+    }));
+}
+
+#[tokio::test]
+async fn dismiss_media_request_resolves_overlapping_pending_requests_without_title() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let input = media_request_input(library_id, 9023);
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input.clone())
+        .await
+        .expect("first request should succeed");
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("duplicate request should succeed");
+
+    let request_id = harness.media_requests.requests.lock().await[0].id.clone();
+    let removed = harness
+        .app
+        .dismiss_media_request(&harness.user, &request_id)
+        .await
+        .expect("dismiss should remove the request group");
+
+    assert_eq!(removed, 2);
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.status == MediaRequestStatus::Rejected)
+    );
+    assert!(requests.iter().all(|request| {
+        request.created_title_id.is_none()
+            && request.approved_quality_profile_id.is_none()
+            && request.resolved_by_user_id.as_deref() == Some(harness.user.id.as_str())
+            && request.resolved_at.is_some()
+    }));
+    drop(requests);
+    assert!(harness.titles.store.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn pending_media_request_counts_deduplicate_duplicate_identity_requests() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let input = media_request_input(library_id, 9024);
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input.clone())
+        .await
+        .expect("first request should succeed");
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("duplicate request should succeed");
+
+    let counts = harness
+        .app
+        .pending_media_request_counts(&harness.user)
+        .await
+        .expect("request counts should load");
+
+    assert_eq!(counts.movie, 1);
+    assert_eq!(counts.series, 0);
+    assert_eq!(counts.anime, 0);
+}
+
+#[tokio::test]
+async fn media_request_admin_surfaces_require_manage_titles_library_permission() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    harness
+        .app
+        .submit_media_request(&harness.user, media_request_input(library_id.clone(), 9025))
+        .await
+        .expect("request submission should succeed");
+
+    let config_admin = test_user_with_app_permissions(
+        "catalog-config-admin",
+        AppPermissionMask::MANAGE_CATALOG_SETTINGS,
+    );
+
+    let listed = harness
+        .app
+        .list_media_requests(
+            &config_admin,
+            ListMediaRequestsInput {
+                facet: Some(MediaFacet::Movie),
+                library_ids: None,
+                status: Some(MediaRequestStatus::Pending),
+            },
+        )
+        .await
+        .expect("request list should load");
+    assert!(listed.is_empty());
+
+    let counts = harness
+        .app
+        .pending_media_request_counts(&config_admin)
+        .await
+        .expect("request counts should load");
+    assert_eq!(counts.movie, 0);
+    assert_eq!(counts.series, 0);
+    assert_eq!(counts.anime, 0);
+    assert!(
+        !harness
+            .app
+            .can_manage_media_requests(&config_admin)
+            .await
+            .expect("permission check should load")
+    );
+
+    let events = harness
+        .app
+        .list_media_request_lifecycle_events_for_manager(&config_admin, 0, 10)
+        .await
+        .expect("request event list should load");
+    assert!(events.is_empty());
+
+    let request_manager = library_permission_user(
+        "request-manager",
+        &library_id,
+        &[scryer_domain::LibraryPermission::ManageTitles],
+    );
+    let manager_events = harness
+        .app
+        .list_media_request_lifecycle_events_for_manager(&request_manager, 0, 10)
+        .await
+        .expect("manager request events should load");
+    assert_eq!(manager_events.len(), 1);
 }
 
 async fn wait_for_title_image_clear_calls(repo: &BlockingTitleImageRepo, expected: usize) {
@@ -7962,6 +8357,7 @@ fn empty_library_settings_override() -> LibrarySettingsOverrideDraft {
     LibrarySettingsOverrideDraft {
         required_audio_languages: None,
         quality_profile_id: None,
+        request_quality_profile_ids: None,
         scoring_persona: None,
         filler_policy: None,
         recap_policy: None,

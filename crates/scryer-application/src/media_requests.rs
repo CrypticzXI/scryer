@@ -1,9 +1,13 @@
 use super::*;
 use crate::domain_events::new_global_domain_event;
+use crate::ports::MediaRequestResolution;
 use scryer_domain::{
-    DomainEventPayload, LibraryPermission, MediaRequestStatus, MediaRequestSubmittedEventData,
+    DomainEvent, DomainEventFilter, DomainEventPayload, DomainEventType, LibraryPermission,
+    MediaRequestResolvedEventData, MediaRequestStatus, MediaRequestSubmittedEventData,
 };
 use std::collections::BTreeSet;
+
+const TITLE_QUALITY_PROFILE_TAG_PREFIX: &str = "scryer:quality-profile:";
 
 #[derive(Clone, Debug)]
 pub struct SubmitMediaRequestInput {
@@ -18,12 +22,21 @@ pub struct SubmitMediaRequestInput {
     pub runtime_minutes: Option<i32>,
     pub language: Option<String>,
     pub content_status: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
     pub external_ids: Vec<ExternalId>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SubmitMediaRequestOutcome {
     pub accepted: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ApproveMediaRequestOutcome {
+    pub accepted: bool,
+    pub title_id: String,
+    pub wanted_search: Option<WantedSearchOutcome>,
+    pub search_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -77,6 +90,12 @@ impl AppUseCase {
             .await?;
         self.ensure_request_subject_is_not_in_library(&library.id, &external_ids)
             .await?;
+        let (requested_quality_profile_id, requested_quality_profile_name) = self
+            .request_quality_profile_snapshot_for_submission(
+                &library,
+                input.requested_quality_profile_id,
+            )
+            .await?;
 
         let request = NewMediaRequest {
             id: Id::new().0,
@@ -92,6 +111,8 @@ impl AppUseCase {
             runtime_minutes: input.runtime_minutes,
             language: normalized_optional_string(input.language),
             content_status: normalized_optional_string(input.content_status),
+            requested_quality_profile_id: Some(requested_quality_profile_id),
+            requested_quality_profile_name: Some(requested_quality_profile_name),
             external_ids,
             created_by_user_id: actor.id.clone(),
         };
@@ -105,6 +126,8 @@ impl AppUseCase {
                 external_ids: request.external_ids.clone(),
                 poster_url: request.poster_url.clone(),
                 year: request.year,
+                requested_quality_profile_id: request.requested_quality_profile_id.clone(),
+                requested_quality_profile_name: request.requested_quality_profile_name.clone(),
             }),
         );
 
@@ -122,17 +145,14 @@ impl AppUseCase {
         actor: &User,
         input: ListMediaRequestsInput,
     ) -> AppResult<Vec<MediaRequest>> {
-        let allowed_libraries = self
-            .list_libraries_for_permission(
+        let allowed_ids = self
+            .library_ids_with_library_permission(
                 actor,
                 input.facet.clone(),
                 LibraryPermission::ManageTitles,
             )
             .await?;
-        let allowed_ids = allowed_libraries
-            .into_iter()
-            .map(|library| library.id)
-            .collect::<HashSet<_>>();
+        let allowed_ids = allowed_ids.into_iter().collect::<HashSet<_>>();
 
         let library_ids = match input.library_ids {
             Some(requested_ids) => requested_ids
@@ -157,6 +177,225 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn approve_media_request(
+        &self,
+        actor: &User,
+        request_id: &str,
+        quality_profile_id: &str,
+    ) -> AppResult<ApproveMediaRequestOutcome> {
+        let request = self
+            .load_manageable_pending_media_request(actor, request_id)
+            .await?;
+        let (approved_quality_profile_id, approved_quality_profile_name) =
+            self.quality_profile_snapshot(quality_profile_id).await?;
+        let outcome = self
+            .add_title_with_outcome_in_library(
+                actor,
+                media_request_to_new_title(&request, Some(&approved_quality_profile_id)),
+                request.library_id.clone(),
+            )
+            .await?;
+        let resolved_event = new_global_domain_event(
+            Some(actor.id.clone()),
+            DomainEventPayload::MediaRequestApproved(media_request_resolved_event_data(
+                &request,
+                Some(outcome.title.id.clone()),
+                Some(approved_quality_profile_id.clone()),
+                Some(approved_quality_profile_name.clone()),
+            )),
+        );
+        self.services
+            .catalog
+            .media_requests
+            .resolve_pending_overlapping(
+                &request,
+                MediaRequestResolution {
+                    status: MediaRequestStatus::Approved,
+                    resolved_by_user_id: actor.id.clone(),
+                    resolved_at: chrono::Utc::now(),
+                    created_title_id: Some(outcome.title.id.clone()),
+                    approved_quality_profile_id: Some(approved_quality_profile_id),
+                    approved_quality_profile_name: Some(approved_quality_profile_name),
+                    event: resolved_event,
+                },
+            )
+            .await?;
+        let title_id = outcome.title.id.clone();
+        let wanted_search = match self
+            .trigger_title_wanted_search(
+                actor,
+                &title_id,
+                SubmissionConflictPolicy::from_replace_flag(false),
+            )
+            .await
+        {
+            Ok(wanted_search) => Some(wanted_search),
+            Err(error) => {
+                return Ok(ApproveMediaRequestOutcome {
+                    accepted: true,
+                    title_id,
+                    wanted_search: None,
+                    search_error: Some(error.to_string()),
+                });
+            }
+        };
+
+        Ok(ApproveMediaRequestOutcome {
+            accepted: true,
+            title_id,
+            wanted_search,
+            search_error: None,
+        })
+    }
+
+    pub async fn dismiss_media_request(&self, actor: &User, request_id: &str) -> AppResult<u64> {
+        let request = self
+            .load_manageable_pending_media_request(actor, request_id)
+            .await?;
+        let resolved_event = new_global_domain_event(
+            Some(actor.id.clone()),
+            DomainEventPayload::MediaRequestRejected(media_request_resolved_event_data(
+                &request, None, None, None,
+            )),
+        );
+        self.services
+            .catalog
+            .media_requests
+            .resolve_pending_overlapping(
+                &request,
+                MediaRequestResolution {
+                    status: MediaRequestStatus::Rejected,
+                    resolved_by_user_id: actor.id.clone(),
+                    resolved_at: chrono::Utc::now(),
+                    created_title_id: None,
+                    approved_quality_profile_id: None,
+                    approved_quality_profile_name: None,
+                    event: resolved_event,
+                },
+            )
+            .await
+    }
+
+    pub async fn pending_media_request_counts(
+        &self,
+        actor: &User,
+    ) -> AppResult<MediaRequestCounts> {
+        let library_ids = self
+            .library_ids_with_library_permission(actor, None, LibraryPermission::ManageTitles)
+            .await?;
+
+        if library_ids.is_empty() {
+            return Ok(MediaRequestCounts::default());
+        }
+
+        self.services
+            .catalog
+            .media_requests
+            .count_pending_by_facet(&library_ids)
+            .await
+    }
+
+    pub async fn can_manage_media_requests(&self, actor: &User) -> AppResult<bool> {
+        Ok(!self
+            .library_ids_with_library_permission(actor, None, LibraryPermission::ManageTitles)
+            .await?
+            .is_empty())
+    }
+
+    pub async fn list_media_request_lifecycle_events_for_manager(
+        &self,
+        actor: &User,
+        after_sequence: i64,
+        limit: usize,
+    ) -> AppResult<Vec<DomainEvent>> {
+        let allowed_library_ids = self
+            .library_ids_with_library_permission(actor, None, LibraryPermission::ManageTitles)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let target_len = if limit == 0 { 100 } else { limit.min(500) };
+        let mut page_filter = DomainEventFilter {
+            event_types: Some(vec![
+                DomainEventType::MediaRequestSubmitted,
+                DomainEventType::MediaRequestApproved,
+                DomainEventType::MediaRequestRejected,
+            ]),
+            after_sequence: Some(after_sequence),
+            limit: 500,
+            ..DomainEventFilter::default()
+        };
+        let mut visible = Vec::new();
+
+        loop {
+            let events = self
+                .services
+                .events
+                .domain_events
+                .list(&page_filter)
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+
+            let next_sequence = events.last().map(|event| event.sequence);
+            let batch_len = events.len();
+            for event in events {
+                if media_request_lifecycle_event_library_id(&event)
+                    .is_some_and(|library_id| allowed_library_ids.contains(library_id))
+                {
+                    visible.push(event);
+                    if visible.len() >= target_len {
+                        return Ok(visible);
+                    }
+                }
+            }
+
+            if batch_len < 500 {
+                break;
+            }
+
+            page_filter.after_sequence = next_sequence;
+        }
+
+        Ok(visible)
+    }
+
+    async fn load_manageable_pending_media_request(
+        &self,
+        actor: &User,
+        request_id: &str,
+    ) -> AppResult<MediaRequest> {
+        let request_id = request_id.trim();
+        if request_id.is_empty() {
+            return Err(AppError::Validation("media request id is required".into()));
+        }
+
+        let request = self
+            .services
+            .catalog
+            .media_requests
+            .get(request_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("media request not found".into()))?;
+        if request.status != MediaRequestStatus::Pending {
+            return Err(AppError::Validation(
+                "media request is no longer pending".into(),
+            ));
+        }
+
+        self.require_library_permission(
+            actor,
+            &request.library_id,
+            LibraryPermission::ManageTitles,
+        )
+        .await?;
+        Ok(request)
+    }
+
     async fn ensure_request_subject_is_not_in_library(
         &self,
         library_id: &str,
@@ -179,6 +418,48 @@ impl AppUseCase {
             }
         }
         Ok(())
+    }
+
+    async fn request_quality_profile_snapshot_for_submission(
+        &self,
+        library: &Library,
+        requested_quality_profile_id: Option<String>,
+    ) -> AppResult<(String, String)> {
+        let settings = self
+            .effective_request_quality_profile_settings_for_library(library)
+            .await?;
+        let requested_quality_profile_id = normalized_optional_string(requested_quality_profile_id)
+            .unwrap_or_else(|| settings.default_profile_id.clone());
+        if !settings
+            .profile_ids
+            .iter()
+            .any(|profile_id| profile_id == &requested_quality_profile_id)
+        {
+            return Err(AppError::Validation(
+                "requested quality profile is not allowed for this library".into(),
+            ));
+        }
+
+        self.quality_profile_snapshot(&requested_quality_profile_id)
+            .await
+    }
+
+    async fn quality_profile_snapshot(
+        &self,
+        quality_profile_id: &str,
+    ) -> AppResult<(String, String)> {
+        let quality_profile_id =
+            normalized_optional_string(Some(quality_profile_id.to_string()))
+                .ok_or_else(|| AppError::Validation("quality profile id is required".into()))?;
+        let profile_settings = self.load_quality_profile_settings().await?;
+        let profile = profile_settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == quality_profile_id)
+            .ok_or_else(|| {
+                AppError::Validation(format!("unknown quality profile {quality_profile_id}"))
+            })?;
+        Ok((profile.id.clone(), profile.name.clone()))
     }
 }
 
@@ -211,6 +492,15 @@ fn media_request_identity_fingerprint(external_ids: &[ExternalId]) -> String {
     )
 }
 
+fn media_request_lifecycle_event_library_id(event: &DomainEvent) -> Option<&str> {
+    match &event.payload {
+        DomainEventPayload::MediaRequestSubmitted(data) => Some(data.library_id.as_str()),
+        DomainEventPayload::MediaRequestApproved(data)
+        | DomainEventPayload::MediaRequestRejected(data) => Some(data.library_id.as_str()),
+        _ => None,
+    }
+}
+
 fn group_external_id_values_by_source(external_ids: &[ExternalId]) -> Vec<(String, Vec<String>)> {
     let mut grouped = std::collections::BTreeMap::<String, Vec<String>>::new();
     for external_id in external_ids {
@@ -224,6 +514,51 @@ fn group_external_id_values_by_source(external_ids: &[ExternalId]) -> Vec<(Strin
 
 fn is_smg_request_correlation_external_id(external_id: &ExternalId) -> bool {
     matches!(external_id.source.as_str(), "tvdb" | "imdb" | "tmdb")
+}
+
+fn media_request_resolved_event_data(
+    request: &MediaRequest,
+    created_title_id: Option<String>,
+    approved_quality_profile_id: Option<String>,
+    approved_quality_profile_name: Option<String>,
+) -> MediaRequestResolvedEventData {
+    MediaRequestResolvedEventData {
+        request_id: request.id.clone(),
+        library_id: request.library_id.clone(),
+        facet: request.facet.clone(),
+        title_name: request.title.clone(),
+        external_ids: request.external_ids.clone(),
+        created_title_id,
+        requested_quality_profile_id: request.requested_quality_profile_id.clone(),
+        requested_quality_profile_name: request.requested_quality_profile_name.clone(),
+        approved_quality_profile_id,
+        approved_quality_profile_name,
+    }
+}
+
+fn media_request_to_new_title(
+    request: &MediaRequest,
+    quality_profile_id: Option<&str>,
+) -> NewTitle {
+    NewTitle {
+        name: request.title.clone(),
+        facet: request.facet.clone(),
+        monitored: true,
+        tags: quality_profile_id
+            .map(|profile_id| format!("{TITLE_QUALITY_PROFILE_TAG_PREFIX}{profile_id}"))
+            .into_iter()
+            .collect(),
+        external_ids: request.external_ids.clone(),
+        min_availability: None,
+        poster_url: request.poster_url.clone(),
+        year: request.year,
+        overview: request.overview.clone(),
+        sort_title: request.sort_title.clone(),
+        slug: request.slug.clone(),
+        runtime_minutes: request.runtime_minutes,
+        language: request.language.clone(),
+        content_status: request.content_status.clone(),
+    }
 }
 
 fn normalized_optional_string(value: Option<String>) -> Option<String> {

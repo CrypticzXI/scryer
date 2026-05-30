@@ -1229,6 +1229,7 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
         name: "Discord".to_string(),
         channel_type: ChannelType::parse("discord").expect("channel type"),
         config_json: r#"{"url":"https://example.com/webhook"}"#.to_string(),
+        media_server_connection_id: None,
         is_enabled: true,
         created_at: now,
         updated_at: now,

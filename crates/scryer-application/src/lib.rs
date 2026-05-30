@@ -28,6 +28,7 @@ mod library_scan_titles;
 mod library_scan_unmatched;
 mod media;
 mod media_requests;
+mod media_servers;
 mod notifications;
 mod null_repositories;
 pub mod persisted_records;
@@ -82,8 +83,8 @@ pub(crate) use rules::user_rule_input;
 pub use download_client_config::resolve_download_client_base_url_from_config_json;
 pub use import::completed_download as completed_download_handler;
 pub use ports::{
-    AudioTranscodeArtifact, AudioTranscodeJob, AudioTranscoderClient, SubtitleSyncClient,
-    SubtitleSyncJob,
+    AudioTranscodeArtifact, AudioTranscodeJob, AudioTranscoderClient, MediaRequestResolution,
+    SubtitleSyncClient, SubtitleSyncJob,
 };
 pub(crate) mod normalize;
 pub use import::failed_download as failed_download_handler;
@@ -115,10 +116,11 @@ use scryer_domain::{
     CompletedDownload, DomainEvent, DomainEventFilter, DomainEventType, DownloadClientConfig,
     DownloadQueueItem, DownloadQueueState, Episode, ExternalId, HistoryEvent, Id, ImportFileResult,
     ImportMode, ImportRecord, ImportResult, ImportStatus, IndexerConfig, Library, LibraryGrant,
-    MediaFacet, MediaRequest, NewDomainEvent, NewDownloadClientConfig, NewIndexerConfig, NewTitle,
-    PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation, PolicyInput, PolicyOutput,
-    RuleSet, SubtitleProviderConfig, TaggedAlias, Title, TitleHistoryEventType, TitleHistoryRecord,
-    User,
+    MediaFacet, MediaRequest, MediaServerConnection, MediaServerDefaultLibraryGrant,
+    MediaServerPathMapping, MediaServerProvider, NewDomainEvent, NewDownloadClientConfig,
+    NewIndexerConfig, NewTitle, PluginCatalogSource, PluginCatalogStatusRecord, PluginInstallation,
+    PolicyInput, PolicyOutput, RuleSet, SubtitleProviderConfig, TaggedAlias, Title,
+    TitleHistoryEventType, TitleHistoryRecord, User,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -216,6 +218,7 @@ pub use media::language::{
 pub use media_requests::{
     ListMediaRequestsInput, SubmitMediaRequestInput, SubmitMediaRequestOutcome,
 };
+pub use media_servers::{MediaServerConnectionDraft, MediaServerConnectionPatch};
 pub use plugins::plugins::{
     ManualPluginPreview, PluginCatalogStatus, RegistryPlugin, RulePackRegistryEntry,
     RulePackTemplate,
@@ -237,10 +240,10 @@ pub use settings::settings::{
     ExternalImportLibraryPathsSelection, FacetScoringPersonaSelection, GeneralSettings,
     IndexerRoutingSettingsEntry, LibraryPathsSettings, LibrarySettings,
     LibrarySettingsOverrideDraft, MediaSettings, QualityProfileSelection, QualityProfileSettings,
-    SaveQualityProfileSettings, SecuritySettings, ServiceSettings, SubtitleSettings,
-    UpdateAutoBackupSettings, UpdateFacetScoringPersonaSelection, UpdateGeneralSettings,
-    UpdateLibraryPaths, UpdateMediaSettings, UpdateQualityProfileSelection, UpdateSecuritySettings,
-    UpdateServiceSettings, UpdateSubtitleSettings,
+    RequestQualityProfileSettings, SaveQualityProfileSettings, SecuritySettings, ServiceSettings,
+    SubtitleSettings, UpdateAutoBackupSettings, UpdateFacetScoringPersonaSelection,
+    UpdateGeneralSettings, UpdateLibraryPaths, UpdateMediaSettings, UpdateQualityProfileSelection,
+    UpdateSecuritySettings, UpdateServiceSettings, UpdateSubtitleSettings,
 };
 pub use subtitles::orchestration::{
     DownloadSubtitleForMediaFileRequest, spawn_subtitle_search_for_file,
@@ -287,13 +290,13 @@ pub use null_repositories::{
     NullImportArtifactRepository, NullImportRepository, NullIndexerStatsTracker,
     NullJobRunRepository, NullLibraryProbeRepository, NullLibraryRepository,
     NullLibraryScanUnmatchedItemRepository, NullLogicalBackupExporter, NullMediaFileRepository,
-    NullMediaRequestRepository, NullNotificationChannelRepository,
-    NullNotificationSubscriptionRepository, NullPendingReleaseRepository,
-    NullPluginDescriptorLoader, NullPluginHttpTrustConfigRuntime, NullPluginInstallationRepository,
-    NullPostProcessingScriptRepository, NullRuleSetRepository, NullSettingsRepository,
-    NullStagedNzbStore, NullSubtitleDownloadRepository, NullSystemInfoProvider,
-    NullTitleImageProcessor, NullTitleImageRepository, NullWantedItemRepository,
-    NullWorkflowOperationRepository,
+    NullMediaRequestRepository, NullMediaServerConnectionRepository,
+    NullNotificationChannelRepository, NullNotificationSubscriptionRepository,
+    NullPendingReleaseRepository, NullPluginDescriptorLoader, NullPluginHttpTrustConfigRuntime,
+    NullPluginInstallationRepository, NullPostProcessingScriptRepository, NullRuleSetRepository,
+    NullSettingsRepository, NullStagedNzbStore, NullSubtitleDownloadRepository,
+    NullSystemInfoProvider, NullTitleImageProcessor, NullTitleImageRepository,
+    NullWantedItemRepository, NullWorkflowOperationRepository,
 };
 pub use ports::{
     AcquisitionStateRepository, BlocklistRepository, BuiltinDownloadClientConnectionTester,
@@ -302,14 +305,15 @@ pub use ports::{
     ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository, ExternalPluginWasm,
     FileImporter, HousekeepingRepository, ImportArtifactRepository, ImportRepository,
     IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
-    IndexerPluginProvider, IndexerStatsTracker, JobRunRepository, LibraryProbeRepository,
-    LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
-    MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
-    NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest, NotificationActorPayload,
-    NotificationAppPayload, NotificationApplicationUpdatePayload, NotificationChannelRepository,
-    NotificationClient, NotificationDownloadPayload, NotificationEpisodePayload,
-    NotificationExternalIdsPayload, NotificationFilePayload, NotificationHealthPayload,
-    NotificationImportPayload, NotificationManualInteractionPayload, NotificationMediaFilePayload,
+    IndexerPluginProvider, IndexerStatsTracker, JellyfinServerUser, JobRunRepository,
+    LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
+    LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
+    MediaRequestRepository, MediaServerConnectionRepository, NOTIFICATION_REQUEST_SCHEMA_VERSION,
+    NewMediaRequest, NotificationActorPayload, NotificationAppPayload,
+    NotificationApplicationUpdatePayload, NotificationChannelRepository, NotificationClient,
+    NotificationDownloadPayload, NotificationEpisodePayload, NotificationExternalIdsPayload,
+    NotificationFilePayload, NotificationHealthPayload, NotificationImportPayload,
+    NotificationManualInteractionPayload, NotificationMediaFilePayload,
     NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
     NotificationPluginProvider, NotificationReleasePayload, NotificationSeverityPayload,
     NotificationSubscriptionRepository, NotificationTitlePayload, PendingReleaseRepository,
@@ -337,9 +341,9 @@ pub use quality::scoring_weights::{
 pub use quality_profile::{
     BLOCK_SCORE, QUALITY_PROFILE_CATALOG_KEY, QUALITY_PROFILE_ID_KEY,
     QUALITY_PROFILE_INHERIT_VALUE, QualityProfile, QualityProfileCriteria, QualityProfileDecision,
-    ScoringConfig, ScoringEntry, ScoringSource, apply_age_scoring, apply_size_scoring_for_category,
-    default_quality_profile_1080p_for_search, default_quality_profile_for_search,
-    evaluate_against_profile, parse_profile_catalog_from_json,
+    REQUEST_QUALITY_PROFILE_IDS_KEY, ScoringConfig, ScoringEntry, ScoringSource, apply_age_scoring,
+    apply_size_scoring_for_category, default_quality_profile_1080p_for_search,
+    default_quality_profile_for_search, evaluate_against_profile, parse_profile_catalog_from_json,
 };
 pub use services::{
     AppServices, AppServicesBuilder, AppUseCase, ExternalImportMonitorWarmupBeginResult,
@@ -393,20 +397,20 @@ pub use types::{
     DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind, EpisodeScopedMediaFile,
     FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
     IgnorePendingImportResult, IndexerQueryStats, JwtAuthConfig, LibraryRootDraft,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, PasskeySummary,
-    PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
-    PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingImportStatus,
-    PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,
-    PrimaryCollectionSummary, RecycleBinSettings, RecycledItem, ReleaseDecision,
-    ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
-    ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
-    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
-    TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord, TitleMediaFile,
-    TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary, TitleReleaseBlocklistEntry,
-    TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
-    TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,
-    UpdateRecycleBinSettings, WantedCompleteTransition, WantedGrabTransition, WantedItem,
-    WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
+    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, MediaRequestCounts,
+    PasskeySummary, PendingImportBindingFilePreview, PendingImportBindingPreview,
+    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
+    PendingImportStatus, PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount,
+    PendingTitleHydration, PrimaryCollectionSummary, RecycleBinSettings, RecycledItem,
+    ReleaseDecision, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
+    ResolvePendingImportResult, ScopedExternalId, SortDirection, SystemHealth,
+    TitleAcquisitionDiagnostics, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
+    TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
+    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary,
+    TitleReleaseBlocklistEntry, TotpCredentialRecord, TotpEnrollmentChallengeRecord,
+    TotpEnrollmentComplete, TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord,
+    TotpStatus, UpdateRecycleBinSettings, WantedCompleteTransition, WantedGrabTransition,
+    WantedItem, WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
     WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
     WebauthnCredentialRecord,
 };

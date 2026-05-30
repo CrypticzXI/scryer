@@ -234,6 +234,20 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
             Ok(Some(channel)) if channel.is_enabled => channel,
             _ => continue,
         };
+        let channel = match app
+            .notification_channel_with_resolved_media_server_config(channel)
+            .await
+        {
+            Ok(channel) => channel,
+            Err(error) => {
+                warn!(
+                    channel_id = subscription.channel_id.as_str(),
+                    error = %error,
+                    "failed to resolve media server notification channel configuration"
+                );
+                continue;
+            }
+        };
 
         let client = match provider.client_for_channel(&channel) {
             Some(client) => client,

@@ -26,6 +26,7 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
   backups: "backups",
   security: "security",
   users: "users",
+  mediaServers: "media-servers",
   indexers: "indexers",
   downloadClients: "download-clients",
   qualityProfiles: "quality-profiles",

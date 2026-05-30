@@ -539,7 +539,164 @@ impl AppUseCase {
         ))
     }
 }
+fn normalize_request_quality_profile_ids(profile_ids: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    profile_ids
+        .into_iter()
+        .filter_map(|profile_id| normalize_optional_string(Some(profile_id)))
+        .filter(|profile_id| seen.insert(profile_id.clone()))
+        .collect()
+}
+
+fn configured_request_quality_profile_ids(
+    raw_profile_ids: Vec<String>,
+    catalog_profile_ids: &HashSet<String>,
+) -> Option<Vec<String>> {
+    let profile_ids = normalize_request_quality_profile_ids(raw_profile_ids)
+        .into_iter()
+        .filter(|profile_id| catalog_profile_ids.contains(profile_id))
+        .collect::<Vec<_>>();
+    (!profile_ids.is_empty()).then_some(profile_ids)
+}
+
+fn fallback_request_quality_profile_id(
+    profile_settings: &QualityProfileSettings,
+    library_quality_profile_id: &str,
+) -> String {
+    if profile_settings
+        .profiles
+        .iter()
+        .any(|profile| profile.id == library_quality_profile_id)
+    {
+        return library_quality_profile_id.to_string();
+    }
+
+    profile_settings.global_profile_id.clone()
+}
+
 impl AppUseCase {
+    async fn load_library_request_quality_profile_ids_override(
+        &self,
+        library_id: &str,
+        catalog_profile_ids: &HashSet<String>,
+    ) -> AppResult<Option<Vec<String>>> {
+        Ok(self
+            .read_setting_json_value::<Vec<String>>(
+                REQUEST_QUALITY_PROFILE_IDS_KEY,
+                Some(library_id),
+            )
+            .await?
+            .and_then(|profile_ids| {
+                configured_request_quality_profile_ids(profile_ids, catalog_profile_ids)
+            }))
+    }
+
+    pub(crate) async fn effective_request_quality_profile_settings_for_library(
+        &self,
+        library: &Library,
+    ) -> AppResult<RequestQualityProfileSettings> {
+        let scope_id = library.facet.as_str();
+        let quality_profile_id = self
+            .resolve_quality_profile_id(Some(&library.id), Some(scope_id))
+            .await?;
+        let profile_settings = self.load_quality_profile_settings().await?;
+        let catalog_profile_ids = profile_settings
+            .profiles
+            .iter()
+            .map(|profile| profile.id.clone())
+            .collect::<HashSet<_>>();
+        let fallback_id =
+            fallback_request_quality_profile_id(&profile_settings, &quality_profile_id);
+        let profile_ids = self
+            .load_library_request_quality_profile_ids_override(&library.id, &catalog_profile_ids)
+            .await?
+            .unwrap_or_else(|| vec![fallback_id.clone()]);
+        let default_profile_id = profile_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| fallback_id.clone());
+
+        Ok(RequestQualityProfileSettings {
+            profile_ids,
+            default_profile_id,
+        })
+    }
+
+    pub async fn request_quality_profile_settings_for_library(
+        &self,
+        actor: &User,
+        library_id: &str,
+    ) -> AppResult<RequestQualityProfileSettings> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+
+        let can_request = self
+            .has_granted_library_permission(
+                actor,
+                &library.id,
+                scryer_domain::LibraryPermission::Request,
+            )
+            .await?;
+        let can_manage = self
+            .has_granted_library_permission(
+                actor,
+                &library.id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+        let can_manage_catalog = self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+        let can_manage_permissions = self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManagePermissions)
+            .await?;
+        if !can_request && !can_manage && !can_manage_catalog && !can_manage_permissions {
+            return Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ));
+        }
+
+        self.effective_request_quality_profile_settings_for_library(&library)
+            .await
+    }
+
+    pub async fn title_quality_profile_id_for_library(
+        &self,
+        actor: &User,
+        library_id: &str,
+    ) -> AppResult<String> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        let can_manage_titles = self
+            .has_granted_library_permission(
+                actor,
+                &library.id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+        let can_manage_catalog = self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+        if !can_manage_titles && !can_manage_catalog {
+            return Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ));
+        }
+
+        self.resolve_quality_profile_id(Some(&library.id), Some(library.facet.as_str()))
+            .await
+    }
+
     pub async fn get_library_settings(
         &self,
         actor: &User,
@@ -571,6 +728,24 @@ impl AppUseCase {
         let quality_profile_id = self
             .resolve_quality_profile_id(Some(&library.id), Some(scope_id))
             .await?;
+        let profile_settings = self.load_quality_profile_settings().await?;
+        let catalog_profile_ids = profile_settings
+            .profiles
+            .iter()
+            .map(|profile| profile.id.clone())
+            .collect::<HashSet<_>>();
+        let request_quality_profile_ids_override = self
+            .load_library_request_quality_profile_ids_override(&library.id, &catalog_profile_ids)
+            .await?;
+        let request_quality_profile_fallback_id =
+            fallback_request_quality_profile_id(&profile_settings, &quality_profile_id);
+        let request_quality_profile_ids = request_quality_profile_ids_override
+            .clone()
+            .unwrap_or_else(|| vec![request_quality_profile_fallback_id.clone()]);
+        let request_quality_profile_default_id = request_quality_profile_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| request_quality_profile_fallback_id.clone());
         let scoring_persona_override = parse_scoring_persona_setting(
             self.read_setting_string_value_explicit(SCORING_PERSONA_KEY, Some(&library.id))
                 .await?,
@@ -715,6 +890,9 @@ impl AppUseCase {
             required_audio_languages,
             quality_profile_id_override,
             quality_profile_id,
+            request_quality_profile_ids_override,
+            request_quality_profile_ids,
+            request_quality_profile_default_id,
             scoring_persona_override,
             scoring_persona,
             filler_policy_override,
@@ -802,6 +980,39 @@ impl AppUseCase {
             .await?;
         } else {
             self.delete_scoped_system_setting(QUALITY_PROFILE_ID_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(profile_ids) = settings.request_quality_profile_ids {
+            let normalized = normalize_request_quality_profile_ids(profile_ids);
+            if normalized.is_empty() {
+                self.delete_scoped_system_setting(REQUEST_QUALITY_PROFILE_IDS_KEY, &library.id)
+                    .await?;
+            } else {
+                let profile_settings = self.load_quality_profile_settings().await?;
+                let catalog_profile_ids = profile_settings
+                    .profiles
+                    .iter()
+                    .map(|profile| profile.id.clone())
+                    .collect::<HashSet<_>>();
+                if let Some(missing_profile_id) = normalized
+                    .iter()
+                    .find(|profile_id| !catalog_profile_ids.contains(*profile_id))
+                {
+                    return Err(AppError::Validation(format!(
+                        "unknown request quality profile {missing_profile_id}"
+                    )));
+                }
+                self.upsert_scoped_system_setting_json(
+                    REQUEST_QUALITY_PROFILE_IDS_KEY,
+                    &library.id,
+                    &normalized,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            }
+        } else {
+            self.delete_scoped_system_setting(REQUEST_QUALITY_PROFILE_IDS_KEY, &library.id)
                 .await?;
         }
 
@@ -971,6 +1182,7 @@ impl AppUseCase {
         let mut changed_keys = vec![
             REQUIRED_AUDIO_LANGUAGES_KEY.to_string(),
             QUALITY_PROFILE_ID_KEY.to_string(),
+            REQUEST_QUALITY_PROFILE_IDS_KEY.to_string(),
             SCORING_PERSONA_KEY.to_string(),
             ANIME_FILLER_POLICY_KEY.to_string(),
             ANIME_RECAP_POLICY_KEY.to_string(),

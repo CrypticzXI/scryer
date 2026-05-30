@@ -23,6 +23,7 @@ impl NotificationMutations {
                 input.name,
                 input.channel_type,
                 input.config_json,
+                input.media_server_connection_id,
                 input.is_enabled.unwrap_or(true),
             )
             .await
@@ -43,6 +44,7 @@ impl NotificationMutations {
                 input.id,
                 input.name,
                 input.config_json,
+                input.media_server_connection_id,
                 input.is_enabled,
             )
             .await

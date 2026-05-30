@@ -27,6 +27,7 @@ import {
   QUALITY_PROFILE_CATALOG_KEY,
   QUALITY_PROFILE_ID_KEY,
   QUALITY_PROFILE_INHERIT_VALUE,
+  REQUEST_QUALITY_PROFILE_IDS_KEY,
 } from "@/lib/constants/settings";
 import {
   coerceProfileSetting,
@@ -34,6 +35,7 @@ import {
 } from "@/lib/utils/quality-profiles";
 import { FACET_REGISTRY, facetById } from "@/lib/facets/registry";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
+import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 
 export type MetadataSearchResults = Record<string, MetadataTvdbSearchItem[]>;
 
@@ -66,6 +68,7 @@ export type MetadataCatalogAddOptions = {
 
 export type MetadataCatalogRequestOptions = {
   libraryId: string;
+  requestedQualityProfileId?: string;
 };
 
 export type AnimeCatalogDefaults = {
@@ -305,6 +308,10 @@ function sameLibrariesByFacet(
           entry.id === candidate.id &&
           entry.name === candidate.name &&
           entry.slug === candidate.slug &&
+          (entry.requestQualityProfileDefaultId ?? null) ===
+            (candidate.requestQualityProfileDefaultId ?? null) &&
+          (entry.requestQualityProfileIds ?? []).join("|") ===
+            (candidate.requestQualityProfileIds ?? []).join("|") &&
           entry.roots.length === candidate.roots.length
         );
       })
@@ -584,6 +591,7 @@ export function useGlobalSearch({
       new Set([
         QUALITY_PROFILE_CATALOG_KEY,
         QUALITY_PROFILE_ID_KEY,
+        REQUEST_QUALITY_PROFILE_IDS_KEY,
         ...FACET_REGISTRY.map((f) => f.rootFoldersKey),
         ...FACET_REGISTRY.map((f) => f.folderSettingKey),
         ANIME_MONITOR_SPECIALS_KEY,
@@ -1150,10 +1158,12 @@ export function useGlobalSearch({
             runtimeMinutes: result.runtimeMinutes ?? undefined,
             language: result.language || undefined,
             contentStatus: result.status || undefined,
+            requestedQualityProfileId: options.requestedQualityProfileId || undefined,
           },
         }).toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.requestSubmitted", { name }));
+        dispatchNavigationBadgesRefresh();
         await runMetadataAutocomplete(globalSearch.trim());
         return true;
       } catch (error) {

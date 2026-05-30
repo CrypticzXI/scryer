@@ -107,6 +107,10 @@ pub(crate) mod media_request_store {
     pub(crate) use crate::media::requests::*;
 }
 
+pub(crate) mod media_server_connection_store {
+    pub(crate) use crate::media::servers::*;
+}
+
 pub(crate) mod metadata_gateway {
     pub(crate) use crate::metadata::gateway::client::*;
 }
@@ -247,6 +251,7 @@ pub mod sqlite {
     pub use crate::media::libraries::store::LibraryStore;
     pub use crate::media::requests::MediaRequestStore;
     pub use crate::media::search::media_file_store::MediaFileStore;
+    pub use crate::media::servers::MediaServerConnectionStore;
     pub use crate::media::shows::store::ShowStore;
     pub use crate::media::titles::store::TitleStore;
     pub use crate::notifications::store::NotificationStore;
@@ -290,6 +295,7 @@ pub use media::libraries::state_store::{
 pub use media::libraries::store::LibraryStore;
 pub use media::requests::MediaRequestStore;
 pub use media::search::media_file_store::MediaFileStore;
+pub use media::servers::MediaServerConnectionStore;
 pub use media::shows::store::ShowStore;
 pub use media::titles::store::TitleStore;
 pub use metadata::gateway::client::{MetadataGatewayClient, SmgEnrollmentConfig};

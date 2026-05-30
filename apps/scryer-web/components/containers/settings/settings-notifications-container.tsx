@@ -13,10 +13,12 @@ import type {
   NotificationSubscription,
   NotificationSubscriptionDraft,
   NotificationSubscriptionRow,
+  MediaServerConnection,
   TitleRecord,
 } from "@/lib/types";
 import {
   notificationChannelsQuery,
+  mediaServerConnectionsQuery,
   notificationProviderTypesQuery,
   notificationSubscriptionsQuery,
   notificationsInitQuery,
@@ -35,6 +37,7 @@ import {
 const CHANNEL_INITIAL_DRAFT: NotificationChannelDraft = {
   name: "",
   channelType: "",
+  mediaServerConnectionId: "",
   isEnabled: true,
   configValues: {},
 };
@@ -231,6 +234,7 @@ export function SettingsNotificationsContainer({
   const [pendingDeleteChannel, setPendingDeleteChannel] = useState<NotificationChannel | null>(null);
   const [channelDraft, setChannelDraft] = useState<NotificationChannelDraft>(() => cloneChannelDraft(CHANNEL_INITIAL_DRAFT));
   const [providerTypes, setProviderTypes] = useState<NotificationProviderType[]>([]);
+  const [mediaServerConnections, setMediaServerConnections] = useState<MediaServerConnection[]>([]);
   const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
   const [isChannelEditorOpen, setIsChannelEditorOpen] = useState(false);
   const [channelEditorMode, setChannelEditorMode] = useState<"create" | "edit">("create");
@@ -335,6 +339,14 @@ export function SettingsNotificationsContainer({
     setProviderTypes(data?.notificationProviderTypes || []);
   }, [client]);
 
+  const refreshMediaServerConnections = useCallback(async () => {
+    const { data, error } = await client
+      .query(mediaServerConnectionsQuery, { provider: "jellyfin" }, { requestPolicy: "network-only" })
+      .toPromise();
+    if (error) throw error;
+    setMediaServerConnections((data?.mediaServerConnections ?? []) as MediaServerConnection[]);
+  }, [client]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -345,6 +357,7 @@ export function SettingsNotificationsContainer({
         if (error && !data?.notificationChannels && !data?.notificationSubscriptions) throw error;
         if (cancelled) return;
         setChannels(data?.notificationChannels || []);
+        setMediaServerConnections((data?.mediaServerConnections ?? []) as MediaServerConnection[]);
         setSubscriptions(data?.notificationSubscriptions || []);
         setProviderTypes(data?.notificationProviderTypes || []);
         setEventTypes(data?.notificationEventTypes || []);
@@ -364,10 +377,10 @@ export function SettingsNotificationsContainer({
     }
 
     providerCatalogVersionRef.current = providerCatalogVersion;
-    void refreshProviderTypes().catch((error: unknown) => {
+    void Promise.all([refreshProviderTypes(), refreshMediaServerConnections()]).catch((error: unknown) => {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
     });
-  }, [providerCatalogVersion, refreshProviderTypes, setGlobalStatus, t]);
+  }, [providerCatalogVersion, refreshMediaServerConnections, refreshProviderTypes, setGlobalStatus, t]);
 
   useEffect(() => {
     setSubscriptionTitlesById((current) => {
@@ -432,7 +445,10 @@ export function SettingsNotificationsContainer({
     const payload = {
       name: channelDraft.name.trim(),
       channelType: channelDraft.channelType.trim(),
-      configJson: serializeConfigJson(channelDraft.configValues),
+      mediaServerConnectionId: channelDraft.mediaServerConnectionId.trim() || undefined,
+      configJson: channelDraft.mediaServerConnectionId.trim()
+        ? undefined
+        : serializeConfigJson(channelDraft.configValues),
       isEnabled: channelDraft.isEnabled,
     };
 
@@ -448,6 +464,7 @@ export function SettingsNotificationsContainer({
           input: {
             id: editingChannelId,
             name: payload.name,
+            mediaServerConnectionId: payload.mediaServerConnectionId ?? null,
             configJson: payload.configJson,
             isEnabled: payload.isEnabled,
           },
@@ -459,6 +476,7 @@ export function SettingsNotificationsContainer({
           input: {
             name: payload.name,
             channelType: payload.channelType,
+            mediaServerConnectionId: payload.mediaServerConnectionId,
             configJson: payload.configJson,
             isEnabled: payload.isEnabled,
           },
@@ -484,6 +502,7 @@ export function SettingsNotificationsContainer({
     setChannelDraft({
       name: provider?.name ?? channel.name,
       channelType: channel.channelType,
+      mediaServerConnectionId: channel.mediaServerConnectionId ?? "",
       isEnabled: channel.isEnabled,
       configValues: parseConfigJson(channel.configJson),
     });
@@ -934,6 +953,7 @@ export function SettingsNotificationsContainer({
         channelEditorMode={channelEditorMode}
         startCreateChannel={requestCreateChannelEditor}
         providerTypes={providerTypes}
+        mediaServerConnections={mediaServerConnections}
         subscriptions={subscriptionRows}
         subscriptionTitlesById={subscriptionTitlesById}
         editingSubscriptionId={editingSubscriptionId}

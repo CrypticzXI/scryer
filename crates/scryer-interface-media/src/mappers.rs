@@ -4,7 +4,7 @@ use scryer_application::{
     ActivityEvent, BackupInfo, DeletePreview, DownloadClientRoutingSettingsEntry,
     FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerRoutingSettingsEntry,
     IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary,
-    LibrarySettings, ManualPluginPreview, MediaSettings, ParsedEpisodeMetadata,
+    LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
     ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
     PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
     QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
@@ -231,6 +231,9 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
         required_audio_languages: settings.required_audio_languages,
         quality_profile_id_override: settings.quality_profile_id_override,
         quality_profile_id: settings.quality_profile_id,
+        request_quality_profile_ids_override: settings.request_quality_profile_ids_override,
+        request_quality_profile_ids: settings.request_quality_profile_ids,
+        request_quality_profile_default_id: settings.request_quality_profile_default_id,
         scoring_persona_override: settings
             .scoring_persona_override
             .map(ScoringPersonaValue::from_application),
@@ -953,6 +956,13 @@ pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
         runtime_minutes: request.runtime_minutes,
         language: request.language,
         content_status: request.content_status,
+        requested_quality_profile_id: request.requested_quality_profile_id,
+        requested_quality_profile_name: request.requested_quality_profile_name,
+        resolved_by_user_id: request.resolved_by_user_id,
+        resolved_at: request.resolved_at.map(|value| value.to_rfc3339()),
+        created_title_id: request.created_title_id,
+        approved_quality_profile_id: request.approved_quality_profile_id,
+        approved_quality_profile_name: request.approved_quality_profile_name,
         external_ids: request
             .external_ids
             .into_iter()
@@ -1007,6 +1017,14 @@ pub fn from_library_scan_summary(summary: LibraryScanSummary) -> LibraryScanSumm
 
 pub fn from_pending_import_counts(counts: PendingImportCounts) -> PendingImportCountsPayload {
     PendingImportCountsPayload {
+        movie: counts.movie as i32,
+        series: counts.series as i32,
+        anime: counts.anime as i32,
+    }
+}
+
+pub fn from_media_request_counts(counts: MediaRequestCounts) -> MediaRequestCountsPayload {
+    MediaRequestCountsPayload {
         movie: counts.movie as i32,
         series: counts.series as i32,
         anime: counts.anime as i32,
@@ -1466,6 +1484,63 @@ pub fn from_linked_account(account: scryer_domain::UserExternalAccount) -> Linke
     }
 }
 
+pub fn from_media_server_connection(
+    connection: scryer_domain::MediaServerConnection,
+) -> MediaServerConnectionPayload {
+    let api_key_present = connection.api_key_present();
+    MediaServerConnectionPayload {
+        id: connection.id,
+        provider: MediaServerProviderValue::from_domain(connection.provider),
+        display_name: connection.display_name,
+        base_url: connection.base_url,
+        enabled: connection.enabled,
+        login_enabled: connection.login_enabled,
+        linking_enabled: connection.linking_enabled,
+        auto_add_enabled: connection.auto_add_enabled,
+        default_app_permissions: connection
+            .default_app_permissions
+            .to_permissions()
+            .into_iter()
+            .map(AppPermissionValue::from_domain)
+            .collect(),
+        default_library_grants: connection
+            .default_library_grants
+            .into_iter()
+            .map(|grant| MediaServerDefaultLibraryGrantPayload {
+                library_id: grant.library_id,
+                permissions: grant
+                    .permissions
+                    .to_permissions()
+                    .into_iter()
+                    .map(LibraryPermissionValue::from_domain)
+                    .collect(),
+            })
+            .collect(),
+        machine_id: connection.machine_id,
+        api_key_present,
+        path_mappings: connection
+            .path_mappings
+            .into_iter()
+            .map(|mapping| MediaServerPathMappingPayload {
+                source_path: mapping.source_path,
+                destination_path: mapping.destination_path,
+            })
+            .collect(),
+        created_at: connection.created_at.to_rfc3339(),
+        updated_at: connection.updated_at.to_rfc3339(),
+    }
+}
+
+pub fn from_jellyfin_server_user(
+    user: scryer_application::JellyfinServerUser,
+) -> JellyfinServerUserPayload {
+    JellyfinServerUserPayload {
+        id: user.id,
+        username: user.username,
+        display_name: user.display_name,
+    }
+}
+
 pub fn from_activity_event(event: ActivityEvent) -> ActivityEventPayload {
     ActivityEventPayload {
         id: event.id,
@@ -1855,6 +1930,7 @@ pub fn from_notification_channel(
         name: ch.name,
         channel_type: ch.channel_type.as_str().to_string(),
         config_json: ch.config_json,
+        media_server_connection_id: ch.media_server_connection_id,
         is_enabled: ch.is_enabled,
         created_at: ch.created_at.to_rfc3339(),
         updated_at: ch.updated_at.to_rfc3339(),

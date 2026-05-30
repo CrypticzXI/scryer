@@ -381,6 +381,7 @@ CREATE TABLE notification_channels (
     name text NOT NULL,
     channel_type text NOT NULL,
     config_json text NOT NULL,
+    media_server_connection_id text,
     is_enabled boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL

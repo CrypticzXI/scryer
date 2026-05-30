@@ -102,8 +102,8 @@ impl TotpRepository for TotpStore {
                 Box::pin(async move {
                     tx.execute(
                         "INSERT INTO totp_enrollment_challenges
-                         (id, user_id, secret_base32, created_at, expires_at)
-                         VALUES ({}, {}, {}, {}, {})",
+                         (id, user_id, secret_base32, algorithm, digits, period_seconds, created_at, expires_at)
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {})",
                         &challenge_args(&challenge, encryption_key.as_ref())?,
                     )
                     .await?;
@@ -298,7 +298,7 @@ async fn load_enrollment_challenge(
 ) -> AppResult<Option<TotpEnrollmentChallengeRecord>> {
     let row = SqlRuntime::fetch_optional(
         exec,
-        "SELECT id, user_id, secret_base32, created_at, expires_at
+        "SELECT id, user_id, secret_base32, algorithm, digits, period_seconds, created_at, expires_at
          FROM totp_enrollment_challenges
          WHERE id = {} AND user_id = {}",
         &[
@@ -357,6 +357,9 @@ fn challenge_args(
             encryption_key,
             &challenge.secret_base32,
         )?),
+        SqlArg::Text(challenge.algorithm.clone()),
+        SqlArg::I32(challenge.digits),
+        SqlArg::I32(challenge.period_seconds),
         timestamp_arg(&challenge.created_at)?,
         timestamp_arg(&challenge.expires_at)?,
     ])
@@ -408,6 +411,9 @@ fn row_to_enrollment_challenge(
             "TOTP enrollment secret",
             true,
         )?,
+        algorithm: row.text("algorithm")?,
+        digits: row.i32("digits")?,
+        period_seconds: row.i32("period_seconds")?,
         created_at: timestamp_string(row, "created_at")?,
         expires_at: timestamp_string(row, "expires_at")?,
     })

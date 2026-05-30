@@ -123,18 +123,24 @@ pub enum PendingImportStatusValue {
 #[graphql(rename_items = "lowercase")]
 pub enum MediaRequestStatusValue {
     Pending,
+    Approved,
+    Rejected,
 }
 
 impl MediaRequestStatusValue {
     pub fn from_domain(value: MediaRequestStatus) -> Self {
         match value {
             MediaRequestStatus::Pending => Self::Pending,
+            MediaRequestStatus::Approved => Self::Approved,
+            MediaRequestStatus::Rejected => Self::Rejected,
         }
     }
 
     pub fn into_domain(self) -> MediaRequestStatus {
         match self {
             Self::Pending => MediaRequestStatus::Pending,
+            Self::Approved => MediaRequestStatus::Approved,
+            Self::Rejected => MediaRequestStatus::Rejected,
         }
     }
 }
@@ -333,6 +339,9 @@ pub enum SortDirectionValue {
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "snake_case")]
 pub enum DomainEventTypeValue {
+    MediaRequestSubmitted,
+    MediaRequestApproved,
+    MediaRequestRejected,
     TitleAdded,
     TitleUpdated,
     TitleRematched,
@@ -371,12 +380,14 @@ pub enum DomainEventTypeValue {
     JobNextRunUpdated,
     DownloadQueueItemUpserted,
     DownloadQueueItemRemoved,
-    MediaRequestSubmitted,
 }
 
 impl DomainEventTypeValue {
     pub fn from_domain(value: DomainEventType) -> Self {
         match value {
+            DomainEventType::MediaRequestSubmitted => Self::MediaRequestSubmitted,
+            DomainEventType::MediaRequestApproved => Self::MediaRequestApproved,
+            DomainEventType::MediaRequestRejected => Self::MediaRequestRejected,
             DomainEventType::TitleAdded => Self::TitleAdded,
             DomainEventType::TitleUpdated => Self::TitleUpdated,
             DomainEventType::TitleRematched => Self::TitleRematched,
@@ -415,12 +426,14 @@ impl DomainEventTypeValue {
             DomainEventType::JobNextRunUpdated => Self::JobNextRunUpdated,
             DomainEventType::DownloadQueueItemUpserted => Self::DownloadQueueItemUpserted,
             DomainEventType::DownloadQueueItemRemoved => Self::DownloadQueueItemRemoved,
-            DomainEventType::MediaRequestSubmitted => Self::MediaRequestSubmitted,
         }
     }
 
     pub fn into_domain(self) -> DomainEventType {
         match self {
+            Self::MediaRequestSubmitted => DomainEventType::MediaRequestSubmitted,
+            Self::MediaRequestApproved => DomainEventType::MediaRequestApproved,
+            Self::MediaRequestRejected => DomainEventType::MediaRequestRejected,
             Self::TitleAdded => DomainEventType::TitleAdded,
             Self::TitleUpdated => DomainEventType::TitleUpdated,
             Self::TitleRematched => DomainEventType::TitleRematched,
@@ -459,7 +472,6 @@ impl DomainEventTypeValue {
             Self::JobNextRunUpdated => DomainEventType::JobNextRunUpdated,
             Self::DownloadQueueItemUpserted => DomainEventType::DownloadQueueItemUpserted,
             Self::DownloadQueueItemRemoved => DomainEventType::DownloadQueueItemRemoved,
-            Self::MediaRequestSubmitted => DomainEventType::MediaRequestSubmitted,
         }
     }
 }
@@ -828,6 +840,32 @@ pub enum ExternalAccountProviderValue {
     Jellyfin,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum MediaServerProviderValue {
+    Jellyfin,
+    Plex,
+    Emby,
+}
+
+impl MediaServerProviderValue {
+    pub fn into_domain(self) -> scryer_domain::MediaServerProvider {
+        match self {
+            Self::Jellyfin => scryer_domain::MediaServerProvider::Jellyfin,
+            Self::Plex => scryer_domain::MediaServerProvider::Plex,
+            Self::Emby => scryer_domain::MediaServerProvider::Emby,
+        }
+    }
+
+    pub fn from_domain(provider: scryer_domain::MediaServerProvider) -> Self {
+        match provider {
+            scryer_domain::MediaServerProvider::Jellyfin => Self::Jellyfin,
+            scryer_domain::MediaServerProvider::Plex => Self::Plex,
+            scryer_domain::MediaServerProvider::Emby => Self::Emby,
+        }
+    }
+}
+
 impl ExternalAccountProviderValue {
     pub fn into_domain(self) -> scryer_domain::ExternalAccountProvider {
         match self {
@@ -975,6 +1013,13 @@ pub struct MediaRequestPayload {
     pub runtime_minutes: Option<i32>,
     pub language: Option<String>,
     pub content_status: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+    pub requested_quality_profile_name: Option<String>,
+    pub resolved_by_user_id: Option<String>,
+    pub resolved_at: Option<String>,
+    pub created_title_id: Option<String>,
+    pub approved_quality_profile_id: Option<String>,
+    pub approved_quality_profile_name: Option<String>,
     pub external_ids: Vec<ExternalIdPayload>,
     pub requesters: Vec<MediaRequestRequesterPayload>,
     pub created_by_user_id: String,
@@ -1448,6 +1493,9 @@ pub struct LibrarySettingsPayload {
     pub required_audio_languages: Vec<String>,
     pub quality_profile_id_override: Option<String>,
     pub quality_profile_id: String,
+    pub request_quality_profile_ids_override: Option<Vec<String>>,
+    pub request_quality_profile_ids: Vec<String>,
+    pub request_quality_profile_default_id: String,
     pub scoring_persona_override: Option<ScoringPersonaValue>,
     pub scoring_persona: ScoringPersonaValue,
     pub filler_policy_override: Option<String>,
@@ -1605,8 +1653,16 @@ pub struct PendingImportCountsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct MediaRequestCountsPayload {
+    pub movie: i32,
+    pub series: i32,
+    pub anime: i32,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct NavigationBadgeCountsPayload {
     pub pending_import_counts: PendingImportCountsPayload,
+    pub pending_media_request_counts: MediaRequestCountsPayload,
     pub activity_import_count: i32,
     pub plugin_update_count: i32,
 }
@@ -1836,6 +1892,7 @@ pub struct AuthRuntimeStatePayload {
     pub effective_form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub passkey_enabled: bool,
+    pub totp_require_jellyfin_login: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2030,6 +2087,31 @@ pub struct SubmitMediaRequestInput {
     pub runtime_minutes: Option<i32>,
     pub language: Option<String>,
     pub content_status: Option<String>,
+    pub requested_quality_profile_id: Option<String>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct MediaRequestActionInput {
+    pub request_id: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct ApproveMediaRequestInput {
+    pub request_id: String,
+    pub quality_profile_id: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaRequestActionPayload {
+    pub accepted: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ApproveMediaRequestPayload {
+    pub accepted: bool,
+    pub title_id: String,
+    pub wanted_search: Option<WantedSearchPayload>,
+    pub search_error: Option<String>,
 }
 
 #[derive(InputObject)]
@@ -2304,6 +2386,95 @@ pub struct CreateExternalAccountInviteInput {
     pub connection_id: String,
     pub provider: ExternalAccountProviderValue,
     pub provider_user_identifier: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaServerPathMappingPayload {
+    pub source_path: String,
+    pub destination_path: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct MediaServerPathMappingInput {
+    pub source_path: String,
+    pub destination_path: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaServerDefaultLibraryGrantPayload {
+    pub library_id: String,
+    pub permissions: Vec<LibraryPermissionValue>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct MediaServerDefaultLibraryGrantInput {
+    pub library_id: String,
+    pub permissions: Vec<LibraryPermissionValue>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaServerConnectionPayload {
+    pub id: String,
+    pub provider: MediaServerProviderValue,
+    pub display_name: String,
+    pub base_url: String,
+    pub enabled: bool,
+    pub login_enabled: bool,
+    pub linking_enabled: bool,
+    pub auto_add_enabled: bool,
+    pub default_app_permissions: Vec<AppPermissionValue>,
+    pub default_library_grants: Vec<MediaServerDefaultLibraryGrantPayload>,
+    pub machine_id: Option<String>,
+    pub api_key_present: bool,
+    pub path_mappings: Vec<MediaServerPathMappingPayload>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct JellyfinServerUserPayload {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct CreateMediaServerConnectionInput {
+    pub provider: MediaServerProviderValue,
+    pub display_name: String,
+    pub base_url: String,
+    pub enabled: Option<bool>,
+    pub login_enabled: Option<bool>,
+    pub linking_enabled: Option<bool>,
+    pub auto_add_enabled: Option<bool>,
+    pub default_app_permissions: Option<Vec<AppPermissionValue>>,
+    pub default_library_grants: Option<Vec<MediaServerDefaultLibraryGrantInput>>,
+    pub machine_id: Option<String>,
+    pub api_key: Option<String>,
+    pub admin_username: Option<String>,
+    pub admin_password: Option<String>,
+    pub path_mappings: Option<Vec<MediaServerPathMappingInput>>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateMediaServerConnectionInput {
+    pub id: String,
+    pub provider: Option<MediaServerProviderValue>,
+    pub display_name: Option<String>,
+    pub base_url: Option<String>,
+    pub enabled: Option<bool>,
+    pub login_enabled: Option<bool>,
+    pub linking_enabled: Option<bool>,
+    pub auto_add_enabled: Option<bool>,
+    pub default_app_permissions: Option<Vec<AppPermissionValue>>,
+    pub default_library_grants: Option<Vec<MediaServerDefaultLibraryGrantInput>>,
+    pub machine_id: Option<String>,
+    pub clear_machine_id: Option<bool>,
+    pub api_key: Option<String>,
+    pub clear_api_key: Option<bool>,
+    pub admin_username: Option<String>,
+    pub admin_password: Option<String>,
+    pub path_mappings: Option<Vec<MediaServerPathMappingInput>>,
 }
 
 #[derive(InputObject, Clone)]
@@ -2676,6 +2847,7 @@ pub struct UpdateLibraryInput {
 pub struct LibrarySettingsInput {
     pub required_audio_languages: Option<Vec<String>>,
     pub quality_profile_id: Option<String>,
+    pub request_quality_profile_ids: Option<Vec<String>>,
     pub scoring_persona: Option<ScoringPersonaValue>,
     pub filler_policy: Option<String>,
     pub recap_policy: Option<String>,
@@ -3183,6 +3355,7 @@ pub struct NotificationChannelPayload {
     pub name: String,
     pub channel_type: String,
     pub config_json: String,
+    pub media_server_connection_id: Option<String>,
     pub is_enabled: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -3205,6 +3378,7 @@ pub struct CreateNotificationChannelInput {
     pub name: String,
     pub channel_type: String,
     pub config_json: String,
+    pub media_server_connection_id: Option<String>,
     pub is_enabled: Option<bool>,
 }
 
@@ -3213,6 +3387,7 @@ pub struct UpdateNotificationChannelInput {
     pub id: String,
     pub name: Option<String>,
     pub config_json: Option<String>,
+    pub media_server_connection_id: Option<Option<String>>,
     pub is_enabled: Option<bool>,
 }
 

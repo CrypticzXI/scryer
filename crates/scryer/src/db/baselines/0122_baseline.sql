@@ -327,6 +327,7 @@ CREATE TABLE notification_channels(
     name TEXT NOT NULL,
     channel_type TEXT NOT NULL,
     config_json TEXT NOT NULL,
+    media_server_connection_id TEXT,
     is_enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

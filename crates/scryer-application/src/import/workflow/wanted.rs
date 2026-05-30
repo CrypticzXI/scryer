@@ -313,6 +313,7 @@ async fn execute_resolved_episode_import(
     }
     maybe_trigger_subtitle_search(app, &title.id, &media_file_id);
 
+    let mut episode_link_failed = false;
     for episode in target_episodes {
         if let Err(err) = app
             .services
@@ -322,7 +323,20 @@ async fn execute_resolved_episode_import(
             .await
         {
             tracing::warn!(error = %err, episode_id = %episode.id, "failed to link file to episode");
+            episode_link_failed = true;
         }
+    }
+    if episode_link_failed && import_mode == scryer_domain::ImportMode::Move {
+        return Err(AppError::Repository(format!(
+            "move import source cleanup blocked because episode linking failed for {}",
+            dest_path.display()
+        )));
+    }
+
+    let link_type =
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
+
+    for episode in target_episodes {
         mark_wanted_completed(app, &title.id, Some(&episode.id), None).await;
     }
 
@@ -331,7 +345,7 @@ async fn execute_resolved_episode_import(
         episode_ids: target_episode_ids,
         imported_media_file_id: Some(media_file_id),
         reason_code: None,
-        link_type: Some(file_result.strategy),
+        link_type: Some(link_type),
     })
 }
 /// Mark a wanted item as completed for a title (and optionally a specific episode).

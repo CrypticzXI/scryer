@@ -1,7 +1,8 @@
 use async_graphql::{Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
-    AcquisitionSettings as AppAcquisitionSettings, QualityProfile, QualityProfileCriteria,
+    AcquisitionSettings as AppAcquisitionSettings, MediaServerConnectionDraft,
+    MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
     UpdateGeneralSettings as AppUpdateGeneralSettings,
@@ -15,7 +16,8 @@ use scryer_interface_core::{
 };
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
-    from_media_settings, from_quality_profile_settings, from_service_settings, from_user,
+    from_media_server_connection, from_media_settings, from_quality_profile_settings,
+    from_service_settings, from_user,
 };
 use scryer_interface_media::types::*;
 
@@ -189,6 +191,97 @@ fn app_auth_provider_connection(
         display_name: connection.display_name.unwrap_or_default(),
         base_url: connection.base_url,
         machine_id: connection.machine_id,
+    }
+}
+
+fn media_server_app_permissions(
+    permissions: Option<Vec<AppPermissionValue>>,
+) -> scryer_domain::AppPermissionMask {
+    scryer_domain::AppPermissionMask::from_permissions(
+        permissions
+            .unwrap_or_default()
+            .into_iter()
+            .map(AppPermissionValue::into_domain),
+    )
+}
+
+fn media_server_library_grants(
+    grants: Option<Vec<MediaServerDefaultLibraryGrantInput>>,
+) -> Vec<scryer_domain::MediaServerDefaultLibraryGrant> {
+    grants
+        .unwrap_or_default()
+        .into_iter()
+        .map(|grant| scryer_domain::MediaServerDefaultLibraryGrant {
+            library_id: grant.library_id,
+            permissions: scryer_domain::LibraryPermissionMask::from_permissions(
+                grant
+                    .permissions
+                    .into_iter()
+                    .map(LibraryPermissionValue::into_domain),
+            ),
+        })
+        .collect()
+}
+
+fn media_server_path_mappings(
+    mappings: Option<Vec<MediaServerPathMappingInput>>,
+) -> Vec<scryer_domain::MediaServerPathMapping> {
+    mappings
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(index, mapping)| scryer_domain::MediaServerPathMapping {
+            source_path: mapping.source_path,
+            destination_path: mapping.destination_path,
+            sort_order: index as i64,
+        })
+        .collect()
+}
+
+fn media_server_draft(input: CreateMediaServerConnectionInput) -> MediaServerConnectionDraft {
+    MediaServerConnectionDraft {
+        provider: input.provider.into_domain(),
+        display_name: input.display_name,
+        base_url: input.base_url,
+        enabled: input.enabled.unwrap_or(true),
+        login_enabled: input.login_enabled.unwrap_or(false),
+        linking_enabled: input.linking_enabled.unwrap_or(false),
+        auto_add_enabled: input.auto_add_enabled.unwrap_or(false),
+        default_app_permissions: media_server_app_permissions(input.default_app_permissions),
+        default_library_grants: media_server_library_grants(input.default_library_grants),
+        machine_id: input.machine_id,
+        api_key: input.api_key,
+        admin_username: input.admin_username,
+        admin_password: input.admin_password,
+        path_mappings: media_server_path_mappings(input.path_mappings),
+    }
+}
+
+fn media_server_patch(input: UpdateMediaServerConnectionInput) -> MediaServerConnectionPatch {
+    MediaServerConnectionPatch {
+        id: input.id,
+        provider: input.provider.map(MediaServerProviderValue::into_domain),
+        display_name: input.display_name,
+        base_url: input.base_url,
+        enabled: input.enabled,
+        login_enabled: input.login_enabled,
+        linking_enabled: input.linking_enabled,
+        auto_add_enabled: input.auto_add_enabled,
+        default_app_permissions: input
+            .default_app_permissions
+            .map(|permissions| media_server_app_permissions(Some(permissions))),
+        default_library_grants: input
+            .default_library_grants
+            .map(|grants| media_server_library_grants(Some(grants))),
+        machine_id: input.machine_id,
+        clear_machine_id: input.clear_machine_id.unwrap_or(false),
+        api_key: input.api_key,
+        clear_api_key: input.clear_api_key.unwrap_or(false),
+        admin_username: input.admin_username,
+        admin_password: input.admin_password,
+        path_mappings: input
+            .path_mappings
+            .map(|mappings| media_server_path_mappings(Some(mappings))),
     }
 }
 
@@ -730,6 +823,58 @@ impl SettingsMutations {
         let actor = actor_from_ctx(ctx)?;
         require_config_step_up(ctx).await?;
         app.test_jellyfin_connection(&actor, app_auth_provider_connection(input.connection))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(true)
+    }
+
+    async fn create_media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateMediaServerConnectionInput,
+    ) -> GqlResult<MediaServerConnectionPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.create_media_server_connection(&actor, media_server_draft(input))
+            .await
+            .map(from_media_server_connection)
+            .map_err(to_gql_error)
+    }
+
+    async fn update_media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateMediaServerConnectionInput,
+    ) -> GqlResult<MediaServerConnectionPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.update_media_server_connection(&actor, media_server_patch(input))
+            .await
+            .map(from_media_server_connection)
+            .map_err(to_gql_error)
+    }
+
+    async fn delete_media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.delete_media_server_connection(&actor, &id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(true)
+    }
+
+    async fn test_media_server_connection(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.test_media_server_connection(&actor, &id)
             .await
             .map_err(to_gql_error)?;
         Ok(true)

@@ -4,6 +4,7 @@ import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-pi
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -217,6 +218,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [settingsError, setSettingsError] = React.useState<string | null>(null);
   const [draftRequiredAudioLanguages, setDraftRequiredAudioLanguages] = React.useState<string[]>([]);
   const [draftQualityProfileId, setDraftQualityProfileId] = React.useState(INHERIT_VALUE);
+  const [draftRequestQualityProfileIds, setDraftRequestQualityProfileIds] = React.useState<string[]>([]);
   const [draftScoringPersona, setDraftScoringPersona] = React.useState(INHERIT_VALUE);
   const [draftFillerPolicy, setDraftFillerPolicy] = React.useState(INHERIT_VALUE);
   const [draftRecapPolicy, setDraftRecapPolicy] = React.useState(INHERIT_VALUE);
@@ -263,6 +265,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setSavedSettings(settings);
       setDraftRequiredAudioLanguages(settings?.requiredAudioLanguagesOverride ?? []);
       setDraftQualityProfileId(settings?.qualityProfileIdOverride ?? INHERIT_VALUE);
+      setDraftRequestQualityProfileIds(settings?.requestQualityProfileIdsOverride ?? []);
       setDraftScoringPersona(settings?.scoringPersonaOverride ?? INHERIT_VALUE);
       setDraftFillerPolicy(settings?.fillerPolicyOverride ?? INHERIT_VALUE);
       setDraftRecapPolicy(settings?.recapPolicyOverride ?? INHERIT_VALUE);
@@ -312,6 +315,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setSavedSettings(null);
       setDraftRequiredAudioLanguages([]);
       setDraftQualityProfileId(INHERIT_VALUE);
+      setDraftRequestQualityProfileIds([]);
       setDraftScoringPersona(INHERIT_VALUE);
       setDraftFillerPolicy(INHERIT_VALUE);
       setDraftRecapPolicy(INHERIT_VALUE);
@@ -473,6 +477,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         draftRequiredAudioLanguages.length > 0 ? draftRequiredAudioLanguages : null,
       qualityProfileId:
         draftQualityProfileId === INHERIT_VALUE ? null : draftQualityProfileId,
+      requestQualityProfileIds:
+        draftRequestQualityProfileIds.length > 0
+          ? draftRequestQualityProfileIds
+          : null,
       scoringPersona:
         draftScoringPersona === INHERIT_VALUE
           ? null
@@ -506,6 +514,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       draftNfoWriteOnImport,
       draftPlexmatchWriteOnImport,
       draftQualityProfileId,
+      draftRequestQualityProfileIds,
       draftRecapPolicy,
       draftRequiredAudioLanguages,
       draftScoringPersona,
@@ -520,6 +529,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       (draftRequiredAudioLanguages.join("\n") !==
         (savedSettings.requiredAudioLanguagesOverride ?? []).join("\n") ||
         settingsDraft.qualityProfileId !== savedSettings.qualityProfileIdOverride ||
+        (settingsDraft.requestQualityProfileIds ?? []).join("\n") !==
+          (savedSettings.requestQualityProfileIdsOverride ?? []).join("\n") ||
         settingsDraft.scoringPersona !== savedSettings.scoringPersonaOverride ||
         settingsDraft.fillerPolicy !== savedSettings.fillerPolicyOverride ||
         settingsDraft.recapPolicy !== savedSettings.recapPolicyOverride ||
@@ -558,6 +569,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setSavedSettings(null);
       setDraftRequiredAudioLanguages([]);
       setDraftQualityProfileId(INHERIT_VALUE);
+      setDraftRequestQualityProfileIds([]);
       setDraftScoringPersona(INHERIT_VALUE);
       setDraftFillerPolicy(INHERIT_VALUE);
       setDraftRecapPolicy(INHERIT_VALUE);
@@ -637,6 +649,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setSavedSettings(null);
     setDraftRequiredAudioLanguages([]);
     setDraftQualityProfileId(INHERIT_VALUE);
+    setDraftRequestQualityProfileIds([]);
     setDraftScoringPersona(INHERIT_VALUE);
     setDraftFillerPolicy(INHERIT_VALUE);
     setDraftRecapPolicy(INHERIT_VALUE);
@@ -1020,6 +1033,34 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       })}
                     </p>
                   ) : null}
+                  <div className="space-y-2 rounded-md border border-border/70 p-2">
+                    <Label>{t("settings.libraryRequestQualityProfilesLabel")}</Label>
+                    {qualityProfiles.map((profile) => {
+                      const checked = draftRequestQualityProfileIds.includes(profile.id);
+                      return (
+                        <label
+                          key={profile.id}
+                          className="flex items-center gap-2 text-xs text-muted-foreground"
+                        >
+                          <Checkbox
+                            checked={checked}
+                            disabled={settingsBusy}
+                            onCheckedChange={(value) => {
+                              setDraftRequestQualityProfileIds((current) =>
+                                value
+                                  ? [...current, profile.id]
+                                  : current.filter((profileId) => profileId !== profile.id),
+                              );
+                            }}
+                          />
+                          <span>{profile.name}</span>
+                        </label>
+                      );
+                    })}
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.libraryRequestQualityProfilesHelp")}
+                    </p>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label>{t("settings.libraryQualityProfileLabel")}</Label>

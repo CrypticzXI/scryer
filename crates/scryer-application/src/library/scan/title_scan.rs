@@ -979,7 +979,6 @@ impl AppUseCase {
                     path: &source_path,
                     display_name: Some(file.display_name.as_str()),
                     library_root: None,
-                    title_root: Some(title_dir.as_path()),
                     title: Some(&title),
                     facet: Some(&title.facet),
                     collections: &collections,
@@ -998,9 +997,13 @@ impl AppUseCase {
                 let target_episodes = filename_parse.target_episodes();
 
                 if target_episodes.is_empty() {
-                    let reason = filename_parse
-                        .unmatched_reason()
-                        .unwrap_or("episode_identity_missing");
+                    let reason = filename_parse.unmatched_reason().unwrap_or_else(|| {
+                        if filename_parse.episode_identity.is_some() {
+                            "episode_lookup_failed"
+                        } else {
+                            "episode_identity_missing"
+                        }
+                    });
                     debug!(
                         title_id = %title.id,
                         title_name = %title.name,
@@ -1446,7 +1449,6 @@ mod tests {
             path,
             display_name: Some("13 (2024) - S02E01"),
             library_root: Some(Path::new("/library")),
-            title_root: Some(Path::new("/library/13 (2024)")),
             title: Some(&title),
             facet: Some(&title.facet),
             collections: &[],

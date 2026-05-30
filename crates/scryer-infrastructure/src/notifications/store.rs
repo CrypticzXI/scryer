@@ -13,13 +13,12 @@ use crate::config_store::{current_encryption_key, decrypt_value, maybe_encrypt_v
 use crate::encryption::EncryptionKey;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};
 
-const CHANNEL_COLUMNS: &str =
-    "id, name, channel_type, config_json, is_enabled, created_at, updated_at";
+const CHANNEL_COLUMNS: &str = "id, name, channel_type, config_json, media_server_connection_id, is_enabled, created_at, updated_at";
 
 const CHANNEL_INSERT_SQL: &str = "INSERT INTO notification_channels (
-    id, name, channel_type, config_json, is_enabled, created_at, updated_at
+    id, name, channel_type, config_json, media_server_connection_id, is_enabled, created_at, updated_at
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 const SUBSCRIPTION_COLUMNS: &str =
@@ -106,6 +105,7 @@ impl NotificationChannelRepository for NotificationStore {
         let args = vec![
             SqlArg::Text(config.name.clone()),
             stored_config,
+            SqlArg::OptText(config.media_server_connection_id.clone()),
             SqlArg::Bool(config.is_enabled),
             SqlArg::Timestamp(updated_at),
             SqlArg::Text(config.id.clone()),
@@ -119,7 +119,7 @@ impl NotificationChannelRepository for NotificationStore {
                 let rows = SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "UPDATE notification_channels
-                     SET name = {}, config_json = {}, is_enabled = {}, updated_at = {}
+                     SET name = {}, config_json = {}, media_server_connection_id = {}, is_enabled = {}, updated_at = {}
                      WHERE id = {}",
                     &args,
                 )
@@ -299,6 +299,7 @@ fn channel_insert_args(
         SqlArg::Text(config.name.clone()),
         SqlArg::Text(config.channel_type.as_str().to_string()),
         channel_config_arg(encryption_key, &config.config_json)?,
+        SqlArg::OptText(config.media_server_connection_id.clone()),
         SqlArg::Bool(config.is_enabled),
         SqlArg::Timestamp(config.created_at),
         SqlArg::Timestamp(config.updated_at),
@@ -363,6 +364,7 @@ fn row_to_channel(
         name: row.text("name")?,
         channel_type,
         config_json: channel_config_json_from_row(row, encryption_key)?,
+        media_server_connection_id: row.opt_text("media_server_connection_id")?,
         is_enabled: row.bool("is_enabled")?,
         created_at: row.timestamp("created_at")?,
         updated_at: row.timestamp("updated_at")?,
@@ -433,6 +435,7 @@ mod tests {
                 name TEXT NOT NULL,
                 channel_type TEXT NOT NULL,
                 config_json TEXT NOT NULL,
+                media_server_connection_id TEXT,
                 is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMPTZ NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL
@@ -467,6 +470,7 @@ mod tests {
             name: "Postgres Webhook".to_string(),
             channel_type: ChannelType::parse("webhook").expect("channel type"),
             config_json: r#"{"url":"https://example.com/webhook"}"#.to_string(),
+            media_server_connection_id: None,
             is_enabled: true,
             created_at: now,
             updated_at: now,

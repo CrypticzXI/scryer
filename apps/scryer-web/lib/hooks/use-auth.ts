@@ -86,6 +86,7 @@ export type AuthState = {
   loading: boolean;
   effectiveFormLoginEnabled: boolean | null;
   passkeyEnabled: boolean;
+  totpRequireJellyfinLogin: boolean;
   login: (
     username: string,
     password: string,
@@ -113,6 +114,7 @@ export function useAuth(): AuthState {
   const [loading, setLoading] = useState(true);
   const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
+  const [totpRequireJellyfinLogin, setTotpRequireJellyfinLogin] = useState(false);
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -164,6 +166,7 @@ export function useAuth(): AuthState {
             : null,
         );
         setPasskeyEnabled(runtimeState?.passkeyEnabled === true);
+        setTotpRequireJellyfinLogin(runtimeState?.totpRequireJellyfinLogin === true);
       } catch {
         // Fall back to the existing token/bootstrap path when the public
         // runtime-state probe is temporarily unavailable.
@@ -263,6 +266,7 @@ export function useAuth(): AuthState {
     loading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
+    totpRequireJellyfinLogin,
     login,
     adoptSession,
     logout,

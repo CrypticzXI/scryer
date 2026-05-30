@@ -73,6 +73,9 @@ async fn import_series_download(
     let nfo_enabled = app
         .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
         .await?;
+    let import_mode = app
+        .resolve_import_mode(Some(&title.library_id), &title.facet)
+        .await?;
 
     let mut imported_count: usize = 0;
     let mut skipped_count: usize = 0;
@@ -140,7 +143,11 @@ async fn import_series_download(
         write_series_sidecars(app, title, &full_folder_path, nfo_enabled).await;
     }
 
-    let (decision, status, skip_reason) = if imported_count > 0 {
+    let move_import_has_failure =
+        import_mode == scryer_domain::ImportMode::Move && failed_count > 0;
+    let (decision, status, skip_reason) = if move_import_has_failure {
+        (ImportDecision::Failed, ImportStatus::Failed, None)
+    } else if imported_count > 0 {
         (ImportDecision::Imported, ImportStatus::Completed, None)
     } else if failed_count > 0 {
         (ImportDecision::Failed, ImportStatus::Failed, None)
@@ -191,7 +198,7 @@ async fn import_series_download(
     app.update_import_status_and_notify(import_id, status, result_json)
         .await?;
 
-    if imported_count > 0 {
+    if imported_count > 0 && !move_import_has_failure {
         app.append_domain_event(new_title_domain_event(
             Some(actor.id.clone()),
             title,

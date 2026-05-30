@@ -12,7 +12,10 @@ use crate::recycle_bin::{self, RecycleBinConfig, RecycleManifest};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::types::TitleMediaFile;
 use crate::{AppError, AppResult, AppUseCase, InsertMediaFileInput};
-use scryer_domain::{DomainEventPayload, ImportMode, MediaFileUpgradedEventData, Title, User};
+use scryer_domain::{
+    DomainEventPayload, ImportMode, ImportSourceCleanupGuard, MediaFileUpgradedEventData, Title,
+    User,
+};
 use std::path::{Path, PathBuf};
 
 /// Result of a successful upgrade operation.
@@ -93,6 +96,7 @@ pub(crate) async fn execute_upgrade(
         media_root,
         &scoring_log,
         &source_path_string,
+        import_mode,
     )
     .await?;
 
@@ -107,6 +111,10 @@ pub(crate) async fn execute_upgrade(
     )
     .await?;
 
+    if import_mode == ImportMode::Move {
+        remove_upgrade_import_source_after_verified_commit(app, &replacement).await?;
+    }
+
     append_upgrade_event(
         app,
         title,
@@ -117,11 +125,6 @@ pub(crate) async fn execute_upgrade(
         final_score,
     )
     .await?;
-
-    if import_mode == ImportMode::Move {
-        remove_import_source_after_verified_move(source_path, &replacement.final_path_string)
-            .await?;
-    }
 
     Ok(UpgradeResult::Upgraded(UpgradeOutcome {
         old_score,
@@ -136,6 +139,7 @@ struct PreparedUpgradeReplacement {
     import_path: PathBuf,
     final_path_string: String,
     same_final_path: bool,
+    source_cleanup: Option<ImportSourceCleanupGuard>,
 }
 
 fn ensure_old_file_disposition_ready(recycle_config: &RecycleBinConfig) -> AppResult<()> {
@@ -170,13 +174,14 @@ async fn prepare_replacement_before_old_removal(
     media_root: Option<&str>,
     scoring_log: &str,
     source_path_string: &str,
+    import_mode: ImportMode,
 ) -> AppResult<PreparedUpgradeReplacement> {
     let import_path_string = path_to_stored_string(import_path);
     let file_result = app
         .services
         .workflow
         .file_importer
-        .import_file(source_path, import_path, ImportMode::HardlinkOrCopy)
+        .import_file(source_path, import_path, import_mode)
         .await
         .map_err(|err| {
             AppError::Repository(format!(
@@ -255,6 +260,7 @@ async fn prepare_replacement_before_old_removal(
         import_path: import_path.to_path_buf(),
         final_path_string,
         same_final_path,
+        source_cleanup: file_result.source_cleanup,
     })
 }
 
@@ -686,29 +692,22 @@ async fn remove_old_file_after_verified_upgrade(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-async fn remove_import_source_after_verified_move(
-    source_path: &Path,
-    final_path_string: &str,
+async fn remove_upgrade_import_source_after_verified_commit(
+    app: &AppUseCase,
+    replacement: &PreparedUpgradeReplacement,
 ) -> AppResult<()> {
-    let final_path = stored_path_to_path_buf(final_path_string);
-    if source_path == final_path.as_path() {
-        return Err(AppError::Repository(format!(
-            "refusing to remove import source after verified move because it is the library file: {}",
-            source_path.display()
-        )));
-    }
-
-    if let Err(error) = tokio::fs::remove_file(source_path).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(AppError::Repository(format!(
-            "failed to remove import source after verified move {}: {}",
-            source_path.display(),
-            error
-        )));
-    }
-
-    Ok(())
+    let guard = replacement.source_cleanup.clone().ok_or_else(|| {
+        AppError::Repository(format!(
+            "move upgrade did not return a source cleanup guard for {}",
+            replacement.import_path.display()
+        ))
+    })?;
+    let final_path = stored_path_to_path_buf(&replacement.final_path_string);
+    app.services
+        .workflow
+        .file_importer
+        .remove_import_source_after_verified_import(guard, &final_path)
+        .await
 }
 
 async fn append_upgrade_event(

@@ -234,6 +234,35 @@ impl AppUseCase {
             .collect())
     }
 
+    pub(crate) async fn library_ids_with_library_permission(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        permission: LibraryPermission,
+    ) -> AppResult<Vec<String>> {
+        let libraries = self.services.catalog.libraries.list(facet.clone()).await?;
+        let authorization = self.authorization_for_actor(actor).await?;
+        let required = LibraryPermissionMask::from_permission(permission);
+        if libraries.is_empty() && authorization.default_library.contains(required) {
+            return Ok(match facet {
+                Some(facet) => vec![scryer_domain::default_library_id_for_facet(&facet)],
+                None => [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime]
+                    .into_iter()
+                    .map(|facet| scryer_domain::default_library_id_for_facet(&facet))
+                    .collect(),
+            });
+        }
+        Ok(libraries
+            .into_iter()
+            .filter(|library| {
+                authorization
+                    .library_permissions(&library.id)
+                    .contains(required)
+            })
+            .map(|library| library.id)
+            .collect())
+    }
+
     pub async fn list_libraries_for_permission(
         &self,
         actor: &User,

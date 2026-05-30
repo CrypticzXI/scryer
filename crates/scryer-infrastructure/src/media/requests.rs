@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, MediaRequestQuery, MediaRequestRepository, NewMediaRequest,
+    AppError, AppResult, MediaRequestCounts, MediaRequestQuery, MediaRequestRepository,
+    MediaRequestResolution, NewMediaRequest,
 };
 use scryer_domain::{
     ExternalId, MediaFacet, MediaRequest, MediaRequestRequester, MediaRequestStatus,
@@ -57,6 +58,95 @@ impl MediaRequestRepository for MediaRequestStore {
         .await
     }
 
+    async fn get(&self, request_id: &str) -> AppResult<Option<MediaRequest>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT id, library_id, facet, status, identity_fingerprint, title, sort_title, slug,
+                    poster_url, year, overview, runtime_minutes, language, content_status,
+                    requested_quality_profile_id, requested_quality_profile_name,
+                    resolved_by_user_id, resolved_at, created_title_id,
+                    approved_quality_profile_id, approved_quality_profile_name,
+                    created_by_user_id, created_at, updated_at
+               FROM media_requests
+              WHERE id = {}",
+            &[SqlArg::Text(request_id.to_string())],
+        )
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let mut request = row_to_media_request(&row)?;
+        request.external_ids =
+            load_media_request_external_ids(self.datastore.read_exec(), &request.id).await?;
+        request.requesters =
+            load_media_request_requesters(self.datastore.read_exec(), &request.id).await?;
+        Ok(Some(request))
+    }
+
+    async fn resolve_pending_overlapping(
+        &self,
+        request: &MediaRequest,
+        resolution: MediaRequestResolution,
+    ) -> AppResult<u64> {
+        let request = request.clone();
+        let resolution = resolution.clone();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "resolve_pending_media_request_group",
+            move |tx| {
+                let request = request.clone();
+                let resolution = resolution.clone();
+                Box::pin(
+                    async move { resolve_pending_overlapping_tx(tx, &request, resolution).await },
+                )
+            },
+        )
+        .await
+    }
+
+    async fn count_pending_by_facet(
+        &self,
+        library_ids: &[String],
+    ) -> AppResult<MediaRequestCounts> {
+        if library_ids.is_empty() {
+            return Ok(MediaRequestCounts::default());
+        }
+
+        let placeholders = std::iter::repeat_n("{}", library_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT facet, COUNT(DISTINCT library_id || ':' || identity_fingerprint) AS count
+               FROM media_requests
+              WHERE status = {{}} AND library_id IN ({placeholders})
+              GROUP BY facet"
+        );
+        let mut args = vec![SqlArg::Text(
+            MediaRequestStatus::Pending.as_str().to_string(),
+        )];
+        args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        let mut counts = MediaRequestCounts::default();
+        for row in rows {
+            let facet_raw = row.text("facet")?;
+            let count = row.i64("count")?;
+            match MediaFacet::parse(&facet_raw) {
+                Some(MediaFacet::Movie) => counts.movie = count,
+                Some(MediaFacet::Series) => counts.series = count,
+                Some(MediaFacet::Anime) => counts.anime = count,
+                None => {
+                    return Err(AppError::Repository(format!(
+                        "unknown media request facet {facet_raw}"
+                    )));
+                }
+            }
+        }
+        Ok(counts)
+    }
+
     async fn list(&self, query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>> {
         if matches!(&query.library_ids, Some(library_ids) if library_ids.is_empty()) {
             return Ok(Vec::new());
@@ -86,10 +176,12 @@ async fn insert_media_request_tx(
         "INSERT INTO media_requests (
             id, library_id, facet, status, identity_fingerprint, title, sort_title, slug,
             poster_url, year, overview, runtime_minutes, language, content_status,
+            requested_quality_profile_id, requested_quality_profile_name,
             created_by_user_id, created_at, updated_at
         ) VALUES (
             {}, {}, {}, {}, {}, {}, {}, {},
             {}, {}, {}, {}, {}, {},
+            {}, {},
             {}, {}, {}
         )",
         &[
@@ -107,6 +199,8 @@ async fn insert_media_request_tx(
             SqlArg::OptI32(request.runtime_minutes),
             SqlArg::OptText(request.language.clone()),
             SqlArg::OptText(request.content_status.clone()),
+            SqlArg::OptText(request.requested_quality_profile_id.clone()),
+            SqlArg::OptText(request.requested_quality_profile_name.clone()),
             SqlArg::Text(request.created_by_user_id.clone()),
             SqlArg::Timestamp(now),
             SqlArg::Timestamp(now),
@@ -163,6 +257,76 @@ async fn insert_media_request_requester_tx(
     Ok(rows > 0)
 }
 
+async fn resolve_pending_overlapping_tx(
+    tx: &mut SqlTx<'_>,
+    request: &MediaRequest,
+    resolution: MediaRequestResolution,
+) -> AppResult<u64> {
+    let resolved_at = resolution.resolved_at;
+    let mut args = vec![
+        SqlArg::Text(resolution.status.as_str().to_string()),
+        SqlArg::Text(resolution.resolved_by_user_id),
+        SqlArg::Timestamp(resolved_at),
+        SqlArg::OptText(resolution.created_title_id),
+        SqlArg::OptText(resolution.approved_quality_profile_id),
+        SqlArg::OptText(resolution.approved_quality_profile_name),
+        SqlArg::Timestamp(resolved_at),
+    ];
+
+    let where_clause = if request.external_ids.is_empty() {
+        args.push(SqlArg::Text(request.id.clone()));
+        args.push(SqlArg::Text(
+            MediaRequestStatus::Pending.as_str().to_string(),
+        ));
+        "id = {} AND status = {}".to_string()
+    } else {
+        args.push(SqlArg::Text(
+            MediaRequestStatus::Pending.as_str().to_string(),
+        ));
+        args.push(SqlArg::Text(request.library_id.clone()));
+        args.push(SqlArg::Text(request.facet.as_str().to_string()));
+        args.push(SqlArg::Text(request.library_id.clone()));
+        let overlap_clauses = std::iter::repeat_n(
+            "(source = {} AND external_id = {})",
+            request.external_ids.len(),
+        )
+        .collect::<Vec<_>>()
+        .join(" OR ");
+        for external_id in &request.external_ids {
+            args.push(SqlArg::Text(external_id.source.clone()));
+            args.push(SqlArg::Text(external_id.value.clone()));
+        }
+        format!(
+            "status = {{}}
+             AND library_id = {{}}
+             AND facet = {{}}
+             AND id IN (
+                 SELECT DISTINCT request_id
+                   FROM media_request_external_ids
+                  WHERE library_id = {{}}
+                    AND ({overlap_clauses})
+             )"
+        )
+    };
+
+    let sql = format!(
+        "UPDATE media_requests
+            SET status = {{}},
+                resolved_by_user_id = {{}},
+                resolved_at = {{}},
+                created_title_id = {{}},
+                approved_quality_profile_id = {{}},
+                approved_quality_profile_name = {{}},
+                updated_at = {{}}
+          WHERE {where_clause}"
+    );
+    let rows = tx.execute(&sql, &args).await?;
+    if rows > 0 {
+        append_domain_event_tx(tx, resolution.event).await?;
+    }
+    Ok(rows)
+}
+
 async fn load_media_request_tx(
     tx: &mut SqlTx<'_>,
     request_id: &str,
@@ -171,6 +335,9 @@ async fn load_media_request_tx(
         SqlExec::Tx(tx),
         "SELECT id, library_id, facet, status, identity_fingerprint, title, sort_title, slug,
                 poster_url, year, overview, runtime_minutes, language, content_status,
+                requested_quality_profile_id, requested_quality_profile_name,
+                resolved_by_user_id, resolved_at, created_title_id,
+                approved_quality_profile_id, approved_quality_profile_name,
                 created_by_user_id, created_at, updated_at
            FROM media_requests
           WHERE id = {}",
@@ -240,6 +407,9 @@ fn build_media_request_list_sql(query: &MediaRequestQuery) -> (String, Vec<SqlAr
     let mut sql = String::from(
         "SELECT id, library_id, facet, status, identity_fingerprint, title, sort_title, slug,
                 poster_url, year, overview, runtime_minutes, language, content_status,
+                requested_quality_profile_id, requested_quality_profile_name,
+                resolved_by_user_id, resolved_at, created_title_id,
+                approved_quality_profile_id, approved_quality_profile_name,
                 created_by_user_id, created_at, updated_at
            FROM media_requests
           WHERE 1 = 1",
@@ -292,6 +462,13 @@ fn row_to_media_request(row: &SqlRow) -> AppResult<MediaRequest> {
         runtime_minutes: row.opt_i32("runtime_minutes")?,
         language: row.opt_text("language")?,
         content_status: row.opt_text("content_status")?,
+        requested_quality_profile_id: row.opt_text("requested_quality_profile_id")?,
+        requested_quality_profile_name: row.opt_text("requested_quality_profile_name")?,
+        resolved_by_user_id: row.opt_text("resolved_by_user_id")?,
+        resolved_at: row.opt_timestamp("resolved_at")?,
+        created_title_id: row.opt_text("created_title_id")?,
+        approved_quality_profile_id: row.opt_text("approved_quality_profile_id")?,
+        approved_quality_profile_name: row.opt_text("approved_quality_profile_name")?,
         external_ids: Vec::new(),
         requesters: Vec::new(),
         created_by_user_id: row.text("created_by_user_id")?,

@@ -59,6 +59,7 @@ type RootSidebarProps = {
   wantedSection: WantedSection;
   user: AuthUser;
   pendingImportCounts: PendingImportCounts | null;
+  pendingMediaRequestCounts: PendingImportCounts | null;
   manualImportRequiredCount: number;
   pluginUpdateCount: number;
   scryerVersion: string | null;
@@ -102,6 +103,11 @@ const settingsEntries: Array<{
     id: "users",
     label: (t) => t("settings.users"),
     requiredAnyAppPermission: [APP_PERMISSIONS.manageUsers, APP_PERMISSIONS.managePermissions],
+  },
+  {
+    id: "mediaServers",
+    label: (t) => t("settings.mediaServers"),
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
     id: "qualityProfiles",
@@ -228,6 +234,7 @@ function RootSidebarContent({
   wantedSection,
   user,
   pendingImportCounts,
+  pendingMediaRequestCounts,
   manualImportRequiredCount,
   pluginUpdateCount,
   scryerVersion,
@@ -281,6 +288,15 @@ function RootSidebarContent({
   const pendingImportCountForNavView = React.useCallback(
     (viewId: ViewId) => pendingImportCountForView(pendingImportCounts, viewId),
     [pendingImportCounts],
+  );
+  const pendingMediaRequestCountForNavView = React.useCallback(
+    (viewId: ViewId) => pendingImportCountForView(pendingMediaRequestCounts, viewId),
+    [pendingMediaRequestCounts],
+  );
+  const mediaFacetBadgeCountForNavView = React.useCallback(
+    (viewId: ViewId) =>
+      pendingImportCountForNavView(viewId) + pendingMediaRequestCountForNavView(viewId),
+    [pendingImportCountForNavView, pendingMediaRequestCountForNavView],
   );
   const activityImportBadgeCount = Math.max(0, manualImportRequiredCount);
   const hasActivityImportBadge = activityImportBadgeCount > 0;
@@ -417,6 +433,9 @@ function RootSidebarContent({
                 const isActiveSystemSection = isSystemTop && view === "system";
                 const isActiveActivitySection = isActivityTop && view === "activity";
                 const isActiveWantedSection = isWantedTop && view === "wanted";
+                const mediaFacetBadgeCount = isMediaSection
+                  ? mediaFacetBadgeCountForNavView(item.id)
+                  : 0;
                 const shouldShowChildren =
                   isActiveMediaSection ||
                   isActiveSettingsSection ||
@@ -509,6 +528,11 @@ function RootSidebarContent({
                         {item.id === "activity" && hasActivityImportBadge ? (
                           <SidebarMenuBadge className="bg-primary text-primary-foreground">
                             {activityImportBadgeCount}
+                          </SidebarMenuBadge>
+                        ) : null}
+                        {isMediaSection && mediaFacetBadgeCount > 0 ? (
+                          <SidebarMenuBadge className="bg-primary text-primary-foreground">
+                            {mediaFacetBadgeCount}
                           </SidebarMenuBadge>
                         ) : null}
                       </SidebarMenuItem>
@@ -632,6 +656,9 @@ function RootSidebarContent({
                                       }}
                                     >
                                       {t("nav.requests")}
+                                      {pendingMediaRequestCountForNavView(item.id) > 0 ? (
+                                        <LeafNavBadge count={pendingMediaRequestCountForNavView(item.id)} />
+                                      ) : null}
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}

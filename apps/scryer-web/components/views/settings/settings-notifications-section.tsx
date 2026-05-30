@@ -34,6 +34,7 @@ import type {
   NotificationProviderType,
   NotificationSubscriptionDraft,
   NotificationSubscriptionRow,
+  MediaServerConnection,
   TitleRecord,
 } from "@/lib/types";
 import type { Facet } from "@/lib/types/titles";
@@ -62,6 +63,7 @@ type SettingsNotificationsSectionProps = {
   channelEditorMode: "create" | "edit";
   startCreateChannel: () => void;
   providerTypes: NotificationProviderType[];
+  mediaServerConnections: MediaServerConnection[];
   subscriptions: NotificationSubscriptionRow[];
   subscriptionTitlesById: Record<string, TitleRecord | null>;
   editingSubscriptionId: string | null;
@@ -435,6 +437,7 @@ export function SettingsNotificationsSection({
   channelEditorMode,
   startCreateChannel,
   providerTypes,
+  mediaServerConnections,
   subscriptions,
   subscriptionTitlesById,
   editingSubscriptionId,
@@ -524,7 +527,17 @@ export function SettingsNotificationsSection({
     return providerByType.get(normalizedChannelType) ?? null;
   }, [normalizedChannelType, providerByType]);
 
-  const selectedProviderFields = selectedProvider?.configFields ?? [];
+  const selectedMediaServerConnection = React.useMemo(
+    () =>
+      mediaServerConnections.find(
+        (connection) => connection.id === channelDraft.mediaServerConnectionId,
+      ) ?? null,
+    [channelDraft.mediaServerConnectionId, mediaServerConnections],
+  );
+  const selectedProviderFields =
+    selectedProvider?.providerType === "jellyfin" && selectedMediaServerConnection
+      ? []
+      : selectedProvider?.configFields ?? [];
 
   React.useEffect(() => {
     const supported = new Set(supportedSubscriptionEventTypes);
@@ -700,6 +713,7 @@ export function SettingsNotificationsSection({
                        setChannelDraft((prev) => ({
                          ...prev,
                          channelType: v,
+                         mediaServerConnectionId: v === "jellyfin" ? prev.mediaServerConnectionId : "",
                          name: provider?.name ?? "",
                        }));
                      }}
@@ -730,6 +744,37 @@ export function SettingsNotificationsSection({
                    />
                  </label>
                </div>
+
+              {selectedProvider?.providerType === "jellyfin" ? (
+                <label className="block">
+                  <Label className="mb-2 block" htmlFor="settings-notification-media-server-connection">
+                    {t("settings.mediaServerConnection")}
+                  </Label>
+                  <Select
+                    value={channelDraft.mediaServerConnectionId || "__manual__"}
+                    onValueChange={(value) =>
+                      setChannelDraft((prev) => ({
+                        ...prev,
+                        mediaServerConnectionId: value === "__manual__" ? "" : value,
+                      }))
+                    }
+                  >
+                    <SelectTrigger id="settings-notification-media-server-connection" className="w-full">
+                      <SelectValue placeholder={t("settings.mediaServerConnection")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__manual__">{t("settings.manualConfiguration")}</SelectItem>
+                      {mediaServerConnections
+                        .filter((connection) => connection.provider === "jellyfin")
+                        .map((connection) => (
+                          <SelectItem key={connection.id} value={connection.id}>
+                            {connection.displayName}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              ) : null}
 
               {selectedProviderFields.length > 0 ? (
                 <div className="space-y-3">

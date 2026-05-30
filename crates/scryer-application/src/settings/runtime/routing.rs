@@ -19,6 +19,7 @@ pub struct IndexerRoutingSettingsEntry {
 pub struct LibrarySettingsOverrideDraft {
     pub required_audio_languages: Option<Vec<String>>,
     pub quality_profile_id: Option<String>,
+    pub request_quality_profile_ids: Option<Vec<String>>,
     pub scoring_persona: Option<ScoringPersona>,
     pub filler_policy: Option<String>,
     pub recap_policy: Option<String>,
@@ -37,6 +38,9 @@ pub struct LibrarySettings {
     pub required_audio_languages: Vec<String>,
     pub quality_profile_id_override: Option<String>,
     pub quality_profile_id: String,
+    pub request_quality_profile_ids_override: Option<Vec<String>>,
+    pub request_quality_profile_ids: Vec<String>,
+    pub request_quality_profile_default_id: String,
     pub scoring_persona_override: Option<ScoringPersona>,
     pub scoring_persona: ScoringPersona,
     pub filler_policy_override: Option<String>,
@@ -58,6 +62,13 @@ pub struct LibrarySettings {
     pub indexer_routing_override: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing_override: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestQualityProfileSettings {
+    pub profile_ids: Vec<String>,
+    pub default_profile_id: String,
+}
+
 fn download_client_routing_payload(
     entries: Vec<DownloadClientRoutingSettingsEntry>,
 ) -> AppResult<serde_json::Map<String, serde_json::Value>> {

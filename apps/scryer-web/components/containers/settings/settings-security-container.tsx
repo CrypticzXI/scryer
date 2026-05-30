@@ -1,26 +1,14 @@
 import * as React from "react";
 import { useClient } from "urql";
 import { toast } from "sonner";
-import {
-  ExternalAccountInvitesContainer,
-  notifyExternalAccountInviteSourcesChanged,
-} from "@/components/containers/settings/external-account-invites-container";
+import { ExternalAccountInvitesContainer } from "@/components/containers/settings/external-account-invites-container";
 import { SettingsSecuritySection } from "@/components/views/settings/settings-security-section";
 import { disposeWsClient } from "@/lib/graphql/ws-client";
-import {
-  testJellyfinConnectionMutation,
-  updateAuthProviderSettingsMutation,
-  updateSecuritySettingsMutation,
-} from "@/lib/graphql/mutations";
-import { authProviderSettingsQuery, securitySettingsQuery } from "@/lib/graphql/queries";
+import { updateSecuritySettingsMutation } from "@/lib/graphql/mutations";
+import { securitySettingsQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
-import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useAuth } from "@/lib/hooks/use-auth";
-import type { AuthProviderSettings, SecuritySettings } from "@/lib/types/settings";
-import {
-  isReportedConnectionFeedbackError,
-  runConnectionFeedback,
-} from "@/lib/utils/connection-feedback";
+import type { SecuritySettings } from "@/lib/types/settings";
 import { APP_PERMISSIONS, hasAppPermission } from "@/lib/utils/permissions";
 
 const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
@@ -33,16 +21,6 @@ const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   envOverrideDescription: null,
 };
 
-const DEFAULT_AUTH_PROVIDER_SETTINGS: AuthProviderSettings = {
-  allowedProviders: [],
-  providerLoginEnabled: [],
-  providerLinkingEnabled: [],
-  allowedJellyfinConnectionIds: [],
-  allowedPlexConnectionIds: [],
-  allowedJellyfinConnections: [],
-  allowedPlexConnections: [],
-};
-
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
@@ -52,15 +30,11 @@ function errorMessage(error: unknown, fallback: string) {
 export function SettingsSecurityContainer() {
   const client = useClient();
   const t = useTranslate();
-  const setGlobalStatus = useGlobalStatus();
   const { token, user, login, adoptSession, logout } = useAuth();
   const [settings, setSettings] = React.useState<SecuritySettings>(
     DEFAULT_SECURITY_SETTINGS,
   );
-  const [authProviderSettings, setAuthProviderSettings] =
-    React.useState<AuthProviderSettings>(DEFAULT_AUTH_PROVIDER_SETTINGS);
   const [loading, setLoading] = React.useState(true);
-  const [authProviderSaving, setAuthProviderSaving] = React.useState(false);
   const [enableConfirmOpen, setEnableConfirmOpen] = React.useState(false);
   const [disableConfirmOpen, setDisableConfirmOpen] = React.useState(false);
   const [confirmBusy, setConfirmBusy] = React.useState(false);
@@ -75,25 +49,16 @@ export function SettingsSecurityContainer() {
 
     (async () => {
       try {
-        const [securityResult, authProviderResult] = await Promise.all([
-          client.query(securitySettingsQuery, {}).toPromise(),
-          client.query(authProviderSettingsQuery, {}).toPromise(),
-        ]);
+        const securityResult = await client.query(securitySettingsQuery, {}).toPromise();
         if (securityResult.error) throw securityResult.error;
-        if (authProviderResult.error) throw authProviderResult.error;
         if (cancelled) return;
         setSettings({
           ...DEFAULT_SECURITY_SETTINGS,
           ...securityResult.data?.securitySettings,
         });
-        setAuthProviderSettings({
-          ...DEFAULT_AUTH_PROVIDER_SETTINGS,
-          ...authProviderResult.data?.authProviderSettings,
-        });
       } catch (error) {
         if (!cancelled) {
           setSettings(DEFAULT_SECURITY_SETTINGS);
-          setAuthProviderSettings(DEFAULT_AUTH_PROVIDER_SETTINGS);
           toast.error(errorMessage(error, t("settings.securityLoadFailed")));
         }
       } finally {
@@ -377,111 +342,10 @@ export function SettingsSecurityContainer() {
     t,
   ]);
 
-  const handleAuthProviderSettingsSave = React.useCallback(async () => {
-    setAuthProviderSaving(true);
-    try {
-      const allowedJellyfinConnections =
-        authProviderSettings.allowedJellyfinConnections.map((connection) => ({
-          id: connection.id,
-          displayName: connection.displayName,
-          baseUrl: connection.baseUrl,
-          machineId: null,
-        }));
-      const allowedPlexConnections =
-        authProviderSettings.allowedPlexConnections.map((connection) => ({
-          id: connection.id,
-          displayName: connection.displayName,
-          baseUrl: null,
-          machineId: connection.machineId,
-        }));
-
-      for (const connection of allowedJellyfinConnections) {
-        if (!connection.baseUrl?.trim()) {
-          continue;
-        }
-
-        const connectionLabel =
-          connection.displayName.trim() || connection.baseUrl.trim() || "Jellyfin";
-
-        await runConnectionFeedback({
-          setGlobalStatus,
-          startMessage: t("status.testingJellyfinConnection", {
-            connection: connectionLabel,
-          }),
-          successMessage: t("status.jellyfinConnectionTestPassed", {
-            connection: connectionLabel,
-          }),
-          failureFallbackMessage: t("status.jellyfinConnectionTestFailed", {
-            connection: connectionLabel,
-          }),
-          announceSuccess: false,
-          run: async () => {
-            const { data: testData, error: testError } = await client
-              .mutation(testJellyfinConnectionMutation, {
-                input: {
-                  connection: {
-                    id: connection.id.trim() || null,
-                    displayName: connection.displayName,
-                    baseUrl: connection.baseUrl,
-                    machineId: null,
-                  },
-                },
-              })
-              .toPromise();
-            if (testError) throw testError;
-            if (!testData?.testJellyfinConnection) {
-              throw new Error(
-                t("status.jellyfinConnectionTestFailed", {
-                  connection: connectionLabel,
-                }),
-              );
-            }
-          },
-        });
-      }
-
-      const { data, error } = await client
-        .mutation(updateAuthProviderSettingsMutation, {
-          input: {
-            allowedProviders: authProviderSettings.allowedProviders,
-            providerLoginEnabled: authProviderSettings.providerLoginEnabled,
-            providerLinkingEnabled: authProviderSettings.providerLinkingEnabled,
-            allowedJellyfinConnectionIds: allowedJellyfinConnections
-              .map((connection) => connection.id.trim())
-              .filter(Boolean),
-            allowedPlexConnectionIds: allowedPlexConnections
-              .map((connection) => connection.id.trim())
-              .filter(Boolean),
-            allowedJellyfinConnections,
-            allowedPlexConnections,
-          },
-        })
-        .toPromise();
-      if (error || !data?.updateAuthProviderSettings) {
-        throw error ?? new Error(t("settings.securitySaveFailed"));
-      }
-      setAuthProviderSettings({
-        ...DEFAULT_AUTH_PROVIDER_SETTINGS,
-        ...data.updateAuthProviderSettings,
-      });
-      notifyExternalAccountInviteSourcesChanged();
-      setGlobalStatus(t("settings.securityPreferenceSaved"));
-      toast.success(t("settings.securityPreferenceSaved"));
-    } catch (error) {
-      if (!isReportedConnectionFeedbackError(error)) {
-        toast.error(errorMessage(error, t("settings.securitySaveFailed")));
-      }
-    } finally {
-      setAuthProviderSaving(false);
-    }
-  }, [authProviderSettings, client, setGlobalStatus, t]);
-
   return (
     <SettingsSecuritySection
       settings={settings}
-      authProviderSettings={authProviderSettings}
       loading={loading}
-      authProviderSaving={authProviderSaving}
       enableConfirmOpen={enableConfirmOpen}
       disableConfirmOpen={disableConfirmOpen}
       confirmBusy={confirmBusy}
@@ -498,8 +362,6 @@ export function SettingsSecurityContainer() {
       onSkipLocalIpsChange={handleSkipLocalIpsChange}
       onTotpConfigStepUpChange={handleTotpConfigStepUpChange}
       onTotpJellyfinLoginChange={handleTotpJellyfinLoginChange}
-      onAuthProviderSettingsChange={setAuthProviderSettings}
-      onAuthProviderSettingsSave={handleAuthProviderSettingsSave}
       externalAccountInvitesPanel={
         canManageExternalInvites ? <ExternalAccountInvitesContainer /> : null
       }

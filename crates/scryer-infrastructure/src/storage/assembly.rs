@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
     DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
-    LibraryRepository, LogicalBackupExporter, MediaRequestRepository, PluginInstallationRepository,
-    PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
-    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
-    UserRepository, WebauthnRepository,
+    LibraryRepository, LogicalBackupExporter, MediaRequestRepository,
+    MediaServerConnectionRepository, PluginInstallationRepository, PostProcessingScriptRepository,
+    QualityProfileRepository, RuleSetRepository, SettingsRepository, ShowRepository,
+    SubtitleProviderConfigRepository, TitleImageProcessor, TitleImageRepository, TitleRepository,
+    TotpRepository, UserExternalAccountRepository, UserRepository, WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
@@ -25,11 +25,12 @@ use crate::{
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
     IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
-    MediaRequestStore, MetadataGatewayClient, MigrationMode, NotificationStore,
-    PendingReleaseStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore,
-    RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig, SqliteLogicalBackupExporter,
-    SqliteServices, SubtitleDownloadStore, SubtitleProviderConfigStore, TitleImageStore,
-    TitleStore, TotpStore, WantedStore, WebauthnStore, WorkflowOperationStore,
+    MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
+    NotificationStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
+    QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
+    SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
+    SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore, WantedStore,
+    WebauthnStore, WorkflowOperationStore,
 };
 use crate::{LibraryStore, UserStore};
 
@@ -607,6 +608,7 @@ enum DatastoreStores {
         show_store: Arc<ShowStore>,
         library_store: Arc<LibraryStore>,
         media_request_store: Arc<MediaRequestStore>,
+        media_server_connection_store: Arc<MediaServerConnectionStore>,
         user_store: Arc<UserStore>,
         webauthn_store: Arc<WebauthnStore>,
         totp_store: Arc<TotpStore>,
@@ -644,6 +646,7 @@ enum DatastoreStores {
         show_store: Arc<ShowStore>,
         library_store: Arc<LibraryStore>,
         media_request_store: Arc<MediaRequestStore>,
+        media_server_connection_store: Arc<MediaServerConnectionStore>,
         user_store: Arc<UserStore>,
         webauthn_store: Arc<WebauthnStore>,
         totp_store: Arc<TotpStore>,
@@ -693,6 +696,10 @@ impl DatastoreAssembly {
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
         let media_request_store = Arc::new(MediaRequestStore::new(datastore.clone()));
+        let media_server_connection_store = Arc::new(MediaServerConnectionStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
         let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
         let totp_store = Arc::new(TotpStore::new(datastore.clone(), db.encryption_key_state()));
@@ -751,6 +758,7 @@ impl DatastoreAssembly {
             show_store,
             library_store,
             media_request_store,
+            media_server_connection_store,
             user_store,
             webauthn_store,
             totp_store,
@@ -795,6 +803,10 @@ impl DatastoreAssembly {
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
         let library_store = Arc::new(LibraryStore::new(datastore.clone()));
         let media_request_store = Arc::new(MediaRequestStore::new(datastore.clone()));
+        let media_server_connection_store = Arc::new(MediaServerConnectionStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        ));
         let user_store = Arc::new(UserStore::new(datastore.clone()));
         let webauthn_store = Arc::new(WebauthnStore::new(datastore.clone()));
         let totp_store = Arc::new(TotpStore::new(datastore.clone(), db.encryption_key_state()));
@@ -851,6 +863,7 @@ impl DatastoreAssembly {
             show_store,
             library_store,
             media_request_store,
+            media_server_connection_store,
             user_store,
             webauthn_store,
             totp_store,
@@ -1007,6 +1020,19 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn media_server_connections(&self) -> Arc<dyn MediaServerConnectionRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                media_server_connection_store,
+                ..
+            } => media_server_connection_store.clone(),
+            DatastoreStores::Postgres {
+                media_server_connection_store,
+                ..
+            } => media_server_connection_store.clone(),
+        }
+    }
+
     pub fn subtitle_provider_configs(&self) -> Arc<dyn SubtitleProviderConfigRepository> {
         match &self.stores {
             DatastoreStores::Sqlite {
@@ -1105,6 +1131,7 @@ impl DatastoreAssembly {
                 show_store,
                 library_store,
                 media_request_store,
+                media_server_connection_store,
                 user_store,
                 webauthn_store,
                 totp_store,
@@ -1157,9 +1184,8 @@ impl DatastoreAssembly {
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
                 .with_external_account_store(external_accounts)
-                .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new(
-                    self.settings(),
-                )))
+                .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
+                .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)
                 .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
@@ -1193,6 +1219,7 @@ impl DatastoreAssembly {
                 show_store,
                 library_store,
                 media_request_store,
+                media_server_connection_store,
                 user_store,
                 webauthn_store,
                 totp_store,
@@ -1245,9 +1272,8 @@ impl DatastoreAssembly {
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
                 .with_external_account_store(external_accounts)
-                .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new(
-                    self.settings(),
-                )))
+                .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
+                .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)
                 .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())

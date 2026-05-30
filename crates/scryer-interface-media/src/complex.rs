@@ -19,6 +19,34 @@ fn title_scope_from_facet(facet: MediaFacetValue) -> ContentScopeValue {
 
 #[ComplexObject]
 impl LibraryPayload {
+    async fn quality_profile_id(&self, ctx: &Context<'_>) -> GqlResult<String> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.title_quality_profile_id_for_library(&actor, &self.id)
+            .await
+            .map_err(to_gql_error)
+    }
+
+    async fn request_quality_profile_ids(&self, ctx: &Context<'_>) -> GqlResult<Vec<String>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .request_quality_profile_settings_for_library(&actor, &self.id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(settings.profile_ids)
+    }
+
+    async fn request_quality_profile_default_id(&self, ctx: &Context<'_>) -> GqlResult<String> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .request_quality_profile_settings_for_library(&actor, &self.id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(settings.default_profile_id)
+    }
+
     async fn settings(&self, ctx: &Context<'_>) -> GqlResult<LibrarySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

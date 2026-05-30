@@ -54,6 +54,53 @@ export type SecuritySettings = {
 
 export type ExternalAccountProvider = "plex" | "jellyfin";
 export type ExternalAccountStatus = "pending_claim" | "active" | "disabled";
+export type MediaServerProvider = "jellyfin" | "plex" | "emby";
+
+export type MediaServerPathMapping = {
+  sourcePath: string;
+  destinationPath: string;
+};
+
+export type MediaServerDefaultLibraryGrant = {
+  libraryId: string;
+  permissions: string[];
+};
+
+export type MediaServerConnection = {
+  id: string;
+  provider: MediaServerProvider;
+  displayName: string;
+  baseUrl: string;
+  enabled: boolean;
+  loginEnabled: boolean;
+  linkingEnabled: boolean;
+  autoAddEnabled: boolean;
+  defaultAppPermissions: string[];
+  defaultLibraryGrants: MediaServerDefaultLibraryGrant[];
+  machineId: string | null;
+  apiKeyPresent: boolean;
+  pathMappings: MediaServerPathMapping[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MediaServerConnectionDraft = {
+  provider: MediaServerProvider;
+  displayName: string;
+  baseUrl: string;
+  enabled: boolean;
+  loginEnabled: boolean;
+  linkingEnabled: boolean;
+  autoAddEnabled: boolean;
+  defaultAppPermissions: string[];
+  defaultLibraryGrants: MediaServerDefaultLibraryGrant[];
+  machineId: string;
+  apiKey: string;
+  clearApiKey: boolean;
+  adminUsername: string;
+  adminPassword: string;
+  pathMappingsText: string;
+};
 
 export type AuthProviderConnection = {
   id: string;
@@ -100,6 +147,7 @@ export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
   passkeyEnabled: boolean;
+  totpRequireJellyfinLogin: boolean;
 };
 
 export type PasskeySummary = {
