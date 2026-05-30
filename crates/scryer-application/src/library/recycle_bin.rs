@@ -379,8 +379,9 @@ pub async fn recycle_file(
     write_manifest(&recycle_dir, &manifest).await?;
 
     // Move the file into the recycle directory
-    let file_name = source_path
+    let file_name = Path::new(&manifest.original_path)
         .file_name()
+        .or_else(|| source_path.file_name())
         .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
     let recycled_path = recycle_dir.join(file_name);
 

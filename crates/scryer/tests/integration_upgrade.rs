@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use common::TestContext;
 use scryer_application::recycle_bin::{
-    RECYCLE_STATUS_COMMITTED, RECYCLE_STATUS_PENDING, RecycleBinConfig, RecycleManifest,
+    RECYCLE_STATUS_COMMITTED, RecycleBinConfig, RecycleManifest,
 };
 use scryer_application::testing::{
     AppUseCaseTestExt, UpgradeForTestInput, execute_upgrade_for_test,
@@ -466,21 +466,15 @@ async fn upgrade_restores_old_file_on_import_failure() {
     assert_eq!(content, "old video content");
 
     let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
-        .unwrap()
-        .filter_map(Result::ok)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
         .filter(|entry| entry.path().is_dir())
         .collect();
     assert_eq!(
         recycle_entries.len(),
-        1,
-        "failed upgrade leaves audit entry"
-    );
-    let manifest_bytes = std::fs::read(recycle_entries[0].path().join("manifest.json")).unwrap();
-    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
-    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_PENDING));
-    assert!(
-        manifest.replacement_file_id.is_none(),
-        "failed upgrade must not commit replacement proof"
+        0,
+        "failed import should not recycle the old file before replacement validation"
     );
 }
 
@@ -614,6 +608,101 @@ async fn disabled_recycle_bin_same_path_upgrade_keeps_backup_until_verified() {
     let files = ctx
         .media_files
         .list_media_files_for_title("title-4")
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, outcome.new_file_id);
+    assert_eq!(files[0].file_path, old_path.to_string_lossy());
+}
+
+#[tokio::test]
+async fn recycle_bin_same_path_upgrade_recycles_original_filename() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-4a").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let recycle_dir = tempfile::tempdir().expect("recycle dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.mkv");
+    std::fs::write(&old_path, b"old same-path content").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new same-path content").expect("write new");
+
+    let existing = seed_media_file(&ctx, "title-4a", &old_path, 21, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let recycle_config = make_recycle_config(recycle_dir.path());
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &old_path,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &recycle_config,
+        },
+    )
+    .await
+    .expect("same-path recycle upgrade should succeed");
+
+    let UpgradeResult::Upgraded(outcome) = result else {
+        panic!("upgrade should be accepted");
+    };
+    assert!(outcome.recycle_entry_committed);
+    assert_eq!(
+        std::fs::read(&old_path).expect("read final path"),
+        b"new same-path content"
+    );
+
+    let leftovers = std::fs::read_dir(media_dir.path())
+        .expect("read media dir")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".scryer-upgrade-")
+        })
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "guard files should be cleaned up");
+
+    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
+        .expect("read recycle dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(recycle_entries.len(), 1, "old file should be recycled once");
+    let entry_dir = recycle_entries[0].path();
+    assert!(
+        entry_dir.join("Movie.mkv").exists(),
+        "same-path recycle should store the original filename, not the guard filename"
+    );
+
+    let manifest_bytes = std::fs::read(entry_dir.join("manifest.json")).unwrap();
+    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
+    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    assert_eq!(manifest.original_path, old_path.to_string_lossy());
+    assert_eq!(
+        manifest.replacement_file_id.as_deref(),
+        Some(outcome.new_file_id.as_str())
+    );
+    assert_eq!(
+        manifest.replacement_path.as_deref(),
+        Some(old_path.to_string_lossy().as_ref())
+    );
+
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-4a")
         .await
         .expect("list media files");
     assert_eq!(files.len(), 1);

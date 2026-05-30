@@ -1,8 +1,8 @@
 //! Quality-upgrade workflow for media files.
 //!
 //! When a new import scores higher than an existing file for the same title,
-//! the old file is recycled and the new one takes its place. If the new import
-//! fails, the old file is restored from the recycle bin to avoid data loss.
+//! the replacement is imported and validated before the old file is recycled
+//! or deleted.
 
 use crate::domain_events::{
     created_media_update, deleted_media_update, modified_media_update, new_title_domain_event,
@@ -29,10 +29,10 @@ pub enum UpgradeResult {
     Rejected(crate::post_download_gate::ImportedFileRejection),
 }
 
-/// Execute an atomic file upgrade: recycle old → import new → update DB.
+/// Execute a guarded file upgrade: import and validate replacement, then retire old.
 ///
-/// If the new file import fails, the old file is restored from the recycle bin
-/// so that we never lose both copies.
+/// The old file is not recycled or deleted until the replacement file is on disk,
+/// represented in storage, linked, and validated.
 #[expect(
     clippy::too_many_arguments,
     reason = "upgrade execution coordinates file movement, scoring, and persistence state in one transaction"
@@ -52,6 +52,8 @@ pub(crate) async fn execute_upgrade(
     media_root: Option<&str>,
     recycle_config: &RecycleBinConfig,
 ) -> AppResult<UpgradeResult> {
+    ensure_old_file_disposition_ready(recycle_config)?;
+
     let old_path = stored_path_to_path_buf(&existing_file.file_path);
     let dest_path_string = path_to_stored_string(dest_path);
     let source_path_string = path_to_stored_string(source_path);
@@ -68,242 +70,107 @@ pub(crate) async fn execute_upgrade(
         }
     );
 
-    if !recycle_config.enabled {
-        return execute_upgrade_without_recycle_bin(
-            app,
-            title,
-            existing_file,
-            source_path,
-            dest_path,
-            prepared,
-            stored_quality_label,
-            final_score,
-            old_score,
-            target_episode_ids,
-            media_root,
-            &scoring_log,
-            &source_path_string,
-            &dest_path_string,
-        )
-        .await;
-    }
-
-    // 3. Recycle the old file
-    let manifest = RecycleManifest::pending_upgrade(
-        existing_file.file_path.clone(),
-        existing_file.id.clone(),
-        existing_file.size_bytes as u64,
-        title.id.clone(),
-        media_root.map(str::to_string),
-    );
-    let recycle_result = recycle_bin::recycle_file(recycle_config, &old_path, manifest).await?;
-
-    // 4. Import the new file
-    let import_result = app
-        .services
-        .workflow
-        .file_importer
-        .import_file(source_path, dest_path)
-        .await;
-
-    let file_result = match import_result {
-        Ok(r) => r,
-        Err(err) => {
-            tracing::error!(
-                error = %err,
-                old_path = %old_path.display(),
-                new_source = %source_path.display(),
-                "upgrade import failed, restoring old file"
-            );
-            restore_old_file(&recycle_result, &old_path).await;
-            return Err(AppError::Repository(format!(
-                "upgrade import failed: {err}"
-            )));
-        }
-    };
-
-    // 5. Delete old media_files record
-    let old_file_id = existing_file.id.clone();
-    let old_episode_id = existing_file.episode_id.clone();
-    if let Err(err) = app
-        .services
-        .library
-        .media_files
-        .delete_media_file(&old_file_id)
-        .await
-    {
-        remove_imported_replacement(dest_path).await;
-        restore_old_file(&recycle_result, &old_path).await;
-        return Err(AppError::Repository(format!(
-            "failed to delete old media file record during upgrade: {err}"
-        )));
-    }
-
-    // 6. Insert new record with rich schema
-    let media_file_input = InsertMediaFileInput {
-        title_id: title.id.clone(),
-        file_path: dest_path_string.clone(),
-        size_bytes: file_result.size_bytes as i64,
-        quality_label: stored_quality_label
-            .map(str::to_string)
-            .or_else(|| prepared.parsed.quality.clone()),
-        scene_name: Some(prepared.parsed.raw_title.clone()),
-        release_group: prepared.parsed.release_group.clone(),
-        source_type: prepared.parsed.source.clone(),
-        resolution: stored_quality_label
-            .map(str::to_string)
-            .or_else(|| prepared.parsed.quality.clone()),
-        video_codec_parsed: prepared.parsed.video_codec.clone(),
-        audio_codec_parsed: prepared.parsed.audio.clone(),
-        audio_channels_parsed: prepared.parsed.audio_channels.clone(),
-        original_file_path: Some(source_path_string),
-        acquisition_score: Some(final_score),
-        scoring_log: Some(scoring_log.clone()),
-        ..Default::default()
-    };
-    let new_file_id = match app
-        .services
-        .library
-        .media_files
-        .insert_media_file(&media_file_input)
-        .await
-    {
-        Ok(id) => id,
-        Err(err) => {
-            remove_imported_replacement(dest_path).await;
-            restore_old_file(&recycle_result, &old_path).await;
-            return Err(AppError::Repository(format!(
-                "failed to insert replacement media file during upgrade: {err}"
-            )));
-        }
-    };
-    crate::post_download_gate::persist_media_analysis_result(
-        &app.services.library.media_files,
-        &new_file_id,
-        prepared.accepted.as_ref(),
-    )
-    .await;
-
-    // 7. Re-link episode mappings.
-    let mut links_written = true;
-    if target_episode_ids.is_empty() {
-        if let Some(ref episode_id) = old_episode_id
-            && let Err(error) = app
-                .services
-                .library
-                .media_files
-                .link_file_to_episode(&new_file_id, episode_id)
-                .await
-        {
-            links_written = false;
-            tracing::warn!(
-                error = %error,
-                file_id = %new_file_id,
-                episode_id,
-                "failed to link replacement file to episode; recycle entry remains pending"
-            );
-        }
-    } else {
-        for episode_id in target_episode_ids {
-            if let Err(error) = app
-                .services
-                .library
-                .media_files
-                .link_file_to_episode(&new_file_id, episode_id)
-                .await
-            {
-                links_written = false;
-                tracing::warn!(
-                    error = %error,
-                    file_id = %new_file_id,
-                    episode_id,
-                    "failed to link replacement file to episode; recycle entry remains pending"
-                );
-            }
-        }
-    }
-
-    let mut recycle_entry_committed = false;
-    if links_written && recycle_result.is_some() {
-        if let Err(error) =
-            recycle_bin::commit_recycle_entry(&recycle_result, &new_file_id, dest_path).await
-        {
-            tracing::warn!(
-                error = %error,
-                file_id = %new_file_id,
-                "replacement imported but recycle entry could not be committed; it will not auto-purge"
-            );
-        } else {
-            recycle_entry_committed = true;
-        }
-    }
-
-    {
-        let media_updates = if existing_file.file_path == dest_path_string {
-            vec![modified_media_update(dest_path_string.clone())]
-        } else {
-            vec![
-                deleted_media_update(existing_file.file_path.clone()),
-                created_media_update(dest_path_string.clone()),
-            ]
-        };
-        app.append_domain_event(new_title_domain_event(
-            None,
-            title,
-            DomainEventPayload::MediaFileUpgraded(MediaFileUpgradedEventData {
-                title: title_context_snapshot(title),
-                media_updates,
-                previous_file_id: Some(existing_file.id.clone()),
-                current_file_id: Some(new_file_id.clone()),
-                old_score: Some(old_score),
-                new_score: Some(final_score),
-            }),
-        ))
-        .await?;
-    }
-
-    Ok(UpgradeResult::Upgraded(UpgradeOutcome {
-        old_score,
-        new_score: final_score,
-        new_file_id,
-        recycle_entry_committed,
-    }))
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "disabled recycle upgrades need the same execution context as recycle-backed upgrades"
-)]
-async fn execute_upgrade_without_recycle_bin(
-    app: &AppUseCase,
-    title: &Title,
-    existing_file: &TitleMediaFile,
-    source_path: &Path,
-    dest_path: &Path,
-    prepared: &crate::post_download_gate::PreparedImportCandidate,
-    stored_quality_label: Option<&str>,
-    final_score: i32,
-    old_score: i32,
-    target_episode_ids: &[String],
-    media_root: Option<&str>,
-    scoring_log: &str,
-    source_path_string: &str,
-    dest_path_string: &str,
-) -> AppResult<UpgradeResult> {
-    let old_path = stored_path_to_path_buf(&existing_file.file_path);
     let same_final_path = old_path == dest_path;
-    let import_dest = if same_final_path {
+    let import_path = if same_final_path {
         sibling_guard_path(dest_path, "replacement")
     } else {
         dest_path.to_path_buf()
     };
-    let import_dest_string = path_to_stored_string(&import_dest);
 
+    let replacement = prepare_replacement_before_old_removal(
+        app,
+        title,
+        existing_file,
+        source_path,
+        &import_path,
+        dest_path_string.clone(),
+        same_final_path,
+        prepared,
+        stored_quality_label,
+        final_score,
+        target_episode_ids,
+        media_root,
+        &scoring_log,
+        &source_path_string,
+    )
+    .await?;
+
+    let recycle_entry_committed = finalize_prepared_upgrade(
+        app,
+        title,
+        existing_file,
+        &replacement,
+        recycle_config,
+        &old_path,
+        media_root,
+    )
+    .await?;
+
+    append_upgrade_event(
+        app,
+        title,
+        existing_file,
+        &replacement.new_file_id,
+        &replacement.final_path_string,
+        old_score,
+        final_score,
+    )
+    .await?;
+
+    Ok(UpgradeResult::Upgraded(UpgradeOutcome {
+        old_score,
+        new_score: final_score,
+        new_file_id: replacement.new_file_id,
+        recycle_entry_committed,
+    }))
+}
+
+struct PreparedUpgradeReplacement {
+    new_file_id: String,
+    import_path: PathBuf,
+    final_path_string: String,
+    same_final_path: bool,
+}
+
+fn ensure_old_file_disposition_ready(recycle_config: &RecycleBinConfig) -> AppResult<()> {
+    if recycle_config.enabled && !recycle_config.cleanup_enabled {
+        return Err(AppError::Validation(format!(
+            "refusing to upgrade because the recycle bin path is unsafe: {}",
+            recycle_config
+                .validation_error
+                .as_deref()
+                .unwrap_or("invalid recycle bin configuration")
+        )));
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preparing a replacement needs import, metadata, scoring, and episode-link context"
+)]
+async fn prepare_replacement_before_old_removal(
+    app: &AppUseCase,
+    title: &Title,
+    existing_file: &TitleMediaFile,
+    source_path: &Path,
+    import_path: &Path,
+    final_path_string: String,
+    same_final_path: bool,
+    prepared: &crate::post_download_gate::PreparedImportCandidate,
+    stored_quality_label: Option<&str>,
+    final_score: i32,
+    target_episode_ids: &[String],
+    media_root: Option<&str>,
+    scoring_log: &str,
+    source_path_string: &str,
+) -> AppResult<PreparedUpgradeReplacement> {
+    let import_path_string = path_to_stored_string(import_path);
     let file_result = app
         .services
         .workflow
         .file_importer
-        .import_file(source_path, &import_dest)
+        .import_file(source_path, import_path)
         .await
         .map_err(|err| {
             AppError::Repository(format!(
@@ -313,7 +180,7 @@ async fn execute_upgrade_without_recycle_bin(
 
     let media_file_input = InsertMediaFileInput {
         title_id: title.id.clone(),
-        file_path: import_dest_string.clone(),
+        file_path: import_path_string.clone(),
         size_bytes: file_result.size_bytes as i64,
         quality_label: stored_quality_label
             .map(str::to_string)
@@ -341,7 +208,7 @@ async fn execute_upgrade_without_recycle_bin(
     {
         Ok(id) => id,
         Err(err) => {
-            remove_imported_replacement(&import_dest).await;
+            remove_imported_replacement(import_path).await;
             return Err(AppError::Repository(format!(
                 "failed to insert replacement media file before old file removal: {err}"
             )));
@@ -356,7 +223,7 @@ async fn execute_upgrade_without_recycle_bin(
 
     if !write_replacement_episode_links(app, &new_file_id, existing_file, target_episode_ids).await
     {
-        rollback_new_replacement(app, &new_file_id, &import_dest).await;
+        rollback_new_replacement(app, &new_file_id, import_path).await;
         return Err(AppError::Repository(
             "failed to link replacement media file before old file removal".to_string(),
         ));
@@ -365,88 +232,90 @@ async fn execute_upgrade_without_recycle_bin(
     if let Err(reason) = validate_replacement_media_file(
         app,
         &new_file_id,
-        &import_dest_string,
+        &import_path_string,
         &title.id,
         media_root,
     )
     .await
     {
-        rollback_new_replacement(app, &new_file_id, &import_dest).await;
+        rollback_new_replacement(app, &new_file_id, import_path).await;
         return Err(AppError::Repository(format!(
             "replacement validation failed before old file removal: {reason}"
         )));
     }
 
-    if same_final_path {
-        finalize_same_path_disabled_recycle_upgrade(
-            app,
-            existing_file,
-            &new_file_id,
-            &old_path,
-            &import_dest,
-            dest_path_string,
-            &title.id,
-            media_root,
-        )
-        .await?;
-    } else {
-        finalize_distinct_path_disabled_recycle_upgrade(
-            app,
-            existing_file,
-            &new_file_id,
-            &old_path,
-            dest_path_string,
-            &title.id,
-            media_root,
-        )
-        .await?;
-    }
-
-    append_upgrade_event(
-        app,
-        title,
-        existing_file,
-        &new_file_id,
-        dest_path_string,
-        old_score,
-        final_score,
-    )
-    .await?;
-
-    Ok(UpgradeResult::Upgraded(UpgradeOutcome {
-        old_score,
-        new_score: final_score,
+    Ok(PreparedUpgradeReplacement {
         new_file_id,
-        recycle_entry_committed: false,
-    }))
+        import_path: import_path.to_path_buf(),
+        final_path_string,
+        same_final_path,
+    })
 }
 
-async fn finalize_distinct_path_disabled_recycle_upgrade(
+async fn finalize_prepared_upgrade(
     app: &AppUseCase,
+    title: &Title,
     existing_file: &TitleMediaFile,
-    replacement_file_id: &str,
+    replacement: &PreparedUpgradeReplacement,
+    recycle_config: &RecycleBinConfig,
     old_path: &Path,
-    replacement_path: &str,
-    title_id: &str,
     media_root: Option<&str>,
-) -> AppResult<()> {
+) -> AppResult<bool> {
+    if replacement.same_final_path {
+        finalize_same_path_upgrade(
+            app,
+            title,
+            existing_file,
+            replacement,
+            recycle_config,
+            old_path,
+            media_root,
+        )
+        .await
+    } else {
+        finalize_distinct_path_upgrade(
+            app,
+            title,
+            existing_file,
+            replacement,
+            recycle_config,
+            old_path,
+            media_root,
+        )
+        .await
+    }
+}
+
+async fn finalize_distinct_path_upgrade(
+    app: &AppUseCase,
+    title: &Title,
+    existing_file: &TitleMediaFile,
+    replacement: &PreparedUpgradeReplacement,
+    recycle_config: &RecycleBinConfig,
+    old_path: &Path,
+    media_root: Option<&str>,
+) -> AppResult<bool> {
     if let Err(error) = app
         .services
         .library
         .media_files
-        .delete_media_file(&existing_file.id)
+        .replace_media_file_for_upgrade(
+            &existing_file.id,
+            &replacement.new_file_id,
+            &replacement.final_path_string,
+        )
         .await
     {
-        rollback_new_replacement(app, replacement_file_id, Path::new(replacement_path)).await;
+        rollback_new_replacement(app, &replacement.new_file_id, &replacement.import_path).await;
         return Err(AppError::Repository(format!(
-            "failed to delete old media file record after replacement validation: {error}"
+            "failed to replace media file record after replacement validation: {error}"
         )));
     }
     validate_replacement_media_file(
         app,
-        replacement_file_id,
-        replacement_path,
-        title_id,
+        &replacement.new_file_id,
+        &replacement.final_path_string,
+        &title.id,
         media_root,
     )
     .await
@@ -459,7 +328,7 @@ async fn finalize_distinct_path_disabled_recycle_upgrade(
         app,
         &existing_file.id,
         &existing_file.file_path,
-        replacement_file_id,
+        &replacement.new_file_id,
     )
     .await
     .map_err(|reason| {
@@ -467,29 +336,35 @@ async fn finalize_distinct_path_disabled_recycle_upgrade(
             "old file deletion blocked after replacement validation: {reason}"
         ))
     })?;
-    remove_old_file_after_verified_upgrade(old_path).await
+
+    dispose_old_file_after_verified_upgrade(
+        recycle_config,
+        existing_file,
+        old_path,
+        &existing_file.file_path,
+        title,
+        media_root,
+        &replacement.new_file_id,
+        Path::new(&replacement.final_path_string),
+    )
+    .await
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "same-path replacement needs explicit staged swap context"
-)]
-async fn finalize_same_path_disabled_recycle_upgrade(
+async fn finalize_same_path_upgrade(
     app: &AppUseCase,
+    title: &Title,
     existing_file: &TitleMediaFile,
-    replacement_file_id: &str,
+    replacement: &PreparedUpgradeReplacement,
+    recycle_config: &RecycleBinConfig,
     old_path: &Path,
-    staged_replacement_path: &Path,
-    final_replacement_path: &str,
-    title_id: &str,
     media_root: Option<&str>,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let backup_path = sibling_guard_path(old_path, "old");
 
     if let Err(error) =
-        swap_staged_replacement_into_place(old_path, staged_replacement_path, &backup_path).await
+        swap_staged_replacement_into_place(old_path, &replacement.import_path, &backup_path).await
     {
-        rollback_new_replacement(app, replacement_file_id, staged_replacement_path).await;
+        rollback_new_replacement(app, &replacement.new_file_id, &replacement.import_path).await;
         return Err(error);
     }
 
@@ -499,13 +374,13 @@ async fn finalize_same_path_disabled_recycle_upgrade(
         .media_files
         .replace_media_file_for_upgrade(
             &existing_file.id,
-            replacement_file_id,
-            final_replacement_path,
+            &replacement.new_file_id,
+            &replacement.final_path_string,
         )
         .await
     {
         restore_same_path_backup(old_path, &backup_path).await;
-        rollback_new_replacement(app, replacement_file_id, staged_replacement_path).await;
+        rollback_new_replacement(app, &replacement.new_file_id, &replacement.import_path).await;
         return Err(AppError::Repository(format!(
             "failed to replace same-path media file record after guarded swap: {error}"
         )));
@@ -513,9 +388,9 @@ async fn finalize_same_path_disabled_recycle_upgrade(
 
     if let Err(reason) = validate_replacement_media_file(
         app,
-        replacement_file_id,
-        final_replacement_path,
-        title_id,
+        &replacement.new_file_id,
+        &replacement.final_path_string,
+        &title.id,
         media_root,
     )
     .await
@@ -529,7 +404,7 @@ async fn finalize_same_path_disabled_recycle_upgrade(
         app,
         &existing_file.id,
         &existing_file.file_path,
-        replacement_file_id,
+        &replacement.new_file_id,
     )
     .await
     .map_err(|reason| {
@@ -538,7 +413,66 @@ async fn finalize_same_path_disabled_recycle_upgrade(
             backup_path.display()
         ))
     })?;
-    remove_old_file_after_verified_upgrade(&backup_path).await
+
+    dispose_old_file_after_verified_upgrade(
+        recycle_config,
+        existing_file,
+        &backup_path,
+        &existing_file.file_path,
+        title,
+        media_root,
+        &replacement.new_file_id,
+        Path::new(&replacement.final_path_string),
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "old-file disposition needs original, replacement, and recycle context"
+)]
+async fn dispose_old_file_after_verified_upgrade(
+    recycle_config: &RecycleBinConfig,
+    existing_file: &TitleMediaFile,
+    old_file_source_path: &Path,
+    manifest_original_path: &str,
+    title: &Title,
+    media_root: Option<&str>,
+    replacement_file_id: &str,
+    replacement_path: &Path,
+) -> AppResult<bool> {
+    if !recycle_config.enabled {
+        remove_old_file_after_verified_upgrade(old_file_source_path).await?;
+        return Ok(false);
+    }
+
+    let manifest = RecycleManifest::pending_upgrade(
+        manifest_original_path.to_string(),
+        existing_file.id.clone(),
+        existing_file.size_bytes as u64,
+        title.id.clone(),
+        media_root.map(str::to_string),
+    );
+    let recycle_result =
+        recycle_bin::recycle_file(recycle_config, old_file_source_path, manifest).await?;
+
+    if recycle_result.is_none() {
+        return Ok(false);
+    }
+
+    if let Err(error) =
+        recycle_bin::commit_recycle_entry(&recycle_result, replacement_file_id, replacement_path)
+            .await
+    {
+        tracing::warn!(
+            error = %error,
+            file_id = %replacement_file_id,
+            "replacement imported but recycle entry could not be committed; it will not auto-purge"
+        );
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 async fn write_replacement_episode_links(
@@ -787,22 +721,6 @@ async fn remove_imported_replacement(dest_path: &std::path::Path) {
             error = %remove_err,
             path = %dest_path.display(),
             "failed to remove imported replacement after upgrade database failure"
-        );
-    }
-}
-
-async fn restore_old_file(
-    recycle_result: &Option<recycle_bin::RecycleResult>,
-    old_path: &std::path::Path,
-) {
-    if let Some(ref recycle_result) = *recycle_result
-        && let Err(restore_err) =
-            recycle_bin::restore_from_recycle(&recycle_result.recycled_path, old_path).await
-    {
-        tracing::error!(
-            error = %restore_err,
-            recycled = %recycle_result.recycled_path.display(),
-            "CRITICAL: failed to restore recycled file after upgrade failure"
         );
     }
 }

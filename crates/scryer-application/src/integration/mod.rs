@@ -1,7 +1,7 @@
 pub(crate) use crate::*;
 
 pub mod download_queue_commands;
-pub(crate) mod indexer_test;
+pub(crate) mod indexer_connection;
 pub mod tracked_downloads;
 #[path = "integration.rs"]
 pub(crate) mod workflow;

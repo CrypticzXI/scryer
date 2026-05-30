@@ -24,40 +24,8 @@ struct RecycleRootLibrary {
     library: RecycleEntryLibrary,
 }
 
-fn normalize_recycle_media_root(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-
-    #[cfg(windows)]
-    {
-        trimmed
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_ascii_lowercase()
-    }
-
-    #[cfg(not(windows))]
-    {
-        trimmed.replace('\\', "/").trim_end_matches('/').to_string()
-    }
-}
-
 fn recycle_path_is_under_root(path: &str, root: &str) -> bool {
-    let normalized_path = normalize_recycle_media_root(path);
-    let normalized_root = normalize_recycle_media_root(root);
-    if normalized_path.is_empty() || normalized_root.is_empty() {
-        return false;
-    }
-
-    #[cfg(windows)]
-    let separator = "\\";
-    #[cfg(not(windows))]
-    let separator = "/";
-
-    normalized_path == normalized_root
-        || normalized_path.starts_with(&format!("{normalized_root}{separator}"))
+    crate::catalog_workflow::library_path_is_under_root(path, root)
 }
 
 fn recycled_item_from_entry(
@@ -107,63 +75,23 @@ impl AppUseCase {
             }
         }
 
-        if !media_roots.is_empty() {
-            return self.recycle_bin_configs_for_media_roots(media_roots).await;
-        }
-
-        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
-            let root_folders = match self.root_folders_for_facet(&facet).await {
-                Ok(root_folders) => root_folders,
-                Err(error) => {
-                    warn!(
-                        facet = facet.as_str(),
-                        error = %error,
-                        "failed to resolve canonical roots for recycle bin housekeeping"
-                    );
-                    continue;
-                }
-            };
-
-            for root in root_folders {
-                let media_root = root.path.trim();
-                if media_root.is_empty() {
-                    continue;
-                }
-                let normalized_media_root = normalize_recycle_media_root(media_root);
-                if !seen_roots.insert(normalized_media_root) {
-                    continue;
-                }
-                media_roots.push(media_root.to_string());
-            }
-        }
         self.recycle_bin_configs_for_media_roots(media_roots).await
     }
 
     async fn recycle_root_libraries(&self) -> AppResult<Vec<RecycleRootLibrary>> {
-        let libraries = self.services.catalog.libraries.list(None).await?;
-        let mut roots = Vec::new();
-
-        for library in libraries {
-            let library_context = RecycleEntryLibrary {
-                id: library.id,
-                name: library.name,
-            };
-
-            for root in library.roots {
-                let media_root = root.path.trim().to_string();
-                let normalized_media_root = normalize_recycle_media_root(&media_root);
-                if normalized_media_root.is_empty() {
-                    continue;
-                }
-                roots.push(RecycleRootLibrary {
-                    media_root,
-                    normalized_media_root,
-                    library: library_context.clone(),
-                });
-            }
-        }
-
-        Ok(roots)
+        Ok(self
+            .all_library_root_folders()
+            .await?
+            .into_iter()
+            .map(|root| RecycleRootLibrary {
+                media_root: root.path,
+                normalized_media_root: root.normalized_path,
+                library: RecycleEntryLibrary {
+                    id: root.library_id,
+                    name: root.library_name,
+                },
+            })
+            .collect())
     }
 
     async fn resolve_recycle_entry_library(
@@ -189,7 +117,8 @@ impl AppUseCase {
             return Ok(Some(root.library.clone()));
         }
 
-        let normalized_media_root = normalize_recycle_media_root(&entry.media_root);
+        let normalized_media_root =
+            crate::catalog_workflow::normalize_library_root_path(&entry.media_root);
         if normalized_media_root.is_empty() {
             return Ok(None);
         }
