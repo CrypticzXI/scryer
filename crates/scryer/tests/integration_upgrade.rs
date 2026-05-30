@@ -4,17 +4,23 @@ mod common;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use common::TestContext;
-use scryer_application::recycle_bin::RecycleBinConfig;
+use scryer_application::recycle_bin::{
+    RECYCLE_STATUS_COMMITTED, RecycleBinConfig, RecycleManifest,
+};
 use scryer_application::testing::{
     AppUseCaseTestExt, UpgradeForTestInput, execute_upgrade_for_test,
 };
 use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
-    ActivityKind, ActivitySeverity, InsertMediaFileInput, MediaFileRepository, TitleRepository,
+    ActivityKind, ActivitySeverity, AppError, AppResult, CutoffUnmetQualitySummary,
+    EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
+    TitleRepository,
 };
 use scryer_domain::{LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization};
-use scryer_infrastructure::FsFileImporter;
+use scryer_infrastructure::{FsFileImporter, MediaFileStore};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,6 +32,152 @@ fn app_with_real_fs(ctx: &TestContext) -> scryer_application::AppUseCase {
             .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_file_importer(Arc::new(FsFileImporter))
     })
+}
+
+fn app_with_failing_media_path_update(
+    ctx: &TestContext,
+    fail_path: String,
+) -> scryer_application::AppUseCase {
+    ctx.app.with_test_overrides(|builder| {
+        builder
+            .with_media_files(Arc::new(FailingPathUpdateMediaFileRepo {
+                inner: ctx.media_files.clone(),
+                fail_path,
+            }))
+            .with_file_importer(Arc::new(FsFileImporter))
+    })
+}
+
+struct FailingPathUpdateMediaFileRepo {
+    inner: MediaFileStore,
+    fail_path: String,
+}
+
+#[async_trait]
+impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
+    async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
+        self.inner.insert_media_file(input).await
+    }
+
+    async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
+        self.inner.link_file_to_episode(file_id, episode_id).await
+    }
+
+    async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
+        self.inner.list_media_files_for_title(title_id).await
+    }
+
+    async fn list_live_media_files_for_episode_ids(
+        &self,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
+        self.inner
+            .list_live_media_files_for_episode_ids(title_id, episode_ids)
+            .await
+    }
+
+    async fn list_title_media_size_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMediaSizeSummary>> {
+        self.inner.list_title_media_size_summaries(title_ids).await
+    }
+
+    async fn list_title_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>> {
+        self.inner.list_title_quality_summaries(title_ids).await
+    }
+
+    async fn list_cutoff_unmet_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
+        self.inner
+            .list_cutoff_unmet_quality_summaries(title_ids)
+            .await
+    }
+
+    async fn list_title_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
+        self.inner
+            .list_title_episode_progress_summaries(title_ids)
+            .await
+    }
+
+    async fn update_media_file_analysis(
+        &self,
+        file_id: &str,
+        analysis: MediaFileAnalysis,
+    ) -> AppResult<()> {
+        self.inner
+            .update_media_file_analysis(file_id, analysis)
+            .await
+    }
+
+    async fn update_media_file_source_signature(
+        &self,
+        file_id: &str,
+        size_bytes: i64,
+        source_signature_scheme: Option<String>,
+        source_signature_value: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_media_file_source_signature(
+                file_id,
+                size_bytes,
+                source_signature_scheme,
+                source_signature_value,
+            )
+            .await
+    }
+
+    async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()> {
+        if file_path == self.fail_path {
+            return Err(AppError::Repository(format!(
+                "injected media file path failure for {file_id} -> {file_path}"
+            )));
+        }
+
+        self.inner.update_media_file_path(file_id, file_path).await
+    }
+
+    async fn replace_media_file_for_upgrade(
+        &self,
+        old_file_id: &str,
+        replacement_file_id: &str,
+        replacement_file_path: &str,
+    ) -> AppResult<()> {
+        if replacement_file_path == self.fail_path {
+            return Err(AppError::Repository(format!(
+                "injected media file replacement failure for {old_file_id} -> {replacement_file_id} at {replacement_file_path}"
+            )));
+        }
+
+        self.inner
+            .replace_media_file_for_upgrade(old_file_id, replacement_file_id, replacement_file_path)
+            .await
+    }
+
+    async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
+        self.inner.mark_scan_failed(file_id, error).await
+    }
+
+    async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
+        self.inner.get_media_file_by_id(file_id).await
+    }
+
+    async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
+        self.inner.get_media_file_by_path(file_path).await
+    }
+
+    async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
+        self.inner.delete_media_file(file_id).await
+    }
 }
 
 async fn seed_title(ctx: &TestContext, id: &str) -> Title {
@@ -75,6 +227,8 @@ fn make_recycle_config(base: &std::path::Path) -> RecycleBinConfig {
         enabled: true,
         base_path: base.to_path_buf(),
         retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
     }
 }
 
@@ -171,6 +325,7 @@ async fn upgrade_replaces_old_file_with_new() {
             parsed,
             final_score: 650,
             target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
             recycle_config: &recycle_config,
         },
     )
@@ -183,6 +338,10 @@ async fn upgrade_replaces_old_file_with_new() {
 
     assert_eq!(outcome.old_score, 400);
     assert_eq!(outcome.new_score, 650);
+    assert!(
+        outcome.recycle_entry_committed,
+        "successful upgrade should commit recycle proof"
+    );
 
     // New file should exist at destination
     assert!(new_dest.exists(), "new file should exist");
@@ -190,11 +349,39 @@ async fn upgrade_replaces_old_file_with_new() {
     // Old file should be gone from original location (recycled)
     assert!(!old_path.exists(), "old file should be recycled");
 
-    // Recycle dir should contain the recycled file
-    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path()).unwrap().collect();
+    // Recycle dir should contain a committed entry for the replaced file.
+    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(
+        recycle_entries.len(),
+        1,
+        "recycle bin should have one entry"
+    );
+    let manifest_bytes = std::fs::read(recycle_entries[0].path().join("manifest.json")).unwrap();
+    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
     assert!(
-        !recycle_entries.is_empty(),
-        "recycle bin should have entries"
+        manifest.entry_id.is_some(),
+        "committed entry should have an id"
+    );
+    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    assert_eq!(
+        manifest.original_file_id.as_deref(),
+        Some(existing.id.as_str())
+    );
+    assert_eq!(
+        manifest.media_root.as_deref(),
+        Some(media_dir.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        manifest.replacement_file_id.as_deref(),
+        Some(outcome.new_file_id.as_str())
+    );
+    assert_eq!(
+        manifest.replacement_path.as_deref(),
+        Some(new_dest.to_string_lossy().as_ref())
     );
 
     // DB should have the new file, not the old one
@@ -256,6 +443,7 @@ async fn upgrade_restores_old_file_on_import_failure() {
             parsed,
             final_score: 700,
             target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
             recycle_config: &recycle_config,
         },
     )
@@ -276,10 +464,22 @@ async fn upgrade_restores_old_file_on_import_failure() {
     // Content should match original
     let content = std::fs::read_to_string(&old_path).unwrap();
     assert_eq!(content, "old video content");
+
+    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(
+        recycle_entries.len(),
+        0,
+        "failed import should not recycle the old file before replacement validation"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Disabled recycle bin (direct delete)
+// Disabled recycle bin (safe refusal)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -307,9 +507,11 @@ async fn upgrade_with_disabled_recycle_bin() {
         enabled: false,
         base_path: std::path::PathBuf::from("/tmp/unused"),
         retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
     };
 
-    let outcome = execute_upgrade_for_test(
+    let result = execute_upgrade_for_test(
         &app,
         UpgradeForTestInput {
             actor: &actor,
@@ -320,21 +522,323 @@ async fn upgrade_with_disabled_recycle_bin() {
             parsed,
             final_score: 600,
             target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &disabled_config,
+        },
+    )
+    .await;
+
+    let outcome =
+        result.expect("upgrade should direct-delete old file when recycle bin is disabled");
+    let UpgradeResult::Upgraded(outcome) = outcome else {
+        panic!("upgrade should be accepted");
+    };
+    assert!(
+        !outcome.recycle_entry_committed,
+        "disabled recycle bin should not report a committed recycle entry"
+    );
+    assert!(!old_path.exists(), "old file should be removed directly");
+    assert!(new_dest.exists(), "new file should be imported");
+}
+
+#[tokio::test]
+async fn disabled_recycle_bin_same_path_upgrade_keeps_backup_until_verified() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-4").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.mkv");
+    std::fs::write(&old_path, b"old same-path content").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new same-path content").expect("write new");
+
+    let existing = seed_media_file(&ctx, "title-4", &old_path, 21, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let disabled_config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
+    };
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &old_path,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
             recycle_config: &disabled_config,
         },
     )
     .await
-    .expect("execute_upgrade");
+    .expect("same-path disabled recycle upgrade should succeed");
 
-    let UpgradeResult::Upgraded(outcome) = outcome else {
-        panic!("expected upgrade to succeed");
+    let UpgradeResult::Upgraded(outcome) = result else {
+        panic!("upgrade should be accepted");
+    };
+    assert!(!outcome.recycle_entry_committed);
+    assert_eq!(
+        std::fs::read(&old_path).expect("read final path"),
+        b"new same-path content"
+    );
+    let leftovers = std::fs::read_dir(media_dir.path())
+        .expect("read media dir")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".scryer-upgrade-")
+        })
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "guard files should be cleaned up");
+
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-4")
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, outcome.new_file_id);
+    assert_eq!(files[0].file_path, old_path.to_string_lossy());
+}
+
+#[tokio::test]
+async fn recycle_bin_same_path_upgrade_recycles_original_filename() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-4a").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let recycle_dir = tempfile::tempdir().expect("recycle dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.mkv");
+    std::fs::write(&old_path, b"old same-path content").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new same-path content").expect("write new");
+
+    let existing = seed_media_file(&ctx, "title-4a", &old_path, 21, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let recycle_config = make_recycle_config(recycle_dir.path());
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &old_path,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &recycle_config,
+        },
+    )
+    .await
+    .expect("same-path recycle upgrade should succeed");
+
+    let UpgradeResult::Upgraded(outcome) = result else {
+        panic!("upgrade should be accepted");
+    };
+    assert!(outcome.recycle_entry_committed);
+    assert_eq!(
+        std::fs::read(&old_path).expect("read final path"),
+        b"new same-path content"
+    );
+
+    let leftovers = std::fs::read_dir(media_dir.path())
+        .expect("read media dir")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".scryer-upgrade-")
+        })
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "guard files should be cleaned up");
+
+    let recycle_entries: Vec<_> = std::fs::read_dir(recycle_dir.path())
+        .expect("read recycle dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(recycle_entries.len(), 1, "old file should be recycled once");
+    let entry_dir = recycle_entries[0].path();
+    assert!(
+        entry_dir.join("Movie.mkv").exists(),
+        "same-path recycle should store the original filename, not the guard filename"
+    );
+
+    let manifest_bytes = std::fs::read(entry_dir.join("manifest.json")).unwrap();
+    let manifest: RecycleManifest = serde_json::from_slice(&manifest_bytes).unwrap();
+    assert_eq!(manifest.status.as_deref(), Some(RECYCLE_STATUS_COMMITTED));
+    assert_eq!(manifest.original_path, old_path.to_string_lossy());
+    assert_eq!(
+        manifest.replacement_file_id.as_deref(),
+        Some(outcome.new_file_id.as_str())
+    );
+    assert_eq!(
+        manifest.replacement_path.as_deref(),
+        Some(old_path.to_string_lossy().as_ref())
+    );
+
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-4a")
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, outcome.new_file_id);
+    assert_eq!(files[0].file_path, old_path.to_string_lossy());
+}
+
+#[tokio::test]
+async fn disabled_recycle_bin_same_path_path_update_failure_preserves_old_file() {
+    let ctx = TestContext::new().await;
+    let title = seed_title(&ctx, "title-4b").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+
+    let old_path = media_dir.path().join("Movie.mkv");
+    std::fs::write(&old_path, b"old same-path content").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new same-path content").expect("write new");
+
+    let existing = seed_media_file(&ctx, "title-4b", &old_path, 21, 300).await;
+    let app = app_with_failing_media_path_update(&ctx, old_path.to_string_lossy().to_string());
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let disabled_config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
     };
 
-    assert_eq!(outcome.new_score, 600);
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &old_path,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(media_dir.path().to_string_lossy().as_ref()),
+            recycle_config: &disabled_config,
+        },
+    )
+    .await;
 
-    // Old file should be deleted (not recycled)
-    assert!(!old_path.exists(), "old file should be deleted");
+    assert!(result.is_err(), "path update failure should abort upgrade");
+    assert_eq!(
+        std::fs::read(&old_path).expect("read original path"),
+        b"old same-path content"
+    );
+    let leftovers = std::fs::read_dir(media_dir.path())
+        .expect("read media dir")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".scryer-upgrade-")
+        })
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "guard files should be cleaned up");
 
-    // New file should exist
-    assert!(new_dest.exists(), "new file should exist");
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-4b")
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, existing.id);
+    assert_eq!(files[0].file_path, old_path.to_string_lossy());
+}
+
+#[tokio::test]
+async fn disabled_recycle_bin_upgrade_validation_failure_preserves_old_file() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_fs(&ctx);
+    let title = seed_title(&ctx, "title-5").await;
+    let actor = test_actor();
+
+    let media_dir = tempfile::tempdir().expect("media dir");
+    let source_dir = tempfile::tempdir().expect("source dir");
+    let wrong_root = tempfile::tempdir().expect("wrong root");
+
+    let old_path = media_dir.path().join("Movie.720p.mkv");
+    std::fs::write(&old_path, b"old content guarded").expect("write old");
+
+    let new_source = source_dir.path().join("Movie.1080p.mkv");
+    std::fs::write(&new_source, b"new content guarded").expect("write new");
+    let new_dest = media_dir.path().join("Movie.1080p.mkv");
+
+    let existing = seed_media_file(&ctx, "title-5", &old_path, 19, 300).await;
+    let parsed = scryer_application::parse_release_metadata("Movie.1080p.WEB-DL");
+    let disabled_config = RecycleBinConfig {
+        enabled: false,
+        base_path: std::path::PathBuf::from("/tmp/unused"),
+        retention_days: 7,
+        cleanup_enabled: true,
+        validation_error: None,
+    };
+
+    let result = execute_upgrade_for_test(
+        &app,
+        UpgradeForTestInput {
+            actor: &actor,
+            title: &title,
+            existing_file: &existing,
+            source_path: &new_source,
+            dest_path: &new_dest,
+            parsed,
+            final_score: 650,
+            target_episode_ids: &[],
+            media_root: Some(wrong_root.path().to_string_lossy().as_ref()),
+            recycle_config: &disabled_config,
+        },
+    )
+    .await;
+
+    assert!(result.is_err(), "replacement validation should fail");
+    assert_eq!(
+        std::fs::read(&old_path).expect("old file still exists"),
+        b"old content guarded"
+    );
+    assert!(
+        !new_dest.exists(),
+        "unverified replacement should be rolled back before old deletion"
+    );
+    let files = ctx
+        .media_files
+        .list_media_files_for_title("title-5")
+        .await
+        .expect("list media files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].id, existing.id);
 }

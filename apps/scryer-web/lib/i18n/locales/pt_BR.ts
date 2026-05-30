@@ -1796,18 +1796,30 @@ const pt_BR: LocaleDictionary = {
   "convenience.requiredAudioHelp":
     "Releases sem esses idiomas de áudio serão bloqueadas. Cria uma regra gerenciada visível em Configurações > Regras.",
   "settings.recycleBin": "Lixeira",
+  "settings.recycleBinEnabled": "Ativar lixeira",
+  "settings.recycleBinEnabledHelp":
+    "Arquivos de mídia excluídos e substituídos vão para a lixeira antes da remoção permanente.",
+  "settings.recycleBinEnabledReadonly":
+    "O status da lixeira é controlado por usuários que podem gerenciar a configuração.",
   "settings.recycleBinSection": "Gerencie arquivos de mídia reciclados",
+  "settings.recycleBinLibraryFilter": "Bibliotecas",
   "settings.recycleBinEmpty": "A lixeira está vazia.",
+  "settings.recycleBinNoManageableLibraries":
+    "Nenhuma biblioteca está disponível para gerenciar itens da lixeira.",
   "settings.recycleBinRestore": "Restaurar",
   "settings.recycleBinDelete": "Excluir",
   "settings.recycleBinEmptyAll": "Esvaziar Lixeira",
   "settings.recycleBinEmptyConfirm":
-    "Excluir permanentemente todos os itens {count} da lixeira? Isto não pode ser desfeito.",
+    "Excluir permanentemente {{count}} itens na visualização atual da lixeira? Isto não pode ser desfeito.",
   "settings.recycleBinDeleteConfirm":
     "Excluir este arquivo permanentemente? Isto não pode ser desfeito.",
-  "status.recycleBinRestored": "Arquivo restaurado para {path}.",
+  "settings.recycleBinReason": "Motivo",
+  "settings.recycleBinSize": "Tamanho",
+  "settings.recycleBinRecycled": "Reciclado",
+  "status.recycleBinRestored": "Arquivo restaurado para {{path}}.",
   "status.recycleBinDeleted": "Arquivo excluído permanentemente.",
-  "status.recycleBinEmptied": "Lixeira esvaziada ({count} itens removidos).",
+  "status.recycleBinEmptied": "Lixeira esvaziada ({{count}} itens removidos).",
+  "status.recycleBinSettingsSaved": "Configurações da lixeira salvas.",
   "settings.pp.animeScript": "Script de anime",
   "settings.pp.envVarsDescription":
     "As seguintes variáveis estão disponíveis no seu script:",

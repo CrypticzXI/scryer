@@ -18,6 +18,8 @@ Use this order when making architectural decisions:
 3. Validate layer boundaries in the backend before touching crates.
 4. Keep changes consistent with existing ownership and naming conventions.
 
+Only update README files when the user explicitly asks for README changes.
+
 If runtime interfaces change (GraphQL, subscription payloads, gateway contract), update API contract documentation in the scryer-docs repo.
 
 ## Release requests

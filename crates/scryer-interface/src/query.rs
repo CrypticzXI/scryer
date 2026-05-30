@@ -1030,11 +1030,12 @@ impl SystemQueries {
         ctx: &Context<'_>,
         #[graphql(default = 500)] limit: i32,
         #[graphql(default = 0)] offset: i32,
+        library_ids: Option<Vec<String>>,
     ) -> GqlResult<RecycledItemsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let all = app
-            .list_recycled_items(&actor)
+            .list_recycled_items(&actor, library_ids)
             .await
             .map_err(to_gql_error)?;
         let total_count = all.len() as i32;
@@ -1044,21 +1045,17 @@ impl SystemQueries {
             .into_iter()
             .skip(offset)
             .take(limit)
-            .map(|entry| {
-                let file_name = std::path::Path::new(&entry.manifest.original_path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                RecycledItemPayload {
-                    id: entry.entry_id,
-                    original_path: entry.manifest.original_path,
-                    file_name,
-                    size_bytes: entry.manifest.size_bytes as i64,
-                    title_id: entry.manifest.title_id,
-                    reason: entry.manifest.reason,
-                    recycled_at: entry.manifest.recycled_at,
-                    media_root: entry.media_root,
-                }
+            .map(|item| RecycledItemPayload {
+                id: item.id,
+                original_path: item.original_path,
+                file_name: item.file_name,
+                size_bytes: item.size_bytes as i64,
+                title_id: item.title_id,
+                reason: item.reason,
+                recycled_at: item.recycled_at,
+                media_root: item.media_root,
+                library_id: item.library_id,
+                library_name: item.library_name,
             })
             .collect();
         Ok(RecycledItemsPayload { items, total_count })

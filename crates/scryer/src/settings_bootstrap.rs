@@ -11,15 +11,15 @@ use scryer_application::{
     POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
     POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY,
     QUALITY_PROFILE_ID_KEY, QUALITY_PROFILE_INHERIT_VALUE, QualityProfile,
-    QualityProfileRepository, RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
-    RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY,
-    RENAME_MISSING_METADATA_POLICY_KEY, RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
-    RENAME_TEMPLATE_ANIME_GLOBAL_KEY, RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY,
-    RENAME_TEMPLATE_SERIES_GLOBAL_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY as TLS_CERT_KEY,
-    TLS_KEY_PATH_KEY as TLS_KEY_KEY, default_quality_profile_1080p_for_search,
-    default_quality_profile_for_search,
+    QualityProfileRepository, RECYCLE_BIN_ENABLED_KEY, RENAME_COLLISION_POLICY_GLOBAL_KEY,
+    RENAME_COLLISION_POLICY_KEY, RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY,
+    RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_KEY,
+    RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
+    RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
+    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY,
+    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    TLS_CERT_PATH_KEY as TLS_CERT_KEY, TLS_KEY_PATH_KEY as TLS_KEY_KEY,
+    default_quality_profile_1080p_for_search, default_quality_profile_for_search,
 };
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
@@ -127,6 +127,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: ANIME_ROOT_FOLDERS_KEY,
             data_type: "json",
             default_value_json: "[]",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_MEDIA,
+            key_name: RECYCLE_BIN_ENABLED_KEY,
+            data_type: "boolean",
+            default_value_json: "true",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -992,6 +1000,12 @@ mod tests {
                 && seed.key_name == AUTO_BACKUP_KEY_KEY
                 && seed.data_type == "string"
                 && seed.is_sensitive
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_MEDIA
+                && seed.key_name == RECYCLE_BIN_ENABLED_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "true"
         }));
     }
 

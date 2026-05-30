@@ -426,6 +426,10 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   }
 }`;
 
+export const clearTitleImageCacheMutation = `mutation ClearTitleImageCache {
+  clearTitleImageCache
+}`;
+
 export const createBackupMutation = `mutation CreateBackup($password: String) {
   createBackup(password: $password) {${BACKUP_INFO_FIELDS}
   }
@@ -1233,8 +1237,14 @@ export const deleteRecycledItemMutation = `mutation DeleteRecycledItem($id: Stri
   deleteRecycledItem(id: $id)
 }`;
 
-export const emptyRecycleBinMutation = `mutation EmptyRecycleBin {
-  emptyRecycleBin
+export const emptyRecycleBinMutation = `mutation EmptyRecycleBin($libraryIds: [String!]) {
+  emptyRecycleBin(libraryIds: $libraryIds)
+}`;
+
+export const updateRecycleBinSettingsMutation = `mutation UpdateRecycleBinSettings($input: UpdateRecycleBinSettingsInput!) {
+  updateRecycleBinSettings(input: $input) {
+    enabled
+  }
 }`;
 
 // ── Notifications ────────────────────────────────────────────────────────

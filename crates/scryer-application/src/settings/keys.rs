@@ -29,6 +29,9 @@ pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local
 pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";
 pub const FORM_LOGIN_ENABLED_KEY: &str = "auth.form_login_enabled";
 pub const SKIP_LOGIN_FOR_LOCAL_IPS_KEY: &str = "auth.skip_login_for_local_ips";
+pub const RECYCLE_BIN_ENABLED_KEY: &str = "recycle_bin.enabled";
+pub const RECYCLE_BIN_PATH_KEY: &str = "recycle_bin.path";
+pub const RECYCLE_BIN_RETENTION_DAYS_KEY: &str = "recycle_bin.retention_days";
 
 pub(crate) fn default_indexer_routing_categories_for_scope(scope_id: &str) -> Vec<String> {
     match scope_id {

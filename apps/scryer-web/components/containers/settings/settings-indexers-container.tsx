@@ -12,6 +12,7 @@ import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import type { ConfigFieldDef, IndexerRecord, ProviderTypeInfo } from "@/lib/types";
+import { useIndexersSubscription } from "@/lib/hooks/use-indexers-subscription";
 import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
   indexerProviderTypesQuery,
@@ -353,6 +354,12 @@ export function SettingsIndexersContainer({
     }
     void refreshIndexers();
   }, [refreshIndexers]);
+
+  useIndexersSubscription(
+    useCallback(() => {
+      void refreshIndexers();
+    }, [refreshIndexers]),
+  );
 
   const openCreateEditor = useCallback(() => {
     resetIndexerDraft();

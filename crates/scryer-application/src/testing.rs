@@ -11,6 +11,7 @@ pub struct UpgradeForTestInput<'a> {
     pub parsed: crate::ParsedReleaseMetadata,
     pub final_score: i32,
     pub target_episode_ids: &'a [String],
+    pub media_root: Option<&'a str>,
     pub recycle_config: &'a crate::recycle_bin::RecycleBinConfig,
 }
 
@@ -27,6 +28,7 @@ pub async fn execute_upgrade_for_test(
         parsed,
         final_score,
         target_episode_ids,
+        media_root,
         recycle_config,
     } = input;
     let prepared = crate::post_download_gate::PreparedImportCandidate {
@@ -51,6 +53,7 @@ pub async fn execute_upgrade_for_test(
         final_score,
         old_score,
         target_episode_ids,
+        media_root,
         recycle_config,
     )
     .await

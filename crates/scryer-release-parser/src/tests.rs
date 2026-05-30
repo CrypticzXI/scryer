@@ -57,6 +57,24 @@ fn parses_sonarr_style_x_episode_release() {
 }
 
 #[test]
+fn parses_numeric_series_title_with_time_window_episode_name() {
+    let mut target = context(ContextFacetHint::Series, "13");
+    target.known_years.push(2024);
+
+    let analysis = analyze_release_for_target(
+        "13 (2024) - S02E01 - Day 2 800 A.M. 900 A.M. [WEBDL-1080p] [EAC3 5.1] [h265]",
+        &target,
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(candidate.projected.normalized_title, "13");
+    assert_eq!(episode.season, Some(2));
+    assert_eq!(episode.episode_numbers, vec![1]);
+}
+
+#[test]
 fn parses_daily_release_with_part_marker() {
     let mut target = context(ContextFacetHint::Series, "Series Title");
     target.known_years.push(2026);

@@ -36,6 +36,13 @@ impl TitleImageRepository for TitleImageStore {
         fetch_refresh_tasks(self.datastore.read_exec(), &sql, &args).await
     }
 
+    async fn clear_title_image_cache(&self) -> AppResult<()> {
+        SqlRuntime::run_in_transaction(&self.datastore, "clear_title_image_cache", move |tx| {
+            Box::pin(async move { clear_title_image_cache_tx(tx).await })
+        })
+        .await
+    }
+
     async fn replace_title_image(
         &self,
         title_id: &str,
@@ -109,6 +116,7 @@ fn build_refresh_sql(kind: TitleImageKind, limit: usize) -> (String, Vec<SqlArg>
     sql.push_str(&format!(
         "
          WHERE NULLIF(TRIM(t.{source_col}), '') IS NOT NULL
+           AND TRIM(t.{source_col}) NOT LIKE {{}}
            AND (
                 ti.id IS NULL
                 OR ti.source_url <> t.{source_col}"
@@ -129,7 +137,10 @@ fn build_refresh_sql(kind: TitleImageKind, limit: usize) -> (String, Vec<SqlArg>
          LIMIT {}",
     );
 
-    let mut args = vec![SqlArg::Text(kind.as_str().to_string())];
+    let mut args = vec![
+        SqlArg::Text(kind.as_str().to_string()),
+        SqlArg::Text(local_title_image_route_pattern().to_string()),
+    ];
     if required_variant.is_some() {
         args.push(SqlArg::Text(
             TitleImageStorageMode::AvifMaster.as_str().to_string(),
@@ -137,6 +148,10 @@ fn build_refresh_sql(kind: TitleImageKind, limit: usize) -> (String, Vec<SqlArg>
     }
     args.push(SqlArg::I64(limit as i64));
     (sql, args)
+}
+
+fn local_title_image_route_pattern() -> &'static str {
+    "/images/titles/%"
 }
 
 async fn fetch_refresh_tasks(
@@ -155,6 +170,108 @@ async fn fetch_refresh_tasks(
             })
         })
         .collect()
+}
+
+async fn clear_title_image_cache_tx(tx: &mut SqlTx<'_>) -> AppResult<()> {
+    for kind in [
+        TitleImageKind::Poster,
+        TitleImageKind::Banner,
+        TitleImageKind::Fanart,
+    ] {
+        repair_local_title_image_source_tx(tx, kind).await?;
+        clear_unrecoverable_local_title_image_source_tx(tx, kind).await?;
+    }
+
+    SqlRuntime::execute(SqlExec::Tx(tx), "DELETE FROM title_image_variants", &[]).await?;
+    SqlRuntime::execute(SqlExec::Tx(tx), "DELETE FROM title_images", &[]).await?;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "UPDATE titles
+            SET poster_local_path = NULL,
+                banner_local_path = NULL,
+                background_local_path = NULL
+          WHERE poster_local_path IS NOT NULL
+             OR banner_local_path IS NOT NULL
+             OR background_local_path IS NOT NULL",
+        &[],
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn title_image_source_columns(kind: TitleImageKind) -> (&'static str, &'static str) {
+    match kind {
+        TitleImageKind::Poster => ("poster_url", "poster_local_path"),
+        TitleImageKind::Banner => ("banner_url", "banner_local_path"),
+        TitleImageKind::Fanart => ("background_url", "background_local_path"),
+    }
+}
+
+async fn repair_local_title_image_source_tx(
+    tx: &mut SqlTx<'_>,
+    kind: TitleImageKind,
+) -> AppResult<()> {
+    let (source_col, _) = title_image_source_columns(kind);
+    let sql = format!(
+        "UPDATE titles
+            SET {source_col} = (
+                SELECT ti.source_url
+                  FROM title_images ti
+                 WHERE ti.title_id = titles.id
+                   AND ti.kind = {{}}
+                   AND NULLIF(TRIM(ti.source_url), '') IS NOT NULL
+                   AND TRIM(ti.source_url) NOT LIKE {{}}
+                 LIMIT 1
+            )
+          WHERE TRIM(COALESCE({source_col}, '')) LIKE {{}}
+            AND EXISTS (
+                SELECT 1
+                  FROM title_images ti
+                 WHERE ti.title_id = titles.id
+                   AND ti.kind = {{}}
+                   AND NULLIF(TRIM(ti.source_url), '') IS NOT NULL
+                   AND TRIM(ti.source_url) NOT LIKE {{}}
+            )"
+    );
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        &sql,
+        &[
+            SqlArg::Text(kind.as_str().to_string()),
+            SqlArg::Text(local_title_image_route_pattern().to_string()),
+            SqlArg::Text(local_title_image_route_pattern().to_string()),
+            SqlArg::Text(kind.as_str().to_string()),
+            SqlArg::Text(local_title_image_route_pattern().to_string()),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn clear_unrecoverable_local_title_image_source_tx(
+    tx: &mut SqlTx<'_>,
+    kind: TitleImageKind,
+) -> AppResult<()> {
+    let (source_col, _) = title_image_source_columns(kind);
+    let sql = format!(
+        "UPDATE titles
+            SET {source_col} = NULL,
+                metadata_fetched_at = NULL,
+                metadata_hydration_next_attempt_at = {{}},
+                metadata_hydration_attempt_count = 0
+          WHERE TRIM(COALESCE({source_col}, '')) LIKE {{}}"
+    );
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        &sql,
+        &[
+            SqlArg::Timestamp(Utc::now()),
+            SqlArg::Text(local_title_image_route_pattern().to_string()),
+        ],
+    )
+    .await?;
+    Ok(())
 }
 
 async fn replace_title_image_tx(

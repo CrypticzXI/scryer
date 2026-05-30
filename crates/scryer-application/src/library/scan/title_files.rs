@@ -20,6 +20,15 @@ pub(super) struct TitleEpisodeLookup {
     by_collection_index: HashMap<String, Vec<Episode>>,
 }
 
+impl TitleEpisodeLookup {
+    pub(super) fn key_count(&self) -> usize {
+        self.by_air_date.len()
+            + self.by_collection_episode.len()
+            + self.by_absolute_number.len()
+            + self.by_collection_index.len()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PlannedTitleScanFile {
     pub(crate) file: LibraryFile,

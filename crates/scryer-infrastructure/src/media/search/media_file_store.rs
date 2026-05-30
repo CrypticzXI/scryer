@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppResult, CutoffUnmetQualitySummary, EpisodeScopedMediaFile, InsertMediaFileInput,
+    AppError, AppResult, CutoffUnmetQualitySummary, EpisodeScopedMediaFile, InsertMediaFileInput,
     MediaFileAnalysis, MediaFileRepository, TitleEpisodeProgressSummary, TitleMediaFile,
     TitleMediaSizeSummary, TitleQualitySummary,
 };
@@ -481,6 +481,58 @@ impl MediaFileRepository for MediaFileStore {
         )
         .await?;
         Ok(())
+    }
+
+    async fn replace_media_file_for_upgrade(
+        &self,
+        old_file_id: &str,
+        replacement_file_id: &str,
+        replacement_file_path: &str,
+    ) -> AppResult<()> {
+        let old_file_id = old_file_id.to_string();
+        let replacement_file_id = replacement_file_id.to_string();
+        let replacement_file_path = replacement_file_path.to_string();
+
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "replace_media_file_for_upgrade",
+            move |tx| {
+                let old_file_id = old_file_id.clone();
+                let replacement_file_id = replacement_file_id.clone();
+                let replacement_file_path = replacement_file_path.clone();
+                Box::pin(async move {
+                    let deleted = SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "DELETE FROM media_files WHERE id = {}",
+                        &[SqlArg::Text(old_file_id.clone())],
+                    )
+                    .await?;
+                    if deleted != 1 {
+                        return Err(AppError::Repository(format!(
+                            "expected to delete one old media file during upgrade replacement, deleted {deleted}: {old_file_id}"
+                        )));
+                    }
+
+                    let updated = SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "UPDATE media_files SET file_path = {} WHERE id = {}",
+                        &[
+                            SqlArg::Text(replacement_file_path),
+                            SqlArg::Text(replacement_file_id.clone()),
+                        ],
+                    )
+                    .await?;
+                    if updated != 1 {
+                        return Err(AppError::Repository(format!(
+                            "expected to update one replacement media file during upgrade replacement, updated {updated}: {replacement_file_id}"
+                        )));
+                    }
+
+                    Ok(())
+                })
+            },
+        )
+        .await
     }
 
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {

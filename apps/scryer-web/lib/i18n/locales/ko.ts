@@ -1730,18 +1730,30 @@ const ko: LocaleDictionary = {
   "convenience.requiredAudioHelp":
     "이 오디오 언어가 없는 릴리스는 차단됩니다. 설정 > 규칙에 표시되는 관리 규칙을 생성합니다.",
   "settings.recycleBin": "휴지통",
+  "settings.recycleBinEnabled": "휴지통 활성화",
+  "settings.recycleBinEnabledHelp":
+    "삭제되거나 교체된 미디어 파일은 영구 제거 전에 휴지통으로 이동됩니다.",
+  "settings.recycleBinEnabledReadonly":
+    "휴지통 상태는 구성을 관리할 수 있는 사용자가 제어합니다.",
   "settings.recycleBinSection": "재활용 미디어 파일 관리",
+  "settings.recycleBinLibraryFilter": "라이브러리",
   "settings.recycleBinEmpty": "휴지통이 비어 있습니다.",
+  "settings.recycleBinNoManageableLibraries":
+    "휴지통 항목을 관리할 수 있는 라이브러리가 없습니다.",
   "settings.recycleBinRestore": "복원",
   "settings.recycleBinDelete": "삭제",
   "settings.recycleBinEmptyAll": "휴지통 비우기",
   "settings.recycleBinEmptyConfirm":
-    "휴지통에 있는 모든 {count} 항목을 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
+    "현재 휴지통 보기의 {{count}}개 항목을 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
   "settings.recycleBinDeleteConfirm":
     "이 파일을 영구적으로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.",
-  "status.recycleBinRestored": "{path}에 파일이 복원되었습니다.",
+  "settings.recycleBinReason": "이유",
+  "settings.recycleBinSize": "크기",
+  "settings.recycleBinRecycled": "휴지통 이동 시간",
+  "status.recycleBinRestored": "{{path}}에 파일이 복원되었습니다.",
   "status.recycleBinDeleted": "파일이 영구적으로 삭제되었습니다.",
-  "status.recycleBinEmptied": "휴지통을 비웠습니다({count}개 항목이 제거됨).",
+  "status.recycleBinEmptied": "휴지통을 비웠습니다({{count}}개 항목이 제거됨).",
+  "status.recycleBinSettingsSaved": "휴지통 설정이 저장되었습니다.",
   "settings.pp.animeScript": "애니메이션 스크립트",
   "settings.pp.envVarsDescription":
     "스크립트에서 다음 변수를 사용할 수 있습니다:",

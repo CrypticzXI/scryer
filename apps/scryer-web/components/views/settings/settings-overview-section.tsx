@@ -26,6 +26,8 @@ type SettingsOverviewSectionProps = {
   generalLoading: boolean;
   generalSaving: boolean;
   onSaveGeneralSettings: () => void;
+  clearingTitleImageCache: boolean;
+  onClearTitleImageCache: () => void;
 };
 
 export function SettingsOverviewSection({
@@ -37,6 +39,8 @@ export function SettingsOverviewSection({
   generalLoading,
   generalSaving,
   onSaveGeneralSettings,
+  clearingTitleImageCache,
+  onClearTitleImageCache,
 }: SettingsOverviewSectionProps) {
   const t = useTranslate();
   const [advancedTrustOpen, setAdvancedTrustOpen] = React.useState(false);
@@ -346,6 +350,28 @@ export function SettingsOverviewSection({
             </div>
           </CollapsibleContent>
         </Collapsible>
+      </div>
+
+      <div
+        id="settings-general-manage-configuration-section"
+        className="space-y-4 border-t border-border pt-6"
+      >
+        <h3 className="text-sm font-semibold">{t("settings.manageConfiguration")}</h3>
+        <Button
+          id="settings-general-clear-title-image-cache"
+          type="button"
+          variant="destructive"
+          className="gap-2"
+          disabled={clearingTitleImageCache}
+          onClick={onClearTitleImageCache}
+        >
+          {clearingTitleImageCache ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Trash2 className="h-4 w-4" />
+          )}
+          {t("settings.clearTitleImageCache")}
+        </Button>
       </div>
 
       <div className="border-t border-border pt-6">

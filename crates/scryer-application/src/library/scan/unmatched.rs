@@ -115,6 +115,7 @@ fn build_movie_unmatched_scan_record(
         METADATA_TYPE_MOVIE,
         &candidate.search_candidates,
         candidate.year_hint,
+        candidate.identity_hint.as_ref(),
         batch_search_results,
     );
     let reason = library_scan_unmatched_reason_code(&search_attempts);
@@ -182,6 +183,7 @@ pub(crate) fn build_series_unmatched_scan_item(
         METADATA_TYPE_SERIES,
         &candidate.search_candidates,
         candidate.year_hint,
+        candidate.identity_hint.as_ref(),
         batch_search_results,
     );
     let reason_code =
