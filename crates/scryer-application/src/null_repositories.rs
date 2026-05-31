@@ -825,6 +825,13 @@ impl NotificationSubscriptionRepository for NullNotificationSubscriptionReposito
     ) -> AppResult<Vec<scryer_domain::NotificationSubscription>> {
         Ok(vec![])
     }
+    async fn list_subscriptions_for_target(
+        &self,
+        _target_kind: scryer_domain::NotificationTargetKind,
+        _target_id: &str,
+    ) -> AppResult<Vec<scryer_domain::NotificationSubscription>> {
+        Ok(vec![])
+    }
     async fn list_subscriptions_for_event(
         &self,
         _event_type: scryer_domain::NotificationEventType,

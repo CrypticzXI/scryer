@@ -65,6 +65,7 @@ import {
 import type { PendingImportCounts } from "@/lib/types";
 import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
 import {
+  dispatchNavigationBadgesRefresh,
   NAVIGATION_BADGES_REFRESH_EVENT,
   type NavigationBadgesRefreshDetail,
 } from "@/lib/events/navigation-badges";
@@ -177,6 +178,7 @@ function defaultSettingsSection(
 
 function defaultAccessibleRoute(
   canViewCatalog: boolean,
+  canRequestMedia: boolean,
   canManageUsers: boolean,
   canManageConfig: boolean,
 ): {
@@ -188,6 +190,13 @@ function defaultAccessibleRoute(
     return {
       view: "movies",
       contentSettingsSection: "overview",
+    };
+  }
+
+  if (canRequestMedia) {
+    return {
+      view: "movies",
+      contentSettingsSection: "requests",
     };
   }
 
@@ -815,6 +824,17 @@ function AuthenticatedHomePage({
   }, [refreshNavigationBadges]);
 
   useEffect(() => {
+    const refreshFromPulse = () => {
+      dispatchNavigationBadgesRefresh({ source: "poll" });
+    };
+    const refreshFromFocus = () => {
+      dispatchNavigationBadgesRefresh({ source: "focus" });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshFromFocus();
+      }
+    };
     const handleNavigationBadgeRefresh = (event: Event) => {
       const delta =
         event instanceof CustomEvent &&
@@ -834,14 +854,18 @@ function AuthenticatedHomePage({
       NAVIGATION_BADGES_REFRESH_EVENT,
       handleNavigationBadgeRefresh,
     );
+    window.addEventListener("focus", refreshFromFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     const intervalId = window.setInterval(() => {
-      void refreshNavigationBadges();
+      refreshFromPulse();
     }, 30_000);
     return () => {
       window.removeEventListener(
         NAVIGATION_BADGES_REFRESH_EVENT,
         handleNavigationBadgeRefresh,
       );
+      window.removeEventListener("focus", refreshFromFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.clearInterval(intervalId);
     };
   }, [refreshNavigationBadges]);
@@ -1178,6 +1202,7 @@ function AuthenticatedHomePage({
   const navigateToAccessibleDefault = useCallback(() => {
     const fallback = defaultAccessibleRoute(
       canViewCatalog,
+      canRequestMedia,
       canManageUsers,
       canManageConfig,
     );
@@ -1188,7 +1213,7 @@ function AuthenticatedHomePage({
       undefined,
       undefined,
     );
-  }, [canManageConfig, canManageUsers, canViewCatalog, navigateTo]);
+  }, [canManageConfig, canManageUsers, canRequestMedia, canViewCatalog, navigateTo]);
 
   useEffect(() => {
     if (view !== "activity" || canAccessActivity) {
@@ -1205,6 +1230,17 @@ function AuthenticatedHomePage({
 
     navigateToAccessibleDefault();
   }, [canManageConfig, navigateToAccessibleDefault, view]);
+
+  useEffect(() => {
+    if (
+      isMediaView(view) &&
+      contentSettingsSection === "overview" &&
+      !canViewCatalog &&
+      canRequestMedia
+    ) {
+      navigateTo(view, undefined, "requests", undefined, undefined);
+    }
+  }, [canRequestMedia, canViewCatalog, contentSettingsSection, navigateTo, view]);
 
   useEffect(() => {
     if (

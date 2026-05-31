@@ -1566,6 +1566,8 @@ pub(crate) fn normalize_env_option(name: &str) -> Option<String> {
 fn build_webauthn_runtime() -> Option<Arc<webauthn_rs::Webauthn>> {
     let rp_id = normalize_env_option("SCRYER_WEBAUTHN_RP_ID");
     let rp_origin = normalize_env_option("SCRYER_WEBAUTHN_RP_ORIGIN");
+    let rp_name =
+        normalize_env_option("SCRYER_WEBAUTHN_RP_NAME").unwrap_or_else(|| "Scryer".to_string());
 
     match (rp_id, rp_origin) {
         (Some(rp_id), Some(rp_origin)) => {
@@ -1589,7 +1591,8 @@ fn build_webauthn_runtime() -> Option<Arc<webauthn_rs::Webauthn>> {
                     );
                     return None;
                 }
-            };
+            }
+            .rp_name(&rp_name);
 
             match builder.build() {
                 Ok(runtime) => Some(Arc::new(runtime)),

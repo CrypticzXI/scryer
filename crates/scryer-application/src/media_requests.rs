@@ -234,16 +234,28 @@ impl AppUseCase {
         actor: &User,
         request_id: &str,
         quality_profile_id: &str,
+        monitor_type: Option<String>,
     ) -> AppResult<ApproveMediaRequestOutcome> {
         let request = self
             .load_manageable_pending_media_request(actor, request_id)
             .await?;
         let (approved_quality_profile_id, approved_quality_profile_name) =
             self.quality_profile_snapshot(quality_profile_id).await?;
+        let approved_monitor_type = match monitor_type {
+            Some(value) => normalize_requested_monitor_type(&request.facet, Some(value))?,
+            None => normalize_requested_monitor_type(
+                &request.facet,
+                request.requested_monitor_type.clone(),
+            )?,
+        };
         let outcome = self
             .add_title_with_outcome_in_library(
                 actor,
-                media_request_to_new_title(&request, Some(&approved_quality_profile_id)),
+                media_request_to_new_title(
+                    &request,
+                    Some(&approved_quality_profile_id),
+                    approved_monitor_type.as_deref(),
+                ),
                 request.library_id.clone(),
             )
             .await?;
@@ -844,16 +856,14 @@ fn media_request_submitted_event_data(
 fn media_request_to_new_title(
     request: &MediaRequest,
     quality_profile_id: Option<&str>,
+    monitor_type: Option<&str>,
 ) -> NewTitle {
-    let requested_monitor_type = request.requested_monitor_type.as_deref();
-    let monitored = requested_monitor_type
-        .map(monitor_type_to_monitored)
-        .unwrap_or(true);
+    let monitored = monitor_type.map(monitor_type_to_monitored).unwrap_or(true);
     let mut tags = quality_profile_id
         .map(|profile_id| format!("{TITLE_QUALITY_PROFILE_TAG_PREFIX}{profile_id}"))
         .into_iter()
         .collect::<Vec<_>>();
-    if let Some(monitor_type) = requested_monitor_type {
+    if let Some(monitor_type) = monitor_type {
         tags.push(format!("{TITLE_MONITOR_TYPE_TAG_PREFIX}{monitor_type}"));
     }
 

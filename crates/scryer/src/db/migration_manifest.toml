@@ -443,6 +443,41 @@ file = "postgres/migrations/0135_user_account_kind.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 136
+description = "notification subscription targets"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0136_notification_subscription_targets.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0136_notification_subscription_targets.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_jellyfin_notification_channels_to_media_server_targets"
+engine = "all"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0136_notification_subscription_target_indexes.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0136_notification_subscription_target_indexes.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

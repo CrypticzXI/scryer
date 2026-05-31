@@ -1507,12 +1507,50 @@ pub struct SubtitleSyncInputSubtitle {
 pub struct SubtitleSyncAlignRequest {
     pub input: SubtitleSyncAlignInputRef,
     pub subtitle: SubtitleSyncInputSubtitle,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subtitle_spans: Vec<SubtitleTimingSpan>,
     pub max_offset_seconds: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_options: Option<SubtitleSyncOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<AudioStreamSelector>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_codec: Option<AudioTranscodeCodec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncOptions {
+    #[serde(default)]
+    pub start_seconds: u32,
+    #[serde(default = "default_max_subtitle_duration_ms")]
+    pub max_subtitle_duration_ms: u64,
+    #[serde(default = "default_precise_framerate_search")]
+    pub precise_framerate_search: bool,
+    #[serde(default = "default_output_encoding")]
+    pub output_encoding: String,
+}
+
+impl Default for SubtitleSyncOptions {
+    fn default() -> Self {
+        Self {
+            start_seconds: 0,
+            max_subtitle_duration_ms: default_max_subtitle_duration_ms(),
+            precise_framerate_search: default_precise_framerate_search(),
+            output_encoding: default_output_encoding(),
+        }
+    }
+}
+
+fn default_max_subtitle_duration_ms() -> u64 {
+    10_000
+}
+
+fn default_precise_framerate_search() -> bool {
+    true
+}
+
+fn default_output_encoding() -> String {
+    "same".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -2,9 +2,9 @@
 //!
 //! The sync pipeline:
 //! 1. Applies policy gates that do not require media analysis.
-//! 2. Parses subtitle timing spans from SRT or ASS/SSA.
-//! 3. Delegates media analysis and alignment to the optional enhanced sync plugin.
-//! 4. Applies the rewritten subtitle bytes returned by the plugin.
+//! 2. Reads subtitle bytes and detects the rewrite format.
+//! 3. Delegates media analysis, timing, and rewriting to the optional enhanced sync plugin.
+//! 4. Atomically applies the rewritten subtitle bytes returned by the plugin.
 
 use std::{fmt, io::Write, path::Path, sync::Arc};
 
@@ -14,7 +14,8 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use scryer_plugin_sdk::{
-    AudioTranscodeCodec, SubtitleSyncAlignResponse, SubtitleSyncAlignSkipReason, SubtitleTimingSpan,
+    AudioTranscodeCodec, SubtitleSyncAlignResponse, SubtitleSyncAlignSkipReason,
+    SubtitleSyncOptions,
 };
 
 /// Result of a subtitle sync operation.
@@ -24,7 +25,7 @@ pub struct SyncResult {
     pub offset_ms: i64,
     /// Whether the sync was applied.
     pub applied: bool,
-    /// Parsed subtitle format when one was recognized.
+    /// Detected subtitle format when one was recognized.
     pub format: Option<SubtitleTimingFormat>,
     /// Alignment consistency across split deltas.
     pub consistency_ratio: Option<f64>,
@@ -36,7 +37,6 @@ pub struct SyncResult {
     pub skipped_reason: Option<SyncSkipReason>,
 }
 
-const MIN_SUBTITLE_SPANS: usize = 3;
 pub const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID: &str = "enhanced-subtitle-sync";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +80,6 @@ pub enum SyncSkipReason {
     UnsupportedSubtitleFormat,
     AudioDecodeFailed,
     NotEnoughReferenceSpans,
-    NotEnoughSubtitleSpans,
     WeakAlignment,
     LowAlignmentConsistency,
     OffsetExceedsMaximum,
@@ -97,7 +96,6 @@ impl SyncSkipReason {
             Self::UnsupportedSubtitleFormat => "unsupported_subtitle_format",
             Self::AudioDecodeFailed => "audio_decode_failed",
             Self::NotEnoughReferenceSpans => "not_enough_reference_spans",
-            Self::NotEnoughSubtitleSpans => "not_enough_subtitle_spans",
             Self::WeakAlignment => "weak_alignment",
             Self::LowAlignmentConsistency => "low_alignment_consistency",
             Self::OffsetExceedsMaximum => "offset_exceeds_maximum",
@@ -138,23 +136,6 @@ impl SyncPolicy {
         }
 
         None
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AssEventFormat {
-    field_count: usize,
-    start_idx: usize,
-    end_idx: usize,
-}
-
-impl Default for AssEventFormat {
-    fn default() -> Self {
-        Self {
-            field_count: 10,
-            start_idx: 1,
-            end_idx: 2,
-        }
     }
 }
 
@@ -223,7 +204,9 @@ pub async fn sync_subtitle_with_plugin_sync(
     subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
     plugin_installed: bool,
 ) -> AppResult<SyncResult> {
-    let Some((subtitle_format, subtitle_spans)) = read_subtitle_spans(subtitle_path)? else {
+    let subtitle_content = std::fs::read(subtitle_path)
+        .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
+    let Some(subtitle_format) = detect_subtitle_format(subtitle_path, &subtitle_content) else {
         tracing::debug!(
             path = %subtitle_path.display(),
             "subtitle sync skipped: unsupported subtitle format"
@@ -237,22 +220,6 @@ pub async fn sync_subtitle_with_plugin_sync(
             SyncSkipReason::UnsupportedSubtitleFormat,
         ));
     };
-    if subtitle_spans.len() < MIN_SUBTITLE_SPANS {
-        tracing::debug!(
-            path = %subtitle_path.display(),
-            format = subtitle_format.label(),
-            spans = subtitle_spans.len(),
-            "subtitle sync skipped: not enough subtitle spans"
-        );
-        return Ok(skipped_sync_result(
-            0,
-            Some(subtitle_format),
-            None,
-            None,
-            None,
-            SyncSkipReason::NotEnoughSubtitleSpans,
-        ));
-    }
 
     let Some(subtitle_sync_client) = subtitle_sync_client else {
         tracing::warn!(
@@ -275,12 +242,11 @@ pub async fn sync_subtitle_with_plugin_sync(
         ));
     };
 
-    let subtitle_content = std::fs::read(subtitle_path)
-        .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
     let subtitle_file_name = subtitle_path
         .file_name()
         .and_then(|name| name.to_str())
         .map(str::to_string);
+    let subtitle_encoding_hint = subtitle_encoding_hint(&subtitle_content);
 
     let response = match subtitle_sync_client
         .align_subtitle(SubtitleSyncJob {
@@ -288,9 +254,9 @@ pub async fn sync_subtitle_with_plugin_sync(
             subtitle_content,
             subtitle_format: subtitle_format.sdk_format(subtitle_path).to_string(),
             subtitle_file_name,
-            subtitle_encoding_hint: Some("utf-8".to_string()),
-            subtitle_spans,
+            subtitle_encoding_hint,
             max_offset_seconds,
+            sync_options: SubtitleSyncOptions::default(),
             expected_codec: targeted_audio_codec_for_path(video_path),
         })
         .await
@@ -327,18 +293,19 @@ pub async fn sync_subtitle_with_plugin_sync(
         return Ok(sync_result_from_plugin_response(subtitle_format, response));
     }
 
-    if let Some(rewritten_subtitle) = response.rewritten_subtitle.as_ref() {
-        let bytes = BASE64
-            .decode(&rewritten_subtitle.content_base64)
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "subtitle sync plugin returned invalid rewritten subtitle base64: {error}"
-                ))
-            })?;
-        write_subtitle_atomic(subtitle_path, &bytes)?;
-    } else {
-        apply_subtitle_offset(subtitle_path, subtitle_format, response.offset_ms)?;
-    }
+    let rewritten_subtitle = response.rewritten_subtitle.as_ref().ok_or_else(|| {
+        AppError::Repository(
+            "subtitle sync plugin reported applied without rewritten_subtitle".to_string(),
+        )
+    })?;
+    let bytes = BASE64
+        .decode(&rewritten_subtitle.content_base64)
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "subtitle sync plugin returned invalid rewritten subtitle base64: {error}"
+            ))
+        })?;
+    write_subtitle_atomic(subtitle_path, &bytes)?;
 
     tracing::info!(
         path = %subtitle_path.display(),
@@ -460,49 +427,22 @@ fn targeted_audio_codec(codec: Option<&str>, profile: Option<&str>) -> Option<Au
     }
 }
 
-// ── Subtitle parsing and shifting with charset detection ─────────────────────
-
-/// Read a subtitle file, auto-detecting charset for common wild-text encodings.
-fn read_subtitle_to_string(path: &Path) -> AppResult<String> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
-
-    if let Ok(s) = std::str::from_utf8(&bytes) {
-        return Ok(s.to_string());
+fn subtitle_encoding_hint(bytes: &[u8]) -> Option<String> {
+    if std::str::from_utf8(bytes).is_ok() {
+        return Some("utf-8".to_string());
     }
 
     let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
-    detector.feed(&bytes, true);
-    let encoding = detector.guess(None, chardetng::Utf8Detection::Allow);
-
-    let (decoded, _, had_errors) = encoding.decode(&bytes);
-    if had_errors {
-        tracing::warn!(
-            path = %path.display(),
-            encoding = %encoding.name(),
-            "subtitle file had encoding errors during charset conversion"
-        );
-    }
-
-    Ok(decoded.into_owned())
+    detector.feed(bytes, true);
+    Some(
+        detector
+            .guess(None, chardetng::Utf8Detection::Allow)
+            .name()
+            .to_ascii_lowercase(),
+    )
 }
 
-fn read_subtitle_spans(
-    path: &Path,
-) -> AppResult<Option<(SubtitleTimingFormat, Vec<SubtitleTimingSpan>)>> {
-    let content = read_subtitle_to_string(path)?;
-    let Some(format) = detect_subtitle_format(path, &content) else {
-        return Ok(None);
-    };
-
-    let spans = match format {
-        SubtitleTimingFormat::Srt => read_srt_spans_from_str(&content),
-        SubtitleTimingFormat::Ass => read_ass_spans_from_str(&content),
-    };
-    Ok(Some((format, spans)))
-}
-
-fn detect_subtitle_format(path: &Path, content: &str) -> Option<SubtitleTimingFormat> {
+fn detect_subtitle_format(path: &Path, content: &[u8]) -> Option<SubtitleTimingFormat> {
     match path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -514,13 +454,11 @@ fn detect_subtitle_format(path: &Path, content: &str) -> Option<SubtitleTimingFo
         _ => {}
     }
 
-    if content.contains("-->") {
+    if content.windows(3).any(|window| window == b"-->") {
         return Some(SubtitleTimingFormat::Srt);
     }
-    if content.contains("[Events]")
-        || content
-            .lines()
-            .any(|line| line_starts_with_ignore_ascii_case(line.trim_start(), "Dialogue:"))
+    if contains_ascii_case_insensitive(content, b"[Events]")
+        || contains_ascii_case_insensitive(content, b"Dialogue:")
     {
         return Some(SubtitleTimingFormat::Ass);
     }
@@ -528,19 +466,13 @@ fn detect_subtitle_format(path: &Path, content: &str) -> Option<SubtitleTimingFo
     None
 }
 
-fn apply_subtitle_offset(
-    subtitle_path: &Path,
-    format: SubtitleTimingFormat,
-    offset_ms: i64,
-) -> AppResult<()> {
-    let content = read_subtitle_to_string(subtitle_path)?;
-    let shifted = match format {
-        SubtitleTimingFormat::Srt => shift_srt_content(&content, offset_ms),
-        SubtitleTimingFormat::Ass => shift_ass_content(&content, offset_ms),
-    };
-
-    write_subtitle_atomic(subtitle_path, shifted.as_bytes())?;
-    Ok(())
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn write_subtitle_atomic(subtitle_path: &Path, bytes: &[u8]) -> AppResult<()> {
@@ -561,259 +493,6 @@ fn write_subtitle_atomic(subtitle_path: &Path, bytes: &[u8]) -> AppResult<()> {
     Ok(())
 }
 
-fn read_srt_spans_from_str(content: &str) -> Vec<SubtitleTimingSpan> {
-    let mut spans = Vec::new();
-    for line in content.lines() {
-        if let Some((start, end)) = line.split_once("-->")
-            && let (Some(start), Some(end)) = (parse_srt_ts(start.trim()), parse_srt_ts(end.trim()))
-        {
-            spans.push(SubtitleTimingSpan {
-                start_ms: start,
-                end_ms: end,
-            });
-        }
-    }
-    spans
-}
-
-fn shift_srt_content(content: &str, offset_ms: i64) -> String {
-    let mut out = String::with_capacity(content.len());
-    for line in content.lines() {
-        if let Some((start_str, end_str)) = line.split_once("-->")
-            && let (Some(start), Some(end)) =
-                (parse_srt_ts(start_str.trim()), parse_srt_ts(end_str.trim()))
-        {
-            out.push_str(&format_srt_ts(start + offset_ms));
-            out.push_str(" --> ");
-            out.push_str(&format_srt_ts(end + offset_ms));
-            out.push('\n');
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
-}
-
-fn read_ass_spans_from_str(content: &str) -> Vec<SubtitleTimingSpan> {
-    let mut spans = Vec::new();
-    let mut in_events = false;
-    let mut event_format = AssEventFormat::default();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if is_section_header(trimmed) {
-            in_events = trimmed.eq_ignore_ascii_case("[Events]");
-            continue;
-        }
-        if !in_events {
-            continue;
-        }
-        if line_starts_with_ignore_ascii_case(trimmed, "Format:") {
-            if let Some(parsed) = parse_ass_event_format(trimmed) {
-                event_format = parsed;
-            }
-            continue;
-        }
-        if !line_starts_with_ignore_ascii_case(trimmed, "Dialogue:") {
-            continue;
-        }
-
-        let Some(fields) = split_ass_fields(trimmed, event_format.field_count) else {
-            continue;
-        };
-        if let (Some(start), Some(end)) = (
-            parse_ass_ts(fields[event_format.start_idx].trim()),
-            parse_ass_ts(fields[event_format.end_idx].trim()),
-        ) {
-            spans.push(SubtitleTimingSpan {
-                start_ms: start,
-                end_ms: end,
-            });
-        }
-    }
-
-    spans
-}
-
-fn shift_ass_content(content: &str, offset_ms: i64) -> String {
-    let mut out = String::with_capacity(content.len());
-    let mut in_events = false;
-    let mut event_format = AssEventFormat::default();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if is_section_header(trimmed) {
-            in_events = trimmed.eq_ignore_ascii_case("[Events]");
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-
-        if in_events && line_starts_with_ignore_ascii_case(trimmed, "Format:") {
-            if let Some(parsed) = parse_ass_event_format(trimmed) {
-                event_format = parsed;
-            }
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-
-        if in_events && let Some(rewritten) = rewrite_ass_event_line(line, &event_format, offset_ms)
-        {
-            out.push_str(&rewritten);
-            out.push('\n');
-            continue;
-        }
-
-        out.push_str(line);
-        out.push('\n');
-    }
-
-    out
-}
-
-fn parse_ass_event_format(line: &str) -> Option<AssEventFormat> {
-    let (_, rest) = line.split_once(':')?;
-    let fields: Vec<String> = rest
-        .split(',')
-        .map(|field| field.trim().to_ascii_lowercase())
-        .collect();
-    let start_idx = fields.iter().position(|field| field == "start")?;
-    let end_idx = fields.iter().position(|field| field == "end")?;
-
-    Some(AssEventFormat {
-        field_count: fields.len(),
-        start_idx,
-        end_idx,
-    })
-}
-
-fn split_ass_fields(line: &str, field_count: usize) -> Option<Vec<&str>> {
-    let (_, rest) = line.split_once(':')?;
-    let fields: Vec<&str> = rest.trim_start().splitn(field_count, ',').collect();
-    if fields.len() != field_count {
-        return None;
-    }
-    Some(fields)
-}
-
-fn rewrite_ass_event_line(line: &str, format: &AssEventFormat, offset_ms: i64) -> Option<String> {
-    let colon_index = line.find(':')?;
-    let prefix = &line[..colon_index];
-    let event_kind = prefix.trim();
-    if !matches!(
-        event_kind.to_ascii_lowercase().as_str(),
-        "dialogue" | "comment" | "picture" | "sound" | "movie" | "command"
-    ) {
-        return None;
-    }
-
-    let rest = &line[colon_index + 1..];
-    let leading_ws_len = rest.len() - rest.trim_start_matches([' ', '\t']).len();
-    let leading_ws = &rest[..leading_ws_len];
-
-    let mut fields: Vec<String> = rest
-        .trim_start()
-        .splitn(format.field_count, ',')
-        .map(|field| field.to_string())
-        .collect();
-    if fields.len() != format.field_count {
-        return None;
-    }
-
-    let start = parse_ass_ts(fields[format.start_idx].trim())?;
-    let end = parse_ass_ts(fields[format.end_idx].trim())?;
-    fields[format.start_idx] = format_ass_ts(start + offset_ms);
-    fields[format.end_idx] = format_ass_ts(end + offset_ms);
-
-    Some(format!("{prefix}:{leading_ws}{}", fields.join(",")))
-}
-
-fn is_section_header(line: &str) -> bool {
-    line.starts_with('[') && line.ends_with(']')
-}
-
-fn line_starts_with_ignore_ascii_case(line: &str, prefix: &str) -> bool {
-    line.get(..prefix.len())
-        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-}
-
-// ── Timestamp parsing and formatting ─────────────────────────────────────────
-
-fn parse_srt_ts(ts: &str) -> Option<i64> {
-    let parts: Vec<&str> = ts.split([':', ',', '.']).collect();
-    if parts.len() < 4 {
-        return None;
-    }
-    let h: i64 = parts[0].trim().parse().ok()?;
-    let m: i64 = parts[1].trim().parse().ok()?;
-    let s: i64 = parts[2].trim().parse().ok()?;
-    let ms: i64 = parts[3].trim().parse().ok()?;
-    Some(h * 3_600_000 + m * 60_000 + s * 1_000 + ms)
-}
-
-fn format_srt_ts(ms: i64) -> String {
-    let ms = ms.max(0);
-    let ts = ms / 1000;
-    format!(
-        "{:02}:{:02}:{:02},{:03}",
-        ts / 3600,
-        (ts % 3600) / 60,
-        ts % 60,
-        ms % 1000
-    )
-}
-
-fn parse_ass_ts(ts: &str) -> Option<i64> {
-    let ts = ts.trim();
-    let separator = ts.find(['.', ','])?;
-    let main = &ts[..separator];
-    let frac = &ts[separator + 1..];
-
-    let parts: Vec<&str> = main.split(':').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-
-    let h: i64 = parts[0].trim().parse().ok()?;
-    let m: i64 = parts[1].trim().parse().ok()?;
-    let s: i64 = parts[2].trim().parse().ok()?;
-    let ms = parse_fractional_ms(frac)?;
-
-    Some(h * 3_600_000 + m * 60_000 + s * 1_000 + ms)
-}
-
-fn parse_fractional_ms(frac: &str) -> Option<i64> {
-    let digits: String = frac
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .take(3)
-        .collect();
-    if digits.is_empty() {
-        return Some(0);
-    }
-
-    let value: i64 = digits.parse().ok()?;
-    Some(match digits.len() {
-        1 => value * 100,
-        2 => value * 10,
-        _ => value,
-    })
-}
-
-fn format_ass_ts(ms: i64) -> String {
-    let total_cs = (ms.max(0) + 5) / 10;
-    let total_seconds = total_cs / 100;
-    format!(
-        "{}:{:02}:{:02}.{:02}",
-        total_seconds / 3600,
-        (total_seconds % 3600) / 60,
-        total_seconds % 60,
-        total_cs % 100
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,7 +511,11 @@ mod tests {
             assert_eq!(job.subtitle_content, self.expected_subtitle_content);
             assert_eq!(job.subtitle_format, "srt");
             assert_eq!(job.subtitle_file_name.as_deref(), Some("subtitle.srt"));
-            assert_eq!(job.subtitle_spans.len(), 3);
+            assert_eq!(job.subtitle_encoding_hint.as_deref(), Some("utf-8"));
+            assert_eq!(job.sync_options.start_seconds, 0);
+            assert_eq!(job.sync_options.max_subtitle_duration_ms, 10_000);
+            assert!(job.sync_options.precise_framerate_search);
+            assert_eq!(job.sync_options.output_encoding, "same");
             Ok(SubtitleSyncAlignResponse {
                 applied: true,
                 offset_ms: -1000,
@@ -846,7 +529,7 @@ mod tests {
                 nosplit_score: Some(42.0),
                 split_score: None,
                 skipped_reason: None,
-                backend: "test-ffsubsync".to_string(),
+                backend: "test-subtitle-sync".to_string(),
                 warnings: Vec::new(),
                 message: None,
             })
@@ -854,10 +537,44 @@ mod tests {
     }
 
     #[test]
-    fn parse_and_format_roundtrip() {
-        assert_eq!(parse_srt_ts("00:01:23,456"), Some(83_456));
-        assert_eq!(format_srt_ts(83_456), "00:01:23,456");
-        assert_eq!(format_srt_ts(0), "00:00:00,000");
+    fn detects_subtitle_format_from_extension_or_content() {
+        assert_eq!(
+            detect_subtitle_format(Path::new("subtitle.srt"), b""),
+            Some(SubtitleTimingFormat::Srt)
+        );
+        assert_eq!(
+            detect_subtitle_format(Path::new("subtitle.ass"), b""),
+            Some(SubtitleTimingFormat::Ass)
+        );
+        assert_eq!(
+            detect_subtitle_format(
+                Path::new("subtitle"),
+                b"1\n00:00:01,000 --> 00:00:02,000\nHello\n"
+            ),
+            Some(SubtitleTimingFormat::Srt)
+        );
+        assert_eq!(
+            detect_subtitle_format(Path::new("subtitle"), b"[Events]\nDialogue: 0,0:00:01.00"),
+            Some(SubtitleTimingFormat::Ass)
+        );
+        assert_eq!(
+            detect_subtitle_format(Path::new("subtitle"), b"plain"),
+            None
+        );
+    }
+
+    #[test]
+    fn subtitle_encoding_hint_identifies_utf8_and_single_byte_inputs() {
+        assert_eq!(
+            subtitle_encoding_hint("hello".as_bytes()).as_deref(),
+            Some("utf-8")
+        );
+
+        let mut bytes = b"caf".to_vec();
+        bytes.push(0xe9);
+        let hint = subtitle_encoding_hint(&bytes).unwrap();
+        assert_ne!(hint, "utf-8");
+        assert!(!hint.is_empty());
     }
 
     #[test]
@@ -901,88 +618,6 @@ mod tests {
         assert!(message.contains(ENHANCED_SUBTITLE_SYNC_PLUGIN_ID));
     }
 
-    #[test]
-    fn ass_parse_and_format_roundtrip() {
-        assert_eq!(parse_ass_ts("0:01:23.45"), Some(83_450));
-        assert_eq!(format_ass_ts(83_450), "0:01:23.45");
-        assert_eq!(format_ass_ts(-100), "0:00:00.00");
-    }
-
-    #[test]
-    fn format_srt_ts_clamps_negative() {
-        assert_eq!(format_srt_ts(-1000), "00:00:00,000");
-        assert_eq!(format_srt_ts(-1), "00:00:00,000");
-    }
-
-    #[test]
-    fn parse_srt_ts_with_dot_separator() {
-        assert_eq!(parse_srt_ts("00:01:23.456"), Some(83_456));
-    }
-
-    #[test]
-    fn parse_srt_ts_hours_greater_than_23() {
-        assert_eq!(parse_srt_ts("25:00:00,000"), Some(25 * 3_600_000));
-    }
-
-    #[test]
-    fn parse_srt_ts_rejects_too_few_parts() {
-        assert_eq!(parse_srt_ts("00:01:23"), None);
-        assert_eq!(parse_srt_ts(""), None);
-    }
-
-    #[test]
-    fn parse_srt_ts_rejects_non_numeric() {
-        assert_eq!(parse_srt_ts("ab:cd:ef,ghi"), None);
-    }
-
-    #[test]
-    fn charset_detection_utf8_passthrough() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), "1\n00:00:01,000 --> 00:00:02,000\nHello\n").unwrap();
-        let content = read_subtitle_to_string(tmp.path()).unwrap();
-        assert!(content.contains("Hello"));
-    }
-
-    #[test]
-    fn charset_detection_latin1() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mut data = b"1\n00:00:01,000 --> 00:00:02,000\ncaf".to_vec();
-        data.push(0xe9);
-        data.push(b'\n');
-        std::fs::write(tmp.path(), &data).unwrap();
-        let content = read_subtitle_to_string(tmp.path()).unwrap();
-        assert!(
-            content.contains("caf"),
-            "should contain 'caf' after charset conversion"
-        );
-    }
-
-    #[test]
-    fn ass_spans_extract_dialogue_lines_only() {
-        let content = "[Script Info]\n\
-Title: Demo\n\
-\n\
-[Events]\n\
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
-Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,ignored\n\
-Dialogue: 0,0:00:03.00,0:00:05.00,Default,,0,0,0,,Hello\n";
-        let spans = read_ass_spans_from_str(content);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].start_ms, 3_000);
-        assert_eq!(spans[0].end_ms, 5_000);
-    }
-
-    #[test]
-    fn shift_ass_content_rewrites_event_times_and_preserves_text_with_commas() {
-        let content = "[Events]\n\
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
-Dialogue: 0,0:00:03.00,0:00:05.00,Default,,0,0,0,,Hello, world\n\
-Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,note\n";
-        let shifted = shift_ass_content(content, 1_500);
-        assert!(shifted.contains("Dialogue: 0,0:00:04.50,0:00:06.50,Default,,0,0,0,,Hello, world"));
-        assert!(shifted.contains("Comment: 0,0:00:02.50,0:00:03.50,Default,,0,0,0,,note"));
-    }
-
     #[tokio::test]
     async fn sync_applies_rewritten_subtitle_bytes_from_plugin() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1013,6 +648,91 @@ Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,note\n";
         assert!(result.applied);
         assert_eq!(result.offset_ms, -1000);
         assert_eq!(std::fs::read(&subtitle_path).unwrap(), rewritten);
+    }
+
+    #[tokio::test]
+    async fn sync_delegates_single_cue_subtitles_to_plugin() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let subtitle_path = temp_dir.path().join("subtitle.srt");
+        let original = b"1\n00:00:01,000 --> 00:00:02,000\nHello\n".to_vec();
+        let rewritten = b"1\n00:00:02,000 --> 00:00:03,000\nHello\n".to_vec();
+        std::fs::write(&subtitle_path, &original).unwrap();
+
+        let result = sync_subtitle_with_policy_and_plugin_sync(
+            Path::new("/tmp/video.mkv"),
+            &subtitle_path,
+            SyncPolicy {
+                enabled: true,
+                forced: false,
+                score: Some(10),
+                threshold: Some(90),
+                max_offset_seconds: 60,
+            },
+            Some(Arc::new(RewritingSubtitleSyncClient {
+                expected_subtitle_content: original,
+                rewritten_subtitle_content: rewritten.clone(),
+            })),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.applied);
+        assert_eq!(std::fs::read(&subtitle_path).unwrap(), rewritten);
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_applied_plugin_response_without_rewritten_subtitle() {
+        struct MissingRewriteClient;
+
+        #[async_trait::async_trait]
+        impl crate::ports::SubtitleSyncClient for MissingRewriteClient {
+            async fn align_subtitle(
+                &self,
+                _job: crate::ports::SubtitleSyncJob,
+            ) -> AppResult<SubtitleSyncAlignResponse> {
+                Ok(SubtitleSyncAlignResponse {
+                    applied: true,
+                    offset_ms: 1000,
+                    rewritten_subtitle: None,
+                    score: Some(1.0),
+                    selected_framerate_ratio: Some(1.0),
+                    consistency_ratio: Some(1.0),
+                    nosplit_score: Some(1.0),
+                    split_score: None,
+                    skipped_reason: None,
+                    backend: "test-subtitle-sync".to_string(),
+                    warnings: Vec::new(),
+                    message: None,
+                })
+            }
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let subtitle_path = temp_dir.path().join("subtitle.srt");
+        std::fs::write(
+            &subtitle_path,
+            "1\n00:00:01,000 --> 00:00:04,000\nHello\n\n2\n00:00:05,000 --> 00:00:08,000\nWorld\n\n3\n00:00:09,000 --> 00:00:12,000\nAgain\n",
+        )
+        .unwrap();
+
+        let error = sync_subtitle_with_policy_and_plugin_sync(
+            Path::new("/tmp/video.mkv"),
+            &subtitle_path,
+            SyncPolicy {
+                enabled: true,
+                forced: false,
+                score: Some(10),
+                threshold: Some(90),
+                max_offset_seconds: 60,
+            },
+            Some(Arc::new(MissingRewriteClient)),
+            true,
+        )
+        .await
+        .expect_err("missing rewrite should fail");
+
+        assert!(error.to_string().contains("rewritten_subtitle"));
     }
 
     #[tokio::test]

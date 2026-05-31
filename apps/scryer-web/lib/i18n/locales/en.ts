@@ -1543,6 +1543,7 @@ const en: LocaleDictionary = {
 
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Manage plugins",
+  "settings.pluginRuntimeMemoryEstimate": "Estimated plugin runtime memory usage",
   "settings.pluginsRefresh": "Refresh Catalog",
   "settings.pluginsUpdateAll": "Update All",
   "settings.pluginsUpdatingAll": "Updating All…",
@@ -2148,6 +2149,7 @@ const en: LocaleDictionary = {
   "requests.approve": "Approve",
   "requests.approveTitle": "Approve request",
   "requests.approvedQualityProfile": "Approved quality profile",
+  "requests.approvedMonitorType": "Approved monitoring",
   "requests.dismiss": "Dismiss",
   "requests.modify": "Modify",
   "requests.modifyTitle": "Modify request",

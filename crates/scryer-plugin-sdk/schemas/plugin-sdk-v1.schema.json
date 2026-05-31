@@ -2398,6 +2398,16 @@
           "type": "integer",
           "format": "int64"
         },
+        "sync_options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubtitleSyncOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "selector": {
           "anyOf": [
             {
@@ -2422,7 +2432,6 @@
       "required": [
         "input",
         "subtitle",
-        "subtitle_spans",
         "max_offset_seconds"
       ]
     },
@@ -2480,6 +2489,31 @@
         "start_ms",
         "end_ms"
       ]
+    },
+    "SubtitleSyncOptions": {
+      "type": "object",
+      "properties": {
+        "start_seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_subtitle_duration_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 10000
+        },
+        "precise_framerate_search": {
+          "type": "boolean",
+          "default": true
+        },
+        "output_encoding": {
+          "type": "string",
+          "default": "same"
+        }
+      }
     },
     "AudioStreamSelector": {
       "oneOf": [

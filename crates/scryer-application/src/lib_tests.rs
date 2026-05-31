@@ -6647,7 +6647,7 @@ async fn approve_media_request_creates_title_and_resolves_overlapping_pending_re
     let request_id = harness.media_requests.requests.lock().await[0].id.clone();
     let outcome = harness
         .app
-        .approve_media_request(&harness.user, &request_id, "1080p")
+        .approve_media_request(&harness.user, &request_id, "1080p", None)
         .await
         .expect("approval should create the title");
 
@@ -6710,7 +6710,7 @@ async fn approve_series_media_request_applies_requested_monitor_type() {
 
     let outcome = harness
         .app
-        .approve_media_request(&harness.user, &request.id, "1080p")
+        .approve_media_request(&harness.user, &request.id, "1080p", None)
         .await
         .expect("approval should create the series title");
 
@@ -6725,6 +6725,46 @@ async fn approve_series_media_request_applies_requested_monitor_type() {
             .tags
             .iter()
             .any(|tag| tag == "scryer:monitor-type:missingandfutureepisodes")
+    );
+}
+
+#[tokio::test]
+async fn approve_series_media_request_can_override_requested_monitor_type() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let mut input = media_request_input(library_id, 9036);
+    input.facet = MediaFacet::Series;
+    input.requested_monitor_type = Some("allEpisodes".to_string());
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("series request should succeed");
+
+    let request = harness.media_requests.requests.lock().await[0].clone();
+    let outcome = harness
+        .app
+        .approve_media_request(
+            &harness.user,
+            &request.id,
+            "1080p",
+            Some("none".to_string()),
+        )
+        .await
+        .expect("approval should create the series title");
+
+    let titles = harness.titles.store.lock().await;
+    let title = titles
+        .iter()
+        .find(|title| title.id == outcome.title_id)
+        .expect("approved title should be stored");
+    assert!(!title.monitored);
+    assert!(
+        title
+            .tags
+            .iter()
+            .any(|tag| tag == "scryer:monitor-type:none")
     );
 }
 
@@ -23345,7 +23385,6 @@ async fn passkey_registration_requires_password_backed_user() {
     }
 }
 
-#[tokio::test]
 async fn password_change_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
     let created = create_user_with_permissions(

@@ -191,20 +191,67 @@ const WANTED_SUB_PAGES: Array<{ id: WantedSection; labelKey: string }> = [
 const LEAF_NAV_BADGE_BASE_CLASS =
   "ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-md px-1 text-[10px] font-medium leading-none tabular-nums";
 
+const TOP_NAV_BADGE_GROUP_CLASS =
+  "pointer-events-none absolute right-1 flex items-center gap-1 select-none peer-data-[size=sm]/menu-button:top-1 peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 group-data-[collapsible=icon]:hidden";
+
+const TOP_NAV_BADGE_BASE_CLASS =
+  "inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1 text-xs font-medium tabular-nums";
+
+type NavBadgeTone = "cta" | "danger" | "request";
+
+function navBadgeToneClass(tone: NavBadgeTone) {
+  switch (tone) {
+    case "danger":
+      return "bg-red-600 text-white dark:bg-red-500 dark:text-white";
+    case "request":
+      return "bg-emerald-600 text-white dark:bg-emerald-500 dark:text-white";
+    case "cta":
+    default:
+      return "bg-primary text-primary-foreground";
+  }
+}
+
+function FacetNavBadges({
+  importCount,
+  requestCount,
+}: {
+  importCount: number;
+  requestCount: number;
+}) {
+  if (importCount <= 0 && requestCount <= 0) {
+    return null;
+  }
+
+  return (
+    <div className={TOP_NAV_BADGE_GROUP_CLASS}>
+      {importCount > 0 ? (
+        <span className={cn(TOP_NAV_BADGE_BASE_CLASS, navBadgeToneClass("cta"))}>
+          {importCount}
+        </span>
+      ) : null}
+      {requestCount > 0 ? (
+        <span
+          className={cn(TOP_NAV_BADGE_BASE_CLASS, navBadgeToneClass("request"))}
+        >
+          {requestCount}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function LeafNavBadge({
   count,
   tone = "cta",
 }: {
   count: number;
-  tone?: "cta" | "warning";
+  tone?: NavBadgeTone;
 }) {
   return (
     <span
       className={cn(
         LEAF_NAV_BADGE_BASE_CLASS,
-        tone === "warning"
-          ? "bg-red-600 text-white dark:bg-red-500 dark:text-white"
-          : "bg-primary text-primary-foreground",
+        navBadgeToneClass(tone),
       )}
     >
       {count}
@@ -252,6 +299,7 @@ function RootSidebarContent({
   }, [theme, setTheme]);
   const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
   const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
+  const canViewCatalog = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view);
   const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
   const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
   const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
@@ -293,11 +341,6 @@ function RootSidebarContent({
   const pendingMediaRequestCountForNavView = React.useCallback(
     (viewId: ViewId) => pendingImportCountForView(pendingMediaRequestCounts, viewId),
     [pendingMediaRequestCounts],
-  );
-  const mediaFacetBadgeCountForNavView = React.useCallback(
-    (viewId: ViewId) =>
-      pendingImportCountForNavView(viewId) + pendingMediaRequestCountForNavView(viewId),
-    [pendingImportCountForNavView, pendingMediaRequestCountForNavView],
   );
   const activityImportBadgeCount = Math.max(0, manualImportRequiredCount);
   const hasActivityImportBadge = activityImportBadgeCount > 0;
@@ -435,8 +478,11 @@ function RootSidebarContent({
                 const isActiveSystemSection = isSystemTop && view === "system";
                 const isActiveActivitySection = isActivityTop && view === "activity";
                 const isActiveWantedSection = isWantedTop && view === "wanted";
-                const mediaFacetBadgeCount = isMediaSection
-                  ? mediaFacetBadgeCountForNavView(item.id)
+                const mediaFacetImportBadgeCount = isMediaSection
+                  ? pendingImportCountForNavView(item.id)
+                  : 0;
+                const mediaFacetRequestBadgeCount = isMediaSection
+                  ? pendingMediaRequestCountForNavView(item.id)
                   : 0;
                 const shouldShowChildren =
                   isActiveMediaSection ||
@@ -520,7 +566,7 @@ function RootSidebarContent({
                               event,
                               item.id,
                               undefined,
-                              "overview",
+                              canViewCatalog ? "overview" : "requests",
                             );
                           }}
                         >
@@ -532,10 +578,11 @@ function RootSidebarContent({
                             {activityImportBadgeCount}
                           </SidebarMenuBadge>
                         ) : null}
-                        {isMediaSection && mediaFacetBadgeCount > 0 ? (
-                          <SidebarMenuBadge className="bg-primary text-primary-foreground">
-                            {mediaFacetBadgeCount}
-                          </SidebarMenuBadge>
+                        {isMediaSection ? (
+                          <FacetNavBadges
+                            importCount={mediaFacetImportBadgeCount}
+                            requestCount={mediaFacetRequestBadgeCount}
+                          />
                         ) : null}
                       </SidebarMenuItem>
 
@@ -554,7 +601,7 @@ function RootSidebarContent({
                                   >
                                     {entry.label(t)}
                                     {entry.id === "plugins" && pluginUpdateCount > 0 ? (
-                                      <LeafNavBadge count={pluginUpdateCount} tone="warning" />
+                                      <LeafNavBadge count={pluginUpdateCount} tone="danger" />
                                     ) : null}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>
@@ -621,17 +668,19 @@ function RootSidebarContent({
                               ))
                             ) : (
                               <>
-                                <SidebarMenuSubItem>
-                                  <SidebarMenuSubButton
-                                    id={selectorId("root-sidebar-media", item.id, "overview")}
-                                    isActive={contentSettingsSection === "overview"}
-                                    onClick={(event) => {
-                                      handleNavigate(event, item.id, undefined, "overview");
-                                    }}
-                                  >
-                                    {getMediaOverviewLabel(item.id, t)}
-                                  </SidebarMenuSubButton>
-                                </SidebarMenuSubItem>
+                                {canViewCatalog ? (
+                                  <SidebarMenuSubItem>
+                                    <SidebarMenuSubButton
+                                      id={selectorId("root-sidebar-media", item.id, "overview")}
+                                      isActive={contentSettingsSection === "overview"}
+                                      onClick={(event) => {
+                                        handleNavigate(event, item.id, undefined, "overview");
+                                      }}
+                                    >
+                                      {getMediaOverviewLabel(item.id, t)}
+                                    </SidebarMenuSubButton>
+                                  </SidebarMenuSubItem>
+                                ) : null}
                                 {canAccessFacetImport && hasImportsForView(item.id) ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
@@ -659,7 +708,10 @@ function RootSidebarContent({
                                     >
                                       {t("nav.requests")}
                                       {pendingMediaRequestCountForNavView(item.id) > 0 ? (
-                                        <LeafNavBadge count={pendingMediaRequestCountForNavView(item.id)} />
+                                        <LeafNavBadge
+                                          count={pendingMediaRequestCountForNavView(item.id)}
+                                          tone="request"
+                                        />
                                       ) : null}
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>

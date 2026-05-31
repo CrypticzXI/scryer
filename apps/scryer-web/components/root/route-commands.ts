@@ -84,17 +84,19 @@ export function buildRouteCommands({
   ]);
   const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
   const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
-  const mediaCommands = canViewCatalog ? FACET_REGISTRY.flatMap((f) => {
-    const commands: RouteCommand[] = [
-      {
+  const mediaCommands = canViewCatalog || canRequestMedia ? FACET_REGISTRY.flatMap((f) => {
+    const commands: RouteCommand[] = [];
+
+    if (canViewCatalog) {
+      commands.push({
         id: `${f.viewId}-overview`,
         label: t(f.overviewLabelKey),
         description: t(f.navLabelKey),
         keywords: [f.viewId, f.id, "manage", "catalog", "overview", "library"],
         icon: f.icon,
         onSelect: buildNavigate(onNavigate, f.viewId as ViewId),
-      },
-    ];
+      });
+    }
 
     if (canResolveImports && hasImportItemsForView(pendingImportCounts, f.viewId)) {
       commands.push({

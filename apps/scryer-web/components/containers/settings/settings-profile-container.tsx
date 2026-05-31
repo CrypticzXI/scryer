@@ -34,7 +34,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-  const { passkeyEnabled, adoptSession, login, user: authUser } = useAuth();
+  const { adoptSession, login, user: authUser } = useAuth();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -156,7 +156,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t, userId]);
 
   const loadPasskeys = useCallback(async () => {
-    if (!passkeyEnabled || !userId) {
+    if (!userId || accountKind !== "local") {
       setPasskeys([]);
       setLoadingPasskeys(false);
       return;
@@ -176,7 +176,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     } finally {
       setLoadingPasskeys(false);
     }
-  }, [client, passkeyEnabled, setGlobalStatus, t, userId]);
+  }, [accountKind, client, setGlobalStatus, t, userId]);
 
   useEffect(() => {
     void loadPasskeys();
@@ -237,7 +237,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [loadLinkedAccounts]);
 
   const handleAddPasskey = useCallback(async () => {
-    if (!passkeyEnabled || !userId || hasPassword !== true || accountKind !== "local") return;
+    if (!userId || hasPassword !== true || accountKind !== "local") return;
 
     setAddingPasskey(true);
     try {
@@ -249,7 +249,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     } finally {
       setAddingPasskey(false);
     }
-  }, [accountKind, client, formatPasskeyError, hasPassword, passkeyEnabled, setGlobalStatus, t, userId]);
+  }, [accountKind, client, formatPasskeyError, hasPassword, setGlobalStatus, t, userId]);
 
   const handleDeletePasskey = useCallback(async (id: string) => {
     setDeletingPasskeyId(id);
@@ -438,12 +438,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       onNewPasswordChange={setNewPassword}
       onConfirmPasswordChange={setConfirmPassword}
       onChangePassword={handleChangePassword}
-      showPasskeys={
-        passkeyEnabled &&
-        Boolean(userId) &&
-        accountKind === "local" &&
-        (hasPassword === true || passkeys.length > 0)
-      }
+      showPasskeys={Boolean(userId) && accountKind === "local"}
       canAddPasskey={accountKind === "local" && hasPassword === true}
       passkeys={passkeys}
       totpStatus={totpStatus}

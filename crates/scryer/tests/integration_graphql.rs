@@ -4302,6 +4302,63 @@ async fn graphql_passkey_authenticate_start_is_public() {
 }
 
 #[tokio::test]
+async fn graphql_passkey_management_remains_available_when_form_login_is_disabled() {
+    let mut ctx = TestContext::new().await;
+    let origin = url::Url::parse("https://scryer.test").expect("valid WebAuthn origin");
+    let webauthn = webauthn_rs::WebauthnBuilder::new("scryer.test", &origin)
+        .expect("valid WebAuthn builder")
+        .build()
+        .expect("valid WebAuthn runtime");
+    ctx.app.webauthn = scryer_application::RuntimeFeature::enabled(std::sync::Arc::new(webauthn));
+    ctx.schema = scryer_interface::context::build_schema(ctx.app.clone(), ctx.auth_runtime.clone());
+
+    let admin = ctx
+        .app
+        .attach_user_authorization(
+            ctx.app
+                .find_or_create_default_user()
+                .await
+                .expect("default user should exist"),
+        )
+        .await
+        .expect("default user authorization");
+
+    let list_body = schema_exec(
+        &ctx,
+        r#"
+        query MyPasskeys {
+          myPasskeys {
+            id
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&list_body);
+    assert_eq!(list_body["data"]["myPasskeys"], json!([]));
+
+    let start_body = schema_exec(
+        &ctx,
+        r#"
+        mutation PasskeyRegisterStart {
+          webauthnRegisterStart {
+            challengeId
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&start_body);
+    assert!(
+        start_body["data"]["webauthnRegisterStart"]["challengeId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+}
+
+#[tokio::test]
 async fn graphql_my_passkeys_requires_authentication() {
     let ctx = TestContext::new().await;
 
@@ -12458,6 +12515,67 @@ async fn login_with_valid_credentials_returns_token() {
         body["data"]["login"]["user"]["appPermissions"],
         json!(["manageUsers"])
     );
+}
+
+#[tokio::test]
+async fn me_reports_password_status_for_token_authenticated_user() {
+    let ctx = TestContext::new().await;
+
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    ctx.app
+        .create_user(
+            &admin,
+            "metest".to_string(),
+            "s3cr3t!".to_string(),
+            scryer_domain::AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    let login_body = schema_exec(
+        &ctx,
+        r#"mutation { login(input: { username: "metest", password: "s3cr3t!" }) { token } }"#,
+        None,
+    )
+    .await;
+    assert!(
+        login_body["errors"].is_null(),
+        "login should succeed: {login_body}"
+    );
+    let token = login_body["data"]["login"]["token"]
+        .as_str()
+        .expect("login token should be a string");
+    let (token_user, _) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("token should authenticate");
+    assert!(
+        token_user.password_hash.is_none(),
+        "request context user should not carry password hashes"
+    );
+
+    let me_body = schema_exec(
+        &ctx,
+        r#"{ me { username hasPassword accountKind } }"#,
+        Some(token_user.clone()),
+    )
+    .await;
+    assert!(me_body["errors"].is_null(), "me should succeed: {me_body}");
+    assert_eq!(me_body["data"]["me"]["username"], "metest");
+    assert_eq!(me_body["data"]["me"]["hasPassword"], true);
+    assert_eq!(me_body["data"]["me"]["accountKind"], "local");
+
+    let refreshed_token = ctx
+        .app
+        .issue_access_token(&token_user)
+        .await
+        .expect("redacted context user should be able to refresh a token");
+    ctx.app
+        .authenticate_token(&refreshed_token)
+        .await
+        .expect("refreshed token should authenticate");
 }
 
 /// Providing the wrong password must produce a GraphQL error — never a token.

@@ -1961,12 +1961,30 @@ pub fn from_notification_subscription(
     NotificationSubscriptionPayload {
         id: sub.id,
         channel_id: sub.channel_id,
+        target_kind: sub.target_kind.as_str().to_string(),
+        target_id: sub.target_id,
         event_type: sub.event_type.as_str().to_string(),
         scope: sub.scope,
         scope_id: sub.scope_id,
         is_enabled: sub.is_enabled,
         created_at: sub.created_at.to_rfc3339(),
         updated_at: sub.updated_at.to_rfc3339(),
+    }
+}
+
+pub fn from_notification_target(
+    target: scryer_domain::NotificationTarget,
+) -> NotificationTargetPayload {
+    NotificationTargetPayload {
+        id: target.id,
+        target_kind: target.target_kind.as_str().to_string(),
+        name: target.name,
+        provider_type: target.provider_type,
+        media_server_provider: target
+            .media_server_provider
+            .map(MediaServerProviderValue::from_domain),
+        media_server_connection_id: target.media_server_connection_id,
+        is_enabled: target.is_enabled,
     }
 }
 

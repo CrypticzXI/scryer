@@ -189,8 +189,13 @@ impl MediaServerConnectionRepository for MediaServerConnectionStore {
     async fn has_notification_channels(&self, id: &str) -> AppResult<bool> {
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT id FROM notification_channels WHERE media_server_connection_id = {} LIMIT 1",
-            &[SqlArg::Text(id.to_string())],
+            "SELECT id FROM notification_channels WHERE media_server_connection_id = {}
+             UNION ALL
+             SELECT id FROM notification_subscriptions
+              WHERE target_kind = 'media_server_connection'
+                AND target_id = {}
+             LIMIT 1",
+            &[SqlArg::Text(id.to_string()), SqlArg::Text(id.to_string())],
         )
         .await?;
         Ok(row.is_some())

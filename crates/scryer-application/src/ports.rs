@@ -2,7 +2,7 @@ use super::*;
 use async_trait::async_trait;
 use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
 use scryer_plugin_sdk::{
-    AudioTranscodeCodec, AudioTranscodeResponse, SubtitleSyncAlignResponse, SubtitleTimingSpan,
+    AudioTranscodeCodec, AudioTranscodeResponse, SubtitleSyncAlignResponse, SubtitleSyncOptions,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -2026,8 +2026,8 @@ pub struct SubtitleSyncJob {
     pub subtitle_format: String,
     pub subtitle_file_name: Option<String>,
     pub subtitle_encoding_hint: Option<String>,
-    pub subtitle_spans: Vec<SubtitleTimingSpan>,
     pub max_offset_seconds: i64,
+    pub sync_options: SubtitleSyncOptions,
     pub expected_codec: Option<AudioTranscodeCodec>,
 }
 

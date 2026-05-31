@@ -1259,7 +1259,9 @@ async fn serialized_writer_handles_notification_channel_and_subscription_round_t
 
     let subscription = NotificationSubscription {
         id: "subscription-1".to_string(),
-        channel_id: updated.id.clone(),
+        channel_id: Some(updated.id.clone()),
+        target_kind: scryer_domain::NotificationTargetKind::PluginChannel,
+        target_id: updated.id.clone(),
         event_type: NotificationEventType::ImportComplete,
         scope: "global".to_string(),
         scope_id: None,

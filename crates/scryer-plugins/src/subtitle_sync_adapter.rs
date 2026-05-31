@@ -50,8 +50,9 @@ impl SubtitleSyncClient for WasmSubtitleSyncClient {
                 file_name: job.subtitle_file_name,
                 encoding_hint: job.subtitle_encoding_hint,
             },
-            subtitle_spans: job.subtitle_spans,
+            subtitle_spans: Vec::new(),
             max_offset_seconds: job.max_offset_seconds,
+            sync_options: Some(job.sync_options),
             selector: Some(AudioStreamSelector::Default),
             expected_codec: job.expected_codec,
         };

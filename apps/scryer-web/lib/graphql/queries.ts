@@ -395,12 +395,23 @@ export const MEDIA_SERVER_CONNECTION_FIELDS = `
 const NOTIFICATION_SUBSCRIPTION_FIELDS = `
     id
     channelId
+    targetKind
+    targetId
     eventType
     scope
     scopeId
     isEnabled
     createdAt
     updatedAt`;
+
+const NOTIFICATION_TARGET_FIELDS = `
+    id
+    targetKind
+    name
+    providerType
+    mediaServerProvider
+    mediaServerConnectionId
+    isEnabled`;
 
 export const BACKUP_INFO_FIELDS = `
     filename
@@ -2314,6 +2325,11 @@ export const notificationChannelsQuery = `query NotificationChannels {
   }
 }`;
 
+export const notificationTargetsQuery = `query NotificationTargets {
+  notificationTargets {${NOTIFICATION_TARGET_FIELDS}
+  }
+}`;
+
 export const notificationSubscriptionsQuery = `query NotificationSubscriptions {
   notificationSubscriptions {${NOTIFICATION_SUBSCRIPTION_FIELDS}
   }
@@ -2332,6 +2348,8 @@ export const notificationsInitQuery = `query NotificationsInit {
   notificationChannels {${NOTIFICATION_CHANNEL_FIELDS}
   }
   mediaServerConnections {${MEDIA_SERVER_CONNECTION_FIELDS}
+  }
+  notificationTargets {${NOTIFICATION_TARGET_FIELDS}
   }
   notificationSubscriptions {${NOTIFICATION_SUBSCRIPTION_FIELDS}
   }

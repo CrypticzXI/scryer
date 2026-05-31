@@ -11,9 +11,9 @@ use scryer_domain::{
     Episode, ExternalId, ImportCompletedEventData, ImportRejectedEventData,
     MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
     MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType, NotificationEventType,
-    PostProcessingCompletedEventData, PostProcessingResult, ReleaseGrabbedEventData,
-    SubtitleDownloadedEventData, SubtitleSearchFailedEventData, Title, TitleAddedEventData,
-    TitleContextSnapshot, TitleDeletedEventData,
+    NotificationTargetKind, PostProcessingCompletedEventData, PostProcessingResult,
+    ReleaseGrabbedEventData, SubtitleDownloadedEventData, SubtitleSearchFailedEventData, Title,
+    TitleAddedEventData, TitleContextSnapshot, TitleDeletedEventData,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_util::sync::CancellationToken;
@@ -230,9 +230,46 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
             continue;
         }
 
-        let channel = match ch_repo.get_channel(&subscription.channel_id).await {
-            Ok(Some(channel)) if channel.is_enabled => channel,
-            _ => continue,
+        let channel = match subscription.target_kind {
+            NotificationTargetKind::PluginChannel => {
+                let Some(channel_id) = subscription.channel_id.as_deref() else {
+                    warn!(
+                        subscription_id = subscription.id.as_str(),
+                        target_id = subscription.target_id.as_str(),
+                        "plugin notification subscription is missing channel_id"
+                    );
+                    continue;
+                };
+                match ch_repo.get_channel(channel_id).await {
+                    Ok(Some(channel)) if channel.is_enabled => channel,
+                    Ok(_) => continue,
+                    Err(error) => {
+                        warn!(
+                            subscription_id = subscription.id.as_str(),
+                            channel_id,
+                            error = %error,
+                            "failed to load notification channel"
+                        );
+                        continue;
+                    }
+                }
+            }
+            NotificationTargetKind::MediaServerConnection => match app
+                .notification_channel_for_media_server_target(&subscription.target_id)
+                .await
+            {
+                Ok(channel) if channel.is_enabled => channel,
+                Ok(_) => continue,
+                Err(error) => {
+                    warn!(
+                        subscription_id = subscription.id.as_str(),
+                        target_id = subscription.target_id.as_str(),
+                        error = %error,
+                        "failed to resolve media server notification target"
+                    );
+                    continue;
+                }
+            },
         };
         let channel = match app
             .notification_channel_with_resolved_media_server_config(channel)
@@ -241,9 +278,10 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
             Ok(channel) => channel,
             Err(error) => {
                 warn!(
-                    channel_id = subscription.channel_id.as_str(),
+                    target_kind = subscription.target_kind.as_str(),
+                    target_id = subscription.target_id.as_str(),
                     error = %error,
-                    "failed to resolve media server notification channel configuration"
+                    "failed to resolve notification target configuration"
                 );
                 continue;
             }

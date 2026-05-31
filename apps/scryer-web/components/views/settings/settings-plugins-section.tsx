@@ -156,7 +156,7 @@ function blockedReasonLabel(plugin: RegistryPluginRecord, t: Translate): string 
   }
 }
 
-function formatPluginBytes(bytes?: number | null): string | null {
+export function formatPluginBytes(bytes?: number | null): string | null {
   if (bytes == null) {
     return null;
   }
@@ -283,15 +283,18 @@ function applyFilters(
 function PluginFilters({
   filters,
   categories,
+  leadingContent,
   onChange,
 }: {
   filters: FilterState;
   categories: string[];
+  leadingContent?: React.ReactNode;
   onChange: (filters: FilterState) => void;
 }) {
   const t = useTranslate();
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3">
+      {leadingContent}
       <Select
         value={filters.category}
         onValueChange={(v) => onChange({ ...filters, category: v })}
@@ -348,9 +351,10 @@ function PluginTable({
 }) {
   const t = useTranslate();
   const nameColumnClass = "w-[38%]";
-  const typeColumnClass = "w-[15%]";
-  const versionColumnClass = "w-[13%]";
-  const statusColumnClass = "w-[16%]";
+  const typeColumnClass = "w-[14%]";
+  const versionColumnClass = "w-[11%]";
+  const sizeColumnClass = "w-[10%]";
+  const statusColumnClass = "w-[14%]";
   const actionsColumnClass =
     showActions === "installed" ? "w-32 text-right" : "w-48 text-right";
   if (plugins.length === 0) {
@@ -368,6 +372,7 @@ function PluginTable({
             <TableHead className={nameColumnClass}>{t("label.name")}</TableHead>
             <TableHead className={typeColumnClass}>{t("label.type")}</TableHead>
             <TableHead className={versionColumnClass}>{t("label.version")}</TableHead>
+            <TableHead className={sizeColumnClass}>{t("queue.size")}</TableHead>
             <TableHead className={statusColumnClass}>{t("label.status")}</TableHead>
             {showActions === "installed" && (
               <TableHead className="w-20 text-center">{t("label.enabled")}</TableHead>
@@ -437,11 +442,6 @@ function PluginTable({
                 <TableCell className={cn(typeColumnClass, "text-sm")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
                 <TableCell className={cn(versionColumnClass, "text-sm")}>
                   {t("settings.pluginVersion", { version: displayVersion })}
-                  {bytesLabel && (
-                    <div className="text-xs text-muted-foreground">
-                      {t("settings.pluginBytes", { bytes: bytesLabel })}
-                    </div>
-                  )}
                   {plugin.updateAvailable && (
                     <div className="text-xs text-yellow-400">
                       {t("settings.pluginUpdateAvailable", { version: plugin.version })}
@@ -457,6 +457,12 @@ function PluginTable({
                     {actionError}
                   </div>
                 )}
+                </TableCell>
+                <TableCell
+                  className={cn(sizeColumnClass, "text-sm text-muted-foreground")}
+                  title={plugin.bytes != null ? `${plugin.bytes} bytes` : undefined}
+                >
+                  {bytesLabel ?? "—"}
                 </TableCell>
                 <TableCell className={statusColumnClass}>
                   <div className="flex items-center gap-2">
@@ -622,6 +628,15 @@ export function SettingsPluginsSection({
 
   const installed = useMemo(() => plugins.filter((p) => p.isInstalled), [plugins]);
   const available = useMemo(() => plugins.filter((p) => !p.isInstalled), [plugins]);
+  const enabledInstalled = useMemo(
+    () => installed.filter((p) => p.isEnabled),
+    [installed],
+  );
+  const runtimeMemoryBytes = useMemo(
+    () => enabledInstalled.reduce((total, plugin) => total + (plugin.bytes ?? 0), 0),
+    [enabledInstalled],
+  );
+  const runtimeMemoryLabel = formatPluginBytes(runtimeMemoryBytes) ?? "—";
   const allCategories = useMemo(
     () => [...new Set(plugins.map((p) => p.pluginType))].sort(),
     [plugins],
@@ -640,7 +655,7 @@ export function SettingsPluginsSection({
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-2">
           <p className="text-sm text-muted-foreground">{t("settings.pluginsSection")}</p>
           {upgradeCount > 0 && (
@@ -820,10 +835,24 @@ export function SettingsPluginsSection({
         <>
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">{t("settings.pluginsInstalled")}</h3>
+              <h3 className="text-lg font-semibold">{t("settings.pluginsInstalled")}</h3>
               <PluginFilters
                 filters={installedFilters}
                 categories={allCategories}
+                leadingContent={(
+                  <div className="flex items-baseline gap-2 rounded-md border border-border/70 bg-card/40 px-3 py-1.5">
+                    <span className="text-xl font-semibold leading-none tracking-normal text-muted-foreground">
+                      {t("settings.pluginRuntimeMemoryEstimate")}
+                    </span>
+                    <span
+                      id="settings-plugins-runtime-memory-estimate"
+                      className="text-xl font-semibold leading-none tracking-normal text-foreground"
+                      title={`${runtimeMemoryBytes} bytes`}
+                    >
+                      {runtimeMemoryLabel}
+                    </span>
+                  </div>
+                )}
                 onChange={setInstalledFilters}
               />
             </div>
@@ -845,7 +874,7 @@ export function SettingsPluginsSection({
 
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">{t("settings.pluginsAvailable")}</h3>
+              <h3 className="text-lg font-semibold">{t("settings.pluginsAvailable")}</h3>
               <PluginFilters
                 filters={availableFilters}
                 categories={allCategories}

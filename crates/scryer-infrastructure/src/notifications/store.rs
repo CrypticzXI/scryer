@@ -22,8 +22,7 @@ const CHANNEL_INSERT_SQL: &str = "INSERT INTO notification_channels (
     {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
-const SUBSCRIPTION_COLUMNS: &str =
-    "id, channel_id, target_kind, target_id, event_type, scope, scope_id, is_enabled, created_at, updated_at";
+const SUBSCRIPTION_COLUMNS: &str = "id, channel_id, target_kind, target_id, event_type, scope, scope_id, is_enabled, created_at, updated_at";
 
 const SUBSCRIPTION_INSERT_SQL: &str = "INSERT INTO notification_subscriptions (
     id, channel_id, target_kind, target_id, event_type, scope, scope_id, is_enabled, created_at, updated_at

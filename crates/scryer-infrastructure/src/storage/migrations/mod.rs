@@ -1,6 +1,8 @@
 pub mod assets;
 pub mod hook_ids;
+pub(crate) mod notification_targets;
 
+use crate::encryption::EncryptionKey;
 use crate::migration_assets::{
     self, ChecksumAlgorithm, CompiledBaseline, CompiledMigration, CompiledMigrationBundle,
     CompiledMigrationCatalog, CompiledMigrationStep, EngineScope, MigrationInstallKind,
@@ -28,6 +30,11 @@ struct MigrationLedgerRow {
     checksum_algo: String,
     checksum_algo_inferred: bool,
     checksum: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MigrationHookContext {
+    pub(crate) encryption_key: Option<EncryptionKey>,
 }
 
 pub fn list_embedded_migrations() -> AppResult<Vec<EmbeddedMigrationDescriptor>> {
@@ -84,6 +91,25 @@ pub async fn replay_catalog_into_fresh_db(
     through_version: Option<i64>,
     enable_baselines: bool,
 ) -> AppResult<()> {
+    replay_catalog_into_fresh_db_with_context(
+        pool,
+        catalog,
+        payload_bytes,
+        through_version,
+        enable_baselines,
+        &MigrationHookContext::default(),
+    )
+    .await
+}
+
+async fn replay_catalog_into_fresh_db_with_context(
+    pool: &SqlitePool,
+    catalog: &CompiledMigrationCatalog,
+    payload_bytes: &[u8],
+    through_version: Option<i64>,
+    enable_baselines: bool,
+    hook_context: &MigrationHookContext,
+) -> AppResult<()> {
     crate::spellfix::register_spellfix_auto_extension()?;
     ensure_migration_ledger_shape(pool).await?;
 
@@ -115,11 +141,21 @@ pub async fn replay_catalog_into_fresh_db(
         MigrationInstallKind::FreshInstall,
         start_version,
         target_version,
+        hook_context,
     )
     .await
 }
 
+#[allow(dead_code)]
 pub(crate) async fn run_migrations(pool: &SqlitePool, mode: MigrationMode) -> AppResult<()> {
+    run_migrations_with_hook_context(pool, mode, MigrationHookContext::default()).await
+}
+
+pub(crate) async fn run_migrations_with_hook_context(
+    pool: &SqlitePool,
+    mode: MigrationMode,
+    hook_context: MigrationHookContext,
+) -> AppResult<()> {
     let catalog = embedded_catalog()?;
     let payload_bytes = embedded_payload_bytes()?;
     if !matches!(mode, MigrationMode::ValidateOnly) {
@@ -143,7 +179,15 @@ pub(crate) async fn run_migrations(pool: &SqlitePool, mode: MigrationMode) -> Ap
     let install_kind = detect_install_kind(pool, &applied).await?;
     match install_kind {
         MigrationInstallKind::FreshInstall => {
-            replay_catalog_into_fresh_db(pool, &catalog, &payload_bytes, None, true).await?;
+            replay_catalog_into_fresh_db_with_context(
+                pool,
+                &catalog,
+                &payload_bytes,
+                None,
+                true,
+                &hook_context,
+            )
+            .await?;
         }
         MigrationInstallKind::Upgrade => {
             apply_version_range(
@@ -153,6 +197,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool, mode: MigrationMode) -> Ap
                 MigrationInstallKind::Upgrade,
                 1,
                 catalog.max_version(),
+                &hook_context,
             )
             .await?;
         }
@@ -555,6 +600,7 @@ async fn apply_version_range(
     install_kind: MigrationInstallKind,
     start_version: i64,
     target_version: i64,
+    hook_context: &MigrationHookContext,
 ) -> AppResult<()> {
     if target_version < start_version {
         return Ok(());
@@ -574,7 +620,7 @@ async fn apply_version_range(
             continue;
         }
 
-        apply_single_migration(pool, migration, payload_bytes, install_kind).await?;
+        apply_single_migration(pool, migration, payload_bytes, install_kind, hook_context).await?;
     }
 
     Ok(())
@@ -585,6 +631,7 @@ async fn apply_single_migration(
     migration: &CompiledMigration,
     payload_bytes: &[u8],
     install_kind: MigrationInstallKind,
+    hook_context: &MigrationHookContext,
 ) -> AppResult<()> {
     let start = Instant::now();
     let mut tx = pool
@@ -621,7 +668,14 @@ async fn apply_single_migration(
                     })?;
             }
             CompiledMigrationStep::Rust { hook_id, .. } => {
-                run_rust_hook(hook_id.clone(), &mut tx, migration.version, install_kind).await?;
+                run_rust_hook(
+                    hook_id.clone(),
+                    &mut tx,
+                    migration.version,
+                    install_kind,
+                    hook_context,
+                )
+                .await?;
             }
         }
     }
@@ -662,9 +716,17 @@ async fn run_rust_hook(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     version: i64,
     install_kind: MigrationInstallKind,
+    hook_context: &MigrationHookContext,
 ) -> AppResult<()> {
     migration_hook_ids::validate_migration_hook_id(&hook_id).map_err(AppError::Repository)?;
     match hook_id.as_str() {
+        "migrate_jellyfin_notification_channels_to_media_server_targets" => {
+            notification_targets::migrate_jellyfin_notification_channels_to_media_server_targets_sqlite(
+                tx,
+                hook_context.encryption_key.as_ref(),
+            )
+            .await
+        }
         #[cfg(test)]
         "test_insert_hook_marker" => {
             let marker = match install_kind {

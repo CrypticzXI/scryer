@@ -364,7 +364,7 @@ async fn login_payload_from_user(
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
 ) -> Result<LoginPayload, Error> {
     let user = app
-        .attach_user_authorization(user)
+        .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app

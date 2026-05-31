@@ -1,9 +1,11 @@
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use scryer_application::{AppError, AppResult};
 use sqlx::ConnectOptions;
 
-use crate::encryption::EncryptionKey;
+use crate::encryption::{EncryptionKey, load_existing_sqlite_migration_encryption_key};
+use crate::migrations::MigrationHookContext;
 use crate::storage::sql::runtime::{
     SqlRuntime, StoreDatastore, repo_err, run_with_sqlite_busy_retries,
 };
@@ -50,6 +52,14 @@ impl SqliteServices {
     pub async fn new_with_mode(
         path: impl AsRef<str>,
         migration_mode: MigrationMode,
+    ) -> Result<Self, AppError> {
+        Self::new_with_mode_and_data_dir(path, migration_mode, None).await
+    }
+
+    pub async fn new_with_mode_and_data_dir(
+        path: impl AsRef<str>,
+        migration_mode: MigrationMode,
+        data_dir: Option<PathBuf>,
     ) -> Result<Self, AppError> {
         crate::spellfix::register_spellfix_auto_extension()?;
 
@@ -120,9 +130,19 @@ impl SqliteServices {
             AppError::Repository(format!("cannot open database at {}: {err}", path.as_ref(),))
         })?;
 
-        crate::migrations::run_migrations(&pool, migration_mode)
-            .await
-            .map_err(|err| AppError::Repository(err.to_string()))?;
+        let migration_encryption_key =
+            load_existing_sqlite_migration_encryption_key(&pool, data_dir)
+                .await
+                .map_err(AppError::Repository)?;
+        crate::migrations::run_migrations_with_hook_context(
+            &pool,
+            migration_mode,
+            MigrationHookContext {
+                encryption_key: migration_encryption_key,
+            },
+        )
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?;
         if matches!(migration_mode, MigrationMode::Apply) {
             crate::queries::title_search::seed_title_search_projection_if_empty(&pool).await?;
         }

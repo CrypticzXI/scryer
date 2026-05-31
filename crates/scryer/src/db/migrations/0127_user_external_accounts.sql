@@ -1,3 +1,6 @@
+ALTER TABLE notification_channels
+    ADD COLUMN media_server_connection_id TEXT;
+
 CREATE TABLE media_server_connections (
     id TEXT PRIMARY KEY,
     provider TEXT NOT NULL,

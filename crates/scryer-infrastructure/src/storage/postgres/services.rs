@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use scryer_application::{AppError, AppResult};
@@ -5,7 +6,8 @@ use sqlx::ConnectOptions;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tracing::log::LevelFilter;
 
-use crate::encryption::EncryptionKey;
+use crate::encryption::{EncryptionKey, load_existing_encryption_key_without_generation};
+use crate::migrations::MigrationHookContext;
 use crate::types::MigrationMode;
 
 const DEFAULT_POSTGRES_MAX_CONNECTIONS: u32 = 16;
@@ -32,6 +34,14 @@ impl PostgresServices {
         database_url: impl AsRef<str>,
         migration_mode: MigrationMode,
     ) -> Result<Self, AppError> {
+        Self::new_with_mode_and_data_dir(database_url, migration_mode, None).await
+    }
+
+    pub async fn new_with_mode_and_data_dir(
+        database_url: impl AsRef<str>,
+        migration_mode: MigrationMode,
+        data_dir: Option<PathBuf>,
+    ) -> Result<Self, AppError> {
         let mut connect_options: PgConnectOptions =
             database_url
                 .as_ref()
@@ -52,7 +62,16 @@ impl PostgresServices {
                 AppError::Repository(format!("cannot open PostgreSQL database: {error}"))
             })?;
 
-        super::migrations::run_migrations(&pool, migration_mode).await?;
+        let migration_encryption_key = load_existing_encryption_key_without_generation(data_dir)
+            .map_err(AppError::Repository)?;
+        super::migrations::run_migrations_with_hook_context(
+            &pool,
+            migration_mode,
+            MigrationHookContext {
+                encryption_key: migration_encryption_key,
+            },
+        )
+        .await?;
 
         Ok(Self {
             pool,

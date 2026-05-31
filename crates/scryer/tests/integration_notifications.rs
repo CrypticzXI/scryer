@@ -677,12 +677,12 @@ async fn create_channel_rejects_empty_type() {
 }
 
 #[tokio::test]
-async fn create_channel_accepts_arbitrary_provider_type() {
+async fn create_channel_rejects_media_server_provider_type() {
     let ctx = TestContext::new().await;
     let app = app_with_notifications(&ctx);
     let user = default_user(&app).await;
 
-    let ch = app
+    let err = app
         .create_notification_channel(
             &user,
             "Jellyfin".into(),
@@ -691,9 +691,9 @@ async fn create_channel_accepts_arbitrary_provider_type() {
             true,
         )
         .await
-        .expect("create channel");
+        .expect_err("media server channels must be managed in Media Servers");
 
-    assert_eq!(ch.channel_type.as_str(), "jellyfin");
+    assert!(matches!(err, AppError::Validation(_)));
 }
 
 #[tokio::test]
@@ -736,7 +736,7 @@ async fn create_and_list_subscriptions() {
         .await
         .expect("create subscription");
 
-    assert_eq!(sub.channel_id, ch.id);
+    assert_eq!(sub.channel_id.as_deref(), Some(ch.id.as_str()));
     assert_eq!(sub.event_type, NotificationEventType::Grab);
     assert!(sub.is_enabled);
 

@@ -18,7 +18,7 @@ impl NotificationMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let channel = app
-            .create_notification_channel(
+            .create_notification_channel_with_media_server_connection_id(
                 &actor,
                 input.name,
                 input.channel_type,
@@ -39,7 +39,7 @@ impl NotificationMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let channel = app
-            .update_notification_channel(
+            .update_notification_channel_with_media_server_connection_id(
                 &actor,
                 input.id,
                 input.name,
@@ -78,9 +78,11 @@ impl NotificationMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let sub = app
-            .create_notification_subscription(
+            .create_notification_subscription_for_target(
                 &actor,
                 input.channel_id,
+                input.target_kind,
+                input.target_id,
                 input.event_type,
                 input.scope,
                 input.scope_id,
@@ -99,9 +101,11 @@ impl NotificationMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let sub = app
-            .update_notification_subscription(
+            .update_notification_subscription_target(
                 &actor,
                 input.id,
+                input.target_kind,
+                input.target_id,
                 input.event_type,
                 input.scope,
                 input

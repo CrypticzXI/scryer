@@ -135,8 +135,50 @@ impl AppUseCase {
         name: String,
         channel_type: String,
         config_json: String,
+        is_enabled: bool,
+    ) -> AppResult<NotificationChannelConfig> {
+        self.create_notification_channel_internal(
+            actor,
+            name,
+            channel_type,
+            config_json,
+            None,
+            is_enabled,
+            true,
+        )
+        .await
+    }
+
+    pub async fn create_notification_channel_with_media_server_connection_id(
+        &self,
+        actor: &scryer_domain::User,
+        name: String,
+        channel_type: String,
+        config_json: String,
         media_server_connection_id: Option<String>,
         is_enabled: bool,
+    ) -> AppResult<NotificationChannelConfig> {
+        self.create_notification_channel_internal(
+            actor,
+            name,
+            channel_type,
+            config_json,
+            media_server_connection_id,
+            is_enabled,
+            true,
+        )
+        .await
+    }
+
+    async fn create_notification_channel_internal(
+        &self,
+        actor: &scryer_domain::User,
+        name: String,
+        channel_type: String,
+        config_json: String,
+        media_server_connection_id: Option<String>,
+        is_enabled: bool,
+        reject_media_provider: bool,
     ) -> AppResult<NotificationChannelConfig> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
@@ -148,7 +190,7 @@ impl AppUseCase {
         }
         let channel_type = scryer_domain::ChannelType::parse(channel_type.trim())
             .ok_or_else(|| AppError::Validation(format!("invalid channel type: {channel_type}")))?;
-        if is_media_server_notification_provider(channel_type.as_str()) {
+        if reject_media_provider && is_media_server_notification_provider(channel_type.as_str()) {
             return Err(AppError::Validation(
                 "media server notification targets must be managed in Media Servers".into(),
             ));
@@ -185,8 +227,50 @@ impl AppUseCase {
         id: String,
         name: Option<String>,
         config_json: Option<String>,
+        is_enabled: Option<bool>,
+    ) -> AppResult<NotificationChannelConfig> {
+        self.update_notification_channel_internal(
+            actor,
+            id,
+            name,
+            config_json,
+            None,
+            is_enabled,
+            true,
+        )
+        .await
+    }
+
+    pub async fn update_notification_channel_with_media_server_connection_id(
+        &self,
+        actor: &scryer_domain::User,
+        id: String,
+        name: Option<String>,
+        config_json: Option<String>,
         media_server_connection_id: Option<Option<String>>,
         is_enabled: Option<bool>,
+    ) -> AppResult<NotificationChannelConfig> {
+        self.update_notification_channel_internal(
+            actor,
+            id,
+            name,
+            config_json,
+            media_server_connection_id,
+            is_enabled,
+            true,
+        )
+        .await
+    }
+
+    async fn update_notification_channel_internal(
+        &self,
+        actor: &scryer_domain::User,
+        id: String,
+        name: Option<String>,
+        config_json: Option<String>,
+        media_server_connection_id: Option<Option<String>>,
+        is_enabled: Option<bool>,
+        reject_media_provider: bool,
     ) -> AppResult<NotificationChannelConfig> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
@@ -213,7 +297,9 @@ impl AppUseCase {
             }
             channel.media_server_connection_id = None;
         }
-        if is_media_server_notification_provider(channel.channel_type.as_str()) {
+        if reject_media_provider
+            && is_media_server_notification_provider(channel.channel_type.as_str())
+        {
             return Err(AppError::Validation(
                 "media server notification targets must be managed in Media Servers".into(),
             ));
@@ -313,6 +399,28 @@ impl AppUseCase {
     pub async fn create_notification_subscription(
         &self,
         actor: &scryer_domain::User,
+        channel_id: String,
+        event_type: String,
+        scope: String,
+        scope_id: Option<String>,
+        is_enabled: bool,
+    ) -> AppResult<NotificationSubscription> {
+        self.create_notification_subscription_for_target(
+            actor,
+            Some(channel_id),
+            None,
+            None,
+            event_type,
+            scope,
+            scope_id,
+            is_enabled,
+        )
+        .await
+    }
+
+    pub async fn create_notification_subscription_for_target(
+        &self,
+        actor: &scryer_domain::User,
         channel_id: Option<String>,
         target_kind: Option<String>,
         target_id: Option<String>,
@@ -350,6 +458,21 @@ impl AppUseCase {
     }
 
     pub async fn update_notification_subscription(
+        &self,
+        actor: &scryer_domain::User,
+        id: String,
+        event_type: Option<String>,
+        scope: Option<String>,
+        scope_id: NotificationScopeIdUpdate,
+        is_enabled: Option<bool>,
+    ) -> AppResult<NotificationSubscription> {
+        self.update_notification_subscription_target(
+            actor, id, None, None, event_type, scope, scope_id, is_enabled,
+        )
+        .await
+    }
+
+    pub async fn update_notification_subscription_target(
         &self,
         actor: &scryer_domain::User,
         id: String,
@@ -502,20 +625,10 @@ impl AppUseCase {
                         "media server connection is disabled".into(),
                     ));
                 }
+                let provider_type = connection.provider.as_str().to_string();
                 self.notification_channel_for_media_server_connection(connection)
                     .await?;
-                target_id.to_string();
-                target_kind.as_str();
-                // provider type follows the media server provider.
-                self.services
-                    .integrations
-                    .media_server_connections
-                    .get_by_id(target_id)
-                    .await?
-                    .map(|connection| connection.provider.as_str().to_string())
-                    .ok_or_else(|| {
-                        AppError::NotFound(format!("media server connection {target_id}"))
-                    })?
+                provider_type
             }
         };
 
@@ -744,4 +857,44 @@ fn normalize_notification_media_server_connection_id(value: Option<String>) -> O
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn normalize_notification_target(
+    channel_id: Option<&str>,
+    target_kind: Option<String>,
+    target_id: Option<String>,
+) -> AppResult<(NotificationTargetKind, String)> {
+    let target_kind = target_kind
+        .as_deref()
+        .map(|value| {
+            NotificationTargetKind::parse(value).ok_or_else(|| {
+                AppError::Validation(format!("invalid notification target kind: {value}"))
+            })
+        })
+        .transpose()?;
+
+    let target_id = target_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let channel_id = channel_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    match (target_kind, target_id, channel_id) {
+        (Some(kind), Some(id), _) => Ok((kind, id)),
+        (None, None, Some(id)) => Ok((NotificationTargetKind::PluginChannel, id)),
+        (Some(NotificationTargetKind::PluginChannel), None, Some(id)) => {
+            Ok((NotificationTargetKind::PluginChannel, id))
+        }
+        (Some(kind), None, _) => Err(AppError::Validation(format!(
+            "notification target id is required for target kind '{}'",
+            kind.as_str()
+        ))),
+        (None, Some(_), _) => Err(AppError::Validation(
+            "notification target kind is required when target id is provided".into(),
+        )),
+        (None, None, None) => Err(AppError::Validation(
+            "notification subscription target is required".into(),
+        )),
+    }
 }

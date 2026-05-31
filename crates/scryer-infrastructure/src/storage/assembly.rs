@@ -689,8 +689,12 @@ impl DatastoreAssembly {
     }
 
     async fn connect_sqlite(config: DatastoreConfig) -> Result<Self, AppError> {
-        let db = SqliteServices::new_with_mode(config.database_url.clone(), config.migration_mode)
-            .await?;
+        let db = SqliteServices::new_with_mode_and_data_dir(
+            config.database_url.clone(),
+            config.migration_mode,
+            Some(config.data_dir.clone()),
+        )
+        .await?;
         let datastore = db.datastore();
         let title_store = Arc::new(TitleStore::new(datastore.clone()));
         let show_store = Arc::new(ShowStore::new(datastore.clone()));
@@ -795,9 +799,12 @@ impl DatastoreAssembly {
     }
 
     async fn connect_postgres(config: DatastoreConfig) -> Result<Self, AppError> {
-        let db =
-            PostgresServices::new_with_mode(config.database_url.clone(), config.migration_mode)
-                .await?;
+        let db = PostgresServices::new_with_mode_and_data_dir(
+            config.database_url.clone(),
+            config.migration_mode,
+            Some(config.data_dir.clone()),
+        )
+        .await?;
         let datastore = db.datastore();
         let title_store = Arc::new(TitleStore::new(datastore.clone()));
         let show_store = Arc::new(ShowStore::new(datastore.clone()));

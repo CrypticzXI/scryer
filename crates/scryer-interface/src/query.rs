@@ -1277,7 +1277,13 @@ impl SystemQueries {
 
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
         match current_user_from_ctx(ctx) {
-            Some(user) => Ok(Some(from_user(user))),
+            Some(user) => {
+                let app = app_from_ctx(ctx)?;
+                app.load_user_for_auth_payload(&user)
+                    .await
+                    .map(|user| Some(from_user(user)))
+                    .map_err(to_gql_error)
+            }
             None => Ok(None),
         }
     }
@@ -1592,6 +1598,22 @@ impl UtilityQueries {
         Ok(channels
             .into_iter()
             .map(crate::mappers::from_notification_channel)
+            .collect())
+    }
+
+    async fn notification_targets(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<NotificationTargetPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let targets = app
+            .list_notification_targets(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(targets
+            .into_iter()
+            .map(crate::mappers::from_notification_target)
             .collect())
     }
 

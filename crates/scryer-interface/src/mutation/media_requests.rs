@@ -66,7 +66,14 @@ impl MediaRequestMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let outcome = app
-            .approve_media_request(&actor, &input.request_id, &input.quality_profile_id)
+            .approve_media_request(
+                &actor,
+                &input.request_id,
+                &input.quality_profile_id,
+                input
+                    .monitor_type
+                    .map(|value| value.as_tag_value().to_string()),
+            )
             .await
             .map_err(to_gql_error)?;
 

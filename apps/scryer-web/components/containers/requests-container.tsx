@@ -18,7 +18,11 @@ import {
 import type { Facet, LibraryRecord, MediaRequestRecord } from "@/lib/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
-import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
+import {
+  dispatchNavigationBadgesRefresh,
+  NAVIGATION_BADGES_REFRESH_EVENT,
+  type NavigationBadgesRefreshDetail,
+} from "@/lib/events/navigation-badges";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { useMediaRequestsSubscription } from "@/lib/hooks/use-media-requests-subscription";
 import {
@@ -40,6 +44,11 @@ type QualityProfileOption = {
 type UpdateRequestValues = {
   requestedQualityProfileId: string;
   requestedMonitorType?: string;
+};
+
+type ApproveRequestValues = {
+  qualityProfileId: string;
+  monitorType?: string;
 };
 
 function externalIdKey(source: string, value: string): string {
@@ -213,6 +222,30 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   });
 
   React.useEffect(() => {
+    const handleNavigationBadgePulse = (event: Event) => {
+      if (!(event instanceof CustomEvent)) {
+        return;
+      }
+      const source = (event as CustomEvent<NavigationBadgesRefreshDetail>)
+        .detail?.source;
+      if (source === "poll" || source === "focus") {
+        void refresh();
+      }
+    };
+
+    window.addEventListener(
+      NAVIGATION_BADGES_REFRESH_EVENT,
+      handleNavigationBadgePulse,
+    );
+    return () => {
+      window.removeEventListener(
+        NAVIGATION_BADGES_REFRESH_EVENT,
+        handleNavigationBadgePulse,
+      );
+    };
+  }, [refresh]);
+
+  React.useEffect(() => {
     setSelectedLibraryIds([]);
   }, [facet, mode]);
 
@@ -221,7 +254,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   }, []);
 
   const approveRequest = React.useCallback(
-    async (request: MediaRequestRecord, qualityProfileId: string) => {
+    async (request: MediaRequestRecord, values: ApproveRequestValues) => {
       if (actionRequestId) {
         return;
       }
@@ -230,7 +263,11 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       try {
         const { data, error } = await client
           .mutation(approveMediaRequestMutation, {
-            input: { requestId: request.id, qualityProfileId },
+            input: {
+              requestId: request.id,
+              qualityProfileId: values.qualityProfileId,
+              monitorType: values.monitorType ?? null,
+            },
           })
           .toPromise();
         if (error) throw error;
@@ -346,8 +383,8 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       loading={loading}
       actionRequestId={actionRequestId}
       onRefresh={() => void refresh()}
-      onApprove={(request, qualityProfileId) =>
-        void approveRequest(request, qualityProfileId)
+      onApprove={(request, values) =>
+        void approveRequest(request, values)
       }
       onDismiss={(request) => void dismissRequest(request)}
       onUpdateRequest={(request, values) => void updateRequest(request, values)}

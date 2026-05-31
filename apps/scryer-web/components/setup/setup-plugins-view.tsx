@@ -11,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatPluginBytes } from "@/components/views/settings/settings-plugins-section";
 import type {
   PluginInstallProgressRecord,
   RegistryPluginRecord,
@@ -246,6 +247,9 @@ export function SetupPluginsView({
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("label.name")}</TableHead>
+                  <TableHead className="w-[120px]">
+                    {t("queue.size")}
+                  </TableHead>
                   <TableHead className="w-[140px] text-right">
                     {t("label.actions")}
                   </TableHead>
@@ -255,7 +259,7 @@ export function SetupPluginsView({
                 {groupedPlugins.map((group) => (
                   <Fragment key={group.key}>
                     <TableRow className="bg-muted/35 hover:bg-muted/35">
-                      <TableCell colSpan={2}>
+                      <TableCell colSpan={3}>
                         <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                           {group.label}
                         </span>
@@ -267,6 +271,7 @@ export function SetupPluginsView({
                       const isBusy = mutatingPluginIds.includes(plugin.id) || plugin.installInProgress;
                       const actionError = pluginErrors[plugin.id];
                       const blockedLabel = blockedReasonLabel(plugin, t);
+                      const bytesLabel = formatPluginBytes(plugin.bytes);
                       return (
                         <TableRow
                           key={plugin.id}
@@ -293,6 +298,12 @@ export function SetupPluginsView({
                                 </div>
                               )}
                             </div>
+                          </TableCell>
+                          <TableCell
+                            className="w-[120px] text-sm text-muted-foreground"
+                            title={plugin.bytes != null ? `${plugin.bytes} bytes` : undefined}
+                          >
+                            {bytesLabel ?? "—"}
                           </TableCell>
                           <TableCell className="w-[124px] text-right">
                             {plugin.isInstalled ? (

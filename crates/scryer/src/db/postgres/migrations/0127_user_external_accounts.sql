@@ -1,3 +1,6 @@
+ALTER TABLE notification_channels
+    ADD COLUMN IF NOT EXISTS media_server_connection_id text;
+
 CREATE TABLE media_server_connections (
     id text PRIMARY KEY,
     provider text NOT NULL CHECK (provider IN ('jellyfin', 'plex', 'emby')),

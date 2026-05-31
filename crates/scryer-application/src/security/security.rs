@@ -187,6 +187,18 @@ impl AppUseCase {
         Ok(user)
     }
 
+    pub async fn load_user_for_auth_payload(&self, user: &User) -> AppResult<User> {
+        let mut user = self
+            .services
+            .identity
+            .users
+            .get_by_id(&user.id)
+            .await?
+            .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))?;
+        user.authorization = self.load_user_authorization(&user).await?;
+        Ok(user)
+    }
+
     async fn derive_jwt_key_for_user(&self, user: &User) -> AppResult<Option<Vec<u8>>> {
         let user = self.user_with_authorization(user).await?;
         let signing_seed = user
@@ -268,7 +280,7 @@ impl AppUseCase {
         actor: &User,
         mfa_verified_until: Option<chrono::DateTime<Utc>>,
     ) -> AppResult<String> {
-        let actor = self.user_with_authorization(actor).await?;
+        let actor = self.load_user_for_auth_payload(actor).await?;
         let signing_seed = actor
             .password_hash
             .clone()

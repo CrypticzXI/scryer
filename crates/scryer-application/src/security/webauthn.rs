@@ -24,13 +24,7 @@ enum StoredChallengeState {
 }
 
 impl AppUseCase {
-    fn ensure_passkeys_enabled(&self, form_login_enabled: bool) -> AppResult<()> {
-        if !form_login_enabled {
-            return Err(AppError::Validation(
-                "passkey authentication is unavailable while form login is disabled".into(),
-            ));
-        }
-
+    fn ensure_passkey_management_enabled(&self) -> AppResult<()> {
         if self.webauthn.available().is_none() {
             return Err(AppError::Validation(
                 "passkey authentication is not configured".into(),
@@ -38,6 +32,16 @@ impl AppUseCase {
         }
 
         Ok(())
+    }
+
+    fn ensure_passkey_authentication_enabled(&self, form_login_enabled: bool) -> AppResult<()> {
+        if !form_login_enabled {
+            return Err(AppError::Validation(
+                "passkey authentication is unavailable while form login is disabled".into(),
+            ));
+        }
+
+        self.ensure_passkey_management_enabled()
     }
 
     fn webauthn_runtime(&self) -> AppResult<&webauthn_rs::Webauthn> {
@@ -63,6 +67,27 @@ impl AppUseCase {
         }
 
         Ok(user)
+    }
+
+    fn user_id_candidates_for_webauthn_uuid(user_uuid: Uuid) -> Vec<String> {
+        let mut candidates = vec![user_uuid.to_string()];
+        let compact = user_uuid.simple().to_string();
+        if compact != candidates[0] {
+            candidates.push(compact);
+        }
+        candidates
+    }
+
+    async fn load_password_backed_user_by_webauthn_uuid(&self, user_uuid: Uuid) -> AppResult<User> {
+        for candidate in Self::user_id_candidates_for_webauthn_uuid(user_uuid) {
+            match self.load_password_backed_user(&candidate).await {
+                Ok(user) => return Ok(user),
+                Err(AppError::NotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(AppError::NotFound(format!("user {user_uuid}")))
     }
 
     async fn cleanup_expired_webauthn_challenges(&self) -> AppResult<()> {
@@ -122,9 +147,9 @@ impl AppUseCase {
     pub async fn webauthn_register_start(
         &self,
         actor: &User,
-        form_login_enabled: bool,
+        _form_login_enabled: bool,
     ) -> AppResult<WebauthnChallengeStart> {
-        self.ensure_passkeys_enabled(form_login_enabled)?;
+        self.ensure_passkey_management_enabled()?;
         self.cleanup_expired_webauthn_challenges().await?;
 
         let user = self.load_password_backed_user(&actor.id).await?;
@@ -195,9 +220,9 @@ impl AppUseCase {
         challenge_id: &str,
         response_json: &str,
         friendly_name: Option<String>,
-        form_login_enabled: bool,
+        _form_login_enabled: bool,
     ) -> AppResult<PasskeySummary> {
-        self.ensure_passkeys_enabled(form_login_enabled)?;
+        self.ensure_passkey_management_enabled()?;
         self.cleanup_expired_webauthn_challenges().await?;
 
         let user = self.load_password_backed_user(&actor.id).await?;
@@ -302,7 +327,7 @@ impl AppUseCase {
         username: Option<&str>,
         form_login_enabled: bool,
     ) -> AppResult<WebauthnChallengeStart> {
-        self.ensure_passkeys_enabled(form_login_enabled)?;
+        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         self.cleanup_expired_webauthn_challenges().await?;
 
         let (record, options_json) = if let Some(username) =
@@ -418,7 +443,7 @@ impl AppUseCase {
         response_json: &str,
         form_login_enabled: bool,
     ) -> AppResult<User> {
-        self.ensure_passkeys_enabled(form_login_enabled)?;
+        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         self.cleanup_expired_webauthn_challenges().await?;
 
         let challenge = self
@@ -532,7 +557,7 @@ impl AppUseCase {
                     })?;
                 let credential_id = Self::encode_credential_id(credential_id);
                 let user = self
-                    .load_password_backed_user(&user_uuid.to_string())
+                    .load_password_backed_user_by_webauthn_uuid(user_uuid)
                     .await?;
                 let mut record = self
                     .services
@@ -581,9 +606,9 @@ impl AppUseCase {
     pub async fn list_my_passkeys(
         &self,
         actor: &User,
-        form_login_enabled: bool,
+        _form_login_enabled: bool,
     ) -> AppResult<Vec<PasskeySummary>> {
-        self.ensure_passkeys_enabled(form_login_enabled)?;
+        self.ensure_passkey_management_enabled()?;
         let records = self
             .services
             .identity
@@ -597,13 +622,32 @@ impl AppUseCase {
         &self,
         actor: &User,
         credential_record_id: &str,
-        form_login_enabled: bool,
+        _form_login_enabled: bool,
     ) -> AppResult<()> {
-        self.ensure_passkeys_enabled(form_login_enabled)?;
+        self.ensure_passkey_management_enabled()?;
         self.services
             .identity
             .webauthn
             .delete_credential_for_user(credential_record_id, &actor.id)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webauthn_uuid_lookup_candidates_include_legacy_compact_admin_id() {
+        let user_uuid =
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid uuid");
+
+        assert_eq!(
+            AppUseCase::user_id_candidates_for_webauthn_uuid(user_uuid),
+            vec![
+                "00000000-0000-0000-0000-000000000001".to_string(),
+                "00000000000000000000000000000001".to_string(),
+            ],
+        );
     }
 }

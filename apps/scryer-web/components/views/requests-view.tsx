@@ -43,6 +43,11 @@ type UpdateRequestValues = {
   requestedMonitorType?: RequestMonitorType;
 };
 
+type ApproveRequestValues = {
+  qualityProfileId: string;
+  monitorType?: RequestMonitorType;
+};
+
 type RequestsViewProps = {
   mode: RequestsMode;
   canShowAdminMode: boolean;
@@ -56,7 +61,7 @@ type RequestsViewProps = {
   loading: boolean;
   actionRequestId: string | null;
   onRefresh: () => void;
-  onApprove: (request: MediaRequestRecord, qualityProfileId: string) => void;
+  onApprove: (request: MediaRequestRecord, values: ApproveRequestValues) => void;
   onDismiss: (request: MediaRequestRecord) => void;
   onUpdateRequest: (request: MediaRequestRecord, values: UpdateRequestValues) => void;
   onCancelRequest: (request: MediaRequestRecord) => void;
@@ -230,6 +235,8 @@ export function RequestsView({
   const [approvalRequest, setApprovalRequest] =
     React.useState<MediaRequestRecord | null>(null);
   const [approvalProfileId, setApprovalProfileId] = React.useState("");
+  const [approvalMonitorType, setApprovalMonitorType] =
+    React.useState<RequestMonitorType>("futureEpisodes");
   const [editRequest, setEditRequest] =
     React.useState<MediaRequestRecord | null>(null);
   const [editProfileId, setEditProfileId] = React.useState("");
@@ -270,6 +277,12 @@ export function RequestsView({
           ? libraryDefaultProfileId
           : qualityProfileOptions[0]?.id ?? "",
     );
+    setApprovalMonitorType(
+      monitorTypeSelectValue(
+        approvalRequest.facet,
+        approvalRequest.requestedMonitorType,
+      ),
+    );
   }, [approvalRequest, libraries, qualityProfileOptions]);
 
   React.useEffect(() => {
@@ -295,11 +308,16 @@ export function RequestsView({
   const closeApprovalDialog = () => {
     setApprovalRequest(null);
     setApprovalProfileId("");
+    setApprovalMonitorType("futureEpisodes");
   };
 
   const confirmApproval = () => {
     if (!approvalRequest || !approvalProfileId) return;
-    onApprove(approvalRequest, approvalProfileId);
+    onApprove(approvalRequest, {
+      qualityProfileId: approvalProfileId,
+      monitorType:
+        approvalRequest.facet === "movie" ? undefined : approvalMonitorType,
+    });
     closeApprovalDialog();
   };
 
@@ -530,6 +548,34 @@ export function RequestsView({
               </SelectContent>
             </Select>
           </label>
+          {approvalRequest && approvalRequest.facet !== "movie" ? (
+            <label className="space-y-2">
+              <span className="block text-sm font-medium text-card-foreground">
+                {t("requests.approvedMonitorType")}
+              </span>
+              <Select
+                value={approvalMonitorType}
+                onValueChange={(value) =>
+                  setApprovalMonitorType(value as RequestMonitorType)
+                }
+                disabled={loading || actionRequestId !== null}
+              >
+                <SelectTrigger
+                  id="approve-media-request-monitor-type"
+                  className="w-full"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {monitorOptions(t).map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          ) : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={closeApprovalDialog}>
               {t("label.cancel")}

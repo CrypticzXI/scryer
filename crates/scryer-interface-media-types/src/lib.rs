@@ -2131,6 +2131,7 @@ pub struct MediaRequestActionInput {
 pub struct ApproveMediaRequestInput {
     pub request_id: String,
     pub quality_profile_id: String,
+    pub monitor_type: Option<MonitorTypeValue>,
 }
 
 #[derive(InputObject, Clone)]
@@ -3418,13 +3419,26 @@ pub struct NotificationChannelPayload {
 #[derive(SimpleObject, Clone)]
 pub struct NotificationSubscriptionPayload {
     pub id: String,
-    pub channel_id: String,
+    pub channel_id: Option<String>,
+    pub target_kind: String,
+    pub target_id: String,
     pub event_type: String,
     pub scope: String,
     pub scope_id: Option<String>,
     pub is_enabled: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct NotificationTargetPayload {
+    pub id: String,
+    pub target_kind: String,
+    pub name: String,
+    pub provider_type: String,
+    pub media_server_provider: Option<MediaServerProviderValue>,
+    pub media_server_connection_id: Option<String>,
+    pub is_enabled: bool,
 }
 
 #[derive(InputObject)]
@@ -3447,7 +3461,9 @@ pub struct UpdateNotificationChannelInput {
 
 #[derive(InputObject)]
 pub struct CreateNotificationSubscriptionInput {
-    pub channel_id: String,
+    pub channel_id: Option<String>,
+    pub target_kind: Option<String>,
+    pub target_id: Option<String>,
     pub event_type: String,
     pub scope: String,
     pub scope_id: Option<String>,
@@ -3457,6 +3473,8 @@ pub struct CreateNotificationSubscriptionInput {
 #[derive(InputObject)]
 pub struct UpdateNotificationSubscriptionInput {
     pub id: String,
+    pub target_kind: Option<String>,
+    pub target_id: Option<String>,
     pub event_type: Option<String>,
     pub scope: Option<String>,
     pub scope_id: Option<String>,

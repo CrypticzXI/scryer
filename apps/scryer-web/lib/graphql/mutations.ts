@@ -1548,6 +1548,8 @@ export const createNotificationSubscriptionMutation = `mutation CreateNotificati
   createNotificationSubscription(input: $input) {
     id
     channelId
+    targetKind
+    targetId
     eventType
     scope
     scopeId
@@ -1561,6 +1563,8 @@ export const updateNotificationSubscriptionMutation = `mutation UpdateNotificati
   updateNotificationSubscription(input: $input) {
     id
     channelId
+    targetKind
+    targetId
     eventType
     scope
     scopeId

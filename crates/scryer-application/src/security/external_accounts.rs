@@ -572,7 +572,7 @@ impl AppUseCase {
         actor: &User,
         verified: VerifiedExternalIdentity,
     ) -> AppResult<scryer_domain::UserExternalAccount> {
-        if let Some(mut existing) = self
+        let mut existing = self
             .services
             .identity
             .external_accounts
@@ -581,8 +581,24 @@ impl AppUseCase {
                 &verified.connection_id,
                 &verified.external_user_id,
             )
-            .await?
+            .await?;
+
+        if existing.is_none()
+            && verified.provider == scryer_domain::ExternalAccountProvider::Jellyfin
         {
+            existing = self
+                .services
+                .identity
+                .external_accounts
+                .get_pending_claim_by_provider_username(
+                    verified.provider.clone(),
+                    &verified.connection_id,
+                    &normalize_provider_username(&verified.username),
+                )
+                .await?;
+        }
+
+        if let Some(mut existing) = existing {
             if existing.user_id != actor.id {
                 return Err(AppError::Validation(
                     "external account is already linked to another Scryer user".into(),
@@ -2184,6 +2200,59 @@ mod tests {
         assert!(
             matches!(result, Err(AppError::Validation(message)) if message.contains("disabled"))
         );
+    }
+
+    #[tokio::test]
+    async fn link_jellyfin_claims_pending_username_invite_without_external_id() {
+        let admin = admin_user();
+        let now = Utc::now();
+        let app = test_app_with_external_accounts(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestExternalAccountRepository::new(vec![
+                UserExternalAccount {
+                    id: "pending-account".to_string(),
+                    user_id: admin.id.clone(),
+                    provider: ExternalAccountProvider::Jellyfin,
+                    connection_id: "jellyfin-main".to_string(),
+                    external_user_id: None,
+                    username: "Remote User".to_string(),
+                    display_name: None,
+                    avatar_url: None,
+                    status: scryer_domain::ExternalAccountStatus::PendingClaim,
+                    verified_at: None,
+                    last_login_at: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+            ])),
+        );
+
+        let account = app
+            .link_verified_external_account(
+                &admin,
+                VerifiedExternalIdentity {
+                    provider: ExternalAccountProvider::Jellyfin,
+                    connection_id: "jellyfin-main".to_string(),
+                    external_user_id: "jellyfin-user-id".to_string(),
+                    username: "remote user".to_string(),
+                    display_name: Some("Remote User".to_string()),
+                    avatar_url: Some("https://jellyfin.example.test/avatar.png".to_string()),
+                },
+            )
+            .await
+            .expect("link pending Jellyfin invite");
+
+        assert_eq!(account.id, "pending-account");
+        assert_eq!(account.user_id, admin.id);
+        assert_eq!(account.external_user_id.as_deref(), Some("jellyfin-user-id"));
+        assert_eq!(account.status, ExternalAccountStatus::Active);
+        assert_eq!(account.display_name.as_deref(), Some("Remote User"));
+        assert_eq!(
+            account.avatar_url.as_deref(),
+            Some("https://jellyfin.example.test/avatar.png")
+        );
+        assert!(account.verified_at.is_some());
+        assert!(account.last_login_at.is_none());
     }
 
     #[tokio::test]
