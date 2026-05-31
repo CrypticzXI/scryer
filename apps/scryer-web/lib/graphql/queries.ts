@@ -383,7 +383,7 @@ export const MEDIA_SERVER_CONNECTION_FIELDS = `
       libraryId
       permissions
     }
-    machineId
+    machineIdPresent
     apiKeyPresent
     pathMappings {
       sourcePath
@@ -814,6 +814,24 @@ export const librariesQuery = `query Libraries($facet: MediaFacetValue, $permiss
 
 export const mediaRequestAdminLibrariesQuery = `query MediaRequestAdminLibraries($facet: MediaFacetValue) {
   libraries(facet: $facet, permission: manageTitles) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    qualityProfileId
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
+    roots {
+      id
+      path
+      isDefault
+    }
+  }
+}`;
+
+export const mediaRequestRequesterLibrariesQuery = `query MediaRequestRequesterLibraries($facet: MediaFacetValue) {
+  libraries(facet: $facet, permission: request) {
     id
     facet
     name
@@ -1302,6 +1320,8 @@ export const usersQuery = `query Users {
   users {
     id
     username
+    hasPassword
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -1372,6 +1392,7 @@ export const jellyfinServerUsersQuery = `query JellyfinServerUsers($connectionId
     id
     username
     displayName
+    avatarUrl
   }
 }`;
 
@@ -1748,14 +1769,16 @@ export const authProviderSettingsQuery = `query AuthProviderSettings {
       displayName
       userVisibleUrl
       baseUrl
-      machineId
+      loginEnabled
+      linkingEnabled
     }
     allowedPlexConnections {
       id
       displayName
       userVisibleUrl
       baseUrl
-      machineId
+      loginEnabled
+      linkingEnabled
     }
   }
 }`;
@@ -1772,14 +1795,16 @@ export const authProviderRuntimeSettingsQuery = `query AuthProviderRuntimeSettin
       displayName
       userVisibleUrl
       baseUrl
-      machineId
+      loginEnabled
+      linkingEnabled
     }
     allowedPlexConnections {
       id
       displayName
       userVisibleUrl
       baseUrl
-      machineId
+      loginEnabled
+      linkingEnabled
     }
   }
 }`;
@@ -1899,6 +1924,8 @@ export const meQuery = `query Me {
   me {
     id
     username
+    hasPassword
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -2193,6 +2220,7 @@ export const pluginsQuery = `query Plugins {
     sourceUrl
     sourceKind
     blockedReason
+    bytes
     isInstalled
     isEnabled
     installedVersion
@@ -2629,6 +2657,7 @@ export const mediaRequestsQuery = `query MediaRequests($facet: MediaFacetValue, 
     contentStatus
     requestedQualityProfileId
     requestedQualityProfileName
+    requestedMonitorType
     resolvedByUserId
     resolvedAt
     createdTitleId
@@ -2641,6 +2670,47 @@ export const mediaRequestsQuery = `query MediaRequests($facet: MediaFacetValue, 
     requesters {
       userId
       username
+      avatarUrl
+      requestedAt
+    }
+    createdByUserId
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetValue, $libraryIds: [String!], $status: MediaRequestStatusValue) {
+  myMediaRequests(facet: $facet, libraryIds: $libraryIds, status: $status) {
+    id
+    libraryId
+    facet
+    status
+    identityFingerprint
+    title
+    sortTitle
+    slug
+    posterUrl
+    year
+    overview
+    runtimeMinutes
+    language
+    contentStatus
+    requestedQualityProfileId
+    requestedQualityProfileName
+    requestedMonitorType
+    resolvedByUserId
+    resolvedAt
+    createdTitleId
+    approvedQualityProfileId
+    approvedQualityProfileName
+    externalIds {
+      source
+      value
+    }
+    requesters {
+      userId
+      username
+      avatarUrl
       requestedAt
     }
     createdByUserId

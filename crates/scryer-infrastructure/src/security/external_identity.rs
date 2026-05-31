@@ -4,7 +4,8 @@ use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use reqwest::StatusCode;
 use scryer_application::{
-    AppError, AppResult, ExternalIdentityVerifier, JellyfinServerUser, VerifiedExternalIdentity,
+    AppError, AppResult, ExternalIdentityVerifier, JellyfinServerUser, PlexServerDiscovery,
+    VerifiedExternalIdentity,
 };
 use scryer_domain::ExternalAccountProvider;
 use scryer_outbound_http::generic_reqwest_client;
@@ -41,6 +42,58 @@ impl HttpExternalIdentityVerifier {
         self.plex_base_url
             .join(path.trim_start_matches('/'))
             .map_err(|error| AppError::Repository(format!("invalid Plex endpoint URL: {error}")))
+    }
+
+    async fn find_jellyfin_api_key(
+        &self,
+        keys_url: &Url,
+        admin_token: &str,
+        app_name: &str,
+    ) -> AppResult<Option<String>> {
+        let response = self
+            .client
+            .get(keys_url.clone())
+            .header("Accept", "application/json")
+            .header("X-Emby-Token", admin_token)
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to list Jellyfin API keys: {error}"))
+            })?;
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                return Err(AppError::Unauthorized(
+                    "Jellyfin admin token cannot list API keys".into(),
+                ));
+            }
+            status => {
+                return Err(AppError::Repository(format!(
+                    "Jellyfin API key listing failed with status {status}"
+                )));
+            }
+        }
+
+        let keys = response
+            .json::<JellyfinApiKeyQueryResult>()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("invalid Jellyfin API key list response: {error}"))
+            })?;
+        Ok(keys
+            .items
+            .into_iter()
+            .filter(|key| {
+                key.app_name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(app_name))
+            })
+            .filter_map(|key| {
+                let token = key.access_token?.trim().to_string();
+                (!token.is_empty()).then_some((key.date_created.unwrap_or_default(), token))
+            })
+            .max_by(|left, right| left.0.cmp(&right.0))
+            .map(|(_, token)| token))
     }
 }
 
@@ -142,6 +195,41 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         })
     }
 
+    async fn discover_plex_servers(
+        &self,
+        plex_auth_token: &str,
+    ) -> AppResult<Vec<PlexServerDiscovery>> {
+        let token = plex_auth_token.trim();
+        if token.is_empty() {
+            return Err(AppError::Unauthorized("Plex auth token is required".into()));
+        }
+        let resources_response = self
+            .client
+            .get(self.plex_url("api/resources?includeHttps=1")?)
+            .header("Accept", "application/xml")
+            .header("X-Plex-Token", token)
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to reach Plex resources: {error}"))
+            })?;
+        match resources_response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                return Err(AppError::Unauthorized("invalid Plex auth token".into()));
+            }
+            status => {
+                return Err(AppError::Repository(format!(
+                    "Plex resources discovery failed with status {status}"
+                )));
+            }
+        }
+        let resources_xml = resources_response.text().await.map_err(|error| {
+            AppError::Repository(format!("invalid Plex resources response: {error}"))
+        })?;
+        plex_server_discoveries(&resources_xml)
+    }
+
     async fn verify_jellyfin(
         &self,
         connection_id: &str,
@@ -198,13 +286,11 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             .user
             .name
             .unwrap_or_else(|| username.trim().to_string());
-        let avatar_url = auth.user.primary_image_tag.as_ref().map(|_| {
-            format!(
-                "{}/Users/{}/Images/Primary",
-                base_url.as_str().trim_end_matches('/'),
-                auth.user.id
-            )
-        });
+        let avatar_url = jellyfin_user_avatar_url(
+            &base_url,
+            &auth.user.id,
+            auth.user.primary_image_tag.as_deref(),
+        );
 
         Ok(VerifiedExternalIdentity {
             provider: ExternalAccountProvider::Jellyfin,
@@ -244,11 +330,17 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             .map_err(|error| {
                 AppError::Repository(format!("invalid Jellyfin system info response: {error}"))
             })?;
-        if info
+        let product_name = info
             .product_name
             .as_deref()
-            .is_some_and(|name| !name.to_ascii_lowercase().contains("jellyfin"))
-        {
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "the supplied URL did not identify itself as a Jellyfin server".into(),
+                )
+            })?;
+        if !product_name.to_ascii_lowercase().contains("jellyfin") {
             return Err(AppError::Validation(
                 "the supplied URL did not identify itself as a Jellyfin server".into(),
             ));
@@ -353,9 +445,16 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         let keys_url = base_url.join("Auth/Keys").map_err(|error| {
             AppError::Validation(format!("Jellyfin API key URL is invalid: {error}"))
         })?;
+        if let Some(existing) = self
+            .find_jellyfin_api_key(&keys_url, token, SCRYER_PRODUCT)
+            .await?
+        {
+            return Ok(existing);
+        }
+
         let response = self
             .client
-            .post(keys_url)
+            .post(keys_url.clone())
             .header("Accept", "application/json")
             .header("X-Emby-Token", token)
             .query(&[("app", SCRYER_PRODUCT)])
@@ -370,14 +469,12 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
                 response.status()
             )));
         }
-        let created = response.json::<Value>().await.unwrap_or(Value::Null);
-        json_value_string(created.get("AccessToken"))
-            .or_else(|| json_value_string(created.get("accessToken")))
-            .or_else(|| json_value_string(created.get("Key")))
-            .or_else(|| json_value_string(created.get("key")))
+
+        self.find_jellyfin_api_key(&keys_url, token, SCRYER_PRODUCT)
+            .await?
             .ok_or_else(|| {
                 AppError::Repository(
-                    "Jellyfin did not return a usable API key; paste an API key manually".into(),
+                    "Jellyfin created an API key but did not expose it through Auth/Keys; paste an API key manually".into(),
                 )
             })
     }
@@ -424,11 +521,17 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             })?
             .into_iter()
             .map(|user| {
+                let avatar_url = jellyfin_user_avatar_url(
+                    &base_url,
+                    &user.id,
+                    user.primary_image_tag.as_deref(),
+                );
                 let username = user.name.unwrap_or_else(|| user.id.clone());
                 JellyfinServerUser {
                     id: user.id,
                     username: username.clone(),
                     display_name: Some(username),
+                    avatar_url,
                 }
             })
             .collect::<Vec<_>>();
@@ -466,6 +569,22 @@ struct JellyfinAuthResponse {
 }
 
 #[derive(Deserialize)]
+struct JellyfinApiKeyQueryResult {
+    #[serde(rename = "Items")]
+    items: Vec<JellyfinApiKeyInfo>,
+}
+
+#[derive(Deserialize)]
+struct JellyfinApiKeyInfo {
+    #[serde(rename = "AccessToken")]
+    access_token: Option<String>,
+    #[serde(rename = "AppName")]
+    app_name: Option<String>,
+    #[serde(rename = "DateCreated")]
+    date_created: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct JellyfinUser {
     #[serde(rename = "Id")]
     id: String,
@@ -497,6 +616,21 @@ fn jellyfin_base_url(base_url: &str) -> AppResult<Url> {
     Ok(base_url)
 }
 
+fn jellyfin_user_avatar_url(
+    base_url: &Url,
+    user_id: &str,
+    primary_image_tag: Option<&str>,
+) -> Option<String> {
+    let tag = primary_image_tag
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let mut image_url = base_url
+        .join(&format!("Users/{user_id}/Images/Primary"))
+        .ok()?;
+    image_url.query_pairs_mut().append_pair("tag", tag);
+    Some(image_url.to_string())
+}
+
 fn jellyfin_authorization_header(connection_id: &str) -> String {
     let device_id = format!("SCRYER_{}", connection_id.replace('"', ""));
     format!(
@@ -512,6 +646,76 @@ fn json_value_string(value: Option<&Value>) -> Option<String> {
         }
         Value::Number(value) => Some(value.to_string()),
         _ => None,
+    }
+}
+
+fn plex_server_discoveries(resources_xml: &str) -> AppResult<Vec<PlexServerDiscovery>> {
+    let mut servers = Vec::new();
+    let mut reader = Reader::from_str(resources_xml);
+    reader.config_mut().trim_text(true);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) | Ok(Event::Empty(element)) => {
+                if element.name().as_ref() != b"Device" {
+                    continue;
+                }
+                let mut machine_id = None;
+                let mut name = None;
+                let mut product = None;
+                let mut provides = None;
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|error| {
+                        AppError::Repository(format!("invalid Plex resources XML: {error}"))
+                    })?;
+                    let value = attribute
+                        .normalized_value(XmlVersion::Implicit1_0)
+                        .map_err(|error| {
+                            AppError::Repository(format!("invalid Plex resources XML: {error}"))
+                        })?
+                        .trim()
+                        .to_string();
+                    if value.is_empty() {
+                        continue;
+                    }
+                    match attribute.key.as_ref() {
+                        b"machineIdentifier" => machine_id = Some(value),
+                        b"name" => name = Some(value),
+                        b"product" => product = Some(value),
+                        b"provides" => provides = Some(value),
+                        _ => {}
+                    }
+                }
+                if provides
+                    .as_deref()
+                    .is_some_and(|value| !value.split(',').any(|part| part.trim() == "server"))
+                {
+                    continue;
+                }
+                if let Some(machine_id) = machine_id {
+                    let name = name.or(product).unwrap_or_else(|| machine_id.clone());
+                    servers.push(PlexServerDiscovery {
+                        id: machine_id,
+                        name,
+                    });
+                }
+            }
+            Ok(Event::Eof) => {
+                servers.sort_by(|left, right| {
+                    left.name
+                        .to_ascii_lowercase()
+                        .cmp(&right.name.to_ascii_lowercase())
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                servers.dedup_by(|left, right| left.id == right.id);
+                return Ok(servers);
+            }
+            Err(error) => {
+                return Err(AppError::Repository(format!(
+                    "invalid Plex resources XML: {error}"
+                )));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -550,131 +754,19 @@ fn plex_resources_include_machine(resources_xml: &str, machine_id: &str) -> AppR
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use serde_json::json;
-    use tokio::sync::Mutex;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
-    type TestSettingsKey = (String, String, Option<String>);
-
-    #[derive(Default)]
-    struct TestSettingsRepository {
-        values: Mutex<HashMap<TestSettingsKey, String>>,
-    }
-
-    impl TestSettingsRepository {
-        async fn set_json<T: serde::Serialize>(&self, key_name: &str, value: &T) {
-            self.values.lock().await.insert(
-                (
-                    scryer_application::SETTINGS_SCOPE_SYSTEM.to_string(),
-                    key_name.to_string(),
-                    None,
-                ),
-                serde_json::to_string(value).expect("serialize setting"),
-            );
-        }
-    }
-
-    #[async_trait]
-    impl SettingsRepository for TestSettingsRepository {
-        async fn get_setting_json(
-            &self,
-            scope: &str,
-            key_name: &str,
-            scope_id: Option<String>,
-        ) -> AppResult<Option<String>> {
-            Ok(self
-                .values
-                .lock()
-                .await
-                .get(&(scope.to_string(), key_name.to_string(), scope_id))
-                .cloned())
-        }
-
-        async fn upsert_setting_json(
-            &self,
-            scope: &str,
-            key_name: &str,
-            scope_id: Option<String>,
-            value_json: String,
-            _source: &str,
-            _updated_by_user_id: Option<String>,
-        ) -> AppResult<()> {
-            self.values.lock().await.insert(
-                (scope.to_string(), key_name.to_string(), scope_id),
-                value_json,
-            );
-            Ok(())
-        }
-
-        async fn delete_setting_value(
-            &self,
-            scope: &str,
-            key_name: &str,
-            scope_id: Option<String>,
-        ) -> AppResult<()> {
-            self.values
-                .lock()
-                .await
-                .remove(&(scope.to_string(), key_name.to_string(), scope_id));
-            Ok(())
-        }
-
-        async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
-            let mut values = self.values.lock().await;
-            let before = values.len();
-            values.retain(|(_, _, current_scope_id), _| {
-                current_scope_id.as_deref() != Some(scope_id)
-            });
-            Ok((before - values.len()) as u32)
-        }
-    }
-
-    async fn verifier_with_jellyfin(
-        base_url: String,
-    ) -> (HttpExternalIdentityVerifier, Arc<TestSettingsRepository>) {
-        let settings = Arc::new(TestSettingsRepository::default());
-        settings
-            .set_json(
-                scryer_application::AUTH_JELLYFIN_CONNECTIONS_KEY,
-                &vec![AuthProviderConnection {
-                    id: "jellyfin-main".to_string(),
-                    display_name: "Main Jellyfin".to_string(),
-                    base_url: Some(base_url),
-                    machine_id: None,
-                }],
-            )
-            .await;
-        (
-            HttpExternalIdentityVerifier::new(settings.clone()),
-            settings,
-        )
-    }
-
-    async fn verifier_with_plex(
-        plex_base_url: Url,
-        machine_id: Option<String>,
-    ) -> (HttpExternalIdentityVerifier, Arc<TestSettingsRepository>) {
-        let settings = Arc::new(TestSettingsRepository::default());
-        settings
-            .set_json(
-                scryer_application::AUTH_PLEX_CONNECTIONS_KEY,
-                &vec![AuthProviderConnection {
-                    id: "plex-main".to_string(),
-                    display_name: "Main Plex".to_string(),
-                    base_url: None,
-                    machine_id,
-                }],
-            )
-            .await;
-        (
-            HttpExternalIdentityVerifier::with_plex_base_url(settings.clone(), plex_base_url),
-            settings,
-        )
+    fn verifier_with_plex(plex_base_url: Url) -> HttpExternalIdentityVerifier {
+        HttpExternalIdentityVerifier::with_plex_base_url(plex_base_url)
     }
 
     #[tokio::test]
@@ -691,19 +783,51 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let (verifier, _) = verifier_with_jellyfin(server.uri()).await;
+        let verifier = HttpExternalIdentityVerifier::new();
 
         let verified = verifier
-            .verify_jellyfin("jellyfin-main", "jelly", "secret")
+            .verify_jellyfin("jellyfin-main", &server.uri(), "jelly", "secret")
             .await
             .expect("verify jellyfin");
 
         assert_eq!(verified.provider, ExternalAccountProvider::Jellyfin);
         assert_eq!(verified.external_user_id, "jf-user");
         assert_eq!(verified.username, "Jelly User");
-        let expected_avatar_url = format!("{}/Users/jf-user/Images/Primary", server.uri());
+        let expected_avatar_url = format!("{}/Users/jf-user/Images/Primary?tag=tag", server.uri());
         assert_eq!(
             verified.avatar_url.as_deref(),
+            Some(expected_avatar_url.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn jellyfin_user_listing_returns_avatar_urls() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/Users"))
+            .and(header("x-emby-token", "api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "Id": "jf-user",
+                "Name": "Jelly User",
+                "PrimaryImageTag": "avatar-tag"
+            }])))
+            .mount(&server)
+            .await;
+        let verifier = HttpExternalIdentityVerifier::new();
+
+        let users = verifier
+            .list_jellyfin_users(&server.uri(), "api-key", None)
+            .await
+            .expect("list jellyfin users");
+
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].username, "Jelly User");
+        let expected_avatar_url = format!(
+            "{}/Users/jf-user/Images/Primary?tag=avatar-tag",
+            server.uri()
+        );
+        assert_eq!(
+            users[0].avatar_url.as_deref(),
             Some(expected_avatar_url.as_str())
         );
     }
@@ -718,7 +842,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let (verifier, _) = verifier_with_jellyfin(server.uri()).await;
+        let verifier = HttpExternalIdentityVerifier::new();
 
         verifier
             .test_jellyfin_connection(&server.uri())
@@ -734,7 +858,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        let (verifier, _) = verifier_with_jellyfin(server.uri()).await;
+        let verifier = HttpExternalIdentityVerifier::new();
 
         let result = verifier.test_jellyfin_connection(&server.uri()).await;
 
@@ -749,23 +873,73 @@ mod tests {
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
-        let (verifier, _) = verifier_with_jellyfin(server.uri()).await;
+        let verifier = HttpExternalIdentityVerifier::new();
 
         let result = verifier
-            .verify_jellyfin("jellyfin-main", "jelly", "bad")
+            .verify_jellyfin("jellyfin-main", &server.uri(), "jelly", "bad")
             .await;
 
         assert!(matches!(result, Err(AppError::Unauthorized(_))));
     }
 
     #[tokio::test]
-    async fn jellyfin_missing_connection_is_validation_error() {
-        let settings = Arc::new(TestSettingsRepository::default());
-        let verifier = HttpExternalIdentityVerifier::new(settings);
+    async fn jellyfin_admin_exchange_creates_key_then_reads_keys() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "AccessToken": "admin-token",
+                "User": {
+                    "Id": "admin-user",
+                    "Name": "Admin User",
+                    "Policy": { "IsAdministrator": true }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let key_list_calls = Arc::new(AtomicUsize::new(0));
+        let key_list_calls_for_mock = Arc::clone(&key_list_calls);
+        Mock::given(method("GET"))
+            .and(path("/Auth/Keys"))
+            .and(header("x-emby-token", "admin-token"))
+            .respond_with(move |_request: &wiremock::Request| {
+                if key_list_calls_for_mock.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "Items": [],
+                        "TotalRecordCount": 0
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "Items": [{
+                            "AppName": "Scryer",
+                            "AccessToken": "generated-token",
+                            "DateCreated": "2026-05-30T00:00:00.0000000Z"
+                        }],
+                        "TotalRecordCount": 1
+                    }))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Auth/Keys"))
+            .and(header("x-emby-token", "admin-token"))
+            .and(query_param("app", SCRYER_PRODUCT))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let verifier = HttpExternalIdentityVerifier::new();
 
-        let result = verifier.verify_jellyfin("missing", "jelly", "secret").await;
+        let api_key = verifier
+            .exchange_jellyfin_admin_api_key("jellyfin-main", &server.uri(), "admin", "secret")
+            .await
+            .expect("exchange jellyfin admin credentials for api key");
 
-        assert!(matches!(result, Err(AppError::Validation(_))));
+        assert_eq!(api_key, "generated-token");
+        assert_eq!(key_list_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -784,11 +958,10 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let (verifier, _) =
-            verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"), None).await;
+        let verifier = verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"));
 
         let verified = verifier
-            .verify_plex("plex-main", "token")
+            .verify_plex("plex-main", None, "token")
             .await
             .expect("verify plex");
 
@@ -810,10 +983,9 @@ mod tests {
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
-        let (verifier, _) =
-            verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"), None).await;
+        let verifier = verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"));
 
-        let result = verifier.verify_plex("plex-main", "bad-token").await;
+        let result = verifier.verify_plex("plex-main", None, "bad-token").await;
 
         assert!(matches!(result, Err(AppError::Unauthorized(_))));
     }
@@ -836,14 +1008,10 @@ mod tests {
             ))
             .mount(&server)
             .await;
-        let (verifier, _) = verifier_with_plex(
-            Url::parse(&server.uri()).expect("mock URL"),
-            Some("machine-1".to_string()),
-        )
-        .await;
+        let verifier = verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"));
 
         verifier
-            .verify_plex("plex-main", "token")
+            .verify_plex("plex-main", Some("machine-1"), "token")
             .await
             .expect("machine should match");
     }
@@ -866,13 +1034,11 @@ mod tests {
             ))
             .mount(&server)
             .await;
-        let (verifier, _) = verifier_with_plex(
-            Url::parse(&server.uri()).expect("mock URL"),
-            Some("machine-1".to_string()),
-        )
-        .await;
+        let verifier = verifier_with_plex(Url::parse(&server.uri()).expect("mock URL"));
 
-        let result = verifier.verify_plex("plex-main", "token").await;
+        let result = verifier
+            .verify_plex("plex-main", Some("machine-1"), "token")
+            .await;
 
         assert!(matches!(result, Err(AppError::Unauthorized(_))));
     }

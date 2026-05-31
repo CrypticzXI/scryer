@@ -196,6 +196,7 @@ pub struct NewMediaRequest {
     pub content_status: Option<String>,
     pub requested_quality_profile_id: Option<String>,
     pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
     pub external_ids: Vec<ExternalId>,
     pub created_by_user_id: String,
 }
@@ -216,6 +217,7 @@ pub struct MediaRequestQuery {
     pub facet: Option<MediaFacet>,
     pub library_ids: Option<Vec<String>>,
     pub status: Option<scryer_domain::MediaRequestStatus>,
+    pub requester_user_id: Option<String>,
 }
 
 #[async_trait]
@@ -234,6 +236,21 @@ pub trait MediaRequestRepository: Send + Sync {
         request: &MediaRequest,
         resolution: MediaRequestResolution,
     ) -> AppResult<u64>;
+
+    async fn resolve_pending(
+        &self,
+        request_id: &str,
+        resolution: MediaRequestResolution,
+    ) -> AppResult<u64>;
+
+    async fn update_pending_request_preferences(
+        &self,
+        request_id: &str,
+        requested_quality_profile_id: String,
+        requested_quality_profile_name: String,
+        requested_monitor_type: Option<String>,
+        updated_event: NewDomainEvent,
+    ) -> AppResult<MediaRequest>;
 
     async fn count_pending_by_facet(&self, library_ids: &[String])
     -> AppResult<MediaRequestCounts>;
@@ -392,6 +409,12 @@ pub struct VerifiedExternalIdentity {
     pub avatar_url: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlexServerDiscovery {
+    pub id: String,
+    pub name: String,
+}
+
 #[async_trait]
 pub trait UserExternalAccountRepository: Send + Sync {
     async fn create(
@@ -419,6 +442,13 @@ pub trait UserExternalAccountRepository: Send + Sync {
         &self,
         account: scryer_domain::UserExternalAccount,
     ) -> AppResult<scryer_domain::UserExternalAccount>;
+    async fn create_auto_added_user_with_account(
+        &self,
+        user: scryer_domain::User,
+        app_permissions: scryer_domain::AppPermissionMask,
+        library_grants: Vec<scryer_domain::LibraryGrant>,
+        account: scryer_domain::UserExternalAccount,
+    ) -> AppResult<(scryer_domain::User, scryer_domain::UserExternalAccount)>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
@@ -447,6 +477,7 @@ pub struct JellyfinServerUser {
     pub id: String,
     pub username: String,
     pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[async_trait]
@@ -457,6 +488,11 @@ pub trait ExternalIdentityVerifier: Send + Sync {
         machine_id: Option<&str>,
         plex_auth_token: &str,
     ) -> AppResult<VerifiedExternalIdentity>;
+
+    async fn discover_plex_servers(
+        &self,
+        plex_auth_token: &str,
+    ) -> AppResult<Vec<PlexServerDiscovery>>;
 
     async fn verify_jellyfin(
         &self,
@@ -1986,6 +2022,10 @@ pub struct AudioTranscodeArtifact {
 #[derive(Debug, Clone)]
 pub struct SubtitleSyncJob {
     pub input_path: PathBuf,
+    pub subtitle_content: Vec<u8>,
+    pub subtitle_format: String,
+    pub subtitle_file_name: Option<String>,
+    pub subtitle_encoding_hint: Option<String>,
     pub subtitle_spans: Vec<SubtitleTimingSpan>,
     pub max_offset_seconds: i64,
     pub expected_codec: Option<AudioTranscodeCodec>,
@@ -2154,6 +2194,11 @@ pub trait NotificationSubscriptionRepository: Send + Sync {
     async fn list_subscriptions_for_channel(
         &self,
         channel_id: &str,
+    ) -> AppResult<Vec<scryer_domain::NotificationSubscription>>;
+    async fn list_subscriptions_for_target(
+        &self,
+        target_kind: scryer_domain::NotificationTargetKind,
+        target_id: &str,
     ) -> AppResult<Vec<scryer_domain::NotificationSubscription>>;
     async fn list_subscriptions_for_event(
         &self,

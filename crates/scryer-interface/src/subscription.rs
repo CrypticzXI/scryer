@@ -564,7 +564,7 @@ impl SubscriptionRoot {
             }
         };
 
-        match app.can_manage_media_requests(&actor).await {
+        match app.can_access_media_requests(&actor).await {
             Ok(true) => {}
             Ok(false) => return empty_box_stream(),
             Err(e) => {
@@ -625,7 +625,7 @@ impl SubscriptionRoot {
                         };
 
                         let events = match app
-                            .list_media_request_lifecycle_events_for_manager(
+                            .list_media_request_lifecycle_events_for_actor(
                                 &actor,
                                 after_sequence,
                                 100,

@@ -365,6 +365,29 @@ impl CatalogQueries {
         Ok(requests.into_iter().map(from_media_request).collect())
     }
 
+    async fn my_media_requests(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+        library_ids: Option<Vec<String>>,
+        status: Option<MediaRequestStatusValue>,
+    ) -> GqlResult<Vec<MediaRequestPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let requests = app
+            .list_my_media_requests(
+                &actor,
+                scryer_application::ListMediaRequestsInput {
+                    facet: facet.map(MediaFacetValue::into_domain),
+                    library_ids,
+                    status: status.map(MediaRequestStatusValue::into_domain),
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(requests.into_iter().map(from_media_request).collect())
+    }
+
     async fn library_settings(
         &self,
         ctx: &Context<'_>,

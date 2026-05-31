@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use scryer_application::{AppError, AppResult, UserExternalAccountRepository, UserRepository};
-use scryer_domain::{ExternalAccountProvider, ExternalAccountStatus, User, UserExternalAccount};
+use scryer_domain::{
+    AppPermissionMask, ExternalAccountProvider, ExternalAccountStatus, LibraryGrant, User,
+    UserAccountKind, UserExternalAccount,
+};
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
 
@@ -35,7 +38,7 @@ impl UserRepository for UserStore {
     async fn list_all(&self) -> AppResult<Vec<User>> {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
-            "SELECT id, username, password_hash FROM users",
+            "SELECT id, username, password_hash, account_kind FROM users",
             &[],
         )
         .await?;
@@ -220,6 +223,37 @@ impl UserExternalAccountRepository for UserStore {
         .await
     }
 
+    async fn create_auto_added_user_with_account(
+        &self,
+        user: User,
+        app_permissions: AppPermissionMask,
+        library_grants: Vec<LibraryGrant>,
+        account: UserExternalAccount,
+    ) -> AppResult<(User, UserExternalAccount)> {
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "create_auto_added_user_with_account",
+            move |tx| {
+                let user = user.clone();
+                let account = account.clone();
+                let library_grants = library_grants.clone();
+                Box::pin(async move {
+                    insert_user_tx(tx, &user).await?;
+                    upsert_app_permission_mask_tx(tx, &user.id, app_permissions).await?;
+                    replace_library_grants_tx(tx, &user.id, &library_grants).await?;
+                    insert_external_account_tx(tx, &account).await?;
+                    let account = load_external_account_by_id_tx(tx, &account.id)
+                        .await?
+                        .ok_or_else(|| {
+                            AppError::NotFound(format!("external account {}", account.id))
+                        })?;
+                    Ok((user, account))
+                })
+            },
+        )
+        .await
+    }
+
     async fn delete(&self, id: &str) -> AppResult<()> {
         let id = id.to_string();
         SqlRuntime::run_in_transaction(&self.datastore, "delete_user_external_account", move |tx| {
@@ -244,7 +278,7 @@ impl UserExternalAccountRepository for UserStore {
 async fn load_user_by_username(exec: SqlExec<'_, '_>, username: &str) -> AppResult<Option<User>> {
     let row = SqlRuntime::fetch_optional(
         exec,
-        "SELECT id, username, password_hash FROM users WHERE username = {}",
+        "SELECT id, username, password_hash, account_kind FROM users WHERE username = {}",
         &[SqlArg::Text(username.to_string())],
     )
     .await?;
@@ -254,7 +288,7 @@ async fn load_user_by_username(exec: SqlExec<'_, '_>, username: &str) -> AppResu
 async fn load_user_by_id(exec: SqlExec<'_, '_>, id: &str) -> AppResult<Option<User>> {
     let row = SqlRuntime::fetch_optional(
         exec,
-        "SELECT id, username, password_hash FROM users WHERE id = {}",
+        "SELECT id, username, password_hash, account_kind FROM users WHERE id = {}",
         &[SqlArg::Text(id.to_string())],
     )
     .await?;
@@ -267,15 +301,64 @@ async fn load_user_by_id_tx(tx: &mut SqlTx<'_>, id: &str) -> AppResult<Option<Us
 
 async fn insert_user_tx(tx: &mut SqlTx<'_>, user: &User) -> AppResult<()> {
     tx.execute(
-        "INSERT INTO users (id, username, password_hash)
-         VALUES ({}, {}, {})",
+        "INSERT INTO users (id, username, password_hash, account_kind)
+         VALUES ({}, {}, {}, {})",
         &[
             SqlArg::Text(user.id.clone()),
             SqlArg::Text(user.username.clone()),
             SqlArg::OptText(user.password_hash.clone()),
+            SqlArg::Text(user.account_kind.as_str().to_string()),
         ],
     )
     .await?;
+    Ok(())
+}
+
+async fn upsert_app_permission_mask_tx(
+    tx: &mut SqlTx<'_>,
+    user_id: &str,
+    permissions: AppPermissionMask,
+) -> AppResult<()> {
+    tx.execute(
+        "INSERT INTO user_app_permission_masks (user_id, permission_mask, updated_at)
+         VALUES ({}, {}, {})
+         ON CONFLICT(user_id) DO UPDATE SET
+            permission_mask = excluded.permission_mask,
+            updated_at = excluded.updated_at",
+        &[
+            SqlArg::Text(user_id.to_string()),
+            SqlArg::I64(permissions.bits() as i64),
+            SqlArg::Timestamp(chrono::Utc::now()),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn replace_library_grants_tx(
+    tx: &mut SqlTx<'_>,
+    user_id: &str,
+    grants: &[LibraryGrant],
+) -> AppResult<()> {
+    tx.execute(
+        "DELETE FROM user_library_permission_masks WHERE user_id = {}",
+        &[SqlArg::Text(user_id.to_string())],
+    )
+    .await?;
+    for grant in grants.iter().filter(|grant| !grant.permissions.is_empty()) {
+        tx.execute(
+            "INSERT INTO user_library_permission_masks
+             (user_id, library_id, permission_mask, updated_at)
+             VALUES ({}, {}, {}, {})",
+            &[
+                SqlArg::Text(user_id.to_string()),
+                SqlArg::Text(grant.library_id.clone()),
+                SqlArg::I64(grant.permissions.bits() as i64),
+                SqlArg::Timestamp(chrono::Utc::now()),
+            ],
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -284,6 +367,12 @@ fn row_to_user(row: &SqlRow) -> AppResult<User> {
         id: row.text("id")?,
         username: row.text("username")?,
         password_hash: row.opt_text("password_hash")?,
+        account_kind: UserAccountKind::parse(&row.text("account_kind")?).ok_or_else(|| {
+            AppError::Repository(format!(
+                "invalid user account kind for user {}",
+                row.text("id").unwrap_or_else(|_| "<unknown>".to_string())
+            ))
+        })?,
         authorization: Default::default(),
     })
 }
@@ -450,6 +539,7 @@ mod tests {
             id: id.to_string(),
             username: format!("{id}_name"),
             password_hash: Some("hash".to_string()),
+            account_kind: Default::default(),
             authorization: UserAuthorization {
                 app: AppPermissionMask::NONE,
                 libraries: HashMap::new(),

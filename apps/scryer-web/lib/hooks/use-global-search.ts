@@ -69,6 +69,7 @@ export type MetadataCatalogAddOptions = {
 export type MetadataCatalogRequestOptions = {
   libraryId: string;
   requestedQualityProfileId?: string;
+  requestedMonitorType?: MetadataCatalogMonitorType;
 };
 
 export type AnimeCatalogDefaults = {
@@ -1159,6 +1160,7 @@ export function useGlobalSearch({
             language: result.language || undefined,
             contentStatus: result.status || undefined,
             requestedQualityProfileId: options.requestedQualityProfileId || undefined,
+            requestedMonitorType: options.requestedMonitorType || undefined,
           },
         }).toPromise();
         if (error) throw error;

@@ -229,6 +229,7 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.to_string(),
             password_hash: Some(self.hash_password(password)?),
+            account_kind: Default::default(),
             authorization: Default::default(),
         };
 
@@ -310,6 +311,7 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.clone(),
             password_hash: Some(password_hash),
+            account_kind: scryer_domain::UserAccountKind::Local,
             authorization: Default::default(),
         };
 
@@ -373,6 +375,12 @@ impl AppUseCase {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {}", actor.id)))?;
 
+        if !existing.account_kind.allows_local_credentials() {
+            return Err(AppError::Validation(
+                "externally managed users cannot set a Scryer password".into(),
+            ));
+        }
+
         let hash = existing
             .password_hash
             .as_deref()
@@ -381,6 +389,33 @@ impl AppUseCase {
             return Err(AppError::Unauthorized(
                 "current password is incorrect".into(),
             ));
+        }
+
+        self.update_user_password_hash(actor, &actor.id, password)
+            .await
+    }
+
+    pub async fn set_initial_own_password(
+        &self,
+        actor: &User,
+        password: String,
+    ) -> AppResult<User> {
+        let existing = self
+            .services
+            .identity
+            .users
+            .get_by_id(&actor.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {}", actor.id)))?;
+
+        if !existing.account_kind.allows_local_credentials() {
+            return Err(AppError::Validation(
+                "externally managed users cannot set a Scryer password".into(),
+            ));
+        }
+
+        if existing.password_hash.is_some() {
+            return Err(AppError::Validation("current password is required".into()));
         }
 
         self.update_user_password_hash(actor, &actor.id, password)
@@ -416,6 +451,19 @@ impl AppUseCase {
             return Err(AppError::Validation("password is required".into()));
         }
 
+        let existing = self
+            .services
+            .identity
+            .users
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
+        if !existing.account_kind.allows_local_credentials() {
+            return Err(AppError::Validation(
+                "externally managed users cannot set a Scryer password".into(),
+            ));
+        }
+
         let password_hash = self.hash_password(&password)?;
         let user = self
             .services
@@ -434,7 +482,6 @@ impl AppUseCase {
 
         Ok(user)
     }
-
     pub async fn set_user_app_permissions(
         &self,
         actor: &User,

@@ -64,6 +64,7 @@ impl MediaRequestRepository for MediaRequestStore {
             "SELECT id, library_id, facet, status, identity_fingerprint, title, sort_title, slug,
                     poster_url, year, overview, runtime_minutes, language, content_status,
                     requested_quality_profile_id, requested_quality_profile_name,
+                    requested_monitor_type,
                     resolved_by_user_id, resolved_at, created_title_id,
                     approved_quality_profile_id, approved_quality_profile_name,
                     created_by_user_id, created_at, updated_at
@@ -101,6 +102,59 @@ impl MediaRequestRepository for MediaRequestStore {
                 Box::pin(
                     async move { resolve_pending_overlapping_tx(tx, &request, resolution).await },
                 )
+            },
+        )
+        .await
+    }
+
+    async fn resolve_pending(
+        &self,
+        request_id: &str,
+        resolution: MediaRequestResolution,
+    ) -> AppResult<u64> {
+        let request_id = request_id.to_string();
+        let resolution = resolution.clone();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "resolve_pending_media_request",
+            move |tx| {
+                let request_id = request_id.clone();
+                let resolution = resolution.clone();
+                Box::pin(async move { resolve_pending_tx(tx, &request_id, resolution).await })
+            },
+        )
+        .await
+    }
+
+    async fn update_pending_request_preferences(
+        &self,
+        request_id: &str,
+        requested_quality_profile_id: String,
+        requested_quality_profile_name: String,
+        requested_monitor_type: Option<String>,
+        updated_event: NewDomainEvent,
+    ) -> AppResult<MediaRequest> {
+        let request_id = request_id.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "update_pending_media_request_preferences",
+            move |tx| {
+                let request_id = request_id.clone();
+                let requested_quality_profile_id = requested_quality_profile_id.clone();
+                let requested_quality_profile_name = requested_quality_profile_name.clone();
+                let requested_monitor_type = requested_monitor_type.clone();
+                let updated_event = updated_event.clone();
+                Box::pin(async move {
+                    update_pending_request_preferences_tx(
+                        tx,
+                        &request_id,
+                        requested_quality_profile_id,
+                        requested_quality_profile_name,
+                        requested_monitor_type,
+                        updated_event,
+                    )
+                    .await
+                })
             },
         )
         .await
@@ -177,11 +231,12 @@ async fn insert_media_request_tx(
             id, library_id, facet, status, identity_fingerprint, title, sort_title, slug,
             poster_url, year, overview, runtime_minutes, language, content_status,
             requested_quality_profile_id, requested_quality_profile_name,
+            requested_monitor_type,
             created_by_user_id, created_at, updated_at
         ) VALUES (
             {}, {}, {}, {}, {}, {}, {}, {},
             {}, {}, {}, {}, {}, {},
-            {}, {},
+            {}, {}, {},
             {}, {}, {}
         )",
         &[
@@ -201,6 +256,7 @@ async fn insert_media_request_tx(
             SqlArg::OptText(request.content_status.clone()),
             SqlArg::OptText(request.requested_quality_profile_id.clone()),
             SqlArg::OptText(request.requested_quality_profile_name.clone()),
+            SqlArg::OptText(request.requested_monitor_type.clone()),
             SqlArg::Text(request.created_by_user_id.clone()),
             SqlArg::Timestamp(now),
             SqlArg::Timestamp(now),
@@ -327,6 +383,81 @@ async fn resolve_pending_overlapping_tx(
     Ok(rows)
 }
 
+async fn resolve_pending_tx(
+    tx: &mut SqlTx<'_>,
+    request_id: &str,
+    resolution: MediaRequestResolution,
+) -> AppResult<u64> {
+    let resolved_at = resolution.resolved_at;
+    let rows = tx
+        .execute(
+            "UPDATE media_requests
+                SET status = {},
+                    resolved_by_user_id = {},
+                    resolved_at = {},
+                    created_title_id = {},
+                    approved_quality_profile_id = {},
+                    approved_quality_profile_name = {},
+                    updated_at = {}
+              WHERE id = {} AND status = {}",
+            &[
+                SqlArg::Text(resolution.status.as_str().to_string()),
+                SqlArg::Text(resolution.resolved_by_user_id),
+                SqlArg::Timestamp(resolved_at),
+                SqlArg::OptText(resolution.created_title_id),
+                SqlArg::OptText(resolution.approved_quality_profile_id),
+                SqlArg::OptText(resolution.approved_quality_profile_name),
+                SqlArg::Timestamp(resolved_at),
+                SqlArg::Text(request_id.to_string()),
+                SqlArg::Text(MediaRequestStatus::Pending.as_str().to_string()),
+            ],
+        )
+        .await?;
+    if rows > 0 {
+        append_domain_event_tx(tx, resolution.event).await?;
+    }
+    Ok(rows)
+}
+
+async fn update_pending_request_preferences_tx(
+    tx: &mut SqlTx<'_>,
+    request_id: &str,
+    requested_quality_profile_id: String,
+    requested_quality_profile_name: String,
+    requested_monitor_type: Option<String>,
+    updated_event: NewDomainEvent,
+) -> AppResult<MediaRequest> {
+    let now = Utc::now();
+    let rows = tx
+        .execute(
+            "UPDATE media_requests
+                SET requested_quality_profile_id = {},
+                    requested_quality_profile_name = {},
+                    requested_monitor_type = {},
+                    updated_at = {}
+              WHERE id = {} AND status = {}",
+            &[
+                SqlArg::Text(requested_quality_profile_id),
+                SqlArg::Text(requested_quality_profile_name),
+                SqlArg::OptText(requested_monitor_type),
+                SqlArg::Timestamp(now),
+                SqlArg::Text(request_id.to_string()),
+                SqlArg::Text(MediaRequestStatus::Pending.as_str().to_string()),
+            ],
+        )
+        .await?;
+    if rows == 0 {
+        return Err(AppError::Validation(
+            "media request is no longer pending".into(),
+        ));
+    }
+
+    append_domain_event_tx(tx, updated_event).await?;
+    load_media_request_tx(tx, request_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("media request {request_id}")))
+}
+
 async fn load_media_request_tx(
     tx: &mut SqlTx<'_>,
     request_id: &str,
@@ -336,6 +467,7 @@ async fn load_media_request_tx(
         "SELECT id, library_id, facet, status, identity_fingerprint, title, sort_title, slug,
                 poster_url, year, overview, runtime_minutes, language, content_status,
                 requested_quality_profile_id, requested_quality_profile_name,
+                requested_monitor_type,
                 resolved_by_user_id, resolved_at, created_title_id,
                 approved_quality_profile_id, approved_quality_profile_name,
                 created_by_user_id, created_at, updated_at
@@ -384,7 +516,24 @@ async fn load_media_request_requesters(
 ) -> AppResult<Vec<MediaRequestRequester>> {
     let rows = SqlRuntime::fetch_all(
         exec,
-        "SELECT mrr.user_id, users.username, mrr.requested_at
+        "SELECT mrr.user_id,
+                users.username,
+                (
+                    SELECT account.avatar_url
+                      FROM user_external_accounts account
+                     WHERE account.user_id = mrr.user_id
+                       AND account.status = 'active'
+                       AND account.avatar_url IS NOT NULL
+                       AND account.avatar_url <> ''
+                     ORDER BY COALESCE(
+                         account.last_login_at,
+                         account.verified_at,
+                         account.updated_at,
+                         account.created_at
+                     ) DESC
+                     LIMIT 1
+                ) AS avatar_url,
+                mrr.requested_at
            FROM media_request_requesters mrr
            JOIN users ON users.id = mrr.user_id
           WHERE mrr.request_id = {}
@@ -397,6 +546,7 @@ async fn load_media_request_requesters(
             Ok(MediaRequestRequester {
                 user_id: row.text("user_id")?,
                 username: row.text("username")?,
+                avatar_url: row.opt_text("avatar_url")?,
                 requested_at: row.timestamp("requested_at")?,
             })
         })
@@ -408,6 +558,7 @@ fn build_media_request_list_sql(query: &MediaRequestQuery) -> (String, Vec<SqlAr
         "SELECT id, library_id, facet, status, identity_fingerprint, title, sort_title, slug,
                 poster_url, year, overview, runtime_minutes, language, content_status,
                 requested_quality_profile_id, requested_quality_profile_name,
+                requested_monitor_type,
                 resolved_by_user_id, resolved_at, created_title_id,
                 approved_quality_profile_id, approved_quality_profile_name,
                 created_by_user_id, created_at, updated_at
@@ -432,6 +583,17 @@ fn build_media_request_list_sql(query: &MediaRequestQuery) -> (String, Vec<SqlAr
             .join(", ");
         sql.push_str(&format!(" AND library_id IN ({placeholders})"));
         args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+    }
+
+    if let Some(requester_user_id) = &query.requester_user_id {
+        sql.push_str(
+            " AND id IN (
+                SELECT request_id
+                  FROM media_request_requesters
+                 WHERE user_id = {}
+            )",
+        );
+        args.push(SqlArg::Text(requester_user_id.clone()));
     }
 
     sql.push_str(" ORDER BY updated_at DESC, created_at DESC");
@@ -464,6 +626,7 @@ fn row_to_media_request(row: &SqlRow) -> AppResult<MediaRequest> {
         content_status: row.opt_text("content_status")?,
         requested_quality_profile_id: row.opt_text("requested_quality_profile_id")?,
         requested_quality_profile_name: row.opt_text("requested_quality_profile_name")?,
+        requested_monitor_type: row.opt_text("requested_monitor_type")?,
         resolved_by_user_id: row.opt_text("resolved_by_user_id")?,
         resolved_at: row.opt_timestamp("resolved_at")?,
         created_title_id: row.opt_text("created_title_id")?,

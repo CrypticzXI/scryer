@@ -46,6 +46,7 @@ export type RegistryPluginRecord = {
   sourceUrl: string | null;
   sourceKind?: string | null;
   blockedReason?: string | null;
+  bytes?: number | null;
   isInstalled: boolean;
   isEnabled: boolean;
   installedVersion: string | null;
@@ -153,6 +154,19 @@ function blockedReasonLabel(plugin: RegistryPluginRecord, t: Translate): string 
     default:
       return null;
   }
+}
+
+function formatPluginBytes(bytes?: number | null): string | null {
+  if (bytes == null) {
+    return null;
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function isRunningPluginProgress(
@@ -380,6 +394,7 @@ function PluginTable({
                 ? plugin.installedVersion
                 : plugin.version;
             const blockedLabel = blockedReasonLabel(plugin, t);
+            const bytesLabel = formatPluginBytes(plugin.bytes);
             return (
               <TableRow
                 key={plugin.id}
@@ -422,6 +437,11 @@ function PluginTable({
                 <TableCell className={cn(typeColumnClass, "text-sm")}>{categoryLabel(plugin.pluginType, t)}</TableCell>
                 <TableCell className={cn(versionColumnClass, "text-sm")}>
                   {t("settings.pluginVersion", { version: displayVersion })}
+                  {bytesLabel && (
+                    <div className="text-xs text-muted-foreground">
+                      {t("settings.pluginBytes", { bytes: bytesLabel })}
+                    </div>
+                  )}
                   {plugin.updateAvailable && (
                     <div className="text-xs text-yellow-400">
                       {t("settings.pluginUpdateAvailable", { version: plugin.version })}

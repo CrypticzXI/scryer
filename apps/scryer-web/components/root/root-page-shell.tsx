@@ -1129,6 +1129,7 @@ function AuthenticatedHomePage({
   );
   const canViewCatalog = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.view);
   const canManageTitle = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.manageTitles);
+  const canRequestMedia = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.request);
   const canResolveImports = hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.resolveImports);
   const canAccessActivity = canResolveImports || canManageTitle;
   const canManageUserAccounts = hasAppPermission(authenticatedUser, APP_PERMISSIONS.manageUsers);
@@ -1141,7 +1142,7 @@ function AuthenticatedHomePage({
 
   useMediaRequestsSubscription(() => {
     void refreshNavigationBadges();
-  }, { pause: !canManageTitle });
+  }, { pause: !canManageTitle && !canRequestMedia });
 
   const routeCommandPalette = useMemo(
     () => buildRouteCommands({
@@ -1206,12 +1207,17 @@ function AuthenticatedHomePage({
   }, [canManageConfig, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
-    if (!isMediaView(view) || contentSettingsSection !== "requests" || canManageTitle) {
+    if (
+      !isMediaView(view) ||
+      contentSettingsSection !== "requests" ||
+      canManageTitle ||
+      canRequestMedia
+    ) {
       return;
     }
 
     navigateToAccessibleDefault();
-  }, [canManageTitle, contentSettingsSection, navigateToAccessibleDefault, view]);
+  }, [canManageTitle, canRequestMedia, contentSettingsSection, navigateToAccessibleDefault, view]);
 
   useEffect(() => {
     if (view !== "wanted" || wantedSection !== "history" || canManageTitle) {

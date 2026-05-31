@@ -106,12 +106,14 @@ export default function LoginPage() {
           displayName: "Jellyfin",
           userVisibleUrl: null,
           baseUrl: null,
-          machineId: null,
-        }));
+          loginEnabled: true,
+          linkingEnabled: false,
+        }))
+        .filter((connection) => connection.loginEnabled);
   const jellyfinConnections =
     authProviderSettings?.providerLoginEnabled.includes("jellyfin") &&
     authProviderSettings.allowedProviders.includes("jellyfin")
-      ? availableJellyfinConnections
+      ? availableJellyfinConnections.filter((connection) => connection.loginEnabled)
       : [];
   const availablePlexConnections = authProviderSettings?.allowedPlexConnections?.length
     ? authProviderSettings.allowedPlexConnections
@@ -120,23 +122,31 @@ export default function LoginPage() {
         displayName: id,
         userVisibleUrl: null,
         baseUrl: null,
-        machineId: null,
-      }));
+        loginEnabled: true,
+        linkingEnabled: false,
+      }))
+      .filter((connection) => connection.loginEnabled);
   const plexConnections =
     authProviderSettings?.providerLoginEnabled.includes("plex") &&
     authProviderSettings.allowedProviders.includes("plex")
-      ? availablePlexConnections
+      ? availablePlexConnections.filter((connection) => connection.loginEnabled)
       : [];
   const plexLoginAvailable = plexConnections.length > 0;
   const localPasswordAvailable = effectiveFormLoginEnabled !== false;
   const jellyfinLoginAvailable = jellyfinConnections.length > 0;
-  const showJellyfinTotpCode = totpRequireJellyfinLogin || jellyfinTotpPrompted;
+  const showJellyfinTotpCode = jellyfinTotpPrompted;
   const anySubmitting =
     submitting ||
     passkeySubmitting ||
     jellyfinSubmitting ||
     jellyfinMfaBusy ||
     plexSubmitting;
+
+  const resetJellyfinTotpChallenge = useCallback(() => {
+    setJellyfinTotpPrompted(false);
+    setJellyfinTotpCode("");
+    setError(null);
+  }, []);
 
   // Redirect to home if already authenticated
   useEffect(() => {
@@ -167,7 +177,7 @@ export default function LoginPage() {
         const settings = data?.authProviderRuntimeSettings ?? null;
         setAuthProviderSettings(settings);
         const firstJellyfinConnectionId =
-          settings?.allowedJellyfinConnections[0]?.id ??
+          settings?.allowedJellyfinConnections.find((connection) => connection.loginEnabled)?.id ??
           settings?.allowedJellyfinConnectionIds[0] ??
           "";
         if (firstJellyfinConnectionId) {
@@ -176,7 +186,7 @@ export default function LoginPage() {
           );
         }
         const firstPlexConnectionId =
-          settings?.allowedPlexConnections[0]?.id ??
+          settings?.allowedPlexConnections.find((connection) => connection.loginEnabled)?.id ??
           settings?.allowedPlexConnectionIds[0] ??
           "";
         if (firstPlexConnectionId) {
@@ -310,7 +320,7 @@ export default function LoginPage() {
               connectionId: jellyfinConnectionId,
               username: jellyfinUsername,
               password: jellyfinPassword,
-              totpCode: jellyfinTotpCode.trim() || null,
+              totpCode: jellyfinTotpPrompted ? jellyfinTotpCode.trim() || null : null,
               persistSession: true,
             },
           })
@@ -330,7 +340,8 @@ export default function LoginPage() {
       } catch (err) {
         if (graphQlErrorCode(err) === "TOTP_STEP_UP_REQUIRED") {
           setJellyfinTotpPrompted(true);
-          setError(t("auth.totpCodeRequired"));
+          setJellyfinTotpCode("");
+          setError(null);
         } else {
           setError(err instanceof Error ? err.message : t("auth.jellyfinFailed"));
         }
@@ -343,6 +354,7 @@ export default function LoginPage() {
       jellyfinConnectionId,
       jellyfinPassword,
       jellyfinTotpCode,
+      jellyfinTotpPrompted,
       jellyfinUsername,
       navigate,
       redirectTarget,
@@ -623,13 +635,59 @@ export default function LoginPage() {
                 {t("auth.signInWithJellyfin")}
               </button>
 
-              {activeMethod === "jellyfin" ? (
+              {activeMethod === "jellyfin" && showJellyfinTotpCode ? (
+                <div id="jellyfin-login-form" className="space-y-4">
+                  <div className="space-y-1 text-center">
+                    <h2 className="text-base font-semibold">{t("auth.totpCode")}</h2>
+                    <p className="text-sm text-muted-foreground">
+                      {t("auth.totpCodeRequired")}
+                    </p>
+                  </div>
+                  <Input
+                    id="jellyfin-totp-code"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    autoFocus
+                    value={jellyfinTotpCode}
+                    onChange={(event) => setJellyfinTotpCode(event.target.value)}
+                    placeholder={t("auth.totpCode")}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleJellyfinSignIn}
+                    disabled={
+                      anySubmitting ||
+                      !jellyfinConnectionId ||
+                      !jellyfinUsername ||
+                      !jellyfinPassword ||
+                      !jellyfinTotpCode.trim()
+                    }
+                    className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {jellyfinSubmitting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : null}
+                    {jellyfinSubmitting ? t("auth.signingIn") : t("auth.signIn")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetJellyfinTotpChallenge}
+                    disabled={anySubmitting}
+                    className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                  >
+                    {t("label.back")}
+                  </button>
+                </div>
+              ) : activeMethod === "jellyfin" ? (
                 <div id="jellyfin-login-form" className="space-y-3">
                   {jellyfinConnections.length > 1 ? (
                     <select
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                       value={jellyfinConnectionId}
-                      onChange={(event) => setJellyfinConnectionId(event.target.value)}
+                      onChange={(event) => {
+                        setJellyfinConnectionId(event.target.value);
+                        resetJellyfinTotpChallenge();
+                      }}
                     >
                       {jellyfinConnections.map((connection) => (
                         <option key={connection.id} value={connection.id}>
@@ -643,7 +701,10 @@ export default function LoginPage() {
                     type="text"
                     autoComplete="username"
                     value={jellyfinUsername}
-                    onChange={(event) => setJellyfinUsername(event.target.value)}
+                    onChange={(event) => {
+                      setJellyfinUsername(event.target.value);
+                      resetJellyfinTotpChallenge();
+                    }}
                     placeholder={t("auth.username")}
                   />
                   <Input
@@ -651,19 +712,12 @@ export default function LoginPage() {
                     type="password"
                     autoComplete="current-password"
                     value={jellyfinPassword}
-                    onChange={(event) => setJellyfinPassword(event.target.value)}
+                    onChange={(event) => {
+                      setJellyfinPassword(event.target.value);
+                      resetJellyfinTotpChallenge();
+                    }}
                     placeholder={t("auth.password")}
                   />
-                  {showJellyfinTotpCode ? (
-                    <Input
-                      id="jellyfin-totp-code"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      value={jellyfinTotpCode}
-                      onChange={(event) => setJellyfinTotpCode(event.target.value)}
-                      placeholder={t("auth.totpCode")}
-                    />
-                  ) : null}
                   <button
                     type="button"
                     onClick={handleJellyfinSignIn}
@@ -671,7 +725,8 @@ export default function LoginPage() {
                       anySubmitting ||
                       !jellyfinConnectionId ||
                       !jellyfinUsername ||
-                      !jellyfinPassword
+                      !jellyfinPassword ||
+                      (jellyfinTotpPrompted && !jellyfinTotpCode.trim())
                     }
                     className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
                   >

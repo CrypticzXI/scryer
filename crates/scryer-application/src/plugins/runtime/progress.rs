@@ -103,6 +103,18 @@ impl AppUseCase {
             &resolved.artifact.wasm_digests,
             &wasm,
         )?;
+        let actual_bytes = u64::try_from(wasm.len()).map_err(|_| {
+            AppError::Validation(format!(
+                "plugin '{}' selected artifact '{}' is too large to validate bytes",
+                resolved.catalog_entry.id, artifact_url
+            ))
+        })?;
+        if actual_bytes != resolved.artifact.bytes {
+            return Err(AppError::Validation(format!(
+                "plugin '{}' selected artifact '{}' bytes mismatch: expected {}, got {}",
+                resolved.catalog_entry.id, artifact_url, resolved.artifact.bytes, actual_bytes
+            )));
+        }
         Ok(FetchedCatalogArtifact {
             persisted_wasm_bytes: compressed_artifact,
             wasm_bytes: wasm,
@@ -133,7 +145,7 @@ impl AppUseCase {
             version: resolved.release.version.clone(),
             sdk_version: None,
             sdk_constraint: resolved.release.sdk_constraint.clone(),
-            scryer_constraint: None,
+            scryer_constraint: catalog_release_scryer_constraint(&resolved.release),
         };
         let validated = self.validate_catalog_downloaded_plugin_release(
             &resolved.catalog_entry.id,
@@ -148,6 +160,7 @@ impl AppUseCase {
         Ok(PreparedCatalogPluginInstall {
             descriptor: validated.descriptor,
             sdk_constraint: validated.sdk_constraint,
+            scryer_constraint: release.scryer_constraint,
             source_kind: resolved.source_kind,
             support_tier: resolved.effective_support_tier,
             persisted_wasm_bytes: fetched.persisted_wasm_bytes,

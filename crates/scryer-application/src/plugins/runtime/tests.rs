@@ -192,6 +192,7 @@ mod catalog_artifact_selection_tests {
             signature_mirror_urls: Vec::new(),
             digests: vec!["sha256:artifact".to_string()],
             wasm_digests: vec!["sha256:wasm".to_string()],
+            bytes: 1234,
         }
     }
 
@@ -199,6 +200,7 @@ mod catalog_artifact_selection_tests {
         CatalogV3PluginRelease {
             version: "1.0.0".to_string(),
             sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+            min_scryer_version: None,
             artifacts,
         }
     }
@@ -311,6 +313,51 @@ mod catalog_artifact_selection_tests {
         assert_eq!(
             selected.required_features,
             vec!["simd128".to_string(), "relaxed-simd".to_string()]
+        );
+    }
+
+    #[test]
+    fn catalog_selection_skips_release_requiring_newer_scryer() {
+        let compatible_release = release(vec![artifact(&[], "https://example.invalid/plugin.zst")]);
+        let mut newer_release = release(vec![artifact(
+            &[],
+            "https://example.invalid/plugin-v2.zst",
+        )]);
+        newer_release.version = "2.0.0".to_string();
+        newer_release.min_scryer_version = Some("999.0.0".to_string());
+
+        let plugin = CatalogV3PluginEntry {
+            id: "alpha".to_string(),
+            name: "Alpha".to_string(),
+            description: "Alpha plugin".to_string(),
+            plugin_type: "indexer".to_string(),
+            provider_type: "alpha".to_string(),
+            publisher: "scryer".to_string(),
+            support_tier: PluginSupportTier::Official,
+            status: PluginLifecycleStatus::Active,
+            docs_url: "https://example.invalid/docs".to_string(),
+            source_repo: "https://github.com/scryer-media/alpha".to_string(),
+            required_signer: RequiredSigner {
+                github_repository: "scryer-media/alpha".to_string(),
+                github_workflow: None,
+            },
+            releases: vec![compatible_release, newer_release],
+        };
+
+        let (selected_release, _) = select_catalog_release_and_artifact(
+            &plugin,
+            &HashSet::new(),
+            RuntimePerformanceClass::Slow,
+        )
+        .expect("compatible release");
+        let blocked_release = latest_host_blocked_catalog_release(&plugin, &HashSet::new())
+            .expect("newer host-blocked release");
+
+        assert_eq!(selected_release.version, "1.0.0");
+        assert_eq!(blocked_release.version, "2.0.0");
+        assert_eq!(
+            blocked_release.min_scryer_version,
+            Some("999.0.0".to_string())
         );
     }
 }

@@ -19,9 +19,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
+import { defaultMonitorTypeForFacet } from "@/lib/facets/helpers";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type {
   CatalogQualityProfileOption,
+  MetadataCatalogMonitorType,
   MetadataCatalogRequestOptions,
 } from "@/lib/hooks/use-global-search";
 import type { Facet, LibraryRecord } from "@/lib/types";
@@ -53,6 +55,9 @@ export function RequestMediaDialog({
   const t = useTranslate();
   const [libraryId, setLibraryId] = React.useState("");
   const [qualityProfileId, setQualityProfileId] = React.useState("");
+  const [monitorType, setMonitorType] = React.useState<MetadataCatalogMonitorType>(
+    () => defaultMonitorTypeForFacet(facet),
+  );
   const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   React.useEffect(() => {
@@ -63,10 +68,21 @@ export function RequestMediaDialog({
         "",
     );
     setQualityProfileId("");
+    setMonitorType(defaultMonitorTypeForFacet(facet));
     setIsSubmitting(false);
-  }, [open, requestableLibraries]);
+  }, [facet, open, requestableLibraries]);
 
   const selectedLibrary = requestableLibraries.find((library) => library.id === libraryId) ?? null;
+  const canRequestMonitorType = facet !== "movie";
+  const monitorOptions: Array<{ value: MetadataCatalogMonitorType; label: string }> = [
+    { value: "futureEpisodes", label: t("search.monitorType.futureEpisodes") },
+    {
+      value: "missingAndFutureEpisodes",
+      label: t("search.monitorType.missingAndFutureEpisodes"),
+    },
+    { value: "allEpisodes", label: t("search.monitorType.allEpisodes") },
+    { value: "none", label: t("search.monitorType.none") },
+  ];
   const requestProfileOptions = React.useMemo(() => {
     const requestProfileIds = selectedLibrary?.requestQualityProfileIds?.length
       ? selectedLibrary.requestQualityProfileIds
@@ -106,6 +122,7 @@ export function RequestMediaDialog({
       const accepted = await onRequest(result, facet, {
         libraryId: selectedLibraryId,
         requestedQualityProfileId: selectedQualityProfileId,
+        requestedMonitorType: canRequestMonitorType ? monitorType : undefined,
       });
       if (accepted) {
         onOpenChange(false);
@@ -113,7 +130,16 @@ export function RequestMediaDialog({
     } finally {
       setIsSubmitting(false);
     }
-  }, [facet, onOpenChange, onRequest, qualityProfileId, result, selectedLibrary]);
+  }, [
+    canRequestMonitorType,
+    facet,
+    monitorType,
+    onOpenChange,
+    onRequest,
+    qualityProfileId,
+    result,
+    selectedLibrary,
+  ]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -191,6 +217,32 @@ export function RequestMediaDialog({
           </Select>
         </label>
 
+        {canRequestMonitorType ? (
+          <label className="space-y-1">
+            <span className="block text-xs font-medium text-card-foreground">
+              {t("requests.requestedMonitorType")}
+            </span>
+            <Select
+              value={monitorType}
+              onValueChange={(value) =>
+                setMonitorType(value as MetadataCatalogMonitorType)
+              }
+              disabled={isSubmitting}
+            >
+              <SelectTrigger id="request-media-monitor-type" className="h-9 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {monitorOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+        ) : null}
+
         <DialogFooter>
           <Button
             id="request-media-cancel"
@@ -205,7 +257,12 @@ export function RequestMediaDialog({
             id="request-media-submit"
             type="button"
             onClick={() => void handleSubmit()}
-            disabled={isSubmitting || !selectedLibrary || !qualityProfileId}
+            disabled={
+              isSubmitting ||
+              !selectedLibrary ||
+              !qualityProfileId ||
+              (canRequestMonitorType && !monitorType)
+            }
             className="bg-emerald-600 text-foreground hover:bg-emerald-500"
           >
             {isSubmitting ? (

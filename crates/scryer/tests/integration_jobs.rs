@@ -292,6 +292,7 @@ async fn domain_events_omit_titleless_operational_events_for_library_viewer() {
             id: user_id.clone(),
             username: "movie-viewer".to_string(),
             password_hash: None,
+            account_kind: Default::default(),
             authorization: Default::default(),
         },
     )

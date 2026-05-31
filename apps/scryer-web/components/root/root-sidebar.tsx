@@ -253,6 +253,7 @@ function RootSidebarContent({
   const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
   const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
   const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
+  const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
   const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
   const canAccessFacetImport = canResolveImports;
   const canAccessMediaSettings = canManageCatalogSettings;
@@ -362,7 +363,7 @@ function RootSidebarContent({
       }
 
       if (contentSettingsSection === "requests") {
-        return canManageTitle ? t("nav.requests") : getMediaOverviewLabel(view, t);
+        return canManageTitle || canRequestMedia ? t("nav.requests") : getMediaOverviewLabel(view, t);
       }
 
       if (isSettingsSubPage(contentSettingsSection)) {
@@ -405,6 +406,7 @@ function RootSidebarContent({
     canAccessFacetImport,
     canAccessMediaSettings,
     canManageTitle,
+    canRequestMedia,
     visibleActivitySubPages,
     visibleSettingsEntries,
     visibleWantedSubPages,
@@ -646,7 +648,7 @@ function RootSidebarContent({
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
-                                {canManageTitle ? (
+                                {canManageTitle || canRequestMedia ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
                                       id={selectorId("root-sidebar-media", item.id, "requests")}

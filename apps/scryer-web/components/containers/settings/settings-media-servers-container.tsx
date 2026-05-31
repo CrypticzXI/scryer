@@ -4,6 +4,7 @@ import { SettingsMediaServersSection } from "@/components/views/settings/setting
 import {
   createMediaServerConnectionMutation,
   deleteMediaServerConnectionMutation,
+  discoverPlexMediaServersMutation,
   testMediaServerConnectionMutation,
   updateMediaServerConnectionMutation,
 } from "@/lib/graphql/mutations";
@@ -25,7 +26,9 @@ import type {
   MediaServerConnection,
   MediaServerConnectionDraft,
   MediaServerPathMapping,
+  PlexServerDiscovery,
 } from "@/lib/types";
+import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
 
 type SettingsMediaServersSectionProps = ComponentProps<typeof SettingsMediaServersSection>;
 
@@ -45,9 +48,11 @@ const DEFAULT_MEDIA_SERVER_DRAFT: MediaServerConnectionDraft = {
   autoAddEnabled: false,
   defaultAppPermissions: [],
   defaultLibraryGrants: [],
-  machineId: "",
+  machineIdPresent: false,
+  plexServerId: "",
   apiKey: "",
   clearApiKey: false,
+  jellyfinCredentialMode: "apiKey",
   adminUsername: "",
   adminPassword: "",
   pathMappingsText: "",
@@ -105,16 +110,18 @@ function draftFromConnection(connection: MediaServerConnection): MediaServerConn
       libraryId: grant.libraryId,
       permissions: [...grant.permissions],
     })),
-    machineId: connection.machineId ?? "",
+    machineIdPresent: connection.machineIdPresent,
+    plexServerId: "",
     apiKey: "",
     clearApiKey: false,
+    jellyfinCredentialMode: "apiKey",
     adminUsername: "",
     adminPassword: "",
     pathMappingsText: serializePathMappings(connection.pathMappings),
   };
 }
 
-function buildCreateInput(draft: MediaServerConnectionDraft) {
+function buildCreateInput(draft: MediaServerConnectionDraft, plexAuthToken: string | null) {
   const supportsAuth = draft.provider === "jellyfin" || draft.provider === "plex";
   const input: Record<string, unknown> = {
     provider: draft.provider,
@@ -129,26 +136,30 @@ function buildCreateInput(draft: MediaServerConnectionDraft) {
     pathMappings: parsePathMappings(draft.pathMappingsText),
   };
 
-  const machineId = normalizeOptional(draft.machineId);
   const apiKey = normalizeOptional(draft.apiKey);
   const adminUsername = normalizeOptional(draft.adminUsername);
   const adminPassword = normalizeOptional(draft.adminPassword);
-  if (draft.provider === "plex" && machineId) input.machineId = machineId;
-  if ((draft.provider === "jellyfin" || draft.provider === "emby") && apiKey) input.apiKey = apiKey;
-  if (draft.provider === "jellyfin" && adminUsername) input.adminUsername = adminUsername;
-  if (draft.provider === "jellyfin" && adminPassword) input.adminPassword = adminPassword;
+  if (draft.provider === "plex" && draft.plexServerId && plexAuthToken) {
+    input.plexServerId = draft.plexServerId;
+    input.plexAuthToken = plexAuthToken;
+  }
+  if (draft.provider === "emby" && apiKey) input.apiKey = apiKey;
+  if (draft.provider === "jellyfin" && draft.jellyfinCredentialMode === "apiKey" && apiKey) {
+    input.apiKey = apiKey;
+  }
+  if (draft.provider === "jellyfin" && draft.jellyfinCredentialMode === "adminLogin") {
+    if (adminUsername) input.adminUsername = adminUsername;
+    if (adminPassword) input.adminPassword = adminPassword;
+  }
   return input;
 }
 
-function buildUpdateInput(id: string, draft: MediaServerConnectionDraft) {
-  const input = buildCreateInput(draft);
+function buildUpdateInput(id: string, draft: MediaServerConnectionDraft, plexAuthToken: string | null) {
+  const input = buildCreateInput(draft, plexAuthToken);
   const apiKey = normalizeOptional(draft.apiKey);
   input.id = id;
   if (!apiKey) delete input.apiKey;
   if (draft.clearApiKey) input.clearApiKey = true;
-  if (!normalizeOptional(draft.machineId) && draft.provider === "plex") {
-    input.clearMachineId = true;
-  }
   return input;
 }
 
@@ -174,6 +185,10 @@ export function SettingsMediaServersContainer() {
     useState<MediaServerConnection | null>(null);
   const [pendingEditorAction, setPendingEditorAction] =
     useState<PendingMediaServerEditorAction>(null);
+  const [plexDiscoveryToken, setPlexDiscoveryToken] = useState<string | null>(null);
+  const [plexServerOptions, setPlexServerOptions] = useState<PlexServerDiscovery[]>([]);
+  const [plexDiscoveryBusy, setPlexDiscoveryBusy] = useState(false);
+  const [editorError, setEditorError] = useState<string | null>(null);
 
   const isDraftDirty = JSON.stringify(draft) !== JSON.stringify(draftBaseline);
 
@@ -211,6 +226,9 @@ export function SettingsMediaServersContainer() {
     const nextDraft = cloneDraft(DEFAULT_MEDIA_SERVER_DRAFT);
     setDraft(nextDraft);
     setDraftBaseline(cloneDraft(nextDraft));
+    setPlexDiscoveryToken(null);
+    setPlexServerOptions([]);
+    setEditorError(null);
   }, []);
 
   const openCreateEditor = useCallback(() => {
@@ -218,6 +236,9 @@ export function SettingsMediaServersContainer() {
     setEditingConnectionId(null);
     setDraft(nextDraft);
     setDraftBaseline(cloneDraft(nextDraft));
+    setPlexDiscoveryToken(null);
+    setPlexServerOptions([]);
+    setEditorError(null);
     setEditorMode("create");
     setIsEditorOpen(true);
   }, []);
@@ -227,6 +248,9 @@ export function SettingsMediaServersContainer() {
     setEditingConnectionId(connection.id);
     setDraft(nextDraft);
     setDraftBaseline(cloneDraft(nextDraft));
+    setPlexDiscoveryToken(null);
+    setPlexServerOptions([]);
+    setEditorError(null);
     setEditorMode("edit");
     setIsEditorOpen(true);
     setGlobalStatus(t("status.editingMediaServer", { name: connection.displayName }));
@@ -277,12 +301,56 @@ export function SettingsMediaServersContainer() {
     setPendingEditorAction(null);
   }, [openCreateEditor, openEditEditor, pendingEditorAction, resetDraft]);
 
+  const discoverPlexServers = useCallback(async () => {
+    setPlexDiscoveryBusy(true);
+    try {
+      const token = await authenticateWithPlexPin();
+      const { data, error } = await client
+        .mutation<{ discoverPlexMediaServers?: PlexServerDiscovery[] }>(
+          discoverPlexMediaServersMutation,
+          { plexAuthToken: token },
+        )
+        .toPromise();
+      if (error) throw error;
+      const servers = data?.discoverPlexMediaServers ?? [];
+      setPlexDiscoveryToken(token);
+      setPlexServerOptions(servers);
+      setDraft((previous) => ({
+        ...previous,
+        plexServerId: servers.length === 1 ? servers[0].id : previous.plexServerId,
+      }));
+      setGlobalStatus(
+        servers.length > 0
+          ? t("status.plexServersDiscovered")
+          : t("settings.plexServerDiscoveryEmpty"),
+      );
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+    } finally {
+      setPlexDiscoveryBusy(false);
+    }
+  }, [client, setGlobalStatus, t]);
+
   const submitConnection = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setEditorError(null);
     const name = draft.displayName.trim();
     const baseUrl = draft.baseUrl.trim();
     if (!name || (draft.provider !== "plex" && !baseUrl)) {
-      setGlobalStatus(t("settings.mediaServerValidation"));
+      const message = t("settings.mediaServerValidation");
+      setEditorError(message);
+      setGlobalStatus(message);
+      return;
+    }
+    if (
+      draft.provider === "plex" &&
+      (draft.loginEnabled || draft.linkingEnabled || draft.autoAddEnabled) &&
+      !draft.machineIdPresent &&
+      !draft.plexServerId
+    ) {
+      const message = t("settings.plexServerDiscoveryRequired");
+      setEditorError(message);
+      setGlobalStatus(message);
       return;
     }
 
@@ -290,13 +358,13 @@ export function SettingsMediaServersContainer() {
     try {
       if (editingConnectionId) {
         const { error } = await client.mutation(updateMediaServerConnectionMutation, {
-          input: buildUpdateInput(editingConnectionId, draft),
+          input: buildUpdateInput(editingConnectionId, draft, plexDiscoveryToken),
         }).toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.mediaServerUpdated"));
       } else {
         const { error } = await client.mutation(createMediaServerConnectionMutation, {
-          input: buildCreateInput(draft),
+          input: buildCreateInput(draft, plexDiscoveryToken),
         }).toPromise();
         if (error) throw error;
         setGlobalStatus(t("status.mediaServerCreated"));
@@ -309,7 +377,9 @@ export function SettingsMediaServersContainer() {
       notifyExternalAccountInviteSourcesChanged();
     } catch (error) {
       if (!isReportedConnectionFeedbackError(error)) {
-        setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+        const message = error instanceof Error ? error.message : t("status.failedToUpdate");
+        setEditorError(message);
+        setGlobalStatus(message);
       }
     } finally {
       setMutatingConnectionId(null);
@@ -331,8 +401,13 @@ export function SettingsMediaServersContainer() {
           server: connection.displayName,
         }),
         run: async () => {
+          const plexAuthToken =
+            connection.provider === "plex" ? await authenticateWithPlexPin() : null;
           const { data, error } = await client
-            .mutation(testMediaServerConnectionMutation, { id: connection.id })
+            .mutation(testMediaServerConnectionMutation, {
+              id: connection.id,
+              plexAuthToken,
+            })
             .toPromise();
           if (error) throw error;
           if (!data?.testMediaServerConnection) {
@@ -431,6 +506,10 @@ export function SettingsMediaServersContainer() {
         deleteConnection={deleteConnection}
         resetDraft={requestCloseEditor}
         startCreateConnection={requestCreateEditor}
+        plexServerOptions={plexServerOptions}
+        plexDiscoveryBusy={plexDiscoveryBusy}
+        discoverPlexServers={discoverPlexServers}
+        editorError={editorError}
       />
       <ConfirmDialog
         open={pendingEditorAction !== null}

@@ -207,6 +207,16 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
             ActivitySeverity::Info,
             format!("Requested '{}' for catalog review.", data.title_name),
         ),
+        DomainEventPayload::MediaRequestUpdated(data) => (
+            ActivityKind::SystemNotice,
+            ActivitySeverity::Info,
+            format!("Updated request for '{}'.", data.title_name),
+        ),
+        DomainEventPayload::MediaRequestCanceled(data) => (
+            ActivityKind::SystemNotice,
+            ActivitySeverity::Info,
+            format!("Canceled request for '{}'.", data.title_name),
+        ),
         DomainEventPayload::ImportRecoveryCompleted(data) => (
             ActivityKind::SystemNotice,
             ActivitySeverity::Warning,

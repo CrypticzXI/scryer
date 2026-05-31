@@ -4,26 +4,42 @@ import { useClient } from "urql";
 import { RequestsView } from "@/components/views/requests-view";
 import {
   approveMediaRequestMutation,
+  cancelMyMediaRequestMutation,
   dismissMediaRequestMutation,
+  updateMyMediaRequestMutation,
 } from "@/lib/graphql/mutations";
 import {
   mediaRequestAdminLibrariesQuery,
+  mediaRequestRequesterLibrariesQuery,
   mediaRequestsQuery,
+  myMediaRequestsQuery,
   qualityProfileOptionsQuery,
 } from "@/lib/graphql/queries";
 import type { Facet, LibraryRecord, MediaRequestRecord } from "@/lib/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
+import { useAuth } from "@/lib/hooks/use-auth";
 import { useMediaRequestsSubscription } from "@/lib/hooks/use-media-requests-subscription";
+import {
+  hasAnyLibraryPermission,
+  LIBRARY_PERMISSIONS,
+} from "@/lib/utils/permissions";
 
 type RequestsContainerProps = {
   facet: Facet;
 };
 
+type RequestsMode = "admin" | "mine";
+
 type QualityProfileOption = {
   id: string;
   name: string;
+};
+
+type UpdateRequestValues = {
+  requestedQualityProfileId: string;
+  requestedMonitorType?: string;
 };
 
 function externalIdKey(source: string, value: string): string {
@@ -112,6 +128,12 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
+  const { user } = useAuth();
+  const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
+  const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
+  const [mode, setMode] = React.useState<RequestsMode>(
+    canManageTitle ? "admin" : "mine",
+  );
   const [libraries, setLibraries] = React.useState<LibraryRecord[]>([]);
   const [selectedLibraryIds, setSelectedLibraryIds] = React.useState<string[]>([]);
   const [requests, setRequests] = React.useState<MediaRequestRecord[]>([]);
@@ -121,17 +143,35 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   const [loading, setLoading] = React.useState(false);
   const [actionRequestId, setActionRequestId] = React.useState<string | null>(null);
 
+  React.useEffect(() => {
+    setMode(canManageTitle ? "admin" : "mine");
+  }, [canManageTitle, user?.id]);
+
+  React.useEffect(() => {
+    if (mode === "admin" && !canManageTitle) {
+      setMode("mine");
+    } else if (mode === "mine" && !canRequestMedia && canManageTitle) {
+      setMode("admin");
+    }
+  }, [canManageTitle, canRequestMedia, mode]);
+
   const refresh = React.useCallback(async () => {
     setLoading(true);
     try {
+      const librariesQuery =
+        mode === "admin"
+          ? mediaRequestAdminLibrariesQuery
+          : mediaRequestRequesterLibrariesQuery;
+      const requestsQuery = mode === "admin" ? mediaRequestsQuery : myMediaRequestsQuery;
+      const requestStatus = mode === "admin" ? "pending" : null;
       const [librariesResult, requestsResult, qualityProfilesResult] = await Promise.all([
-        client.query(mediaRequestAdminLibrariesQuery, {
+        client.query(librariesQuery, {
           facet,
         }).toPromise(),
-        client.query(mediaRequestsQuery, {
+        client.query(requestsQuery, {
           facet,
           libraryIds: selectedLibraryIds.length > 0 ? selectedLibraryIds : null,
-          status: "pending",
+          status: requestStatus,
         }).toPromise(),
         client.query(qualityProfileOptionsQuery, {}).toPromise(),
       ]);
@@ -139,7 +179,15 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       if (requestsResult.error) throw requestsResult.error;
       if (qualityProfilesResult.error) throw qualityProfilesResult.error;
       setLibraries((librariesResult.data?.libraries ?? []) as LibraryRecord[]);
-      setRequests(collapseMediaRequests((requestsResult.data?.mediaRequests ?? []) as MediaRequestRecord[]));
+      const loadedRequests =
+        mode === "admin"
+          ? requestsResult.data?.mediaRequests
+          : requestsResult.data?.myMediaRequests;
+      setRequests(
+        mode === "admin"
+          ? collapseMediaRequests((loadedRequests ?? []) as MediaRequestRecord[])
+          : ((loadedRequests ?? []) as MediaRequestRecord[]),
+      );
       setQualityProfileOptions(
         (
           qualityProfilesResult.data?.qualityProfileSettings?.profiles ?? []
@@ -153,7 +201,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
     } finally {
       setLoading(false);
     }
-  }, [client, facet, selectedLibraryIds, setGlobalStatus, t]);
+  }, [client, facet, mode, selectedLibraryIds, setGlobalStatus, t]);
 
   React.useEffect(() => {
     void refresh();
@@ -166,7 +214,11 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
 
   React.useEffect(() => {
     setSelectedLibraryIds([]);
-  }, [facet]);
+  }, [facet, mode]);
+
+  const changeMode = React.useCallback((nextMode: RequestsMode) => {
+    setMode(nextMode);
+  }, []);
 
   const approveRequest = React.useCallback(
     async (request: MediaRequestRecord, qualityProfileId: string) => {
@@ -226,8 +278,66 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
     [actionRequestId, client, refresh, setGlobalStatus, t],
   );
 
+  const updateRequest = React.useCallback(
+    async (request: MediaRequestRecord, values: UpdateRequestValues) => {
+      if (actionRequestId) {
+        return;
+      }
+
+      setActionRequestId(request.id);
+      try {
+        const { error } = await client
+          .mutation(updateMyMediaRequestMutation, {
+            input: {
+              requestId: request.id,
+              requestedQualityProfileId: values.requestedQualityProfileId,
+              requestedMonitorType: values.requestedMonitorType ?? null,
+            },
+          })
+          .toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.requestUpdated", { name: request.title }));
+        dispatchNavigationBadgesRefresh();
+        await refresh();
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+      } finally {
+        setActionRequestId(null);
+      }
+    },
+    [actionRequestId, client, refresh, setGlobalStatus, t],
+  );
+
+  const cancelRequest = React.useCallback(
+    async (request: MediaRequestRecord) => {
+      if (actionRequestId) {
+        return;
+      }
+
+      setActionRequestId(request.id);
+      try {
+        const { error } = await client
+          .mutation(cancelMyMediaRequestMutation, { input: { requestId: request.id } })
+          .toPromise();
+        if (error) throw error;
+        setGlobalStatus(t("status.requestCanceled", { name: request.title }));
+        dispatchNavigationBadgesRefresh();
+        await refresh();
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+      } finally {
+        setActionRequestId(null);
+      }
+    },
+    [actionRequestId, client, refresh, setGlobalStatus, t],
+  );
+
   return (
     <RequestsView
+      mode={mode}
+      canShowAdminMode={canManageTitle}
+      canShowRequesterMode={canRequestMedia}
+      onModeChange={changeMode}
       libraries={libraries}
       selectedLibraryIds={selectedLibraryIds}
       onSelectedLibraryIdsChange={setSelectedLibraryIds}
@@ -240,6 +350,8 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
         void approveRequest(request, qualityProfileId)
       }
       onDismiss={(request) => void dismissRequest(request)}
+      onUpdateRequest={(request, values) => void updateRequest(request, values)}
+      onCancelRequest={(request) => void cancelRequest(request)}
     />
   );
 }

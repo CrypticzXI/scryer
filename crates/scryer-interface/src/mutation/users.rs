@@ -88,12 +88,15 @@ impl UserMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let user = if input.user_id == actor.id {
-            let current_password = input.current_password.ok_or_else(|| {
-                to_gql_error(AppError::Validation("current password is required".into()))
-            })?;
-            app.change_own_password(&actor, input.password, current_password)
-                .await
-                .map_err(to_gql_error)?
+            if let Some(current_password) = input.current_password {
+                app.change_own_password(&actor, input.password, current_password)
+                    .await
+                    .map_err(to_gql_error)?
+            } else {
+                app.set_initial_own_password(&actor, input.password)
+                    .await
+                    .map_err(to_gql_error)?
+            }
         } else {
             app.set_user_password(&actor, &input.user_id, input.password)
                 .await

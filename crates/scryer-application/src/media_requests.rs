@@ -8,6 +8,7 @@ use scryer_domain::{
 use std::collections::BTreeSet;
 
 const TITLE_QUALITY_PROFILE_TAG_PREFIX: &str = "scryer:quality-profile:";
+const TITLE_MONITOR_TYPE_TAG_PREFIX: &str = "scryer:monitor-type:";
 
 #[derive(Clone, Debug)]
 pub struct SubmitMediaRequestInput {
@@ -23,6 +24,7 @@ pub struct SubmitMediaRequestInput {
     pub language: Option<String>,
     pub content_status: Option<String>,
     pub requested_quality_profile_id: Option<String>,
+    pub requested_monitor_type: Option<String>,
     pub external_ids: Vec<ExternalId>,
 }
 
@@ -44,6 +46,13 @@ pub struct ListMediaRequestsInput {
     pub facet: Option<MediaFacet>,
     pub library_ids: Option<Vec<String>>,
     pub status: Option<MediaRequestStatus>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UpdateMediaRequestInput {
+    pub request_id: String,
+    pub requested_quality_profile_id: String,
+    pub requested_monitor_type: Option<String>,
 }
 
 impl AppUseCase {
@@ -96,6 +105,8 @@ impl AppUseCase {
                 input.requested_quality_profile_id,
             )
             .await?;
+        let requested_monitor_type =
+            normalize_requested_monitor_type(&input.facet, input.requested_monitor_type)?;
 
         let request = NewMediaRequest {
             id: Id::new().0,
@@ -113,6 +124,7 @@ impl AppUseCase {
             content_status: normalized_optional_string(input.content_status),
             requested_quality_profile_id: Some(requested_quality_profile_id),
             requested_quality_profile_name: Some(requested_quality_profile_name),
+            requested_monitor_type,
             external_ids,
             created_by_user_id: actor.id.clone(),
         };
@@ -128,6 +140,7 @@ impl AppUseCase {
                 year: request.year,
                 requested_quality_profile_id: request.requested_quality_profile_id.clone(),
                 requested_quality_profile_name: request.requested_quality_profile_name.clone(),
+                requested_monitor_type: request.requested_monitor_type.clone(),
             }),
         );
 
@@ -173,6 +186,45 @@ impl AppUseCase {
                 facet: input.facet,
                 library_ids: Some(library_ids),
                 status: input.status,
+                requester_user_id: None,
+            })
+            .await
+    }
+
+    pub async fn list_my_media_requests(
+        &self,
+        actor: &User,
+        input: ListMediaRequestsInput,
+    ) -> AppResult<Vec<MediaRequest>> {
+        let allowed_ids = self
+            .library_ids_with_library_permission(
+                actor,
+                input.facet.clone(),
+                LibraryPermission::Request,
+            )
+            .await?;
+        let allowed_ids = allowed_ids.into_iter().collect::<HashSet<_>>();
+
+        let library_ids = match input.library_ids {
+            Some(requested_ids) => requested_ids
+                .into_iter()
+                .filter(|id| allowed_ids.contains(id))
+                .collect::<Vec<_>>(),
+            None => allowed_ids.into_iter().collect::<Vec<_>>(),
+        };
+
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.services
+            .catalog
+            .media_requests
+            .list(MediaRequestQuery {
+                facet: input.facet,
+                library_ids: Some(library_ids),
+                status: input.status,
+                requester_user_id: Some(actor.id.clone()),
             })
             .await
     }
@@ -276,6 +328,82 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn update_my_media_request(
+        &self,
+        actor: &User,
+        input: UpdateMediaRequestInput,
+    ) -> AppResult<MediaRequest> {
+        let request = self
+            .load_requester_pending_media_request(actor, &input.request_id)
+            .await?;
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(&request.library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("library not found".into()))?;
+        let (requested_quality_profile_id, requested_quality_profile_name) = self
+            .request_quality_profile_snapshot_for_submission(
+                &library,
+                Some(input.requested_quality_profile_id),
+            )
+            .await?;
+        let requested_monitor_type =
+            normalize_requested_monitor_type(&request.facet, input.requested_monitor_type)?;
+        let updated_event = new_global_domain_event(
+            Some(actor.id.clone()),
+            DomainEventPayload::MediaRequestUpdated(media_request_submitted_event_data(
+                &request,
+                Some(requested_quality_profile_id.clone()),
+                Some(requested_quality_profile_name.clone()),
+                requested_monitor_type.clone(),
+            )),
+        );
+
+        self.services
+            .catalog
+            .media_requests
+            .update_pending_request_preferences(
+                &request.id,
+                requested_quality_profile_id,
+                requested_quality_profile_name,
+                requested_monitor_type,
+                updated_event,
+            )
+            .await
+    }
+
+    pub async fn cancel_my_media_request(&self, actor: &User, request_id: &str) -> AppResult<u64> {
+        let request = self
+            .load_requester_pending_media_request(actor, request_id)
+            .await?;
+        let canceled_at = chrono::Utc::now();
+        let canceled_event = new_global_domain_event(
+            Some(actor.id.clone()),
+            DomainEventPayload::MediaRequestCanceled(media_request_resolved_event_data(
+                &request, None, None, None,
+            )),
+        );
+
+        self.services
+            .catalog
+            .media_requests
+            .resolve_pending(
+                &request.id,
+                MediaRequestResolution {
+                    status: MediaRequestStatus::Canceled,
+                    resolved_by_user_id: actor.id.clone(),
+                    resolved_at: canceled_at,
+                    created_title_id: None,
+                    approved_quality_profile_id: None,
+                    approved_quality_profile_name: None,
+                    event: canceled_event,
+                },
+            )
+            .await
+    }
+
     pub async fn pending_media_request_counts(
         &self,
         actor: &User,
@@ -302,6 +430,17 @@ impl AppUseCase {
             .is_empty())
     }
 
+    pub async fn can_access_media_requests(&self, actor: &User) -> AppResult<bool> {
+        if self.can_manage_media_requests(actor).await? {
+            return Ok(true);
+        }
+
+        Ok(!self
+            .library_ids_with_library_permission(actor, None, LibraryPermission::Request)
+            .await?
+            .is_empty())
+    }
+
     pub async fn list_media_request_lifecycle_events_for_manager(
         &self,
         actor: &User,
@@ -319,11 +458,7 @@ impl AppUseCase {
 
         let target_len = if limit == 0 { 100 } else { limit.min(500) };
         let mut page_filter = DomainEventFilter {
-            event_types: Some(vec![
-                DomainEventType::MediaRequestSubmitted,
-                DomainEventType::MediaRequestApproved,
-                DomainEventType::MediaRequestRejected,
-            ]),
+            event_types: Some(media_request_lifecycle_event_types()),
             after_sequence: Some(after_sequence),
             limit: 500,
             ..DomainEventFilter::default()
@@ -347,6 +482,75 @@ impl AppUseCase {
                 if media_request_lifecycle_event_library_id(&event)
                     .is_some_and(|library_id| allowed_library_ids.contains(library_id))
                 {
+                    visible.push(event);
+                    if visible.len() >= target_len {
+                        return Ok(visible);
+                    }
+                }
+            }
+
+            if batch_len < 500 {
+                break;
+            }
+
+            page_filter.after_sequence = next_sequence;
+        }
+
+        Ok(visible)
+    }
+
+    pub async fn list_media_request_lifecycle_events_for_actor(
+        &self,
+        actor: &User,
+        after_sequence: i64,
+        limit: usize,
+    ) -> AppResult<Vec<DomainEvent>> {
+        let manageable_library_ids = self
+            .library_ids_with_library_permission(actor, None, LibraryPermission::ManageTitles)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let requestable_library_ids = self
+            .library_ids_with_library_permission(actor, None, LibraryPermission::Request)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if manageable_library_ids.is_empty() && requestable_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let target_len = if limit == 0 { 100 } else { limit.min(500) };
+        let mut page_filter = DomainEventFilter {
+            event_types: Some(media_request_lifecycle_event_types()),
+            after_sequence: Some(after_sequence),
+            limit: 500,
+            ..DomainEventFilter::default()
+        };
+        let mut visible = Vec::new();
+
+        loop {
+            let events = self
+                .services
+                .events
+                .domain_events
+                .list(&page_filter)
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+
+            let next_sequence = events.last().map(|event| event.sequence);
+            let batch_len = events.len();
+            for event in events {
+                let Some(library_id) = media_request_lifecycle_event_library_id(&event) else {
+                    continue;
+                };
+                let is_manageable = manageable_library_ids.contains(library_id);
+                let is_owned_request = requestable_library_ids.contains(library_id)
+                    && self
+                        .media_request_event_belongs_to_actor(actor, &event)
+                        .await?;
+                if is_manageable || is_owned_request {
                     visible.push(event);
                     if visible.len() >= target_len {
                         return Ok(visible);
@@ -394,6 +598,63 @@ impl AppUseCase {
         )
         .await?;
         Ok(request)
+    }
+
+    async fn load_requester_pending_media_request(
+        &self,
+        actor: &User,
+        request_id: &str,
+    ) -> AppResult<MediaRequest> {
+        let request_id = request_id.trim();
+        if request_id.is_empty() {
+            return Err(AppError::Validation("media request id is required".into()));
+        }
+
+        let request = self
+            .services
+            .catalog
+            .media_requests
+            .get(request_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("media request not found".into()))?;
+
+        self.require_library_permission(actor, &request.library_id, LibraryPermission::Request)
+            .await?;
+
+        if !request
+            .requesters
+            .iter()
+            .any(|requester| requester.user_id == actor.id)
+        {
+            return Err(AppError::Unauthorized(
+                "You do not own this media request".to_string(),
+            ));
+        }
+
+        if request.status != MediaRequestStatus::Pending {
+            return Err(AppError::Validation(
+                "media request is no longer pending".into(),
+            ));
+        }
+
+        Ok(request)
+    }
+
+    async fn media_request_event_belongs_to_actor(
+        &self,
+        actor: &User,
+        event: &DomainEvent,
+    ) -> AppResult<bool> {
+        let Some(request_id) = media_request_lifecycle_event_request_id(event) else {
+            return Ok(false);
+        };
+        let Some(request) = self.services.catalog.media_requests.get(request_id).await? else {
+            return Ok(false);
+        };
+        Ok(request
+            .requesters
+            .iter()
+            .any(|requester| requester.user_id == actor.id))
     }
 
     async fn ensure_request_subject_is_not_in_library(
@@ -492,11 +753,34 @@ fn media_request_identity_fingerprint(external_ids: &[ExternalId]) -> String {
     )
 }
 
+fn media_request_lifecycle_event_types() -> Vec<DomainEventType> {
+    vec![
+        DomainEventType::MediaRequestSubmitted,
+        DomainEventType::MediaRequestUpdated,
+        DomainEventType::MediaRequestApproved,
+        DomainEventType::MediaRequestRejected,
+        DomainEventType::MediaRequestCanceled,
+    ]
+}
+
+fn media_request_lifecycle_event_request_id(event: &DomainEvent) -> Option<&str> {
+    match &event.payload {
+        DomainEventPayload::MediaRequestSubmitted(data)
+        | DomainEventPayload::MediaRequestUpdated(data) => Some(data.request_id.as_str()),
+        DomainEventPayload::MediaRequestApproved(data)
+        | DomainEventPayload::MediaRequestRejected(data)
+        | DomainEventPayload::MediaRequestCanceled(data) => Some(data.request_id.as_str()),
+        _ => None,
+    }
+}
+
 fn media_request_lifecycle_event_library_id(event: &DomainEvent) -> Option<&str> {
     match &event.payload {
-        DomainEventPayload::MediaRequestSubmitted(data) => Some(data.library_id.as_str()),
+        DomainEventPayload::MediaRequestSubmitted(data)
+        | DomainEventPayload::MediaRequestUpdated(data) => Some(data.library_id.as_str()),
         DomainEventPayload::MediaRequestApproved(data)
-        | DomainEventPayload::MediaRequestRejected(data) => Some(data.library_id.as_str()),
+        | DomainEventPayload::MediaRequestRejected(data)
+        | DomainEventPayload::MediaRequestCanceled(data) => Some(data.library_id.as_str()),
         _ => None,
     }
 }
@@ -531,8 +815,29 @@ fn media_request_resolved_event_data(
         created_title_id,
         requested_quality_profile_id: request.requested_quality_profile_id.clone(),
         requested_quality_profile_name: request.requested_quality_profile_name.clone(),
+        requested_monitor_type: request.requested_monitor_type.clone(),
         approved_quality_profile_id,
         approved_quality_profile_name,
+    }
+}
+
+fn media_request_submitted_event_data(
+    request: &MediaRequest,
+    requested_quality_profile_id: Option<String>,
+    requested_quality_profile_name: Option<String>,
+    requested_monitor_type: Option<String>,
+) -> MediaRequestSubmittedEventData {
+    MediaRequestSubmittedEventData {
+        request_id: request.id.clone(),
+        library_id: request.library_id.clone(),
+        facet: request.facet.clone(),
+        title_name: request.title.clone(),
+        external_ids: request.external_ids.clone(),
+        poster_url: request.poster_url.clone(),
+        year: request.year,
+        requested_quality_profile_id,
+        requested_quality_profile_name,
+        requested_monitor_type,
     }
 }
 
@@ -540,14 +845,23 @@ fn media_request_to_new_title(
     request: &MediaRequest,
     quality_profile_id: Option<&str>,
 ) -> NewTitle {
+    let requested_monitor_type = request.requested_monitor_type.as_deref();
+    let monitored = requested_monitor_type
+        .map(monitor_type_to_monitored)
+        .unwrap_or(true);
+    let mut tags = quality_profile_id
+        .map(|profile_id| format!("{TITLE_QUALITY_PROFILE_TAG_PREFIX}{profile_id}"))
+        .into_iter()
+        .collect::<Vec<_>>();
+    if let Some(monitor_type) = requested_monitor_type {
+        tags.push(format!("{TITLE_MONITOR_TYPE_TAG_PREFIX}{monitor_type}"));
+    }
+
     NewTitle {
         name: request.title.clone(),
         facet: request.facet.clone(),
-        monitored: true,
-        tags: quality_profile_id
-            .map(|profile_id| format!("{TITLE_QUALITY_PROFILE_TAG_PREFIX}{profile_id}"))
-            .into_iter()
-            .collect(),
+        monitored,
+        tags,
         external_ids: request.external_ids.clone(),
         min_availability: None,
         poster_url: request.poster_url.clone(),
@@ -559,6 +873,38 @@ fn media_request_to_new_title(
         language: request.language.clone(),
         content_status: request.content_status.clone(),
     }
+}
+
+fn normalize_requested_monitor_type(
+    facet: &MediaFacet,
+    value: Option<String>,
+) -> AppResult<Option<String>> {
+    let Some(value) = normalized_optional_string(value) else {
+        return Ok(match facet {
+            MediaFacet::Movie => None,
+            MediaFacet::Series | MediaFacet::Anime => Some("futureepisodes".to_string()),
+        });
+    };
+    let normalized = value
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && *ch != '-' && *ch != '_')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "monitored"
+        | "unmonitored"
+        | "futureepisodes"
+        | "missingandfutureepisodes"
+        | "allepisodes"
+        | "none" => Ok(Some(normalized)),
+        _ => Err(AppError::Validation(format!(
+            "unsupported request monitor type {value}"
+        ))),
+    }
+}
+
+fn monitor_type_to_monitored(value: &str) -> bool {
+    !matches!(value, "none" | "unmonitored")
 }
 
 fn normalized_optional_string(value: Option<String>) -> Option<String> {

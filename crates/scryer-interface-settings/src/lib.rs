@@ -70,12 +70,16 @@ mod tests {
                     display_name: "Main Jellyfin".to_string(),
                     base_url: Some("https://jellyfin.example.test".to_string()),
                     machine_id: None,
+                    login_enabled: true,
+                    linking_enabled: true,
                 }],
                 allowed_plex_connections: vec![scryer_application::AuthProviderConnection {
                     id: "plex-main".to_string(),
                     display_name: "Main Plex".to_string(),
                     base_url: None,
                     machine_id: Some("machine-1".to_string()),
+                    login_enabled: true,
+                    linking_enabled: true,
                 }],
             });
 
@@ -90,7 +94,7 @@ mod tests {
                 .is_none()
         );
         assert!(payload.allowed_jellyfin_connections[0].base_url.is_none());
-        assert!(payload.allowed_plex_connections[0].machine_id.is_none());
+        assert!(payload.allowed_plex_connections[0].base_url.is_none());
     }
 }
 
@@ -157,14 +161,12 @@ fn auth_provider_connections(
     connections
         .into_iter()
         .map(|connection| AuthProviderConnectionPayload {
-            user_visible_url: connection
-                .base_url
-                .clone()
-                .or_else(|| connection.machine_id.clone()),
+            user_visible_url: connection.base_url.clone(),
             id: connection.id,
             display_name: connection.display_name,
             base_url: connection.base_url,
-            machine_id: connection.machine_id,
+            login_enabled: connection.login_enabled,
+            linking_enabled: connection.linking_enabled,
         })
         .collect()
 }
@@ -179,7 +181,8 @@ fn runtime_auth_provider_connections(
             display_name: connection.display_name,
             user_visible_url: None,
             base_url: None,
-            machine_id: None,
+            login_enabled: connection.login_enabled,
+            linking_enabled: connection.linking_enabled,
         })
         .collect()
 }

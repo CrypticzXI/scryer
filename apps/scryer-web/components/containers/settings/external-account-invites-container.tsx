@@ -67,8 +67,9 @@ function connectionDescriptorsForProvider(
       ? settings.allowedJellyfinConnections
       : settings.allowedPlexConnections;
 
-  if (descriptors.length > 0) {
-    return descriptors;
+  const loginDescriptors = descriptors.filter((connection) => connection.loginEnabled);
+  if (loginDescriptors.length > 0) {
+    return loginDescriptors;
   }
 
   return connectionIdsForProvider(settings, provider).map((id) => ({
@@ -76,7 +77,8 @@ function connectionDescriptorsForProvider(
     displayName: provider === "jellyfin" ? "Jellyfin" : id,
     userVisibleUrl: null,
     baseUrl: null,
-    machineId: null,
+    loginEnabled: true,
+    linkingEnabled: false,
   }));
 }
 
@@ -96,6 +98,8 @@ export function ExternalAccountInvitesContainer() {
   const [invites, setInvites] = useState<LinkedAccount[]>([]);
   const [providerUserOptions, setProviderUserOptions] =
     useState<ExternalInviteProviderUserOption[]>([]);
+  const [providerUserSearchLoading, setProviderUserSearchLoading] = useState(false);
+  const [providerUserLookupError, setProviderUserLookupError] = useState<string | null>(null);
   const [authProviderSettings, setAuthProviderSettings] =
     useState<AuthProviderSettings>(DEFAULT_AUTH_PROVIDER_SETTINGS);
   const [externalInviteDraft, setExternalInviteDraft] =
@@ -104,6 +108,7 @@ export function ExternalAccountInvitesContainer() {
   const [externalInviteSubmitting, setExternalInviteSubmitting] = useState(false);
 
   const updateExternalInviteDraft = useCallback((patch: Partial<ExternalInviteDraft>) => {
+    setProviderUserLookupError(null);
     setExternalInviteDraft((previous) => ({ ...previous, ...patch }));
   }, []);
 
@@ -186,6 +191,9 @@ export function ExternalAccountInvitesContainer() {
         ? previous.connectionId
         : connections[0]?.id ?? "";
 
+      const providerChanged = provider !== previous.provider;
+      const connectionChanged = connectionId !== previous.connectionId;
+
       return {
         ...previous,
         userId: users.some((user) => user.id === previous.userId)
@@ -193,6 +201,9 @@ export function ExternalAccountInvitesContainer() {
           : users[0]?.id ?? "",
         provider,
         connectionId,
+        providerUserIdentifier: providerChanged || connectionChanged
+          ? ""
+          : previous.providerUserIdentifier,
       };
     });
   }, [authProviderSettings, users]);
@@ -203,38 +214,70 @@ export function ExternalAccountInvitesContainer() {
       externalInviteDraft.connectionId.trim().length === 0
     ) {
       setProviderUserOptions([]);
+      setProviderUserSearchLoading(false);
+      setProviderUserLookupError(null);
       return;
     }
 
     let cancelled = false;
-    void client
-      .query(
-        jellyfinServerUsersQuery,
-        { connectionId: externalInviteDraft.connectionId, search: null },
-        { requestPolicy: "network-only" },
-      )
-      .toPromise()
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        if (error) {
+    const search = externalInviteDraft.providerUserIdentifier.trim();
+    setProviderUserSearchLoading(true);
+    setProviderUserLookupError(null);
+
+    const timeoutId = window.setTimeout(() => {
+      void client
+        .query(
+          jellyfinServerUsersQuery,
+          {
+            connectionId: externalInviteDraft.connectionId,
+            search: search.length > 0 ? search : null,
+          },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise()
+        .then(({ data, error }) => {
+          if (cancelled) return;
+          if (error) {
+            setProviderUserOptions([]);
+            setProviderUserLookupError(error.message);
+            return;
+          }
+          setProviderUserOptions(
+            ((data?.jellyfinServerUsers ?? []) as ExternalInviteProviderUserOption[]).map(
+              (user) => ({
+                id: user.id,
+                username: user.username,
+                displayName: user.displayName,
+                avatarUrl: user.avatarUrl,
+              }),
+            ),
+          );
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return;
           setProviderUserOptions([]);
-          return;
-        }
-        setProviderUserOptions(
-          ((data?.jellyfinServerUsers ?? []) as ExternalInviteProviderUserOption[]).map(
-            (user) => ({
-              id: user.id,
-              username: user.username,
-              displayName: user.displayName,
-            }),
-          ),
-        );
-      });
+          setProviderUserLookupError(
+            error instanceof Error ? error.message : t("settings.jellyfinUserSearchFailed"),
+          );
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setProviderUserSearchLoading(false);
+          }
+        });
+    }, search.length > 0 ? 250 : 0);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
-  }, [client, externalInviteDraft.connectionId, externalInviteDraft.provider]);
+  }, [
+    client,
+    externalInviteDraft.connectionId,
+    externalInviteDraft.provider,
+    externalInviteDraft.providerUserIdentifier,
+    t,
+  ]);
 
   const createExternalAccountInvite = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -278,6 +321,8 @@ export function ExternalAccountInvitesContainer() {
       users={users}
       invites={invites}
       providerUserOptions={providerUserOptions}
+      providerUserSearchLoading={providerUserSearchLoading}
+      providerUserLookupError={providerUserLookupError}
       authProviderSettings={authProviderSettings}
       loading={loading}
       externalInviteDraft={externalInviteDraft}

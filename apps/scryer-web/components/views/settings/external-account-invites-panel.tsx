@@ -1,8 +1,21 @@
-import type * as React from "react";
-import { Loader2, Plus } from "lucide-react";
+import * as React from "react";
+import { Check, ChevronsUpDown, Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -35,12 +48,15 @@ export type ExternalInviteProviderUserOption = {
   id: string;
   username: string;
   displayName: string | null;
+  avatarUrl: string | null;
 };
 
 type ExternalAccountInvitesPanelProps = {
   users: ExternalInviteUser[];
   invites: LinkedAccount[];
   providerUserOptions: ExternalInviteProviderUserOption[];
+  providerUserSearchLoading: boolean;
+  providerUserLookupError: string | null;
   authProviderSettings: AuthProviderSettings;
   loading: boolean;
   externalInviteDraft: ExternalInviteDraft;
@@ -69,8 +85,9 @@ function providerConnections(
       ? settings.allowedJellyfinConnections
       : settings.allowedPlexConnections;
 
-  if (descriptors.length > 0) {
-    return descriptors;
+  const loginDescriptors = descriptors.filter((connection) => connection.loginEnabled);
+  if (loginDescriptors.length > 0) {
+    return loginDescriptors;
   }
 
   const ids =
@@ -83,7 +100,8 @@ function providerConnections(
     displayName: provider === "jellyfin" ? "Jellyfin" : id,
     userVisibleUrl: null,
     baseUrl: null,
-    machineId: null,
+    loginEnabled: true,
+    linkingEnabled: false,
   }));
 }
 
@@ -141,6 +159,183 @@ function providerIdentityLabel(account: LinkedAccount): string {
   return account.externalUserId ? `${name} (${account.externalUserId})` : name;
 }
 
+function ProviderAvatar({
+  avatarUrl,
+  label,
+}: {
+  avatarUrl: string | null | undefined;
+  label: string;
+}) {
+  return avatarUrl ? (
+    <img
+      src={avatarUrl}
+      alt=""
+      className="h-7 w-7 shrink-0 rounded-full border border-border object-cover"
+      loading="lazy"
+    />
+  ) : (
+    <span
+      aria-hidden="true"
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-xs font-medium text-muted-foreground"
+    >
+      {label.trim().slice(0, 1).toUpperCase() || "?"}
+    </span>
+  );
+}
+
+function JellyfinProviderUserCombobox({
+  id,
+  value,
+  options,
+  selectedOption,
+  loading,
+  disabled,
+  placeholder,
+  emptyLabel,
+  loadingLabel,
+  manualEntryLabel,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  options: ExternalInviteProviderUserOption[];
+  selectedOption: ExternalInviteProviderUserOption | null;
+  loading: boolean;
+  disabled: boolean;
+  placeholder: string;
+  emptyLabel: string;
+  loadingLabel: string;
+  manualEntryLabel: (value: string) => string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const normalizedValue = value.trim().toLocaleLowerCase();
+  const filteredOptions = React.useMemo(() => {
+    if (!normalizedValue) {
+      return options;
+    }
+
+    return options.filter((option) => {
+      const searchable = [
+        option.username,
+        option.id,
+        option.displayName ?? "",
+      ]
+        .join(" ")
+        .toLocaleLowerCase();
+      return searchable.includes(normalizedValue);
+    });
+  }, [normalizedValue, options]);
+  const showManualEntry = normalizedValue.length > 0 && !selectedOption;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="h-10 w-full justify-between px-3 text-left font-normal"
+          disabled={disabled}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            {selectedOption ? (
+              <ProviderAvatar
+                avatarUrl={selectedOption.avatarUrl}
+                label={selectedOption.displayName ?? selectedOption.username}
+              />
+            ) : null}
+            <span
+              className={
+                value.trim()
+                  ? "truncate"
+                  : "truncate text-muted-foreground"
+              }
+            >
+              {selectedOption
+                ? selectedOption.displayName ?? selectedOption.username
+                : value.trim() || placeholder}
+            </span>
+          </span>
+          {loading ? (
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+          ) : (
+            <ChevronsUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[var(--radix-popover-trigger-width)] min-w-64 p-0"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        <Command shouldFilter={false}>
+          <CommandInput
+            value={value}
+            onValueChange={onChange}
+            placeholder={placeholder}
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-form-type="other"
+            name="jellyfin-provider-user-search"
+          />
+          <CommandList>
+            {loading ? (
+              <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>{loadingLabel}</span>
+              </div>
+            ) : null}
+            {!loading && filteredOptions.length === 0 && !showManualEntry ? (
+              <CommandEmpty>{emptyLabel}</CommandEmpty>
+            ) : null}
+            <CommandGroup>
+              {filteredOptions.map((option) => {
+                const label = option.displayName ?? option.username;
+                const selected = selectedOption?.id === option.id;
+                return (
+                  <CommandItem
+                    key={option.id}
+                    value={`${option.username} ${option.displayName ?? ""} ${option.id}`}
+                    onSelect={() => {
+                      onChange(option.username);
+                      setOpen(false);
+                    }}
+                    className="items-center gap-3"
+                  >
+                    <ProviderAvatar avatarUrl={option.avatarUrl} label={label} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{label}</span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {option.username}
+                      </span>
+                    </span>
+                    {selected ? <Check className="h-4 w-4 text-primary" /> : null}
+                  </CommandItem>
+                );
+              })}
+              {showManualEntry ? (
+                <CommandItem
+                  value={`manual ${value}`}
+                  onSelect={() => {
+                    onChange(value.trim());
+                    setOpen(false);
+                  }}
+                >
+                  <span className="truncate">{manualEntryLabel(value.trim())}</span>
+                </CommandItem>
+              ) : null}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function inviteStatus(account: LinkedAccount, t: ReturnType<typeof useTranslate>) {
   if (account.status === "disabled") {
     return {
@@ -173,6 +368,8 @@ export function ExternalAccountInvitesPanel({
   users,
   invites,
   providerUserOptions,
+  providerUserSearchLoading,
+  providerUserLookupError,
   authProviderSettings,
   loading,
   externalInviteDraft,
@@ -184,13 +381,33 @@ export function ExternalAccountInvitesPanel({
   const inviteProviders = inviteProviderOptions(authProviderSettings);
   const inviteConnections = providerConnections(authProviderSettings, externalInviteDraft.provider);
   const providerIdentifierLabelText = providerIdentifierLabel(externalInviteDraft.provider, t);
+  const isJellyfinInvite = externalInviteDraft.provider === "jellyfin";
   const inviteUnavailable = inviteProviders.length === 0 || users.length === 0;
+  const inviteCreateDisabled =
+    externalInviteSubmitting ||
+    !externalInviteDraft.userId ||
+    !externalInviteDraft.connectionId ||
+    externalInviteDraft.providerUserIdentifier.trim().length === 0;
   const usersById = new Map(users.map((user) => [user.id, user.username]));
   const sortedInvites = [...invites].sort((left, right) => {
     const rightTime = new Date(right.createdAt).getTime();
     const leftTime = new Date(left.createdAt).getTime();
     return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
   });
+  const selectedProviderUser = isJellyfinInvite
+    ? providerUserOptions.find((option) =>
+        option.username.localeCompare(
+          externalInviteDraft.providerUserIdentifier,
+          undefined,
+          { sensitivity: "accent" },
+        ) === 0 ||
+        option.id.localeCompare(
+          externalInviteDraft.providerUserIdentifier,
+          undefined,
+          { sensitivity: "accent" },
+        ) === 0,
+      ) ?? null
+    : null;
 
   return (
     <div className="space-y-4 rounded-lg border border-border bg-card/50 p-4">
@@ -245,6 +462,7 @@ export function ExternalAccountInvitesPanel({
                     updateExternalInviteDraft({
                       provider,
                       connectionId: providerConnections(authProviderSettings, provider)[0]?.id ?? "",
+                      providerUserIdentifier: "",
                     });
                   }}
                   disabled={externalInviteSubmitting}
@@ -268,7 +486,10 @@ export function ExternalAccountInvitesPanel({
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                   value={externalInviteDraft.connectionId}
                   onChange={(event) =>
-                    updateExternalInviteDraft({ connectionId: event.target.value })
+                    updateExternalInviteDraft({
+                      connectionId: event.target.value,
+                      providerUserIdentifier: "",
+                    })
                   }
                   disabled={externalInviteSubmitting}
                   required
@@ -282,34 +503,55 @@ export function ExternalAccountInvitesPanel({
               </div>
             ) : null}
             <div className="space-y-1.5">
-              <Label htmlFor="settings-external-invite-provider-identifier">
-                {providerIdentifierLabelText}
-              </Label>
-              <Input
-                id="settings-external-invite-provider-identifier"
-                list={
-                  externalInviteDraft.provider === "jellyfin" && providerUserOptions.length > 0
-                    ? "settings-external-invite-provider-users"
-                    : undefined
-                }
-                value={externalInviteDraft.providerUserIdentifier}
-                onChange={(event) =>
-                  updateExternalInviteDraft({ providerUserIdentifier: event.target.value })
-                }
-                disabled={externalInviteSubmitting}
-                placeholder={providerIdentifierLabelText}
-                required
-              />
-              {externalInviteDraft.provider === "jellyfin" && providerUserOptions.length > 0 ? (
-                <datalist id="settings-external-invite-provider-users">
-                  {providerUserOptions.map((option) => (
-                    <option
-                      key={option.id}
-                      value={option.username}
-                      label={option.displayName ?? option.id}
-                    />
-                  ))}
-                </datalist>
+              <div className="flex min-h-5 items-center justify-between gap-2">
+                <Label htmlFor="settings-external-invite-provider-identifier">
+                  {providerIdentifierLabelText}
+                </Label>
+                {isJellyfinInvite && providerUserSearchLoading ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {t("label.loading")}
+                  </span>
+                ) : null}
+              </div>
+              {isJellyfinInvite ? (
+                <JellyfinProviderUserCombobox
+                  id="settings-external-invite-provider-identifier"
+                  value={externalInviteDraft.providerUserIdentifier}
+                  options={providerUserOptions}
+                  selectedOption={selectedProviderUser}
+                  loading={providerUserSearchLoading}
+                  disabled={externalInviteSubmitting}
+                  placeholder={providerIdentifierLabelText}
+                  emptyLabel={t("settings.jellyfinUserPickerEmpty")}
+                  loadingLabel={t("label.loading")}
+                  manualEntryLabel={(manualValue) =>
+                    t("settings.jellyfinUserPickerManualEntry", { value: manualValue })
+                  }
+                  onChange={(providerUserIdentifier) =>
+                    updateExternalInviteDraft({ providerUserIdentifier })
+                  }
+                />
+              ) : (
+                <Input
+                  id="settings-external-invite-provider-identifier"
+                  type="text"
+                  value={externalInviteDraft.providerUserIdentifier}
+                  onChange={(event) =>
+                    updateExternalInviteDraft({ providerUserIdentifier: event.target.value })
+                  }
+                  disabled={externalInviteSubmitting}
+                  placeholder={providerIdentifierLabelText}
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-form-type="other"
+                  name="external-provider-user-identifier"
+                  required
+                />
+              )}
+              {isJellyfinInvite && providerUserLookupError ? (
+                <p className="text-xs text-destructive">{providerUserLookupError}</p>
               ) : null}
             </div>
             <div className="flex items-end">
@@ -317,7 +559,7 @@ export function ExternalAccountInvitesPanel({
                 id="settings-external-account-invite-create"
                 type="submit"
                 className="min-w-40"
-                disabled={externalInviteSubmitting}
+                disabled={inviteCreateDisabled}
               >
                 {externalInviteSubmitting ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -366,7 +608,15 @@ export function ExternalAccountInvitesPanel({
                     <TableCell>{usersById.get(invite.userId) ?? invite.userId}</TableCell>
                     <TableCell>{providerLabel(invite.provider)}</TableCell>
                     <TableCell>{inviteConnectionLabel(authProviderSettings, invite)}</TableCell>
-                    <TableCell>{providerIdentityLabel(invite)}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <ProviderAvatar
+                          avatarUrl={invite.avatarUrl}
+                          label={invite.displayName ?? invite.username}
+                        />
+                        <span>{providerIdentityLabel(invite)}</span>
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <span
                         className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${status.className}`}

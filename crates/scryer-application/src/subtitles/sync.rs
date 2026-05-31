@@ -4,14 +4,15 @@
 //! 1. Applies policy gates that do not require media analysis.
 //! 2. Parses subtitle timing spans from SRT or ASS/SSA.
 //! 3. Delegates media analysis and alignment to the optional enhanced sync plugin.
-//! 4. Applies the returned constant offset when the plugin reports a safe sync.
+//! 4. Applies the rewritten subtitle bytes returned by the plugin.
 
-use std::{fmt, path::Path, sync::Arc};
+use std::{fmt, io::Write, path::Path, sync::Arc};
 
 use crate::{
     AppError, AppResult,
     ports::{SubtitleSyncClient, SubtitleSyncJob},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use scryer_plugin_sdk::{
     AudioTranscodeCodec, SubtitleSyncAlignResponse, SubtitleSyncAlignSkipReason, SubtitleTimingSpan,
 };
@@ -49,6 +50,23 @@ impl SubtitleTimingFormat {
         match self {
             Self::Srt => "srt",
             Self::Ass => "ass/ssa",
+        }
+    }
+
+    fn sdk_format(self, path: &Path) -> &'static str {
+        match self {
+            Self::Srt => "srt",
+            Self::Ass => {
+                if path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ssa"))
+                {
+                    "ssa"
+                } else {
+                    "ass"
+                }
+            }
         }
     }
 }
@@ -257,9 +275,20 @@ pub async fn sync_subtitle_with_plugin_sync(
         ));
     };
 
+    let subtitle_content = std::fs::read(subtitle_path)
+        .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
+    let subtitle_file_name = subtitle_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string);
+
     let response = match subtitle_sync_client
         .align_subtitle(SubtitleSyncJob {
             input_path: video_path.to_path_buf(),
+            subtitle_content,
+            subtitle_format: subtitle_format.sdk_format(subtitle_path).to_string(),
+            subtitle_file_name,
+            subtitle_encoding_hint: Some("utf-8".to_string()),
             subtitle_spans,
             max_offset_seconds,
             expected_codec: targeted_audio_codec_for_path(video_path),
@@ -298,7 +327,18 @@ pub async fn sync_subtitle_with_plugin_sync(
         return Ok(sync_result_from_plugin_response(subtitle_format, response));
     }
 
-    apply_subtitle_offset(subtitle_path, subtitle_format, response.offset_ms)?;
+    if let Some(rewritten_subtitle) = response.rewritten_subtitle.as_ref() {
+        let bytes = BASE64
+            .decode(&rewritten_subtitle.content_base64)
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "subtitle sync plugin returned invalid rewritten subtitle base64: {error}"
+                ))
+            })?;
+        write_subtitle_atomic(subtitle_path, &bytes)?;
+    } else {
+        apply_subtitle_offset(subtitle_path, subtitle_format, response.offset_ms)?;
+    }
 
     tracing::info!(
         path = %subtitle_path.display(),
@@ -499,8 +539,25 @@ fn apply_subtitle_offset(
         SubtitleTimingFormat::Ass => shift_ass_content(&content, offset_ms),
     };
 
-    std::fs::write(subtitle_path, shifted)
-        .map_err(|e| AppError::Repository(format!("cannot write subtitle file: {e}")))?;
+    write_subtitle_atomic(subtitle_path, shifted.as_bytes())?;
+    Ok(())
+}
+
+fn write_subtitle_atomic(subtitle_path: &Path, bytes: &[u8]) -> AppResult<()> {
+    let parent = subtitle_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty());
+    let mut temp = match parent {
+        Some(parent) => tempfile::NamedTempFile::new_in(parent),
+        None => tempfile::NamedTempFile::new(),
+    }
+    .map_err(|e| AppError::Repository(format!("cannot create subtitle temp file: {e}")))?;
+    temp.write_all(bytes)
+        .and_then(|_| temp.flush())
+        .map_err(|e| AppError::Repository(format!("cannot write subtitle temp file: {e}")))?;
+    let temp_path = temp.into_temp_path();
+    std::fs::rename(&temp_path, subtitle_path)
+        .map_err(|e| AppError::Repository(format!("cannot replace subtitle file: {e}")))?;
     Ok(())
 }
 
@@ -761,6 +818,41 @@ fn format_ass_ts(ms: i64) -> String {
 mod tests {
     use super::*;
 
+    struct RewritingSubtitleSyncClient {
+        expected_subtitle_content: Vec<u8>,
+        rewritten_subtitle_content: Vec<u8>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::SubtitleSyncClient for RewritingSubtitleSyncClient {
+        async fn align_subtitle(
+            &self,
+            job: crate::ports::SubtitleSyncJob,
+        ) -> AppResult<SubtitleSyncAlignResponse> {
+            assert_eq!(job.subtitle_content, self.expected_subtitle_content);
+            assert_eq!(job.subtitle_format, "srt");
+            assert_eq!(job.subtitle_file_name.as_deref(), Some("subtitle.srt"));
+            assert_eq!(job.subtitle_spans.len(), 3);
+            Ok(SubtitleSyncAlignResponse {
+                applied: true,
+                offset_ms: -1000,
+                rewritten_subtitle: Some(scryer_plugin_sdk::SubtitleSyncRewrittenSubtitle {
+                    content_base64: BASE64.encode(&self.rewritten_subtitle_content),
+                    format: "srt".to_string(),
+                }),
+                score: Some(42.0),
+                selected_framerate_ratio: Some(1.0),
+                consistency_ratio: Some(1.0),
+                nosplit_score: Some(42.0),
+                split_score: None,
+                skipped_reason: None,
+                backend: "test-ffsubsync".to_string(),
+                warnings: Vec::new(),
+                message: None,
+            })
+        }
+    }
+
     #[test]
     fn parse_and_format_roundtrip() {
         assert_eq!(parse_srt_ts("00:01:23,456"), Some(83_456));
@@ -889,6 +981,38 @@ Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,note\n";
         let shifted = shift_ass_content(content, 1_500);
         assert!(shifted.contains("Dialogue: 0,0:00:04.50,0:00:06.50,Default,,0,0,0,,Hello, world"));
         assert!(shifted.contains("Comment: 0,0:00:02.50,0:00:03.50,Default,,0,0,0,,note"));
+    }
+
+    #[tokio::test]
+    async fn sync_applies_rewritten_subtitle_bytes_from_plugin() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let subtitle_path = temp_dir.path().join("subtitle.srt");
+        let original = b"1\n00:00:01,000 --> 00:00:02,000\nHello\n\n2\n00:00:03,000 --> 00:00:04,000\nWorld\n\n3\n00:00:05,000 --> 00:00:06,000\nAgain\n".to_vec();
+        let rewritten = b"1\n00:00:00,000 --> 00:00:01,000\nHello\n\n2\n00:00:02,000 --> 00:00:03,000\nWorld\n\n3\n00:00:04,000 --> 00:00:05,000\nAgain\n".to_vec();
+        std::fs::write(&subtitle_path, &original).unwrap();
+
+        let result = sync_subtitle_with_policy_and_plugin_sync(
+            Path::new("/tmp/video.mkv"),
+            &subtitle_path,
+            SyncPolicy {
+                enabled: true,
+                forced: false,
+                score: Some(10),
+                threshold: Some(90),
+                max_offset_seconds: 60,
+            },
+            Some(Arc::new(RewritingSubtitleSyncClient {
+                expected_subtitle_content: original,
+                rewritten_subtitle_content: rewritten.clone(),
+            })),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.applied);
+        assert_eq!(result.offset_ms, -1000);
+        assert_eq!(std::fs::read(&subtitle_path).unwrap(), rewritten);
     }
 
     #[tokio::test]

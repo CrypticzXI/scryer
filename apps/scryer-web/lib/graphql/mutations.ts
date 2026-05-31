@@ -10,6 +10,8 @@ import {
 const AUTH_USER_FIELDS = `
       id
       username
+      hasPassword
+      accountKind
       appPermissions
       libraryPermissions {
         libraryId
@@ -114,6 +116,8 @@ export const createUserMutation = `mutation CreateUser($input: CreateUserInput!)
   createUser(input: $input) {
     id
     username
+    hasPassword
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -126,6 +130,8 @@ export const setUserPasswordMutation = `mutation SetUserPassword($input: SetUser
   setUserPassword(input: $input) {
     id
     username
+    hasPassword
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -138,6 +144,8 @@ export const setUserAppPermissionsMutation = `mutation SetUserAppPermissions($in
   setUserAppPermissions(input: $input) {
     id
     username
+    hasPassword
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -150,6 +158,8 @@ export const setUserLibraryPermissionsMutation = `mutation SetUserLibraryPermiss
   setUserLibraryPermissions(input: $input) {
     id
     username
+    hasPassword
+    accountKind
     appPermissions
     libraryPermissions {
       libraryId
@@ -333,6 +343,27 @@ export const approveMediaRequestMutation = `mutation ApproveMediaRequest($input:
 
 export const dismissMediaRequestMutation = `mutation DismissMediaRequest($input: MediaRequestActionInput!) {
   dismissMediaRequest(input: $input) {
+    accepted
+  }
+}`;
+
+export const updateMyMediaRequestMutation = `mutation UpdateMyMediaRequest($input: UpdateMediaRequestInput!) {
+  updateMyMediaRequest(input: $input) {
+    id
+    libraryId
+    facet
+    status
+    identityFingerprint
+    title
+    requestedQualityProfileId
+    requestedQualityProfileName
+    requestedMonitorType
+    updatedAt
+  }
+}`;
+
+export const cancelMyMediaRequestMutation = `mutation CancelMyMediaRequest($input: MediaRequestActionInput!) {
+  cancelMyMediaRequest(input: $input) {
     accepted
   }
 }`;
@@ -606,14 +637,16 @@ export const updateAuthProviderSettingsMutation = `mutation UpdateAuthProviderSe
       displayName
       userVisibleUrl
       baseUrl
-      machineId
+      loginEnabled
+      linkingEnabled
     }
     allowedPlexConnections {
       id
       displayName
       userVisibleUrl
       baseUrl
-      machineId
+      loginEnabled
+      linkingEnabled
     }
   }
 }`;
@@ -632,8 +665,15 @@ export const deleteMediaServerConnectionMutation = `mutation DeleteMediaServerCo
   deleteMediaServerConnection(id: $id)
 }`;
 
-export const testMediaServerConnectionMutation = `mutation TestMediaServerConnection($id: String!) {
-  testMediaServerConnection(id: $id)
+export const testMediaServerConnectionMutation = `mutation TestMediaServerConnection($id: String!, $plexAuthToken: String) {
+  testMediaServerConnection(id: $id, plexAuthToken: $plexAuthToken)
+}`;
+
+export const discoverPlexMediaServersMutation = `mutation DiscoverPlexMediaServers($plexAuthToken: String!) {
+  discoverPlexMediaServers(plexAuthToken: $plexAuthToken) {
+    id
+    name
+  }
 }`;
 
 export const testJellyfinConnectionMutation = `mutation TestJellyfinConnection($input: TestJellyfinConnectionInput!) {
@@ -1213,6 +1253,7 @@ export const refreshPluginRegistryMutation = `mutation RefreshPluginRegistry {
     sourceUrl
     sourceKind
     blockedReason
+    bytes
     isInstalled
     isEnabled
     installedVersion
@@ -1240,6 +1281,7 @@ export const refreshPluginCatalogMutation = `mutation RefreshPluginCatalog {
     sourceUrl
     sourceKind
     blockedReason
+    bytes
     isInstalled
     isEnabled
     installedVersion
@@ -1381,6 +1423,7 @@ export const inspectManualPluginRepoMutation = `mutation InspectManualPluginRepo
       sourceUrl
       sourceKind
       blockedReason
+      bytes
       isInstalled
       isEnabled
       installedVersion

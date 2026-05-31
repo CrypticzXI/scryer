@@ -19,12 +19,12 @@ use scryer_application::{
     RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY,
     RENAME_MISSING_METADATA_POLICY_KEY, RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
     RENAME_TEMPLATE_ANIME_GLOBAL_KEY, RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY,
-    RENAME_TEMPLATE_SERIES_GLOBAL_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY as TLS_CERT_KEY,
-    TLS_KEY_PATH_KEY as TLS_KEY_KEY, TOTP_REQUIRE_CONFIG_STEP_UP_KEY,
-    TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, default_quality_profile_1080p_for_search,
-    default_quality_profile_for_search,
+    RENAME_TEMPLATE_SERIES_GLOBAL_KEY, REQUEST_QUALITY_PROFILE_IDS_KEY,
+    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY,
+    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    TLS_CERT_PATH_KEY as TLS_CERT_KEY, TLS_KEY_PATH_KEY as TLS_KEY_KEY,
+    TOTP_REQUIRE_CONFIG_STEP_UP_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+    default_quality_profile_1080p_for_search, default_quality_profile_for_search,
 };
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
@@ -388,6 +388,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: QUALITY_PROFILE_ID_KEY,
             data_type: "string",
             default_value_json: "\"4k\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: REQUEST_QUALITY_PROFILE_IDS_KEY,
+            data_type: "json",
+            default_value_json: "[]",
             is_sensitive: false,
         },
         ServiceSettingSeed {

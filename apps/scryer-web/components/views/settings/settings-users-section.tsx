@@ -318,6 +318,7 @@ export function SettingsUsersSection({
             ) : (
               settingsUsers.map((user) => {
                 const isOwnUser = currentUserId === user.id;
+                const canSetPassword = user.accountKind !== "external_auto_provisioned";
                 const appSelected = userAppPermissionDrafts[user.id] ?? user.appPermissions;
                 const libraryDrafts =
                   userLibraryPermissionDrafts[user.id] ??
@@ -369,30 +370,37 @@ export function SettingsUsersSection({
                       </div>
                     </TableCell>
                     <TableCell className="align-middle">
-                      <div className="flex items-center gap-2">
-                        <label className="sr-only" htmlFor={`new-password-${user.id}`}>
-                          {t("settings.newPassword")}
-                        </label>
-                        <Input
-                          id={`new-password-${user.id}`}
-                          value={userPasswordDrafts[user.id] ?? ""}
-                          onChange={(event) => updateUserPasswordDraft(user.id, event.target.value)}
-                          placeholder={t("form.newPasswordPlaceholder")}
-                          type="password"
-                          aria-label={t("settings.newPassword")}
-                        />
-                        <Button
-                          id={selectorId("settings-user-update-password", user.username)}
-                          variant="primary"
-                          size="sm"
-                          className="min-w-44"
-                          onClick={() => void setUserPassword(user.id)}
-                          disabled={mutatingUserId === user.id}
-                        >
-                          <KeyRound className="mr-1 h-3.5 w-3.5" />
-                          {mutatingUserId === user.id ? t("label.saving") : t("settings.updatePassword")}
-                        </Button>
-                      </div>
+                      {canSetPassword ? (
+                        <div className="flex items-center gap-2">
+                          <label className="sr-only" htmlFor={`new-password-${user.id}`}>
+                            {t("settings.newPassword")}
+                          </label>
+                          <Input
+                            id={`new-password-${user.id}`}
+                            value={userPasswordDrafts[user.id] ?? ""}
+                            onChange={(event) => updateUserPasswordDraft(user.id, event.target.value)}
+                            placeholder={t("form.newPasswordPlaceholder")}
+                            type="password"
+                            aria-label={t("settings.newPassword")}
+                            disabled={isOwnUser}
+                          />
+                          <Button
+                            id={selectorId("settings-user-update-password", user.username)}
+                            variant="primary"
+                            size="sm"
+                            className="min-w-44"
+                            onClick={() => void setUserPassword(user.id)}
+                            disabled={mutatingUserId === user.id || isOwnUser}
+                          >
+                            <KeyRound className="mr-1 h-3.5 w-3.5" />
+                            {mutatingUserId === user.id ? t("label.saving") : t("settings.updatePassword")}
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">
+                          {t("settings.passwordManagedExternally")}
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="align-middle text-right">
                       <div className="flex justify-end gap-2">

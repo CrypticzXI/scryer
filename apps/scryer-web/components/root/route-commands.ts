@@ -76,6 +76,7 @@ export function buildRouteCommands({
 }: BuildRouteCommandsArgs): RouteCommand[] {
   const canViewCatalog = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view);
   const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
+  const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
   const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
   const canManageUsers = hasAnyAppPermission(user, [
     APP_PERMISSIONS.manageUsers,
@@ -106,7 +107,7 @@ export function buildRouteCommands({
       });
     }
 
-    if (canManageTitle) {
+    if (canManageTitle || canRequestMedia) {
       commands.push({
         id: `${f.viewId}-requests`,
         label: `${t(f.navLabelKey)} / ${t("nav.requests")}`,

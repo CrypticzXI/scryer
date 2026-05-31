@@ -33,6 +33,24 @@ pub enum AppPermissionValue {
     ManageCatalogSettings,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "snake_case")]
+pub enum UserAccountKindValue {
+    Local,
+    ExternalAutoProvisioned,
+}
+
+impl UserAccountKindValue {
+    pub fn from_domain(kind: scryer_domain::UserAccountKind) -> Self {
+        match kind {
+            scryer_domain::UserAccountKind::Local => Self::Local,
+            scryer_domain::UserAccountKind::ExternalAutoProvisioned => {
+                Self::ExternalAutoProvisioned
+            }
+        }
+    }
+}
+
 impl AppPermissionValue {
     pub fn into_domain(self) -> AppPermission {
         match self {
@@ -125,6 +143,7 @@ pub enum MediaRequestStatusValue {
     Pending,
     Approved,
     Rejected,
+    Canceled,
 }
 
 impl MediaRequestStatusValue {
@@ -133,6 +152,7 @@ impl MediaRequestStatusValue {
             MediaRequestStatus::Pending => Self::Pending,
             MediaRequestStatus::Approved => Self::Approved,
             MediaRequestStatus::Rejected => Self::Rejected,
+            MediaRequestStatus::Canceled => Self::Canceled,
         }
     }
 
@@ -141,6 +161,7 @@ impl MediaRequestStatusValue {
             Self::Pending => MediaRequestStatus::Pending,
             Self::Approved => MediaRequestStatus::Approved,
             Self::Rejected => MediaRequestStatus::Rejected,
+            Self::Canceled => MediaRequestStatus::Canceled,
         }
     }
 }
@@ -340,8 +361,10 @@ pub enum SortDirectionValue {
 #[graphql(rename_items = "snake_case")]
 pub enum DomainEventTypeValue {
     MediaRequestSubmitted,
+    MediaRequestUpdated,
     MediaRequestApproved,
     MediaRequestRejected,
+    MediaRequestCanceled,
     TitleAdded,
     TitleUpdated,
     TitleRematched,
@@ -386,8 +409,10 @@ impl DomainEventTypeValue {
     pub fn from_domain(value: DomainEventType) -> Self {
         match value {
             DomainEventType::MediaRequestSubmitted => Self::MediaRequestSubmitted,
+            DomainEventType::MediaRequestUpdated => Self::MediaRequestUpdated,
             DomainEventType::MediaRequestApproved => Self::MediaRequestApproved,
             DomainEventType::MediaRequestRejected => Self::MediaRequestRejected,
+            DomainEventType::MediaRequestCanceled => Self::MediaRequestCanceled,
             DomainEventType::TitleAdded => Self::TitleAdded,
             DomainEventType::TitleUpdated => Self::TitleUpdated,
             DomainEventType::TitleRematched => Self::TitleRematched,
@@ -432,8 +457,10 @@ impl DomainEventTypeValue {
     pub fn into_domain(self) -> DomainEventType {
         match self {
             Self::MediaRequestSubmitted => DomainEventType::MediaRequestSubmitted,
+            Self::MediaRequestUpdated => DomainEventType::MediaRequestUpdated,
             Self::MediaRequestApproved => DomainEventType::MediaRequestApproved,
             Self::MediaRequestRejected => DomainEventType::MediaRequestRejected,
+            Self::MediaRequestCanceled => DomainEventType::MediaRequestCanceled,
             Self::TitleAdded => DomainEventType::TitleAdded,
             Self::TitleUpdated => DomainEventType::TitleUpdated,
             Self::TitleRematched => DomainEventType::TitleRematched,
@@ -994,6 +1021,7 @@ pub struct ExternalIdPayload {
 pub struct MediaRequestRequesterPayload {
     pub user_id: String,
     pub username: String,
+    pub avatar_url: Option<String>,
     pub requested_at: String,
 }
 
@@ -1015,6 +1043,7 @@ pub struct MediaRequestPayload {
     pub content_status: Option<String>,
     pub requested_quality_profile_id: Option<String>,
     pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
     pub resolved_by_user_id: Option<String>,
     pub resolved_at: Option<String>,
     pub created_title_id: Option<String>,
@@ -1122,6 +1151,8 @@ pub struct IndexerQueryStatsPayload {
 pub struct UserPayload {
     pub id: String,
     pub username: String,
+    pub has_password: bool,
+    pub account_kind: UserAccountKindValue,
     pub app_permissions: Vec<AppPermissionValue>,
     pub library_permissions: Vec<UserLibraryPermissionGrantPayload>,
 }
@@ -2088,6 +2119,7 @@ pub struct SubmitMediaRequestInput {
     pub language: Option<String>,
     pub content_status: Option<String>,
     pub requested_quality_profile_id: Option<String>,
+    pub requested_monitor_type: Option<MonitorTypeValue>,
 }
 
 #[derive(InputObject, Clone)]
@@ -2099,6 +2131,13 @@ pub struct MediaRequestActionInput {
 pub struct ApproveMediaRequestInput {
     pub request_id: String,
     pub quality_profile_id: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct UpdateMediaRequestInput {
+    pub request_id: String,
+    pub requested_quality_profile_id: String,
+    pub requested_monitor_type: Option<MonitorTypeValue>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2342,7 +2381,8 @@ pub struct AuthProviderConnectionPayload {
     pub display_name: String,
     pub user_visible_url: Option<String>,
     pub base_url: Option<String>,
-    pub machine_id: Option<String>,
+    pub login_enabled: bool,
+    pub linking_enabled: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2362,6 +2402,8 @@ pub struct AuthProviderConnectionInput {
     pub display_name: Option<String>,
     pub base_url: Option<String>,
     pub machine_id: Option<String>,
+    pub login_enabled: Option<bool>,
+    pub linking_enabled: Option<bool>,
 }
 
 #[derive(InputObject, Clone)]
@@ -2424,7 +2466,7 @@ pub struct MediaServerConnectionPayload {
     pub auto_add_enabled: bool,
     pub default_app_permissions: Vec<AppPermissionValue>,
     pub default_library_grants: Vec<MediaServerDefaultLibraryGrantPayload>,
-    pub machine_id: Option<String>,
+    pub machine_id_present: bool,
     pub api_key_present: bool,
     pub path_mappings: Vec<MediaServerPathMappingPayload>,
     pub created_at: String,
@@ -2436,6 +2478,13 @@ pub struct JellyfinServerUserPayload {
     pub id: String,
     pub username: String,
     pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PlexServerDiscoveryPayload {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(InputObject, Clone)]
@@ -2450,6 +2499,8 @@ pub struct CreateMediaServerConnectionInput {
     pub default_app_permissions: Option<Vec<AppPermissionValue>>,
     pub default_library_grants: Option<Vec<MediaServerDefaultLibraryGrantInput>>,
     pub machine_id: Option<String>,
+    pub plex_auth_token: Option<String>,
+    pub plex_server_id: Option<String>,
     pub api_key: Option<String>,
     pub admin_username: Option<String>,
     pub admin_password: Option<String>,
@@ -2470,6 +2521,8 @@ pub struct UpdateMediaServerConnectionInput {
     pub default_library_grants: Option<Vec<MediaServerDefaultLibraryGrantInput>>,
     pub machine_id: Option<String>,
     pub clear_machine_id: Option<bool>,
+    pub plex_auth_token: Option<String>,
+    pub plex_server_id: Option<String>,
     pub api_key: Option<String>,
     pub clear_api_key: Option<bool>,
     pub admin_username: Option<String>,
@@ -3172,6 +3225,7 @@ pub struct RegistryPluginPayload {
     pub source_url: Option<String>,
     pub source_kind: Option<String>,
     pub blocked_reason: Option<String>,
+    pub bytes: Option<i64>,
     pub is_installed: bool,
     pub is_enabled: bool,
     pub installed_version: Option<String>,

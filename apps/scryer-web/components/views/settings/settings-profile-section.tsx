@@ -19,11 +19,14 @@ type Props = {
   newPassword: string;
   confirmPassword: string;
   saving: boolean;
+  canChangePassword: boolean;
+  requiresCurrentPassword: boolean;
   onCurrentPasswordChange: (value: string) => void;
   onNewPasswordChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
   onChangePassword: () => void;
   showPasskeys: boolean;
+  canAddPasskey: boolean;
   passkeys: PasskeySummary[];
   totpStatus: TotpStatus | null;
   totpEnrollment: TotpEnrollmentStart | null;
@@ -74,17 +77,39 @@ function providerLabel(provider: LinkedAccount["provider"]): string {
   }
 }
 
+function LinkedAccountAvatar({ account }: { account: LinkedAccount }) {
+  const label = account.displayName || account.username;
+  return account.avatarUrl ? (
+    <img
+      src={account.avatarUrl}
+      alt=""
+      className="h-9 w-9 shrink-0 rounded-full border border-border object-cover"
+      loading="lazy"
+    />
+  ) : (
+    <span
+      aria-hidden="true"
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-sm font-medium text-muted-foreground"
+    >
+      {label.trim().slice(0, 1).toUpperCase() || "?"}
+    </span>
+  );
+}
+
 export function SettingsProfileSection({
   username,
   currentPassword,
   newPassword,
   confirmPassword,
   saving,
+  canChangePassword,
+  requiresCurrentPassword,
   onCurrentPasswordChange,
   onNewPasswordChange,
   onConfirmPasswordChange,
   onChangePassword,
   showPasskeys,
+  canAddPasskey,
   passkeys,
   totpStatus,
   totpEnrollment,
@@ -112,7 +137,11 @@ export function SettingsProfileSection({
 }: Props) {
   const t = useTranslate();
   const passwordMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
-  const canSubmit = currentPassword.length > 0 && newPassword.length > 0 && !passwordMismatch && !saving;
+  const canSubmit =
+    (!requiresCurrentPassword || currentPassword.length > 0) &&
+    newPassword.length > 0 &&
+    !passwordMismatch &&
+    !saving;
 
   return (
     <div id="settings-profile-section" className="space-y-6 text-sm">
@@ -124,55 +153,61 @@ export function SettingsProfileSection({
         </div>
       </div>
 
-      <Separator />
+      {canChangePassword ? (
+        <>
+          <Separator />
 
-      <div className="space-y-4">
-        <h3 className="text-base font-medium">{t("profile.changePassword")}</h3>
-        <div className="grid max-w-sm gap-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="current-password">{t("profile.currentPassword")}</Label>
-            <Input
-              id="current-password"
-              type="password"
-              autoComplete="current-password"
-              value={currentPassword}
-              onChange={(e) => onCurrentPasswordChange(e.target.value)}
-            />
+          <div className="space-y-4">
+            <h3 className="text-base font-medium">{t("profile.changePassword")}</h3>
+            <div className="grid max-w-sm gap-3">
+              {requiresCurrentPassword ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="current-password">{t("profile.currentPassword")}</Label>
+                  <Input
+                    id="current-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={currentPassword}
+                    onChange={(e) => onCurrentPasswordChange(e.target.value)}
+                  />
+                </div>
+              ) : null}
+              <div className="space-y-1.5">
+                <Label htmlFor="new-password">{t("profile.newPassword")}</Label>
+                <Input
+                  id="new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => onNewPasswordChange(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="confirm-password">{t("profile.confirmPassword")}</Label>
+                <Input
+                  id="confirm-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => onConfirmPasswordChange(e.target.value)}
+                />
+                {passwordMismatch ? (
+                  <p className="text-xs text-destructive">{t("profile.passwordMismatch")}</p>
+                ) : null}
+              </div>
+              <Button
+                id={selectorId("settings-profile-change-password")}
+                onClick={onChangePassword}
+                disabled={!canSubmit}
+                className="w-fit"
+              >
+                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.changePassword")}
+              </Button>
+            </div>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="new-password">{t("profile.newPassword")}</Label>
-            <Input
-              id="new-password"
-              type="password"
-              autoComplete="new-password"
-              value={newPassword}
-              onChange={(e) => onNewPasswordChange(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="confirm-password">{t("profile.confirmPassword")}</Label>
-            <Input
-              id="confirm-password"
-              type="password"
-              autoComplete="new-password"
-              value={confirmPassword}
-              onChange={(e) => onConfirmPasswordChange(e.target.value)}
-            />
-            {passwordMismatch ? (
-              <p className="text-xs text-destructive">{t("profile.passwordMismatch")}</p>
-            ) : null}
-          </div>
-          <Button
-            id={selectorId("settings-profile-change-password")}
-            onClick={onChangePassword}
-            disabled={!canSubmit}
-            className="w-fit"
-          >
-            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {t("profile.changePassword")}
-          </Button>
-        </div>
-      </div>
+        </>
+      ) : null}
 
       {showPasskeys ? (
         <>
@@ -183,15 +218,17 @@ export function SettingsProfileSection({
                 <h3 className="text-base font-medium">{t("profile.passkeys")}</h3>
                 <p className="text-sm text-muted-foreground">{t("profile.passkeysDescription")}</p>
               </div>
-              <Button
-                id={selectorId("settings-profile-add-passkey")}
-                onClick={onAddPasskey}
-                disabled={addingPasskey}
-                className="w-fit"
-              >
-                {addingPasskey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                {addingPasskey ? t("profile.passkeyAdding") : t("profile.passkeyAdd")}
-              </Button>
+              {canAddPasskey ? (
+                <Button
+                  id={selectorId("settings-profile-add-passkey")}
+                  onClick={onAddPasskey}
+                  disabled={addingPasskey}
+                  className="w-fit"
+                >
+                  {addingPasskey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  {addingPasskey ? t("profile.passkeyAdding") : t("profile.passkeyAdd")}
+                </Button>
+              ) : null}
             </div>
 
             {loadingPasskeys ? (
@@ -405,15 +442,18 @@ export function SettingsProfileSection({
                 key={account.id}
                 className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
               >
-                <div className="space-y-1">
-                  <div className="font-medium text-foreground">
-                    {providerLabel(account.provider)} · {account.displayName || account.username}
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    {t("profile.linkedAccountConnection")}: {account.connectionId}
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    {t("profile.linkedAccountStatus")}: {account.status}
+                <div className="flex min-w-0 items-start gap-3">
+                  <LinkedAccountAvatar account={account} />
+                  <div className="min-w-0 space-y-1">
+                    <div className="truncate font-medium text-foreground">
+                      {providerLabel(account.provider)} · {account.displayName || account.username}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {t("profile.linkedAccountConnection")}: {account.connectionId}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {t("profile.linkedAccountStatus")}: {account.status}
+                    </div>
                   </div>
                 </div>
                 <Button

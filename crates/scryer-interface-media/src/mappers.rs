@@ -958,6 +958,7 @@ pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
         content_status: request.content_status,
         requested_quality_profile_id: request.requested_quality_profile_id,
         requested_quality_profile_name: request.requested_quality_profile_name,
+        requested_monitor_type: request.requested_monitor_type,
         resolved_by_user_id: request.resolved_by_user_id,
         resolved_at: request.resolved_at.map(|value| value.to_rfc3339()),
         created_title_id: request.created_title_id,
@@ -977,6 +978,7 @@ pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
             .map(|requester| MediaRequestRequesterPayload {
                 user_id: requester.user_id,
                 username: requester.username,
+                avatar_url: requester.avatar_url,
                 requested_at: requester.requested_at.to_rfc3339(),
             })
             .collect(),
@@ -1432,6 +1434,8 @@ pub fn from_user(user: User) -> UserPayload {
     let User {
         id,
         username,
+        password_hash,
+        account_kind,
         authorization,
         ..
     } = user;
@@ -1461,6 +1465,8 @@ pub fn from_user(user: User) -> UserPayload {
     UserPayload {
         id,
         username,
+        has_password: password_hash.is_some(),
+        account_kind: UserAccountKindValue::from_domain(account_kind),
         app_permissions,
         library_permissions,
     }
@@ -1488,6 +1494,7 @@ pub fn from_media_server_connection(
     connection: scryer_domain::MediaServerConnection,
 ) -> MediaServerConnectionPayload {
     let api_key_present = connection.api_key_present();
+    let machine_id_present = connection.machine_id.is_some();
     MediaServerConnectionPayload {
         id: connection.id,
         provider: MediaServerProviderValue::from_domain(connection.provider),
@@ -1516,7 +1523,7 @@ pub fn from_media_server_connection(
                     .collect(),
             })
             .collect(),
-        machine_id: connection.machine_id,
+        machine_id_present,
         api_key_present,
         path_mappings: connection
             .path_mappings
@@ -1538,6 +1545,16 @@ pub fn from_jellyfin_server_user(
         id: user.id,
         username: user.username,
         display_name: user.display_name,
+        avatar_url: user.avatar_url,
+    }
+}
+
+pub fn from_plex_server_discovery(
+    server: scryer_application::PlexServerDiscovery,
+) -> PlexServerDiscoveryPayload {
+    PlexServerDiscoveryPayload {
+        id: server.id,
+        name: server.name,
     }
 }
 
@@ -1809,6 +1826,7 @@ pub fn from_registry_plugin(p: RegistryPlugin) -> RegistryPluginPayload {
         source_url: p.source_url,
         source_kind: p.source_kind,
         blocked_reason: p.blocked_reason,
+        bytes: p.bytes.and_then(|value| i64::try_from(value).ok()),
         is_installed: p.is_installed,
         is_enabled: p.is_enabled,
         installed_version: p.installed_version,

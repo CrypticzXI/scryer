@@ -11,7 +11,7 @@ import {
   totpVerifyStepUpMutation,
   unlinkExternalAccountMutation,
 } from "@/lib/graphql/mutations";
-import { linkedAccountsQuery, myPasskeysQuery, myTotpQuery } from "@/lib/graphql/queries";
+import { linkedAccountsQuery, meQuery, myPasskeysQuery, myTotpQuery } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
@@ -22,6 +22,7 @@ import type {
   TotpEnrollmentStart,
   TotpStatus,
 } from "@/lib/types/settings";
+import type { UserAccountKind } from "@/lib/types/users";
 import { PasskeyClientError, registerPasskey } from "@/lib/utils/passkeys";
 
 type Props = {
@@ -33,12 +34,14 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-  const { passkeyEnabled, adoptSession } = useAuth();
+  const { passkeyEnabled, adoptSession, login, user: authUser } = useAuth();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [hasPassword, setHasPassword] = useState<boolean | null>(null);
+  const [accountKind, setAccountKind] = useState<UserAccountKind | null>(null);
   const [totpStatus, setTotpStatus] = useState<TotpStatus | null>(null);
   const [totpEnrollment, setTotpEnrollment] = useState<TotpEnrollmentStart | null>(null);
   const [totpEnrollmentCode, setTotpEnrollmentCode] = useState("");
@@ -77,7 +80,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
           input: {
             userId,
             password: newPassword,
-            currentPassword,
+            currentPassword: hasPassword === true ? currentPassword : undefined,
           },
         })
         .toPromise();
@@ -87,6 +90,14 @@ export function SettingsProfileContainer({ userId, username }: Props) {
         return;
       }
 
+      setHasPassword(result.data?.setUserPassword?.hasPassword === true);
+      setAccountKind(result.data?.setUserPassword?.accountKind ?? accountKind);
+      const profileUsername = username ?? authUser?.username;
+      if (profileUsername) {
+        const refreshed = await login(profileUsername, newPassword);
+        setHasPassword(refreshed.user?.hasPassword === true);
+        setAccountKind(refreshed.user?.accountKind ?? accountKind);
+      }
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -96,7 +107,53 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [client, userId, currentPassword, newPassword, confirmPassword, setGlobalStatus, t]);
+  }, [accountKind, authUser?.username, client, userId, username, hasPassword, currentPassword, newPassword, confirmPassword, login, setGlobalStatus, t]);
+
+  useEffect(() => {
+    if (!userId) {
+      setHasPassword(false);
+      setAccountKind(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      setHasPassword(null);
+      setAccountKind(null);
+      try {
+        const result = await client
+          .query<{ me?: Pick<AuthUser, "id" | "hasPassword" | "accountKind"> | null }>(
+            meQuery,
+            {},
+          )
+          .toPromise();
+        if (cancelled) return;
+
+        if (result.error) {
+          setGlobalStatus(result.error.message);
+          setHasPassword(false);
+          setAccountKind(null);
+          return;
+        }
+
+        const currentUser = result.data?.me;
+        const isProfileUser = currentUser?.id === userId;
+        setHasPassword(isProfileUser && currentUser.hasPassword === true);
+        setAccountKind(isProfileUser ? currentUser.accountKind ?? "local" : null);
+      } catch (error) {
+        if (!cancelled) {
+          setHasPassword(false);
+          setAccountKind(null);
+          setGlobalStatus(error instanceof Error ? error.message : t("profile.passkeyOperationFailed"));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, setGlobalStatus, t, userId]);
 
   const loadPasskeys = useCallback(async () => {
     if (!passkeyEnabled || !userId) {
@@ -180,7 +237,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [loadLinkedAccounts]);
 
   const handleAddPasskey = useCallback(async () => {
-    if (!passkeyEnabled || !userId) return;
+    if (!passkeyEnabled || !userId || hasPassword !== true || accountKind !== "local") return;
 
     setAddingPasskey(true);
     try {
@@ -192,7 +249,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     } finally {
       setAddingPasskey(false);
     }
-  }, [client, formatPasskeyError, passkeyEnabled, setGlobalStatus, t, userId]);
+  }, [accountKind, client, formatPasskeyError, hasPassword, passkeyEnabled, setGlobalStatus, t, userId]);
 
   const handleDeletePasskey = useCallback(async (id: string) => {
     setDeletingPasskeyId(id);
@@ -375,11 +432,19 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       newPassword={newPassword}
       confirmPassword={confirmPassword}
       saving={saving}
+      canChangePassword={accountKind === "local"}
+      requiresCurrentPassword={hasPassword === true}
       onCurrentPasswordChange={setCurrentPassword}
       onNewPasswordChange={setNewPassword}
       onConfirmPasswordChange={setConfirmPassword}
       onChangePassword={handleChangePassword}
-      showPasskeys={passkeyEnabled && Boolean(userId)}
+      showPasskeys={
+        passkeyEnabled &&
+        Boolean(userId) &&
+        accountKind === "local" &&
+        (hasPassword === true || passkeys.length > 0)
+      }
+      canAddPasskey={accountKind === "local" && hasPassword === true}
       passkeys={passkeys}
       totpStatus={totpStatus}
       totpEnrollment={totpEnrollment}

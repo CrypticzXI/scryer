@@ -6616,6 +6616,7 @@ async fn user_crud_queries_work() {
             id: "u-1".to_string(),
             username: "editor".to_string(),
             password_hash: None,
+            account_kind: Default::default(),
             authorization: Default::default(),
         },
     )

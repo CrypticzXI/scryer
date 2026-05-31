@@ -772,6 +772,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "media".into(),
                 scope: "system".into(),
+                key_name: "quality.request_profile_ids".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
                 key_name: "quality.scoring_persona".into(),
                 data_type: "string".into(),
                 default_value_json: "\"Balanced\"".into(),
@@ -10067,6 +10076,7 @@ async fn graphql_external_account_invites_expose_last_login() {
         id: "viewer".to_string(),
         username: "viewer".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::NONE,
             libraries: HashMap::new(),
@@ -12600,6 +12610,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         id: Id::new().0,
         username: "scoped-delete-user".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization {
             app: scryer_domain::AppPermissionMask::NONE,
             libraries: HashMap::from([(

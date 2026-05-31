@@ -84,6 +84,7 @@ export type LibraryRecord = {
 export type MediaRequestRequesterRecord = {
   userId: string;
   username: string;
+  avatarUrl?: string | null;
   requestedAt: string;
 };
 
@@ -91,7 +92,7 @@ export type MediaRequestRecord = {
   id: string;
   libraryId: string;
   facet: Facet;
-  status: "pending" | "approved" | "rejected";
+  status: "pending" | "approved" | "rejected" | "canceled";
   identityFingerprint: string;
   title: string;
   sortTitle?: string | null;
@@ -104,6 +105,7 @@ export type MediaRequestRecord = {
   contentStatus?: string | null;
   requestedQualityProfileId?: string | null;
   requestedQualityProfileName?: string | null;
+  requestedMonitorType?: string | null;
   resolvedByUserId?: string | null;
   resolvedAt?: string | null;
   createdTitleId?: string | null;

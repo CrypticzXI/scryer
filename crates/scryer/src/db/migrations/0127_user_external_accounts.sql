@@ -208,6 +208,139 @@ WHERE definition.key_name = 'auth.providers.plex.connections'
         AND existing.provider = 'plex'
   );
 
+UPDATE media_server_connections
+SET
+    enabled = (
+        EXISTS (
+            SELECT 1
+            FROM settings_values allowed_value
+            JOIN settings_definitions allowed_definition
+              ON allowed_definition.id = allowed_value.setting_definition_id
+            JOIN json_each(CASE WHEN json_valid(allowed_value.value_json) THEN allowed_value.value_json ELSE '[]' END) allowed_provider
+            WHERE allowed_definition.key_name = 'auth.providers.allowed'
+              AND lower(trim(allowed_provider.value)) = media_server_connections.provider
+        )
+        AND (
+            NOT EXISTS (
+                SELECT 1
+                FROM settings_values ids_value
+                JOIN settings_definitions ids_definition
+                  ON ids_definition.id = ids_value.setting_definition_id
+                JOIN json_each(CASE WHEN json_valid(ids_value.value_json) THEN ids_value.value_json ELSE '[]' END) allowed_id
+                WHERE ids_definition.key_name = CASE media_server_connections.provider
+                    WHEN 'jellyfin' THEN 'auth.providers.jellyfin.allowed_connection_ids'
+                    WHEN 'plex' THEN 'auth.providers.plex.allowed_connection_ids'
+                END
+                  AND NULLIF(trim(allowed_id.value), '') IS NOT NULL
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM settings_values ids_value
+                JOIN settings_definitions ids_definition
+                  ON ids_definition.id = ids_value.setting_definition_id
+                JOIN json_each(CASE WHEN json_valid(ids_value.value_json) THEN ids_value.value_json ELSE '[]' END) allowed_id
+                WHERE ids_definition.key_name = CASE media_server_connections.provider
+                    WHEN 'jellyfin' THEN 'auth.providers.jellyfin.allowed_connection_ids'
+                    WHEN 'plex' THEN 'auth.providers.plex.allowed_connection_ids'
+                END
+                  AND trim(allowed_id.value) = media_server_connections.id
+            )
+        )
+    ),
+    login_enabled = (
+        EXISTS (
+            SELECT 1
+            FROM settings_values allowed_value
+            JOIN settings_definitions allowed_definition
+              ON allowed_definition.id = allowed_value.setting_definition_id
+            JOIN json_each(CASE WHEN json_valid(allowed_value.value_json) THEN allowed_value.value_json ELSE '[]' END) allowed_provider
+            WHERE allowed_definition.key_name = 'auth.providers.allowed'
+              AND lower(trim(allowed_provider.value)) = media_server_connections.provider
+        )
+        AND EXISTS (
+            SELECT 1
+            FROM settings_values login_value
+            JOIN settings_definitions login_definition
+              ON login_definition.id = login_value.setting_definition_id
+            JOIN json_each(CASE WHEN json_valid(login_value.value_json) THEN login_value.value_json ELSE '[]' END) login_provider
+            WHERE login_definition.key_name = 'auth.providers.login_enabled'
+              AND lower(trim(login_provider.value)) = media_server_connections.provider
+        )
+        AND (
+            NOT EXISTS (
+                SELECT 1
+                FROM settings_values ids_value
+                JOIN settings_definitions ids_definition
+                  ON ids_definition.id = ids_value.setting_definition_id
+                JOIN json_each(CASE WHEN json_valid(ids_value.value_json) THEN ids_value.value_json ELSE '[]' END) allowed_id
+                WHERE ids_definition.key_name = CASE media_server_connections.provider
+                    WHEN 'jellyfin' THEN 'auth.providers.jellyfin.allowed_connection_ids'
+                    WHEN 'plex' THEN 'auth.providers.plex.allowed_connection_ids'
+                END
+                  AND NULLIF(trim(allowed_id.value), '') IS NOT NULL
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM settings_values ids_value
+                JOIN settings_definitions ids_definition
+                  ON ids_definition.id = ids_value.setting_definition_id
+                JOIN json_each(CASE WHEN json_valid(ids_value.value_json) THEN ids_value.value_json ELSE '[]' END) allowed_id
+                WHERE ids_definition.key_name = CASE media_server_connections.provider
+                    WHEN 'jellyfin' THEN 'auth.providers.jellyfin.allowed_connection_ids'
+                    WHEN 'plex' THEN 'auth.providers.plex.allowed_connection_ids'
+                END
+                  AND trim(allowed_id.value) = media_server_connections.id
+            )
+        )
+    ),
+    linking_enabled = (
+        EXISTS (
+            SELECT 1
+            FROM settings_values allowed_value
+            JOIN settings_definitions allowed_definition
+              ON allowed_definition.id = allowed_value.setting_definition_id
+            JOIN json_each(CASE WHEN json_valid(allowed_value.value_json) THEN allowed_value.value_json ELSE '[]' END) allowed_provider
+            WHERE allowed_definition.key_name = 'auth.providers.allowed'
+              AND lower(trim(allowed_provider.value)) = media_server_connections.provider
+        )
+        AND EXISTS (
+            SELECT 1
+            FROM settings_values linking_value
+            JOIN settings_definitions linking_definition
+              ON linking_definition.id = linking_value.setting_definition_id
+            JOIN json_each(CASE WHEN json_valid(linking_value.value_json) THEN linking_value.value_json ELSE '[]' END) linking_provider
+            WHERE linking_definition.key_name = 'auth.providers.linking_enabled'
+              AND lower(trim(linking_provider.value)) = media_server_connections.provider
+        )
+        AND (
+            NOT EXISTS (
+                SELECT 1
+                FROM settings_values ids_value
+                JOIN settings_definitions ids_definition
+                  ON ids_definition.id = ids_value.setting_definition_id
+                JOIN json_each(CASE WHEN json_valid(ids_value.value_json) THEN ids_value.value_json ELSE '[]' END) allowed_id
+                WHERE ids_definition.key_name = CASE media_server_connections.provider
+                    WHEN 'jellyfin' THEN 'auth.providers.jellyfin.allowed_connection_ids'
+                    WHEN 'plex' THEN 'auth.providers.plex.allowed_connection_ids'
+                END
+                  AND NULLIF(trim(allowed_id.value), '') IS NOT NULL
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM settings_values ids_value
+                JOIN settings_definitions ids_definition
+                  ON ids_definition.id = ids_value.setting_definition_id
+                JOIN json_each(CASE WHEN json_valid(ids_value.value_json) THEN ids_value.value_json ELSE '[]' END) allowed_id
+                WHERE ids_definition.key_name = CASE media_server_connections.provider
+                    WHEN 'jellyfin' THEN 'auth.providers.jellyfin.allowed_connection_ids'
+                    WHEN 'plex' THEN 'auth.providers.plex.allowed_connection_ids'
+                END
+                  AND trim(allowed_id.value) = media_server_connections.id
+            )
+        )
+    )
+WHERE provider IN ('jellyfin', 'plex');
+
 INSERT OR IGNORE INTO media_server_connections (
     id,
     provider,

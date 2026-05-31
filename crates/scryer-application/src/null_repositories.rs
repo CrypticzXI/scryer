@@ -14,7 +14,7 @@ use scryer_domain::RuleSet;
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
     AcquisitionStateRepository, InsertMediaFileInput, JellyfinServerUser,
-    MediaServerConnectionRepository, SuccessfulGrabCommit, WantedItemsQuery,
+    MediaServerConnectionRepository, PlexServerDiscovery, SuccessfulGrabCommit, WantedItemsQuery,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
@@ -1518,6 +1518,27 @@ impl MediaRequestRepository for NullMediaRequestRepository {
         Ok(0)
     }
 
+    async fn resolve_pending(
+        &self,
+        _request_id: &str,
+        _resolution: MediaRequestResolution,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn update_pending_request_preferences(
+        &self,
+        _request_id: &str,
+        _requested_quality_profile_id: String,
+        _requested_quality_profile_name: String,
+        _requested_monitor_type: Option<String>,
+        _updated_event: NewDomainEvent,
+    ) -> AppResult<MediaRequest> {
+        Err(AppError::Repository(
+            "media request repository not configured".into(),
+        ))
+    }
+
     async fn count_pending_by_facet(
         &self,
         _library_ids: &[String],
@@ -1705,6 +1726,16 @@ impl UserExternalAccountRepository for NullUserExternalAccountRepository {
         Err(AppError::Repository("not configured".into()))
     }
 
+    async fn create_auto_added_user_with_account(
+        &self,
+        _: scryer_domain::User,
+        _: scryer_domain::AppPermissionMask,
+        _: Vec<scryer_domain::LibraryGrant>,
+        _: scryer_domain::UserExternalAccount,
+    ) -> AppResult<(scryer_domain::User, scryer_domain::UserExternalAccount)> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
     async fn delete(&self, _: &str) -> AppResult<()> {
         Ok(())
     }
@@ -1764,6 +1795,12 @@ impl ExternalIdentityVerifier for NullExternalIdentityVerifier {
         _: Option<&str>,
         _: &str,
     ) -> AppResult<VerifiedExternalIdentity> {
+        Err(AppError::Repository(
+            "external identity verification is not configured".into(),
+        ))
+    }
+
+    async fn discover_plex_servers(&self, _: &str) -> AppResult<Vec<PlexServerDiscovery>> {
         Err(AppError::Repository(
             "external identity verification is not configured".into(),
         ))

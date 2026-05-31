@@ -233,13 +233,16 @@ function libraryRootsInput(roots: RootFolderOption[]) {
     .filter((root) => root.path.length > 0);
 }
 
-function librarySettingsInput(settings: LibrarySettingsDraft | undefined) {
+function librarySettingsInput(
+  settings: LibrarySettingsDraft | undefined,
+): LibrarySettingsDraft | undefined {
   if (!settings) {
     return undefined;
   }
   return {
     requiredAudioLanguages: settings.requiredAudioLanguages,
     qualityProfileId: settings.qualityProfileId,
+    requestQualityProfileIds: settings.requestQualityProfileIds,
     scoringPersona: settings.scoringPersona,
     fillerPolicy: settings.fillerPolicy,
     recapPolicy: settings.recapPolicy,

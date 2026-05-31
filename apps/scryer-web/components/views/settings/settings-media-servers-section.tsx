@@ -34,6 +34,7 @@ import type {
   MediaServerConnectionDraft,
   MediaServerDefaultLibraryGrant,
   MediaServerProvider,
+  PlexServerDiscovery,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
@@ -66,6 +67,10 @@ type SettingsMediaServersSectionProps = {
   deleteConnection: (connection: MediaServerConnection) => Promise<void> | void;
   resetDraft: () => void;
   startCreateConnection: () => void;
+  plexServerOptions: PlexServerDiscovery[];
+  plexDiscoveryBusy: boolean;
+  discoverPlexServers: () => Promise<void> | void;
+  editorError: string | null;
 };
 
 const PROVIDERS: Array<{ value: MediaServerProvider; label: string }> = [
@@ -216,11 +221,17 @@ export function SettingsMediaServersSection({
   deleteConnection,
   resetDraft,
   startCreateConnection,
+  plexServerOptions,
+  plexDiscoveryBusy,
+  discoverPlexServers,
+  editorError,
 }: SettingsMediaServersSectionProps) {
   const t = useTranslate();
   const isEditing = editorMode === "edit";
   const supportsAuth = providerSupportsAuth(draft.provider);
   const selectedProviderLabel = providerLabel(draft.provider);
+  const editorMutationId = editingConnectionId ?? "new";
+  const isSavingEditor = mutatingConnectionId === editorMutationId;
 
   const handleProviderChange = React.useCallback(
     (provider: MediaServerProvider) => {
@@ -244,7 +255,8 @@ export function SettingsMediaServersSection({
           defaultLibraryGrants: providerSupportsAuth(provider)
             ? previous.defaultLibraryGrants
             : [],
-          machineId: provider === "plex" ? previous.machineId : "",
+          machineIdPresent: provider === "plex" ? previous.machineIdPresent : false,
+          plexServerId: provider === "plex" ? previous.plexServerId : "",
         };
       });
     },
@@ -301,13 +313,13 @@ export function SettingsMediaServersSection({
                   </TableCell>
                   <TableCell>
                     {connection.provider === "plex" ? (
-                      connection.machineId ? (
+                      connection.machineIdPresent ? (
                         <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
                           <CheckCircle2 className="h-3.5 w-3.5" />
-                          {t("settings.machineIdConfigured")}
+                          {t("settings.plexServerSelected")}
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">{t("settings.machineIdMissing")}</span>
+                        <span className="text-muted-foreground">{t("settings.plexServerMissing")}</span>
                       )
                     ) : connection.apiKeyPresent ? (
                       <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
@@ -476,98 +488,172 @@ export function SettingsMediaServersSection({
                 </div>
 
                 {draft.provider === "plex" ? (
-                  <label className="block">
-                    <Label className="mb-2 block" htmlFor="settings-media-server-machine-id">
-                      {t("settings.plexMachineId")}
-                    </Label>
-                    <Input
-                      id="settings-media-server-machine-id"
-                      value={draft.machineId}
-                      onChange={(event) =>
-                        setDraft((previous) => ({
-                          ...previous,
-                          machineId: event.target.value,
-                        }))
-                      }
-                      placeholder={t("settings.plexMachineIdPlaceholder")}
-                    />
-                  </label>
+                  <div className="space-y-3 rounded border border-border bg-background/40 p-3">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button
+                        id="settings-media-server-discover-plex"
+                        type="button"
+                        variant="outline"
+                        onClick={() => void discoverPlexServers()}
+                        disabled={plexDiscoveryBusy}
+                      >
+                        {plexDiscoveryBusy ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Server className="h-4 w-4" />
+                        )}
+                        {t("settings.discoverPlexServers")}
+                      </Button>
+                      {draft.machineIdPresent && !draft.plexServerId ? (
+                        <span className="inline-flex items-center gap-1 text-sm text-emerald-700 dark:text-emerald-300">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          {t("settings.plexServerSelected")}
+                        </span>
+                      ) : null}
+                    </div>
+                    {plexServerOptions.length > 0 ? (
+                      <label className="block">
+                        <Label className="mb-2 block" htmlFor="settings-media-server-plex-server">
+                          {t("settings.plexServer")}
+                        </Label>
+                        <Select
+                          value={draft.plexServerId}
+                          onValueChange={(value) =>
+                            setDraft((previous) => ({
+                              ...previous,
+                              plexServerId: value,
+                            }))
+                          }
+                        >
+                          <SelectTrigger id="settings-media-server-plex-server" className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {plexServerOptions.map((server) => (
+                              <SelectItem key={server.id} value={server.id}>
+                                {server.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </label>
+                    ) : null}
+                  </div>
                 ) : null}
 
                 {draft.provider === "jellyfin" || draft.provider === "emby" ? (
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label>
-                      <Label className="mb-2 block" htmlFor="settings-media-server-api-key">
-                        {t("settings.apiKey")}
-                      </Label>
-                      <Input
-                        id="settings-media-server-api-key"
-                        value={draft.apiKey}
-                        onChange={(event) =>
-                          setDraft((previous) => ({
-                            ...previous,
-                            apiKey: event.target.value,
-                            clearApiKey: false,
-                          }))
-                        }
-                        type="password"
-                        placeholder={t("form.apiKeyInputPlaceholder")}
-                      />
-                    </label>
-                    {editingConnectionId ? (
-                      <label className="flex items-end gap-2 pb-2">
-                        <Checkbox
-                          checked={draft.clearApiKey}
-                          onCheckedChange={(checked) =>
+                  <div className="space-y-3">
+                    {draft.provider === "jellyfin" ? (
+                      <div className="inline-flex rounded-md border border-border p-1">
+                        <Button
+                          type="button"
+                          variant={draft.jellyfinCredentialMode === "apiKey" ? "default" : "ghost"}
+                          size="sm"
+                          onClick={() =>
                             setDraft((previous) => ({
                               ...previous,
-                              clearApiKey: checked === true,
+                              jellyfinCredentialMode: "apiKey",
+                              adminUsername: "",
+                              adminPassword: "",
                             }))
                           }
-                        />
-                        <span className="text-sm">{t("settings.clearSavedApiKey")}</span>
-                      </label>
+                        >
+                          {t("settings.setupViaApiKey")}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={draft.jellyfinCredentialMode === "adminLogin" ? "default" : "ghost"}
+                          size="sm"
+                          onClick={() =>
+                            setDraft((previous) => ({
+                              ...previous,
+                              jellyfinCredentialMode: "adminLogin",
+                              apiKey: "",
+                              clearApiKey: false,
+                            }))
+                          }
+                        >
+                          {t("settings.loginAsAdmin")}
+                        </Button>
+                      </div>
                     ) : null}
-                    {draft.provider === "jellyfin" ? (
-                      <>
-                        <label>
-                          <Label className="mb-2 block" htmlFor="settings-media-server-admin-username">
-                            {t("settings.adminUsername")}
-                          </Label>
-                          <Input
-                            id="settings-media-server-admin-username"
-                            value={draft.adminUsername}
-                            onChange={(event) =>
-                              setDraft((previous) => ({
-                                ...previous,
-                                adminUsername: event.target.value,
-                              }))
-                            }
-                            autoComplete="off"
-                            placeholder={t("form.usernamePlaceholder")}
-                          />
-                        </label>
-                        <label>
-                          <Label className="mb-2 block" htmlFor="settings-media-server-admin-password">
-                            {t("settings.adminPassword")}
-                          </Label>
-                          <Input
-                            id="settings-media-server-admin-password"
-                            value={draft.adminPassword}
-                            onChange={(event) =>
-                              setDraft((previous) => ({
-                                ...previous,
-                                adminPassword: event.target.value,
-                              }))
-                            }
-                            type="password"
-                            autoComplete="off"
-                            placeholder={t("form.passwordPlaceholder")}
-                          />
-                        </label>
-                      </>
-                    ) : null}
-                    <div className="md:col-span-2">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {draft.provider === "emby" || draft.jellyfinCredentialMode === "apiKey" ? (
+                        <>
+                          <label>
+                            <Label className="mb-2 block" htmlFor="settings-media-server-api-key">
+                              {t("settings.apiKey")}
+                            </Label>
+                            <Input
+                              id="settings-media-server-api-key"
+                              value={draft.apiKey}
+                              onChange={(event) =>
+                                setDraft((previous) => ({
+                                  ...previous,
+                                  apiKey: event.target.value,
+                                  clearApiKey: false,
+                                }))
+                              }
+                              type="password"
+                              placeholder={t("form.apiKeyInputPlaceholder")}
+                            />
+                          </label>
+                          {editingConnectionId ? (
+                            <label className="flex items-end gap-2 pb-2">
+                              <Checkbox
+                                checked={draft.clearApiKey}
+                                onCheckedChange={(checked) =>
+                                  setDraft((previous) => ({
+                                    ...previous,
+                                    clearApiKey: checked === true,
+                                  }))
+                                }
+                              />
+                              <span className="text-sm">{t("settings.clearSavedApiKey")}</span>
+                            </label>
+                          ) : null}
+                        </>
+                      ) : (
+                        <>
+                          <label>
+                            <Label className="mb-2 block" htmlFor="settings-media-server-admin-username">
+                              {t("settings.adminUsername")}
+                            </Label>
+                            <Input
+                              id="settings-media-server-admin-username"
+                              value={draft.adminUsername}
+                              onChange={(event) =>
+                                setDraft((previous) => ({
+                                  ...previous,
+                                  adminUsername: event.target.value,
+                                }))
+                              }
+                              autoComplete="off"
+                              placeholder={t("form.usernamePlaceholder")}
+                            />
+                          </label>
+                          <label>
+                            <Label className="mb-2 block" htmlFor="settings-media-server-admin-password">
+                              {t("settings.adminPassword")}
+                            </Label>
+                            <Input
+                              id="settings-media-server-admin-password"
+                              value={draft.adminPassword}
+                              onChange={(event) =>
+                                setDraft((previous) => ({
+                                  ...previous,
+                                  adminPassword: event.target.value,
+                                }))
+                              }
+                              type="password"
+                              autoComplete="off"
+                              placeholder={t("form.passwordPlaceholder")}
+                            />
+                          </label>
+                        </>
+                      )}
+                    </div>
+                    <div>
                       <LocalRemotePathMappingsField
                         fieldKey="path_mappings"
                         label={t("settings.mediaServerPathMappings")}
@@ -697,13 +783,22 @@ export function SettingsMediaServersSection({
                   </div>
                 ) : null}
 
+                {editorError ? (
+                  <div
+                    role="alert"
+                    className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                  >
+                    {editorError}
+                  </div>
+                ) : null}
+
                 <div className="flex gap-2">
                   <Button
                     id="settings-media-server-save"
                     type="submit"
-                    disabled={mutatingConnectionId === "new" || mutatingConnectionId === editingConnectionId}
+                    disabled={isSavingEditor}
                   >
-                    {mutatingConnectionId === "new" || mutatingConnectionId === editingConnectionId
+                    {isSavingEditor
                       ? t("label.saving")
                       : isEditing
                         ? t("settings.mediaServerUpdate")

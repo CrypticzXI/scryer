@@ -217,6 +217,7 @@ pub use media::language::{
 };
 pub use media_requests::{
     ListMediaRequestsInput, SubmitMediaRequestInput, SubmitMediaRequestOutcome,
+    UpdateMediaRequestInput,
 };
 pub use media_servers::{MediaServerConnectionDraft, MediaServerConnectionPatch};
 pub use plugins::plugins::{
@@ -317,14 +318,14 @@ pub use ports::{
     NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
     NotificationPluginProvider, NotificationReleasePayload, NotificationSeverityPayload,
     NotificationSubscriptionRepository, NotificationTitlePayload, PendingReleaseRepository,
-    PluginDescriptorLoader, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
-    PostProcessingScriptRepository, QualityProfileRepository, ReleaseAttemptRepository,
-    RuleSetRepository, RuntimePluginLoad, SettingsRepository, ShowRepository, StagedNzbStore,
-    SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
-    SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
-    UserRepository, VerifiedExternalIdentity, WantedItemRepository, WebauthnRepository,
-    WorkflowOperationInfo, WorkflowOperationRepository,
+    PlexServerDiscovery, PluginDescriptorLoader, PluginHttpTrustConfigRuntime,
+    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
+    ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad, SettingsRepository,
+    ShowRepository, StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider,
+    SubtitleProviderClient, SubtitleProviderConfigRepository, SystemInfoProvider,
+    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository,
+    UserExternalAccountRepository, UserRepository, VerifiedExternalIdentity, WantedItemRepository,
+    WebauthnRepository, WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,

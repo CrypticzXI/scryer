@@ -12,6 +12,8 @@ pub struct MediaServerConnectionDraft {
     pub default_app_permissions: AppPermissionMask,
     pub default_library_grants: Vec<MediaServerDefaultLibraryGrant>,
     pub machine_id: Option<String>,
+    pub plex_auth_token: Option<String>,
+    pub plex_server_id: Option<String>,
     pub api_key: Option<String>,
     pub admin_username: Option<String>,
     pub admin_password: Option<String>,
@@ -32,6 +34,8 @@ pub struct MediaServerConnectionPatch {
     pub default_library_grants: Option<Vec<MediaServerDefaultLibraryGrant>>,
     pub machine_id: Option<String>,
     pub clear_machine_id: bool,
+    pub plex_auth_token: Option<String>,
+    pub plex_server_id: Option<String>,
     pub api_key: Option<String>,
     pub clear_api_key: bool,
     pub admin_username: Option<String>,
@@ -75,6 +79,20 @@ impl AppUseCase {
     ) -> AppResult<MediaServerConnection> {
         self.require_media_server_permission(actor, &draft).await?;
         let now = Utc::now();
+        let machine_id = self
+            .resolve_plex_machine_id(
+                &draft.provider,
+                None,
+                draft.machine_id.clone(),
+                draft.plex_auth_token.as_deref(),
+                draft.plex_server_id.as_deref(),
+            )
+            .await?;
+        let api_key_supplied = draft
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
         let mut connection = self
             .normalize_media_server_connection(
                 scryer_domain::Id::new().0,
@@ -87,7 +105,7 @@ impl AppUseCase {
                 draft.auto_add_enabled,
                 draft.default_app_permissions,
                 draft.default_library_grants,
-                draft.machine_id,
+                machine_id,
                 draft.api_key,
                 draft.path_mappings,
                 now,
@@ -100,10 +118,15 @@ impl AppUseCase {
                 draft.admin_username.as_deref(),
                 draft.admin_password.as_deref(),
                 connection.api_key.clone(),
+                api_key_supplied,
             )
             .await?;
-        self.test_media_server_connection_internal(&connection)
-            .await?;
+        self.test_media_server_connection_internal(
+            &connection,
+            draft.plex_auth_token.as_deref(),
+            false,
+        )
+        .await?;
 
         let created = self
             .services
@@ -166,6 +189,25 @@ impl AppUseCase {
                 "cannot change provider for a connection with linked accounts".into(),
             ));
         }
+        let requested_machine_id = if patch.clear_machine_id {
+            None
+        } else {
+            patch.machine_id.clone().or(existing.machine_id.clone())
+        };
+        let machine_id = self
+            .resolve_plex_machine_id(
+                &provider,
+                existing.machine_id.as_deref(),
+                requested_machine_id,
+                patch.plex_auth_token.as_deref(),
+                patch.plex_server_id.as_deref(),
+            )
+            .await?;
+        let api_key_supplied = patch
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
 
         let mut connection = self
             .normalize_media_server_connection(
@@ -185,11 +227,7 @@ impl AppUseCase {
                 patch
                     .default_library_grants
                     .unwrap_or_else(|| existing.default_library_grants.clone()),
-                if patch.clear_machine_id {
-                    None
-                } else {
-                    patch.machine_id.or(existing.machine_id.clone())
-                },
+                machine_id,
                 if patch.clear_api_key {
                     None
                 } else {
@@ -209,10 +247,15 @@ impl AppUseCase {
                 patch.admin_username.as_deref(),
                 patch.admin_password.as_deref(),
                 connection.api_key.clone(),
+                api_key_supplied,
             )
             .await?;
-        self.test_media_server_connection_internal(&connection)
-            .await?;
+        self.test_media_server_connection_internal(
+            &connection,
+            patch.plex_auth_token.as_deref(),
+            false,
+        )
+        .await?;
 
         let updated = self
             .services
@@ -273,7 +316,12 @@ impl AppUseCase {
         Ok(())
     }
 
-    pub async fn test_media_server_connection(&self, actor: &User, id: &str) -> AppResult<()> {
+    pub async fn test_media_server_connection(
+        &self,
+        actor: &User,
+        id: &str,
+        plex_auth_token: Option<&str>,
+    ) -> AppResult<()> {
         self.require_app_permission(actor, AppPermission::ManageSystemSettings)
             .await?;
         let connection = self
@@ -283,7 +331,21 @@ impl AppUseCase {
             .get_by_id(id.trim())
             .await?
             .ok_or_else(|| AppError::NotFound(format!("media server connection {}", id.trim())))?;
-        self.test_media_server_connection_internal(&connection)
+        self.test_media_server_connection_internal(&connection, plex_auth_token, true)
+            .await
+    }
+
+    pub async fn discover_plex_media_servers(
+        &self,
+        actor: &User,
+        plex_auth_token: &str,
+    ) -> AppResult<Vec<PlexServerDiscovery>> {
+        self.require_app_permission(actor, AppPermission::ManageSystemSettings)
+            .await?;
+        self.services
+            .integrations
+            .external_identity_verifier
+            .discover_plex_servers(plex_auth_token)
             .await
     }
 
@@ -398,9 +460,13 @@ impl AppUseCase {
         } else {
             (false, false, false, AppPermissionMask::NONE, Vec::new())
         };
-        if provider == MediaServerProvider::Plex && auto_add_enabled && machine_id.is_none() {
+        if provider == MediaServerProvider::Plex
+            && (login_enabled || linking_enabled || auto_add_enabled)
+            && machine_id.is_none()
+        {
             return Err(AppError::Validation(
-                "Plex auto-add requires a configured Plex machine identifier".into(),
+                "Discover and select a Plex server before enabling login, linking, or auto-add"
+                    .into(),
             ));
         }
 
@@ -438,6 +504,7 @@ impl AppUseCase {
         admin_username: Option<&str>,
         admin_password: Option<&str>,
         api_key: Option<String>,
+        api_key_supplied: bool,
     ) -> AppResult<Option<String>> {
         if connection.provider != MediaServerProvider::Jellyfin {
             return Ok(api_key);
@@ -448,6 +515,12 @@ impl AppUseCase {
         let admin_password = admin_password
             .map(str::trim)
             .filter(|value| !value.is_empty());
+        if api_key_supplied && (admin_username.is_some() || admin_password.is_some()) {
+            return Err(AppError::Validation(
+                "choose either a Jellyfin API key or Jellyfin admin login credentials, not both"
+                    .into(),
+            ));
+        }
         match (admin_username, admin_password) {
             (Some(username), Some(password)) => {
                 let generated = self
@@ -473,6 +546,8 @@ impl AppUseCase {
     async fn test_media_server_connection_internal(
         &self,
         connection: &MediaServerConnection,
+        plex_auth_token: Option<&str>,
+        require_plex_token: bool,
     ) -> AppResult<()> {
         match connection.provider {
             MediaServerProvider::Jellyfin => {
@@ -489,9 +564,103 @@ impl AppUseCase {
                         .await?;
                 }
             }
-            MediaServerProvider::Plex | MediaServerProvider::Emby => {}
+            MediaServerProvider::Plex => {
+                let has_auth_capability = connection.login_enabled
+                    || connection.linking_enabled
+                    || connection.auto_add_enabled;
+                if has_auth_capability && connection.machine_id.is_none() {
+                    return Err(AppError::Validation(
+                        "Discover and select a Plex server before enabling login, linking, or auto-add"
+                            .into(),
+                    ));
+                }
+                let token = plex_auth_token
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                if require_plex_token && token.is_none() {
+                    return Err(AppError::Validation(
+                        "Sign in with Plex to test this connection".into(),
+                    ));
+                }
+                if let Some(token) = token {
+                    let servers = self
+                        .services
+                        .integrations
+                        .external_identity_verifier
+                        .discover_plex_servers(token)
+                        .await?;
+                    if let Some(machine_id) = connection.machine_id.as_deref() {
+                        if !servers.iter().any(|server| server.id == machine_id) {
+                            return Err(AppError::Unauthorized(
+                                "Plex account does not have access to the selected server".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            MediaServerProvider::Emby => {}
         }
         Ok(())
+    }
+
+    async fn resolve_plex_machine_id(
+        &self,
+        provider: &MediaServerProvider,
+        existing_machine_id: Option<&str>,
+        requested_machine_id: Option<String>,
+        plex_auth_token: Option<&str>,
+        plex_server_id: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        if *provider != MediaServerProvider::Plex {
+            return Ok(None);
+        }
+
+        let token = plex_auth_token
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let selected_server_id = plex_server_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        if let Some(token) = token {
+            let servers = self
+                .services
+                .integrations
+                .external_identity_verifier
+                .discover_plex_servers(token)
+                .await?;
+            if servers.is_empty() {
+                return Err(AppError::Validation(
+                    "Plex did not return any accessible servers for that account".into(),
+                ));
+            }
+            let selected = if let Some(selected_server_id) = selected_server_id {
+                servers
+                    .iter()
+                    .find(|server| server.id == selected_server_id)
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "The selected Plex server was not returned by Plex discovery".into(),
+                        )
+                    })?
+            } else if servers.len() == 1 {
+                &servers[0]
+            } else {
+                return Err(AppError::Validation(
+                    "Select a Plex server before saving this connection".into(),
+                ));
+            };
+            return Ok(Some(selected.id.clone()));
+        }
+
+        if selected_server_id.is_some() {
+            return Err(AppError::Validation(
+                "Sign in with Plex before selecting a Plex server".into(),
+            ));
+        }
+
+        Ok(normalize_optional_string(requested_machine_id)
+            .or_else(|| existing_machine_id.map(ToString::to_string)))
     }
 }
 

@@ -1310,10 +1310,12 @@ impl MediaRequestRepository for MockMediaRequestRepo {
             content_status: request.content_status,
             requested_quality_profile_id: request.requested_quality_profile_id,
             requested_quality_profile_name: request.requested_quality_profile_name,
+            requested_monitor_type: request.requested_monitor_type,
             external_ids: request.external_ids,
             requesters: vec![MediaRequestRequester {
                 user_id: requester.id.clone(),
                 username: requester.username.clone(),
+                avatar_url: None,
                 requested_at: now,
             }],
             created_by_user_id: request.created_by_user_id,
@@ -1380,6 +1382,68 @@ impl MediaRequestRepository for MockMediaRequestRepo {
         Ok(updated)
     }
 
+    async fn resolve_pending(
+        &self,
+        request_id: &str,
+        resolution: MediaRequestResolution,
+    ) -> AppResult<u64> {
+        let mut requests = self.requests.lock().await;
+        let mut updated = 0;
+        for candidate in requests.iter_mut().filter(|candidate| {
+            candidate.id == request_id && candidate.status == MediaRequestStatus::Pending
+        }) {
+            candidate.status = resolution.status;
+            candidate.resolved_by_user_id = Some(resolution.resolved_by_user_id.clone());
+            candidate.resolved_at = Some(resolution.resolved_at);
+            candidate.created_title_id = resolution.created_title_id.clone();
+            candidate.approved_quality_profile_id = resolution.approved_quality_profile_id.clone();
+            candidate.approved_quality_profile_name =
+                resolution.approved_quality_profile_name.clone();
+            candidate.updated_at = resolution.resolved_at;
+            updated += 1;
+        }
+        drop(requests);
+
+        if updated > 0
+            && let Some(domain_events) = &self.domain_events
+        {
+            domain_events.append(resolution.event).await?;
+        }
+
+        Ok(updated)
+    }
+
+    async fn update_pending_request_preferences(
+        &self,
+        request_id: &str,
+        requested_quality_profile_id: String,
+        requested_quality_profile_name: String,
+        requested_monitor_type: Option<String>,
+        updated_event: NewDomainEvent,
+    ) -> AppResult<MediaRequest> {
+        let mut requests = self.requests.lock().await;
+        let now = Utc::now();
+        let Some(request) = requests.iter_mut().find(|request| {
+            request.id == request_id && request.status == MediaRequestStatus::Pending
+        }) else {
+            return Err(AppError::Validation(
+                "media request is no longer pending".into(),
+            ));
+        };
+        request.requested_quality_profile_id = Some(requested_quality_profile_id);
+        request.requested_quality_profile_name = Some(requested_quality_profile_name);
+        request.requested_monitor_type = requested_monitor_type;
+        request.updated_at = now;
+        let updated = request.clone();
+        drop(requests);
+
+        if let Some(domain_events) = &self.domain_events {
+            domain_events.append(updated_event).await?;
+        }
+
+        Ok(updated)
+    }
+
     async fn count_pending_by_facet(
         &self,
         library_ids: &[String],
@@ -1420,6 +1484,12 @@ impl MediaRequestRepository for MockMediaRequestRepo {
                     && query.status.is_none_or(|status| request.status == status)
                     && query.library_ids.as_ref().is_none_or(|library_ids| {
                         library_ids.iter().any(|id| id == &request.library_id)
+                    })
+                    && query.requester_user_id.as_ref().is_none_or(|user_id| {
+                        request
+                            .requesters
+                            .iter()
+                            .any(|requester| &requester.user_id == user_id)
                     })
             })
             .cloned()
@@ -5697,6 +5767,7 @@ fn test_user_with_app_permissions(username: &str, app_permissions: AppPermission
         id: Id::new().0,
         username: username.to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     user.authorization.app = app_permissions;
@@ -5852,6 +5923,7 @@ fn media_request_input(library_id: impl Into<String>, tvdb_id: i64) -> SubmitMed
         language: Some("en".to_string()),
         content_status: Some("Released".to_string()),
         requested_quality_profile_id: None,
+        requested_monitor_type: None,
         external_ids: vec![
             ExternalId {
                 source: "TVDB".to_string(),
@@ -5915,6 +5987,7 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
         request.requested_quality_profile_name.as_deref(),
         Some("4K")
     );
+    assert!(request.requested_monitor_type.is_none());
     assert_eq!(request.created_by_user_id, harness.user.id);
     assert_eq!(request.requesters.len(), 1);
     assert_eq!(request.requesters[0].user_id, harness.user.id);
@@ -5946,6 +6019,7 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
             assert_eq!(data.external_ids, request.external_ids);
             assert_eq!(data.requested_quality_profile_id.as_deref(), Some("4k"));
             assert_eq!(data.requested_quality_profile_name.as_deref(), Some("4K"));
+            assert!(data.requested_monitor_type.is_none());
         }
         other => panic!("unexpected event payload: {other:?}"),
     }
@@ -6374,6 +6448,186 @@ async fn list_media_requests_filters_by_facet_and_manageable_libraries() {
 }
 
 #[tokio::test]
+async fn list_my_media_requests_filters_to_requester_owned_requests() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let second_user = library_permission_user(
+        "requester-owned-list",
+        &library_id,
+        &[scryer_domain::LibraryPermission::Request],
+    );
+
+    harness
+        .app
+        .submit_media_request(&harness.user, media_request_input(library_id.clone(), 9031))
+        .await
+        .expect("first user's request should succeed");
+    harness
+        .app
+        .submit_media_request(&second_user, media_request_input(library_id, 9032))
+        .await
+        .expect("second user's request should succeed");
+
+    let requests = harness
+        .app
+        .list_my_media_requests(
+            &second_user,
+            ListMediaRequestsInput {
+                facet: Some(MediaFacet::Movie),
+                library_ids: None,
+                status: None,
+            },
+        )
+        .await
+        .expect("own requests should load");
+
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].created_by_user_id, second_user.id);
+    assert!(
+        requests[0]
+            .requesters
+            .iter()
+            .any(|requester| requester.user_id == second_user.id)
+    );
+}
+
+#[tokio::test]
+async fn requester_can_update_pending_request_preferences() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    harness
+        .app
+        .update_library_settings(
+            &harness.user,
+            &library_id,
+            LibrarySettingsOverrideDraft {
+                request_quality_profile_ids: Some(vec!["1080p".to_string(), "4k".to_string()]),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect("request profile allowlist should save");
+    let mut input = media_request_input(library_id, 9033);
+    input.facet = MediaFacet::Series;
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("request should succeed");
+    let request_id = harness.media_requests.requests.lock().await[0].id.clone();
+
+    let updated = harness
+        .app
+        .update_my_media_request(
+            &harness.user,
+            UpdateMediaRequestInput {
+                request_id,
+                requested_quality_profile_id: "1080p".to_string(),
+                requested_monitor_type: Some("allEpisodes".to_string()),
+            },
+        )
+        .await
+        .expect("requester should update pending request");
+
+    assert_eq!(
+        updated.requested_quality_profile_id.as_deref(),
+        Some("1080p")
+    );
+    assert_eq!(
+        updated.requested_quality_profile_name.as_deref(),
+        Some("1080P")
+    );
+    assert_eq!(
+        updated.requested_monitor_type.as_deref(),
+        Some("allepisodes")
+    );
+
+    let events = harness.domain_events.events.lock().await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.payload, DomainEventPayload::MediaRequestUpdated(_)))
+    );
+}
+
+#[tokio::test]
+async fn requester_can_cancel_pending_request_without_resolving_overlapping_requests() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let input = media_request_input(library_id, 9034);
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input.clone())
+        .await
+        .expect("first request should succeed");
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("duplicate request should succeed");
+    let request_id = harness.media_requests.requests.lock().await[0].id.clone();
+
+    let canceled = harness
+        .app
+        .cancel_my_media_request(&harness.user, &request_id)
+        .await
+        .expect("requester should cancel pending request");
+
+    assert_eq!(canceled, 1);
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].status, MediaRequestStatus::Canceled);
+    assert_eq!(requests[1].status, MediaRequestStatus::Pending);
+}
+
+#[tokio::test]
+async fn requester_cannot_update_or_cancel_after_manager_resolution() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    harness
+        .app
+        .submit_media_request(&harness.user, media_request_input(library_id, 9035))
+        .await
+        .expect("request should succeed");
+    let request_id = harness.media_requests.requests.lock().await[0].id.clone();
+    harness
+        .app
+        .dismiss_media_request(&harness.user, &request_id)
+        .await
+        .expect("manager should reject request");
+
+    let update_error = harness
+        .app
+        .update_my_media_request(
+            &harness.user,
+            UpdateMediaRequestInput {
+                request_id: request_id.clone(),
+                requested_quality_profile_id: "1080p".to_string(),
+                requested_monitor_type: None,
+            },
+        )
+        .await
+        .expect_err("resolved request cannot be updated");
+    assert!(
+        matches!(update_error, AppError::Validation(ref message) if message.contains("no longer pending")),
+        "unexpected update error: {update_error:?}"
+    );
+
+    let cancel_error = harness
+        .app
+        .cancel_my_media_request(&harness.user, &request_id)
+        .await
+        .expect_err("resolved request cannot be canceled");
+    assert!(
+        matches!(cancel_error, AppError::Validation(ref message) if message.contains("no longer pending")),
+        "unexpected cancel error: {cancel_error:?}"
+    );
+}
+
+#[tokio::test]
 async fn approve_media_request_creates_title_and_resolves_overlapping_pending_requests() {
     let harness = bootstrap_media_request_app();
     let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
@@ -6432,6 +6686,46 @@ async fn approve_media_request_creates_title_and_resolves_overlapping_pending_re
             && request.resolved_by_user_id.as_deref() == Some(harness.user.id.as_str())
             && request.resolved_at.is_some()
     }));
+}
+
+#[tokio::test]
+async fn approve_series_media_request_applies_requested_monitor_type() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let mut input = media_request_input(library_id.clone(), 9030);
+    input.facet = MediaFacet::Series;
+    input.requested_monitor_type = Some("missingAndFutureEpisodes".to_string());
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("series request should succeed");
+
+    let request = harness.media_requests.requests.lock().await[0].clone();
+    assert_eq!(
+        request.requested_monitor_type.as_deref(),
+        Some("missingandfutureepisodes")
+    );
+
+    let outcome = harness
+        .app
+        .approve_media_request(&harness.user, &request.id, "1080p")
+        .await
+        .expect("approval should create the series title");
+
+    let titles = harness.titles.store.lock().await;
+    let title = titles
+        .iter()
+        .find(|title| title.id == outcome.title_id)
+        .expect("approved title should be stored");
+    assert!(title.monitored);
+    assert!(
+        title
+            .tags
+            .iter()
+            .any(|tag| tag == "scryer:monitor-type:missingandfutureepisodes")
+    );
 }
 
 #[tokio::test]
@@ -13065,6 +13359,7 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
         id: "ghost-search-user".to_string(),
         username: "ghost".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     ghost_actor.authorization = scryer_domain::UserAuthorization {
@@ -22408,6 +22703,7 @@ async fn issue_and_authenticate_token_round_trips() {
         id: "user-jwt-1".to_string(),
         username: "jwt_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     app.services
@@ -22929,6 +23225,7 @@ async fn expired_token_returns_unauthorized() {
         id: "user-jwt-3".to_string(),
         username: "exp_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     app.services
@@ -22963,6 +23260,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         id: "user-jwt-4".to_string(),
         username: "iss_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     app.services
@@ -23000,6 +23298,7 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
         id: "user-jwt-cache-1".to_string(),
         username: "cache_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     app.services
@@ -23019,6 +23318,31 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
 
     assert_eq!(users.get_by_id_call_count(), 2);
     assert_eq!(users.list_all_call_count(), 1);
+}
+
+#[tokio::test]
+async fn passkey_registration_requires_password_backed_user() {
+    let users = Arc::new(MockUserRepo::default());
+    let user = test_user_with_app_permissions("jellyfin_user", AppPermissionMask::NONE);
+    users.create(user.clone()).await.expect("create user");
+
+    let (mut app, _) = bootstrap_with_user_repo(users);
+    let origin = url::Url::parse("https://scryer.test").expect("valid WebAuthn origin");
+    let webauthn = webauthn_rs::WebauthnBuilder::new("scryer.test", &origin)
+        .expect("valid WebAuthn builder")
+        .build()
+        .expect("valid WebAuthn runtime");
+    app.webauthn = services::RuntimeFeature::enabled(Arc::new(webauthn));
+
+    let result = app.webauthn_register_start(&user, true).await;
+
+    match result {
+        Err(AppError::Validation(message)) => {
+            assert_eq!(message, "passkeys require a password-backed account");
+        }
+        Err(error) => panic!("expected password-backed validation error, got {error}"),
+        Ok(_) => panic!("expected password-backed validation error"),
+    }
 }
 
 #[tokio::test]
@@ -23150,6 +23474,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         id: "user-jwt-malformed".to_string(),
         username: "jwt_claims".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     app.services

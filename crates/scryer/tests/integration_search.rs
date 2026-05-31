@@ -17,6 +17,7 @@ fn admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization {
             loaded: true,
             default_library: LibraryPermissionMask::from_permissions([

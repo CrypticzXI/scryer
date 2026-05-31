@@ -298,6 +298,7 @@ async fn setup() -> (
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
 

@@ -100,6 +100,7 @@ pub enum MediaRequestStatus {
     Pending,
     Approved,
     Rejected,
+    Canceled,
 }
 
 impl MediaRequestStatus {
@@ -108,6 +109,7 @@ impl MediaRequestStatus {
             Self::Pending => "pending",
             Self::Approved => "approved",
             Self::Rejected => "rejected",
+            Self::Canceled => "canceled",
         }
     }
 
@@ -116,6 +118,7 @@ impl MediaRequestStatus {
             "pending" => Some(Self::Pending),
             "approved" => Some(Self::Approved),
             "rejected" => Some(Self::Rejected),
+            "canceled" => Some(Self::Canceled),
             _ => None,
         }
     }
@@ -125,6 +128,7 @@ impl MediaRequestStatus {
 pub struct MediaRequestRequester {
     pub user_id: String,
     pub username: String,
+    pub avatar_url: Option<String>,
     pub requested_at: DateTime<Utc>,
 }
 
@@ -146,6 +150,7 @@ pub struct MediaRequest {
     pub content_status: Option<String>,
     pub requested_quality_profile_id: Option<String>,
     pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
     pub resolved_by_user_id: Option<String>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub created_title_id: Option<String>,
@@ -1690,8 +1695,10 @@ pub enum EventType {
 #[derive(strum::EnumIter)]
 pub enum DomainEventType {
     MediaRequestSubmitted,
+    MediaRequestUpdated,
     MediaRequestApproved,
     MediaRequestRejected,
+    MediaRequestCanceled,
     TitleAdded,
     TitleUpdated,
     TitleRematched,
@@ -1736,8 +1743,10 @@ impl DomainEventType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MediaRequestSubmitted => "media_request_submitted",
+            Self::MediaRequestUpdated => "media_request_updated",
             Self::MediaRequestApproved => "media_request_approved",
             Self::MediaRequestRejected => "media_request_rejected",
+            Self::MediaRequestCanceled => "media_request_canceled",
             Self::TitleAdded => "title_added",
             Self::TitleUpdated => "title_updated",
             Self::TitleRematched => "title_rematched",
@@ -1782,8 +1791,10 @@ impl DomainEventType {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "media_request_submitted" => Some(Self::MediaRequestSubmitted),
+            "media_request_updated" => Some(Self::MediaRequestUpdated),
             "media_request_approved" => Some(Self::MediaRequestApproved),
             "media_request_rejected" => Some(Self::MediaRequestRejected),
+            "media_request_canceled" => Some(Self::MediaRequestCanceled),
             "title_added" => Some(Self::TitleAdded),
             "title_updated" => Some(Self::TitleUpdated),
             "title_rematched" => Some(Self::TitleRematched),
@@ -1884,6 +1895,7 @@ pub struct MediaRequestSubmittedEventData {
     pub year: Option<i32>,
     pub requested_quality_profile_id: Option<String>,
     pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1896,6 +1908,7 @@ pub struct MediaRequestResolvedEventData {
     pub created_title_id: Option<String>,
     pub requested_quality_profile_id: Option<String>,
     pub requested_quality_profile_name: Option<String>,
+    pub requested_monitor_type: Option<String>,
     pub approved_quality_profile_id: Option<String>,
     pub approved_quality_profile_name: Option<String>,
 }
@@ -2380,8 +2393,10 @@ pub struct DownloadQueueItemRemovedEventData {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum DomainEventPayload {
     MediaRequestSubmitted(MediaRequestSubmittedEventData),
+    MediaRequestUpdated(MediaRequestSubmittedEventData),
     MediaRequestApproved(MediaRequestResolvedEventData),
     MediaRequestRejected(MediaRequestResolvedEventData),
+    MediaRequestCanceled(MediaRequestResolvedEventData),
     TitleAdded(TitleAddedEventData),
     TitleUpdated(TitleUpdatedEventData),
     TitleRematched(TitleRematchedEventData),
@@ -2426,8 +2441,10 @@ impl DomainEventPayload {
     pub fn event_type(&self) -> DomainEventType {
         match self {
             Self::MediaRequestSubmitted(_) => DomainEventType::MediaRequestSubmitted,
+            Self::MediaRequestUpdated(_) => DomainEventType::MediaRequestUpdated,
             Self::MediaRequestApproved(_) => DomainEventType::MediaRequestApproved,
             Self::MediaRequestRejected(_) => DomainEventType::MediaRequestRejected,
+            Self::MediaRequestCanceled(_) => DomainEventType::MediaRequestCanceled,
             Self::TitleAdded(_) => DomainEventType::TitleAdded,
             Self::TitleUpdated(_) => DomainEventType::TitleUpdated,
             Self::TitleRematched(_) => DomainEventType::TitleRematched,
@@ -2701,10 +2718,46 @@ pub struct RuleSet {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UserAccountKind {
+    Local,
+    ExternalAutoProvisioned,
+}
+
+impl Default for UserAccountKind {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
+impl UserAccountKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::ExternalAutoProvisioned => "external_auto_provisioned",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "local" => Some(Self::Local),
+            "external_auto_provisioned" => Some(Self::ExternalAutoProvisioned),
+            _ => None,
+        }
+    }
+
+    pub fn allows_local_credentials(&self) -> bool {
+        matches!(self, Self::Local)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
     pub id: String,
     pub username: String,
     pub password_hash: Option<String>,
+    #[serde(default)]
+    pub account_kind: UserAccountKind,
     #[serde(default)]
     pub authorization: UserAuthorization,
 }
@@ -2889,6 +2942,7 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: None,
+            account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
     }
@@ -2901,6 +2955,7 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: Some(password_hash.into()),
+            account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
     }
@@ -3359,10 +3414,47 @@ pub struct NewNotificationChannelConfig {
     pub is_enabled: bool,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationTargetKind {
+    PluginChannel,
+    MediaServerConnection,
+}
+
+impl NotificationTargetKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PluginChannel => "plugin_channel",
+            Self::MediaServerConnection => "media_server_connection",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plugin_channel" => Some(Self::PluginChannel),
+            "media_server_connection" => Some(Self::MediaServerConnection),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationTarget {
+    pub id: String,
+    pub target_kind: NotificationTargetKind,
+    pub name: String,
+    pub provider_type: String,
+    pub media_server_provider: Option<MediaServerProvider>,
+    pub media_server_connection_id: Option<String>,
+    pub is_enabled: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NotificationSubscription {
     pub id: String,
-    pub channel_id: String,
+    pub channel_id: Option<String>,
+    pub target_kind: NotificationTargetKind,
+    pub target_id: String,
     pub event_type: NotificationEventType,
     pub scope: String,
     pub scope_id: Option<String>,
@@ -3373,7 +3465,9 @@ pub struct NotificationSubscription {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NewNotificationSubscription {
-    pub channel_id: String,
+    pub channel_id: Option<String>,
+    pub target_kind: NotificationTargetKind,
+    pub target_id: String,
     pub event_type: NotificationEventType,
     pub scope: String,
     pub scope_id: Option<String>,

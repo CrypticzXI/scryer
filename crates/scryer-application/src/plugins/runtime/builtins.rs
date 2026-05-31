@@ -22,6 +22,7 @@ pub struct RegistryPlugin {
     pub wasm_url: Option<String>,
     pub wasm_sha256: Option<String>,
     pub min_scryer_version: Option<String>,
+    pub bytes: Option<u64>,
     /// Merged from local installation state.
     pub is_installed: bool,
     pub is_enabled: bool,
@@ -52,7 +53,7 @@ impl PreparedCatalogPluginInstall {
                 version: self.descriptor.version.clone(),
                 sdk_version: self.descriptor.sdk_version.clone(),
                 sdk_constraint: self.sdk_constraint,
-                scryer_constraint: None,
+                scryer_constraint: self.scryer_constraint,
                 plugin_type: self.descriptor.plugin_type().to_string(),
                 provider_type: normalize_provider_key(self.descriptor.provider_type()),
                 source_kind: self.source_kind,
@@ -90,7 +91,7 @@ impl PreparedCatalogPluginInstall {
         installation.version = self.descriptor.version.clone();
         installation.sdk_version = self.descriptor.sdk_version.clone();
         installation.sdk_constraint = self.sdk_constraint;
-        installation.scryer_constraint = None;
+        installation.scryer_constraint = self.scryer_constraint;
         installation.plugin_type = self.descriptor.plugin_type().to_string();
         installation.provider_type = normalize_provider_key(self.descriptor.provider_type());
         installation.source_kind = self.source_kind;

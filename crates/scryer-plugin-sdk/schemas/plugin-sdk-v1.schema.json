@@ -36,41 +36,47 @@
     "subtitle_generate_result": {
       "$ref": "#/$defs/PluginResult4"
     },
+    "subtitle_sync_align_request": {
+      "$ref": "#/$defs/SubtitleSyncAlignRequest"
+    },
+    "subtitle_sync_align_result": {
+      "$ref": "#/$defs/PluginResult5"
+    },
     "download_add_request": {
       "$ref": "#/$defs/PluginDownloadClientAddRequest"
     },
     "download_add_result": {
-      "$ref": "#/$defs/PluginResult5"
-    },
-    "download_queue_result": {
       "$ref": "#/$defs/PluginResult6"
     },
-    "download_history_result": {
+    "download_queue_result": {
       "$ref": "#/$defs/PluginResult7"
     },
+    "download_history_result": {
+      "$ref": "#/$defs/PluginResult8"
+    },
     "download_completed_result": {
-      "$ref": "#/$defs/PluginResult7"
+      "$ref": "#/$defs/PluginResult8"
     },
     "download_control_request": {
       "$ref": "#/$defs/PluginDownloadClientControlRequest"
     },
     "download_control_result": {
-      "$ref": "#/$defs/PluginResult8"
+      "$ref": "#/$defs/PluginResult9"
     },
     "download_mark_imported_request": {
       "$ref": "#/$defs/PluginDownloadClientMarkImportedRequest"
     },
     "download_mark_imported_result": {
-      "$ref": "#/$defs/PluginResult8"
+      "$ref": "#/$defs/PluginResult9"
     },
     "download_status_result": {
-      "$ref": "#/$defs/PluginResult9"
+      "$ref": "#/$defs/PluginResult10"
     },
     "notification_request": {
       "$ref": "#/$defs/PluginNotificationRequest"
     },
     "notification_result": {
-      "$ref": "#/$defs/PluginResult10"
+      "$ref": "#/$defs/PluginResult11"
     }
   },
   "required": [
@@ -85,6 +91,8 @@
     "subtitle_validate_config_result",
     "subtitle_generate_request",
     "subtitle_generate_result",
+    "subtitle_sync_align_request",
+    "subtitle_sync_align_result",
     "download_add_request",
     "download_add_result",
     "download_queue_result",
@@ -2371,6 +2379,309 @@
         "format"
       ]
     },
+    "SubtitleSyncAlignRequest": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/SubtitleSyncAlignInputRef"
+        },
+        "subtitle": {
+          "$ref": "#/$defs/SubtitleSyncInputSubtitle"
+        },
+        "subtitle_spans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SubtitleTimingSpan"
+          }
+        },
+        "max_offset_seconds": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "selector": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioStreamSelector"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_codec": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioTranscodeCodec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "input",
+        "subtitle",
+        "subtitle_spans",
+        "max_offset_seconds"
+      ]
+    },
+    "SubtitleSyncAlignInputRef": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "SubtitleSyncInputSubtitle": {
+      "type": "object",
+      "properties": {
+        "content_base64": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        },
+        "file_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "encoding_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "content_base64",
+        "format"
+      ]
+    },
+    "SubtitleTimingSpan": {
+      "type": "object",
+      "properties": {
+        "start_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "end_ms": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "start_ms",
+        "end_ms"
+      ]
+    },
+    "AudioStreamSelector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "default"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "stream_index"
+            }
+          },
+          "required": [
+            "kind",
+            "index"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "language": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "language"
+            }
+          },
+          "required": [
+            "kind",
+            "language"
+          ]
+        }
+      ]
+    },
+    "AudioTranscodeCodec": {
+      "type": "string",
+      "enum": [
+        "ac3",
+        "eac3",
+        "dts",
+        "dts_hd_ma_core",
+        "true_hd"
+      ]
+    },
+    "PluginResult5": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "$ref": "#/$defs/SubtitleSyncAlignResponse"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "err": {
+              "$ref": "#/$defs/PluginError"
+            }
+          },
+          "required": [
+            "err"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SubtitleSyncAlignResponse": {
+      "type": "object",
+      "properties": {
+        "applied": {
+          "type": "boolean"
+        },
+        "offset_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "rewritten_subtitle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubtitleSyncRewrittenSubtitle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "selected_framerate_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "consistency_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "nosplit_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "split_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "skipped_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubtitleSyncAlignSkipReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backend": {
+          "type": "string"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "applied",
+        "offset_ms",
+        "backend"
+      ]
+    },
+    "SubtitleSyncRewrittenSubtitle": {
+      "type": "object",
+      "properties": {
+        "content_base64": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_base64",
+        "format"
+      ]
+    },
+    "SubtitleSyncAlignSkipReason": {
+      "type": "string",
+      "enum": [
+        "audio_decode_failed",
+        "not_enough_reference_spans",
+        "weak_alignment",
+        "low_alignment_consistency",
+        "offset_exceeds_maximum",
+        "offset_too_small"
+      ]
+    },
     "PluginDownloadClientAddRequest": {
       "type": "object",
       "properties": {
@@ -2740,7 +3051,7 @@
         "no_subfolder"
       ]
     },
-    "PluginResult5": {
+    "PluginResult6": {
       "oneOf": [
         {
           "type": "object",
@@ -2785,7 +3096,7 @@
         "client_item_id"
       ]
     },
-    "PluginResult6": {
+    "PluginResult7": {
       "oneOf": [
         {
           "type": "object",
@@ -3077,7 +3388,7 @@
         }
       }
     },
-    "PluginResult7": {
+    "PluginResult8": {
       "oneOf": [
         {
           "type": "object",
@@ -3224,7 +3535,7 @@
         "force_start"
       ]
     },
-    "PluginResult8": {
+    "PluginResult9": {
       "oneOf": [
         {
           "type": "object",
@@ -3305,7 +3616,7 @@
         "client_item_id"
       ]
     },
-    "PluginResult9": {
+    "PluginResult10": {
       "oneOf": [
         {
           "type": "object",
@@ -4308,7 +4619,7 @@
         }
       }
     },
-    "PluginResult10": {
+    "PluginResult11": {
       "oneOf": [
         {
           "type": "object",

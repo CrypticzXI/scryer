@@ -56,7 +56,7 @@ impl AppUseCase {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
 
-        if user.password_hash.is_none() {
+        if !user.account_kind.allows_local_credentials() || user.password_hash.is_none() {
             return Err(AppError::Validation(
                 "passkeys require a password-backed account".into(),
             ));

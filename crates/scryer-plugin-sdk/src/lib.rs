@@ -34,7 +34,7 @@ pub use notification::{
     to_script_environment, to_webhook_json,
 };
 
-pub const SDK_VERSION: &str = "2.0.0";
+pub const SDK_VERSION: &str = "2.1.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -225,13 +225,18 @@ fn legacy_sdk_constraint(version: &str) -> String {
     let Some(version) = parsed else {
         return ">=0.0.0".to_string();
     };
+    let (lower_major, lower_minor) = if version.major == 1 {
+        (1, 0)
+    } else {
+        (version.major, version.minor)
+    };
     let upper_major = if version.major == 1 {
         // SDK 2 keeps the SDK-v1 guest ABI loadable; SDK 3 is the next hard boundary.
         3
     } else {
         version.major + 1
     };
-    format!(">={}.0.0, <{}.0.0", version.major, upper_major)
+    format!(">={lower_major}.{lower_minor}.0, <{upper_major}.0.0")
 }
 
 fn sdk_minor_line_constraint(version: &str) -> Option<String> {
@@ -1489,8 +1494,19 @@ pub struct SubtitleSyncAlignInputRef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncInputSubtitle {
+    pub content_base64: String,
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubtitleSyncAlignRequest {
     pub input: SubtitleSyncAlignInputRef,
+    pub subtitle: SubtitleSyncInputSubtitle,
     pub subtitle_spans: Vec<SubtitleTimingSpan>,
     pub max_offset_seconds: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1500,9 +1516,21 @@ pub struct SubtitleSyncAlignRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncRewrittenSubtitle {
+    pub content_base64: String,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubtitleSyncAlignResponse {
     pub applied: bool,
     pub offset_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewritten_subtitle: Option<SubtitleSyncRewrittenSubtitle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_framerate_ratio: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consistency_ratio: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2279,6 +2307,8 @@ struct PluginSdkSchemaDocument {
     subtitle_validate_config_result: PluginResult<SubtitlePluginValidateConfigResponse>,
     subtitle_generate_request: SubtitlePluginGenerateRequest,
     subtitle_generate_result: PluginResult<SubtitlePluginGenerateResponse>,
+    subtitle_sync_align_request: SubtitleSyncAlignRequest,
+    subtitle_sync_align_result: PluginResult<SubtitleSyncAlignResponse>,
     download_add_request: PluginDownloadClientAddRequest,
     download_add_result: PluginResult<PluginDownloadClientAddResponse>,
     download_queue_result: PluginResult<Vec<PluginDownloadItem>>,
@@ -2308,8 +2338,8 @@ mod tests {
     };
 
     #[test]
-    fn current_sdk_constraint_uses_abi_major_line() {
-        assert_eq!(current_sdk_constraint(), ">=2.0.0, <3.0.0");
+    fn current_sdk_constraint_uses_current_v2_minor_floor() {
+        assert_eq!(current_sdk_constraint(), ">=2.1.0, <3.0.0");
     }
 
     #[test]

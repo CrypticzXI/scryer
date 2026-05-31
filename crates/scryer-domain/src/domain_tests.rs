@@ -104,6 +104,7 @@ fn catalog_settings_permission_does_not_include_system_settings() {
         id: Id::new().0,
         username: "catalog-settings".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization::default(),
     };
     user.authorization.loaded = true;
@@ -268,6 +269,7 @@ fn user_with_limited_permission_masks() {
         id: Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: UserAuthorization {
             default_library: LibraryPermissionMask::from_permissions([
                 LibraryPermission::View,
@@ -307,6 +309,7 @@ fn user_with_no_permission_masks() {
         id: Id::new().0,
         username: "empty".to_string(),
         password_hash: None,
+        account_kind: Default::default(),
         authorization: Default::default(),
     };
     assert!(

@@ -2,12 +2,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use scryer_application::{AppError, AppResult, SubtitleSyncClient, SubtitleSyncJob};
 
 use crate::loader::build_plugin;
 use crate::types::{
     AudioStreamSelector, EXPORT_SUBSYNC_ALIGN, PluginDescriptor, SubtitleSyncAlignInputRef,
-    SubtitleSyncAlignRequest, SubtitleSyncAlignResponse, decode_plugin_result,
+    SubtitleSyncAlignRequest, SubtitleSyncAlignResponse, SubtitleSyncInputSubtitle,
+    decode_plugin_result,
 };
 
 const GUEST_INPUT_ROOT: &str = "/input";
@@ -41,6 +43,12 @@ impl SubtitleSyncClient for WasmSubtitleSyncClient {
         let request = SubtitleSyncAlignRequest {
             input: SubtitleSyncAlignInputRef {
                 path: guest_input_path,
+            },
+            subtitle: SubtitleSyncInputSubtitle {
+                content_base64: BASE64.encode(&job.subtitle_content),
+                format: job.subtitle_format,
+                file_name: job.subtitle_file_name,
+                encoding_hint: job.subtitle_encoding_hint,
             },
             subtitle_spans: job.subtitle_spans,
             max_offset_seconds: job.max_offset_seconds,

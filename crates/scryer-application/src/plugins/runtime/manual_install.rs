@@ -167,6 +167,7 @@ impl AppUseCase {
                 wasm_url: Some(resolved.artifact.url.clone()),
                 wasm_sha256: None,
                 min_scryer_version: None,
+                bytes: Some(resolved.artifact.bytes),
                 is_installed: self
                     .services
                     .customization

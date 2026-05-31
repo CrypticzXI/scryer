@@ -199,6 +199,8 @@ pub struct CatalogV3PluginEntry {
 pub struct CatalogV3PluginRelease {
     pub version: String,
     pub sdk_constraint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_scryer_version: Option<String>,
     pub artifacts: Vec<CatalogV3PluginArtifact>,
 }
 
@@ -216,6 +218,7 @@ pub struct CatalogV3PluginArtifact {
     pub signature_mirror_urls: Vec<String>,
     pub digests: Vec<String>,
     pub wasm_digests: Vec<String>,
+    pub bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -994,6 +997,14 @@ fn validate_plugin_release_set(plugin: &CatalogV3PluginEntry) -> AppResult<()> {
                 release.sdk_constraint, plugin.id
             ))
         })?;
+        if let Some(min_scryer_version) = release.min_scryer_version.as_deref() {
+            Version::parse(min_scryer_version.trim()).map_err(|error| {
+                AppError::Validation(format!(
+                    "plugin '{}' release '{}' has invalid min_scryer_version '{}': {error}",
+                    plugin.id, release.version, min_scryer_version
+                ))
+            })?;
+        }
         if !versions.insert(release.version.clone()) {
             return Err(AppError::Validation(format!(
                 "duplicate release version '{}' for plugin '{}'",
@@ -1071,6 +1082,12 @@ fn validate_plugin_release_set(plugin: &CatalogV3PluginEntry) -> AppResult<()> {
             }
             for digest in &artifact.wasm_digests {
                 require_digest("wasm_digest", digest)?;
+            }
+            if artifact.bytes == 0 {
+                return Err(AppError::Validation(format!(
+                    "plugin '{}' release '{}' artifact '{}' bytes must be greater than zero",
+                    plugin.id, release.version, artifact.url
+                )));
             }
         }
     }
@@ -1709,6 +1726,61 @@ mod tests {
         }"#;
         let err = parse_and_validate_child_catalog(raw, None, None).unwrap_err();
         assert!(err.to_string().contains("duplicate release version"));
+    }
+
+    #[test]
+    fn catalog_v3_rejects_invalid_plugin_min_scryer_version() {
+        let raw = br#"{
+            "schema_version": "scryer.plugin.catalog.v3",
+            "catalog_version": 1,
+            "generated_at": "2026-05-30T00:00:00Z",
+            "plugins": [
+                {
+                    "id": "alpha",
+                    "name": "Alpha",
+                    "description": "Alpha plugin",
+                    "plugin_type": "indexer",
+                    "provider_type": "alpha",
+                    "publisher": "scryer",
+                    "support_tier": "official",
+                    "status": "active",
+                    "docs_url": "https://github.com/scryer-media/alpha",
+                    "source_repo": "https://github.com/scryer-media/alpha",
+                    "required_signer": {
+                        "github_repository": "scryer-media/alpha"
+                    },
+                    "releases": [
+                        {
+                            "version": "1.0.0",
+                            "sdk_constraint": ">=1.5.0, <1.6.0",
+                            "min_scryer_version": "not-semver",
+                            "artifacts": [
+                                {
+                                    "runtime": "wasm32-wasip1",
+                                    "required_features": [],
+                                    "url": "https://github.com/scryer-media/alpha/releases/download/v1.0.0/alpha.wasm.zst",
+                                    "mirror_urls": [],
+                                    "signature_url": "https://github.com/scryer-media/alpha/releases/download/v1.0.0/alpha.wasm.zst.bundle.json",
+                                    "signature_mirror_urls": [],
+                                    "digests": [
+                                        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                                    ],
+                                    "wasm_digests": [
+                                        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                                    ],
+                                    "bytes": 1234
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "rule_packs": []
+        }"#;
+
+        let err = parse_and_validate_catalog_v3(raw).unwrap_err();
+
+        assert!(err.to_string().contains("invalid min_scryer_version"));
     }
 
     #[cfg(feature = "runtime-plugin-trust")]

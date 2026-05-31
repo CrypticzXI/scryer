@@ -392,6 +392,57 @@ file = "postgres/migrations/0132_media_request_lifecycle_profiles.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 133
+description = "media request monitor type"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0133_media_request_monitor_type.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0133_media_request_monitor_type.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 134
+description = "media request canceled status"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0134_media_request_canceled_status.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0134_media_request_canceled_status.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 135
+description = "user account kind"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0135_user_account_kind.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0135_user_account_kind.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

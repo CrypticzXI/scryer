@@ -10,6 +10,7 @@ struct CatalogPluginResolution {
 struct PreparedCatalogPluginInstall {
     descriptor: PluginDescriptor,
     sdk_constraint: String,
+    scryer_constraint: Option<String>,
     source_kind: PluginSourceKind,
     support_tier: PluginSupportTier,
     persisted_wasm_bytes: Vec<u8>,
@@ -113,6 +114,41 @@ fn catalog_release_is_sdk_compatible(plugin_id: &str, release: &CatalogV3PluginR
     };
     sdk_req.matches(current_sdk_version())
 }
+fn catalog_release_is_scryer_compatible(
+    plugin_id: &str,
+    release: &CatalogV3PluginRelease,
+) -> bool {
+    let Some(min_scryer_version) = release
+        .min_scryer_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+    else {
+        return true;
+    };
+    let Ok(min_scryer_version) = semver::Version::parse(min_scryer_version) else {
+        warn!(
+            plugin_id,
+            version = release.version.as_str(),
+            min_scryer_version,
+            "skipping plugin release with invalid min_scryer_version"
+        );
+        return false;
+    };
+    current_scryer_version() >= &min_scryer_version
+}
+fn catalog_release_is_host_compatible(plugin_id: &str, release: &CatalogV3PluginRelease) -> bool {
+    catalog_release_is_sdk_compatible(plugin_id, release)
+        && catalog_release_is_scryer_compatible(plugin_id, release)
+}
+fn catalog_release_scryer_constraint(release: &CatalogV3PluginRelease) -> Option<String> {
+    release
+        .min_scryer_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(|version| format!(">={version}"))
+}
 fn latest_catalog_release(plugin: &CatalogV3PluginEntry) -> Option<CatalogV3PluginRelease> {
     plugin
         .releases
@@ -130,7 +166,7 @@ fn latest_compatible_catalog_release(
     plugin
         .releases
         .iter()
-        .filter(|release| catalog_release_is_sdk_compatible(&plugin.id, release))
+        .filter(|release| catalog_release_is_host_compatible(&plugin.id, release))
         .filter(|release| {
             select_catalog_release_artifact(
                 release,
@@ -156,14 +192,19 @@ fn latest_host_blocked_catalog_release(
         Some(selected) => {
             let selected_version = parse_catalog_release_version(&plugin.id, &selected)?;
             if latest_version > selected_version
-                && !catalog_release_is_sdk_compatible(&plugin.id, &latest)
+                && catalog_release_is_sdk_compatible(&plugin.id, &latest)
+                && !catalog_release_is_scryer_compatible(&plugin.id, &latest)
             {
                 Some(latest)
             } else {
                 None
             }
         }
-        None if !catalog_release_is_sdk_compatible(&plugin.id, &latest) => Some(latest),
+        None if catalog_release_is_sdk_compatible(&plugin.id, &latest)
+            && !catalog_release_is_scryer_compatible(&plugin.id, &latest) =>
+        {
+            Some(latest)
+        }
         None => None,
     }
 }
@@ -244,7 +285,7 @@ fn select_catalog_release_and_artifact(
     plugin
         .releases
         .iter()
-        .filter(|release| catalog_release_is_sdk_compatible(&plugin.id, release))
+        .filter(|release| catalog_release_is_host_compatible(&plugin.id, release))
         .filter_map(|release| {
             select_catalog_release_artifact(release, supported_features, cpu_class)
                 .map(|artifact| (release, artifact))

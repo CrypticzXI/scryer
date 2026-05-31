@@ -1,6 +1,7 @@
 use chrono::Utc;
 use scryer_domain::{
-    Id, NotificationChannelConfig, NotificationEventType, NotificationSubscription,
+    Id, MediaServerConnection, MediaServerProvider, NotificationChannelConfig,
+    NotificationEventType, NotificationSubscription, NotificationTarget, NotificationTargetKind,
 };
 
 use crate::ports::NOTIFICATION_REQUEST_SCHEMA_VERSION;
@@ -28,6 +29,10 @@ fn parse_subscribable_notification_event_type(
     }
 }
 
+fn is_media_server_notification_provider(provider_type: &str) -> bool {
+    MediaServerProvider::parse(provider_type).is_some()
+}
+
 impl AppUseCase {
     pub fn subscribable_notification_event_types(&self) -> &'static [NotificationEventType] {
         crate::notifications::dispatcher::supported_notification_event_types()
@@ -40,7 +45,77 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         let repo = self.notification_channels()?;
-        repo.list_channels().await
+        Ok(repo
+            .list_channels()
+            .await?
+            .into_iter()
+            .filter(|channel| !is_media_server_notification_provider(channel.channel_type.as_str()))
+            .collect())
+    }
+
+    pub async fn list_notification_targets(
+        &self,
+        actor: &scryer_domain::User,
+    ) -> AppResult<Vec<NotificationTarget>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let mut targets = Vec::new();
+        for channel in self.notification_channels()?.list_channels().await? {
+            if is_media_server_notification_provider(channel.channel_type.as_str()) {
+                continue;
+            }
+            targets.push(NotificationTarget {
+                id: channel.id,
+                target_kind: NotificationTargetKind::PluginChannel,
+                name: channel.name,
+                provider_type: channel.channel_type.as_str().to_string(),
+                media_server_provider: None,
+                media_server_connection_id: None,
+                is_enabled: channel.is_enabled,
+            });
+        }
+
+        let provider = self.services.notifications.notification_provider();
+        let available = provider
+            .as_ref()
+            .map(|provider| provider.available_provider_types())
+            .unwrap_or_default();
+        let available: std::collections::HashSet<String> = available
+            .into_iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .collect();
+
+        for connection in self
+            .services
+            .integrations
+            .media_server_connections
+            .list(None)
+            .await?
+        {
+            let provider_type = connection.provider.as_str().to_string();
+            if !connection.enabled || !available.contains(provider_type.as_str()) {
+                continue;
+            }
+            if self
+                .notification_channel_for_media_server_connection(connection.clone())
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            targets.push(NotificationTarget {
+                id: connection.id.clone(),
+                target_kind: NotificationTargetKind::MediaServerConnection,
+                name: connection.display_name,
+                provider_type,
+                media_server_provider: Some(connection.provider),
+                media_server_connection_id: Some(connection.id),
+                is_enabled: connection.enabled,
+            });
+        }
+
+        Ok(targets)
     }
 
     pub async fn get_notification_channel(
@@ -73,6 +148,18 @@ impl AppUseCase {
         }
         let channel_type = scryer_domain::ChannelType::parse(channel_type.trim())
             .ok_or_else(|| AppError::Validation(format!("invalid channel type: {channel_type}")))?;
+        if is_media_server_notification_provider(channel_type.as_str()) {
+            return Err(AppError::Validation(
+                "media server notification targets must be managed in Media Servers".into(),
+            ));
+        }
+        if normalize_notification_media_server_connection_id(media_server_connection_id.clone())
+            .is_some()
+        {
+            return Err(AppError::Validation(
+                "notification channels cannot reference media server connections".into(),
+            ));
+        }
 
         let now = Utc::now();
         let config = NotificationChannelConfig {
@@ -117,8 +204,19 @@ impl AppUseCase {
             channel.config_json = c;
         }
         if let Some(media_server_connection_id) = media_server_connection_id {
-            channel.media_server_connection_id =
-                normalize_notification_media_server_connection_id(media_server_connection_id);
+            if normalize_notification_media_server_connection_id(media_server_connection_id)
+                .is_some()
+            {
+                return Err(AppError::Validation(
+                    "notification channels cannot reference media server connections".into(),
+                ));
+            }
+            channel.media_server_connection_id = None;
+        }
+        if is_media_server_notification_provider(channel.channel_type.as_str()) {
+            return Err(AppError::Validation(
+                "media server notification targets must be managed in Media Servers".into(),
+            ));
         }
         if let Some(e) = is_enabled {
             channel.is_enabled = e;
@@ -215,7 +313,9 @@ impl AppUseCase {
     pub async fn create_notification_subscription(
         &self,
         actor: &scryer_domain::User,
-        channel_id: String,
+        channel_id: Option<String>,
+        target_kind: Option<String>,
+        target_id: Option<String>,
         event_type: String,
         scope: String,
         scope_id: Option<String>,
@@ -225,18 +325,18 @@ impl AppUseCase {
             .await?;
 
         let parsed_event_type = parse_subscribable_notification_event_type(&event_type)?;
-
-        // Validate channel exists
-        let ch_repo = self.notification_channels()?;
-        ch_repo
-            .get_channel(&channel_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("notification channel {channel_id}")))?;
+        let (target_kind, target_id) =
+            normalize_notification_target(channel_id.as_deref(), target_kind, target_id)?;
+        let channel_id = self
+            .validate_notification_subscription_target(target_kind, &target_id, parsed_event_type)
+            .await?;
 
         let now = Utc::now();
         let sub = NotificationSubscription {
             id: Id::new().0,
             channel_id,
+            target_kind,
+            target_id,
             event_type: parsed_event_type,
             scope,
             scope_id,
@@ -253,6 +353,8 @@ impl AppUseCase {
         &self,
         actor: &scryer_domain::User,
         id: String,
+        target_kind: Option<String>,
+        target_id: Option<String>,
         event_type: Option<String>,
         scope: Option<String>,
         scope_id: NotificationScopeIdUpdate,
@@ -269,9 +371,23 @@ impl AppUseCase {
             .find(|s| s.id == id)
             .ok_or_else(|| AppError::NotFound(format!("notification subscription {id}")))?;
 
+        if target_kind.is_some() || target_id.is_some() {
+            let (next_kind, next_id) =
+                normalize_notification_target(sub.channel_id.as_deref(), target_kind, target_id)?;
+            let channel_id = self
+                .validate_notification_subscription_target(next_kind, &next_id, sub.event_type)
+                .await?;
+            sub.target_kind = next_kind;
+            sub.target_id = next_id;
+            sub.channel_id = channel_id;
+        }
         if let Some(et) = event_type {
             let parsed = parse_subscribable_notification_event_type(&et)?;
+            let channel_id = self
+                .validate_notification_subscription_target(sub.target_kind, &sub.target_id, parsed)
+                .await?;
             sub.event_type = parsed;
+            sub.channel_id = channel_id;
         }
         if let Some(s) = scope {
             sub.scope = s;
@@ -344,6 +460,141 @@ impl AppUseCase {
             .is_some_and(|p| p.supports_test_for_provider(provider_type))
     }
 
+    async fn validate_notification_subscription_target(
+        &self,
+        target_kind: NotificationTargetKind,
+        target_id: &str,
+        event_type: NotificationEventType,
+    ) -> AppResult<Option<String>> {
+        let provider_type = match target_kind {
+            NotificationTargetKind::PluginChannel => {
+                let channel = self
+                    .notification_channels()?
+                    .get_channel(target_id)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!("notification channel {target_id}"))
+                    })?;
+                if !channel.is_enabled {
+                    return Err(AppError::Validation(
+                        "notification channel is disabled".into(),
+                    ));
+                }
+                if is_media_server_notification_provider(channel.channel_type.as_str()) {
+                    return Err(AppError::Validation(
+                        "media server notification providers must be targeted through media server connections".into(),
+                    ));
+                }
+                channel.channel_type.as_str().to_string()
+            }
+            NotificationTargetKind::MediaServerConnection => {
+                let connection = self
+                    .services
+                    .integrations
+                    .media_server_connections
+                    .get_by_id(target_id)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!("media server connection {target_id}"))
+                    })?;
+                if !connection.enabled {
+                    return Err(AppError::Validation(
+                        "media server connection is disabled".into(),
+                    ));
+                }
+                self.notification_channel_for_media_server_connection(connection)
+                    .await?;
+                target_id.to_string();
+                target_kind.as_str();
+                // provider type follows the media server provider.
+                self.services
+                    .integrations
+                    .media_server_connections
+                    .get_by_id(target_id)
+                    .await?
+                    .map(|connection| connection.provider.as_str().to_string())
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!("media server connection {target_id}"))
+                    })?
+            }
+        };
+
+        let provider = self
+            .services
+            .notifications
+            .notification_provider()
+            .ok_or_else(|| {
+                AppError::Repository("notification plugin provider is not configured".into())
+            })?;
+        if !provider
+            .available_provider_types()
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(&provider_type))
+        {
+            return Err(AppError::Validation(format!(
+                "notification provider '{provider_type}' is not available"
+            )));
+        }
+        let supported_events = provider.supported_events_for_provider(&provider_type);
+        if !supported_events.is_empty() && !supported_events.contains(&event_type) {
+            return Err(AppError::Validation(format!(
+                "notification provider '{provider_type}' does not support event '{}'",
+                event_type.as_str()
+            )));
+        }
+
+        Ok(match target_kind {
+            NotificationTargetKind::PluginChannel => Some(target_id.to_string()),
+            NotificationTargetKind::MediaServerConnection => None,
+        })
+    }
+
+    pub(crate) async fn notification_channel_for_media_server_target(
+        &self,
+        connection_id: &str,
+    ) -> AppResult<NotificationChannelConfig> {
+        let connection = self
+            .services
+            .integrations
+            .media_server_connections
+            .get_by_id(connection_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("media server connection {connection_id}"))
+            })?;
+        self.notification_channel_for_media_server_connection(connection)
+            .await
+    }
+
+    async fn notification_channel_for_media_server_connection(
+        &self,
+        connection: MediaServerConnection,
+    ) -> AppResult<NotificationChannelConfig> {
+        let channel_type = scryer_domain::ChannelType::parse(connection.provider.as_str())
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "invalid media server provider '{}'",
+                    connection.provider.as_str()
+                ))
+            })?;
+        let mut channel = NotificationChannelConfig {
+            id: format!("media-server:{}", connection.id),
+            name: connection.display_name.clone(),
+            channel_type,
+            config_json: "{}".to_string(),
+            media_server_connection_id: Some(connection.id.clone()),
+            is_enabled: connection.enabled,
+            created_at: connection.created_at,
+            updated_at: connection.updated_at,
+        };
+        channel.config_json = self.media_server_notification_config_json(&connection, None)?;
+        self.validate_notification_provider_required_config(
+            connection.provider.as_str(),
+            &channel.config_json,
+        )?;
+        Ok(channel)
+    }
+
     pub(crate) async fn notification_channel_with_resolved_media_server_config(
         &self,
         mut channel: NotificationChannelConfig,
@@ -351,9 +602,6 @@ impl AppUseCase {
         let Some(connection_id) = channel.media_server_connection_id.clone() else {
             return Ok(channel);
         };
-        if channel.channel_type.as_str() != "jellyfin" {
-            return Ok(channel);
-        }
         let connection = self
             .services
             .integrations
@@ -363,29 +611,54 @@ impl AppUseCase {
             .ok_or_else(|| {
                 AppError::NotFound(format!("media server connection {connection_id}"))
             })?;
-        if connection.provider != scryer_domain::MediaServerProvider::Jellyfin {
+        if connection.provider.as_str() != channel.channel_type.as_str() {
             return Err(AppError::Validation(
-                "Jellyfin notification channels require a Jellyfin media server connection".into(),
+                "notification channel media server connection provider does not match channel type"
+                    .into(),
             ));
         }
-        let api_key = connection.api_key.as_deref().ok_or_else(|| {
-            AppError::Validation(
-                "Jellyfin notification channels require a saved Jellyfin API key".into(),
-            )
-        })?;
-        let existing_config = serde_json::from_str::<serde_json::Value>(&channel.config_json)
-            .ok()
+        channel.config_json =
+            self.media_server_notification_config_json(&connection, Some(&channel.config_json))?;
+        self.validate_notification_provider_required_config(
+            connection.provider.as_str(),
+            &channel.config_json,
+        )?;
+        Ok(channel)
+    }
+
+    fn media_server_notification_config_json(
+        &self,
+        connection: &MediaServerConnection,
+        existing_config_json: Option<&str>,
+    ) -> AppResult<String> {
+        let existing_config = existing_config_json
+            .and_then(|config_json| serde_json::from_str::<serde_json::Value>(config_json).ok())
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default();
         let mut config = serde_json::Map::new();
+        for (key, value) in existing_config {
+            config.insert(key, value);
+        }
         config.insert(
             "base_url".to_string(),
-            serde_json::Value::String(connection.base_url),
+            serde_json::Value::String(connection.base_url.clone()),
         );
-        config.insert(
-            "api_key".to_string(),
-            serde_json::Value::String(api_key.to_string()),
-        );
+        if let Some(api_key) = connection.api_key.as_deref() {
+            config.insert(
+                "api_key".to_string(),
+                serde_json::Value::String(api_key.to_string()),
+            );
+        } else {
+            config.remove("api_key");
+        }
+        if let Some(machine_id) = connection.machine_id.as_deref() {
+            config.insert(
+                "machine_id".to_string(),
+                serde_json::Value::String(machine_id.to_string()),
+            );
+        } else {
+            config.remove("machine_id");
+        }
         if !connection.path_mappings.is_empty() {
             let rendered = connection
                 .path_mappings
@@ -397,11 +670,35 @@ impl AppUseCase {
                 "path_mappings".to_string(),
                 serde_json::Value::String(rendered),
             );
-        } else if let Some(path_mappings) = existing_config.get("path_mappings").cloned() {
-            config.insert("path_mappings".to_string(), path_mappings);
         }
-        channel.config_json = serde_json::Value::Object(config).to_string();
-        Ok(channel)
+        Ok(serde_json::Value::Object(config).to_string())
+    }
+
+    fn validate_notification_provider_required_config(
+        &self,
+        provider_type: &str,
+        config_json: &str,
+    ) -> AppResult<()> {
+        let config = serde_json::from_str::<serde_json::Value>(config_json)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        for field in self.notification_provider_config_fields(provider_type) {
+            if !field.required {
+                continue;
+            }
+            let present = config
+                .get(&field.key)
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| !value.trim().is_empty());
+            if !present {
+                return Err(AppError::Validation(format!(
+                    "notification provider '{provider_type}' requires '{}'",
+                    field.label
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn notification_channels_repo(

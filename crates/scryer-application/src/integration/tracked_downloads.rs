@@ -1618,6 +1618,7 @@ mod tests {
             id: "user-1".to_string(),
             username: "user@example.test".to_string(),
             password_hash: None,
+            account_kind: Default::default(),
             authorization: scryer_domain::UserAuthorization {
                 app: scryer_domain::AppPermissionMask::NONE,
                 libraries,

@@ -77,11 +77,16 @@ export type MediaServerConnection = {
   autoAddEnabled: boolean;
   defaultAppPermissions: string[];
   defaultLibraryGrants: MediaServerDefaultLibraryGrant[];
-  machineId: string | null;
+  machineIdPresent: boolean;
   apiKeyPresent: boolean;
   pathMappings: MediaServerPathMapping[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type PlexServerDiscovery = {
+  id: string;
+  name: string;
 };
 
 export type MediaServerConnectionDraft = {
@@ -94,9 +99,11 @@ export type MediaServerConnectionDraft = {
   autoAddEnabled: boolean;
   defaultAppPermissions: string[];
   defaultLibraryGrants: MediaServerDefaultLibraryGrant[];
-  machineId: string;
+  machineIdPresent: boolean;
+  plexServerId: string;
   apiKey: string;
   clearApiKey: boolean;
+  jellyfinCredentialMode: "apiKey" | "adminLogin";
   adminUsername: string;
   adminPassword: string;
   pathMappingsText: string;
@@ -107,7 +114,8 @@ export type AuthProviderConnection = {
   displayName: string;
   userVisibleUrl: string | null;
   baseUrl: string | null;
-  machineId: string | null;
+  loginEnabled: boolean;
+  linkingEnabled: boolean;
 };
 
 export type AuthProviderSettings = {

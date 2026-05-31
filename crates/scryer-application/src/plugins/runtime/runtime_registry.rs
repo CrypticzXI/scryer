@@ -205,10 +205,10 @@ impl AppUseCase {
                     (None, Some(latest)) => Some(latest.version.clone()),
                     _ => None,
                 };
-                let blocked_reason = if selected_release.is_none() && latest_release.is_some() {
-                    Some("no_compatible_release".to_string())
-                } else if blocked_release.is_some() {
+                let blocked_reason = if blocked_release.is_some() {
                     Some("newer_release_requires_newer_scryer".to_string())
+                } else if selected_release.is_none() && latest_release.is_some() {
+                    Some("no_compatible_release".to_string())
                 } else {
                     None
                 };
@@ -248,7 +248,11 @@ impl AppUseCase {
                     blocked_reason,
                     wasm_url: selected.map(|value| value.artifact.url.clone()),
                     wasm_sha256: None,
-                    min_scryer_version: None,
+                    min_scryer_version: selected_release
+                        .as_ref()
+                        .or(blocked_release.as_ref())
+                        .and_then(|release| release.min_scryer_version.clone()),
+                    bytes: selected.map(|value| value.artifact.bytes),
                     default_base_url: self
                         .default_base_url_for_plugin(&plugin_type, &entry.provider_type),
                     is_installed: inst.is_some(),
@@ -319,6 +323,7 @@ impl AppUseCase {
                 wasm_url: Some(resolved.artifact.url.clone()),
                 wasm_sha256: None,
                 min_scryer_version: None,
+                bytes: Some(resolved.artifact.bytes),
                 default_base_url: self.default_base_url_for_plugin(
                     &plugin_type,
                     &resolved.catalog_entry.provider_type,
@@ -361,6 +366,7 @@ impl AppUseCase {
                     wasm_url: None,
                     wasm_sha256: None,
                     min_scryer_version: None,
+                    bytes: None,
                     default_base_url: self
                         .default_base_url_for_plugin(&inst.plugin_type, &inst.provider_type),
                     is_installed: true,

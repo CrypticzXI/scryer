@@ -16,8 +16,8 @@ use scryer_interface_core::{
 };
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
-    from_media_server_connection, from_media_settings, from_quality_profile_settings,
-    from_service_settings, from_user,
+    from_media_server_connection, from_media_settings, from_plex_server_discovery,
+    from_quality_profile_settings, from_service_settings, from_user,
 };
 use scryer_interface_media::types::*;
 
@@ -130,14 +130,12 @@ fn auth_provider_connections(
     connections
         .into_iter()
         .map(|connection| AuthProviderConnectionPayload {
-            user_visible_url: connection
-                .base_url
-                .clone()
-                .or_else(|| connection.machine_id.clone()),
+            user_visible_url: connection.base_url.clone(),
             id: connection.id,
             display_name: connection.display_name,
             base_url: connection.base_url,
-            machine_id: connection.machine_id,
+            login_enabled: connection.login_enabled,
+            linking_enabled: connection.linking_enabled,
         })
         .collect()
 }
@@ -191,6 +189,8 @@ fn app_auth_provider_connection(
         display_name: connection.display_name.unwrap_or_default(),
         base_url: connection.base_url,
         machine_id: connection.machine_id,
+        login_enabled: connection.login_enabled.unwrap_or(false),
+        linking_enabled: connection.linking_enabled.unwrap_or(false),
     }
 }
 
@@ -250,6 +250,8 @@ fn media_server_draft(input: CreateMediaServerConnectionInput) -> MediaServerCon
         default_app_permissions: media_server_app_permissions(input.default_app_permissions),
         default_library_grants: media_server_library_grants(input.default_library_grants),
         machine_id: input.machine_id,
+        plex_auth_token: input.plex_auth_token,
+        plex_server_id: input.plex_server_id,
         api_key: input.api_key,
         admin_username: input.admin_username,
         admin_password: input.admin_password,
@@ -275,6 +277,8 @@ fn media_server_patch(input: UpdateMediaServerConnectionInput) -> MediaServerCon
             .map(|grants| media_server_library_grants(Some(grants))),
         machine_id: input.machine_id,
         clear_machine_id: input.clear_machine_id.unwrap_or(false),
+        plex_auth_token: input.plex_auth_token,
+        plex_server_id: input.plex_server_id,
         api_key: input.api_key,
         clear_api_key: input.clear_api_key.unwrap_or(false),
         admin_username: input.admin_username,
@@ -870,14 +874,38 @@ impl SettingsMutations {
         Ok(true)
     }
 
-    async fn test_media_server_connection(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
+    async fn test_media_server_connection(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        plex_auth_token: Option<String>,
+    ) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         require_config_step_up(ctx).await?;
-        app.test_media_server_connection(&actor, &id)
+        app.test_media_server_connection(&actor, &id, plex_auth_token.as_deref())
             .await
             .map_err(to_gql_error)?;
         Ok(true)
+    }
+
+    async fn discover_plex_media_servers(
+        &self,
+        ctx: &Context<'_>,
+        plex_auth_token: String,
+    ) -> GqlResult<Vec<PlexServerDiscoveryPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        require_config_step_up(ctx).await?;
+        app.discover_plex_media_servers(&actor, &plex_auth_token)
+            .await
+            .map(|servers| {
+                servers
+                    .into_iter()
+                    .map(from_plex_server_discovery)
+                    .collect()
+            })
+            .map_err(to_gql_error)
     }
 
     async fn upsert_delay_profile(

@@ -7,6 +7,7 @@ use scryer_application::{
 };
 use scryer_domain::{
     ChannelType, NotificationChannelConfig, NotificationEventType, NotificationSubscription,
+    NotificationTargetKind,
 };
 
 use crate::config_store::{current_encryption_key, decrypt_value, maybe_encrypt_value};
@@ -22,12 +23,12 @@ const CHANNEL_INSERT_SQL: &str = "INSERT INTO notification_channels (
 )";
 
 const SUBSCRIPTION_COLUMNS: &str =
-    "id, channel_id, event_type, scope, scope_id, is_enabled, created_at, updated_at";
+    "id, channel_id, target_kind, target_id, event_type, scope, scope_id, is_enabled, created_at, updated_at";
 
 const SUBSCRIPTION_INSERT_SQL: &str = "INSERT INTO notification_subscriptions (
-    id, channel_id, event_type, scope, scope_id, is_enabled, created_at, updated_at
+    id, channel_id, target_kind, target_id, event_type, scope, scope_id, is_enabled, created_at, updated_at
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 #[derive(Clone)]
@@ -188,6 +189,24 @@ impl NotificationSubscriptionRepository for NotificationStore {
         .await
     }
 
+    async fn list_subscriptions_for_target(
+        &self,
+        target_kind: NotificationTargetKind,
+        target_id: &str,
+    ) -> AppResult<Vec<NotificationSubscription>> {
+        fetch_subscriptions(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {SUBSCRIPTION_COLUMNS} FROM notification_subscriptions WHERE target_kind = {{}} AND target_id = {{}} ORDER BY created_at DESC"
+            ),
+            &[
+                SqlArg::Text(target_kind.as_str().to_string()),
+                SqlArg::Text(target_id.to_string()),
+            ],
+        )
+        .await
+    }
+
     async fn list_subscriptions_for_event(
         &self,
         event_type: NotificationEventType,
@@ -228,6 +247,9 @@ impl NotificationSubscriptionRepository for NotificationStore {
     ) -> AppResult<NotificationSubscription> {
         let updated_at = Utc::now();
         let args = vec![
+            SqlArg::OptText(sub.channel_id.clone()),
+            SqlArg::Text(sub.target_kind.as_str().to_string()),
+            SqlArg::Text(sub.target_id.clone()),
             SqlArg::Text(sub.event_type.as_str().to_string()),
             SqlArg::Text(sub.scope.clone()),
             SqlArg::OptText(sub.scope_id.clone()),
@@ -245,7 +267,7 @@ impl NotificationSubscriptionRepository for NotificationStore {
                     let rows = SqlRuntime::execute(
                         SqlExec::Tx(tx),
                         "UPDATE notification_subscriptions
-                         SET event_type = {}, scope = {}, scope_id = {}, is_enabled = {}, updated_at = {}
+                         SET channel_id = {}, target_kind = {}, target_id = {}, event_type = {}, scope = {}, scope_id = {}, is_enabled = {}, updated_at = {}
                          WHERE id = {}",
                         &args,
                     )
@@ -317,7 +339,9 @@ fn channel_config_arg(
 fn subscription_insert_args(sub: &NotificationSubscription) -> Vec<SqlArg> {
     vec![
         SqlArg::Text(sub.id.clone()),
-        SqlArg::Text(sub.channel_id.clone()),
+        SqlArg::OptText(sub.channel_id.clone()),
+        SqlArg::Text(sub.target_kind.as_str().to_string()),
+        SqlArg::Text(sub.target_id.clone()),
         SqlArg::Text(sub.event_type.as_str().to_string()),
         SqlArg::Text(sub.scope.clone()),
         SqlArg::OptText(sub.scope_id.clone()),
@@ -395,9 +419,14 @@ fn row_to_subscription(row: &SqlRow) -> AppResult<NotificationSubscription> {
     let event_type_raw = row.text("event_type")?;
     let event_type = NotificationEventType::parse(&event_type_raw)
         .ok_or_else(|| AppError::Repository(format!("unknown event_type: {event_type_raw}")))?;
+    let target_kind_raw = row.text("target_kind")?;
+    let target_kind = NotificationTargetKind::parse(&target_kind_raw)
+        .ok_or_else(|| AppError::Repository(format!("unknown target_kind: {target_kind_raw}")))?;
     Ok(NotificationSubscription {
         id: row.text("id")?,
-        channel_id: row.text("channel_id")?,
+        channel_id: row.opt_text("channel_id")?,
+        target_kind,
+        target_id: row.text("target_id")?,
         event_type,
         scope: row.text("scope")?,
         scope_id: row.opt_text("scope_id")?,
@@ -447,7 +476,9 @@ mod tests {
         sqlx::query(
             "CREATE TEMP TABLE notification_subscriptions (
                 id TEXT PRIMARY KEY,
-                channel_id TEXT NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+                channel_id TEXT REFERENCES notification_channels(id) ON DELETE CASCADE,
+                target_kind TEXT NOT NULL,
+                target_id TEXT NOT NULL,
                 event_type TEXT NOT NULL,
                 scope TEXT NOT NULL,
                 scope_id TEXT,
@@ -484,7 +515,9 @@ mod tests {
 
         let subscription = NotificationSubscription {
             id: "pg-subscription-1".to_string(),
-            channel_id: channel.id.clone(),
+            channel_id: Some(channel.id.clone()),
+            target_kind: NotificationTargetKind::PluginChannel,
+            target_id: channel.id.clone(),
             event_type: NotificationEventType::ImportComplete,
             scope: "global".to_string(),
             scope_id: None,
