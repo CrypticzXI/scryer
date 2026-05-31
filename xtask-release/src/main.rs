@@ -2592,21 +2592,21 @@ fn run_sdk_release(ctx: &TaskContext, args: SdkReleaseArgs) -> Result<()> {
         );
     }
     if changed.is_empty() {
-        bail!("SDK release produced no changes to commit");
+        ok("No SDK release file changes to commit; tagging current HEAD");
+    } else {
+        let mut add = ctx.release_command_in("git", &ctx.repo_root);
+        add.arg("add");
+        add.args(&changed);
+        run_checked(&mut add)?;
+        let mut commit = ctx.release_command_in("git", &ctx.repo_root);
+        commit.args([
+            "commit",
+            "-m",
+            &format!("release: publish scryer-plugin-sdk {version}"),
+        ]);
+        run_checked(&mut commit)?;
+        ok("Committed SDK release");
     }
-
-    let mut add = ctx.release_command_in("git", &ctx.repo_root);
-    add.arg("add");
-    add.args(&changed);
-    run_checked(&mut add)?;
-    let mut commit = ctx.release_command_in("git", &ctx.repo_root);
-    commit.args([
-        "commit",
-        "-m",
-        &format!("release: publish scryer-plugin-sdk {version}"),
-    ]);
-    run_checked(&mut commit)?;
-    ok("Committed SDK release");
 
     step(format!("Creating signed tag {tag_name}"));
     let mut tag = ctx.release_command_in("git", &ctx.repo_root);
