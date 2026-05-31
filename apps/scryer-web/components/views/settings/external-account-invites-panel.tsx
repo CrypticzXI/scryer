@@ -575,63 +575,67 @@ export function ExternalAccountInvitesPanel({
 
       <div className="space-y-3">
         <h4 className="text-sm font-medium">{t("settings.previousExternalAccountInvites")}</h4>
-        <Table id="settings-external-account-invites-table">
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("settings.user")}</TableHead>
-              <TableHead>{t("settings.provider")}</TableHead>
-              <TableHead>{t("profile.linkedAccountConnection")}</TableHead>
-              <TableHead>{t("settings.externalAccountInviteProviderUser")}</TableHead>
-              <TableHead>{t("profile.linkedAccountStatus")}</TableHead>
-              <TableHead>{t("settings.externalAccountInviteCreatedAt")}</TableHead>
-              <TableHead>{t("settings.externalAccountInviteLastLogin")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-muted-foreground">
-                  {t("label.loading")}
-                </TableCell>
-              </TableRow>
-            ) : sortedInvites.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-muted-foreground">
-                  {t("settings.noExternalAccountInvites")}
-                </TableCell>
-              </TableRow>
-            ) : (
-              sortedInvites.map((invite) => {
-                const status = inviteStatus(invite, t);
-                return (
-                  <TableRow key={invite.id}>
-                    <TableCell>{usersById.get(invite.userId) ?? invite.userId}</TableCell>
-                    <TableCell>{providerLabel(invite.provider)}</TableCell>
-                    <TableCell>{inviteConnectionLabel(authProviderSettings, invite)}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <ProviderAvatar
-                          avatarUrl={invite.avatarUrl}
-                          label={invite.displayName ?? invite.username}
-                        />
-                        <span>{providerIdentityLabel(invite)}</span>
-                      </div>
+        <div className="rounded border border-border">
+          <div className="overflow-x-auto">
+            <Table id="settings-external-account-invites-table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("settings.user")}</TableHead>
+                  <TableHead>{t("settings.provider")}</TableHead>
+                  <TableHead>{t("profile.linkedAccountConnection")}</TableHead>
+                  <TableHead>{t("settings.externalAccountInviteProviderUser")}</TableHead>
+                  <TableHead>{t("profile.linkedAccountStatus")}</TableHead>
+                  <TableHead>{t("settings.externalAccountInviteCreatedAt")}</TableHead>
+                  <TableHead>{t("settings.externalAccountInviteLastLogin")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-muted-foreground">
+                      {t("label.loading")}
                     </TableCell>
-                    <TableCell>
-                      <span
-                        className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${status.className}`}
-                      >
-                        {status.label}
-                      </span>
-                    </TableCell>
-                    <TableCell>{formatTimestamp(invite.createdAt)}</TableCell>
-                    <TableCell>{formatTimestamp(invite.lastLoginAt)}</TableCell>
                   </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
+                ) : sortedInvites.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-muted-foreground">
+                      {t("settings.noExternalAccountInvites")}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  sortedInvites.map((invite) => {
+                    const status = inviteStatus(invite, t);
+                    return (
+                      <TableRow key={invite.id}>
+                        <TableCell>{usersById.get(invite.userId) ?? invite.userId}</TableCell>
+                        <TableCell>{providerLabel(invite.provider)}</TableCell>
+                        <TableCell>{inviteConnectionLabel(authProviderSettings, invite)}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <ProviderAvatar
+                              avatarUrl={invite.avatarUrl}
+                              label={invite.displayName ?? invite.username}
+                            />
+                            <span>{providerIdentityLabel(invite)}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${status.className}`}
+                          >
+                            {status.label}
+                          </span>
+                        </TableCell>
+                        <TableCell>{formatTimestamp(invite.createdAt)}</TableCell>
+                        <TableCell>{formatTimestamp(invite.lastLoginAt)}</TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
       </div>
     </div>
   );

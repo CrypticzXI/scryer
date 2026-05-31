@@ -6,7 +6,7 @@ use async_graphql_axum::GraphQLRequest;
 use async_trait::async_trait;
 use axum::Router;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use serde_json::{Value, json};
@@ -15,9 +15,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use scryer_application::{
-    AppResult, AppServices, AppUseCase, BlocklistRepository, FacetRegistry, HousekeepingRepository,
-    IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler, PendingReleaseRepository,
-    SeriesFacetHandler, SubtitleDownloadRepository, WantedItemRepository,
+    AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims, BlocklistRepository,
+    FacetRegistry, HousekeepingRepository, IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler,
+    PendingReleaseRepository, SeriesFacetHandler, SubtitleDownloadRepository, WantedItemRepository,
 };
 use scryer_infrastructure::sqlite::{
     LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
@@ -25,14 +25,16 @@ use scryer_infrastructure::sqlite::{
 };
 use scryer_infrastructure::{
     AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadQueueCommandStore,
-    DownloadSubmissionStore, ExternalImportMonitorStore, FileSystemLibraryScanner,
+    DownloadSubmissionStore, EncryptionKey, ExternalImportMonitorStore, FileSystemLibraryScanner,
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, IndexerConfigStore,
     LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MetadataGatewayClient,
     MultiIndexerSearchClient, NzbgetDownloadClient, PendingReleaseStore, ReleaseStore,
-    SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore, WantedStore,
-    WorkflowOperationStore,
+    SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore, TotpStore,
+    WantedStore, WorkflowOperationStore,
 };
-use scryer_interface::context::{AuthRuntimeStateHandle, AuthRuntimeStateSnapshot};
+use scryer_interface::context::{
+    AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, MfaVerification,
+};
 use scryer_interface::{ApiSchema, build_schema};
 
 /// Shared integration-test context.
@@ -577,6 +579,9 @@ impl TestContext {
         let db = SqliteServices::new(":memory:")
             .await
             .expect("failed to create in-memory SQLite");
+        db.set_encryption_key(EncryptionKey::generate())
+            .await
+            .expect("failed to configure test encryption key");
         let app_data_dir = tempfile::Builder::new()
             .prefix("scryer-test-data-")
             .tempdir_in("/tmp")
@@ -643,6 +648,7 @@ impl TestContext {
         let show_store = ShowStore::new(datastore.clone());
         let library_store = LibraryStore::new(datastore.clone());
         let user_store = UserStore::new(datastore.clone());
+        let totp_store = TotpStore::new(datastore.clone(), db.encryption_key_state());
         let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(title_store.clone());
         let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(show_store.clone());
         let users: Arc<dyn scryer_application::UserRepository> = Arc::new(user_store.clone());
@@ -707,6 +713,7 @@ impl TestContext {
         .with_subtitle_downloads(Arc::new(subtitle_download_store))
         .with_libraries(Arc::new(library_store.clone()))
         .with_external_account_store(Arc::new(user_store.clone()))
+        .with_totp_store(Arc::new(totp_store))
         .with_rule_set_store(Arc::new(rule_set_store))
         .with_post_processing_script_store(Arc::new(post_processing_script_store))
         .with_plugin_installation_store(Arc::new(plugin_store.clone()))
@@ -1061,22 +1068,45 @@ fn build_test_router(
 /// Minimal GraphQL handler that replicates auth-disabled default-user injection.
 async fn test_graphql_handler(
     State((app, schema, auth_runtime)): State<(AppUseCase, ApiSchema, AuthRuntimeStateHandle)>,
+    headers: HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
-    let user = if auth_runtime.snapshot().effective_form_login_enabled {
-        None
+    let actor = if auth_runtime.snapshot().effective_form_login_enabled {
+        if let Some(token) = authorization_token_from_headers(&headers) {
+            app.authenticate_token_with_claims(token).await.ok()
+        } else {
+            None
+        }
     } else {
-        app.find_or_create_default_user().await.ok()
+        app.find_or_create_default_user()
+            .await
+            .ok()
+            .map(|user| (user, AuthenticatedTokenClaims::default()))
     };
     let mut request = req.into_inner();
     let response_status = graphql_response_status(&mut request);
-    if let Some(u) = user {
-        request = request.data(u);
+    if let Some((user, claims)) = actor {
+        request = request.data(MfaVerification {
+            verified_until: claims.mfa_verified_until,
+            session_scope: claims.session_scope,
+        });
+        request = request.data(user);
     }
     let mut response =
         async_graphql_axum::GraphQLResponse::from(schema.execute(request).await).into_response();
     *response.status_mut() = response_status;
     response
+}
+
+fn authorization_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let mut parts = raw.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+    if parts.next().is_some() || !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    Some(token)
 }
 
 fn graphql_response_status(request: &mut async_graphql::Request) -> StatusCode {

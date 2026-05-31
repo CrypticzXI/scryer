@@ -30,6 +30,7 @@ pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";
 pub const FORM_LOGIN_ENABLED_KEY: &str = "auth.form_login_enabled";
 pub const SKIP_LOGIN_FOR_LOCAL_IPS_KEY: &str = "auth.skip_login_for_local_ips";
 pub const TOTP_REQUIRE_CONFIG_STEP_UP_KEY: &str = "auth.totp.require_config_step_up";
+pub const TOTP_REQUIRE_LOCAL_LOGIN_KEY: &str = "auth.totp.require_local_login";
 pub const TOTP_REQUIRE_JELLYFIN_LOGIN_KEY: &str = "auth.totp.require_jellyfin_login";
 pub const AUTH_ALLOWED_PROVIDERS_KEY: &str = "auth.providers.allowed";
 pub const AUTH_PROVIDER_LOGIN_ENABLED_KEY: &str = "auth.providers.login_enabled";

@@ -2,7 +2,7 @@ use async_graphql::{Context, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::AppError;
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
+use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error};
 use crate::mappers::{from_linked_account, from_user};
 use crate::types::*;
 
@@ -28,6 +28,30 @@ async fn login_payload_from_user(
         user: from_user(user),
         expires_at,
         mfa_verified_until: mfa_verified_until.map(|value| value.to_rfc3339()),
+        mfa_enrollment_required: false,
+    })
+}
+
+async fn login_mfa_enrollment_payload_from_user(
+    app: &scryer_application::AppUseCase,
+    user: scryer_domain::User,
+) -> GqlResult<LoginPayload> {
+    let user = app
+        .load_user_for_auth_payload(&user)
+        .await
+        .map_err(to_gql_error)?;
+    let token = app
+        .issue_mfa_enrollment_token(&user)
+        .await
+        .map_err(to_gql_error)?;
+    let expires_at =
+        (Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime())).to_rfc3339();
+    Ok(LoginPayload {
+        token,
+        user: from_user(user),
+        expires_at,
+        mfa_verified_until: None,
+        mfa_enrollment_required: true,
     })
 }
 
@@ -258,14 +282,18 @@ impl UserMutations {
             .federated_login_with_jellyfin(input.connection_id, input.username, input.password)
             .await
             .map_err(to_gql_error)?;
-        let mfa_verified_until = if app
-            .security_settings()
-            .await
-            .map_err(to_gql_error)?
-            .totp_require_jellyfin_login
-        {
+        let effective_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
+        let jellyfin_mfa_required = effective_login_enabled
+            && app
+                .security_settings()
+                .await
+                .map_err(to_gql_error)?
+                .totp_require_jellyfin_login;
+        let mfa_verified_until = if jellyfin_mfa_required {
             if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
-                return login_payload_from_user(&app, user, None).await;
+                return login_mfa_enrollment_payload_from_user(&app, user).await;
             }
             let code = input.totp_code.as_deref().ok_or_else(|| {
                 to_gql_error(AppError::TotpStepUpRequired(

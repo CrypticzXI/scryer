@@ -46,6 +46,7 @@ export type SecuritySettings = {
   formLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
   totpRequireConfigStepUp: boolean;
+  totpRequireLocalLogin: boolean;
   totpRequireJellyfinLogin: boolean;
   effectiveFormLoginEnabled: boolean;
   envOverrideActive: boolean;
@@ -155,6 +156,7 @@ export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
   passkeyEnabled: boolean;
+  totpRequireLocalLogin: boolean;
   totpRequireJellyfinLogin: boolean;
 };
 

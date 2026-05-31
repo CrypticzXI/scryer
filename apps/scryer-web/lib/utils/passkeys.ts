@@ -44,6 +44,8 @@ type RequestOptionsMode = "manual" | "conditional";
 type LoginPayload = {
   token: string;
   user: AuthUser | null;
+  mfaEnrollmentRequired?: boolean;
+  mfaVerifiedUntil?: string | null;
 };
 
 type PublicKeyCredentialJsonHelpers = {

@@ -9,6 +9,7 @@ export type JwtPayload = {
     libraryId: string;
     permissions: string[];
   }[];
+  authScope?: "full" | "mfa_enrollment";
 };
 
 /** Decode a JWT payload without signature verification. Returns null if malformed. */

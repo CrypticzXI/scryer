@@ -82,10 +82,7 @@ pub(crate) use rules::user_rule_input;
 
 pub use download_client_config::resolve_download_client_base_url_from_config_json;
 pub use import::completed_download as completed_download_handler;
-pub use ports::{
-    AudioTranscodeArtifact, AudioTranscodeJob, AudioTranscoderClient, MediaRequestResolution,
-    SubtitleSyncClient, SubtitleSyncJob,
-};
+pub use ports::{MediaRequestResolution, SubtitleSyncClient, SubtitleSyncJob};
 pub(crate) mod normalize;
 pub use import::failed_download as failed_download_handler;
 pub use import::post_processing as app_usecase_post_processing;
@@ -386,32 +383,34 @@ pub use settings::keys::{
     SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
     SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY,
     TLS_KEY_PATH_KEY, TOTP_REQUIRE_CONFIG_STEP_UP_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+    TOTP_REQUIRE_LOCAL_LOGIN_KEY,
 };
 pub(crate) use types::JwtClaims;
 pub use types::SmgVersionCompatibilityNotice;
 pub use types::{
-    AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome, BackupDownloadTicket,
-    BackupInfo, BackupStatus, BackupTrigger, CancelLibraryScanResult, CreateTitleOutcome,
-    CutoffUnmetItem, CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo,
-    DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter,
-    DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter,
-    DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind, EpisodeScopedMediaFile,
-    FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
-    IgnorePendingImportResult, IndexerQueryStats, JwtAuthConfig, LibraryRootDraft,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, MediaRequestCounts,
-    PasskeySummary, PendingImportBindingFilePreview, PendingImportBindingPreview,
-    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
-    PendingImportStatus, PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount,
-    PendingTitleHydration, PrimaryCollectionSummary, RecycleBinSettings, RecycledItem,
-    ReleaseDecision, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
-    ResolvePendingImportResult, ScopedExternalId, SortDirection, SystemHealth,
-    TitleAcquisitionDiagnostics, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
-    TitleImageReplacement, TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord,
-    TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary,
-    TitleReleaseBlocklistEntry, TotpCredentialRecord, TotpEnrollmentChallengeRecord,
-    TotpEnrollmentComplete, TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord,
-    TotpStatus, UpdateRecycleBinSettings, WantedCompleteTransition, WantedGrabTransition,
-    WantedItem, WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
+    AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome,
+    AuthenticatedTokenClaims, BackupDownloadTicket, BackupInfo, BackupStatus, BackupTrigger,
+    CancelLibraryScanResult, CreateTitleOutcome, CutoffUnmetItem, CutoffUnmetQualitySummary,
+    DecisionCodeCount, DiskSpaceInfo, DownloadActivityFilter, DownloadDisplayState,
+    DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage, DownloadHistorySort,
+    DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage, DownloadQueueCommandRecord,
+    DownloadSourceKind, EpisodeScopedMediaFile, FixTitleMatchResult, HealthCheckResult,
+    HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult, IndexerQueryStats,
+    JwtAuthConfig, JwtSessionScope, LibraryRootDraft, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedSearchAttempt, MediaRequestCounts, PasskeySummary,
+    PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
+    PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingImportStatus,
+    PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,
+    PrimaryCollectionSummary, RecycleBinSettings, RecycledItem, ReleaseDecision,
+    ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
+    ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
+    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageReplacement,
+    TitleImageStorageMode, TitleImageSyncTask, TitleImageVariantRecord, TitleMediaFile,
+    TitleMediaSizeSummary, TitleMetadataUpdate, TitleQualitySummary, TitleReleaseBlocklistEntry,
+    TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
+    TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,
+    UpdateRecycleBinSettings, WantedCompleteTransition, WantedGrabTransition, WantedItem,
+    WantedPauseTransition, WantedSearchTransition, WantedStatus, WantedStatusCount,
     WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
     WebauthnCredentialRecord,
 };
@@ -447,6 +446,9 @@ pub enum AppError {
 
     #[error("{0}")]
     TotpEnrollmentRequired(String),
+
+    #[error("{0}")]
+    MfaEnrollmentRequired(String),
 
     #[error("{0}")]
     TotpInvalidCode(String),

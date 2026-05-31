@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -587,6 +587,7 @@ impl AppUseCase {
             read_subtitle_sync_settings(&settings),
             subtitle_media_kind(&title),
             file_path.as_path(),
+            &media_file.id,
             &dest_path,
             Some(&record.id),
             score,
@@ -766,6 +767,72 @@ fn read_subtitle_sync_settings(settings: &AppSubtitleSettings) -> SubtitleSyncSe
     }
 }
 
+async fn reference_subtitle_path_for_sync(
+    app: &AppUseCase,
+    media_file_id: &str,
+    subtitle_path: &Path,
+    download_id: Option<&str>,
+) -> Option<PathBuf> {
+    let mut candidates = app
+        .services
+        .workflow
+        .subtitle_downloads
+        .list_for_media_file(media_file_id)
+        .await
+        .ok()?
+        .into_iter()
+        .filter(|record| download_id != Some(record.id.as_str()))
+        .filter(|record| !record.forced)
+        .filter_map(|record| {
+            let path = stored_path_to_path_buf(&record.file_path);
+            if same_filesystem_path(&path, subtitle_path)
+                || !path.exists()
+                || !is_supported_reference_subtitle_path(&path)
+            {
+                return None;
+            }
+            Some((record, path))
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|(left, _), (right, _)| {
+        right
+            .synced
+            .cmp(&left.synced)
+            .then_with(|| {
+                right
+                    .score
+                    .unwrap_or(i32::MIN)
+                    .cmp(&left.score.unwrap_or(i32::MIN))
+            })
+            .then_with(|| right.downloaded_at.cmp(&left.downloaded_at))
+    });
+
+    candidates.into_iter().map(|(_, path)| path).next()
+}
+
+fn is_supported_reference_subtitle_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "srt" | "vtt" | "ass" | "ssa"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn same_filesystem_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 async fn load_poller_settings(app: &AppUseCase) -> Option<AppSubtitleSettings> {
     match app.subtitle_settings().await {
         Ok(settings) => Some(settings),
@@ -821,6 +888,7 @@ async fn maybe_sync_downloaded_subtitle(
     sync_settings: SubtitleSyncSettings,
     media_kind: SubtitleMediaKind,
     video_path: &Path,
+    media_file_id: &str,
     subtitle_path: &Path,
     download_id: Option<&str>,
     score: Option<i32>,
@@ -847,6 +915,8 @@ async fn maybe_sync_downloaded_subtitle(
             .iter()
             .any(|provider_type| provider_type == "enhanced-subtitle-sync")
     });
+    let reference_subtitle_path =
+        reference_subtitle_path_for_sync(app, media_file_id, subtitle_path, download_id).await;
 
     match sync::sync_subtitle_with_policy_and_plugin_sync(
         video_path,
@@ -854,6 +924,7 @@ async fn maybe_sync_downloaded_subtitle(
         policy,
         subtitle_sync_client,
         plugin_installed,
+        reference_subtitle_path.as_deref(),
     )
     .await
     {
@@ -1417,6 +1488,7 @@ async fn run_subtitle_search_for_file(
                     sync_settings,
                     query.media_kind,
                     file_path.as_path(),
+                    &mf.id,
                     &dest_path,
                     record_inserted.then_some(record_id.as_str()),
                     Some(best.score),
@@ -1663,6 +1735,7 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                             sync_settings,
                             query.media_kind,
                             file_path.as_path(),
+                            &mf.id,
                             &dest_path,
                             record_inserted.then_some(record.id.as_str()),
                             Some(best.score),

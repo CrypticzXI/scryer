@@ -18,6 +18,7 @@ pub struct SyncResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtitleTimingFormat {
     Srt,
+    Vtt,
     Ass,
 }
 
@@ -25,6 +26,7 @@ impl SubtitleTimingFormat {
     pub fn label(self) -> &'static str {
         match self {
             Self::Srt => "srt",
+            Self::Vtt => "vtt",
             Self::Ass => "ass/ssa",
         }
     }
@@ -95,8 +97,15 @@ pub async fn sync_subtitle_with_policy(
     _subtitle_path: &Path,
     policy: SyncPolicy,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_policy_and_plugin_sync(_video_path, _subtitle_path, policy, None, false)
-        .await
+    sync_subtitle_with_policy_and_plugin_sync(
+        _video_path,
+        _subtitle_path,
+        policy,
+        None,
+        false,
+        None,
+    )
+    .await
 }
 
 pub async fn sync_subtitle_with_policy_and_plugin_sync(
@@ -105,6 +114,7 @@ pub async fn sync_subtitle_with_policy_and_plugin_sync(
     policy: SyncPolicy,
     _subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
     _plugin_installed: bool,
+    _reference_subtitle_path: Option<&Path>,
 ) -> AppResult<SyncResult> {
     Ok(SyncResult {
         offset_ms: 0,
@@ -134,6 +144,7 @@ pub async fn sync_subtitle(
         },
         None,
         false,
+        None,
     )
     .await
 }

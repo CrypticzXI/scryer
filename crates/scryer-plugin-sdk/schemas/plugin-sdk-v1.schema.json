@@ -2388,6 +2388,16 @@
         "subtitle": {
           "$ref": "#/$defs/SubtitleSyncInputSubtitle"
         },
+        "reference_subtitle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubtitleSyncReferenceSubtitle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "subtitle_spans": {
           "type": "array",
           "items": {
@@ -2421,7 +2431,7 @@
         "expected_codec": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AudioTranscodeCodec"
+              "$ref": "#/$defs/SubtitleSyncAudioCodec"
             },
             {
               "type": "null"
@@ -2447,6 +2457,33 @@
       ]
     },
     "SubtitleSyncInputSubtitle": {
+      "type": "object",
+      "properties": {
+        "content_base64": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        },
+        "file_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "encoding_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "content_base64",
+        "format"
+      ]
+    },
+    "SubtitleSyncReferenceSubtitle": {
       "type": "object",
       "properties": {
         "content_base64": {
@@ -2565,7 +2602,7 @@
         }
       ]
     },
-    "AudioTranscodeCodec": {
+    "SubtitleSyncAudioCodec": {
       "type": "string",
       "enum": [
         "ac3",

@@ -17,8 +17,8 @@ export type AuthUser = {
   appPermissions: AppPermission[];
   libraryPermissions: LibraryPermissionGrant[];
 };
-type AuthLoginOptions = { persistSession?: boolean };
-type AuthLoginResult = { token: string; user: AuthUser | null };
+type AuthLoginOptions = { persistSession?: boolean; totpCode?: string | null };
+type AuthLoginResult = { token: string; user: AuthUser | null; mfaEnrollmentRequired: boolean };
 
 // Module-level token ref so getAuthToken() can be called outside React
 let currentToken: string | null = null;
@@ -80,7 +80,7 @@ function applyAuthenticatedSession(
 ) {
   persistAuthToken(token);
   setToken(token);
-  setUser(user);
+  setUser(isMfaEnrollmentToken(token) ? null : user);
 }
 
 export type AuthState = {
@@ -89,6 +89,7 @@ export type AuthState = {
   loading: boolean;
   effectiveFormLoginEnabled: boolean | null;
   passkeyEnabled: boolean;
+  totpRequireLocalLogin: boolean;
   totpRequireJellyfinLogin: boolean;
   login: (
     username: string,
@@ -102,7 +103,7 @@ export type AuthState = {
 /** Extract AuthUser from a JWT payload, or null if the token is invalid/expired. */
 function userFromToken(token: string): AuthUser | null {
   const payload = decodeJwtPayload(token);
-  if (!payload || isTokenExpired(payload)) return null;
+  if (!payload || isTokenExpired(payload) || payload.authScope === "mfa_enrollment") return null;
   return {
     id: payload.sub,
     username: payload.username,
@@ -111,12 +112,18 @@ function userFromToken(token: string): AuthUser | null {
   };
 }
 
+function isMfaEnrollmentToken(token: string): boolean {
+  const payload = decodeJwtPayload(token);
+  return payload?.authScope === "mfa_enrollment";
+}
+
 export function useAuth(): AuthState {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
+  const [totpRequireLocalLogin, setTotpRequireLocalLogin] = useState(false);
   const [totpRequireJellyfinLogin, setTotpRequireJellyfinLogin] = useState(false);
   const initialized = useRef(false);
 
@@ -169,6 +176,7 @@ export function useAuth(): AuthState {
             : null,
         );
         setPasskeyEnabled(runtimeState?.passkeyEnabled === true);
+        setTotpRequireLocalLogin(runtimeState?.totpRequireLocalLogin === true);
         setTotpRequireJellyfinLogin(runtimeState?.totpRequireJellyfinLogin === true);
       } catch {
         // Fall back to the existing token/bootstrap path when the public
@@ -235,7 +243,7 @@ export function useAuth(): AuthState {
     options?: AuthLoginOptions,
   ) => {
     const { data, error } = await backendClient.mutation(loginMutation, {
-      input: { username, password },
+      input: { username, password, totpCode: options?.totpCode ?? null },
     }).toPromise();
     if (error || !data?.login) {
       throw error ?? new Error("Login failed");
@@ -250,6 +258,7 @@ export function useAuth(): AuthState {
     return {
       token: newToken,
       user: nextUser,
+      mfaEnrollmentRequired: data.login.mfaEnrollmentRequired === true,
     };
   }, []);
 
@@ -269,6 +278,7 @@ export function useAuth(): AuthState {
     loading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
+    totpRequireLocalLogin,
     totpRequireJellyfinLogin,
     login,
     adoptSession,

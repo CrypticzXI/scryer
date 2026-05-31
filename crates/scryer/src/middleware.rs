@@ -7,7 +7,7 @@ use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
-use scryer_application::{AppError, AppUseCase};
+use scryer_application::{AppError, AppUseCase, AuthenticatedTokenClaims};
 use scryer_domain::AppPermission;
 use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification};
 use std::net::{IpAddr, SocketAddr};
@@ -400,13 +400,14 @@ fn graphql_response_status(batch: &mut async_graphql::BatchRequest) -> StatusCod
 #[derive(Clone)]
 struct ResolvedActor {
     user: scryer_domain::User,
-    mfa_verified_until: Option<i64>,
+    token_claims: AuthenticatedTokenClaims,
 }
 
 impl ResolvedActor {
     fn mfa_verification(&self) -> MfaVerification {
         MfaVerification {
-            verified_until: self.mfa_verified_until,
+            verified_until: self.token_claims.mfa_verified_until,
+            session_scope: self.token_claims.session_scope,
         }
     }
 }
@@ -438,15 +439,10 @@ async fn resolve_ws_connection_init_actor(
 
     match parse_bearer_token(raw) {
         Some(token) => match app.authenticate_token_with_claims(token).await {
-            Ok((user, mfa_verified_until)) => app
+            Ok((user, token_claims)) => app
                 .attach_user_authorization(user)
                 .await
-                .map(|user| {
-                    Some(ResolvedActor {
-                        user,
-                        mfa_verified_until,
-                    })
-                })
+                .map(|user| Some(ResolvedActor { user, token_claims }))
                 .map_err(|e| async_graphql::Error::new(format!("authentication failed: {e}"))),
             Err(_) if local_bypass_active => Ok(initial_actor),
             Err(e) => Err(async_graphql::Error::new(format!(
@@ -468,33 +464,30 @@ async fn resolve_actor(
     let actor = if !snapshot.effective_form_login_enabled {
         resolve_default_user(&state.app)
             .await
-            .map(|user| (user, None))
+            .map(|user| (user, AuthenticatedTokenClaims::default()))
     } else {
         match authorization_token_from_headers(headers) {
             Ok(Some(token)) => match state.app.authenticate_token_with_claims(token).await {
-                Ok((user, mfa_verified_until)) => Some((user, mfa_verified_until)),
+                Ok((user, token_claims)) => Some((user, token_claims)),
                 Err(_) if local_bypass => resolve_default_user(&state.app)
                     .await
-                    .map(|user| (user, None)),
+                    .map(|user| (user, mfa_bypass_token_claims())),
                 Err(_) => None,
             },
             Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app)
                 .await
-                .map(|user| (user, None)),
+                .map(|user| (user, mfa_bypass_token_claims())),
             Ok(None) | Err(_) => None,
         }
     };
 
     match actor {
-        Some((user, mfa_verified_until)) => state
+        Some((user, token_claims)) => state
             .app
             .attach_user_authorization(user)
             .await
             .ok()
-            .map(|user| ResolvedActor {
-                user,
-                mfa_verified_until,
-            }),
+            .map(|user| ResolvedActor { user, token_claims }),
         None => None,
     }
 }
@@ -504,6 +497,13 @@ async fn resolve_default_user(app_use_case: &AppUseCase) -> Option<scryer_domain
         Ok(Some(user)) => Some(user),
         Ok(None) => app_use_case.find_or_create_default_user().await.ok(),
         Err(_) => None,
+    }
+}
+
+fn mfa_bypass_token_claims() -> AuthenticatedTokenClaims {
+    AuthenticatedTokenClaims {
+        mfa_verified_until: Some(i64::MAX),
+        ..AuthenticatedTokenClaims::default()
     }
 }
 
@@ -793,6 +793,7 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             .into_response(),
         AppError::TotpStepUpRequired(message)
         | AppError::TotpEnrollmentRequired(message)
+        | AppError::MfaEnrollmentRequired(message)
         | AppError::TotpInvalidCode(message)
         | AppError::TotpRecoveryCodeUsed(message) => (
             StatusCode::UNAUTHORIZED,
@@ -981,6 +982,17 @@ mod tests {
             &headers,
             Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 3000))),
         ));
+    }
+
+    #[test]
+    fn local_ip_bypass_claims_satisfy_step_up_checks() {
+        let claims = mfa_bypass_token_claims();
+
+        assert_eq!(claims.mfa_verified_until, Some(i64::MAX));
+        assert_eq!(
+            claims.session_scope,
+            scryer_application::JwtSessionScope::Full
+        );
     }
 
     #[test]

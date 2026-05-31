@@ -9,7 +9,7 @@ use scryer_application::{
     AppError, AppResult, BackupInfo, BackupService, BackupStatus, BackupTrigger,
     BlocklistRepository, CollectionUpdate, CutoffUnmetQualitySummary, DeleteExecutionConfirmation,
     DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
-    LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease,
+    JwtSessionScope, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease,
     PendingReleaseRepository, ReleaseDecision, ScopedExternalId, ShowRepository,
     TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
     TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
@@ -50,6 +50,19 @@ async fn gql(ctx: &TestContext, query: &str, variables: Value) -> Value {
     let client = ctx.http_client();
     let resp = client
         .post(ctx.graphql_url())
+        .json(&json!({ "query": query, "variables": variables }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(resp.status(), 200);
+    resp.json().await.expect("should be valid JSON")
+}
+
+async fn gql_with_token(ctx: &TestContext, query: &str, variables: Value, token: &str) -> Value {
+    let client = ctx.http_client();
+    let resp = client
+        .post(ctx.graphql_url())
+        .bearer_auth(token)
         .json(&json!({ "query": query, "variables": variables }))
         .send()
         .await
@@ -746,6 +759,33 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 category: "security".into(),
                 scope: "system".into(),
                 key_name: "auth.skip_login_for_local_ips".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.totp.require_config_step_up".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.totp.require_jellyfin_login".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.totp.require_local_login".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
                 is_sensitive: false,
@@ -4660,6 +4700,7 @@ async fn graphql_typed_security_settings_defaults() {
           securitySettings {
             formLoginEnabled
             skipLoginForLocalIps
+            totpRequireLocalLogin
             effectiveFormLoginEnabled
             envOverrideActive
             envOverrideDescription
@@ -4677,11 +4718,84 @@ async fn graphql_typed_security_settings_defaults() {
         false
     );
     assert_eq!(
+        body["data"]["securitySettings"]["totpRequireLocalLogin"],
+        false
+    );
+    assert_eq!(
         body["data"]["securitySettings"]["effectiveFormLoginEnabled"],
         false
     );
     assert_eq!(body["data"]["securitySettings"]["envOverrideActive"], false);
     assert!(body["data"]["securitySettings"]["envOverrideDescription"].is_null());
+}
+
+#[tokio::test]
+async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            skipLoginForLocalIps: false
+            totpRequireConfigStepUp: false
+            totpRequireLocalLogin: true
+            totpRequireJellyfinLogin: true
+          }) {
+            formLoginEnabled
+            totpRequireConfigStepUp
+            totpRequireLocalLogin
+            totpRequireJellyfinLogin
+            effectiveFormLoginEnabled
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["totpRequireJellyfinLogin"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        false
+    );
+
+    let runtime = schema_exec(
+        &ctx,
+        r#"
+        query AuthRuntimeState {
+          authRuntimeState {
+            effectiveFormLoginEnabled
+            totpRequireLocalLogin
+            totpRequireJellyfinLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+
+    assert_no_errors(&runtime);
+    assert_eq!(
+        runtime["data"]["authRuntimeState"]["effectiveFormLoginEnabled"],
+        false
+    );
+    assert_eq!(
+        runtime["data"]["authRuntimeState"]["totpRequireJellyfinLogin"],
+        false
+    );
+    assert_eq!(
+        runtime["data"]["authRuntimeState"]["totpRequireLocalLogin"],
+        false
+    );
 }
 
 #[tokio::test]
@@ -4694,7 +4808,13 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
         &ctx,
         r#"
         mutation UpdateSecuritySettings {
-          updateSecuritySettings(input: { formLoginEnabled: true, skipLoginForLocalIps: true }) {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            skipLoginForLocalIps: true
+            totpRequireConfigStepUp: false
+            totpRequireLocalLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
             formLoginEnabled
             skipLoginForLocalIps
             effectiveFormLoginEnabled
@@ -10005,6 +10125,101 @@ async fn graphql_me_query() {
 }
 
 #[tokio::test]
+async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            skipLoginForLocalIps: false
+            totpRequireConfigStepUp: false
+            totpRequireLocalLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            effectiveFormLoginEnabled
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        true
+    );
+
+    let token = ctx
+        .app
+        .issue_mfa_enrollment_token(&admin)
+        .await
+        .expect("issue enrollment token");
+
+    let me = gql_with_token(&ctx, "{ me { id username } }", json!({}), &token).await;
+    assert_no_errors(&me);
+    assert!(me["data"]["me"].is_null());
+
+    let enrollment_start = gql_with_token(
+        &ctx,
+        r#"mutation { totpEnrollmentStart { challengeId otpauthUrl } }"#,
+        json!({}),
+        &token,
+    )
+    .await;
+    assert_no_errors(&enrollment_start);
+    assert!(
+        enrollment_start["data"]["totpEnrollmentStart"]["challengeId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()),
+        "enrollment-scoped token should be allowed to start TOTP enrollment: {enrollment_start}"
+    );
+
+    let create = gql_with_token(
+        &ctx,
+        r#"mutation($input: CreateUserInput!) {
+            createUser(input: $input) { id username }
+        }"#,
+        json!({ "input": { "username": "enrollment_blocked", "password": "testpass123", "appPermissions": [], "libraryPermissions": [] } }),
+        &token,
+    )
+    .await;
+    let errors = create["errors"]
+        .as_array()
+        .expect("expected GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected normal API access to be rejected: {create}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "MFA_ENROLLMENT_REQUIRED",
+        "unexpected enrollment-scope rejection shape: {create}"
+    );
+
+    let step_up = gql_with_token(
+        &ctx,
+        r#"mutation { totpVerifyStepUp(input: { code: "123456" }) { token } }"#,
+        json!({}),
+        &token,
+    )
+    .await;
+    let errors = step_up["errors"]
+        .as_array()
+        .expect("expected GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected step-up to reject enrollment scope: {step_up}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "MFA_ENROLLMENT_REQUIRED",
+        "unexpected enrollment step-up rejection shape: {step_up}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_users_query() {
     let ctx = TestContext::new().await;
     // Trigger default admin user creation first
@@ -13209,4 +13424,77 @@ async fn newly_created_user_can_login() {
     let token = login_body["data"]["login"]["token"].as_str().unwrap();
     assert!(!token.is_empty());
     assert_eq!(login_body["data"]["login"]["user"]["username"], "newuser");
+}
+
+#[tokio::test]
+async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let create_body = schema_exec(
+        &ctx,
+        r#"mutation { createUser(input: { username: "localmfa", password: "s3cr3t!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&create_body);
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            skipLoginForLocalIps: false
+            totpRequireConfigStepUp: false
+            totpRequireLocalLogin: true
+            totpRequireJellyfinLogin: false
+          }) {
+            effectiveFormLoginEnabled
+            totpRequireLocalLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["totpRequireLocalLogin"],
+        true
+    );
+
+    let login_body = schema_exec(
+        &ctx,
+        r#"
+        mutation {
+          login(input: { username: "localmfa", password: "s3cr3t!" }) {
+            token
+            mfaEnrollmentRequired
+            mfaVerifiedUntil
+            user { username }
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    assert_no_errors(&login_body);
+    let payload = &login_body["data"]["login"];
+    assert_eq!(payload["mfaEnrollmentRequired"], true);
+    assert!(payload["mfaVerifiedUntil"].is_null());
+    assert_eq!(payload["user"]["username"], "localmfa");
+
+    let token = payload["token"].as_str().expect("enrollment token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate enrollment token");
+    assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
 }

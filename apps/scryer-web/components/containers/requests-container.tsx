@@ -29,6 +29,7 @@ import {
   hasAnyLibraryPermission,
   LIBRARY_PERMISSIONS,
 } from "@/lib/utils/permissions";
+import { normalizeLibraryFilterSelection } from "@/lib/utils/library-filter";
 
 type RequestsContainerProps = {
   facet: Facet;
@@ -50,6 +51,10 @@ type ApproveRequestValues = {
   qualityProfileId: string;
   monitorType?: string;
 };
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
 
 function externalIdKey(source: string, value: string): string {
   return `${source.trim().toLowerCase()}:${value.trim()}`;
@@ -151,6 +156,12 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   >([]);
   const [loading, setLoading] = React.useState(false);
   const [actionRequestId, setActionRequestId] = React.useState<string | null>(null);
+  const refreshSeqRef = React.useRef(0);
+  const librariesRef = React.useRef<LibraryRecord[]>([]);
+
+  React.useEffect(() => {
+    librariesRef.current = libraries;
+  }, [libraries]);
 
   React.useEffect(() => {
     setMode(canManageTitle ? "admin" : "mine");
@@ -165,6 +176,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   }, [canManageTitle, canRequestMedia, mode]);
 
   const refresh = React.useCallback(async () => {
+    const refreshSeq = ++refreshSeqRef.current;
     setLoading(true);
     try {
       const librariesQuery =
@@ -173,21 +185,37 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
           : mediaRequestRequesterLibrariesQuery;
       const requestsQuery = mode === "admin" ? mediaRequestsQuery : myMediaRequestsQuery;
       const requestStatus = mode === "admin" ? "pending" : null;
-      const [librariesResult, requestsResult, qualityProfilesResult] = await Promise.all([
+      const normalizedSelectedLibraryIds = normalizeLibraryFilterSelection(
+        selectedLibraryIds,
+        librariesRef.current,
+      );
+      const [librariesResult, requestsResult] = await Promise.all([
         client.query(librariesQuery, {
           facet,
         }).toPromise(),
         client.query(requestsQuery, {
           facet,
-          libraryIds: selectedLibraryIds.length > 0 ? selectedLibraryIds : null,
+          libraryIds:
+            normalizedSelectedLibraryIds.length > 0
+              ? normalizedSelectedLibraryIds
+              : null,
           status: requestStatus,
         }).toPromise(),
-        client.query(qualityProfileOptionsQuery, {}).toPromise(),
       ]);
       if (librariesResult.error) throw librariesResult.error;
       if (requestsResult.error) throw requestsResult.error;
-      if (qualityProfilesResult.error) throw qualityProfilesResult.error;
-      setLibraries((librariesResult.data?.libraries ?? []) as LibraryRecord[]);
+      if (refreshSeq !== refreshSeqRef.current) {
+        return;
+      }
+      const nextLibraries = (librariesResult.data?.libraries ?? []) as LibraryRecord[];
+      setLibraries(nextLibraries);
+      const nextSelectedLibraryIds = normalizeLibraryFilterSelection(
+        selectedLibraryIds,
+        nextLibraries,
+      );
+      if (!sameStringArray(nextSelectedLibraryIds, selectedLibraryIds)) {
+        setSelectedLibraryIds(nextSelectedLibraryIds);
+      }
       const loadedRequests =
         mode === "admin"
           ? requestsResult.data?.mediaRequests
@@ -197,6 +225,21 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
           ? collapseMediaRequests((loadedRequests ?? []) as MediaRequestRecord[])
           : ((loadedRequests ?? []) as MediaRequestRecord[]),
       );
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
+    } finally {
+      if (refreshSeq === refreshSeqRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [client, facet, mode, selectedLibraryIds, setGlobalStatus, t]);
+
+  const refreshQualityProfileOptions = React.useCallback(async () => {
+    try {
+      const qualityProfilesResult = await client
+        .query(qualityProfileOptionsQuery, {})
+        .toPromise();
+      if (qualityProfilesResult.error) throw qualityProfilesResult.error;
       setQualityProfileOptions(
         (
           qualityProfilesResult.data?.qualityProfileSettings?.profiles ?? []
@@ -207,10 +250,8 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       );
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
-    } finally {
-      setLoading(false);
     }
-  }, [client, facet, mode, selectedLibraryIds, setGlobalStatus, t]);
+  }, [client, setGlobalStatus, t]);
 
   React.useEffect(() => {
     void refresh();
@@ -383,6 +424,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
       loading={loading}
       actionRequestId={actionRequestId}
       onRefresh={() => void refresh()}
+      onLoadQualityProfileOptions={() => void refreshQualityProfileOptions()}
       onApprove={(request, values) =>
         void approveRequest(request, values)
       }

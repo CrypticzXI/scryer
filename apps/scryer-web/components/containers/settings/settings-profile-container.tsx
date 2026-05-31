@@ -1,8 +1,12 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo, type FormEvent } from "react";
 import { useClient } from "urql";
+import { notifyExternalAccountInviteSourcesChanged } from "@/components/containers/settings/external-account-invites-container";
+import { sanitizeDigits } from "@/components/ui/input";
 import { SettingsProfileSection } from "@/components/views/settings/settings-profile-section";
 import {
   deleteMyPasskeyMutation,
+  linkJellyfinAccountMutation,
+  linkPlexAccountMutation,
   setUserPasswordMutation,
   totpDisableMutation,
   totpEnrollmentCompleteMutation,
@@ -11,11 +15,20 @@ import {
   totpVerifyStepUpMutation,
   unlinkExternalAccountMutation,
 } from "@/lib/graphql/mutations";
-import { linkedAccountsQuery, meQuery, myPasskeysQuery, myTotpQuery } from "@/lib/graphql/queries";
+import {
+  authProviderRuntimeSettingsQuery,
+  linkedAccountsQuery,
+  meQuery,
+  myPasskeysQuery,
+  myTotpQuery,
+} from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import type {
+  AuthProviderConnection,
+  AuthProviderSettings,
+  ExternalAccountProvider,
   LinkedAccount,
   PasskeySummary,
   TotpEnrollmentComplete,
@@ -24,11 +37,67 @@ import type {
 } from "@/lib/types/settings";
 import type { UserAccountKind } from "@/lib/types/users";
 import { PasskeyClientError, registerPasskey } from "@/lib/utils/passkeys";
+import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
 
 type Props = {
   userId?: string;
   username?: string;
 };
+
+type LinkAccountDraft = {
+  provider: ExternalAccountProvider;
+  connectionId: string;
+  jellyfinUsername: string;
+  jellyfinPassword: string;
+};
+
+const DEFAULT_AUTH_PROVIDER_SETTINGS: AuthProviderSettings = {
+  allowedProviders: [],
+  providerLoginEnabled: [],
+  providerLinkingEnabled: [],
+  allowedJellyfinConnectionIds: [],
+  allowedPlexConnectionIds: [],
+  allowedJellyfinConnections: [],
+  allowedPlexConnections: [],
+};
+
+const TOTP_CODE_LENGTH = 6;
+
+function sanitizeTotpCode(value: string): string {
+  return sanitizeDigits(value).slice(0, TOTP_CODE_LENGTH);
+}
+
+function connectionsForProvider(
+  settings: AuthProviderSettings,
+  provider: ExternalAccountProvider,
+): AuthProviderConnection[] {
+  const connections =
+    provider === "jellyfin"
+      ? settings.allowedJellyfinConnections
+      : settings.allowedPlexConnections;
+  if (connections.length > 0) {
+    return connections;
+  }
+
+  const ids =
+    provider === "jellyfin"
+      ? settings.allowedJellyfinConnectionIds
+      : settings.allowedPlexConnectionIds;
+  return ids.map((id) => ({
+    id,
+    displayName: id,
+    userVisibleUrl: null,
+    baseUrl: null,
+    loginEnabled: settings.providerLoginEnabled.includes(provider),
+    linkingEnabled: settings.providerLinkingEnabled.includes(provider),
+  }));
+}
+
+function connectionLabelForDisplay(connection: AuthProviderConnection): string {
+  return connection.userVisibleUrl
+    ? `${connection.displayName} (${connection.userVisibleUrl})`
+    : connection.displayName;
+}
 
 export function SettingsProfileContainer({ userId, username }: Props) {
   const setGlobalStatus = useGlobalStatus();
@@ -48,13 +117,26 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const [totpActionCode, setTotpActionCode] = useState("");
   const [totpRecoveryCodes, setTotpRecoveryCodes] = useState<string[]>([]);
   const [linkedAccounts, setLinkedAccounts] = useState<LinkedAccount[]>([]);
+  const [authProviderSettings, setAuthProviderSettings] = useState<AuthProviderSettings>(
+    DEFAULT_AUTH_PROVIDER_SETTINGS,
+  );
   const [loadingPasskeys, setLoadingPasskeys] = useState(false);
   const [loadingTotp, setLoadingTotp] = useState(false);
   const [loadingLinkedAccounts, setLoadingLinkedAccounts] = useState(false);
+  const [loadingLinkOptions, setLoadingLinkOptions] = useState(false);
   const [addingPasskey, setAddingPasskey] = useState(false);
   const [totpBusy, setTotpBusy] = useState(false);
   const [deletingPasskeyId, setDeletingPasskeyId] = useState<string | null>(null);
   const [unlinkingAccountId, setUnlinkingAccountId] = useState<string | null>(null);
+  const [linkingProvider, setLinkingProvider] = useState<ExternalAccountProvider | null>(null);
+  const [linkAccountDraft, setLinkAccountDraft] = useState<LinkAccountDraft>({
+    provider: "jellyfin",
+    connectionId: "",
+    jellyfinUsername: "",
+    jellyfinPassword: "",
+  });
+  const [linkAccountBusy, setLinkAccountBusy] = useState(false);
+  const [linkAccountError, setLinkAccountError] = useState<string | null>(null);
 
   const formatPasskeyError = useCallback((error: unknown) => {
     if (error instanceof PasskeyClientError) {
@@ -236,6 +318,75 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     void loadLinkedAccounts();
   }, [loadLinkedAccounts]);
 
+  const loadAuthProviderSettings = useCallback(async () => {
+    if (!userId) {
+      setAuthProviderSettings(DEFAULT_AUTH_PROVIDER_SETTINGS);
+      setLoadingLinkOptions(false);
+      return;
+    }
+
+    setLoadingLinkOptions(true);
+    try {
+      const result = await client
+        .query<{ authProviderRuntimeSettings?: AuthProviderSettings }>(
+          authProviderRuntimeSettingsQuery,
+          {},
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (result.error) {
+        setGlobalStatus(result.error.message);
+        return;
+      }
+      setAuthProviderSettings(
+        result.data?.authProviderRuntimeSettings ?? DEFAULT_AUTH_PROVIDER_SETTINGS,
+      );
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("profile.linkAccountLoadFailed"));
+    } finally {
+      setLoadingLinkOptions(false);
+    }
+  }, [client, setGlobalStatus, t, userId]);
+
+  useEffect(() => {
+    void loadAuthProviderSettings();
+  }, [loadAuthProviderSettings]);
+
+  const linkableConnections = useMemo(() => {
+    const linkedPairs = new Set(
+      linkedAccounts.map((account) => `${account.provider}:${account.connectionId}`),
+    );
+
+    const eligibleForProvider = (provider: ExternalAccountProvider) => {
+      if (
+        !authProviderSettings.allowedProviders.includes(provider) ||
+        !authProviderSettings.providerLinkingEnabled.includes(provider)
+      ) {
+        return [];
+      }
+
+      return connectionsForProvider(authProviderSettings, provider).filter(
+        (connection) =>
+          connection.linkingEnabled && !linkedPairs.has(`${provider}:${connection.id}`),
+      );
+    };
+
+    return {
+      jellyfin: eligibleForProvider("jellyfin"),
+      plex: eligibleForProvider("plex"),
+    };
+  }, [authProviderSettings, linkedAccounts]);
+
+  const linkedAccountConnectionLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    (["jellyfin", "plex"] as const).forEach((provider) => {
+      connectionsForProvider(authProviderSettings, provider).forEach((connection) => {
+        labels[`${provider}:${connection.id}`] = connectionLabelForDisplay(connection);
+      });
+    });
+    return labels;
+  }, [authProviderSettings]);
+
   const handleAddPasskey = useCallback(async () => {
     if (!userId || hasPassword !== true || accountKind !== "local") return;
 
@@ -292,7 +443,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t]);
 
   const handleCompleteTotpEnrollment = useCallback(async () => {
-    if (!totpEnrollment || !totpEnrollmentCode.trim()) return;
+    if (!totpEnrollment || totpEnrollmentCode.length !== TOTP_CODE_LENGTH) return;
 
     setTotpBusy(true);
     try {
@@ -324,7 +475,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t, totpEnrollment, totpEnrollmentCode]);
 
   const handleDisableTotp = useCallback(async () => {
-    if (!totpActionCode.trim()) return;
+    if (totpActionCode.length !== TOTP_CODE_LENGTH) return;
 
     setTotpBusy(true);
     try {
@@ -350,7 +501,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t, totpActionCode]);
 
   const handleVerifyTotpStepUp = useCallback(async () => {
-    if (!totpActionCode.trim()) return;
+    if (totpActionCode.length !== TOTP_CODE_LENGTH) return;
 
     setTotpBusy(true);
     try {
@@ -375,7 +526,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [adoptSession, client, setGlobalStatus, t, totpActionCode]);
 
   const handleRegenerateTotpRecoveryCodes = useCallback(async () => {
-    if (!totpActionCode.trim()) return;
+    if (totpActionCode.length !== TOTP_CODE_LENGTH) return;
 
     setTotpBusy(true);
     try {
@@ -415,6 +566,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       }
 
       setLinkedAccounts((current) => current.filter((account) => account.id !== id));
+      notifyExternalAccountInviteSourcesChanged();
       setGlobalStatus(t("profile.linkedAccountUnlinked"));
     } catch (error) {
       setGlobalStatus(
@@ -424,6 +576,129 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       setUnlinkingAccountId(null);
     }
   }, [client, setGlobalStatus, t]);
+
+  const handleStartLinkAccount = useCallback((provider: ExternalAccountProvider) => {
+    const connections = provider === "jellyfin" ? linkableConnections.jellyfin : linkableConnections.plex;
+    setLinkingProvider(provider);
+    setLinkAccountError(null);
+    setLinkAccountDraft({
+      provider,
+      connectionId: connections[0]?.id ?? "",
+      jellyfinUsername: "",
+      jellyfinPassword: "",
+    });
+  }, [linkableConnections.jellyfin, linkableConnections.plex]);
+
+  const handleCancelLinkAccount = useCallback(() => {
+    setLinkingProvider(null);
+    setLinkAccountError(null);
+    setLinkAccountDraft((current) => ({
+      ...current,
+      jellyfinPassword: "",
+    }));
+  }, []);
+
+  const handleLinkAccountConnectionChange = useCallback((connectionId: string) => {
+    setLinkAccountDraft((current) => ({ ...current, connectionId }));
+  }, []);
+
+  const handleLinkAccountUsernameChange = useCallback((jellyfinUsername: string) => {
+    setLinkAccountDraft((current) => ({ ...current, jellyfinUsername }));
+  }, []);
+
+  const handleLinkAccountPasswordChange = useCallback((jellyfinPassword: string) => {
+    setLinkAccountDraft((current) => ({ ...current, jellyfinPassword }));
+  }, []);
+
+  const handleSubmitJellyfinLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (
+      linkingProvider !== "jellyfin" ||
+      !linkAccountDraft.connectionId ||
+      !linkAccountDraft.jellyfinUsername.trim() ||
+      !linkAccountDraft.jellyfinPassword
+    ) {
+      return;
+    }
+
+    setLinkAccountBusy(true);
+    setLinkAccountError(null);
+    try {
+      const result = await client
+        .mutation<{ linkJellyfinAccount?: LinkedAccount }, {
+          input: { connectionId: string; username: string; password: string };
+        }>(linkJellyfinAccountMutation, {
+          input: {
+            connectionId: linkAccountDraft.connectionId,
+            username: linkAccountDraft.jellyfinUsername.trim(),
+            password: linkAccountDraft.jellyfinPassword,
+          },
+        })
+        .toPromise();
+
+      if (result.error || !result.data?.linkJellyfinAccount) {
+        const message = result.error?.message ?? t("profile.linkAccountFailed");
+        setLinkAccountError(message);
+        setGlobalStatus(message);
+        return;
+      }
+
+      setLinkingProvider(null);
+      setLinkAccountDraft((current) => ({ ...current, jellyfinPassword: "" }));
+      await loadLinkedAccounts();
+      notifyExternalAccountInviteSourcesChanged();
+      setGlobalStatus(t("profile.linkAccountLinked"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("profile.linkAccountFailed");
+      setLinkAccountError(message);
+      setGlobalStatus(message);
+    } finally {
+      setLinkAccountDraft((current) => ({ ...current, jellyfinPassword: "" }));
+      setLinkAccountBusy(false);
+    }
+  }, [client, linkAccountDraft, linkingProvider, loadLinkedAccounts, setGlobalStatus, t]);
+
+  const handleSubmitPlexLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (linkingProvider !== "plex" || !linkAccountDraft.connectionId) {
+      return;
+    }
+
+    setLinkAccountBusy(true);
+    setLinkAccountError(null);
+    try {
+      setGlobalStatus(t("auth.plexPinFlowPending"));
+      const plexAuthToken = await authenticateWithPlexPin();
+      const result = await client
+        .mutation<{ linkPlexAccount?: LinkedAccount }, {
+          input: { connectionId: string; plexAuthToken: string };
+        }>(linkPlexAccountMutation, {
+          input: {
+            connectionId: linkAccountDraft.connectionId,
+            plexAuthToken,
+          },
+        })
+        .toPromise();
+
+      if (result.error || !result.data?.linkPlexAccount) {
+        const message = result.error?.message ?? t("profile.linkAccountFailed");
+        setLinkAccountError(message);
+        setGlobalStatus(message);
+        return;
+      }
+
+      setLinkingProvider(null);
+      await loadLinkedAccounts();
+      notifyExternalAccountInviteSourcesChanged();
+      setGlobalStatus(t("profile.linkAccountLinked"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("profile.linkAccountFailed");
+      setLinkAccountError(message);
+      setGlobalStatus(message);
+    } finally {
+      setLinkAccountBusy(false);
+    }
+  }, [client, linkAccountDraft.connectionId, linkingProvider, loadLinkedAccounts, setGlobalStatus, t]);
 
   return (
     <SettingsProfileSection
@@ -447,9 +722,19 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       totpActionCode={totpActionCode}
       totpRecoveryCodes={totpRecoveryCodes}
       linkedAccounts={linkedAccounts}
+      linkedAccountConnectionLabels={linkedAccountConnectionLabels}
+      linkableJellyfinConnections={linkableConnections.jellyfin}
+      linkablePlexConnections={linkableConnections.plex}
+      linkingProvider={linkingProvider}
+      linkAccountConnectionId={linkAccountDraft.connectionId}
+      linkAccountUsername={linkAccountDraft.jellyfinUsername}
+      linkAccountPassword={linkAccountDraft.jellyfinPassword}
+      linkAccountBusy={linkAccountBusy}
+      linkAccountError={linkAccountError}
       loadingPasskeys={loadingPasskeys}
       loadingTotp={loadingTotp}
       loadingLinkedAccounts={loadingLinkedAccounts}
+      loadingLinkOptions={loadingLinkOptions}
       addingPasskey={addingPasskey}
       totpBusy={totpBusy}
       deletingPasskeyId={deletingPasskeyId}
@@ -457,12 +742,19 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       onAddPasskey={handleAddPasskey}
       onDeletePasskey={handleDeletePasskey}
       onStartTotpEnrollment={handleStartTotpEnrollment}
-      onTotpEnrollmentCodeChange={setTotpEnrollmentCode}
+      onTotpEnrollmentCodeChange={(value) => setTotpEnrollmentCode(sanitizeTotpCode(value))}
       onCompleteTotpEnrollment={handleCompleteTotpEnrollment}
-      onTotpActionCodeChange={setTotpActionCode}
+      onTotpActionCodeChange={(value) => setTotpActionCode(sanitizeTotpCode(value))}
       onVerifyTotpStepUp={handleVerifyTotpStepUp}
       onDisableTotp={handleDisableTotp}
       onRegenerateTotpRecoveryCodes={handleRegenerateTotpRecoveryCodes}
+      onStartLinkAccount={handleStartLinkAccount}
+      onCancelLinkAccount={handleCancelLinkAccount}
+      onLinkAccountConnectionChange={handleLinkAccountConnectionChange}
+      onLinkAccountUsernameChange={handleLinkAccountUsernameChange}
+      onLinkAccountPasswordChange={handleLinkAccountPasswordChange}
+      onSubmitJellyfinLink={handleSubmitJellyfinLink}
+      onSubmitPlexLink={handleSubmitPlexLink}
       onUnlinkExternalAccount={handleUnlinkExternalAccount}
     />
   );

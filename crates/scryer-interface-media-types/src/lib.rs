@@ -858,6 +858,7 @@ pub enum PendingReleaseStatusValue {
 pub struct LoginInput {
     pub username: String,
     pub password: String,
+    pub totp_code: Option<String>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -962,6 +963,7 @@ pub struct LoginPayload {
     pub user: UserPayload,
     pub expires_at: String,
     pub mfa_verified_until: Option<String>,
+    pub mfa_enrollment_required: bool,
 }
 
 #[derive(InputObject)]
@@ -995,6 +997,13 @@ pub struct TotpEnrollmentStartPayload {
 pub struct TotpEnrollmentCompletePayload {
     pub status: TotpStatusPayload,
     pub recovery_codes: Vec<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct LoginMfaEnrollmentCompletePayload {
+    pub status: TotpStatusPayload,
+    pub recovery_codes: Vec<String>,
+    pub login: LoginPayload,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1912,6 +1921,7 @@ pub struct SecuritySettingsPayload {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub totp_require_config_step_up: bool,
+    pub totp_require_local_login: bool,
     pub totp_require_jellyfin_login: bool,
     pub effective_form_login_enabled: bool,
     pub env_override_active: bool,
@@ -1923,6 +1933,7 @@ pub struct AuthRuntimeStatePayload {
     pub effective_form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub passkey_enabled: bool,
+    pub totp_require_local_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
 
@@ -2373,6 +2384,7 @@ pub struct UpdateSecuritySettingsInput {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub totp_require_config_step_up: bool,
+    pub totp_require_local_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
 

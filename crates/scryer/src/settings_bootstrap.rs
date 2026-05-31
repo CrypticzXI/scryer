@@ -23,7 +23,7 @@ use scryer_application::{
     REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY,
     SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
     TLS_CERT_PATH_KEY as TLS_CERT_KEY, TLS_KEY_PATH_KEY as TLS_KEY_KEY,
-    TOTP_REQUIRE_CONFIG_STEP_UP_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+    TOTP_REQUIRE_CONFIG_STEP_UP_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, TOTP_REQUIRE_LOCAL_LOGIN_KEY,
     default_quality_profile_1080p_for_search, default_quality_profile_for_search,
 };
 pub(crate) use scryer_application::{
@@ -234,6 +234,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             category: SETTINGS_CATEGORY_SECURITY,
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SECURITY,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: TOTP_REQUIRE_LOCAL_LOGIN_KEY,
             data_type: "boolean",
             default_value_json: "false",
             is_sensitive: false,

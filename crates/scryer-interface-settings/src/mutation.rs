@@ -12,7 +12,8 @@ use scryer_application::{
 };
 
 use scryer_interface_core::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_verification_from_ctx, to_gql_error,
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
+    mfa_verification_from_ctx, to_gql_error,
 };
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
@@ -117,6 +118,7 @@ fn from_security_settings(
         form_login_enabled: settings.form_login_enabled,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
         totp_require_config_step_up: settings.totp_require_config_step_up,
+        totp_require_local_login: settings.totp_require_local_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
@@ -377,10 +379,40 @@ async fn login_payload_from_user(
         user: from_user(user),
         expires_at,
         mfa_verified_until: mfa_verified_until.map(|value| value.to_rfc3339()),
+        mfa_enrollment_required: false,
+    })
+}
+
+async fn login_mfa_enrollment_payload_from_user(
+    app: &scryer_application::AppUseCase,
+    user: scryer_domain::User,
+) -> Result<LoginPayload, Error> {
+    let user = app
+        .load_user_for_auth_payload(&user)
+        .await
+        .map_err(to_gql_error)?;
+    let token = app
+        .issue_mfa_enrollment_token(&user)
+        .await
+        .map_err(to_gql_error)?;
+    let expires_at =
+        (Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime())).to_rfc3339();
+    Ok(LoginPayload {
+        token,
+        user: from_user(user),
+        expires_at,
+        mfa_verified_until: None,
+        mfa_enrollment_required: true,
     })
 }
 
 async fn require_config_step_up(ctx: &Context<'_>) -> GqlResult<()> {
+    if !auth_runtime_from_ctx(ctx)
+        .snapshot()
+        .effective_form_login_enabled
+    {
+        return Ok(());
+    }
     let app = app_from_ctx(ctx)?;
     let actor = actor_from_ctx(ctx)?;
     let mfa = mfa_verification_from_ctx(ctx);
@@ -764,6 +796,7 @@ impl SettingsMutations {
                     form_login_enabled: input.form_login_enabled,
                     skip_login_for_local_ips: input.skip_login_for_local_ips,
                     totp_require_config_step_up: input.totp_require_config_step_up,
+                    totp_require_local_login: input.totp_require_local_login,
                     totp_require_jellyfin_login: input.totp_require_jellyfin_login,
                 },
             )
@@ -1231,7 +1264,12 @@ impl SettingsMutations {
         ctx: &Context<'_>,
     ) -> GqlResult<TotpEnrollmentStartPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
+        let mfa = mfa_verification_from_ctx(ctx);
+        let actor = if mfa.session_scope == scryer_application::JwtSessionScope::MfaEnrollment {
+            mfa_enrollment_actor_from_ctx(ctx)?
+        } else {
+            actor_from_ctx(ctx)?
+        };
         app.totp_enrollment_start(&actor)
             .await
             .map(from_totp_enrollment_start)
@@ -1249,6 +1287,26 @@ impl SettingsMutations {
             .await
             .map(from_totp_enrollment_complete)
             .map_err(to_gql_error)
+    }
+
+    async fn complete_login_mfa_enrollment(
+        &self,
+        ctx: &Context<'_>,
+        input: TotpEnrollmentCompleteInput,
+    ) -> GqlResult<LoginMfaEnrollmentCompletePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = mfa_enrollment_actor_from_ctx(ctx)?;
+        let complete = app
+            .totp_enrollment_complete(&actor, &input.challenge_id, &input.code)
+            .await
+            .map_err(to_gql_error)?;
+        let login =
+            login_payload_from_user(&app, actor, Some(app.totp_step_up_verified_until())).await?;
+        Ok(LoginMfaEnrollmentCompletePayload {
+            status: from_totp_status(complete.status),
+            recovery_codes: complete.recovery_codes,
+            login,
+        })
     }
 
     async fn totp_verify_step_up(
@@ -1345,7 +1403,33 @@ impl SettingsMutations {
             .authenticate_credentials(&input.username, &input.password)
             .await
             .map_err(to_gql_error)?;
-        login_payload_from_user(&app, user, None).await
+        let effective_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
+        let local_mfa_required = effective_login_enabled
+            && app
+                .security_settings()
+                .await
+                .map_err(to_gql_error)?
+                .totp_require_local_login;
+        let mfa_verified_until = if local_mfa_required {
+            if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
+                return login_mfa_enrollment_payload_from_user(&app, user).await;
+            }
+            let code = input.totp_code.as_deref().ok_or_else(|| {
+                to_gql_error(scryer_application::AppError::TotpStepUpRequired(
+                    "TOTP code is required for local login".into(),
+                ))
+            })?;
+            Some(
+                app.verify_totp_for_user(&user, code)
+                    .await
+                    .map_err(to_gql_error)?,
+            )
+        } else {
+            None
+        };
+        login_payload_from_user(&app, user, mfa_verified_until).await
     }
 
     /// Mark the setup wizard as complete.

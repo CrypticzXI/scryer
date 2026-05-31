@@ -76,16 +76,6 @@ impl AppUseCase {
             });
         }
 
-        let provider = self.services.notifications.notification_provider();
-        let available = provider
-            .as_ref()
-            .map(|provider| provider.available_provider_types())
-            .unwrap_or_default();
-        let available: std::collections::HashSet<String> = available
-            .into_iter()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .collect();
-
         for connection in self
             .services
             .integrations
@@ -94,16 +84,6 @@ impl AppUseCase {
             .await?
         {
             let provider_type = connection.provider.as_str().to_string();
-            if !connection.enabled || !available.contains(provider_type.as_str()) {
-                continue;
-            }
-            if self
-                .notification_channel_for_media_server_connection(connection.clone())
-                .await
-                .is_err()
-            {
-                continue;
-            }
             targets.push(NotificationTarget {
                 id: connection.id.clone(),
                 target_kind: NotificationTargetKind::MediaServerConnection,

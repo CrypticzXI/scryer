@@ -2,17 +2,17 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Fingerprint, KeyRound, Loader2 } from "lucide-react";
 import { QRCode } from "react-qr-code";
-import { useAuth } from "@/lib/hooks/use-auth";
+import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import { useLanguage } from "@/lib/hooks/use-language";
-import { Input } from "@/components/ui/input";
+import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import { backendClient } from "@/lib/graphql/urql-client";
 import { authProviderRuntimeSettingsQuery } from "@/lib/graphql/queries";
 import {
+  completeLoginMfaEnrollmentMutation,
   loginWithJellyfinMutation,
   loginWithPlexMutation,
-  totpEnrollmentCompleteMutation,
   totpEnrollmentStartMutation,
 } from "@/lib/graphql/mutations";
 import type {
@@ -24,6 +24,13 @@ import { authenticateWithPasskey, PasskeyClientError } from "@/lib/utils/passkey
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
 
 type LoginMethod = "password" | "jellyfin" | null;
+
+type LoginPayload = {
+  token: string;
+  user: AuthUser | null;
+  mfaEnrollmentRequired: boolean;
+  mfaVerifiedUntil: string | null;
+};
 
 function resolveRedirectTarget(value: string | null): string {
   if (!value || !value.startsWith("/") || value.startsWith("//")) {
@@ -61,6 +68,10 @@ function graphQlErrorCode(error: unknown): string | null {
   return null;
 }
 
+function sanitizeTotpCode(value: string): string {
+  return sanitizeDigits(value).slice(0, 6);
+}
+
 export default function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -69,17 +80,19 @@ export default function LoginPage() {
   const {
     login,
     adoptSession,
+    logout,
     user,
     loading: authLoading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
-    totpRequireJellyfinLogin,
   } = useAuth();
   const [activeMethod, setActiveMethod] = useState<LoginMethod>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [localTotpCode, setLocalTotpCode] = useState("");
+  const [localTotpPrompted, setLocalTotpPrompted] = useState(false);
   const [passkeySubmitting, setPasskeySubmitting] = useState(false);
   const [jellyfinSubmitting, setJellyfinSubmitting] = useState(false);
   const [authProviderSettings, setAuthProviderSettings] =
@@ -148,6 +161,12 @@ export default function LoginPage() {
     setError(null);
   }, []);
 
+  const resetLocalTotpChallenge = useCallback(() => {
+    setLocalTotpPrompted(false);
+    setLocalTotpCode("");
+    setError(null);
+  }, []);
+
   // Redirect to home if already authenticated
   useEffect(() => {
     if (!serviceRestarting && !authLoading && user && !jellyfinMfaSetupActive) {
@@ -202,23 +221,6 @@ export default function LoginPage() {
     };
   }, []);
 
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      setError(null);
-      setSubmitting(true);
-      try {
-        await login(username, password);
-        navigate(redirectTarget, { replace: true });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : t("auth.invalidCredentials"));
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [login, navigate, password, redirectTarget, t, username],
-  );
-
   const handlePasskeySignIn = useCallback(
     async () => {
       setError(null);
@@ -269,43 +271,104 @@ export default function LoginPage() {
     }
   }, [t]);
 
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      setError(null);
+      setSubmitting(true);
+      try {
+        const result = await login(username, password, {
+          totpCode: localTotpPrompted ? localTotpCode || null : null,
+        });
+        if (result.mfaEnrollmentRequired) {
+          setJellyfinMfaSetupActive(true);
+          adoptSession(result.token, result.user ?? null);
+          await startJellyfinMfaEnrollment();
+          return;
+        }
+        navigate(redirectTarget, { replace: true });
+      } catch (err) {
+        if (graphQlErrorCode(err) === "TOTP_STEP_UP_REQUIRED") {
+          setLocalTotpPrompted(true);
+          setLocalTotpCode("");
+          setError(null);
+        } else {
+          setError(err instanceof Error ? err.message : t("auth.invalidCredentials"));
+        }
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [
+      adoptSession,
+      localTotpCode,
+      localTotpPrompted,
+      login,
+      navigate,
+      password,
+      redirectTarget,
+      startJellyfinMfaEnrollment,
+      t,
+      username,
+    ],
+  );
+
   const completeJellyfinMfaEnrollment = useCallback(async () => {
-    if (!jellyfinMfaEnrollment || !jellyfinMfaEnrollmentCode.trim()) return;
+    if (!jellyfinMfaEnrollment || jellyfinMfaEnrollmentCode.length !== 6) return;
 
     setError(null);
     setJellyfinMfaBusy(true);
     try {
       const { data, error } = await backendClient
         .mutation<
-          { totpEnrollmentComplete?: TotpEnrollmentComplete },
+          {
+            completeLoginMfaEnrollment?: TotpEnrollmentComplete & {
+              login: LoginPayload;
+            };
+          },
           { input: { challengeId: string; code: string } }
-        >(totpEnrollmentCompleteMutation, {
+        >(completeLoginMfaEnrollmentMutation, {
           input: {
             challengeId: jellyfinMfaEnrollment.challengeId,
-            code: jellyfinMfaEnrollmentCode.trim(),
+            code: jellyfinMfaEnrollmentCode,
           },
         })
         .toPromise();
-      if (error || !data?.totpEnrollmentComplete) {
+      if (error || !data?.completeLoginMfaEnrollment) {
         throw error ?? new Error(t("auth.mfaSetupCompleteFailed"));
       }
-      setJellyfinMfaRecoveryCodes(data.totpEnrollmentComplete.recoveryCodes);
+      setJellyfinMfaRecoveryCodes(data.completeLoginMfaEnrollment.recoveryCodes);
       setJellyfinMfaEnrollment(null);
       setJellyfinMfaEnrollmentCode("");
+      adoptSession(
+        data.completeLoginMfaEnrollment.login.token,
+        data.completeLoginMfaEnrollment.login.user ?? null,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : t("auth.mfaSetupCompleteFailed"));
     } finally {
       setJellyfinMfaBusy(false);
     }
-  }, [jellyfinMfaEnrollment, jellyfinMfaEnrollmentCode, t]);
+  }, [adoptSession, jellyfinMfaEnrollment, jellyfinMfaEnrollmentCode, t]);
 
-  const skipJellyfinMfaEnrollment = useCallback(() => {
+  const continueAfterJellyfinMfaEnrollment = useCallback(() => {
+    setJellyfinMfaSetupActive(false);
+    navigate(redirectTarget, { replace: true });
+  }, [navigate, redirectTarget]);
+
+  const cancelJellyfinMfaEnrollment = useCallback(() => {
+    logout();
     setJellyfinMfaSetupActive(false);
     setJellyfinMfaEnrollment(null);
     setJellyfinMfaEnrollmentCode("");
     setJellyfinMfaRecoveryCodes([]);
-    navigate(redirectTarget, { replace: true });
-  }, [navigate, redirectTarget]);
+    setLocalTotpCode("");
+    setLocalTotpPrompted(false);
+    setJellyfinPassword("");
+    setJellyfinTotpCode("");
+    setJellyfinTotpPrompted(false);
+    setError(null);
+  }, [logout]);
 
   const handleJellyfinSignIn = useCallback(
     async () => {
@@ -320,7 +383,7 @@ export default function LoginPage() {
               connectionId: jellyfinConnectionId,
               username: jellyfinUsername,
               password: jellyfinPassword,
-              totpCode: jellyfinTotpPrompted ? jellyfinTotpCode.trim() || null : null,
+              totpCode: jellyfinTotpPrompted ? jellyfinTotpCode || null : null,
               persistSession: true,
             },
           })
@@ -329,7 +392,7 @@ export default function LoginPage() {
           throw error ?? new Error(t("auth.jellyfinFailed"));
         }
         const loginPayload = data.loginWithJellyfin;
-        if (totpRequireJellyfinLogin && !loginPayload.mfaVerifiedUntil) {
+        if (loginPayload.mfaEnrollmentRequired) {
           setJellyfinMfaSetupActive(true);
           adoptSession(loginPayload.token, loginPayload.user ?? null);
           await startJellyfinMfaEnrollment();
@@ -360,7 +423,6 @@ export default function LoginPage() {
       redirectTarget,
       startJellyfinMfaEnrollment,
       t,
-      totpRequireJellyfinLogin,
     ],
   );
 
@@ -434,7 +496,7 @@ export default function LoginPage() {
               </div>
               <button
                 type="button"
-                onClick={skipJellyfinMfaEnrollment}
+                onClick={continueAfterJellyfinMfaEnrollment}
                 className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500"
               >
                 {t("auth.continue")}
@@ -461,17 +523,18 @@ export default function LoginPage() {
               </div>
               <div className="space-y-2">
                 <Input
+                  {...integerInputProps}
                   id="jellyfin-mfa-enrollment-code"
-                  inputMode="numeric"
                   autoComplete="one-time-code"
+                  maxLength={6}
                   value={jellyfinMfaEnrollmentCode}
-                  onChange={(event) => setJellyfinMfaEnrollmentCode(event.target.value)}
+                  onChange={(event) => setJellyfinMfaEnrollmentCode(sanitizeTotpCode(event.target.value))}
                   placeholder={t("auth.totpCode")}
                 />
                 <button
                   type="button"
                   onClick={completeJellyfinMfaEnrollment}
-                  disabled={jellyfinMfaBusy || !jellyfinMfaEnrollmentCode.trim()}
+                  disabled={jellyfinMfaBusy || jellyfinMfaEnrollmentCode.length !== 6}
                   className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
                 >
                   {jellyfinMfaBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -480,11 +543,11 @@ export default function LoginPage() {
               </div>
               <button
                 type="button"
-                onClick={skipJellyfinMfaEnrollment}
+                onClick={cancelJellyfinMfaEnrollment}
                 disabled={jellyfinMfaBusy}
                 className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
               >
-                {t("auth.mfaSetupSkip")}
+                {t("auth.mfaSetupCancel")}
               </button>
             </div>
           ) : (
@@ -502,11 +565,11 @@ export default function LoginPage() {
               </button>
               <button
                 type="button"
-                onClick={skipJellyfinMfaEnrollment}
+                onClick={cancelJellyfinMfaEnrollment}
                 disabled={jellyfinMfaBusy}
                 className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
               >
-                {t("auth.mfaSetupSkip")}
+                {t("auth.mfaSetupCancel")}
               </button>
             </div>
           )}
@@ -544,54 +607,98 @@ export default function LoginPage() {
               </button>
 
               {activeMethod === "password" ? (
-                <form id="login-form" onSubmit={handleSubmit} className="space-y-5">
-                  <div className="space-y-1.5">
-                    <label
-                      htmlFor="username"
-                      className="block text-sm font-medium text-muted-foreground"
-                    >
-                      {t("auth.username")}
-                    </label>
+                localTotpPrompted ? (
+                  <form id="login-form" onSubmit={handleSubmit} className="space-y-4">
+                    <div className="space-y-1 text-center">
+                      <h2 className="text-base font-semibold">{t("auth.totpCode")}</h2>
+                      <p className="text-sm text-muted-foreground">
+                        {t("auth.totpCodeRequired")}
+                      </p>
+                    </div>
                     <Input
-                      id="username"
-                      type="text"
-                      autoComplete="username"
+                      {...integerInputProps}
+                      id="local-totp-code"
+                      autoComplete="one-time-code"
                       autoFocus
-                      required
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder={t("auth.username")}
+                      maxLength={6}
+                      value={localTotpCode}
+                      onChange={(event) => setLocalTotpCode(sanitizeTotpCode(event.target.value))}
+                      placeholder={t("auth.totpCode")}
                     />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label
-                      htmlFor="password"
-                      className="block text-sm font-medium text-muted-foreground"
+                    <button
+                      id="login-submit"
+                      type="submit"
+                      disabled={anySubmitting || localTotpCode.length !== 6}
+                      className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
                     >
-                      {t("auth.password")}
-                    </label>
-                    <Input
-                      id="password"
-                      type="password"
-                      autoComplete="current-password"
-                      required
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder={t("auth.password")}
-                    />
-                  </div>
+                      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      {submitting ? t("auth.signingIn") : t("auth.signIn")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetLocalTotpChallenge}
+                      disabled={anySubmitting}
+                      className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                    >
+                      {t("label.back")}
+                    </button>
+                  </form>
+                ) : (
+                  <form id="login-form" onSubmit={handleSubmit} className="space-y-5">
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor="username"
+                        className="block text-sm font-medium text-muted-foreground"
+                      >
+                        {t("auth.username")}
+                      </label>
+                      <Input
+                        id="username"
+                        type="text"
+                        autoComplete="username"
+                        autoFocus
+                        required
+                        value={username}
+                        onChange={(e) => {
+                          setUsername(e.target.value);
+                          resetLocalTotpChallenge();
+                        }}
+                        placeholder={t("auth.username")}
+                      />
+                    </div>
 
-                  <button
-                    id="login-submit"
-                    type="submit"
-                    disabled={anySubmitting}
-                    className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    {submitting ? t("auth.signingIn") : t("auth.signIn")}
-                  </button>
-                </form>
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor="password"
+                        className="block text-sm font-medium text-muted-foreground"
+                      >
+                        {t("auth.password")}
+                      </label>
+                      <Input
+                        id="password"
+                        type="password"
+                        autoComplete="current-password"
+                        required
+                        value={password}
+                        onChange={(e) => {
+                          setPassword(e.target.value);
+                          resetLocalTotpChallenge();
+                        }}
+                        placeholder={t("auth.password")}
+                      />
+                    </div>
+
+                    <button
+                      id="login-submit"
+                      type="submit"
+                      disabled={anySubmitting}
+                      className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
+                    >
+                      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      {submitting ? t("auth.signingIn") : t("auth.signIn")}
+                    </button>
+                  </form>
+                )
               ) : null}
             </>
           ) : null}
@@ -644,12 +751,13 @@ export default function LoginPage() {
                     </p>
                   </div>
                   <Input
+                    {...integerInputProps}
                     id="jellyfin-totp-code"
-                    inputMode="numeric"
                     autoComplete="one-time-code"
                     autoFocus
+                    maxLength={6}
                     value={jellyfinTotpCode}
-                    onChange={(event) => setJellyfinTotpCode(event.target.value)}
+                    onChange={(event) => setJellyfinTotpCode(sanitizeTotpCode(event.target.value))}
                     placeholder={t("auth.totpCode")}
                   />
                   <button
@@ -660,7 +768,7 @@ export default function LoginPage() {
                       !jellyfinConnectionId ||
                       !jellyfinUsername ||
                       !jellyfinPassword ||
-                      !jellyfinTotpCode.trim()
+                      jellyfinTotpCode.length !== 6
                     }
                     className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
                   >
@@ -726,7 +834,7 @@ export default function LoginPage() {
                       !jellyfinConnectionId ||
                       !jellyfinUsername ||
                       !jellyfinPassword ||
-                      (jellyfinTotpPrompted && !jellyfinTotpCode.trim())
+                      (jellyfinTotpPrompted && jellyfinTotpCode.length !== 6)
                     }
                     className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
                   >

@@ -61,6 +61,7 @@ type RequestsViewProps = {
   loading: boolean;
   actionRequestId: string | null;
   onRefresh: () => void;
+  onLoadQualityProfileOptions: () => void;
   onApprove: (request: MediaRequestRecord, values: ApproveRequestValues) => void;
   onDismiss: (request: MediaRequestRecord) => void;
   onUpdateRequest: (request: MediaRequestRecord, values: UpdateRequestValues) => void;
@@ -225,6 +226,7 @@ export function RequestsView({
   loading,
   actionRequestId,
   onRefresh,
+  onLoadQualityProfileOptions,
   onApprove,
   onDismiss,
   onUpdateRequest,
@@ -302,6 +304,7 @@ export function RequestsView({
   }, [editProfileOptions, editRequest]);
 
   const openApprovalDialog = (request: MediaRequestRecord) => {
+    onLoadQualityProfileOptions();
     setApprovalRequest(request);
   };
 
@@ -322,6 +325,7 @@ export function RequestsView({
   };
 
   const openEditDialog = (request: MediaRequestRecord) => {
+    onLoadQualityProfileOptions();
     setEditRequest(request);
   };
 
@@ -394,8 +398,7 @@ export function RequestsView({
           const requesters = requesterLabel(request);
           const externalIds = requestExternalIdLabel(request);
           const isResolving = actionRequestId === request.id;
-          const approveDisabled =
-            loading || actionRequestId !== null || qualityProfileOptions.length === 0;
+          const approveDisabled = loading || actionRequestId !== null;
           const actionsDisabled = loading || actionRequestId !== null;
           const canEditOwnRequest = mode === "mine" && request.status === "pending";
           return (

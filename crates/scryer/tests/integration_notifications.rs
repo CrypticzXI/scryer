@@ -8,21 +8,22 @@ use chrono::Utc;
 use common::{TestContext, disabled_auth_runtime_handle};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, NotificationAppPayload, NotificationClient,
-    NotificationExternalIdsPayload, NotificationFilePayload, NotificationMediaFilePayload,
-    NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
-    NotificationPluginProvider, NotificationScopeIdUpdate, NotificationTitlePayload,
-    start_notification_dispatcher,
+    AppError, AppResult, MediaServerConnectionRepository, NotificationAppPayload,
+    NotificationClient, NotificationExternalIdsPayload, NotificationFilePayload,
+    NotificationMediaFilePayload, NotificationMediaUpdatePayload,
+    NotificationMediaUpdateTypePayload, NotificationPayload, NotificationPluginProvider,
+    NotificationScopeIdUpdate, NotificationTitlePayload, start_notification_dispatcher,
 };
 use scryer_domain::{
-    ConfigFieldDef, ConfigFieldOption, ConfigFieldType, ConfigFieldValueSource, DomainEventPayload,
-    DomainEventStream, DomainEventType, DomainExternalIds, ExternalId, ImportCompletedEventData,
-    LibraryScanProgressedEventData, MediaFacet, MediaFileDeletedEventData, MediaFileDeletedReason,
-    MediaFileRenamedEventData, MediaFileUpgradedEventData, MediaPathUpdate, MediaUpdateType,
-    NewDomainEvent, NewTitle, NotificationChannelConfig, NotificationEventType,
-    TitleContextSnapshot,
+    AppPermissionMask, ConfigFieldDef, ConfigFieldOption, ConfigFieldType, ConfigFieldValueSource,
+    DomainEventPayload, DomainEventStream, DomainEventType, DomainExternalIds, ExternalId,
+    ImportCompletedEventData, LibraryScanProgressedEventData, MediaFacet,
+    MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
+    MediaFileUpgradedEventData, MediaPathUpdate, MediaServerConnection, MediaServerPathMapping,
+    MediaServerProvider, MediaUpdateType, NewDomainEvent, NewTitle, NotificationChannelConfig,
+    NotificationEventType, TitleContextSnapshot,
 };
-use scryer_infrastructure::NotificationStore;
+use scryer_infrastructure::{MediaServerConnectionStore, NotificationStore};
 use scryer_interface::build_schema;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -42,10 +43,15 @@ use wiremock::{Mock, ResponseTemplate};
 /// return "not configured".
 fn app_with_notifications(ctx: &TestContext) -> scryer_application::AppUseCase {
     ctx.app.with_test_overrides(|builder| {
-        builder.with_notification_store(Arc::new(NotificationStore::new(
-            ctx.db.datastore(),
-            ctx.db.encryption_key_state(),
-        )))
+        builder
+            .with_notification_store(Arc::new(NotificationStore::new(
+                ctx.db.datastore(),
+                ctx.db.encryption_key_state(),
+            )))
+            .with_media_server_connection_store(Arc::new(MediaServerConnectionStore::new(
+                ctx.db.datastore(),
+                ctx.db.encryption_key_state(),
+            )))
     })
 }
 
@@ -59,6 +65,92 @@ fn app_with_notification_provider(
 
 async fn default_user(app: &scryer_application::AppUseCase) -> scryer_domain::User {
     app.find_or_create_default_user().await.unwrap()
+}
+
+fn media_server_connection_store(ctx: &TestContext) -> MediaServerConnectionStore {
+    MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state())
+}
+
+async fn insert_jellyfin_media_server_connection(
+    ctx: &TestContext,
+    id: &str,
+    base_url: &str,
+    path_mappings: Vec<MediaServerPathMapping>,
+) -> MediaServerConnection {
+    insert_jellyfin_media_server_connection_with_api_key(
+        ctx,
+        id,
+        base_url,
+        Some("secret".to_string()),
+        path_mappings,
+    )
+    .await
+}
+
+async fn insert_jellyfin_media_server_connection_with_api_key(
+    ctx: &TestContext,
+    id: &str,
+    base_url: &str,
+    api_key: Option<String>,
+    path_mappings: Vec<MediaServerPathMapping>,
+) -> MediaServerConnection {
+    let now = Utc::now();
+    let connection = MediaServerConnection {
+        id: id.to_string(),
+        provider: MediaServerProvider::Jellyfin,
+        display_name: "Jellyfin".to_string(),
+        base_url: base_url.trim_end_matches('/').to_string(),
+        enabled: true,
+        login_enabled: false,
+        linking_enabled: false,
+        auto_add_enabled: false,
+        default_app_permissions: AppPermissionMask::from_bits_retain(0),
+        default_library_grants: Vec::new(),
+        machine_id: None,
+        api_key,
+        path_mappings,
+        created_at: now,
+        updated_at: now,
+    };
+    media_server_connection_store(ctx)
+        .create(connection)
+        .await
+        .expect("media server connection should insert")
+}
+
+fn jellyfin_path_mappings() -> Vec<MediaServerPathMapping> {
+    vec![
+        MediaServerPathMapping {
+            source_path: "/data/Movies".to_string(),
+            destination_path: "/mnt/media/Movies".to_string(),
+            sort_order: 0,
+        },
+        MediaServerPathMapping {
+            source_path: "/data/TV".to_string(),
+            destination_path: "/mnt/media/TV".to_string(),
+            sort_order: 1,
+        },
+    ]
+}
+
+async fn create_media_server_subscription(
+    app: &scryer_application::AppUseCase,
+    user: &scryer_domain::User,
+    connection: &MediaServerConnection,
+    event_type: &str,
+) {
+    app.create_notification_subscription_for_target(
+        user,
+        None,
+        Some("media_server_connection".into()),
+        Some(connection.id.clone()),
+        event_type.to_string(),
+        "global".into(),
+        None,
+        true,
+    )
+    .await
+    .expect("create media server target subscription");
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +188,15 @@ struct FakeNotificationProvider {
 }
 
 impl FakeNotificationProvider {
+    fn webhook() -> Self {
+        Self {
+            provider_type: "webhook".to_string(),
+            provider_name: "Webhook".to_string(),
+            config_fields: Vec::new(),
+            captured: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     fn jellyfin() -> Self {
         Self {
             provider_type: "jellyfin".to_string(),
@@ -191,7 +292,7 @@ impl NotificationPluginProvider for FakeNotificationProvider {
     }
 
     fn supported_events_for_provider(&self, provider_type: &str) -> Vec<NotificationEventType> {
-        if provider_type == self.provider_type {
+        if provider_type == self.provider_type && self.provider_type == "jellyfin" {
             jellyfin_supported_event_types()
         } else {
             vec![]
@@ -228,13 +329,6 @@ fn jellyfin_config_json(base_url: &str, path_mappings: &str) -> String {
         "path_mappings": path_mappings,
     })
     .to_string()
-}
-
-fn config_json_with_path_mappings() -> String {
-    jellyfin_config_json(
-        "http://jellyfin:8096",
-        "/data/Movies => /mnt/media/Movies\n/data/TV => /mnt/media/TV",
-    )
 }
 
 fn repo_root() -> PathBuf {
@@ -356,6 +450,36 @@ fn jellyfin_notification_payload(
         health: None,
         file,
         media_files,
+        application_update: None,
+        manual_interaction: None,
+    }
+}
+
+fn test_notification_payload() -> NotificationPayload {
+    NotificationPayload {
+        schema_version: 1,
+        event_type: NotificationEventType::Test,
+        event_id: None,
+        occurred_at: None,
+        correlation_id: None,
+        actor: None,
+        severity: None,
+        is_test: true,
+        summary_title: "Scryer Test Notification".to_string(),
+        summary_message: "This is a test notification from Scryer.".to_string(),
+        app: NotificationAppPayload {
+            name: "Scryer".to_string(),
+            version: "test".to_string(),
+        },
+        title: None,
+        episode: None,
+        episodes: Vec::new(),
+        release: None,
+        download: None,
+        import: None,
+        health: None,
+        file: None,
+        media_files: Vec::new(),
         application_update: None,
         manual_interaction: None,
     }
@@ -716,7 +840,7 @@ async fn update_nonexistent_channel_returns_not_found() {
 #[tokio::test]
 async fn create_and_list_subscriptions() {
     let ctx = TestContext::new().await;
-    let app = app_with_notifications(&ctx);
+    let app = app_with_notification_provider(&ctx, Arc::new(FakeNotificationProvider::webhook()));
     let user = default_user(&app).await;
 
     let ch = app
@@ -747,7 +871,7 @@ async fn create_and_list_subscriptions() {
 #[tokio::test]
 async fn update_subscription() {
     let ctx = TestContext::new().await;
-    let app = app_with_notifications(&ctx);
+    let app = app_with_notification_provider(&ctx, Arc::new(FakeNotificationProvider::webhook()));
     let user = default_user(&app).await;
 
     let ch = app
@@ -786,7 +910,7 @@ async fn update_subscription() {
 #[tokio::test]
 async fn delete_subscription() {
     let ctx = TestContext::new().await;
-    let app = app_with_notifications(&ctx);
+    let app = app_with_notification_provider(&ctx, Arc::new(FakeNotificationProvider::webhook()));
     let user = default_user(&app).await;
 
     let ch = app
@@ -866,7 +990,7 @@ async fn create_subscription_rejects_nonexistent_channel() {
 #[tokio::test]
 async fn update_subscription_rejects_unknown_event_type() {
     let ctx = TestContext::new().await;
-    let app = app_with_notifications(&ctx);
+    let app = app_with_notification_provider(&ctx, Arc::new(FakeNotificationProvider::webhook()));
     let user = default_user(&app).await;
 
     let ch = app
@@ -1032,29 +1156,79 @@ async fn notification_provider_types_query_exposes_jellyfin_multiline_field() {
 }
 
 #[tokio::test]
-async fn create_channel_preserves_multiline_jellyfin_config_json() {
+async fn jellyfin_media_server_connection_is_notification_target() {
     let ctx = TestContext::new().await;
-    let app = app_with_notifications(&ctx);
+    let app = app_with_notification_provider(&ctx, Arc::new(FakeNotificationProvider::jellyfin()));
     let user = default_user(&app).await;
-    let config_json = config_json_with_path_mappings();
 
-    let channel = app
-        .create_notification_channel(
+    let connection = insert_jellyfin_media_server_connection(
+        &ctx,
+        "jellyfin-notification-target",
+        "http://jellyfin:8096",
+        jellyfin_path_mappings(),
+    )
+    .await;
+
+    let targets = app
+        .list_notification_targets(&user)
+        .await
+        .expect("list notification targets");
+    let target = targets
+        .iter()
+        .find(|target| target.id == connection.id)
+        .expect("media server target should be listed");
+    assert_eq!(target.target_kind.as_str(), "media_server_connection");
+    assert_eq!(target.provider_type, "jellyfin");
+    assert_eq!(
+        target.media_server_connection_id.as_deref(),
+        Some(connection.id.as_str())
+    );
+
+    let subscription = app
+        .create_notification_subscription_for_target(
             &user,
-            "Jellyfin".into(),
-            "jellyfin".into(),
-            config_json.clone(),
+            None,
+            Some("media_server_connection".into()),
+            Some(connection.id.clone()),
+            NotificationEventType::ImportComplete.as_str().to_string(),
+            "global".into(),
+            None,
             true,
         )
         .await
-        .expect("create channel");
+        .expect("create media server target subscription");
+    assert_eq!(subscription.channel_id, None);
+    assert_eq!(subscription.target_kind.as_str(), "media_server_connection");
+    assert_eq!(subscription.target_id, connection.id);
+}
 
-    let fetched = app
-        .get_notification_channel(&user, &channel.id)
+#[tokio::test]
+async fn media_server_connections_are_listed_without_notification_plugin_or_api_key() {
+    let ctx = TestContext::new().await;
+    let app = app_with_notifications(&ctx);
+    let user = default_user(&app).await;
+
+    let connection = insert_jellyfin_media_server_connection_with_api_key(
+        &ctx,
+        "jellyfin-visible-target",
+        "http://jellyfin:8096",
+        None,
+        jellyfin_path_mappings(),
+    )
+    .await;
+
+    let targets = app
+        .list_notification_targets(&user)
         .await
-        .expect("load channel")
-        .expect("channel should exist");
-    assert_eq!(fetched.config_json, config_json);
+        .expect("list notification targets");
+
+    let target = targets
+        .iter()
+        .find(|target| target.id == connection.id)
+        .expect("media server connection should be visible as a notification target");
+    assert_eq!(target.target_kind.as_str(), "media_server_connection");
+    assert_eq!(target.provider_type, "jellyfin");
+    assert_eq!(target.is_enabled, connection.enabled);
 }
 
 #[tokio::test]
@@ -1063,8 +1237,6 @@ async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
         return;
     };
     let ctx = TestContext::new().await;
-    let app = app_with_notification_provider(&ctx, provider);
-    let user = default_user(&app).await;
 
     Mock::given(method("GET"))
         .and(path("/System/Info"))
@@ -1076,25 +1248,13 @@ async fn jellyfin_dist_plugin_accepts_test_notification_payload() {
         .mount(&ctx.nzbgeek_server)
         .await;
 
-    let config_json = json!({
-        "base_url": ctx.nzbgeek_server.uri(),
-        "api_key": "secret",
-        "path_mappings": "/data => /mnt",
-    })
-    .to_string();
+    let channel = jellyfin_channel_config(&ctx.nzbgeek_server.uri(), "/data => /mnt");
+    let client = provider
+        .client_for_channel(&channel)
+        .expect("jellyfin client should load");
 
-    let channel = app
-        .create_notification_channel(
-            &user,
-            "Jellyfin".into(),
-            "jellyfin".into(),
-            config_json,
-            true,
-        )
-        .await
-        .expect("create channel");
-
-    app.test_notification_channel(&user, &channel.id)
+    client
+        .send_notification(&test_notification_payload())
         .await
         .expect("jellyfin dist plugin should accept test payload");
 }
@@ -1488,16 +1648,13 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
     let app = app_with_notification_provider(&ctx, provider.clone());
     let user = default_user(&app).await;
 
-    let channel = app
-        .create_notification_channel(
-            &user,
-            "Jellyfin".into(),
-            "jellyfin".into(),
-            config_json_with_path_mappings(),
-            true,
-        )
-        .await
-        .expect("create channel");
+    let connection = insert_jellyfin_media_server_connection(
+        &ctx,
+        "jellyfin-lifecycle-target",
+        "http://jellyfin:8096",
+        jellyfin_path_mappings(),
+    )
+    .await;
 
     for event_type in [
         DomainEventType::ImportCompleted,
@@ -1505,16 +1662,7 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
         DomainEventType::MediaFileRenamed,
         DomainEventType::MediaFileDeleted,
     ] {
-        app.create_notification_subscription(
-            &user,
-            channel.id.clone(),
-            event_type.as_str().to_string(),
-            "global".into(),
-            None,
-            true,
-        )
-        .await
-        .expect("create subscription");
+        create_media_server_subscription(&app, &user, &connection, event_type.as_str()).await;
     }
 
     let cancel = CancellationToken::new();
@@ -1797,27 +1945,20 @@ async fn notification_dispatcher_prefers_local_catalog_metadata_over_snapshot() 
         .await
         .expect("create episode");
 
-    let channel = app
-        .create_notification_channel(
-            &user,
-            "Jellyfin".into(),
-            "jellyfin".into(),
-            config_json_with_path_mappings(),
-            true,
-        )
-        .await
-        .expect("create channel");
-
-    app.create_notification_subscription(
-        &user,
-        channel.id.clone(),
-        DomainEventType::ImportCompleted.as_str().to_string(),
-        "global".into(),
-        None,
-        true,
+    let connection = insert_jellyfin_media_server_connection(
+        &ctx,
+        "jellyfin-local-catalog-target",
+        "http://jellyfin:8096",
+        jellyfin_path_mappings(),
     )
-    .await
-    .expect("create subscription");
+    .await;
+    create_media_server_subscription(
+        &app,
+        &user,
+        &connection,
+        DomainEventType::ImportCompleted.as_str(),
+    )
+    .await;
 
     let cancel = CancellationToken::new();
     let dispatcher = tokio::spawn(start_notification_dispatcher(app.clone(), cancel.clone()));
@@ -1889,27 +2030,20 @@ async fn notification_dispatcher_replays_notifications_after_operational_burst()
     let app = app_with_notification_provider(&ctx, provider.clone());
     let user = default_user(&app).await;
 
-    let channel = app
-        .create_notification_channel(
-            &user,
-            "Jellyfin".into(),
-            "jellyfin".into(),
-            config_json_with_path_mappings(),
-            true,
-        )
-        .await
-        .expect("create channel");
-
-    app.create_notification_subscription(
-        &user,
-        channel.id.clone(),
-        DomainEventType::ImportCompleted.as_str().to_string(),
-        "global".into(),
-        None,
-        true,
+    let connection = insert_jellyfin_media_server_connection(
+        &ctx,
+        "jellyfin-replay-target",
+        "http://jellyfin:8096",
+        jellyfin_path_mappings(),
     )
-    .await
-    .expect("create import-complete subscription");
+    .await;
+    create_media_server_subscription(
+        &app,
+        &user,
+        &connection,
+        DomainEventType::ImportCompleted.as_str(),
+    )
+    .await;
 
     for i in 0..300 {
         app.append_domain_event(new_event(
@@ -1986,27 +2120,20 @@ async fn notification_dispatcher_ignores_operational_burst_while_running() {
     let app = app_with_notification_provider(&ctx, provider.clone());
     let user = default_user(&app).await;
 
-    let channel = app
-        .create_notification_channel(
-            &user,
-            "Jellyfin".into(),
-            "jellyfin".into(),
-            config_json_with_path_mappings(),
-            true,
-        )
-        .await
-        .expect("create channel");
-
-    app.create_notification_subscription(
-        &user,
-        channel.id.clone(),
-        DomainEventType::ImportCompleted.as_str().to_string(),
-        "global".into(),
-        None,
-        true,
+    let connection = insert_jellyfin_media_server_connection(
+        &ctx,
+        "jellyfin-live-burst-target",
+        "http://jellyfin:8096",
+        jellyfin_path_mappings(),
     )
-    .await
-    .expect("create import-complete subscription");
+    .await;
+    create_media_server_subscription(
+        &app,
+        &user,
+        &connection,
+        DomainEventType::ImportCompleted.as_str(),
+    )
+    .await;
 
     let mut wake_rx = app.notification_wake_receiver();
     let cancel = CancellationToken::new();

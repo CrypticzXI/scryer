@@ -15,6 +15,7 @@ const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   formLoginEnabled: false,
   skipLoginForLocalIps: false,
   totpRequireConfigStepUp: false,
+  totpRequireLocalLogin: false,
   totpRequireJellyfinLogin: false,
   effectiveFormLoginEnabled: false,
   envOverrideActive: false,
@@ -77,6 +78,7 @@ export function SettingsSecurityContainer() {
     formLoginEnabled: boolean,
     skipLoginForLocalIps: boolean,
     totpRequireConfigStepUp: boolean,
+    totpRequireLocalLogin: boolean,
     totpRequireJellyfinLogin: boolean,
   ) => {
     const { data, error } = await client
@@ -85,6 +87,7 @@ export function SettingsSecurityContainer() {
           formLoginEnabled,
           skipLoginForLocalIps,
           totpRequireConfigStepUp,
+          totpRequireLocalLogin,
           totpRequireJellyfinLogin,
         },
       })
@@ -146,6 +149,7 @@ export function SettingsSecurityContainer() {
         true,
         settings.skipLoginForLocalIps,
         settings.totpRequireConfigStepUp,
+        settings.totpRequireLocalLogin,
         settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
@@ -182,6 +186,7 @@ export function SettingsSecurityContainer() {
     settings.envOverrideActive,
     settings.skipLoginForLocalIps,
     settings.totpRequireConfigStepUp,
+    settings.totpRequireLocalLogin,
     settings.totpRequireJellyfinLogin,
     t,
   ]);
@@ -207,6 +212,7 @@ export function SettingsSecurityContainer() {
         false,
         settings.skipLoginForLocalIps,
         settings.totpRequireConfigStepUp,
+        settings.totpRequireLocalLogin,
         settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
@@ -236,6 +242,7 @@ export function SettingsSecurityContainer() {
     settings.envOverrideActive,
     settings.skipLoginForLocalIps,
     settings.totpRequireConfigStepUp,
+    settings.totpRequireLocalLogin,
     settings.totpRequireJellyfinLogin,
     t,
   ]);
@@ -258,6 +265,7 @@ export function SettingsSecurityContainer() {
         settings.formLoginEnabled,
         enabled,
         settings.totpRequireConfigStepUp,
+        settings.totpRequireLocalLogin,
         settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
@@ -283,6 +291,7 @@ export function SettingsSecurityContainer() {
     settings.formLoginEnabled,
     settings.skipLoginForLocalIps,
     settings.totpRequireConfigStepUp,
+    settings.totpRequireLocalLogin,
     settings.totpRequireJellyfinLogin,
     t,
     token,
@@ -298,6 +307,7 @@ export function SettingsSecurityContainer() {
         settings.formLoginEnabled,
         settings.skipLoginForLocalIps,
         enabled,
+        settings.totpRequireLocalLogin,
         settings.totpRequireJellyfinLogin,
       );
       setSettings(nextSettings);
@@ -311,6 +321,36 @@ export function SettingsSecurityContainer() {
     settings.formLoginEnabled,
     settings.skipLoginForLocalIps,
     settings.totpRequireConfigStepUp,
+    settings.totpRequireLocalLogin,
+    settings.totpRequireJellyfinLogin,
+    t,
+  ]);
+
+  const handleTotpLocalLoginChange = React.useCallback(async (enabled: boolean) => {
+    if (confirmBusy || enabled === settings.totpRequireLocalLogin) {
+      return;
+    }
+
+    try {
+      const nextSettings = await applySecuritySettings(
+        settings.formLoginEnabled,
+        settings.skipLoginForLocalIps,
+        settings.totpRequireConfigStepUp,
+        enabled,
+        settings.totpRequireJellyfinLogin,
+      );
+      setSettings(nextSettings);
+      toast.success(t("settings.securityPreferenceSaved"));
+    } catch (error) {
+      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+    }
+  }, [
+    applySecuritySettings,
+    confirmBusy,
+    settings.formLoginEnabled,
+    settings.skipLoginForLocalIps,
+    settings.totpRequireConfigStepUp,
+    settings.totpRequireLocalLogin,
     settings.totpRequireJellyfinLogin,
     t,
   ]);
@@ -325,6 +365,7 @@ export function SettingsSecurityContainer() {
         settings.formLoginEnabled,
         settings.skipLoginForLocalIps,
         settings.totpRequireConfigStepUp,
+        settings.totpRequireLocalLogin,
         enabled,
       );
       setSettings(nextSettings);
@@ -338,6 +379,7 @@ export function SettingsSecurityContainer() {
     settings.formLoginEnabled,
     settings.skipLoginForLocalIps,
     settings.totpRequireConfigStepUp,
+    settings.totpRequireLocalLogin,
     settings.totpRequireJellyfinLogin,
     t,
   ]);
@@ -361,6 +403,7 @@ export function SettingsSecurityContainer() {
       onCancelDisable={handleCancelDisable}
       onSkipLocalIpsChange={handleSkipLocalIpsChange}
       onTotpConfigStepUpChange={handleTotpConfigStepUpChange}
+      onTotpLocalLoginChange={handleTotpLocalLoginChange}
       onTotpJellyfinLoginChange={handleTotpJellyfinLoginChange}
       externalAccountInvitesPanel={
         canManageExternalInvites ? <ExternalAccountInvitesContainer /> : null

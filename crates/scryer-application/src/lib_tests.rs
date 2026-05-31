@@ -22762,6 +22762,92 @@ async fn issue_and_authenticate_token_round_trips() {
 }
 
 #[tokio::test]
+async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
+    let (app, _) = bootstrap();
+    let user = User {
+        id: "user-jwt-mfa-enroll".to_string(),
+        username: "jwt_mfa_enroll".to_string(),
+        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
+
+    let token = app
+        .issue_mfa_enrollment_token(&user)
+        .await
+        .expect("issue enrollment token");
+    let (decoded, claims) = app
+        .authenticate_token_with_claims(&token)
+        .await
+        .expect("authenticate enrollment token");
+
+    assert_eq!(decoded.id, user.id);
+    assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+    assert_eq!(claims.mfa_verified_until, None);
+}
+
+#[tokio::test]
+async fn legacy_token_without_scope_claim_defaults_to_full_scope() {
+    #[derive(serde::Serialize)]
+    struct LegacyJwtClaims {
+        sub: String,
+        exp: i64,
+        iat: i64,
+        iss: String,
+        username: String,
+        #[serde(rename = "appPermissions")]
+        app_permissions: Vec<String>,
+        #[serde(rename = "libraryPermissions")]
+        library_permissions: Vec<serde_json::Value>,
+        #[serde(rename = "mfaVerifiedUntil")]
+        mfa_verified_until: Option<i64>,
+    }
+
+    let (app, _) = bootstrap();
+    let user = User {
+        id: "user-jwt-legacy-scope".to_string(),
+        username: "jwt_legacy_scope".to_string(),
+        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
+    let claims = LegacyJwtClaims {
+        sub: user.id.clone(),
+        exp: Utc::now().timestamp() + 3600,
+        iat: Utc::now().timestamp(),
+        iss: app.auth.issuer.clone(),
+        username: user.username.clone(),
+        app_permissions: vec![],
+        library_permissions: vec![],
+        mfa_verified_until: None,
+    };
+    let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+    let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
+    let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
+    let token = jsonwebtoken::encode(&header, &claims, &key).expect("encode legacy token");
+
+    let (decoded, token_claims) = app
+        .authenticate_token_with_claims(&token)
+        .await
+        .expect("legacy token should authenticate");
+
+    assert_eq!(decoded.id, user.id);
+    assert_eq!(token_claims.session_scope, JwtSessionScope::Full);
+}
+
+#[tokio::test]
 async fn permission_claims_survive_token_round_trip() {
     let (app, admin) = bootstrap();
     let user = create_user_with_permissions(
@@ -23284,6 +23370,7 @@ async fn expired_token_returns_unauthorized() {
         app_permissions: vec![],
         library_permissions: vec![],
         mfa_verified_until: None,
+        auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -23318,6 +23405,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         app_permissions: vec![],
         library_permissions: vec![],
         mfa_verified_until: None,
+        auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -23535,6 +23623,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         app_permissions: vec!["manageSystemSettings".to_string()],
         library_permissions: vec![],
         mfa_verified_until: None,
+        auth_scope: JwtSessionScope::Full,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);

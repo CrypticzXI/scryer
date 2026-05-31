@@ -2244,7 +2244,10 @@ mod tests {
 
         assert_eq!(account.id, "pending-account");
         assert_eq!(account.user_id, admin.id);
-        assert_eq!(account.external_user_id.as_deref(), Some("jellyfin-user-id"));
+        assert_eq!(
+            account.external_user_id.as_deref(),
+            Some("jellyfin-user-id")
+        );
         assert_eq!(account.status, ExternalAccountStatus::Active);
         assert_eq!(account.display_name.as_deref(), Some("Remote User"));
         assert_eq!(

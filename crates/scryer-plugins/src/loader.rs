@@ -6,10 +6,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use extism::Manifest;
 use scryer_application::{
-    AppError, AppResult, AudioTranscoderClient, DownloadClient, DownloadClientPluginProvider,
-    ExternalPluginWasm, IndexerClient, IndexerPluginProvider, NotificationClient,
-    NotificationPluginProvider, PluginDescriptorLoader, RuntimePluginLoad, SubtitlePluginProvider,
-    SubtitleProviderClient, SubtitleSyncClient,
+    AppError, AppResult, DownloadClient, DownloadClientPluginProvider, ExternalPluginWasm,
+    IndexerClient, IndexerPluginProvider, NotificationClient, NotificationPluginProvider,
+    PluginDescriptorLoader, RuntimePluginLoad, SubtitlePluginProvider, SubtitleProviderClient,
+    SubtitleSyncClient,
 };
 use scryer_domain::{
     DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
@@ -17,7 +17,6 @@ use scryer_domain::{
 };
 use tracing::{info, warn};
 
-use crate::audio_transcoder_adapter::WasmAudioTranscoderClient;
 use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
 use crate::notification_adapter::WasmNotificationClient;
@@ -1733,14 +1732,6 @@ impl WasmSubtitlePluginProvider {
         resolve_loaded_plugin(&self.plugins, &self.aliases, provider_type)
     }
 
-    fn audio_transcoder_client_from_loaded(
-        loaded: &LoadedPlugin,
-    ) -> Option<Arc<dyn AudioTranscoderClient>> {
-        let wasm_bytes = loaded.materialize_wasm().ok()?;
-        let client = WasmAudioTranscoderClient::new(wasm_bytes, loaded.descriptor.clone());
-        Some(Arc::new(client))
-    }
-
     fn subtitle_sync_client_from_loaded(
         loaded: &LoadedPlugin,
     ) -> Option<Arc<dyn SubtitleSyncClient>> {
@@ -1793,13 +1784,6 @@ impl SubtitlePluginProvider for WasmSubtitlePluginProvider {
                 None
             }
         }
-    }
-
-    fn audio_transcoder_client(&self) -> Option<Arc<dyn AudioTranscoderClient>> {
-        self.plugins
-            .values()
-            .find(|loaded| loaded.descriptor.provider_type() == "enhanced-subtitle-sync")
-            .and_then(Self::audio_transcoder_client_from_loaded)
     }
 
     fn subtitle_sync_client(&self) -> Option<Arc<dyn SubtitleSyncClient>> {
@@ -1939,14 +1923,6 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
         }
 
         Some(client)
-    }
-
-    fn audio_transcoder_client(&self) -> Option<Arc<dyn AudioTranscoderClient>> {
-        let guard = self
-            .inner
-            .read()
-            .expect("DynamicSubtitlePluginProvider lock poisoned");
-        guard.audio_transcoder_client()
     }
 
     fn available_provider_types(&self) -> Vec<String> {

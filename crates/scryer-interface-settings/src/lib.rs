@@ -148,6 +148,7 @@ fn from_security_settings(
         form_login_enabled: settings.form_login_enabled,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
         totp_require_config_step_up: settings.totp_require_config_step_up,
+        totp_require_local_login: settings.totp_require_local_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
@@ -259,7 +260,10 @@ fn from_auth_runtime_state(
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
         passkey_enabled: auth_runtime.passkey_enabled,
-        totp_require_jellyfin_login: security_settings.totp_require_jellyfin_login,
+        totp_require_local_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_local_login,
+        totp_require_jellyfin_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_jellyfin_login,
     }
 }
 

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
-use scryer_application::{AppError, AppUseCase, BackupRestorePreparedBundle};
+use scryer_application::{AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope};
 use scryer_domain::{AppPermission, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
@@ -116,6 +116,7 @@ pub struct ConnectionAuthEpoch(pub u64);
 #[derive(Clone, Copy, Default)]
 pub struct MfaVerification {
     pub verified_until: Option<i64>,
+    pub session_scope: JwtSessionScope,
 }
 
 #[derive(Clone)]
@@ -251,6 +252,11 @@ pub fn to_gql_error(err: AppError) -> Error {
                 extensions.set("code", "TOTP_ENROLLMENT_REQUIRED");
             })
         }
+        AppError::MfaEnrollmentRequired(message) => {
+            Error::new(message).extend_with(|_, extensions| {
+                extensions.set("code", "MFA_ENROLLMENT_REQUIRED");
+            })
+        }
         AppError::TotpInvalidCode(message) => Error::new(message).extend_with(|_, extensions| {
             extensions.set("code", "TOTP_INVALID_CODE");
         }),
@@ -264,7 +270,21 @@ pub fn to_gql_error(err: AppError) -> Error {
 }
 
 pub fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
-    current_user_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
+    if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
+        return Err(to_gql_error(AppError::MfaEnrollmentRequired(
+            "MFA enrollment must be completed before accessing Scryer".into(),
+        )));
+    }
+    current_user_any_scope_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
+}
+
+pub fn mfa_enrollment_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
+    if mfa_verification_from_ctx(ctx).session_scope != JwtSessionScope::MfaEnrollment {
+        return Err(to_gql_error(AppError::MfaEnrollmentRequired(
+            "MFA enrollment session required".into(),
+        )));
+    }
+    current_user_any_scope_from_ctx(ctx).ok_or_else(|| Error::new("authentication required"))
 }
 
 pub async fn require_app_permission(
@@ -302,6 +322,13 @@ pub async fn actor_has_any_library_permission(
 }
 
 pub fn current_user_from_ctx(ctx: &Context<'_>) -> Option<User> {
+    if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
+        return None;
+    }
+    current_user_any_scope_from_ctx(ctx)
+}
+
+fn current_user_any_scope_from_ctx(ctx: &Context<'_>) -> Option<User> {
     if let Some(connection_epoch) = ctx.data_opt::<ConnectionAuthEpoch>()
         && connection_epoch.0 != auth_runtime_from_ctx(ctx).snapshot().epoch
     {

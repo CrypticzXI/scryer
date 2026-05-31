@@ -23,7 +23,8 @@ const LOGIN_PAYLOAD_FIELDS = `
     user {${AUTH_USER_FIELDS}
     }
     expiresAt
-    mfaVerifiedUntil`;
+    mfaVerifiedUntil
+    mfaEnrollmentRequired`;
 
 export const loginMutation = `mutation Login($input: LoginInput!) {
   login(input: $input) {
@@ -82,6 +83,21 @@ export const totpEnrollmentCompleteMutation = `mutation TotpEnrollmentComplete($
       recoveryCodesRemaining
     }
     recoveryCodes
+  }
+}`;
+
+export const completeLoginMfaEnrollmentMutation = `mutation CompleteLoginMfaEnrollment($input: TotpEnrollmentCompleteInput!) {
+  completeLoginMfaEnrollment(input: $input) {
+    status {
+      enabled
+      createdAt
+      lastUsedAt
+      recoveryCodesRemaining
+    }
+    recoveryCodes
+    login {
+${LOGIN_PAYLOAD_FIELDS}
+    }
   }
 }`;
 
@@ -603,6 +619,7 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
     formLoginEnabled
     skipLoginForLocalIps
     totpRequireConfigStepUp
+    totpRequireLocalLogin
     totpRequireJellyfinLogin
     effectiveFormLoginEnabled
     envOverrideActive

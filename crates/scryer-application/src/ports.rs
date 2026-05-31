@@ -1,9 +1,7 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::{ImportType, IndexerCapsSnapshot, PersistedPluginWasmPayload};
-use scryer_plugin_sdk::{
-    AudioTranscodeCodec, AudioTranscodeResponse, SubtitleSyncAlignResponse, SubtitleSyncOptions,
-};
+use scryer_plugin_sdk::{SubtitleSyncAlignResponse, SubtitleSyncAudioCodec, SubtitleSyncOptions};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -2007,16 +2005,11 @@ pub trait SubtitleProviderClient: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
-pub struct AudioTranscodeJob {
-    pub input_path: PathBuf,
-    pub output_path: PathBuf,
-    pub expected_codec: AudioTranscodeCodec,
-}
-
-#[derive(Debug, Clone)]
-pub struct AudioTranscodeArtifact {
-    pub output_path: PathBuf,
-    pub response: AudioTranscodeResponse,
+pub struct SubtitleSyncReferenceSubtitle {
+    pub content: Vec<u8>,
+    pub format: String,
+    pub file_name: Option<String>,
+    pub encoding_hint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2026,17 +2019,10 @@ pub struct SubtitleSyncJob {
     pub subtitle_format: String,
     pub subtitle_file_name: Option<String>,
     pub subtitle_encoding_hint: Option<String>,
+    pub reference_subtitle: Option<SubtitleSyncReferenceSubtitle>,
     pub max_offset_seconds: i64,
     pub sync_options: SubtitleSyncOptions,
-    pub expected_codec: Option<AudioTranscodeCodec>,
-}
-
-#[async_trait]
-pub trait AudioTranscoderClient: Send + Sync {
-    async fn transcode_sync_flac(
-        &self,
-        job: AudioTranscodeJob,
-    ) -> AppResult<AudioTranscodeArtifact>;
+    pub expected_codec: Option<SubtitleSyncAudioCodec>,
 }
 
 #[async_trait]
@@ -2113,9 +2099,6 @@ pub trait SubtitlePluginProvider: Send + Sync {
         config: &scryer_domain::SubtitleProviderConfig,
         host_bindings: &std::collections::HashMap<scryer_domain::PluginHostBindingId, String>,
     ) -> Option<Arc<dyn SubtitleProviderClient>>;
-    fn audio_transcoder_client(&self) -> Option<Arc<dyn AudioTranscoderClient>> {
-        None
-    }
     fn subtitle_sync_client(&self) -> Option<Arc<dyn SubtitleSyncClient>> {
         None
     }

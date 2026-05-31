@@ -8,6 +8,7 @@ pub struct SecuritySettings {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub totp_require_config_step_up: bool,
+    pub totp_require_local_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub struct UpdateSecuritySettings {
     pub form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub totp_require_config_step_up: bool,
+    pub totp_require_local_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,11 +42,16 @@ impl AppUseCase {
             .read_setting_bool_value(TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, None)
             .await?
             .unwrap_or(false);
+        let totp_require_local_login = self
+            .read_setting_bool_value(TOTP_REQUIRE_LOCAL_LOGIN_KEY, None)
+            .await?
+            .unwrap_or(false);
 
         Ok(SecuritySettings {
             form_login_enabled,
             skip_login_for_local_ips,
             totp_require_config_step_up,
+            totp_require_local_login,
             totp_require_jellyfin_login,
         })
     }
@@ -155,6 +162,12 @@ impl AppUseCase {
             Some(actor.id.clone()),
         )
         .await?;
+        self.upsert_system_setting_json(
+            TOTP_REQUIRE_LOCAL_LOGIN_KEY,
+            &input.totp_require_local_login,
+            Some(actor.id.clone()),
+        )
+        .await?;
 
         self.emit_settings_saved(
             actor,
@@ -164,6 +177,7 @@ impl AppUseCase {
                 FORM_LOGIN_ENABLED_KEY.to_string(),
                 SKIP_LOGIN_FOR_LOCAL_IPS_KEY.to_string(),
                 TOTP_REQUIRE_CONFIG_STEP_UP_KEY.to_string(),
+                TOTP_REQUIRE_LOCAL_LOGIN_KEY.to_string(),
                 TOTP_REQUIRE_JELLYFIN_LOGIN_KEY.to_string(),
             ],
         )
@@ -173,6 +187,7 @@ impl AppUseCase {
             form_login_enabled: input.form_login_enabled,
             skip_login_for_local_ips: input.skip_login_for_local_ips,
             totp_require_config_step_up: input.totp_require_config_step_up,
+            totp_require_local_login: input.totp_require_local_login,
             totp_require_jellyfin_login: input.totp_require_jellyfin_login,
         })
     }

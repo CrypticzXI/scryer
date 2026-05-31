@@ -10,11 +10,11 @@ use std::{fmt, io::Write, path::Path, sync::Arc};
 
 use crate::{
     AppError, AppResult,
-    ports::{SubtitleSyncClient, SubtitleSyncJob},
+    ports::{SubtitleSyncClient, SubtitleSyncJob, SubtitleSyncReferenceSubtitle},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use scryer_plugin_sdk::{
-    AudioTranscodeCodec, SubtitleSyncAlignResponse, SubtitleSyncAlignSkipReason,
+    SubtitleSyncAlignResponse, SubtitleSyncAlignSkipReason, SubtitleSyncAudioCodec,
     SubtitleSyncOptions,
 };
 
@@ -42,6 +42,7 @@ pub const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID: &str = "enhanced-subtitle-sync";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtitleTimingFormat {
     Srt,
+    Vtt,
     Ass,
 }
 
@@ -49,6 +50,7 @@ impl SubtitleTimingFormat {
     pub fn label(self) -> &'static str {
         match self {
             Self::Srt => "srt",
+            Self::Vtt => "vtt",
             Self::Ass => "ass/ssa",
         }
     }
@@ -56,6 +58,7 @@ impl SubtitleTimingFormat {
     fn sdk_format(self, path: &Path) -> &'static str {
         match self {
             Self::Srt => "srt",
+            Self::Vtt => "vtt",
             Self::Ass => {
                 if path
                     .extension()
@@ -157,7 +160,8 @@ pub async fn sync_subtitle_with_policy(
     subtitle_path: &Path,
     policy: SyncPolicy,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_policy_and_plugin_sync(video_path, subtitle_path, policy, None, false).await
+    sync_subtitle_with_policy_and_plugin_sync(video_path, subtitle_path, policy, None, false, None)
+        .await
 }
 
 pub async fn sync_subtitle_with_policy_and_plugin_sync(
@@ -166,6 +170,7 @@ pub async fn sync_subtitle_with_policy_and_plugin_sync(
     policy: SyncPolicy,
     subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
     plugin_installed: bool,
+    reference_subtitle_path: Option<&Path>,
 ) -> AppResult<SyncResult> {
     if let Some(reason) = policy.skip_reason() {
         tracing::debug!(
@@ -184,6 +189,7 @@ pub async fn sync_subtitle_with_policy_and_plugin_sync(
         policy.max_offset_seconds,
         subtitle_sync_client,
         plugin_installed,
+        reference_subtitle_path,
     )
     .await
 }
@@ -194,7 +200,15 @@ pub async fn sync_subtitle(
     subtitle_path: &Path,
     max_offset_seconds: i64,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_plugin_sync(video_path, subtitle_path, max_offset_seconds, None, false).await
+    sync_subtitle_with_plugin_sync(
+        video_path,
+        subtitle_path,
+        max_offset_seconds,
+        None,
+        false,
+        None,
+    )
+    .await
 }
 
 pub async fn sync_subtitle_with_plugin_sync(
@@ -203,6 +217,7 @@ pub async fn sync_subtitle_with_plugin_sync(
     max_offset_seconds: i64,
     subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
     plugin_installed: bool,
+    reference_subtitle_path: Option<&Path>,
 ) -> AppResult<SyncResult> {
     let subtitle_content = std::fs::read(subtitle_path)
         .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
@@ -247,6 +262,7 @@ pub async fn sync_subtitle_with_plugin_sync(
         .and_then(|name| name.to_str())
         .map(str::to_string);
     let subtitle_encoding_hint = subtitle_encoding_hint(&subtitle_content);
+    let reference_subtitle = reference_subtitle_from_path(reference_subtitle_path, subtitle_path);
 
     let response = match subtitle_sync_client
         .align_subtitle(SubtitleSyncJob {
@@ -255,6 +271,7 @@ pub async fn sync_subtitle_with_plugin_sync(
             subtitle_format: subtitle_format.sdk_format(subtitle_path).to_string(),
             subtitle_file_name,
             subtitle_encoding_hint,
+            reference_subtitle,
             max_offset_seconds,
             sync_options: SubtitleSyncOptions::default(),
             expected_codec: targeted_audio_codec_for_path(video_path),
@@ -393,7 +410,7 @@ fn skipped_sync_result(
     }
 }
 
-fn targeted_audio_codec_for_path(video_path: &Path) -> Option<AudioTranscodeCodec> {
+fn targeted_audio_codec_for_path(video_path: &Path) -> Option<SubtitleSyncAudioCodec> {
     let analysis = scryer_mediainfo::analyze_file_with_options(
         video_path,
         scryer_mediainfo::AnalyzeOptions {
@@ -407,20 +424,23 @@ fn targeted_audio_codec_for_path(video_path: &Path) -> Option<AudioTranscodeCode
     )
 }
 
-fn targeted_audio_codec(codec: Option<&str>, profile: Option<&str>) -> Option<AudioTranscodeCodec> {
+fn targeted_audio_codec(
+    codec: Option<&str>,
+    profile: Option<&str>,
+) -> Option<SubtitleSyncAudioCodec> {
     let normalized = codec?.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "ac3" => Some(AudioTranscodeCodec::Ac3),
-        "eac3" => Some(AudioTranscodeCodec::Eac3),
-        "truehd" | "mlp" => Some(AudioTranscodeCodec::TrueHd),
+        "ac3" => Some(SubtitleSyncAudioCodec::Ac3),
+        "eac3" => Some(SubtitleSyncAudioCodec::Eac3),
+        "truehd" | "mlp" => Some(SubtitleSyncAudioCodec::TrueHd),
         "dts" => {
             if profile
                 .map(|profile| profile.to_ascii_lowercase().contains("dts-hd ma"))
                 .unwrap_or(false)
             {
-                Some(AudioTranscodeCodec::DtsHdMaCore)
+                Some(SubtitleSyncAudioCodec::DtsHdMaCore)
             } else {
-                Some(AudioTranscodeCodec::Dts)
+                Some(SubtitleSyncAudioCodec::Dts)
             }
         }
         _ => None,
@@ -450,10 +470,14 @@ fn detect_subtitle_format(path: &Path, content: &[u8]) -> Option<SubtitleTimingF
         .as_deref()
     {
         Some("srt") => return Some(SubtitleTimingFormat::Srt),
+        Some("vtt") => return Some(SubtitleTimingFormat::Vtt),
         Some("ass") | Some("ssa") => return Some(SubtitleTimingFormat::Ass),
         _ => {}
     }
 
+    if contains_ascii_case_insensitive(content, b"WEBVTT") {
+        return Some(SubtitleTimingFormat::Vtt);
+    }
     if content.windows(3).any(|window| window == b"-->") {
         return Some(SubtitleTimingFormat::Srt);
     }
@@ -464,6 +488,55 @@ fn detect_subtitle_format(path: &Path, content: &[u8]) -> Option<SubtitleTimingF
     }
 
     None
+}
+
+fn reference_subtitle_from_path(
+    reference_path: Option<&Path>,
+    target_path: &Path,
+) -> Option<SubtitleSyncReferenceSubtitle> {
+    let reference_path = reference_path?;
+    if same_path(reference_path, target_path) {
+        return None;
+    }
+
+    let content = match std::fs::read(reference_path) {
+        Ok(content) => content,
+        Err(error) => {
+            tracing::debug!(
+                path = %reference_path.display(),
+                error = %error,
+                "subtitle sync reference subtitle unavailable"
+            );
+            return None;
+        }
+    };
+    let Some(format) = detect_subtitle_format(reference_path, &content) else {
+        tracing::debug!(
+            path = %reference_path.display(),
+            "subtitle sync reference subtitle ignored: unsupported format"
+        );
+        return None;
+    };
+
+    Some(SubtitleSyncReferenceSubtitle {
+        encoding_hint: subtitle_encoding_hint(&content),
+        file_name: reference_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string),
+        format: format.sdk_format(reference_path).to_string(),
+        content,
+    })
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
@@ -500,6 +573,16 @@ mod tests {
     struct RewritingSubtitleSyncClient {
         expected_subtitle_content: Vec<u8>,
         rewritten_subtitle_content: Vec<u8>,
+        expected_subtitle_format: &'static str,
+        expected_subtitle_file_name: &'static str,
+        expected_reference_subtitle: Option<ExpectedReferenceSubtitle>,
+    }
+
+    #[derive(Debug)]
+    struct ExpectedReferenceSubtitle {
+        content: Vec<u8>,
+        format: &'static str,
+        file_name: &'static str,
     }
 
     #[async_trait::async_trait]
@@ -509,9 +592,22 @@ mod tests {
             job: crate::ports::SubtitleSyncJob,
         ) -> AppResult<SubtitleSyncAlignResponse> {
             assert_eq!(job.subtitle_content, self.expected_subtitle_content);
-            assert_eq!(job.subtitle_format, "srt");
-            assert_eq!(job.subtitle_file_name.as_deref(), Some("subtitle.srt"));
+            assert_eq!(job.subtitle_format, self.expected_subtitle_format);
+            assert_eq!(
+                job.subtitle_file_name.as_deref(),
+                Some(self.expected_subtitle_file_name)
+            );
             assert_eq!(job.subtitle_encoding_hint.as_deref(), Some("utf-8"));
+            match (&job.reference_subtitle, &self.expected_reference_subtitle) {
+                (Some(actual), Some(expected)) => {
+                    assert_eq!(actual.content, expected.content);
+                    assert_eq!(actual.format, expected.format);
+                    assert_eq!(actual.file_name.as_deref(), Some(expected.file_name));
+                    assert_eq!(actual.encoding_hint.as_deref(), Some("utf-8"));
+                }
+                (None, None) => {}
+                other => panic!("unexpected reference subtitle: {other:?}"),
+            }
             assert_eq!(job.sync_options.start_seconds, 0);
             assert_eq!(job.sync_options.max_subtitle_duration_ms, 10_000);
             assert!(job.sync_options.precise_framerate_search);
@@ -521,7 +617,7 @@ mod tests {
                 offset_ms: -1000,
                 rewritten_subtitle: Some(scryer_plugin_sdk::SubtitleSyncRewrittenSubtitle {
                     content_base64: BASE64.encode(&self.rewritten_subtitle_content),
-                    format: "srt".to_string(),
+                    format: self.expected_subtitle_format.to_string(),
                 }),
                 score: Some(42.0),
                 selected_framerate_ratio: Some(1.0),
@@ -543,6 +639,10 @@ mod tests {
             Some(SubtitleTimingFormat::Srt)
         );
         assert_eq!(
+            detect_subtitle_format(Path::new("subtitle.vtt"), b""),
+            Some(SubtitleTimingFormat::Vtt)
+        );
+        assert_eq!(
             detect_subtitle_format(Path::new("subtitle.ass"), b""),
             Some(SubtitleTimingFormat::Ass)
         );
@@ -552,6 +652,13 @@ mod tests {
                 b"1\n00:00:01,000 --> 00:00:02,000\nHello\n"
             ),
             Some(SubtitleTimingFormat::Srt)
+        );
+        assert_eq!(
+            detect_subtitle_format(
+                Path::new("subtitle"),
+                b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n"
+            ),
+            Some(SubtitleTimingFormat::Vtt)
         );
         assert_eq!(
             detect_subtitle_format(Path::new("subtitle"), b"[Events]\nDialogue: 0,0:00:01.00"),
@@ -581,23 +688,23 @@ mod tests {
     fn targeted_audio_codec_routes_only_ffmpeg_wasm_codecs() {
         assert_eq!(
             targeted_audio_codec(Some("ac3"), None),
-            Some(AudioTranscodeCodec::Ac3)
+            Some(SubtitleSyncAudioCodec::Ac3)
         );
         assert_eq!(
             targeted_audio_codec(Some("eac3"), None),
-            Some(AudioTranscodeCodec::Eac3)
+            Some(SubtitleSyncAudioCodec::Eac3)
         );
         assert_eq!(
             targeted_audio_codec(Some("truehd"), None),
-            Some(AudioTranscodeCodec::TrueHd)
+            Some(SubtitleSyncAudioCodec::TrueHd)
         );
         assert_eq!(
             targeted_audio_codec(Some("dts"), Some("DTS-HD MA")),
-            Some(AudioTranscodeCodec::DtsHdMaCore)
+            Some(SubtitleSyncAudioCodec::DtsHdMaCore)
         );
         assert_eq!(
             targeted_audio_codec(Some("dts"), Some("DTS Core")),
-            Some(AudioTranscodeCodec::Dts)
+            Some(SubtitleSyncAudioCodec::Dts)
         );
         assert_eq!(targeted_audio_codec(Some("aac"), None), None);
         assert_eq!(targeted_audio_codec(Some("flac"), None), None);
@@ -639,14 +746,96 @@ mod tests {
             Some(Arc::new(RewritingSubtitleSyncClient {
                 expected_subtitle_content: original,
                 rewritten_subtitle_content: rewritten.clone(),
+                expected_subtitle_format: "srt",
+                expected_subtitle_file_name: "subtitle.srt",
+                expected_reference_subtitle: None,
             })),
             true,
+            None,
         )
         .await
         .unwrap();
 
         assert!(result.applied);
         assert_eq!(result.offset_ms, -1000);
+        assert_eq!(std::fs::read(&subtitle_path).unwrap(), rewritten);
+    }
+
+    #[tokio::test]
+    async fn sync_routes_and_replaces_vtt_subtitles() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let subtitle_path = temp_dir.path().join("subtitle.vtt");
+        let original = b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n\n00:00:03.000 --> 00:00:04.000\nWorld\n".to_vec();
+        let rewritten = b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n\n00:00:02.000 --> 00:00:03.000\nWorld\n".to_vec();
+        std::fs::write(&subtitle_path, &original).unwrap();
+
+        let result = sync_subtitle_with_policy_and_plugin_sync(
+            Path::new("/tmp/video.mkv"),
+            &subtitle_path,
+            SyncPolicy {
+                enabled: true,
+                forced: false,
+                score: Some(10),
+                threshold: Some(90),
+                max_offset_seconds: 60,
+            },
+            Some(Arc::new(RewritingSubtitleSyncClient {
+                expected_subtitle_content: original,
+                rewritten_subtitle_content: rewritten.clone(),
+                expected_subtitle_format: "vtt",
+                expected_subtitle_file_name: "subtitle.vtt",
+                expected_reference_subtitle: None,
+            })),
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.applied);
+        assert_eq!(result.format, Some(SubtitleTimingFormat::Vtt));
+        assert_eq!(std::fs::read(&subtitle_path).unwrap(), rewritten);
+    }
+
+    #[tokio::test]
+    async fn sync_sends_reference_subtitle_when_available() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let subtitle_path = temp_dir.path().join("subtitle.srt");
+        let reference_path = temp_dir.path().join("reference.vtt");
+        let original = b"1\n00:00:01,000 --> 00:00:02,000\nHello\n".to_vec();
+        let reference = b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n\n00:00:02.000 --> 00:00:03.000\nWorld\n".to_vec();
+        let rewritten = b"1\n00:00:00,000 --> 00:00:01,000\nHello\n".to_vec();
+        std::fs::write(&subtitle_path, &original).unwrap();
+        std::fs::write(&reference_path, &reference).unwrap();
+
+        let result = sync_subtitle_with_policy_and_plugin_sync(
+            Path::new("/tmp/video.mkv"),
+            &subtitle_path,
+            SyncPolicy {
+                enabled: true,
+                forced: false,
+                score: Some(10),
+                threshold: Some(90),
+                max_offset_seconds: 60,
+            },
+            Some(Arc::new(RewritingSubtitleSyncClient {
+                expected_subtitle_content: original,
+                rewritten_subtitle_content: rewritten.clone(),
+                expected_subtitle_format: "srt",
+                expected_subtitle_file_name: "subtitle.srt",
+                expected_reference_subtitle: Some(ExpectedReferenceSubtitle {
+                    content: reference,
+                    format: "vtt",
+                    file_name: "reference.vtt",
+                }),
+            })),
+            true,
+            Some(&reference_path),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.applied);
         assert_eq!(std::fs::read(&subtitle_path).unwrap(), rewritten);
     }
 
@@ -671,8 +860,12 @@ mod tests {
             Some(Arc::new(RewritingSubtitleSyncClient {
                 expected_subtitle_content: original,
                 rewritten_subtitle_content: rewritten.clone(),
+                expected_subtitle_format: "srt",
+                expected_subtitle_file_name: "subtitle.srt",
+                expected_reference_subtitle: None,
             })),
             true,
+            None,
         )
         .await
         .unwrap();
@@ -728,6 +921,7 @@ mod tests {
             },
             Some(Arc::new(MissingRewriteClient)),
             true,
+            None,
         )
         .await
         .expect_err("missing rewrite should fail");
@@ -756,6 +950,7 @@ mod tests {
             },
             None,
             false,
+            None,
         )
         .await
         .unwrap();

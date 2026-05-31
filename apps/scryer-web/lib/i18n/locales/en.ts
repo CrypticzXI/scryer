@@ -99,12 +99,19 @@ const en: LocaleDictionary = {
   "settings.securityEnableFormLogin": "Form login",
   "settings.securityEnableFormLoginHelp":
     "When enabled, Scryer requires an authenticated user session. When disabled, requests resolve as the default admin user.",
+  "settings.manageMediaServerLogins": "Manage media server logins",
+  "settings.manageMediaServerLoginsDescription":
+    "Configure Jellyfin and Plex login, linking, and auto-onboarding on each media server connection.",
+  "settings.openMediaServers": "Open Media Servers",
   "settings.securitySkipLocalIps": "Skip for local IPs",
   "settings.securitySkipLocalIpsHelp":
     "When enabled, callers from 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 can access Scryer without signing in.",
   "settings.securityTotpConfigStepUp": "Require TOTP for settings",
   "settings.securityTotpConfigStepUpHelp":
     "When enabled, system and facet configuration changes require a recent TOTP verification.",
+  "settings.securityTotpLocalLogin": "Require MFA for local user logins",
+  "settings.securityTotpLocalLoginHelp":
+    "When enabled, Scryer username and password sign-in requires Scryer one-time codes. Passkeys are unchanged.",
   "settings.securityTotpJellyfinLogin": "Require TOTP for Jellyfin login",
   "settings.securityTotpJellyfinLoginHelp":
     "When enabled, Jellyfin password passthrough sign-in requires the user's Scryer TOTP code.",
@@ -2094,11 +2101,24 @@ const en: LocaleDictionary = {
     "Plex, passkeys, and other external connections will be available here.",
   "profile.linkedAccounts": "Linked accounts",
   "profile.linkedAccountsDescription":
-    "Manage Plex and Jellyfin identities that are allowed to sign in as this Scryer account.",
+    "Manage Plex and Jellyfin identities linked to this Scryer account.",
   "profile.linkedAccountsEmpty": "No external accounts are linked yet.",
   "profile.linkedAccountsLoadFailed": "Failed to load linked accounts.",
+  "profile.linkAccountLoadFailed": "Failed to load link options.",
   "profile.linkedAccountConnection": "Connection",
+  "profile.linkedAccountUnknownConnection": "Unknown connection",
   "profile.linkedAccountStatus": "Status",
+  "profile.linkJellyfinAccount": "Link Jellyfin",
+  "profile.linkPlexAccount": "Link Plex",
+  "profile.linkAccountConnection": "Connection",
+  "profile.linkAccountUsername": "Username",
+  "profile.linkAccountPassword": "Password",
+  "profile.linkAccountSubmit": "Link account",
+  "profile.linkAccountCancel": "Cancel",
+  "profile.linkAccountNoConnections": "No eligible connection available.",
+  "profile.linkAccountLinked": "External account linked.",
+  "profile.linkAccountFailed": "Failed to link external account.",
+  "profile.signInWithPlexToLink": "Sign in with Plex",
   "profile.unlinkAccount": "Unlink",
   "profile.linkedAccountUnlinked": "Linked account removed.",
   "profile.linkedAccountUnlinkFailed": "Failed to unlink account.",
@@ -2126,13 +2146,13 @@ const en: LocaleDictionary = {
   "auth.passkeyUnsupported": "This browser does not support passkeys.",
   "auth.passkeyCancelled": "Passkey request was cancelled.",
   "auth.passkeyFailed": "Passkey request failed.",
-  "auth.totpCodeRequired": "Enter your Scryer one-time code to finish Jellyfin sign-in.",
+  "auth.totpCodeRequired": "Enter your Scryer one-time code to finish signing in.",
   "auth.mfaSetupTitle": "Set up Scryer MFA",
   "auth.mfaSetupDescription":
-    "Your Jellyfin sign-in worked. Set up Scryer one-time codes now so future Jellyfin sign-ins can be verified.",
+    "Your sign-in worked. Set up Scryer one-time codes now so future sign-ins can be verified.",
   "auth.mfaSetupStartFailed": "Could not start MFA setup.",
   "auth.mfaSetupCompleteFailed": "Could not complete MFA setup.",
-  "auth.mfaSetupSkip": "Skip for now",
+  "auth.mfaSetupCancel": "Return to sign in",
   "auth.mfaSetupRestart": "Restart MFA setup",
   "auth.mfaRecoveryCodesDescription":
     "Save these recovery codes somewhere safe. Each code can be used once if you cannot access your authenticator.",

@@ -7,13 +7,14 @@ use super::*;
 use crate::services::AppAssembly;
 use crate::services::RuntimeFeature;
 use crate::types::{
-    BackupDownloadTicket, BackupDownloadTokenClaims, JwtLibraryPermissionClaim,
-    ReleaseCandidateTokenClaims,
+    AuthenticatedTokenClaims, BackupDownloadTicket, BackupDownloadTokenClaims,
+    JwtLibraryPermissionClaim, JwtSessionScope, ReleaseCandidateTokenClaims,
 };
 
 impl AppUseCase {
     const BACKUP_DOWNLOAD_TOKEN_KIND: &'static str = "backup_download_v1";
     const BACKUP_DOWNLOAD_TOKEN_TTL_SECONDS: i64 = 5 * 60;
+    const MFA_ENROLLMENT_TOKEN_TTL_SECONDS: i64 = 10 * 60;
     const RELEASE_CANDIDATE_TOKEN_KIND: &'static str = "release_candidate_v1";
     const RELEASE_CANDIDATE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
@@ -271,6 +272,14 @@ impl AppUseCase {
         self.auth.access_ttl_seconds as i64
     }
 
+    pub fn mfa_enrollment_token_lifetime(&self) -> i64 {
+        Self::MFA_ENROLLMENT_TOKEN_TTL_SECONDS
+    }
+
+    pub fn totp_step_up_verified_until(&self) -> chrono::DateTime<Utc> {
+        Utc::now() + Duration::minutes(super::totp::TOTP_STEP_UP_TTL_MINUTES)
+    }
+
     pub async fn issue_access_token(&self, actor: &User) -> AppResult<String> {
         self.issue_access_token_with_mfa(actor, None).await
     }
@@ -280,6 +289,32 @@ impl AppUseCase {
         actor: &User,
         mfa_verified_until: Option<chrono::DateTime<Utc>>,
     ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_and_scope(
+            actor,
+            mfa_verified_until,
+            JwtSessionScope::Full,
+            self.token_lifetime(),
+        )
+        .await
+    }
+
+    pub async fn issue_mfa_enrollment_token(&self, actor: &User) -> AppResult<String> {
+        self.issue_access_token_with_mfa_and_scope(
+            actor,
+            None,
+            JwtSessionScope::MfaEnrollment,
+            self.mfa_enrollment_token_lifetime(),
+        )
+        .await
+    }
+
+    async fn issue_access_token_with_mfa_and_scope(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        auth_scope: JwtSessionScope,
+        ttl_seconds: i64,
+    ) -> AppResult<String> {
         let actor = self.load_user_for_auth_payload(actor).await?;
         let signing_seed = actor
             .password_hash
@@ -288,7 +323,7 @@ impl AppUseCase {
 
         let now = Utc::now();
         let iat = now.timestamp();
-        let exp = (now + Duration::seconds(self.token_lifetime())).timestamp();
+        let exp = (now + Duration::seconds(ttl_seconds)).timestamp();
 
         let app_permissions = Self::canonical_app_permission_claims(&actor);
         let library_permissions = Self::canonical_library_permission_claims(&actor);
@@ -302,6 +337,7 @@ impl AppUseCase {
             app_permissions,
             library_permissions,
             mfa_verified_until: mfa_verified_until.map(|value| value.timestamp()),
+            auth_scope,
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -673,7 +709,7 @@ impl AppUseCase {
     pub async fn authenticate_token_with_claims(
         &self,
         token: &str,
-    ) -> AppResult<(User, Option<i64>)> {
+    ) -> AppResult<(User, AuthenticatedTokenClaims)> {
         // Decode claims without signature verification to extract the subject (user ID).
         let unverified = jsonwebtoken::dangerous::insecure_decode::<JwtClaims>(token)
             .map_err(|err| AppError::Unauthorized(format!("malformed token: {err}")))?;
@@ -705,7 +741,13 @@ impl AppUseCase {
             .await?
             .map(|mut user| {
                 user.password_hash = None;
-                (user, claims.mfa_verified_until)
+                (
+                    user,
+                    AuthenticatedTokenClaims {
+                        mfa_verified_until: claims.mfa_verified_until,
+                        session_scope: claims.auth_scope,
+                    },
+                )
             })
             .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))
     }

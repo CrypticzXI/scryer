@@ -130,10 +130,13 @@ impl SqliteServices {
             AppError::Repository(format!("cannot open database at {}: {err}", path.as_ref(),))
         })?;
 
-        let migration_encryption_key =
+        let migration_encryption_key = if is_memory {
+            None
+        } else {
             load_existing_sqlite_migration_encryption_key(&pool, data_dir)
                 .await
-                .map_err(AppError::Repository)?;
+                .map_err(AppError::Repository)?
+        };
         crate::migrations::run_migrations_with_hook_context(
             &pool,
             migration_mode,

@@ -1,4 +1,5 @@
 import type * as React from "react";
+import { Link } from "react-router-dom";
 import { InfoHelp } from "@/components/common/info-help";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ type SettingsSecuritySectionProps = {
   onCancelDisable: () => void;
   onSkipLocalIpsChange: (enabled: boolean) => void;
   onTotpConfigStepUpChange: (enabled: boolean) => void;
+  onTotpLocalLoginChange: (enabled: boolean) => void;
   onTotpJellyfinLoginChange: (enabled: boolean) => void;
   externalAccountInvitesPanel: React.ReactNode;
 };
@@ -49,6 +51,7 @@ export function SettingsSecuritySection({
   onCancelDisable,
   onSkipLocalIpsChange,
   onTotpConfigStepUpChange,
+  onTotpLocalLoginChange,
   onTotpJellyfinLoginChange,
   externalAccountInvitesPanel,
 }: SettingsSecuritySectionProps) {
@@ -112,7 +115,7 @@ export function SettingsSecuritySection({
                   />
                 </div>
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-3">
                 <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
                   <Checkbox
                     checked={settings.totpRequireConfigStepUp}
@@ -131,6 +134,28 @@ export function SettingsSecuritySection({
                       <InfoHelp
                         ariaLabel={t("settings.securityTotpConfigStepUp")}
                         text={t("settings.securityTotpConfigStepUpHelp")}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
+                  <Checkbox
+                    checked={settings.totpRequireLocalLogin}
+                    disabled={busy}
+                    id="security-totp-local-login"
+                    onCheckedChange={(checked) => onTotpLocalLoginChange(checked === true)}
+                  />
+                  <div className="grid gap-1">
+                    <div className="flex items-center gap-2">
+                      <Label
+                        className="cursor-pointer text-sm font-medium"
+                        htmlFor="security-totp-local-login"
+                      >
+                        {t("settings.securityTotpLocalLogin")}
+                      </Label>
+                      <InfoHelp
+                        ariaLabel={t("settings.securityTotpLocalLogin")}
+                        text={t("settings.securityTotpLocalLoginHelp")}
                       />
                     </div>
                   </div>
@@ -159,6 +184,24 @@ export function SettingsSecuritySection({
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card/50 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">
+                {t("settings.manageMediaServerLogins")}
+              </h4>
+              <p className="max-w-2xl text-xs text-muted-foreground">
+                {t("settings.manageMediaServerLoginsDescription")}
+              </p>
+            </div>
+            <Button asChild variant="outline" className="w-fit shrink-0">
+              <Link to="/settings/media-servers">
+                {t("settings.openMediaServers")}
+              </Link>
+            </Button>
           </div>
         </div>
 

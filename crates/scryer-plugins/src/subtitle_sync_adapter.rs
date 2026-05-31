@@ -9,7 +9,7 @@ use crate::loader::build_plugin;
 use crate::types::{
     AudioStreamSelector, EXPORT_SUBSYNC_ALIGN, PluginDescriptor, SubtitleSyncAlignInputRef,
     SubtitleSyncAlignRequest, SubtitleSyncAlignResponse, SubtitleSyncInputSubtitle,
-    decode_plugin_result,
+    SubtitleSyncReferenceSubtitle, decode_plugin_result,
 };
 
 const GUEST_INPUT_ROOT: &str = "/input";
@@ -50,6 +50,14 @@ impl SubtitleSyncClient for WasmSubtitleSyncClient {
                 file_name: job.subtitle_file_name,
                 encoding_hint: job.subtitle_encoding_hint,
             },
+            reference_subtitle: job.reference_subtitle.map(|subtitle| {
+                SubtitleSyncReferenceSubtitle {
+                    content_base64: BASE64.encode(&subtitle.content),
+                    format: subtitle.format,
+                    file_name: subtitle.file_name,
+                    encoding_hint: subtitle.encoding_hint,
+                }
+            }),
             subtitle_spans: Vec::new(),
             max_offset_seconds: job.max_offset_seconds,
             sync_options: Some(job.sync_options),

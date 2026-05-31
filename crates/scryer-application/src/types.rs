@@ -1189,6 +1189,20 @@ pub struct TotpEnrollmentComplete {
     pub recovery_codes: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JwtSessionScope {
+    #[default]
+    Full,
+    MfaEnrollment,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AuthenticatedTokenClaims {
+    pub mfa_verified_until: Option<i64>,
+    pub session_scope: JwtSessionScope,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct JwtClaims {
     pub sub: String,
@@ -1203,6 +1217,8 @@ pub(crate) struct JwtClaims {
     pub library_permissions: Vec<JwtLibraryPermissionClaim>,
     #[serde(default, rename = "mfaVerifiedUntil")]
     pub mfa_verified_until: Option<i64>,
+    #[serde(default, rename = "authScope")]
+    pub auth_scope: JwtSessionScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
