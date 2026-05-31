@@ -1065,15 +1065,26 @@ fn build_test_router(
     )
 }
 
-/// Minimal GraphQL handler that replicates auth-disabled default-user injection.
+/// Minimal GraphQL handler that replicates default-user auth injection.
 async fn test_graphql_handler(
     State((app, schema, auth_runtime)): State<(AppUseCase, ApiSchema, AuthRuntimeStateHandle)>,
     headers: HeaderMap,
     req: GraphQLRequest,
 ) -> Response {
-    let actor = if auth_runtime.snapshot().effective_form_login_enabled {
+    let snapshot = auth_runtime.snapshot();
+    let actor = if snapshot.effective_form_login_enabled {
         if let Some(token) = authorization_token_from_headers(&headers) {
             app.authenticate_token_with_claims(token).await.ok()
+        } else if snapshot.skip_login_for_local_ips {
+            app.find_or_create_default_user().await.ok().map(|user| {
+                (
+                    user,
+                    AuthenticatedTokenClaims {
+                        mfa_verified_until: Some(i64::MAX),
+                        ..AuthenticatedTokenClaims::default()
+                    },
+                )
+            })
         } else {
             None
         }

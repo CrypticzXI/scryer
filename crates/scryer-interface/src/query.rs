@@ -2,8 +2,8 @@ use async_graphql::{Context, Error, MergedObject, Object, Result as GqlResult};
 
 use chrono::Utc;
 use scryer_application::{
-    DownloadImportFilter, MediaRequestCounts, PendingImportCounts, SCRYER_VERSION,
-    TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
+    AppError, DownloadImportFilter, JwtSessionScope, MediaRequestCounts, PendingImportCounts,
+    SCRYER_VERSION, TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
     supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
@@ -12,7 +12,7 @@ use scryer_interface_settings::SettingsQueries;
 
 use crate::context::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
-    current_user_from_ctx, require_app_permission, to_gql_error,
+    current_user_from_ctx, mfa_verification_from_ctx, require_app_permission, to_gql_error,
 };
 use crate::mappers::{
     from_activity_event, from_backup_info, from_delete_preview, from_domain_event,
@@ -1276,6 +1276,12 @@ impl SystemQueries {
     }
 
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
+        if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
+            return Err(to_gql_error(AppError::MfaEnrollmentRequired(
+                "MFA enrollment must be completed before accessing Scryer".into(),
+            )));
+        }
+
         match current_user_from_ctx(ctx) {
             Some(user) => {
                 let app = app_from_ctx(ctx)?;

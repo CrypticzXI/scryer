@@ -3,6 +3,7 @@
 mod common;
 
 use async_trait::async_trait;
+use aws_lc_rs::hmac;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
@@ -12,7 +13,8 @@ use scryer_application::{
     JwtSessionScope, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease,
     PendingReleaseRepository, ReleaseDecision, ScopedExternalId, ShowRepository,
     TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
-    TitleRepository, WantedItem, WantedItemRepository, start_background_download_delete_poller,
+    TitleRepository, TotpRepository, WantedItem, WantedItemRepository,
+    start_background_download_delete_poller,
 };
 use scryer_domain::{
     AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
@@ -24,6 +26,7 @@ use scryer_domain::{
 use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
     DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, SettingDefinitionSeed,
+    TotpStore,
 };
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -32,6 +35,48 @@ use wiremock::matchers::{body_string_contains, method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
 use common::{TestContext, load_fixture};
+
+const TEST_BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+fn test_base32_decode_no_pad(input: &str) -> Vec<u8> {
+    let mut buffer = 0_u32;
+    let mut bits = 0_u8;
+    let mut decoded = Vec::new();
+
+    for ch in input
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '=')
+    {
+        let upper = ch.to_ascii_uppercase() as u8;
+        let value = TEST_BASE32_ALPHABET
+            .iter()
+            .position(|candidate| *candidate == upper)
+            .expect("valid test base32 secret") as u32;
+        buffer = (buffer << 5) | value;
+        bits += 5;
+        while bits >= 8 {
+            bits -= 8;
+            decoded.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+
+    decoded
+}
+
+fn test_totp_code(secret_base32: &str) -> String {
+    let secret = test_base32_decode_no_pad(secret_base32);
+    let step = Utc::now().timestamp() / 30;
+    let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, &secret);
+    let tag = hmac::sign(&key, &(step as u64).to_be_bytes());
+    let digest = tag.as_ref();
+    let offset = usize::from(digest[digest.len() - 1] & 0x0f);
+    let value = (u32::from(digest[offset] & 0x7f) << 24)
+        | (u32::from(digest[offset + 1]) << 16)
+        | (u32::from(digest[offset + 2]) << 8)
+        | u32::from(digest[offset + 3]);
+
+    format!("{:06}", value % 1_000_000)
+}
 
 /// Execute a GraphQL operation directly against the schema, without going
 /// through the HTTP test server.  This gives full control over what data
@@ -10160,8 +10205,15 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
         .expect("issue enrollment token");
 
     let me = gql_with_token(&ctx, "{ me { id username } }", json!({}), &token).await;
-    assert_no_errors(&me);
-    assert!(me["data"]["me"].is_null());
+    let errors = me["errors"].as_array().expect("expected GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected me query to reject enrollment scope: {me}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "MFA_ENROLLMENT_REQUIRED",
+        "unexpected enrollment-scope me rejection shape: {me}"
+    );
 
     let enrollment_start = gql_with_token(
         &ctx,
@@ -10217,6 +10269,49 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
         errors[0]["extensions"]["code"], "MFA_ENROLLMENT_REQUIRED",
         "unexpected enrollment step-up rejection shape: {step_up}"
     );
+}
+
+#[tokio::test]
+async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    ctx.app.find_or_create_default_user().await.unwrap();
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.form_login_enabled",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.skip_login_for_local_ips",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.settings_store
+        .upsert_setting_value(
+            "system",
+            "auth.totp.require_config_step_up",
+            None,
+            "true",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.auth_runtime.apply_saved_security_settings(true, true);
+
+    set_folder_template(&ctx, "movie", "{title} ({year})").await;
 }
 
 #[tokio::test]
@@ -13497,4 +13592,209 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
         .await
         .expect("authenticate enrollment token");
     assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+
+    let enrollment_start = gql_with_token(
+        &ctx,
+        r#"mutation { totpEnrollmentStart { challengeId secretBase32 } }"#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_no_errors(&enrollment_start);
+    let challenge_id = enrollment_start["data"]["totpEnrollmentStart"]["challengeId"]
+        .as_str()
+        .expect("challenge id");
+    let secret_base32 = enrollment_start["data"]["totpEnrollmentStart"]["secretBase32"]
+        .as_str()
+        .expect("secret");
+    let code = test_totp_code(secret_base32);
+
+    let complete = gql_with_token(
+        &ctx,
+        r#"
+        mutation CompleteLoginMfaEnrollment($input: TotpEnrollmentCompleteInput!) {
+          completeLoginMfaEnrollment(input: $input) {
+            recoveryCodes
+            login {
+              token
+              mfaEnrollmentRequired
+              mfaVerifiedUntil
+              user { username }
+            }
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "challengeId": challenge_id,
+                "code": code
+            }
+        }),
+        token,
+    )
+    .await;
+    assert_no_errors(&complete);
+    let complete_payload = &complete["data"]["completeLoginMfaEnrollment"];
+    assert!(
+        complete_payload["recoveryCodes"]
+            .as_array()
+            .is_some_and(|codes| !codes.is_empty()),
+        "login MFA enrollment should return recovery codes: {complete}"
+    );
+    let login_payload = &complete_payload["login"];
+    assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
+    assert_eq!(login_payload["user"]["username"], "localmfa");
+    let full_token = login_payload["token"].as_str().expect("full token");
+    let (_user, full_claims) = ctx
+        .app
+        .authenticate_token_with_claims(full_token)
+        .await
+        .expect("authenticate full token");
+    assert_eq!(full_claims.session_scope, JwtSessionScope::Full);
+    assert!(full_claims.mfa_verified_until.is_some());
+}
+
+#[tokio::test]
+async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_code() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let create_body = schema_exec(
+        &ctx,
+        r#"mutation { createUser(input: { username: "localmfa_totp", password: "s3cr3t!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&create_body);
+
+    let user = ctx
+        .app
+        .authenticate_credentials("localmfa_totp", "s3cr3t!")
+        .await
+        .expect("authenticate local user");
+    let enrollment = ctx
+        .app
+        .totp_enrollment_start(&user)
+        .await
+        .expect("start TOTP enrollment");
+    let enrollment_code = test_totp_code(&enrollment.secret_base32);
+    ctx.app
+        .totp_enrollment_complete(&user, &enrollment.challenge_id, &enrollment_code)
+        .await
+        .expect("complete TOTP enrollment");
+
+    let totp_store = TotpStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    let mut credential = totp_store
+        .get_credential_for_user(&user.id)
+        .await
+        .expect("load TOTP credential")
+        .expect("TOTP credential");
+    credential.last_accepted_step = None;
+    totp_store
+        .upsert_credential(credential)
+        .await
+        .expect("reset accepted TOTP step");
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            skipLoginForLocalIps: false
+            totpRequireConfigStepUp: false
+            totpRequireLocalLogin: true
+            totpRequireJellyfinLogin: false
+          }) {
+            effectiveFormLoginEnabled
+            totpRequireLocalLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&update);
+
+    let missing_code = schema_exec(
+        &ctx,
+        r#"
+        mutation {
+          login(input: { username: "localmfa_totp", password: "s3cr3t!" }) {
+            token
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    let errors = missing_code["errors"]
+        .as_array()
+        .expect("expected missing-code GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected local password login to require TOTP: {missing_code}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "TOTP_STEP_UP_REQUIRED",
+        "unexpected missing-code rejection shape: {missing_code}"
+    );
+
+    let invalid_code = schema_exec(
+        &ctx,
+        r#"
+        mutation {
+          login(input: { username: "localmfa_totp", password: "s3cr3t!", totpCode: "abc123" }) {
+            token
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    let errors = invalid_code["errors"]
+        .as_array()
+        .expect("expected invalid-code GraphQL errors");
+    assert!(
+        !errors.is_empty(),
+        "expected invalid TOTP code to be rejected: {invalid_code}"
+    );
+    assert_eq!(
+        errors[0]["extensions"]["code"], "TOTP_INVALID_CODE",
+        "unexpected invalid-code rejection shape: {invalid_code}"
+    );
+
+    let valid_code = test_totp_code(&enrollment.secret_base32);
+    let valid_login = schema_exec(
+        &ctx,
+        &format!(
+            r#"
+            mutation {{
+              login(input: {{ username: "localmfa_totp", password: "s3cr3t!", totpCode: "{valid_code}" }}) {{
+                token
+                mfaEnrollmentRequired
+                mfaVerifiedUntil
+                user {{ username }}
+              }}
+            }}
+            "#
+        ),
+        None,
+    )
+    .await;
+    assert_no_errors(&valid_login);
+    let payload = &valid_login["data"]["login"];
+    assert_eq!(payload["mfaEnrollmentRequired"], false);
+    assert!(payload["mfaVerifiedUntil"].as_str().is_some());
+    assert_eq!(payload["user"]["username"], "localmfa_totp");
+    let token = payload["token"].as_str().expect("full token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate full token");
+    assert_eq!(claims.session_scope, JwtSessionScope::Full);
+    assert!(claims.mfa_verified_until.is_some());
 }

@@ -9,7 +9,7 @@ pub use scryer_interface_core::{
     RestoreDatastoreHandle, RestoreMigrationMode, RestoreRestartHandle,
     RestoreSqliteDatastoreRequest, actor_from_ctx, actor_has_any_library_permission,
     actor_has_app_permission, app_from_ctx, auth_runtime_from_ctx, current_user_from_ctx,
-    require_app_permission, restore_context_from_ctx, to_gql_error,
+    mfa_verification_from_ctx, require_app_permission, restore_context_from_ctx, to_gql_error,
 };
 
 pub type ApiSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;

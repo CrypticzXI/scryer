@@ -268,6 +268,10 @@ impl AppUseCase {
             return Ok(());
         }
 
+        if mfa_verified_until.is_some_and(|expires_at| expires_at > Utc::now().timestamp()) {
+            return Ok(());
+        }
+
         let credential = self
             .services
             .identity
@@ -278,10 +282,6 @@ impl AppUseCase {
             return Err(AppError::TotpEnrollmentRequired(
                 "TOTP enrollment is required before changing system configuration".into(),
             ));
-        }
-
-        if mfa_verified_until.is_some_and(|expires_at| expires_at > Utc::now().timestamp()) {
-            return Ok(());
         }
 
         Err(AppError::TotpStepUpRequired(

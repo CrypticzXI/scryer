@@ -7,7 +7,7 @@ use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
-use scryer_application::{AppError, AppUseCase, AuthenticatedTokenClaims};
+use scryer_application::{AppError, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope};
 use scryer_domain::AppPermission;
 use scryer_interface::context::{AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification};
 use std::net::{IpAddr, SocketAddr};
@@ -507,6 +507,16 @@ fn mfa_bypass_token_claims() -> AuthenticatedTokenClaims {
     }
 }
 
+fn ensure_full_session_claims(claims: &AuthenticatedTokenClaims) -> Result<(), AppError> {
+    if claims.session_scope == JwtSessionScope::MfaEnrollment {
+        return Err(AppError::MfaEnrollmentRequired(
+            "MFA enrollment must be completed before accessing Scryer".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn authorization_token_from_headers(headers: &HeaderMap) -> Result<Option<&str>, AppError> {
     let Some(auth_header) = headers.get(header::AUTHORIZATION) else {
         return Ok(None);
@@ -548,8 +558,11 @@ pub(crate) async fn resolve_actor_with_app_permission(
         resolve_default_user_required(app_use_case).await?
     } else {
         match authorization_token_from_headers(headers) {
-            Ok(Some(token)) => match app_use_case.authenticate_token(token).await {
-                Ok(actor) => actor,
+            Ok(Some(token)) => match app_use_case.authenticate_token_with_claims(token).await {
+                Ok((actor, claims)) => {
+                    ensure_full_session_claims(&claims)?;
+                    actor
+                }
                 Err(_) if local_bypass => resolve_default_user_required(app_use_case).await?,
                 Err(error) => return Err(error),
             },
@@ -993,6 +1006,18 @@ mod tests {
             claims.session_scope,
             scryer_application::JwtSessionScope::Full
         );
+    }
+
+    #[test]
+    fn enrollment_scoped_claims_are_not_full_admin_sessions() {
+        let claims = AuthenticatedTokenClaims {
+            session_scope: JwtSessionScope::MfaEnrollment,
+            ..AuthenticatedTokenClaims::default()
+        };
+
+        let error = ensure_full_session_claims(&claims).expect_err("enrollment scope rejected");
+
+        assert!(matches!(error, AppError::MfaEnrollmentRequired(_)));
     }
 
     #[test]
