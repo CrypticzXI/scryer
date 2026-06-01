@@ -29,7 +29,15 @@ impl HttpExternalIdentityVerifier {
             plex_base_url: Url::parse(PLEX_BASE_URL).expect("valid Plex base URL"),
         }
     }
+}
 
+impl Default for HttpExternalIdentityVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HttpExternalIdentityVerifier {
     #[cfg(test)]
     fn with_plex_base_url(plex_base_url: Url) -> Self {
         Self {

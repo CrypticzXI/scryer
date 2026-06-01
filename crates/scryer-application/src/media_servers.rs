@@ -589,12 +589,12 @@ impl AppUseCase {
                         .external_identity_verifier
                         .discover_plex_servers(token)
                         .await?;
-                    if let Some(machine_id) = connection.machine_id.as_deref() {
-                        if !servers.iter().any(|server| server.id == machine_id) {
-                            return Err(AppError::Unauthorized(
-                                "Plex account does not have access to the selected server".into(),
-                            ));
-                        }
+                    if let Some(machine_id) = connection.machine_id.as_deref()
+                        && !servers.iter().any(|server| server.id == machine_id)
+                    {
+                        return Err(AppError::Unauthorized(
+                            "Plex account does not have access to the selected server".into(),
+                        ));
                     }
                 }
             }

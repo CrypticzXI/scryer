@@ -2717,17 +2717,12 @@ pub struct RuleSet {
     pub managed_key: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UserAccountKind {
+    #[default]
     Local,
     ExternalAutoProvisioned,
-}
-
-impl Default for UserAccountKind {
-    fn default() -> Self {
-        Self::Local
-    }
 }
 
 impl UserAccountKind {

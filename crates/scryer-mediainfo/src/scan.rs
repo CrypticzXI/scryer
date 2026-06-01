@@ -2052,7 +2052,7 @@ mod tests {
         data.extend_from_slice(&avi_idx1_entry(b"01wb", 11));
         data.extend_from_slice(&avi_idx1_entry(b"99dc", 13));
         data.extend_from_slice(&avi_idx1_entry(b"AAwb", 17));
-        data.extend_from_slice(&[b'0', b'2', b'd']);
+        data.extend_from_slice(b"02d");
 
         let mut totals = [0_u64; 100];
         accumulate_avi_idx1_stream_sizes(&data, &mut totals);

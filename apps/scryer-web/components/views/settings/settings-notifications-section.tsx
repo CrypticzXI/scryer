@@ -380,11 +380,13 @@ function MultiSelectDropdown({
   selectedValues,
   onSelectedValuesChange,
   placeholder,
+  triggerId,
 }: {
   options: MultiSelectDropdownOption[];
   selectedValues: string[];
   onSelectedValuesChange: (values: string[]) => void;
   placeholder: string;
+  triggerId?: string;
 }) {
   const selectedLabel = React.useMemo(() => {
     const labels = options
@@ -415,6 +417,7 @@ function MultiSelectDropdown({
     <Popover>
       <PopoverTrigger asChild>
         <Button
+          id={triggerId}
           type="button"
           variant="outline"
           className="w-full justify-between px-3 text-left font-normal"
@@ -1048,7 +1051,11 @@ export function SettingsNotificationsSection({
               {notificationTargets.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t("settings.notificationNoChannels")}</p>
               ) : (
-                <form className="space-y-3" onSubmit={submitSubscription}>
+                <form
+                  id="settings-notification-subscription-form"
+                  className="space-y-3"
+                  onSubmit={submitSubscription}
+                >
               <div className="grid gap-3 md:grid-cols-3">
                 <label>
                   <Label className="mb-2 block">{t("settings.notificationEventType")}</Label>
@@ -1062,6 +1069,7 @@ export function SettingsNotificationsSection({
                       }))
                     }
                     placeholder={t("settings.notificationEventType")}
+                    triggerId="settings-notification-subscription-event-types"
                   />
                 </label>
                 <label>
@@ -1084,7 +1092,7 @@ export function SettingsNotificationsSection({
                       }));
                     }}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="settings-notification-subscription-target" className="w-full">
                       <SelectValue placeholder={t("settings.notificationChannel")} />
                     </SelectTrigger>
                     <SelectContent>
@@ -1112,7 +1120,7 @@ export function SettingsNotificationsSection({
                       }))
                     }
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="settings-notification-subscription-scope" className="w-full">
                       <SelectValue placeholder={t("settings.notificationScope")} />
                     </SelectTrigger>
                     <SelectContent>
@@ -1172,6 +1180,7 @@ export function SettingsNotificationsSection({
 
               <label className="flex items-center gap-2">
                 <input
+                  id="settings-notification-subscription-enabled"
                   type="checkbox"
                   checked={subscriptionDraft.isEnabled}
                   onChange={(event) =>
@@ -1186,14 +1195,23 @@ export function SettingsNotificationsSection({
               </label>
 
               <div className="flex gap-2">
-                <Button type="submit" disabled={!isSubscriptionDraftValid || mutatingSubscriptionId !== null}>
+                <Button
+                  id="settings-notification-subscription-save"
+                  type="submit"
+                  disabled={!isSubscriptionDraftValid || mutatingSubscriptionId !== null}
+                >
                   {mutatingSubscriptionId !== null
                     ? t("label.saving")
                     : editingSubscriptionId
                       ? t("settings.notificationSubscriptionUpdate")
                       : t("settings.notificationSubscriptionCreate")}
                 </Button>
-                <Button type="button" variant="outline" onClick={resetSubscriptionDraft}>
+                <Button
+                  id="settings-notification-subscription-cancel"
+                  type="button"
+                  variant="outline"
+                  onClick={resetSubscriptionDraft}
+                >
                   {t("label.cancel")}
                 </Button>
               </div>
@@ -1204,6 +1222,7 @@ export function SettingsNotificationsSection({
           {isEditingSubscription ? (
             <div className="flex justify-center">
               <Button
+                id="settings-notification-subscription-create"
                 type="button"
                 size="lg"
                 onClick={() => startCreateSubscription()}
@@ -1219,6 +1238,7 @@ export function SettingsNotificationsSection({
       ) : (
         <div className="flex justify-center">
           <Button
+            id="settings-notification-subscription-create"
             type="button"
             size="lg"
             onClick={() => startCreateSubscription()}

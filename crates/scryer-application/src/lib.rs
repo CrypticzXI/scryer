@@ -90,6 +90,9 @@ pub use import::upgrade;
 pub use integration::tracked_downloads;
 pub use library::filesystem_walk;
 pub use library::recycle_bin;
+pub use notifications::runtime::{
+    NotificationSubscriptionTargetCreate, NotificationSubscriptionTargetUpdate,
+};
 pub use plugins::catalog::blake3_digest as plugin_wasm_blake3_digest;
 pub use plugins::catalog::decompress_zstd as plugin_wasm_decompress_zstd;
 pub use plugins::catalog::verify_split_digest as plugin_wasm_verify_split_digest;

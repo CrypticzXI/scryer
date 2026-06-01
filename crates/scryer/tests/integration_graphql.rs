@@ -10,8 +10,9 @@ use scryer_application::{
     AppError, AppResult, BackupInfo, BackupService, BackupStatus, BackupTrigger,
     BlocklistRepository, CollectionUpdate, CutoffUnmetQualitySummary, DeleteExecutionConfirmation,
     DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
-    JwtSessionScope, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, PendingRelease,
-    PendingReleaseRepository, ReleaseDecision, ScopedExternalId, ShowRepository,
+    JwtSessionScope, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository,
+    MediaServerConnectionRepository, PendingRelease, PendingReleaseRepository, ReleaseDecision,
+    ScopedExternalId, ShowRepository,
     TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
     TitleRepository, TotpRepository, WantedItem, WantedItemRepository,
     start_background_download_delete_poller,
@@ -20,13 +21,13 @@ use scryer_domain::{
     AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
     DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType, ExternalId, Id,
     ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask, MediaFacet,
-    MediaPathUpdate, MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title,
-    TitleContextSnapshot, User, UserAuthorization,
+    MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType, NewDomainEvent,
+    ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User, UserAuthorization,
 };
 use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
-    DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, SettingDefinitionSeed,
-    TotpStore,
+    DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
+    SettingDefinitionSeed, TotpStore,
 };
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -10344,7 +10345,6 @@ async fn graphql_create_user() {
 #[tokio::test]
 async fn graphql_external_account_invites_expose_last_login() {
     let ctx = TestContext::new().await;
-    seed_auth_provider_setting_definitions(&ctx).await;
     let user = gql(
         &ctx,
         r#"mutation($input: CreateUserInput!) {
@@ -10358,30 +10358,31 @@ async fn graphql_external_account_invites_expose_last_login() {
         .as_str()
         .expect("created user id");
 
-    let settings = gql(
-        &ctx,
-        r#"mutation($input: UpdateAuthProviderSettingsInput!) {
-            updateAuthProviderSettings(input: $input) { allowedProviders }
-        }"#,
-        json!({
-            "input": {
-                "allowedProviders": ["jellyfin"],
-                "providerLoginEnabled": ["jellyfin"],
-                "providerLinkingEnabled": [],
-                "allowedJellyfinConnectionIds": [],
-                "allowedPlexConnectionIds": [],
-                "allowedJellyfinConnections": [{
-                    "id": "jellyfin-main",
-                    "displayName": "Main Jellyfin",
-                    "baseUrl": "https://jellyfin.example.test",
-                    "machineId": null
-                }],
-                "allowedPlexConnections": []
-            }
-        }),
+    let now = Utc::now();
+    let media_servers =
+        MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    MediaServerConnectionRepository::create(
+        &media_servers,
+        MediaServerConnection {
+            id: "jellyfin-main".to_string(),
+            provider: MediaServerProvider::Jellyfin,
+            display_name: "Main Jellyfin".to_string(),
+            base_url: "https://jellyfin.example.test".to_string(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: false,
+            default_app_permissions: AppPermissionMask::NONE,
+            default_library_grants: Vec::new(),
+            machine_id: None,
+            api_key: None,
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
     )
-    .await;
-    assert_no_errors(&settings);
+    .await
+    .expect("seed Jellyfin media server connection");
 
     let invite = gql(
         &ctx,

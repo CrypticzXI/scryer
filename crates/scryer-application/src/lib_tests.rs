@@ -23473,6 +23473,7 @@ async fn passkey_registration_requires_password_backed_user() {
     }
 }
 
+#[tokio::test]
 async fn password_change_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
     let created = create_user_with_permissions(

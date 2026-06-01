@@ -33,6 +33,44 @@ fn is_media_server_notification_provider(provider_type: &str) -> bool {
     MediaServerProvider::parse(provider_type).is_some()
 }
 
+struct NotificationChannelCreateInternal {
+    name: String,
+    channel_type: String,
+    config_json: String,
+    media_server_connection_id: Option<String>,
+    is_enabled: bool,
+    reject_media_provider: bool,
+}
+
+struct NotificationChannelUpdateInternal {
+    id: String,
+    name: Option<String>,
+    config_json: Option<String>,
+    media_server_connection_id: Option<Option<String>>,
+    is_enabled: Option<bool>,
+    reject_media_provider: bool,
+}
+
+pub struct NotificationSubscriptionTargetCreate {
+    pub channel_id: Option<String>,
+    pub target_kind: Option<String>,
+    pub target_id: Option<String>,
+    pub event_type: String,
+    pub scope: String,
+    pub scope_id: Option<String>,
+    pub is_enabled: bool,
+}
+
+pub struct NotificationSubscriptionTargetUpdate {
+    pub id: String,
+    pub target_kind: Option<String>,
+    pub target_id: Option<String>,
+    pub event_type: Option<String>,
+    pub scope: Option<String>,
+    pub scope_id: NotificationScopeIdUpdate,
+    pub is_enabled: Option<bool>,
+}
+
 impl AppUseCase {
     pub fn subscribable_notification_event_types(&self) -> &'static [NotificationEventType] {
         crate::notifications::dispatcher::supported_notification_event_types()
@@ -119,12 +157,14 @@ impl AppUseCase {
     ) -> AppResult<NotificationChannelConfig> {
         self.create_notification_channel_internal(
             actor,
-            name,
-            channel_type,
-            config_json,
-            None,
-            is_enabled,
-            true,
+            NotificationChannelCreateInternal {
+                name,
+                channel_type,
+                config_json,
+                media_server_connection_id: None,
+                is_enabled,
+                reject_media_provider: true,
+            },
         )
         .await
     }
@@ -140,12 +180,14 @@ impl AppUseCase {
     ) -> AppResult<NotificationChannelConfig> {
         self.create_notification_channel_internal(
             actor,
-            name,
-            channel_type,
-            config_json,
-            media_server_connection_id,
-            is_enabled,
-            true,
+            NotificationChannelCreateInternal {
+                name,
+                channel_type,
+                config_json,
+                media_server_connection_id,
+                is_enabled,
+                reject_media_provider: true,
+            },
         )
         .await
     }
@@ -153,15 +195,19 @@ impl AppUseCase {
     async fn create_notification_channel_internal(
         &self,
         actor: &scryer_domain::User,
-        name: String,
-        channel_type: String,
-        config_json: String,
-        media_server_connection_id: Option<String>,
-        is_enabled: bool,
-        reject_media_provider: bool,
+        input: NotificationChannelCreateInternal,
     ) -> AppResult<NotificationChannelConfig> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
+
+        let NotificationChannelCreateInternal {
+            name,
+            channel_type,
+            config_json,
+            media_server_connection_id,
+            is_enabled,
+            reject_media_provider,
+        } = input;
 
         if name.trim().is_empty() {
             return Err(AppError::Validation(
@@ -211,12 +257,14 @@ impl AppUseCase {
     ) -> AppResult<NotificationChannelConfig> {
         self.update_notification_channel_internal(
             actor,
-            id,
-            name,
-            config_json,
-            None,
-            is_enabled,
-            true,
+            NotificationChannelUpdateInternal {
+                id,
+                name,
+                config_json,
+                media_server_connection_id: None,
+                is_enabled,
+                reject_media_provider: true,
+            },
         )
         .await
     }
@@ -232,12 +280,14 @@ impl AppUseCase {
     ) -> AppResult<NotificationChannelConfig> {
         self.update_notification_channel_internal(
             actor,
-            id,
-            name,
-            config_json,
-            media_server_connection_id,
-            is_enabled,
-            true,
+            NotificationChannelUpdateInternal {
+                id,
+                name,
+                config_json,
+                media_server_connection_id,
+                is_enabled,
+                reject_media_provider: true,
+            },
         )
         .await
     }
@@ -245,16 +295,20 @@ impl AppUseCase {
     async fn update_notification_channel_internal(
         &self,
         actor: &scryer_domain::User,
-        id: String,
-        name: Option<String>,
-        config_json: Option<String>,
-        media_server_connection_id: Option<Option<String>>,
-        is_enabled: Option<bool>,
-        reject_media_provider: bool,
+        input: NotificationChannelUpdateInternal,
     ) -> AppResult<NotificationChannelConfig> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         let repo = self.notification_channels()?;
+
+        let NotificationChannelUpdateInternal {
+            id,
+            name,
+            config_json,
+            media_server_connection_id,
+            is_enabled,
+            reject_media_provider,
+        } = input;
 
         let mut channel = repo
             .get_channel(&id)
@@ -387,13 +441,15 @@ impl AppUseCase {
     ) -> AppResult<NotificationSubscription> {
         self.create_notification_subscription_for_target(
             actor,
-            Some(channel_id),
-            None,
-            None,
-            event_type,
-            scope,
-            scope_id,
-            is_enabled,
+            NotificationSubscriptionTargetCreate {
+                channel_id: Some(channel_id),
+                target_kind: None,
+                target_id: None,
+                event_type,
+                scope,
+                scope_id,
+                is_enabled,
+            },
         )
         .await
     }
@@ -401,16 +457,20 @@ impl AppUseCase {
     pub async fn create_notification_subscription_for_target(
         &self,
         actor: &scryer_domain::User,
-        channel_id: Option<String>,
-        target_kind: Option<String>,
-        target_id: Option<String>,
-        event_type: String,
-        scope: String,
-        scope_id: Option<String>,
-        is_enabled: bool,
+        input: NotificationSubscriptionTargetCreate,
     ) -> AppResult<NotificationSubscription> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
+
+        let NotificationSubscriptionTargetCreate {
+            channel_id,
+            target_kind,
+            target_id,
+            event_type,
+            scope,
+            scope_id,
+            is_enabled,
+        } = input;
 
         let parsed_event_type = parse_subscribable_notification_event_type(&event_type)?;
         let (target_kind, target_id) =
@@ -447,7 +507,16 @@ impl AppUseCase {
         is_enabled: Option<bool>,
     ) -> AppResult<NotificationSubscription> {
         self.update_notification_subscription_target(
-            actor, id, None, None, event_type, scope, scope_id, is_enabled,
+            actor,
+            NotificationSubscriptionTargetUpdate {
+                id,
+                target_kind: None,
+                target_id: None,
+                event_type,
+                scope,
+                scope_id,
+                is_enabled,
+            },
         )
         .await
     }
@@ -455,17 +524,21 @@ impl AppUseCase {
     pub async fn update_notification_subscription_target(
         &self,
         actor: &scryer_domain::User,
-        id: String,
-        target_kind: Option<String>,
-        target_id: Option<String>,
-        event_type: Option<String>,
-        scope: Option<String>,
-        scope_id: NotificationScopeIdUpdate,
-        is_enabled: Option<bool>,
+        input: NotificationSubscriptionTargetUpdate,
     ) -> AppResult<NotificationSubscription> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         let repo = self.notification_subscriptions()?;
+
+        let NotificationSubscriptionTargetUpdate {
+            id,
+            target_kind,
+            target_id,
+            event_type,
+            scope,
+            scope_id,
+            is_enabled,
+        } = input;
 
         // Find all subscriptions and locate ours
         let all = repo.list_subscriptions().await?;

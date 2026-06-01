@@ -8,6 +8,28 @@ struct CatalogPluginResolution {
     github_repo: GitHubRepo,
 }
 struct PreparedCatalogPluginInstall {
+    plugin_id: String,
+    expected_plugin_type: String,
+    expected_provider_type: String,
+    release: DownloadedPluginReleaseContract,
+    scryer_constraint: Option<String>,
+    source_kind: PluginSourceKind,
+    support_tier: PluginSupportTier,
+    persisted_wasm_bytes: Vec<u8>,
+    runtime_wasm_bytes: Vec<u8>,
+    runtime_first_party: bool,
+    wasm_encoding: PluginWasmEncoding,
+    wasm_digest_algo: String,
+    source_url: String,
+    publisher: String,
+    docs_url: String,
+    source_repo: String,
+    manifest_url: String,
+    wasm_digest: String,
+    artifact_digest: String,
+    description: String,
+}
+struct ValidatedCatalogPluginInstall {
     descriptor: PluginDescriptor,
     sdk_constraint: String,
     scryer_constraint: Option<String>,
@@ -71,6 +93,11 @@ struct FetchedCatalogArtifact {
     artifact_url: String,
     artifact_digest: String,
     wasm_encoding: PluginWasmEncoding,
+}
+struct FetchedSignedBlob {
+    raw: Vec<u8>,
+    actual_url: String,
+    signature_bundle: Vec<u8>,
 }
 fn parse_catalog_release_version(
     plugin_id: &str,
@@ -430,30 +457,26 @@ async fn decode_signature_bundle(bundle: Vec<u8>, actual_url: &str) -> AppResult
         _ => Ok(bundle),
     }
 }
-
-impl AppUseCase {
-    fn validate_catalog_downloaded_plugin_release(
-        &self,
-        plugin_id: &str,
-        expected_plugin_type: &str,
-        expected_provider_type: &str,
-        release: &DownloadedPluginReleaseContract,
-        wasm_bytes: &[u8],
-    ) -> AppResult<ValidatedDownloadedPlugin> {
-        let descriptor = self
-            .services
-            .customization
-            .plugin_descriptor_loader
-            .load_descriptor_from_wasm_bytes(wasm_bytes)?;
-        validate_downloaded_plugin_descriptor(
-            plugin_id,
-            expected_plugin_type,
-            expected_provider_type,
-            release,
-            &descriptor,
-            false,
-        )
-    }
+async fn fetch_signed_blob_from_locations(
+    data_urls: &[String],
+    signature_urls: &[String],
+    label: &str,
+) -> AppResult<FetchedSignedBlob> {
+    let scope = format!("verified_blob:{}", blake3_digest(label.as_bytes()));
+    let (raw, actual_url) =
+        fetch_plugin_bytes_from_locations(data_urls, label, &format!("{scope}:blob")).await?;
+    let (bundle, bundle_url) = fetch_plugin_bytes_from_locations(
+        signature_urls,
+        &format!("{label} signature"),
+        &format!("{scope}:signature"),
+    )
+    .await?;
+    let signature_bundle = decode_signature_bundle(bundle, &bundle_url).await?;
+    Ok(FetchedSignedBlob {
+        raw,
+        actual_url,
+        signature_bundle,
+    })
 }
 impl AppUseCase {
     async fn cached_central_catalog(&self) -> AppResult<Option<CatalogV3>> {
@@ -608,18 +631,14 @@ impl AppUseCase {
         signer: &RequiredSigner,
         label: &str,
     ) -> AppResult<(Vec<u8>, String)> {
-        let scope = format!("verified_blob:{}", blake3_digest(label.as_bytes()));
-        let (raw, actual_url) =
-            fetch_plugin_bytes_from_locations(data_urls, label, &format!("{scope}:blob")).await?;
-        let (bundle, bundle_url) = fetch_plugin_bytes_from_locations(
-            signature_urls,
-            &format!("{label} signature"),
-            &format!("{scope}:signature"),
+        let fetched = fetch_signed_blob_from_locations(data_urls, signature_urls, label).await?;
+        verify_signed_blob(
+            fetched.raw.clone(),
+            fetched.signature_bundle,
+            signer.clone(),
         )
         .await?;
-        let bundle = decode_signature_bundle(bundle, &bundle_url).await?;
-        verify_signed_blob(raw.clone(), bundle, signer.clone()).await?;
-        Ok((raw, actual_url))
+        Ok((fetched.raw, fetched.actual_url))
     }
 }
 impl AppUseCase {

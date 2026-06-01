@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Translate } from "@/components/root/types";
 import { TranslateContext } from "@/lib/context/translate-context";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type PathMappingRow = {
   localPath: string;
@@ -152,94 +153,108 @@ export function LocalRemotePathMappingsField({
     <label className="block">
       <Label className="mb-2 block">{label}</Label>
       <div className="space-y-2">
-        {rows.map((row, index) => (
-          <div
-            key={index}
-            className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-center gap-2"
-          >
-            <div className="relative min-w-0">
-              <Input
-                value={localPathFirst ? row.localPath : row.remotePath}
-                readOnly={localPathFirst}
-                onClick={localPathFirst ? () => setBrowseRowIndex(index) : undefined}
-                onChange={
-                  localPathFirst
-                    ? undefined
-                    : (event) => updateRow(index, { remotePath: event.target.value })
-                }
-                required={required && isEmpty && index === 0}
-                className={`font-mono text-sm${localPathFirst ? " cursor-pointer pr-10" : ""}`}
-                aria-label={`${label} ${index + 1}`}
-              />
-              {localPathFirst ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
-                  onClick={() => setBrowseRowIndex(index)}
-                  title={t("setup.browse")}
-                  aria-label={t("setup.browse")}
-                >
-                  <FolderOpen className="h-4 w-4" />
-                </Button>
-              ) : null}
-            </div>
-
-            <span
-              aria-hidden="true"
-              className="shrink-0 px-1 text-sm text-muted-foreground [font-variant-ligatures:none]"
+        {rows.map((row, index) => {
+          const localInputId = selectorId("path-mapping", fieldKey, index + 1, "local");
+          const remoteInputId = selectorId("path-mapping", fieldKey, index + 1, "remote");
+          const browseButtonId = selectorId("path-mapping", fieldKey, index + 1, "browse");
+          const removeButtonId = selectorId("path-mapping", fieldKey, index + 1, "remove");
+          const firstInputId = localPathFirst ? localInputId : remoteInputId;
+          const secondInputId = localPathFirst ? remoteInputId : localInputId;
+          return (
+            <div
+              key={index}
+              className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-center gap-2"
             >
-              =&gt;
-            </span>
+              <div className="relative min-w-0">
+                <Input
+                  id={firstInputId}
+                  value={localPathFirst ? row.localPath : row.remotePath}
+                  readOnly={localPathFirst}
+                  onClick={localPathFirst ? () => setBrowseRowIndex(index) : undefined}
+                  onChange={
+                    localPathFirst
+                      ? undefined
+                      : (event) => updateRow(index, { remotePath: event.target.value })
+                  }
+                  required={required && isEmpty && index === 0}
+                  className={`font-mono text-sm${localPathFirst ? " cursor-pointer pr-10" : ""}`}
+                  aria-label={`${label} ${index + 1}`}
+                />
+                {localPathFirst ? (
+                  <Button
+                    id={browseButtonId}
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
+                    onClick={() => setBrowseRowIndex(index)}
+                    title={t("setup.browse")}
+                    aria-label={t("setup.browse")}
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                  </Button>
+                ) : null}
+              </div>
 
-            <div className="relative min-w-0">
-              <Input
-                value={localPathFirst ? row.remotePath : row.localPath}
-                readOnly={!localPathFirst}
-                onClick={!localPathFirst ? () => setBrowseRowIndex(index) : undefined}
-                onChange={
-                  localPathFirst
-                    ? (event) => updateRow(index, { remotePath: event.target.value })
-                    : undefined
-                }
-                required={required && isEmpty && index === 0}
-                className={`font-mono text-sm${!localPathFirst ? " cursor-pointer pr-10" : ""}`}
-              />
-              {!localPathFirst ? (
+              <span
+                aria-hidden="true"
+                className="shrink-0 px-1 text-sm text-muted-foreground [font-variant-ligatures:none]"
+              >
+                =&gt;
+              </span>
+
+              <div className="relative min-w-0">
+                <Input
+                  id={secondInputId}
+                  value={localPathFirst ? row.remotePath : row.localPath}
+                  readOnly={!localPathFirst}
+                  onClick={!localPathFirst ? () => setBrowseRowIndex(index) : undefined}
+                  onChange={
+                    localPathFirst
+                      ? (event) => updateRow(index, { remotePath: event.target.value })
+                      : undefined
+                  }
+                  required={required && isEmpty && index === 0}
+                  className={`font-mono text-sm${!localPathFirst ? " cursor-pointer pr-10" : ""}`}
+                />
+                {!localPathFirst ? (
+                  <Button
+                    id={browseButtonId}
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
+                    onClick={() => setBrowseRowIndex(index)}
+                    title={t("setup.browse")}
+                    aria-label={t("setup.browse")}
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                  </Button>
+                ) : null}
+              </div>
+
+              {rows.length > 1 ? (
                 <Button
+                  id={removeButtonId}
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
-                  onClick={() => setBrowseRowIndex(index)}
-                  title={t("setup.browse")}
-                  aria-label={t("setup.browse")}
+                  className="h-9 w-9 shrink-0"
+                  onClick={() => removeRow(index)}
+                  title={t("label.remove")}
+                  aria-label={t("label.remove")}
                 >
-                  <FolderOpen className="h-4 w-4" />
+                  <Trash2 className="h-4 w-4" />
                 </Button>
-              ) : null}
+              ) : (
+                <div className="h-9 w-9 shrink-0" aria-hidden="true" />
+              )}
             </div>
-
-            {rows.length > 1 ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="h-9 w-9 shrink-0"
-                onClick={() => removeRow(index)}
-                title={t("label.remove")}
-                aria-label={t("label.remove")}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            ) : (
-              <div className="h-9 w-9 shrink-0" aria-hidden="true" />
-            )}
-          </div>
-        ))}
+          );
+        })}
 
         <Button
+          id={selectorId("path-mapping", fieldKey, "add")}
           type="button"
           variant="outline"
           size="icon"

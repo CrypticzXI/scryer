@@ -139,6 +139,11 @@ fn supported_channels(codec: &str, requested: i32) -> i32 {
     requested
 }
 
+struct FixtureFlags {
+    subtitle: bool,
+    dual: bool,
+}
+
 fn build_case(
     prefix: &str,
     index: usize,
@@ -146,12 +151,11 @@ fn build_case(
     container: &'static str,
     video: &'static str,
     audio: &[&'static str],
-    subtitle: bool,
-    dual: bool,
+    flags: FixtureFlags,
 ) -> FixtureCase {
     let (width, height) = dims(index);
     let mut audios = audio.to_vec();
-    if dual && audios.len() == 1 {
+    if flags.dual && audios.len() == 1 {
         let extra = if ext == "webm" {
             if audios[0] != "vorbis" {
                 "vorbis"
@@ -208,7 +212,7 @@ fn build_case(
         audio_channels: channels,
         audio_languages,
         source_audio_languages,
-        subtitle_stream_count: usize::from(subtitle),
+        subtitle_stream_count: usize::from(flags.subtitle),
         generated: true,
         duration_seconds: None,
         min_duration_seconds: 1,
@@ -233,8 +237,10 @@ fn build_matrix() -> Vec<FixtureCase> {
             "matroska",
             video,
             &[audio],
-            i % 9 == 0,
-            i % 7 == 0,
+            FixtureFlags {
+                subtitle: i % 9 == 0,
+                dual: i % 7 == 0,
+            },
         ));
     }
 
@@ -248,8 +254,10 @@ fn build_matrix() -> Vec<FixtureCase> {
             "webm",
             video,
             &[audio],
-            false,
-            i % 5 == 0,
+            FixtureFlags {
+                subtitle: false,
+                dual: i % 5 == 0,
+            },
         ));
     }
 
@@ -272,8 +280,10 @@ fn build_matrix() -> Vec<FixtureCase> {
             container,
             video,
             &[audio],
-            i % 10 == 0,
-            i % 8 == 0,
+            FixtureFlags {
+                subtitle: i % 10 == 0,
+                dual: i % 8 == 0,
+            },
         ));
     }
 
@@ -290,8 +300,10 @@ fn build_matrix() -> Vec<FixtureCase> {
             "avi",
             video,
             &[audio],
-            false,
-            i % 6 == 0,
+            FixtureFlags {
+                subtitle: false,
+                dual: i % 6 == 0,
+            },
         ));
     }
 
@@ -310,8 +322,10 @@ fn build_matrix() -> Vec<FixtureCase> {
             "mpegts",
             video,
             &[audio],
-            false,
-            i % 9 == 0,
+            FixtureFlags {
+                subtitle: false,
+                dual: i % 9 == 0,
+            },
         ));
     }
 
@@ -869,7 +883,7 @@ fn late(data: &mut Vec<u8>, payload: &[u8], pad_len: usize) {
 }
 
 fn pad(data: &mut Vec<u8>, length: usize, byte: u8) {
-    data.extend(std::iter::repeat(byte).take(length));
+    data.extend(std::iter::repeat_n(byte, length));
 }
 
 #[cfg(test)]

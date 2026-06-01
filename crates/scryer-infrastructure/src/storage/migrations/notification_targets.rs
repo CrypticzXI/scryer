@@ -314,10 +314,9 @@ async fn sqlite_create_or_reuse_jellyfin_connection(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        && sqlite_connection_exists(tx, connection_id).await?
     {
-        if sqlite_connection_exists(tx, connection_id).await? {
-            return Ok(connection_id.to_string());
-        }
+        return Ok(connection_id.to_string());
     }
 
     if let Some(existing_id) = sqlx::query_scalar::<_, String>(
@@ -365,10 +364,9 @@ async fn postgres_create_or_reuse_jellyfin_connection(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        && postgres_connection_exists(tx, connection_id).await?
     {
-        if postgres_connection_exists(tx, connection_id).await? {
-            return Ok(connection_id.to_string());
-        }
+        return Ok(connection_id.to_string());
     }
 
     if let Some(existing_id) = sqlx::query_scalar::<_, String>(

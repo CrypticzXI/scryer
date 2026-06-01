@@ -27,15 +27,19 @@ use scryer_infrastructure::{
     AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadQueueCommandStore,
     DownloadSubmissionStore, EncryptionKey, ExternalImportMonitorStore, FileSystemLibraryScanner,
     FileSystemStagedNzbStore, HousekeepingStore, ImportStore, IndexerConfigStore,
-    LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MetadataGatewayClient,
-    MultiIndexerSearchClient, NzbgetDownloadClient, PendingReleaseStore, ReleaseStore,
-    SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore, TotpStore,
-    WantedStore, WorkflowOperationStore,
+    LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MediaServerConnectionStore,
+    MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient, PendingReleaseStore,
+    ReleaseStore, SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore,
+    TotpStore, WantedStore, WorkflowOperationStore,
 };
 use scryer_interface::context::{
     AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, MfaVerification,
 };
 use scryer_interface::{ApiSchema, build_schema};
+
+pub fn disable_platform_keystore_for_tests() {
+    scryer_infrastructure::keystore::disable_platform_keystore_for_tests();
+}
 
 /// Shared integration-test context.
 ///
@@ -569,6 +573,8 @@ pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
 
 impl TestContext {
     pub async fn new() -> Self {
+        disable_platform_keystore_for_tests();
+
         // Start wiremock mock servers for each external API
         let nzbget_server = MockServer::start().await;
         let nzbgeek_server = MockServer::start().await;
@@ -713,6 +719,10 @@ impl TestContext {
         .with_subtitle_downloads(Arc::new(subtitle_download_store))
         .with_libraries(Arc::new(library_store.clone()))
         .with_external_account_store(Arc::new(user_store.clone()))
+        .with_media_server_connection_store(Arc::new(MediaServerConnectionStore::new(
+            datastore.clone(),
+            db.encryption_key_state(),
+        )))
         .with_totp_store(Arc::new(totp_store))
         .with_rule_set_store(Arc::new(rule_set_store))
         .with_post_processing_script_store(Arc::new(post_processing_script_store))

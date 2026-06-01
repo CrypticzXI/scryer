@@ -448,6 +448,7 @@ export function SettingsMediaServersSection({
                 <div className="rounded border border-border bg-background/40 p-3">
                   <label className="flex items-center gap-3">
                     <Checkbox
+                      id="settings-media-server-enabled"
                       checked={draft.enabled}
                       onCheckedChange={(checked) =>
                         setDraft((previous) => ({
@@ -519,6 +520,7 @@ export function SettingsMediaServersSection({
                     {draft.provider === "jellyfin" ? (
                       <div className="inline-flex rounded-md border border-border p-1">
                         <Button
+                          id="settings-media-server-credential-admin-login"
                           type="button"
                           variant={draft.jellyfinCredentialMode === "adminLogin" ? "default" : "ghost"}
                           size="sm"
@@ -534,6 +536,7 @@ export function SettingsMediaServersSection({
                           {t("settings.loginAsAdmin")}
                         </Button>
                         <Button
+                          id="settings-media-server-credential-api-key"
                           type="button"
                           variant={draft.jellyfinCredentialMode === "apiKey" ? "default" : "ghost"}
                           size="sm"

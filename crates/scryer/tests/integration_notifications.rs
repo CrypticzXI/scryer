@@ -12,7 +12,8 @@ use scryer_application::{
     NotificationClient, NotificationExternalIdsPayload, NotificationFilePayload,
     NotificationMediaFilePayload, NotificationMediaUpdatePayload,
     NotificationMediaUpdateTypePayload, NotificationPayload, NotificationPluginProvider,
-    NotificationScopeIdUpdate, NotificationTitlePayload, start_notification_dispatcher,
+    NotificationScopeIdUpdate, NotificationSubscriptionTargetCreate, NotificationTitlePayload,
+    start_notification_dispatcher,
 };
 use scryer_domain::{
     AppPermissionMask, ConfigFieldDef, ConfigFieldOption, ConfigFieldType, ConfigFieldValueSource,
@@ -141,13 +142,15 @@ async fn create_media_server_subscription(
 ) {
     app.create_notification_subscription_for_target(
         user,
-        None,
-        Some("media_server_connection".into()),
-        Some(connection.id.clone()),
-        event_type.to_string(),
-        "global".into(),
-        None,
-        true,
+        NotificationSubscriptionTargetCreate {
+            channel_id: None,
+            target_kind: Some("media_server_connection".into()),
+            target_id: Some(connection.id.clone()),
+            event_type: event_type.to_string(),
+            scope: "global".into(),
+            scope_id: None,
+            is_enabled: true,
+        },
     )
     .await
     .expect("create media server target subscription");
@@ -1187,13 +1190,15 @@ async fn jellyfin_media_server_connection_is_notification_target() {
     let subscription = app
         .create_notification_subscription_for_target(
             &user,
-            None,
-            Some("media_server_connection".into()),
-            Some(connection.id.clone()),
-            NotificationEventType::ImportComplete.as_str().to_string(),
-            "global".into(),
-            None,
-            true,
+            NotificationSubscriptionTargetCreate {
+                channel_id: None,
+                target_kind: Some("media_server_connection".into()),
+                target_id: Some(connection.id.clone()),
+                event_type: NotificationEventType::ImportComplete.as_str().to_string(),
+                scope: "global".into(),
+                scope_id: None,
+                is_enabled: true,
+            },
         )
         .await
         .expect("create media server target subscription");

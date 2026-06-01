@@ -569,49 +569,6 @@ fn should_include_request_history(
     }
 }
 
-#[cfg(test)]
-mod title_history_request_filter_tests {
-    use super::*;
-
-    fn filter(event_types: Option<Vec<TitleHistoryEventType>>) -> TitleHistoryFilter {
-        TitleHistoryFilter {
-            event_types,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn default_unfiltered_history_does_not_scan_for_requests() {
-        assert!(!should_include_request_history(&filter(None), None));
-    }
-
-    #[test]
-    fn default_single_title_history_includes_matching_requests() {
-        let title_ids = vec!["title-1".to_string()];
-        assert!(should_include_request_history(
-            &filter(None),
-            Some(&title_ids),
-        ));
-    }
-
-    #[test]
-    fn explicit_requested_filter_includes_requests_for_known_titles() {
-        let title_ids = vec!["title-1".to_string(), "title-2".to_string()];
-        assert!(should_include_request_history(
-            &filter(Some(vec![TitleHistoryEventType::Requested])),
-            Some(&title_ids),
-        ));
-    }
-
-    #[test]
-    fn explicit_requested_filter_without_title_matches_does_not_scan() {
-        assert!(!should_include_request_history(
-            &filter(Some(vec![TitleHistoryEventType::Requested])),
-            None,
-        ));
-    }
-}
-
 async fn resolve_title_history_title_ids(
     app: &AppUseCase,
     filter: &TitleHistoryFilter,
@@ -1556,5 +1513,48 @@ impl AppUseCase {
         )
         .await?;
         project_episode_title_history(self, episode_id, limit).await
+    }
+}
+
+#[cfg(test)]
+mod title_history_request_filter_tests {
+    use super::*;
+
+    fn filter(event_types: Option<Vec<TitleHistoryEventType>>) -> TitleHistoryFilter {
+        TitleHistoryFilter {
+            event_types,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_unfiltered_history_does_not_scan_for_requests() {
+        assert!(!should_include_request_history(&filter(None), None));
+    }
+
+    #[test]
+    fn default_single_title_history_includes_matching_requests() {
+        let title_ids = vec!["title-1".to_string()];
+        assert!(should_include_request_history(
+            &filter(None),
+            Some(&title_ids),
+        ));
+    }
+
+    #[test]
+    fn explicit_requested_filter_includes_requests_for_known_titles() {
+        let title_ids = vec!["title-1".to_string(), "title-2".to_string()];
+        assert!(should_include_request_history(
+            &filter(Some(vec![TitleHistoryEventType::Requested])),
+            Some(&title_ids),
+        ));
+    }
+
+    #[test]
+    fn explicit_requested_filter_without_title_matches_does_not_scan() {
+        assert!(!should_include_request_history(
+            &filter(Some(vec![TitleHistoryEventType::Requested])),
+            None,
+        ));
     }
 }

@@ -76,10 +76,10 @@ fn avi_idx1_buffer(len: usize, stream_count: usize) -> Vec<u8> {
 
 fn accumulate_avi_idx1_repeated_scan(data: &[u8], stream_count: usize) -> [u64; 100] {
     let mut totals = [0_u64; 100];
-    for stream in 0..stream_count {
+    for (stream, total) in totals.iter_mut().enumerate().take(stream_count) {
         let mut cursor = 0;
         while let Some(offset) = scan::find_avi_idx1_stream_prefix(data, cursor, stream) {
-            totals[stream] += u64::from(u32::from_le_bytes([
+            *total += u64::from(u32::from_le_bytes([
                 data[offset + 12],
                 data[offset + 13],
                 data[offset + 14],

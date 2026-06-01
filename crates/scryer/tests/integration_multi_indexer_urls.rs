@@ -8,7 +8,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::load_fixture;
+use common::{disable_platform_keystore_for_tests, load_fixture};
 use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, IndexerPluginProvider, JwtAuthConfig,
     MovieFacetHandler, SeriesFacetHandler,
@@ -39,6 +39,8 @@ async fn setup() -> (
     MockServer, // newznab
     MockServer, // torznab
 ) {
+    disable_platform_keystore_for_tests();
+
     let newznab_server = MockServer::start().await;
     let torznab_server = MockServer::start().await;
 

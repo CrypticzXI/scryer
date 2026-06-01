@@ -69,15 +69,18 @@ impl AppUseCase {
             &resolved.artifact.signature_url,
             &resolved.artifact.signature_mirror_urls,
         );
-        let (compressed_artifact, artifact_url) = self
-            .fetch_verified_blob_from_locations(
-                &data_urls,
-                &signature_urls,
-                &signer,
-                "plugin artifact",
-            )
-            .await?;
+        let fetched_blob =
+            fetch_signed_blob_from_locations(&data_urls, &signature_urls, "plugin artifact")
+                .await?;
         reporter.verifying().await;
+        verify_signed_blob(
+            fetched_blob.raw.clone(),
+            fetched_blob.signature_bundle,
+            signer,
+        )
+        .await?;
+        let compressed_artifact = fetched_blob.raw;
+        let artifact_url = fetched_blob.actual_url;
         verify_digest_set(
             "compressed plugin artifact",
             &resolved.artifact.digests,
@@ -147,20 +150,15 @@ impl AppUseCase {
             sdk_constraint: resolved.release.sdk_constraint.clone(),
             scryer_constraint: catalog_release_scryer_constraint(&resolved.release),
         };
-        let validated = self.validate_catalog_downloaded_plugin_release(
-            &resolved.catalog_entry.id,
-            &resolved.catalog_entry.plugin_type,
-            &resolved.catalog_entry.provider_type,
-            &release,
-            &fetched.wasm_bytes,
-        )?;
         let (wasm_digest_algo, wasm_digest) =
             blake3_digest_components(&resolved.artifact.wasm_digests, "plugin artifact WASM")?;
 
         Ok(PreparedCatalogPluginInstall {
-            descriptor: validated.descriptor,
-            sdk_constraint: validated.sdk_constraint,
-            scryer_constraint: release.scryer_constraint,
+            plugin_id: resolved.catalog_entry.id.clone(),
+            expected_plugin_type: resolved.catalog_entry.plugin_type.clone(),
+            expected_provider_type: resolved.catalog_entry.provider_type.clone(),
+            scryer_constraint: release.scryer_constraint.clone(),
+            release,
             source_kind: resolved.source_kind,
             support_tier: resolved.effective_support_tier,
             persisted_wasm_bytes: fetched.persisted_wasm_bytes,
@@ -178,6 +176,76 @@ impl AppUseCase {
             description: resolved.catalog_entry.description.clone(),
         })
     }
+
+    async fn validate_prepared_catalog_plugin_install(
+        &self,
+        prepared: PreparedCatalogPluginInstall,
+    ) -> AppResult<ValidatedCatalogPluginInstall> {
+        let descriptor_loader = self
+            .services
+            .customization
+            .plugin_descriptor_loader
+            .clone();
+        let PreparedCatalogPluginInstall {
+            plugin_id,
+            expected_plugin_type,
+            expected_provider_type,
+            release,
+            scryer_constraint,
+            source_kind,
+            support_tier,
+            persisted_wasm_bytes,
+            runtime_wasm_bytes,
+            runtime_first_party,
+            wasm_encoding,
+            wasm_digest_algo,
+            source_url,
+            publisher,
+            docs_url,
+            source_repo,
+            manifest_url,
+            wasm_digest,
+            artifact_digest,
+            description,
+        } = prepared;
+        let (runtime_wasm_bytes, descriptor) = tokio::task::spawn_blocking(move || {
+            let descriptor =
+                descriptor_loader.load_descriptor_from_wasm_bytes(&runtime_wasm_bytes)?;
+            Ok::<_, AppError>((runtime_wasm_bytes, descriptor))
+        })
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("plugin descriptor loading panicked: {error}"))
+        })??;
+        let validated = validate_downloaded_plugin_descriptor(
+            &plugin_id,
+            &expected_plugin_type,
+            &expected_provider_type,
+            &release,
+            &descriptor,
+            false,
+        )?;
+        Ok(ValidatedCatalogPluginInstall {
+            descriptor: validated.descriptor,
+            sdk_constraint: validated.sdk_constraint,
+            scryer_constraint,
+            source_kind,
+            support_tier,
+            persisted_wasm_bytes,
+            runtime_wasm_bytes,
+            runtime_first_party,
+            wasm_encoding,
+            wasm_digest_algo,
+            source_url,
+            publisher,
+            docs_url,
+            source_repo,
+            manifest_url,
+            wasm_digest,
+            artifact_digest,
+            description,
+        })
+    }
 }
 impl AppUseCase {
     async fn install_catalog_plugin(
@@ -188,11 +256,14 @@ impl AppUseCase {
         let prepared = self
             .prepare_catalog_plugin_install(&resolved, reporter)
             .await?;
+        reporter.installing().await;
+        let prepared = self
+            .validate_prepared_catalog_plugin_install(prepared)
+            .await?;
         let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
         let (installation, runtime_plugin) =
             prepared.into_new_installation(resolved.catalog_entry.id.clone())?;
 
-        reporter.installing().await;
         let result = self
             .services
             .customization
@@ -238,12 +309,15 @@ impl AppUseCase {
         let prepared = self
             .prepare_catalog_plugin_install(&resolved, reporter)
             .await?;
-        let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
         let previous_plugin_type = installation.plugin_type.clone();
         let previous_provider_type = installation.provider_type.clone();
+        reporter.installing().await;
+        let prepared = self
+            .validate_prepared_catalog_plugin_install(prepared)
+            .await?;
+        let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
         let (updated, runtime_plugin) = prepared.into_updated_installation(installation)?;
 
-        reporter.installing().await;
         let result = self
             .services
             .customization
@@ -304,12 +378,15 @@ impl AppUseCase {
         let prepared = self
             .prepare_catalog_plugin_install(&resolved, &reporter)
             .await?;
-        let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
         let previous_plugin_type = installation.plugin_type.clone();
         let previous_provider_type = installation.provider_type.clone();
+        reporter.installing().await;
+        let prepared = self
+            .validate_prepared_catalog_plugin_install(prepared)
+            .await?;
+        let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
         let (updated, runtime_plugin) = prepared.into_updated_installation(installation)?;
 
-        reporter.installing().await;
         let result = self
             .services
             .customization
@@ -396,6 +473,10 @@ impl AppUseCase {
         );
         let prepared = self
             .prepare_catalog_plugin_install(&resolved, &reporter)
+            .await?;
+        reporter.installing().await;
+        let prepared = self
+            .validate_prepared_catalog_plugin_install(prepared)
             .await?;
         let persisted_wasm_bytes = prepared.persisted_wasm_bytes.clone();
         let (updated_installation, _) = prepared.into_updated_installation(target.installation)?;

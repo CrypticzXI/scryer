@@ -12,8 +12,10 @@ mod macos;
 mod windows;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const DISABLE_PLATFORM_KEYSTORE_ENV: &str = "SCRYER_DISABLE_PLATFORM_KEYSTORE";
+static DISABLE_PLATFORM_KEYSTORE_FOR_PROCESS: AtomicBool = AtomicBool::new(false);
 
 /// A backend that can store and retrieve the encryption master key.
 pub trait KeyStore: Send + Sync {
@@ -28,6 +30,11 @@ pub trait KeyStore: Send + Sync {
 
     /// Human-readable name for log messages (e.g. "macOS Keychain").
     fn name(&self) -> &'static str;
+}
+
+#[doc(hidden)]
+pub fn disable_platform_keystore_for_tests() {
+    DISABLE_PLATFORM_KEYSTORE_FOR_PROCESS.store(true, Ordering::SeqCst);
 }
 
 /// Returns platform-native keystores in priority order.
@@ -60,6 +67,10 @@ pub fn platform_keystores(_data_dir: Option<PathBuf>) -> Vec<Box<dyn KeyStore>> 
 }
 
 fn platform_keystore_disabled() -> bool {
+    if DISABLE_PLATFORM_KEYSTORE_FOR_PROCESS.load(Ordering::SeqCst) {
+        return true;
+    }
+
     std::env::var(DISABLE_PLATFORM_KEYSTORE_ENV)
         .ok()
         .is_some_and(|value| {

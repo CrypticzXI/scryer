@@ -175,7 +175,7 @@ fn process_path<W: Write>(
     path: &Path,
     sonarr_channel_layout_retry: bool,
 ) -> io::Result<()> {
-    if index == 0 || index % PROGRESS_INTERVAL == 0 {
+    if index == 0 || index.is_multiple_of(PROGRESS_INTERVAL) {
         println!("Progress: {} {}", index, path.display());
     }
 

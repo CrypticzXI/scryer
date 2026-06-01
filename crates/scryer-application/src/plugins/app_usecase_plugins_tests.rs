@@ -745,12 +745,14 @@ impl IndexerPluginProvider for MockPluginProvider {
 
 struct MockPluginDescriptorLoader {
     descriptors: StdArc<StdMutex<HashMap<Vec<u8>, scryer_plugin_sdk::PluginDescriptor>>>,
+    load_calls: StdArc<AtomicUsize>,
 }
 
 impl MockPluginDescriptorLoader {
     fn new() -> Self {
         Self {
             descriptors: StdArc::new(StdMutex::new(HashMap::new())),
+            load_calls: StdArc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -760,6 +762,10 @@ impl MockPluginDescriptorLoader {
             .expect("plugin descriptor loader lock")
             .insert(wasm_bytes.to_vec(), descriptor);
     }
+
+    fn load_count(&self) -> usize {
+        self.load_calls.load(Ordering::Relaxed)
+    }
 }
 
 impl PluginDescriptorLoader for MockPluginDescriptorLoader {
@@ -767,6 +773,7 @@ impl PluginDescriptorLoader for MockPluginDescriptorLoader {
         &self,
         wasm_bytes: &[u8],
     ) -> AppResult<scryer_plugin_sdk::PluginDescriptor> {
+        self.load_calls.fetch_add(1, Ordering::Relaxed);
         self.descriptors
             .lock()
             .expect("plugin descriptor loader lock")
@@ -1013,6 +1020,41 @@ fn fixture_source_repo(plugin_id: &str) -> String {
         "https://github.com/scryer-media/test-plugin-{}",
         plugin_id.replace('_', "-")
     )
+}
+
+fn prepared_catalog_plugin_install_fixture(
+    plugin_id: &str,
+    plugin_type: &str,
+    provider_type: &str,
+    wasm_bytes: Vec<u8>,
+) -> PreparedCatalogPluginInstall {
+    PreparedCatalogPluginInstall {
+        plugin_id: plugin_id.to_string(),
+        expected_plugin_type: plugin_type.to_string(),
+        expected_provider_type: provider_type.to_string(),
+        release: DownloadedPluginReleaseContract {
+            version: "0.1.0".to_string(),
+            sdk_version: None,
+            sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+            scryer_constraint: None,
+        },
+        scryer_constraint: None,
+        source_kind: PluginSourceKind::Downloaded,
+        support_tier: PluginSupportTier::Official,
+        persisted_wasm_bytes: vec![9, 8, 7, 6],
+        runtime_wasm_bytes: wasm_bytes,
+        runtime_first_party: true,
+        wasm_encoding: PluginWasmEncoding::Zstd,
+        wasm_digest_algo: "blake3".to_string(),
+        source_url: "https://example.com/plugin.wasm.zst".to_string(),
+        publisher: "scryer".to_string(),
+        docs_url: "https://example.com/docs".to_string(),
+        source_repo: fixture_source_repo(plugin_id),
+        manifest_url: "https://example.com/plugin.wasm.zst".to_string(),
+        wasm_digest: "abc123".to_string(),
+        artifact_digest: "def456".to_string(),
+        description: "Fixture plugin".to_string(),
+    }
 }
 
 fn fixture_plugin_artifact_url(url: &str) -> String {
@@ -2733,6 +2775,55 @@ async fn install_catalog_not_loaded() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let err = h.app.install_plugin(&admin(), "alpha").await.unwrap_err();
     assert_not_available_from_catalog(err, "alpha");
+}
+
+#[tokio::test]
+async fn catalog_descriptor_load_is_deferred_until_install_validation() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let runtime_plugin = make_runtime_plugin_load("alpha", "indexer", "alpha");
+    let wasm_bytes = runtime_plugin.wasm_bytes.clone();
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, runtime_plugin.descriptor);
+
+    let prepared =
+        prepared_catalog_plugin_install_fixture("alpha", "indexer", "alpha", wasm_bytes.clone());
+
+    assert_eq!(h.plugin_descriptor_loader.load_count(), 0);
+
+    let validated = h
+        .app
+        .validate_prepared_catalog_plugin_install(prepared)
+        .await
+        .expect("prepared install should validate descriptor during installing phase");
+
+    assert_eq!(h.plugin_descriptor_loader.load_count(), 1);
+    let (installation, runtime_plugin) = validated
+        .into_new_installation("alpha".to_string())
+        .expect("validated install should convert to persisted installation");
+    assert_eq!(installation.plugin_id, "alpha");
+    assert_eq!(installation.provider_type, "alpha");
+    assert_eq!(runtime_plugin.wasm_bytes, wasm_bytes);
+}
+
+#[tokio::test]
+async fn catalog_descriptor_mismatch_fails_before_installation_is_created() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let runtime_plugin = make_runtime_plugin_load("wrong-alpha", "indexer", "alpha");
+    let wasm_bytes = runtime_plugin.wasm_bytes.clone();
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, runtime_plugin.descriptor);
+
+    let prepared =
+        prepared_catalog_plugin_install_fixture("alpha", "indexer", "alpha", wasm_bytes);
+
+    let err = match h.app.validate_prepared_catalog_plugin_install(prepared).await {
+        Ok(_) => panic!("descriptor id mismatch should fail during installing phase"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, AppError::Validation(_)));
+    assert_eq!(h.plugin_descriptor_loader.load_count(), 1);
+    assert!(h.plugin_repo.installations.lock().await.is_empty());
 }
 
 #[tokio::test]

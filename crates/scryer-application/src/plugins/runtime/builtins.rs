@@ -33,7 +33,7 @@ pub struct RegistryPlugin {
     /// When set, installing this plugin auto-creates an IndexerConfig with this URL.
     pub default_base_url: Option<String>,
 }
-impl PreparedCatalogPluginInstall {
+impl ValidatedCatalogPluginInstall {
     fn into_new_installation(
         self,
         plugin_id: String,
