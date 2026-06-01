@@ -50,7 +50,7 @@ impl AppUseCase {
         let mut skipped_local_uploads = Vec::new();
         for installation in installations {
             match installation.source_kind {
-                PluginSourceKind::Downloaded => {
+                PluginSourceKind::Downloaded | PluginSourceKind::Community => {
                     recoverable.push(RestoredPluginRecoveryTarget {
                         installation,
                         source_repo: None,
@@ -179,6 +179,7 @@ impl AppUseCase {
 
         match target.installation.source_kind {
             PluginSourceKind::Downloaded => resolved.source_kind == PluginSourceKind::Downloaded,
+            PluginSourceKind::Community => resolved.source_kind == PluginSourceKind::Community,
             PluginSourceKind::Manual => target
                 .source_repo
                 .as_deref()

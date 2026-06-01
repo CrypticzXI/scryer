@@ -1919,6 +1919,7 @@ pub struct AutoBackupSettingsPayload {
 #[derive(SimpleObject, Clone)]
 pub struct SecuritySettingsPayload {
     pub form_login_enabled: bool,
+    pub password_min_length: i32,
     pub skip_login_for_local_ips: bool,
     pub totp_require_config_step_up: bool,
     pub totp_require_local_login: bool,
@@ -2382,6 +2383,7 @@ pub struct UpdateAutoBackupSettingsInput {
 #[derive(InputObject, Clone)]
 pub struct UpdateSecuritySettingsInput {
     pub form_login_enabled: bool,
+    pub password_min_length: i32,
     pub skip_login_for_local_ips: bool,
     pub totp_require_config_step_up: bool,
     pub totp_require_local_login: bool,

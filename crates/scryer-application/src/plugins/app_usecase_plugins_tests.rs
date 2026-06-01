@@ -227,6 +227,43 @@ impl MockPluginInstallationRepo {
             sources.push(source);
         }
     }
+
+    async fn store_community_catalog_source(
+        &self,
+        plugin_id: &str,
+        github_repo: &str,
+        catalog_json: String,
+    ) {
+        self.store_community_catalog_source_with_support_tier(
+            plugin_id,
+            github_repo,
+            PluginSupportTier::VerifiedCommunity,
+            catalog_json,
+        )
+        .await;
+    }
+
+    async fn store_community_catalog_source_with_support_tier(
+        &self,
+        plugin_id: &str,
+        github_repo: &str,
+        support_tier: PluginSupportTier,
+        catalog_json: String,
+    ) {
+        let source = scryer_domain::PluginCatalogSource {
+            source_key: format!("community:{plugin_id}"),
+            source_kind: "community".to_string(),
+            source_url: "https://example.com/catalog.json".to_string(),
+            github_repo: Some(github_repo.to_string()),
+            support_tier,
+            catalog_json: Some(catalog_json),
+            last_success_at: Some(Utc::now()),
+            last_error: None,
+            updated_at: Utc::now(),
+        };
+        let mut sources = self.catalog_sources.lock().await;
+        sources.push(source);
+    }
 }
 
 #[async_trait]
@@ -2059,6 +2096,119 @@ async fn list_catalog_entries_not_installed() {
 }
 
 #[tokio::test]
+async fn list_available_plugins_includes_cached_verified_community_source() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let artifact_url = fixture_plugin_artifact_url("https://example.com/community-alpha.wasm");
+    let catalog_json = serde_json::json!({
+        "schema_version": "scryer.plugin.catalog.v3",
+        "catalog_version": 1,
+        "plugins": [{
+            "id": "community-alpha",
+            "name": "Community Alpha",
+            "description": "Community plugin",
+            "plugin_type": "indexer",
+            "provider_type": "community-alpha",
+            "publisher": "community",
+            "support_tier": "verified_community",
+            "status": "active",
+            "docs_url": "https://github.com/scryer-community/community-alpha",
+            "source_repo": "https://github.com/scryer-community/community-alpha",
+            "required_signer": {
+                "github_repository": "scryer-community/community-alpha"
+            },
+            "releases": [{
+                "version": "1.0.0",
+                "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
+                "artifacts": [{
+                    "runtime": "wasm32-wasip1",
+                    "required_features": [],
+                    "url": artifact_url,
+                    "mirror_urls": [],
+                    "signature_url": format!("{artifact_url}.bundle.json"),
+                    "signature_mirror_urls": [],
+                    "digests": [fixture_artifact_digest()],
+                    "wasm_digests": [fixture_wasm_digest()],
+                    "bytes": 4,
+                }]
+            }]
+        }],
+        "rule_packs": []
+    })
+    .to_string();
+    h.plugin_repo
+        .store_community_catalog_source(
+            "community-alpha",
+            "scryer-community/community-alpha",
+            catalog_json,
+        )
+        .await;
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+
+    assert_eq!(result.len(), 1);
+    let plugin = &result[0];
+    assert_eq!(plugin.id, "community-alpha");
+    assert_eq!(plugin.source_kind.as_deref(), Some("community"));
+    assert_eq!(plugin.support_tier, PluginSupportTier::VerifiedCommunity);
+    assert!(!plugin.official);
+    assert_eq!(plugin.bytes, Some(4));
+}
+
+#[tokio::test]
+async fn list_available_plugins_ignores_cached_community_source_with_unapproved_tier() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let artifact_url = fixture_plugin_artifact_url("https://example.com/community-alpha.wasm");
+    let catalog_json = serde_json::json!({
+        "schema_version": "scryer.plugin.catalog.v3",
+        "catalog_version": 1,
+        "plugins": [{
+            "id": "community-alpha",
+            "name": "Community Alpha",
+            "description": "Community plugin",
+            "plugin_type": "indexer",
+            "provider_type": "community-alpha",
+            "publisher": "community",
+            "support_tier": "official",
+            "status": "active",
+            "docs_url": "https://github.com/scryer-community/community-alpha",
+            "source_repo": "https://github.com/scryer-community/community-alpha",
+            "required_signer": {
+                "github_repository": "scryer-community/community-alpha"
+            },
+            "releases": [{
+                "version": "1.0.0",
+                "sdk_constraint": scryer_plugin_sdk::current_sdk_constraint(),
+                "artifacts": [{
+                    "runtime": "wasm32-wasip1",
+                    "required_features": [],
+                    "url": artifact_url,
+                    "mirror_urls": [],
+                    "signature_url": format!("{artifact_url}.bundle.json"),
+                    "signature_mirror_urls": [],
+                    "digests": [fixture_artifact_digest()],
+                    "wasm_digests": [fixture_wasm_digest()],
+                    "bytes": 4,
+                }]
+            }]
+        }],
+        "rule_packs": []
+    })
+    .to_string();
+    h.plugin_repo
+        .store_community_catalog_source_with_support_tier(
+            "community-alpha",
+            "scryer-community/community-alpha",
+            PluginSupportTier::Official,
+            catalog_json,
+        )
+        .await;
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
 async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_only() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let initiator = admin();
@@ -2813,10 +2963,13 @@ async fn catalog_descriptor_mismatch_fails_before_installation_is_created() {
     h.plugin_descriptor_loader
         .register(&wasm_bytes, runtime_plugin.descriptor);
 
-    let prepared =
-        prepared_catalog_plugin_install_fixture("alpha", "indexer", "alpha", wasm_bytes);
+    let prepared = prepared_catalog_plugin_install_fixture("alpha", "indexer", "alpha", wasm_bytes);
 
-    let err = match h.app.validate_prepared_catalog_plugin_install(prepared).await {
+    let err = match h
+        .app
+        .validate_prepared_catalog_plugin_install(prepared)
+        .await
+    {
         Ok(_) => panic!("descriptor id mismatch should fail during installing phase"),
         Err(err) => err,
     };

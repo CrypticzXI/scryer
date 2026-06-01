@@ -2621,6 +2621,7 @@ pub enum PluginSourceKind {
     Bundled,
     #[default]
     Downloaded,
+    Community,
     Manual,
 }
 

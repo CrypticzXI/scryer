@@ -5864,6 +5864,9 @@ fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     let media_requests = Arc::new(MockMediaRequestRepo::with_domain_events(
         domain_events.clone(),
     ));
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
 
     let services = AppServices::builder(
         titles.clone(),
@@ -5881,6 +5884,15 @@ fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     .with_domain_events(domain_events.clone())
     .with_libraries(libraries.clone())
     .with_media_requests(media_requests.clone())
+    .with_wanted_items(wanted_items.clone())
+    .with_pending_releases(pending_releases.clone())
+    .with_download_submissions(download_submissions.clone())
+    .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
+    .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
+        download_submissions,
+        pending_releases,
+        wanted_items,
+    }))
     .build_partial_for_tests();
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(MovieFacetHandler));
@@ -20152,6 +20164,55 @@ async fn update_user_password_is_hashed() {
 }
 
 #[tokio::test]
+async fn create_user_rejects_password_shorter_than_minimum() {
+    let (app, user) = bootstrap();
+
+    let result = create_user_with_permissions(
+        &app,
+        &user,
+        "short-password-user",
+        "1234567",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+
+    match result {
+        Err(AppError::Validation(message)) => {
+            assert_eq!(message, "password must be at least 8 characters");
+        }
+        Err(error) => panic!("expected password-length validation error, got {error}"),
+        Ok(_) => panic!("expected password-length validation error"),
+    }
+}
+
+#[tokio::test]
+async fn set_user_password_rejects_password_shorter_than_minimum() {
+    let (app, user) = bootstrap();
+
+    let created = create_user_with_permissions(
+        &app,
+        &user,
+        "password-reset-user",
+        "before-pass",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await
+    .expect("create user");
+
+    let result = app
+        .set_user_password(&user, &created.id, "1234567".to_string())
+        .await;
+
+    match result {
+        Err(AppError::Validation(message)) => {
+            assert_eq!(message, "password must be at least 8 characters");
+        }
+        Err(error) => panic!("expected password-length validation error, got {error}"),
+        Ok(_) => panic!("expected password-length validation error"),
+    }
+}
+
+#[tokio::test]
 async fn self_password_change_is_hashed() {
     let (app, admin) = bootstrap();
 
@@ -20180,6 +20241,58 @@ async fn self_password_change_is_hashed() {
         "password hash should change when password is updated"
     );
     assert_ne!(updated.password_hash, Some("after-pass".to_string()));
+}
+
+#[tokio::test]
+async fn self_password_change_rejects_password_shorter_than_minimum() {
+    let (app, admin) = bootstrap();
+
+    let created = create_user_with_permissions(
+        &app,
+        &admin,
+        "self-short-password-user",
+        "before-pass",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await
+    .expect("create user");
+
+    let result = app
+        .change_own_password(&created, "1234567".to_string(), "before-pass".to_string())
+        .await;
+
+    match result {
+        Err(AppError::Validation(message)) => {
+            assert_eq!(message, "password must be at least 8 characters");
+        }
+        Err(error) => panic!("expected password-length validation error, got {error}"),
+        Ok(_) => panic!("expected password-length validation error"),
+    }
+}
+
+#[tokio::test]
+async fn set_initial_own_password_rejects_password_shorter_than_minimum() {
+    let (app, _) = bootstrap();
+    let user =
+        test_user_with_app_permissions("initial-short-password-user", AppPermissionMask::NONE);
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("create passwordless user");
+
+    let result = app
+        .set_initial_own_password(&user, "1234567".to_string())
+        .await;
+
+    match result {
+        Err(AppError::Validation(message)) => {
+            assert_eq!(message, "password must be at least 8 characters");
+        }
+        Err(error) => panic!("expected password-length validation error, got {error}"),
+        Ok(_) => panic!("expected password-length validation error"),
+    }
 }
 
 #[tokio::test]
@@ -22562,6 +22675,111 @@ fn v1_password_still_validates() {
     );
 }
 
+#[tokio::test]
+async fn existing_short_password_remains_valid_after_minimum_is_raised() {
+    let (app, admin) = bootstrap();
+    let short_password = "short7!";
+    let user = User {
+        id: "existing-short-password-user".to_string(),
+        username: "existing_short_password".to_string(),
+        password_hash: Some(
+            app.hash_password(short_password)
+                .expect("hash short password"),
+        ),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("create short-password user");
+
+    app.update_security_settings(
+        &admin,
+        UpdateSecuritySettings {
+            form_login_enabled: false,
+            password_min_length: 12,
+            skip_login_for_local_ips: false,
+            totp_require_config_step_up: false,
+            totp_require_local_login: false,
+            totp_require_jellyfin_login: false,
+        },
+    )
+    .await
+    .expect("raise password minimum");
+
+    let authenticated = app
+        .authenticate_credentials("existing_short_password", short_password)
+        .await
+        .expect("authenticate existing short password");
+    assert_eq!(authenticated.id, user.id);
+}
+
+#[tokio::test]
+async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
+    let (app, admin) = bootstrap();
+    let short_password = "short7!";
+    let salt = "abcdef0123456789abcdef0123456789";
+    let digest = sha256_hex(format!("{salt}{short_password}"));
+    let legacy_hash = format!("v1${salt}${digest}");
+    let user = User {
+        id: "existing-short-v1-password-user".to_string(),
+        username: "existing_short_v1_password".to_string(),
+        password_hash: Some(legacy_hash.clone()),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("create short-password legacy user");
+
+    app.update_security_settings(
+        &admin,
+        UpdateSecuritySettings {
+            form_login_enabled: false,
+            password_min_length: 12,
+            skip_login_for_local_ips: false,
+            totp_require_config_step_up: false,
+            totp_require_local_login: false,
+            totp_require_jellyfin_login: false,
+        },
+    )
+    .await
+    .expect("raise password minimum");
+
+    let authenticated = app
+        .authenticate_credentials("existing_short_v1_password", short_password)
+        .await
+        .expect("authenticate existing short v1 password");
+    assert!(
+        authenticated
+            .password_hash
+            .as_deref()
+            .is_some_and(|hash| hash.starts_with("v2$"))
+    );
+
+    let stored = app
+        .services
+        .identity
+        .users
+        .get_by_id(&user.id)
+        .await
+        .expect("load migrated user")
+        .expect("migrated user present");
+    assert_ne!(stored.password_hash.as_deref(), Some(legacy_hash.as_str()));
+    assert!(
+        stored
+            .password_hash
+            .as_deref()
+            .is_some_and(|hash| hash.starts_with("v2$"))
+    );
+}
+
 // ── password edge cases ───────────────────────────────────────────────────
 
 #[test]
@@ -23444,7 +23662,7 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
         .await
         .expect("authenticate token from warm cache");
 
-    assert_eq!(users.get_by_id_call_count(), 2);
+    assert_eq!(users.get_by_id_call_count(), 3);
     assert_eq!(users.list_all_call_count(), 1);
 }
 

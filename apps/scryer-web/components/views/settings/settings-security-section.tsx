@@ -19,6 +19,8 @@ type SettingsSecuritySectionProps = {
   confirmUsername: string;
   confirmPassword: string;
   confirmError: string | null;
+  passwordMinLengthDraft: string;
+  minPasswordLength: number;
   onToggle: (enabled: boolean) => void;
   onConfirmUsernameChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
@@ -26,6 +28,8 @@ type SettingsSecuritySectionProps = {
   onCancelEnable: () => void;
   onConfirmDisable: () => Promise<void> | void;
   onCancelDisable: () => void;
+  onPasswordMinLengthDraftChange: (value: string) => void;
+  onPasswordMinLengthSubmit: () => Promise<void> | void;
   onSkipLocalIpsChange: (enabled: boolean) => void;
   onTotpConfigStepUpChange: (enabled: boolean) => void;
   onTotpLocalLoginChange: (enabled: boolean) => void;
@@ -42,6 +46,8 @@ export function SettingsSecuritySection({
   confirmUsername,
   confirmPassword,
   confirmError,
+  passwordMinLengthDraft,
+  minPasswordLength,
   onToggle,
   onConfirmUsernameChange,
   onConfirmPasswordChange,
@@ -49,6 +55,8 @@ export function SettingsSecuritySection({
   onCancelEnable,
   onConfirmDisable,
   onCancelDisable,
+  onPasswordMinLengthDraftChange,
+  onPasswordMinLengthSubmit,
   onSkipLocalIpsChange,
   onTotpConfigStepUpChange,
   onTotpLocalLoginChange,
@@ -81,6 +89,33 @@ export function SettingsSecuritySection({
               </div>
               <p className="text-xs text-muted-foreground">
                 {t("settings.securityEnableFormLoginHelp")}
+              </p>
+            </div>
+            <div className="max-w-xs space-y-1.5">
+              <Label className="text-sm font-medium" htmlFor="security-password-min-length">
+                {t("settings.securityPasswordMinLength")}
+              </Label>
+              <Input
+                id="security-password-min-length"
+                type="number"
+                inputMode="numeric"
+                min={minPasswordLength}
+                step={1}
+                value={passwordMinLengthDraft}
+                disabled={busy}
+                onBlur={() => void onPasswordMinLengthSubmit()}
+                onChange={(event) => onPasswordMinLengthDraftChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void onPasswordMinLengthSubmit();
+                  }
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("settings.securityPasswordMinLengthHelp", {
+                  min: minPasswordLength,
+                })}
               </p>
             </div>
             <div className="space-y-3">

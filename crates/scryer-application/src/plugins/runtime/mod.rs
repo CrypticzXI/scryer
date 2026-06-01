@@ -1,10 +1,11 @@
 use super::catalog::{
-    CATALOG_V3_RUNTIME_WASIP1, CatalogV3, CatalogV3DistributionArtifact, CatalogV3PluginArtifact,
-    CatalogV3PluginEntry, CatalogV3PluginRelease, CatalogV3Redirect, CatalogV3RulePackEntry,
-    CatalogV3RulePackRelease, GitHubRepo, PluginLifecycleStatus, RequiredSigner,
-    artifact_encoding_from_url, blake3_digest, compress_zstd, decompress_brotli, decompress_zstd,
-    parse_and_validate_catalog_v3, parse_and_validate_catalog_v3_redirect, parse_digest_string,
-    redirect_bundle_url_for, verify_digest_set, verify_signed_blob, verify_split_digest,
+    CATALOG_V3_RUNTIME_WASIP1, CatalogV3, CatalogV3CommunitySource, CatalogV3DistributionArtifact,
+    CatalogV3PluginArtifact, CatalogV3PluginEntry, CatalogV3PluginRelease, CatalogV3Redirect,
+    CatalogV3RulePackEntry, CatalogV3RulePackRelease, GitHubRepo, PluginLifecycleStatus,
+    RequiredSigner, artifact_encoding_from_url, blake3_digest, compress_zstd, decompress_brotli,
+    decompress_zstd, parse_and_validate_catalog_v3, parse_and_validate_catalog_v3_redirect,
+    parse_digest_string, redirect_bundle_url_for, verify_digest_set, verify_signed_blob,
+    verify_split_digest,
 };
 #[cfg(test)]
 use super::catalog::{ChildCatalog, ChildCatalogRelease};

@@ -174,7 +174,17 @@ pub struct CatalogV3 {
     pub catalog_version: u64,
     pub plugins: Vec<CatalogV3PluginEntry>,
     #[serde(default)]
+    pub community_sources: Vec<CatalogV3CommunitySource>,
+    #[serde(default)]
     pub rule_packs: Vec<CatalogV3RulePackEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogV3CommunitySource {
+    pub id: String,
+    pub github_repository: String,
+    pub support_tier: PluginSupportTier,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -388,6 +398,13 @@ impl GitHubRepo {
     pub fn catalog_v3_url(&self) -> String {
         format!(
             "https://github.com/{}/{}/releases/latest/download/catalog-v3.json",
+            self.owner, self.name
+        )
+    }
+
+    pub fn delegated_catalog_v3_url(&self) -> String {
+        format!(
+            "https://github.com/{}/{}/releases/download/catalog%2Fv3/catalog-v3.min.json.zst",
             self.owner, self.name
         )
     }
@@ -941,6 +958,28 @@ fn validate_catalog_v3(catalog: &CatalogV3) -> AppResult<()> {
             )));
         }
         validate_plugin_release_set(plugin)?;
+    }
+
+    let mut community_source_ids = HashSet::new();
+    for source in &catalog.community_sources {
+        require_non_empty("community source id", &source.id)?;
+        require_non_empty(
+            "community source github_repository",
+            &source.github_repository,
+        )?;
+        if source.support_tier != PluginSupportTier::VerifiedCommunity {
+            return Err(AppError::Validation(format!(
+                "community source '{}' support tier must be verified_community",
+                source.id
+            )));
+        }
+        if !community_source_ids.insert(source.id.clone()) {
+            return Err(AppError::Validation(format!(
+                "duplicate community source id '{}' in plugin catalog",
+                source.id
+            )));
+        }
+        GitHubRepo::parse(&source.github_repository)?;
     }
 
     let mut rule_pack_ids = HashSet::new();
@@ -1733,7 +1772,6 @@ mod tests {
         let raw = br#"{
             "schema_version": "scryer.plugin.catalog.v3",
             "catalog_version": 1,
-            "generated_at": "2026-05-30T00:00:00Z",
             "plugins": [
                 {
                     "id": "alpha",
@@ -1780,7 +1818,61 @@ mod tests {
 
         let err = parse_and_validate_catalog_v3(raw).unwrap_err();
 
-        assert!(err.to_string().contains("invalid min_scryer_version"));
+        assert!(
+            err.to_string().contains("invalid min_scryer_version"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn catalog_v3_accepts_verified_community_sources() {
+        let raw = br#"{
+            "schema_version": "scryer.plugin.catalog.v3",
+            "catalog_version": 1,
+            "plugins": [],
+            "rule_packs": [],
+            "community_sources": [
+                {
+                    "id": "community-alpha",
+                    "github_repository": "scryer-community/community-alpha",
+                    "support_tier": "verified_community"
+                }
+            ]
+        }"#;
+
+        let catalog = parse_and_validate_catalog_v3(raw).expect("catalog should parse");
+
+        assert_eq!(catalog.community_sources.len(), 1);
+        assert_eq!(catalog.community_sources[0].id, "community-alpha");
+        assert_eq!(
+            catalog.community_sources[0].support_tier,
+            PluginSupportTier::VerifiedCommunity
+        );
+    }
+
+    #[test]
+    fn catalog_v3_rejects_non_verified_community_sources() {
+        let raw = br#"{
+            "schema_version": "scryer.plugin.catalog.v3",
+            "catalog_version": 1,
+            "plugins": [],
+            "rule_packs": [],
+            "community_sources": [
+                {
+                    "id": "community-alpha",
+                    "github_repository": "scryer-community/community-alpha",
+                    "support_tier": "official"
+                }
+            ]
+        }"#;
+
+        let err = parse_and_validate_catalog_v3(raw).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("support tier must be verified_community"),
+            "unexpected error: {err}"
+        );
     }
 
     #[cfg(feature = "runtime-plugin-trust")]

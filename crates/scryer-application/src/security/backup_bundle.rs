@@ -540,6 +540,30 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "media_server_connections",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_server_default_library_grants",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "media_server_path_mappings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "jellyfin_media_server_details",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "plex_media_server_details",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "emby_media_server_details",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "media_request_external_ids",
         classification: BackupTableClassification::Export,
     },

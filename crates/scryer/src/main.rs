@@ -1893,6 +1893,7 @@ async fn load_runtime_plugin_state(
             if !matches!(
                 installation.source_kind,
                 scryer_domain::PluginSourceKind::Downloaded
+                    | scryer_domain::PluginSourceKind::Community
                     | scryer_domain::PluginSourceKind::Manual
             ) {
                 return None;

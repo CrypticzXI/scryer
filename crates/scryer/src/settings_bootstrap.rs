@@ -11,7 +11,7 @@ use scryer_application::{
     HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY,
     LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
     METADATA_LANGUAGE_KEY, MOVIES_ROOT_FOLDERS_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY,
-    NZBGET_RECENT_PRIORITY_SETTING_KEY, POST_PROCESSING_SCRIPT_ANIME_KEY,
+    NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY, POST_PROCESSING_SCRIPT_ANIME_KEY,
     POST_PROCESSING_SCRIPT_MOVIE_KEY, POST_PROCESSING_SCRIPT_SERIES_KEY,
     POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY, QUALITY_PROFILE_ID_KEY,
     QUALITY_PROFILE_INHERIT_VALUE, QualityProfile, QualityProfileRepository,
@@ -212,6 +212,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: FORM_LOGIN_ENABLED_KEY,
             data_type: "boolean",
             default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SECURITY,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: PASSWORD_MIN_LENGTH_KEY,
+            data_type: "integer",
+            default_value_json: "8",
             is_sensitive: false,
         },
         ServiceSettingSeed {

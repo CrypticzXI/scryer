@@ -141,10 +141,7 @@ fn catalog_release_is_sdk_compatible(plugin_id: &str, release: &CatalogV3PluginR
     };
     sdk_req.matches(current_sdk_version())
 }
-fn catalog_release_is_scryer_compatible(
-    plugin_id: &str,
-    release: &CatalogV3PluginRelease,
-) -> bool {
+fn catalog_release_is_scryer_compatible(plugin_id: &str, release: &CatalogV3PluginRelease) -> bool {
     let Some(min_scryer_version) = release
         .min_scryer_version
         .as_deref()
@@ -403,6 +400,9 @@ const CENTRAL_CATALOG_SOURCE_KEY: &str = "__central_catalog";
 const LEGACY_CENTRAL_CATALOG_SOURCE_KEY: &str = "__central_catalog_v2";
 const CENTRAL_CATALOG_REPO: &str = "scryer-media/scryer-plugins";
 const CENTRAL_CATALOG_WORKFLOW: &str = ".github/workflows/release-plugin.yml";
+fn community_catalog_source_key(plugin_id: &str) -> String {
+    format!("community:{plugin_id}")
+}
 fn plugin_catalog_url() -> String {
     std::env::var(CATALOG_URL_ENV)
         .ok()
@@ -478,6 +478,67 @@ async fn fetch_signed_blob_from_locations(
         signature_bundle,
     })
 }
+fn validate_community_catalog_v3_delegate(
+    source: &CatalogV3CommunitySource,
+    repo: &GitHubRepo,
+    catalog: &CatalogV3,
+) -> AppResult<()> {
+    if source.support_tier != PluginSupportTier::VerifiedCommunity {
+        return Err(AppError::Validation(format!(
+            "community catalog source '{}' approved tier must be verified_community",
+            source.id
+        )));
+    }
+    if catalog.plugins.len() != 1 {
+        return Err(AppError::Validation(format!(
+            "community catalog source '{}' must publish exactly one plugin",
+            source.id
+        )));
+    }
+    if !catalog.rule_packs.is_empty() {
+        return Err(AppError::Validation(format!(
+            "community catalog source '{}' must not publish rule packs",
+            source.id
+        )));
+    }
+    if !catalog.community_sources.is_empty() {
+        return Err(AppError::Validation(format!(
+            "community catalog source '{}' must not publish nested community sources",
+            source.id
+        )));
+    }
+    let plugin = &catalog.plugins[0];
+    if plugin.id != source.id {
+        return Err(AppError::Validation(format!(
+            "community catalog source '{}' published plugin '{}'",
+            source.id, plugin.id
+        )));
+    }
+    if plugin.support_tier != source.support_tier {
+        return Err(AppError::Validation(format!(
+            "community catalog source '{}' support tier does not match approved tier",
+            source.id
+        )));
+    }
+    if plugin.required_signer.github_repository != repo.slug() {
+        return Err(AppError::Validation(format!(
+            "community catalog source '{}' signer repo '{}' does not match approved repo '{}'",
+            source.id,
+            plugin.required_signer.github_repository,
+            repo.slug()
+        )));
+    }
+    let source_repo = GitHubRepo::parse(&plugin.source_repo)?;
+    if source_repo != *repo {
+        return Err(AppError::Validation(format!(
+            "community catalog source '{}' source repo '{}' does not match approved repo '{}'",
+            source.id,
+            source_repo.slug(),
+            repo.slug()
+        )));
+    }
+    Ok(())
+}
 impl AppUseCase {
     async fn cached_central_catalog(&self) -> AppResult<Option<CatalogV3>> {
         let Some(source) = self
@@ -524,6 +585,11 @@ impl AppUseCase {
 impl AppUseCase {
     pub async fn refresh_plugin_catalog_internal(&self) -> AppResult<()> {
         let (central, redirect_url, _) = self.fetch_verified_catalog_v3().await?;
+        let community_sources = central.community_sources.clone();
+        let approved_community_source_keys = community_sources
+            .iter()
+            .map(|source| community_catalog_source_key(&source.id))
+            .collect::<std::collections::HashSet<_>>();
         let central_json = serde_json::to_string(&central).map_err(|error| {
             AppError::Repository(format!("failed to serialize plugin catalog cache: {error}"))
         })?;
@@ -552,13 +618,86 @@ impl AppUseCase {
             .await?;
 
         for stale_source in sources.iter().filter(|source| {
-            source.source_key == LEGACY_CENTRAL_CATALOG_SOURCE_KEY || source.source_kind == "child"
+            source.source_key == LEGACY_CENTRAL_CATALOG_SOURCE_KEY
+                || source.source_kind == "child"
+                || (source.source_kind == "community"
+                    && !approved_community_source_keys.contains(&source.source_key))
         }) {
             self.services
                 .customization
                 .plugin_installations
                 .delete_plugin_catalog_source(&stale_source.source_key)
                 .await?;
+        }
+
+        let mut community_tasks = tokio::task::JoinSet::new();
+        for community_source in community_sources {
+            let app = self.clone();
+            community_tasks.spawn(async move {
+                let repo = GitHubRepo::parse(&community_source.github_repository)?;
+                let catalog_url = repo.delegated_catalog_v3_url();
+                let source_key = community_catalog_source_key(&community_source.id);
+                let result = app
+                    .fetch_verified_community_catalog_v3(&community_source)
+                    .await;
+                Ok::<_, AppError>((community_source, repo, catalog_url, source_key, result))
+            });
+        }
+        while let Some(joined) = community_tasks.join_next().await {
+            let (community_source, repo, catalog_url, source_key, result) =
+                joined.map_err(|error| {
+                    AppError::Repository(format!(
+                        "community plugin catalog refresh task failed to complete: {error}"
+                    ))
+                })??;
+            match result {
+                Ok((catalog, actual_url)) => {
+                    let catalog_json = serde_json::to_string(&catalog).map_err(|error| {
+                        AppError::Repository(format!(
+                            "failed to serialize community plugin catalog cache: {error}"
+                        ))
+                    })?;
+                    let now = Utc::now();
+                    self.services
+                        .customization
+                        .plugin_installations
+                        .upsert_plugin_catalog_source(&PluginCatalogSource {
+                            source_key: source_key.clone(),
+                            source_kind: "community".to_string(),
+                            source_url: actual_url,
+                            github_repo: Some(repo.slug()),
+                            support_tier: community_source.support_tier,
+                            catalog_json: Some(catalog_json),
+                            last_success_at: Some(now),
+                            last_error: None,
+                            updated_at: now,
+                        })
+                        .await?;
+                }
+                Err(error) => {
+                    warn!(
+                        source_key = source_key.as_str(),
+                        error = %error,
+                        "verified community plugin catalog is unavailable"
+                    );
+                    let now = Utc::now();
+                    self.services
+                        .customization
+                        .plugin_installations
+                        .upsert_plugin_catalog_source(&PluginCatalogSource {
+                            source_key,
+                            source_kind: "community".to_string(),
+                            source_url: catalog_url,
+                            github_repo: Some(repo.slug()),
+                            support_tier: community_source.support_tier,
+                            catalog_json: None,
+                            last_success_at: None,
+                            last_error: Some(error.to_string()),
+                            updated_at: now,
+                        })
+                        .await?;
+                }
+            }
         }
 
         for source in sources
@@ -709,6 +848,36 @@ impl AppUseCase {
         let catalog = parse_and_validate_catalog_v3(&decoded)?;
         Ok((catalog, redirect_url, redirect.catalog_version))
     }
+
+    async fn fetch_verified_community_catalog_v3(
+        &self,
+        source: &CatalogV3CommunitySource,
+    ) -> AppResult<(CatalogV3, String)> {
+        let repo = GitHubRepo::parse(&source.github_repository)?;
+        let catalog_url = repo.delegated_catalog_v3_url();
+        let signer = RequiredSigner {
+            github_repository: repo.slug(),
+            github_workflow: None,
+        };
+        let data_urls = vec![catalog_url.clone()];
+        let signature_urls = vec![signed_catalog_json_bundle_url(&catalog_url)];
+        let (raw, actual_url) = self
+            .fetch_verified_blob_from_locations(
+                &data_urls,
+                &signature_urls,
+                &signer,
+                "community plugin catalog",
+            )
+            .await?;
+        let decoded = match artifact_encoding_from_url(&actual_url) {
+            Some("zst") => decompress_zstd(raw).await?,
+            Some("br") => decompress_brotli(raw).await?,
+            _ => raw,
+        };
+        let catalog = parse_and_validate_catalog_v3(&decoded)?;
+        validate_community_catalog_v3_delegate(source, &repo, &catalog)?;
+        Ok((catalog, actual_url))
+    }
 }
 impl AppUseCase {
     async fn resolved_catalog_plugins(&self) -> AppResult<Vec<CatalogPluginResolution>> {
@@ -746,6 +915,92 @@ impl AppUseCase {
                     github_repo,
                 });
             }
+        }
+
+        let mut seen_plugin_ids = result
+            .iter()
+            .map(|resolved| resolved.catalog_entry.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for source in sources
+            .iter()
+            .filter(|source| source.source_kind == "community")
+        {
+            let Some(catalog_json) = source.catalog_json.as_deref() else {
+                continue;
+            };
+            let Some(repo_slug) = source.github_repo.as_deref() else {
+                warn!(
+                    source_key = source.source_key.as_str(),
+                    "cached community plugin catalog source is missing github repo"
+                );
+                continue;
+            };
+            let Some(approved_id) = source.source_key.strip_prefix("community:") else {
+                warn!(
+                    source_key = source.source_key.as_str(),
+                    "cached community plugin catalog source has invalid source key"
+                );
+                continue;
+            };
+            let community_repo = match GitHubRepo::parse(repo_slug) {
+                Ok(repo) => repo,
+                Err(error) => {
+                    warn!(
+                        source_key = source.source_key.as_str(),
+                        error = %error,
+                        "cached community plugin catalog source has invalid github repo"
+                    );
+                    continue;
+                }
+            };
+            let catalog = match parse_and_validate_catalog_v3(catalog_json.as_bytes()) {
+                Ok(catalog) => catalog,
+                Err(error) => {
+                    warn!(
+                        source_key = source.source_key.as_str(),
+                        error = %error,
+                        "ignoring invalid cached community plugin catalog"
+                    );
+                    continue;
+                }
+            };
+            let approved_source = CatalogV3CommunitySource {
+                id: approved_id.to_string(),
+                github_repository: community_repo.slug(),
+                support_tier: source.support_tier,
+            };
+            if let Err(error) =
+                validate_community_catalog_v3_delegate(&approved_source, &community_repo, &catalog)
+            {
+                warn!(
+                    source_key = source.source_key.as_str(),
+                    error = %error,
+                    "ignoring invalid cached community plugin catalog"
+                );
+                continue;
+            }
+            let plugin = catalog.plugins[0].clone();
+            if !seen_plugin_ids.insert(plugin.id.clone()) {
+                warn!(
+                    plugin_id = plugin.id.as_str(),
+                    source_key = source.source_key.as_str(),
+                    "ignoring duplicate community plugin catalog entry"
+                );
+                continue;
+            }
+            let Some((release, artifact)) =
+                select_catalog_release_and_artifact(&plugin, &supported_plugin_features, cpu_class)
+            else {
+                continue;
+            };
+            result.push(CatalogPluginResolution {
+                catalog_entry: plugin,
+                release,
+                artifact,
+                source_kind: PluginSourceKind::Community,
+                effective_support_tier: source.support_tier,
+                github_repo: community_repo,
+            });
         }
 
         for source in sources

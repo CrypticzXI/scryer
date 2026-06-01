@@ -44,6 +44,7 @@ export type TrustedCertificateEntry = {
 
 export type SecuritySettings = {
   formLoginEnabled: boolean;
+  passwordMinLength: number;
   skipLoginForLocalIps: boolean;
   totpRequireConfigStepUp: boolean;
   totpRequireLocalLogin: boolean;

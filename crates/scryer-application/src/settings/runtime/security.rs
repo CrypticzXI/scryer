@@ -6,6 +6,7 @@ pub struct ServiceSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecuritySettings {
     pub form_login_enabled: bool,
+    pub password_min_length: i32,
     pub skip_login_for_local_ips: bool,
     pub totp_require_config_step_up: bool,
     pub totp_require_local_login: bool,
@@ -14,6 +15,7 @@ pub struct SecuritySettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateSecuritySettings {
     pub form_login_enabled: bool,
+    pub password_min_length: i32,
     pub skip_login_for_local_ips: bool,
     pub totp_require_config_step_up: bool,
     pub totp_require_local_login: bool,
@@ -30,6 +32,7 @@ impl AppUseCase {
             .read_setting_bool_value(FORM_LOGIN_ENABLED_KEY, None)
             .await?
             .unwrap_or(false);
+        let password_min_length = self.password_min_length().await?;
         let skip_login_for_local_ips = self
             .read_setting_bool_value(SKIP_LOGIN_FOR_LOCAL_IPS_KEY, None)
             .await?
@@ -49,6 +52,7 @@ impl AppUseCase {
 
         Ok(SecuritySettings {
             form_login_enabled,
+            password_min_length,
             skip_login_for_local_ips,
             totp_require_config_step_up,
             totp_require_local_login,
@@ -123,6 +127,14 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
             .await?;
 
+        let current = self.load_security_settings().await?;
+
+        if input.password_min_length < PASSWORD_MIN_LENGTH_MIN as i32 {
+            return Err(AppError::Validation(format!(
+                "password minimum length must be at least {PASSWORD_MIN_LENGTH_MIN}"
+            )));
+        }
+
         if input.totp_require_config_step_up
             && self
                 .services
@@ -138,9 +150,24 @@ impl AppUseCase {
             ));
         }
 
+        if !current.form_login_enabled
+            && input.form_login_enabled
+            && self.default_admin_uses_bootstrap_password().await?
+        {
+            return Err(AppError::Validation(
+                "change the default admin password before enabling form login".into(),
+            ));
+        }
+
         self.upsert_system_setting_json(
             FORM_LOGIN_ENABLED_KEY,
             &input.form_login_enabled,
+            Some(actor.id.clone()),
+        )
+        .await?;
+        self.upsert_system_setting_json(
+            PASSWORD_MIN_LENGTH_KEY,
+            &input.password_min_length,
             Some(actor.id.clone()),
         )
         .await?;
@@ -175,6 +202,7 @@ impl AppUseCase {
             None,
             vec![
                 FORM_LOGIN_ENABLED_KEY.to_string(),
+                PASSWORD_MIN_LENGTH_KEY.to_string(),
                 SKIP_LOGIN_FOR_LOCAL_IPS_KEY.to_string(),
                 TOTP_REQUIRE_CONFIG_STEP_UP_KEY.to_string(),
                 TOTP_REQUIRE_LOCAL_LOGIN_KEY.to_string(),
@@ -185,6 +213,7 @@ impl AppUseCase {
 
         Ok(SecuritySettings {
             form_login_enabled: input.form_login_enabled,
+            password_min_length: input.password_min_length,
             skip_login_for_local_ips: input.skip_login_for_local_ips,
             totp_require_config_step_up: input.totp_require_config_step_up,
             totp_require_local_login: input.totp_require_local_login,

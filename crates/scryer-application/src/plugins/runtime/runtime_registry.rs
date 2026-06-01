@@ -264,10 +264,12 @@ impl AppUseCase {
             }
         }
 
-        for resolved in resolved
-            .into_iter()
-            .filter(|resolved| resolved.source_kind == PluginSourceKind::Manual)
-        {
+        for resolved in resolved.into_iter().filter(|resolved| {
+            matches!(
+                resolved.source_kind,
+                PluginSourceKind::Community | PluginSourceKind::Manual
+            )
+        }) {
             let inst = effective_installations
                 .iter()
                 .copied()
@@ -322,7 +324,7 @@ impl AppUseCase {
                 blocked_reason: None,
                 wasm_url: Some(resolved.artifact.url.clone()),
                 wasm_sha256: None,
-                min_scryer_version: None,
+                min_scryer_version: resolved.release.min_scryer_version.clone(),
                 bytes: Some(resolved.artifact.bytes),
                 default_base_url: self.default_base_url_for_plugin(
                     &plugin_type,

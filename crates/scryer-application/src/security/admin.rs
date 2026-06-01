@@ -291,6 +291,7 @@ impl AppUseCase {
         if username.is_empty() {
             return Err(AppError::Validation("username is required".to_string()));
         }
+        self.validate_new_local_password(&password).await?;
         let password_hash = self.hash_password(&password)?;
 
         if self
@@ -464,6 +465,7 @@ impl AppUseCase {
             ));
         }
 
+        self.validate_new_local_password(&password).await?;
         let password_hash = self.hash_password(&password)?;
         let user = self
             .services

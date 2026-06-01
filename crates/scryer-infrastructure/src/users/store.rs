@@ -479,7 +479,8 @@ mod tests {
             "CREATE TABLE users (
                 id TEXT PRIMARY KEY NOT NULL,
                 username TEXT NOT NULL UNIQUE,
-                password_hash TEXT
+                password_hash TEXT,
+                account_kind TEXT NOT NULL DEFAULT 'local'
             )",
         )
         .execute(&pool)

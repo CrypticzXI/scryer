@@ -1759,6 +1759,7 @@ export const generalSettingsQuery = `query GeneralSettings {
 export const securitySettingsQuery = `query SecuritySettings {
   securitySettings {
     formLoginEnabled
+    passwordMinLength
     skipLoginForLocalIps
     totpRequireConfigStepUp
     totpRequireLocalLogin

@@ -772,6 +772,7 @@ fn row_is_incompatible_external_installation(row: &SqlRow) -> bool {
 fn parse_source_kind(value: &str) -> PluginSourceKind {
     match value {
         "bundled" => PluginSourceKind::Bundled,
+        "community" => PluginSourceKind::Community,
         "manual" => PluginSourceKind::Manual,
         _ => PluginSourceKind::Downloaded,
     }
@@ -781,6 +782,7 @@ fn source_kind_label(value: PluginSourceKind) -> &'static str {
     match value {
         PluginSourceKind::Bundled => "bundled",
         PluginSourceKind::Downloaded => "downloaded",
+        PluginSourceKind::Community => "community",
         PluginSourceKind::Manual => "manual",
     }
 }

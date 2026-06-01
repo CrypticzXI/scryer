@@ -30,7 +30,7 @@ use scryer_infrastructure::{
     LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MediaServerConnectionStore,
     MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient, PendingReleaseStore,
     ReleaseStore, SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore, TitleImageStore,
-    TotpStore, WantedStore, WorkflowOperationStore,
+    TotpStore, WantedStore, WebauthnStore, WorkflowOperationStore,
 };
 use scryer_interface::context::{
     AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, MfaVerification,
@@ -723,6 +723,7 @@ impl TestContext {
             datastore.clone(),
             db.encryption_key_state(),
         )))
+        .with_webauthn_store(Arc::new(WebauthnStore::new(datastore.clone())))
         .with_totp_store(Arc::new(totp_store))
         .with_rule_set_store(Arc::new(rule_set_store))
         .with_post_processing_script_store(Arc::new(post_processing_script_store))

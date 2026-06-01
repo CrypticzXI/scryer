@@ -2037,6 +2037,7 @@ pub fn from_plugin_installation(inst: PluginInstallation) -> PluginInstallationP
         source_kind: match inst.source_kind {
             scryer_domain::PluginSourceKind::Bundled => "bundled".to_string(),
             scryer_domain::PluginSourceKind::Downloaded => "downloaded".to_string(),
+            scryer_domain::PluginSourceKind::Community => "community".to_string(),
             scryer_domain::PluginSourceKind::Manual => "manual".to_string(),
         },
         source_url: inst.source_url,

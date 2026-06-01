@@ -116,6 +116,7 @@ fn from_security_settings(
 ) -> SecuritySettingsPayload {
     SecuritySettingsPayload {
         form_login_enabled: settings.form_login_enabled,
+        password_min_length: settings.password_min_length,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
         totp_require_config_step_up: settings.totp_require_config_step_up,
         totp_require_local_login: settings.totp_require_local_login,
@@ -794,6 +795,7 @@ impl SettingsMutations {
                 &actor,
                 AppUpdateSecuritySettings {
                     form_login_enabled: input.form_login_enabled,
+                    password_min_length: input.password_min_length,
                     skip_login_for_local_ips: input.skip_login_for_local_ips,
                     totp_require_config_step_up: input.totp_require_config_step_up,
                     totp_require_local_login: input.totp_require_local_login,

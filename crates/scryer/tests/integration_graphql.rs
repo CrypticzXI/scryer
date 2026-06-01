@@ -12,10 +12,9 @@ use scryer_application::{
     DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate, InsertMediaFileInput,
     JwtSessionScope, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository,
     MediaServerConnectionRepository, PendingRelease, PendingReleaseRepository, ReleaseDecision,
-    ScopedExternalId, ShowRepository,
-    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary,
-    TitleRepository, TotpRepository, WantedItem, WantedItemRepository,
-    start_background_download_delete_poller,
+    ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
+    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, TotpRepository, WantedItem,
+    WantedItemRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{
     AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
@@ -804,6 +803,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "security".into(),
                 scope: "system".into(),
+                key_name: "auth.password_min_length".into(),
+                data_type: "integer".into(),
+                default_value_json: "8".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
                 key_name: "auth.skip_login_for_local_ips".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
@@ -1176,77 +1184,6 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
         ])
         .await
         .expect("settings definitions should seed");
-}
-
-async fn seed_auth_provider_setting_definitions(ctx: &TestContext) {
-    ctx.settings_store
-        .batch_ensure_setting_definitions(vec![
-            SettingDefinitionSeed {
-                category: "auth".into(),
-                scope: "system".into(),
-                key_name: "auth.providers.allowed".into(),
-                data_type: "json".into(),
-                default_value_json: "[]".into(),
-                is_sensitive: false,
-                validation_json: None,
-            },
-            SettingDefinitionSeed {
-                category: "auth".into(),
-                scope: "system".into(),
-                key_name: "auth.providers.login_enabled".into(),
-                data_type: "json".into(),
-                default_value_json: "[]".into(),
-                is_sensitive: false,
-                validation_json: None,
-            },
-            SettingDefinitionSeed {
-                category: "auth".into(),
-                scope: "system".into(),
-                key_name: "auth.providers.linking_enabled".into(),
-                data_type: "json".into(),
-                default_value_json: "[]".into(),
-                is_sensitive: false,
-                validation_json: None,
-            },
-            SettingDefinitionSeed {
-                category: "auth".into(),
-                scope: "system".into(),
-                key_name: "auth.providers.jellyfin.allowed_connection_ids".into(),
-                data_type: "json".into(),
-                default_value_json: "[]".into(),
-                is_sensitive: false,
-                validation_json: None,
-            },
-            SettingDefinitionSeed {
-                category: "auth".into(),
-                scope: "system".into(),
-                key_name: "auth.providers.plex.allowed_connection_ids".into(),
-                data_type: "json".into(),
-                default_value_json: "[]".into(),
-                is_sensitive: false,
-                validation_json: None,
-            },
-            SettingDefinitionSeed {
-                category: "auth".into(),
-                scope: "system".into(),
-                key_name: "auth.providers.jellyfin.connections".into(),
-                data_type: "json".into(),
-                default_value_json: "[]".into(),
-                is_sensitive: false,
-                validation_json: None,
-            },
-            SettingDefinitionSeed {
-                category: "auth".into(),
-                scope: "system".into(),
-                key_name: "auth.providers.plex.connections".into(),
-                data_type: "json".into(),
-                default_value_json: "[]".into(),
-                is_sensitive: false,
-                validation_json: None,
-            },
-        ])
-        .await
-        .expect("auth provider settings definitions should seed");
 }
 
 async fn mount_smg_mocks(ctx: &TestContext, fixture_path: &str) {
@@ -4745,6 +4682,7 @@ async fn graphql_typed_security_settings_defaults() {
         query SecuritySettings {
           securitySettings {
             formLoginEnabled
+            passwordMinLength
             skipLoginForLocalIps
             totpRequireLocalLogin
             effectiveFormLoginEnabled
@@ -4759,6 +4697,7 @@ async fn graphql_typed_security_settings_defaults() {
 
     assert_no_errors(&body);
     assert_eq!(body["data"]["securitySettings"]["formLoginEnabled"], false);
+    assert_eq!(body["data"]["securitySettings"]["passwordMinLength"], 8);
     assert_eq!(
         body["data"]["securitySettings"]["skipLoginForLocalIps"],
         false
@@ -4787,6 +4726,7 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
         mutation UpdateSecuritySettings {
           updateSecuritySettings(input: {
             formLoginEnabled: false
+            passwordMinLength: 8
             skipLoginForLocalIps: false
             totpRequireConfigStepUp: false
             totpRequireLocalLogin: true
@@ -4849,6 +4789,11 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .await
+        .expect("change default admin password");
 
     let update = schema_exec(
         &ctx,
@@ -4856,12 +4801,14 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
         mutation UpdateSecuritySettings {
           updateSecuritySettings(input: {
             formLoginEnabled: true
+            passwordMinLength: 12
             skipLoginForLocalIps: true
             totpRequireConfigStepUp: false
             totpRequireLocalLogin: false
             totpRequireJellyfinLogin: false
           }) {
             formLoginEnabled
+            passwordMinLength
             skipLoginForLocalIps
             effectiveFormLoginEnabled
             envOverrideActive
@@ -4876,6 +4823,10 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     assert_eq!(
         update["data"]["updateSecuritySettings"]["formLoginEnabled"],
         true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["passwordMinLength"],
+        12
     );
     assert_eq!(
         update["data"]["updateSecuritySettings"]["skipLoginForLocalIps"],
@@ -4913,9 +4864,12 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
         true
     );
 
-    let me_without_auth = gql(&ctx, "{ me { username } }", json!({})).await;
-    assert_no_errors(&me_without_auth);
-    assert!(me_without_auth["data"]["me"].is_null());
+    let me_with_local_bypass = gql(&ctx, "{ me { username } }", json!({})).await;
+    assert_no_errors(&me_with_local_bypass);
+    assert_eq!(
+        me_with_local_bypass["data"]["me"]["username"],
+        admin.username
+    );
 
     let read = schema_exec(
         &ctx,
@@ -4923,6 +4877,7 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
         query SecuritySettings {
           securitySettings {
             formLoginEnabled
+            passwordMinLength
             effectiveFormLoginEnabled
           }
         }
@@ -4932,10 +4887,98 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     .await;
     assert_no_errors(&read);
     assert_eq!(read["data"]["securitySettings"]["formLoginEnabled"], true);
+    assert_eq!(read["data"]["securitySettings"]["passwordMinLength"], 12);
     assert_eq!(
         read["data"]["securitySettings"]["effectiveFormLoginEnabled"],
         true
     );
+}
+
+#[tokio::test]
+async fn graphql_typed_security_settings_reject_short_password_minimum() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 7
+            skipLoginForLocalIps: false
+            totpRequireConfigStepUp: false
+            totpRequireLocalLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            formLoginEnabled
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+
+    let errors = update["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(
+        message.contains("password minimum length must be at least 8"),
+        "expected minimum-length validation error: {update}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_typed_security_settings_reject_enable_with_default_admin_password() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            totpRequireConfigStepUp: false
+            totpRequireLocalLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            formLoginEnabled
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+
+    let errors = update["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(
+        message.contains("change the default admin password before enabling form login"),
+        "expected default admin password validation error: {update}"
+    );
+
+    let read = schema_exec(
+        &ctx,
+        r#"
+        query SecuritySettings {
+          securitySettings {
+            formLoginEnabled
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&read);
+    assert_eq!(read["data"]["securitySettings"]["formLoginEnabled"], false);
 }
 
 #[tokio::test]
@@ -10175,12 +10218,18 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .await
+        .expect("change default admin password");
     let update = schema_exec(
         &ctx,
         r#"
         mutation UpdateSecuritySettings {
           updateSecuritySettings(input: {
             formLoginEnabled: true
+            passwordMinLength: 8
             skipLoginForLocalIps: false
             totpRequireConfigStepUp: false
             totpRequireLocalLogin: false
@@ -10330,6 +10379,7 @@ async fn graphql_users_query() {
 #[tokio::test]
 async fn graphql_create_user() {
     let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
     let body = gql(
         &ctx,
         r#"mutation($input: CreateUserInput!) {
@@ -10340,6 +10390,29 @@ async fn graphql_create_user() {
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["createUser"]["username"], "testuser");
+}
+
+#[tokio::test]
+async fn graphql_create_user_rejects_short_password() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: CreateUserInput!) {
+            createUser(input: $input) { id username }
+        }"#,
+        json!({ "input": { "username": "shortpass", "password": "1234567", "appPermissions": [], "libraryPermissions": [] } }),
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let message = errors[0]["message"]
+        .as_str()
+        .expect("graphql error message");
+    assert!(
+        message.contains("password must be at least 8 characters"),
+        "expected short-password validation error: {body}"
+    );
 }
 
 #[tokio::test]
@@ -12799,7 +12872,7 @@ async fn login_with_valid_credentials_returns_token() {
         .create_user(
             &admin,
             "logintest".to_string(),
-            "s3cr3t!".to_string(),
+            "s3cr3t!!".to_string(),
             scryer_domain::AppPermissionMask::from_permissions([
                 scryer_domain::AppPermission::ManageUsers,
             ]),
@@ -12810,7 +12883,7 @@ async fn login_with_valid_credentials_returns_token() {
 
     let body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "logintest", password: "s3cr3t!" }) { token expiresAt user { username appPermissions } } }"#,
+        r#"mutation { login(input: { username: "logintest", password: "s3cr3t!!" }) { token expiresAt user { username appPermissions } } }"#,
         None,
     )
     .await;
@@ -12837,7 +12910,7 @@ async fn me_reports_password_status_for_token_authenticated_user() {
         .create_user(
             &admin,
             "metest".to_string(),
-            "s3cr3t!".to_string(),
+            "s3cr3t!!".to_string(),
             scryer_domain::AppPermissionMask::NONE,
             vec![],
         )
@@ -12846,7 +12919,7 @@ async fn me_reports_password_status_for_token_authenticated_user() {
 
     let login_body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "metest", password: "s3cr3t!" }) { token } }"#,
+        r#"mutation { login(input: { username: "metest", password: "s3cr3t!!" }) { token } }"#,
         None,
     )
     .await;
@@ -13320,7 +13393,7 @@ async fn authenticated_request_with_valid_token_succeeds() {
         .create_user(
             &admin,
             "authtest".to_string(),
-            "s3cr3t!".to_string(),
+            "s3cr3t!!".to_string(),
             scryer_domain::AppPermissionMask::NONE,
             vec![view_grant],
         )
@@ -13330,7 +13403,7 @@ async fn authenticated_request_with_valid_token_succeeds() {
     // Step 1: log in and capture the token.
     let login_body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "authtest", password: "s3cr3t!" }) { token } }"#,
+        r#"mutation { login(input: { username: "authtest", password: "s3cr3t!!" }) { token } }"#,
         None,
     )
     .await;
@@ -13371,7 +13444,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
             r#"mutation {{
             createUser(input: {{
                 username: "entrevoketest",
-                password: "s3cr3t!",
+                password: "s3cr3t!!",
                 appPermissions: [],
                 libraryPermissions: [{{ libraryId: "{library_id}", permissions: [view] }}]
             }}) {{
@@ -13394,7 +13467,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
 
     let login_before = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "entrevoketest", password: "s3cr3t!" }) { token } }"#,
+        r#"mutation { login(input: { username: "entrevoketest", password: "s3cr3t!!" }) { token } }"#,
         None,
     )
     .await;
@@ -13436,7 +13509,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
 
     let login_after = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "entrevoketest", password: "s3cr3t!" }) { token } }"#,
+        r#"mutation { login(input: { username: "entrevoketest", password: "s3cr3t!!" }) { token } }"#,
         None,
     )
     .await;
@@ -13496,7 +13569,7 @@ async fn newly_created_user_can_login() {
     // Create a new user as admin.
     let create_body = schema_exec(
         &ctx,
-        r#"mutation { createUser(input: { username: "newuser", password: "s3cr3t!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        r#"mutation { createUser(input: { username: "newuser", password: "s3cr3t!!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
         Some(admin),
     )
     .await;
@@ -13509,7 +13582,7 @@ async fn newly_created_user_can_login() {
     // Log in as the newly created user.
     let login_body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "newuser", password: "s3cr3t!" }) { token user { username } } }"#,
+        r#"mutation { login(input: { username: "newuser", password: "s3cr3t!!" }) { token user { username } } }"#,
         None,
     )
     .await;
@@ -13527,10 +13600,15 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .await
+        .expect("change default admin password");
 
     let create_body = schema_exec(
         &ctx,
-        r#"mutation { createUser(input: { username: "localmfa", password: "s3cr3t!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        r#"mutation { createUser(input: { username: "localmfa", password: "s3cr3t!!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
         Some(admin.clone()),
     )
     .await;
@@ -13542,6 +13620,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
         mutation UpdateSecuritySettings {
           updateSecuritySettings(input: {
             formLoginEnabled: true
+            passwordMinLength: 8
             skipLoginForLocalIps: false
             totpRequireConfigStepUp: false
             totpRequireLocalLogin: true
@@ -13569,7 +13648,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
         &ctx,
         r#"
         mutation {
-          login(input: { username: "localmfa", password: "s3cr3t!" }) {
+          login(input: { username: "localmfa", password: "s3cr3t!!" }) {
             token
             mfaEnrollmentRequired
             mfaVerifiedUntil
@@ -13661,10 +13740,15 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .change_own_password(&admin, "admin-pass1".to_string(), "admin".to_string())
+        .await
+        .expect("change default admin password");
 
     let create_body = schema_exec(
         &ctx,
-        r#"mutation { createUser(input: { username: "localmfa_totp", password: "s3cr3t!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        r#"mutation { createUser(input: { username: "localmfa_totp", password: "s3cr3t!!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
         Some(admin.clone()),
     )
     .await;
@@ -13672,7 +13756,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
 
     let user = ctx
         .app
-        .authenticate_credentials("localmfa_totp", "s3cr3t!")
+        .authenticate_credentials("localmfa_totp", "s3cr3t!!")
         .await
         .expect("authenticate local user");
     let enrollment = ctx
@@ -13704,6 +13788,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
         mutation UpdateSecuritySettings {
           updateSecuritySettings(input: {
             formLoginEnabled: true
+            passwordMinLength: 8
             skipLoginForLocalIps: false
             totpRequireConfigStepUp: false
             totpRequireLocalLogin: true
@@ -13723,7 +13808,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
         &ctx,
         r#"
         mutation {
-          login(input: { username: "localmfa_totp", password: "s3cr3t!" }) {
+          login(input: { username: "localmfa_totp", password: "s3cr3t!!" }) {
             token
           }
         }
@@ -13747,7 +13832,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
         &ctx,
         r#"
         mutation {
-          login(input: { username: "localmfa_totp", password: "s3cr3t!", totpCode: "abc123" }) {
+          login(input: { username: "localmfa_totp", password: "s3cr3t!!", totpCode: "abc123" }) {
             token
           }
         }
@@ -13773,7 +13858,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
         &format!(
             r#"
             mutation {{
-              login(input: {{ username: "localmfa_totp", password: "s3cr3t!", totpCode: "{valid_code}" }}) {{
+              login(input: {{ username: "localmfa_totp", password: "s3cr3t!!", totpCode: "{valid_code}" }}) {{
                 token
                 mfaEnrollmentRequired
                 mfaVerifiedUntil

@@ -32,6 +32,7 @@ fn source_kind_label(source_kind: PluginSourceKind) -> String {
     match source_kind {
         PluginSourceKind::Bundled => "bundled".to_string(),
         PluginSourceKind::Downloaded => "downloaded".to_string(),
+        PluginSourceKind::Community => "community".to_string(),
         PluginSourceKind::Manual => "manual".to_string(),
     }
 }

@@ -56,7 +56,10 @@ impl AppUseCase {
         reporter: &PluginInstallProgressReporter,
     ) -> AppResult<FetchedCatalogArtifact> {
         reporter.downloading().await;
-        let signer = if resolved.source_kind == PluginSourceKind::Downloaded {
+        let signer = if matches!(
+            resolved.source_kind,
+            PluginSourceKind::Downloaded | PluginSourceKind::Community
+        ) {
             resolved.catalog_entry.required_signer.clone()
         } else {
             RequiredSigner {
@@ -181,11 +184,7 @@ impl AppUseCase {
         &self,
         prepared: PreparedCatalogPluginInstall,
     ) -> AppResult<ValidatedCatalogPluginInstall> {
-        let descriptor_loader = self
-            .services
-            .customization
-            .plugin_descriptor_loader
-            .clone();
+        let descriptor_loader = self.services.customization.plugin_descriptor_loader.clone();
         let PreparedCatalogPluginInstall {
             plugin_id,
             expected_plugin_type,

@@ -83,6 +83,34 @@ impl AppUseCase {
         Ok(format!("v2${phc_string}"))
     }
 
+    pub(crate) async fn password_min_length(&self) -> AppResult<i32> {
+        Ok(self
+            .read_setting_i64_value(PASSWORD_MIN_LENGTH_KEY, None)
+            .await?
+            .unwrap_or(PASSWORD_MIN_LENGTH_MIN)
+            .max(PASSWORD_MIN_LENGTH_MIN) as i32)
+    }
+
+    pub(crate) async fn validate_new_local_password(&self, password: &str) -> AppResult<()> {
+        let min_length = self.password_min_length().await?;
+        if password.chars().count() < min_length as usize {
+            return Err(AppError::Validation(format!(
+                "password must be at least {min_length} characters"
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn default_admin_uses_bootstrap_password(&self) -> AppResult<bool> {
+        let admin = self.find_or_create_default_user().await?;
+        let Some(password_hash) = admin.password_hash.as_deref() else {
+            return Ok(true);
+        };
+
+        self.validate_password("admin", password_hash)
+    }
+
     pub(crate) fn validate_password(&self, password: &str, password_hash: &str) -> AppResult<bool> {
         if let Some(phc_string) = password_hash.strip_prefix("v2$") {
             let parsed = PasswordHash::new(phc_string)

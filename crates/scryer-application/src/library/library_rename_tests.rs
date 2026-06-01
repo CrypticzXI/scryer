@@ -414,6 +414,7 @@ fn resolve_rename_common_metadata_prefers_analysis_over_parsed_metadata() {
 fn resolve_rename_common_metadata_uses_persisted_parsed_backup_when_analysis_missing() {
     let mut media_file = test_media_file("/library/Movie.2024.mkv");
     media_file.video_codec = None;
+    media_file.video_width = None;
     media_file.video_height = None;
     media_file.audio_codec = None;
     media_file.audio_profile = None;

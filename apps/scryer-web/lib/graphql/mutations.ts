@@ -617,6 +617,7 @@ export const updateAutoBackupSettingsMutation = `mutation UpdateAutoBackupSettin
 export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($input: UpdateSecuritySettingsInput!) {
   updateSecuritySettings(input: $input) {
     formLoginEnabled
+    passwordMinLength
     skipLoginForLocalIps
     totpRequireConfigStepUp
     totpRequireLocalLogin

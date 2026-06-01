@@ -118,7 +118,9 @@ impl AppUseCase {
         let mut pending_plugins = enabled.into_iter().filter_map(|(installation, payload)| {
             if !matches!(
                 installation.source_kind,
-                PluginSourceKind::Downloaded | PluginSourceKind::Manual
+                PluginSourceKind::Downloaded
+                    | PluginSourceKind::Community
+                    | PluginSourceKind::Manual
             ) {
                 return None;
             }

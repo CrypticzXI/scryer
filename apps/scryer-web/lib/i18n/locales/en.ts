@@ -99,6 +99,11 @@ const en: LocaleDictionary = {
   "settings.securityEnableFormLogin": "Form login",
   "settings.securityEnableFormLoginHelp":
     "When enabled, Scryer requires an authenticated user session. When disabled, requests resolve as the default admin user.",
+  "settings.securityPasswordMinLength": "Minimum local password length",
+  "settings.securityPasswordMinLengthHelp":
+    "Applies to new or changed Scryer passwords only. Existing shorter passwords keep working. Minimum: {{min}}.",
+  "settings.securityPasswordMinLengthInvalid":
+    "Minimum password length must be at least {{min}}.",
   "settings.manageMediaServerLogins": "Manage media server logins",
   "settings.manageMediaServerLoginsDescription":
     "Configure Jellyfin and Plex login, linking, and auto-onboarding on each media server connection.",
