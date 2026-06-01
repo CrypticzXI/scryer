@@ -1,25 +1,8 @@
 
-import { memo, useCallback, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { SettingsOverviewContainer } from "@/components/containers/settings/settings-overview-container";
-import { SettingsSecurityContainer } from "@/components/containers/settings/settings-security-container";
-import { SettingsUsersContainer } from "@/components/containers/settings/settings-users-container";
-import { SettingsIndexersContainer } from "@/components/containers/settings/settings-indexers-container";
-import { SettingsMediaServersContainer } from "@/components/containers/settings/settings-media-servers-container";
-import { SettingsDownloadClientsContainer } from "@/components/containers/settings/settings-download-clients-container";
-import { SettingsDelayProfilesContainer } from "@/components/containers/settings/settings-delay-profiles-container";
-import { SettingsQualityProfilesContainer } from "@/components/containers/settings/settings-quality-profiles-container";
-import { SettingsAcquisitionContainer } from "@/components/containers/settings/settings-acquisition-container";
-import { SettingsProfileContainer } from "@/components/containers/settings/settings-profile-container";
-import { SettingsRulesContainer } from "@/components/containers/settings/settings-rules-container";
-import { SettingsPluginsContainer } from "@/components/containers/settings/settings-plugins-container";
-import { SettingsNotificationsContainer } from "@/components/containers/settings/settings-notifications-container";
-import { SettingsPostProcessingContainer } from "@/components/containers/settings/settings-post-processing-container";
-import { SettingsSubtitlesContainer } from "@/components/containers/settings/settings-subtitles-container";
-import { SettingsRecycleBinContainer } from "@/components/containers/settings/settings-recycle-bin-container";
-import { SettingsBackupsContainer } from "@/components/containers/settings/settings-backups-container";
 import type { SettingsSection } from "@/components/root/types";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -27,6 +10,58 @@ import {
   type ProviderCatalogFamily,
   useProviderCatalogSubscription,
 } from "@/lib/hooks/use-provider-catalog-subscription";
+
+const SettingsOverviewContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-overview-container")).SettingsOverviewContainer,
+}));
+const SettingsSecurityContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-security-container")).SettingsSecurityContainer,
+}));
+const SettingsUsersContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-users-container")).SettingsUsersContainer,
+}));
+const SettingsIndexersContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-indexers-container")).SettingsIndexersContainer,
+}));
+const SettingsMediaServersContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-media-servers-container")).SettingsMediaServersContainer,
+}));
+const SettingsDownloadClientsContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-download-clients-container")).SettingsDownloadClientsContainer,
+}));
+const SettingsDelayProfilesContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-delay-profiles-container")).SettingsDelayProfilesContainer,
+}));
+const SettingsQualityProfilesContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-quality-profiles-container")).SettingsQualityProfilesContainer,
+}));
+const SettingsAcquisitionContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-acquisition-container")).SettingsAcquisitionContainer,
+}));
+const SettingsProfileContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-profile-container")).SettingsProfileContainer,
+}));
+const SettingsRulesContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-rules-container")).SettingsRulesContainer,
+}));
+const SettingsPluginsContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-plugins-container")).SettingsPluginsContainer,
+}));
+const SettingsNotificationsContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-notifications-container")).SettingsNotificationsContainer,
+}));
+const SettingsPostProcessingContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-post-processing-container")).SettingsPostProcessingContainer,
+}));
+const SettingsSubtitlesContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-subtitles-container")).SettingsSubtitlesContainer,
+}));
+const SettingsRecycleBinContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-recycle-bin-container")).SettingsRecycleBinContainer,
+}));
+const SettingsBackupsContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-backups-container")).SettingsBackupsContainer,
+}));
 
 type SettingsContainerProps = {
   settingsSection: SettingsSection;
@@ -129,57 +164,59 @@ export const SettingsContainer = memo(function SettingsContainer({
         ) : null}
       </CardHeader>
       <CardContent>
-        {settingsSection === "profile" ? (
-          <SettingsProfileContainer
-            userId={userId}
-            username={username}
-          />
-        ) : settingsSection === "general" ? (
-          <SettingsOverviewContainer
-            availableLanguages={availableLanguages}
-            selectedLanguage={selectedLanguage}
-            uiLanguage={uiLanguage}
-            onSelectLanguage={onSelectLanguage}
-          />
-        ) : settingsSection === "backups" ? (
-          <SettingsBackupsContainer />
-        ) : settingsSection === "security" ? (
-          <SettingsSecurityContainer />
-        ) : settingsSection === "users" ? (
-          <SettingsUsersContainer />
-        ) : settingsSection === "mediaServers" ? (
-          <SettingsMediaServersContainer />
-        ) : settingsSection === "indexers" ? (
-          <SettingsIndexersContainer
-            providerCatalogVersion={providerCatalogVersions.indexer}
-          />
-        ) : settingsSection === "downloadClients" ? (
-          <SettingsDownloadClientsContainer
-            providerCatalogVersion={providerCatalogVersions.download_client}
-          />
-        ) : settingsSection === "acquisition" ? (
-          <SettingsAcquisitionContainer />
-        ) : settingsSection === "rules" ? (
-          <SettingsRulesContainer />
-        ) : settingsSection === "plugins" ? (
-          <SettingsPluginsContainer />
-        ) : settingsSection === "notifications" ? (
-          <SettingsNotificationsContainer
-            providerCatalogVersion={providerCatalogVersions.notification}
-          />
-        ) : settingsSection === "post-processing" ? (
-          <SettingsPostProcessingContainer />
-        ) : settingsSection === "subtitles" ? (
-          <SettingsSubtitlesContainer
-            providerCatalogVersion={providerCatalogVersions.subtitle}
-          />
-        ) : settingsSection === "recycleBin" ? (
-          <SettingsRecycleBinContainer />
-        ) : settingsSection === "delayProfiles" ? (
-          <SettingsDelayProfilesContainer />
-        ) : (
-          <SettingsQualityProfilesContainer />
-        )}
+        <Suspense fallback={<div className="py-6 text-sm text-muted-foreground">{t("label.loading")}</div>}>
+          {settingsSection === "profile" ? (
+            <SettingsProfileContainer
+              userId={userId}
+              username={username}
+            />
+          ) : settingsSection === "general" ? (
+            <SettingsOverviewContainer
+              availableLanguages={availableLanguages}
+              selectedLanguage={selectedLanguage}
+              uiLanguage={uiLanguage}
+              onSelectLanguage={onSelectLanguage}
+            />
+          ) : settingsSection === "backups" ? (
+            <SettingsBackupsContainer />
+          ) : settingsSection === "security" ? (
+            <SettingsSecurityContainer />
+          ) : settingsSection === "users" ? (
+            <SettingsUsersContainer />
+          ) : settingsSection === "mediaServers" ? (
+            <SettingsMediaServersContainer />
+          ) : settingsSection === "indexers" ? (
+            <SettingsIndexersContainer
+              providerCatalogVersion={providerCatalogVersions.indexer}
+            />
+          ) : settingsSection === "downloadClients" ? (
+            <SettingsDownloadClientsContainer
+              providerCatalogVersion={providerCatalogVersions.download_client}
+            />
+          ) : settingsSection === "acquisition" ? (
+            <SettingsAcquisitionContainer />
+          ) : settingsSection === "rules" ? (
+            <SettingsRulesContainer />
+          ) : settingsSection === "plugins" ? (
+            <SettingsPluginsContainer />
+          ) : settingsSection === "notifications" ? (
+            <SettingsNotificationsContainer
+              providerCatalogVersion={providerCatalogVersions.notification}
+            />
+          ) : settingsSection === "post-processing" ? (
+            <SettingsPostProcessingContainer />
+          ) : settingsSection === "subtitles" ? (
+            <SettingsSubtitlesContainer
+              providerCatalogVersion={providerCatalogVersions.subtitle}
+            />
+          ) : settingsSection === "recycleBin" ? (
+            <SettingsRecycleBinContainer />
+          ) : settingsSection === "delayProfiles" ? (
+            <SettingsDelayProfilesContainer />
+          ) : (
+            <SettingsQualityProfilesContainer />
+          )}
+        </Suspense>
       </CardContent>
     </Card>
   );

@@ -52,7 +52,7 @@ const DEFAULT_MEDIA_SERVER_DRAFT: MediaServerConnectionDraft = {
   plexServerId: "",
   apiKey: "",
   clearApiKey: false,
-  jellyfinCredentialMode: "apiKey",
+  jellyfinCredentialMode: "adminLogin",
   adminUsername: "",
   adminPassword: "",
   pathMappingsText: "",

@@ -12,6 +12,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
+import {
+  PermissionDropdowns,
+  type LibraryPermissionDrafts,
+} from "@/components/common/permission-checkboxes";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,12 +42,6 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
-import {
-  APP_PERMISSIONS,
-  LIBRARY_PERMISSIONS,
-  type AppPermission,
-  type LibraryPermission,
-} from "@/lib/utils/permissions";
 import {
   boxedActionButtonBaseClass,
   boxedActionButtonToneClass,
@@ -91,41 +89,12 @@ const DEFAULT_NAME_BY_PROVIDER: Record<MediaServerProvider, string> = {
   emby: "Emby",
 };
 
-const APP_PERMISSION_OPTIONS: Array<{ value: AppPermission; label: string }> = [
-  { value: APP_PERMISSIONS.manageUsers, label: "Manage users" },
-  { value: APP_PERMISSIONS.managePermissions, label: "Manage permissions" },
-  { value: APP_PERMISSIONS.manageSystemSettings, label: "Manage system settings" },
-  { value: APP_PERMISSIONS.manageCatalogSettings, label: "Manage catalog settings" },
-];
-
-const LIBRARY_PERMISSION_OPTIONS: Array<{ value: LibraryPermission; label: string }> = [
-  { value: LIBRARY_PERMISSIONS.view, label: "View" },
-  { value: LIBRARY_PERMISSIONS.request, label: "Request" },
-  { value: LIBRARY_PERMISSIONS.autoApproveRequests, label: "Auto approve requests" },
-  { value: LIBRARY_PERMISSIONS.manageTitles, label: "Manage titles" },
-  { value: LIBRARY_PERMISSIONS.resolveImports, label: "Resolve imports" },
-  { value: LIBRARY_PERMISSIONS.manageLibrary, label: "Manage library" },
-];
-
 function providerLabel(provider: MediaServerProvider): string {
   return PROVIDERS.find((candidate) => candidate.value === provider)?.label ?? provider;
 }
 
 function providerSupportsAuth(provider: MediaServerProvider): boolean {
   return provider === "jellyfin" || provider === "plex";
-}
-
-function toggleListValue<T extends string>(values: T[], value: T): T[] {
-  return values.includes(value)
-    ? values.filter((candidate) => candidate !== value)
-    : [...values, value];
-}
-
-function selectedLibraryGrant(
-  grants: MediaServerDefaultLibraryGrant[],
-  libraryId: string,
-): string[] {
-  return grants.find((grant) => grant.libraryId === libraryId)?.permissions ?? [];
 }
 
 function updateLibraryGrant(
@@ -257,6 +226,10 @@ export function SettingsMediaServersSection({
             : [],
           machineIdPresent: provider === "plex" ? previous.machineIdPresent : false,
           plexServerId: provider === "plex" ? previous.plexServerId : "",
+          jellyfinCredentialMode:
+            provider === "jellyfin" ? "adminLogin" : previous.jellyfinCredentialMode,
+          apiKey: provider === "jellyfin" ? "" : previous.apiKey,
+          clearApiKey: provider === "jellyfin" ? false : previous.clearApiKey,
         };
       });
     },
@@ -547,21 +520,6 @@ export function SettingsMediaServersSection({
                       <div className="inline-flex rounded-md border border-border p-1">
                         <Button
                           type="button"
-                          variant={draft.jellyfinCredentialMode === "apiKey" ? "default" : "ghost"}
-                          size="sm"
-                          onClick={() =>
-                            setDraft((previous) => ({
-                              ...previous,
-                              jellyfinCredentialMode: "apiKey",
-                              adminUsername: "",
-                              adminPassword: "",
-                            }))
-                          }
-                        >
-                          {t("settings.setupViaApiKey")}
-                        </Button>
-                        <Button
-                          type="button"
                           variant={draft.jellyfinCredentialMode === "adminLogin" ? "default" : "ghost"}
                           size="sm"
                           onClick={() =>
@@ -574,6 +532,21 @@ export function SettingsMediaServersSection({
                           }
                         >
                           {t("settings.loginAsAdmin")}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={draft.jellyfinCredentialMode === "apiKey" ? "default" : "ghost"}
+                          size="sm"
+                          onClick={() =>
+                            setDraft((previous) => ({
+                              ...previous,
+                              jellyfinCredentialMode: "apiKey",
+                              adminUsername: "",
+                              adminPassword: "",
+                            }))
+                          }
+                        >
+                          {t("settings.setupViaApiKey")}
                         </Button>
                       </div>
                     ) : null}
@@ -675,8 +648,9 @@ export function SettingsMediaServersSection({
                   <div className="space-y-3 rounded border border-border bg-background/40 p-3">
                     <div className="font-medium">{t("settings.mediaServerAuthCapabilities")}</div>
                     <div className="grid gap-3 md:grid-cols-3">
-                      <label className="flex items-center gap-2">
+                      <label className="flex items-center gap-3">
                         <Checkbox
+                          className="size-8 rounded-md"
                           checked={draft.loginEnabled}
                           onCheckedChange={(checked) =>
                             setDraft((previous) => ({
@@ -687,8 +661,9 @@ export function SettingsMediaServersSection({
                         />
                         <span>{t("settings.authProviderLoginEnabled")}</span>
                       </label>
-                      <label className="flex items-center gap-2">
+                      <label className="flex items-center gap-3">
                         <Checkbox
+                          className="size-8 rounded-md"
                           checked={draft.linkingEnabled}
                           onCheckedChange={(checked) =>
                             setDraft((previous) => ({
@@ -699,8 +674,9 @@ export function SettingsMediaServersSection({
                         />
                         <span>{t("settings.authProviderLinkingEnabled")}</span>
                       </label>
-                      <label className="flex items-center gap-2">
+                      <label className="flex items-center gap-3">
                         <Checkbox
+                          className="size-8 rounded-md"
                           checked={draft.autoAddEnabled}
                           onCheckedChange={(checked) =>
                             setDraft((previous) => ({
@@ -713,73 +689,37 @@ export function SettingsMediaServersSection({
                       </label>
                     </div>
 
-                    <div className="grid gap-3 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
+                    {draft.autoAddEnabled ? (
                       <div className="rounded border border-border bg-card/50 p-3">
-                        <Label className="mb-2 block">{t("settings.defaultAppPermissions")}</Label>
-                        <div className="grid gap-2">
-                          {APP_PERMISSION_OPTIONS.map((permission) => (
-                            <label key={permission.value} className="flex items-center gap-2">
-                              <Checkbox
-                                checked={draft.defaultAppPermissions.includes(permission.value)}
-                                onCheckedChange={() =>
-                                  setDraft((previous) => ({
-                                    ...previous,
-                                    defaultAppPermissions: toggleListValue(
-                                      previous.defaultAppPermissions as AppPermission[],
-                                      permission.value,
-                                    ),
-                                  }))
-                                }
-                              />
-                              <span>{permission.label}</span>
-                            </label>
-                          ))}
-                        </div>
+                        <Label className="mb-2 block">Default Permissions</Label>
+                        <PermissionDropdowns
+                          libraries={libraries}
+                          selectedAppPermissions={draft.defaultAppPermissions}
+                          selectedLibraryPermissions={Object.fromEntries(
+                            draft.defaultLibraryGrants.map((grant) => [
+                              grant.libraryId,
+                              grant.permissions,
+                            ]),
+                          ) as LibraryPermissionDrafts}
+                          onAppChange={(nextPermissions) =>
+                            setDraft((previous) => ({
+                              ...previous,
+                              defaultAppPermissions: nextPermissions,
+                            }))
+                          }
+                          onLibraryChange={(libraryId, nextPermissions) =>
+                            setDraft((previous) => ({
+                              ...previous,
+                              defaultLibraryGrants: updateLibraryGrant(
+                                previous.defaultLibraryGrants,
+                                libraryId,
+                                nextPermissions,
+                              ),
+                            }))
+                          }
+                        />
                       </div>
-                      <div className="rounded border border-border bg-card/50 p-3">
-                        <Label className="mb-2 block">{t("settings.defaultLibraryPermissions")}</Label>
-                        <div className="space-y-3">
-                          {libraries.map((library) => {
-                            const selected = selectedLibraryGrant(
-                              draft.defaultLibraryGrants,
-                              library.id,
-                            );
-                            return (
-                              <div key={library.id} className="space-y-2">
-                                <div className="font-medium">{library.name}</div>
-                                <div className="flex flex-wrap gap-2">
-                                  {LIBRARY_PERMISSION_OPTIONS.map((permission) => (
-                                    <label
-                                      key={`${library.id}-${permission.value}`}
-                                      className="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 hover:bg-card/70"
-                                    >
-                                      <Checkbox
-                                        checked={selected.includes(permission.value)}
-                                        onCheckedChange={() => {
-                                          const next = toggleListValue(
-                                            selected as LibraryPermission[],
-                                            permission.value,
-                                          );
-                                          setDraft((previous) => ({
-                                            ...previous,
-                                            defaultLibraryGrants: updateLibraryGrant(
-                                              previous.defaultLibraryGrants,
-                                              library.id,
-                                              next,
-                                            ),
-                                          }));
-                                        }}
-                                      />
-                                      <span className="text-xs">{permission.label}</span>
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
+                    ) : null}
                   </div>
                 ) : null}
 

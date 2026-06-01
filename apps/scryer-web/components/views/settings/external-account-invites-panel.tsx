@@ -1,11 +1,10 @@
 import * as React from "react";
-import { Check, ChevronsUpDown, Loader2, Plus } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Command,
   CommandEmpty,
   CommandGroup,
-  CommandInput,
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
@@ -16,6 +15,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -237,7 +243,7 @@ function JellyfinProviderUserCombobox({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="h-10 w-full justify-between px-3 text-left font-normal"
+          className="h-9 w-full justify-between border-input bg-field px-3 text-left font-normal shadow-xs hover:bg-field hover:text-foreground"
           disabled={disabled}
         >
           <span className="flex min-w-0 items-center gap-2">
@@ -272,16 +278,23 @@ function JellyfinProviderUserCombobox({
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
         <Command shouldFilter={false}>
-          <CommandInput
-            value={value}
-            onValueChange={onChange}
-            placeholder={placeholder}
-            autoComplete="off"
-            data-1p-ignore="true"
-            data-lpignore="true"
-            data-form-type="other"
-            name="jellyfin-provider-user-search"
-          />
+          <div className="border-b border-border p-2">
+            <div className="flex h-8 items-center gap-2 rounded-md border border-input bg-field px-2">
+              <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <input
+                type="text"
+                value={value}
+                onChange={(event) => onChange(event.target.value)}
+                placeholder={placeholder}
+                autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-form-type="other"
+                name="jellyfin-provider-user-search"
+                className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
+              />
+            </div>
+          </div>
           <CommandList>
             {loading ? (
               <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
@@ -431,34 +444,32 @@ export function ExternalAccountInvitesPanel({
               <Label htmlFor="settings-external-invite-user">
                 {t("settings.user")}
               </Label>
-              <select
-                id="settings-external-invite-user"
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              <Select
                 value={externalInviteDraft.userId}
-                onChange={(event) =>
-                  updateExternalInviteDraft({ userId: event.target.value })
-                }
+                onValueChange={(userId) => updateExternalInviteDraft({ userId })}
                 disabled={externalInviteSubmitting}
-                required
               >
+                <SelectTrigger id="settings-external-invite-user" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
                 {users.map((user) => (
-                  <option key={user.id} value={user.id}>
+                  <SelectItem key={user.id} value={user.id}>
                     {user.username}
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
+                </SelectContent>
+              </Select>
             </div>
             {inviteProviders.length > 1 ? (
               <div className="space-y-1.5">
                 <Label htmlFor="settings-external-invite-provider">
                   {t("settings.provider")}
                 </Label>
-                <select
-                  id="settings-external-invite-provider"
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                <Select
                   value={externalInviteDraft.provider}
-                  onChange={(event) => {
-                    const provider = event.target.value as ExternalAccountProvider;
+                  onValueChange={(value) => {
+                    const provider = value as ExternalAccountProvider;
                     updateExternalInviteDraft({
                       provider,
                       connectionId: providerConnections(authProviderSettings, provider)[0]?.id ?? "",
@@ -466,14 +477,18 @@ export function ExternalAccountInvitesPanel({
                     });
                   }}
                   disabled={externalInviteSubmitting}
-                  required
                 >
+                  <SelectTrigger id="settings-external-invite-provider" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
                   {inviteProviders.map((provider) => (
-                    <option key={provider} value={provider}>
+                    <SelectItem key={provider} value={provider}>
                       {providerLabel(provider)}
-                    </option>
+                    </SelectItem>
                   ))}
-                </select>
+                  </SelectContent>
+                </Select>
               </div>
             ) : null}
             {inviteConnections.length > 1 ? (
@@ -481,29 +496,31 @@ export function ExternalAccountInvitesPanel({
                 <Label htmlFor="settings-external-invite-connection">
                   {t("profile.linkedAccountConnection")}
                 </Label>
-                <select
-                  id="settings-external-invite-connection"
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                <Select
                   value={externalInviteDraft.connectionId}
-                  onChange={(event) =>
+                  onValueChange={(connectionId) =>
                     updateExternalInviteDraft({
-                      connectionId: event.target.value,
+                      connectionId,
                       providerUserIdentifier: "",
                     })
                   }
                   disabled={externalInviteSubmitting}
-                  required
                 >
+                  <SelectTrigger id="settings-external-invite-connection" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
                   {inviteConnections.map((connection) => (
-                    <option key={connection.id} value={connection.id}>
+                    <SelectItem key={connection.id} value={connection.id}>
                       {providerConnectionLabel(connection)}
-                    </option>
+                    </SelectItem>
                   ))}
-                </select>
+                  </SelectContent>
+                </Select>
               </div>
             ) : null}
             <div className="space-y-1.5">
-              <div className="flex min-h-5 items-center justify-between gap-2">
+              <div className="flex items-center justify-between gap-2">
                 <Label htmlFor="settings-external-invite-provider-identifier">
                   {providerIdentifierLabelText}
                 </Label>
@@ -554,7 +571,8 @@ export function ExternalAccountInvitesPanel({
                 <p className="text-xs text-destructive">{providerUserLookupError}</p>
               ) : null}
             </div>
-            <div className="flex items-end">
+            <div className="space-y-1.5">
+              <div aria-hidden="true" className="h-3.5" />
               <Button
                 id="settings-external-account-invite-create"
                 type="submit"

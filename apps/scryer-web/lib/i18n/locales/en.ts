@@ -106,15 +106,15 @@ const en: LocaleDictionary = {
   "settings.securitySkipLocalIps": "Skip for local IPs",
   "settings.securitySkipLocalIpsHelp":
     "When enabled, callers from 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 can access Scryer without signing in.",
-  "settings.securityTotpConfigStepUp": "Require TOTP for settings",
+  "settings.securityTotpConfigStepUp": "Require MFA for settings",
   "settings.securityTotpConfigStepUpHelp":
-    "When enabled, system and facet configuration changes require a recent TOTP verification.",
+    "When enabled, system and facet configuration changes require a recent MFA verification.",
   "settings.securityTotpLocalLogin": "Require MFA for local user logins",
   "settings.securityTotpLocalLoginHelp":
     "When enabled, Scryer username and password sign-in requires Scryer one-time codes. Passkeys are unchanged.",
-  "settings.securityTotpJellyfinLogin": "Require TOTP for Jellyfin login",
+  "settings.securityTotpJellyfinLogin": "Require MFA for Jellyfin login",
   "settings.securityTotpJellyfinLoginHelp":
-    "When enabled, Jellyfin password passthrough sign-in requires the user's Scryer TOTP code.",
+    "When enabled, Jellyfin password passthrough sign-in requires the user's Scryer MFA code.",
   "settings.securitySavedPreference": "Saved preference",
   "settings.securityEffectiveMode": "Effective runtime mode",
   "settings.securityOverrideTitle": "Deployment override active",
@@ -450,7 +450,7 @@ const en: LocaleDictionary = {
   "settings.mediaServerConfirmDiscardDescription":
     "Your current media server edits will be lost.",
   "settings.mediaServerEnabled": "Enable media server connection",
-  "settings.mediaServerAuthCapabilities": "Login, linking, and auto-onboarding",
+  "settings.mediaServerAuthCapabilities": "Permissions",
   "settings.mediaServerAutoAddEnabled": "Auto-add new verified users",
   "settings.defaultAppPermissions": "Default app permissions",
   "settings.defaultLibraryPermissions": "Default library permissions",
@@ -1115,7 +1115,7 @@ const en: LocaleDictionary = {
   "settings.permissions": "Permissions",
   "settings.noUsers": "No users loaded.",
   "settings.savePermissions": "Save Permissions",
-  "settings.updatePassword": "Update Password",
+  "settings.updatePassword": "Update",
   "settings.currentPermissions": "Current permissions",
   "settings.apiKey": "API Key",
   "settings.indexerProviderSection": "Indexer providers",
