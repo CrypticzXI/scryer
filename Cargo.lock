@@ -5931,6 +5931,7 @@ dependencies = [
  "scryer-application",
  "scryer-domain",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

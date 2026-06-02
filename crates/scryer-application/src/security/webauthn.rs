@@ -330,8 +330,9 @@ impl AppUseCase {
         self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         self.cleanup_expired_webauthn_challenges().await?;
 
-        let (record, options_json) = if let Some(username) =
-            username.map(str::trim).filter(|value| !value.is_empty())
+        let (record, options_json) = if let Some(username) = username
+            .map(Self::normalize_local_username)
+            .filter(|value| !value.is_empty())
         {
             let invalid_username_passkey =
                 || AppError::Unauthorized("invalid passkey credentials".into());

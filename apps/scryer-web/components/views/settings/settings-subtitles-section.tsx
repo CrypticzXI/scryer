@@ -57,7 +57,21 @@ function Toggle({
 }
 
 /** Integer input that holds local state and only commits on blur. */
-function BlurIntegerInput({ id, value, onCommit, disabled }: { id: string; value: number; onCommit: (v: number) => void; disabled?: boolean }) {
+function BlurIntegerInput({
+  id,
+  value,
+  onCommit,
+  disabled,
+  min = 0,
+  max,
+}: {
+  id: string;
+  value: number;
+  onCommit: (v: number) => void;
+  disabled?: boolean;
+  min?: number;
+  max?: number;
+}) {
   const [local, setLocal] = React.useState(String(value));
   React.useEffect(() => { setLocal(String(value)); }, [value]);
   return (
@@ -67,7 +81,9 @@ function BlurIntegerInput({ id, value, onCommit, disabled }: { id: string; value
       value={local}
       onChange={(e) => setLocal(sanitizeDigits(e.target.value))}
       onBlur={() => {
-        const parsed = local === "" ? 0 : Number(local);
+        let parsed = local === "" ? min : Number(local);
+        parsed = Math.max(min, max == null ? parsed : Math.min(max, parsed));
+        setLocal(String(parsed));
         if (parsed !== value) onCommit(parsed);
       }}
       disabled={disabled}
@@ -201,6 +217,7 @@ export function SettingsSubtitlesSection({
                 id="settings-subtitles-min-score-series"
                 value={settings.minimumScoreSeries}
                 onCommit={(v) => update({ minimumScoreSeries: v })}
+                max={100}
                 disabled={disabled}
               />
             </div>
@@ -210,6 +227,7 @@ export function SettingsSubtitlesSection({
                 id="settings-subtitles-min-score-movie"
                 value={settings.minimumScoreMovie}
                 onCommit={(v) => update({ minimumScoreMovie: v })}
+                max={100}
                 disabled={disabled}
               />
             </div>
@@ -246,6 +264,7 @@ export function SettingsSubtitlesSection({
                 id="settings-subtitles-sync-threshold-series"
                 value={settings.syncThresholdSeries}
                 onCommit={(v) => update({ syncThresholdSeries: v })}
+                max={100}
                 disabled={syncDisabled}
               />
             </div>
@@ -255,6 +274,7 @@ export function SettingsSubtitlesSection({
                 id="settings-subtitles-sync-threshold-movie"
                 value={settings.syncThresholdMovie}
                 onCommit={(v) => update({ syncThresholdMovie: v })}
+                max={100}
                 disabled={syncDisabled}
               />
             </div>

@@ -1,10 +1,15 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
-use scryer_application::{AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope};
+use scryer_application::{
+    AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
+};
 use scryer_domain::{AppPermission, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
+
+pub const LOGIN_FAILED_MESSAGE: &str = "Sign-in failed. Check your sign-in details and try again.";
 
 /// Opaque handle to a log snapshot provider and subscription source.
 /// The `scryer` crate constructs this from its `LogRingBuffer`.
@@ -269,6 +274,63 @@ pub fn to_gql_error(err: AppError) -> Error {
     }
 }
 
+fn login_progression_error(err: &AppError) -> bool {
+    matches!(
+        err,
+        AppError::TotpStepUpRequired(_)
+            | AppError::TotpEnrollmentRequired(_)
+            | AppError::MfaEnrollmentRequired(_)
+            | AppError::TotpInvalidCode(_)
+            | AppError::TotpRecoveryCodeUsed(_)
+    )
+}
+
+fn app_error_kind(err: &AppError) -> &'static str {
+    match err {
+        AppError::Unauthorized(_) => "Unauthorized",
+        AppError::Validation(_) => "Validation",
+        AppError::PluginInstallInProgress(_) => "PluginInstallInProgress",
+        AppError::NotFound(_) => "NotFound",
+        AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
+        AppError::TotpStepUpRequired(_) => "TotpStepUpRequired",
+        AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
+        AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",
+        AppError::TotpInvalidCode(_) => "TotpInvalidCode",
+        AppError::TotpRecoveryCodeUsed(_) => "TotpRecoveryCodeUsed",
+        AppError::Repository(_) => "Repository",
+    }
+}
+
+pub fn to_login_gql_error(method: &'static str, err: AppError) -> Error {
+    if login_progression_error(&err) {
+        return to_gql_error(err);
+    }
+
+    let error_kind = app_error_kind(&err);
+    if matches!(err, AppError::Repository(_)) {
+        tracing::warn!(login_method = method, error_kind, "masked login failure");
+    } else {
+        tracing::debug!(login_method = method, error_kind, "masked login failure");
+    }
+    Error::new(LOGIN_FAILED_MESSAGE).extend_with(|_, extensions| {
+        extensions.set("code", "LOGIN_FAILED");
+    })
+}
+
+pub async fn to_login_gql_error_after_timing(
+    method: &'static str,
+    timing_class: LoginFailureTimingClass,
+    started_at: Instant,
+    err: AppError,
+) -> Error {
+    if login_progression_error(&err) {
+        return to_gql_error(err);
+    }
+
+    AppUseCase::apply_login_failure_timing(timing_class, started_at).await;
+    to_login_gql_error(method, err)
+}
+
 pub fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
     if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
         return Err(to_gql_error(AppError::MfaEnrollmentRequired(
@@ -342,4 +404,43 @@ pub fn mfa_verification_from_ctx(ctx: &Context<'_>) -> MfaVerification {
     ctx.data_opt::<MfaVerification>()
         .copied()
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn graphql_error_code(error: &Error) -> Option<&str> {
+        error
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get("code"))
+            .and_then(|value| match value {
+                async_graphql::Value::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn login_errors_mask_disclosure_details() {
+        for err in [
+            AppError::Unauthorized("external account is not invited".into()),
+            AppError::NotFound("user 00000000-0000-0000-0000-000000000001".into()),
+            AppError::Validation("passkeys require a password-backed account".into()),
+        ] {
+            let error = to_login_gql_error("jellyfin", err);
+            assert_eq!(error.message, LOGIN_FAILED_MESSAGE);
+            assert_eq!(graphql_error_code(&error), Some("LOGIN_FAILED"));
+        }
+    }
+
+    #[test]
+    fn login_errors_preserve_mfa_progression() {
+        let error = to_login_gql_error(
+            "local",
+            AppError::TotpStepUpRequired("TOTP code is required for local login".into()),
+        );
+        assert_eq!(error.message, "TOTP code is required for local login");
+        assert_eq!(graphql_error_code(&error), Some("TOTP_STEP_UP_REQUIRED"));
+    }
 }

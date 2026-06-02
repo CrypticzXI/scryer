@@ -56,7 +56,8 @@ impl MetadataIdentityHint {
 
     fn accepts_safe_match(&self, item: &MetadataSearchItem) -> bool {
         !self.has_external_ids()
-            || self.has_matching_external_id_signal(item)
+            || (self.has_matching_external_id_signal(item)
+                && self.external_id_match_is_evidence_compatible(item))
             || self.allows_sidecar_exact_title_year_fallback(item)
     }
 
@@ -64,6 +65,23 @@ impl MetadataIdentityHint {
         (self.imdb_id.is_some() && item.has_auto_match_signal("external_id:imdb"))
             || (self.tmdb_id.is_some() && item.has_auto_match_signal("external_id:tmdb"))
             || (self.tvdb_id.is_some() && item.has_auto_match_signal("external_id:tvdb"))
+    }
+
+    fn external_id_match_is_evidence_compatible(&self, item: &MetadataSearchItem) -> bool {
+        if let Some(hint_year) = self.year
+            && let Some(item_year) = item.year
+        {
+            let Ok(hint_year) = i32::try_from(hint_year) else {
+                return false;
+            };
+            if (hint_year - item_year).abs() > 1 {
+                return false;
+            }
+        }
+
+        self.title
+            .as_deref()
+            .is_none_or(|hint_title| title_evidence_is_compatible(hint_title, &item.name))
     }
 
     fn allows_sidecar_exact_title_year_fallback(&self, item: &MetadataSearchItem) -> bool {
@@ -77,6 +95,44 @@ impl MetadataIdentityHint {
             && item.has_auto_match_signal("exact_title")
             && item.has_auto_match_signal("exact_year")
     }
+}
+
+fn title_evidence_is_compatible(expected: &str, actual: &str) -> bool {
+    let expected = crate::title_matching::canonical_lookup_key(expected);
+    let actual = crate::title_matching::canonical_lookup_key(actual);
+    if expected.is_empty() || actual.is_empty() {
+        return true;
+    }
+    if expected == actual {
+        return true;
+    }
+
+    let distance = levenshtein_distance(&expected, &actual);
+    let max_len = expected.chars().count().max(actual.chars().count());
+    if max_len <= 4 {
+        return false;
+    }
+
+    distance <= 2 || (max_len >= 16 && distance.saturating_mul(100) <= max_len.saturating_mul(18))
+}
+
+fn levenshtein_distance(left: &str, right: &str) -> usize {
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right_chars.len() + 1];
+
+    for (left_index, left_char) in left.chars().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right_chars.iter().enumerate() {
+            let substitution_cost = usize::from(left_char != *right_char);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + substitution_cost);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right_chars.len()]
 }
 
 trait MetadataSearchItemSignals {
@@ -1514,11 +1570,9 @@ async fn build_prepared_movie_library_scan_candidate(
     let query_variants = query_evidence.queries.clone();
     let extracted_year_hint = query_evidence.year;
     let fallback_query = query_variants.first().cloned().unwrap_or_default();
-    let plexmatch_meta =
-        read_plexmatch_metadata(candidate_sidecar_folder(&file.path, &library_path)).await;
     let identity_hint = select_metadata_identity_hint(
         nfo_meta.as_ref(),
-        plexmatch_meta.as_ref(),
+        None,
         query_evidence.file_walk.as_ref(),
         query_evidence.folder_walk.as_ref(),
         &parsed_release,
@@ -2785,6 +2839,79 @@ mod tests {
     }
 
     #[test]
+    fn select_movie_metadata_from_batch_results_rejects_external_id_with_conflicting_evidence() {
+        let mut candidate = build_prepared_movie_candidate(&["The Bourne Supremacy"]);
+        candidate.identity_hint = Some(MetadataIdentityHint {
+            source: MetadataIdentitySource::Nfo,
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: Some("2502".into()),
+            title: Some("The Bourne Supremacy".into()),
+            year: Some(2004),
+        });
+        let key = BatchMetadataSearchKey::new(
+            METADATA_TYPE_MOVIE,
+            "The Bourne Supremacy",
+            None,
+            candidate.identity_hint.as_ref(),
+        )
+        .expect("metadata search key");
+        let mut results = HashMap::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "2502".into(),
+                name: "Patton".into(),
+                year: Some(1970),
+                auto_match_safe: true,
+                auto_match_signals: vec!["external_id:tvdb".into()],
+            }]),
+        );
+
+        let selected = select_movie_metadata_from_batch_results(&candidate, &results)
+            .expect("movie batch selection");
+
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn select_movie_metadata_from_batch_results_accepts_external_id_with_title_nuance() {
+        let mut candidate = build_prepared_movie_candidate(&["Furiosa A Mad Max Saga"]);
+        candidate.identity_hint = Some(MetadataIdentityHint {
+            source: MetadataIdentitySource::Filename,
+            imdb_id: Some("tt12037194".into()),
+            tmdb_id: None,
+            tvdb_id: None,
+            title: Some("Furiosa A Mad Max Saga".into()),
+            year: Some(2024),
+        });
+        let key = BatchMetadataSearchKey::new(
+            METADATA_TYPE_MOVIE,
+            "Furiosa A Mad Max Saga",
+            None,
+            candidate.identity_hint.as_ref(),
+        )
+        .expect("metadata search key");
+        let mut results = HashMap::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "157390".into(),
+                name: "Furiosa: A Mad Max Saga".into(),
+                year: Some(2024),
+                auto_match_safe: true,
+                auto_match_signals: vec!["external_id:imdb".into()],
+            }]),
+        );
+
+        let selected = select_movie_metadata_from_batch_results(&candidate, &results)
+            .expect("movie batch selection")
+            .expect("compatible ID-backed match");
+
+        assert_eq!(selected.tvdb_id, "157390");
+    }
+
+    #[test]
     fn next_metadata_search_chunk_limits_movie_batch_keys() {
         let candidates = vec![
             build_prepared_movie_candidate(&["Alpha", "Beta"]),
@@ -3062,6 +3189,42 @@ mod tests {
                 .as_ref()
                 .map(|item| item.tvdb_id.as_str())
                 == Some("series-1")
+        }));
+    }
+
+    #[tokio::test]
+    async fn prepare_movie_candidate_ignores_plexmatch_hint() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let folder = tempdir.path().join("The Bourne Supremacy (2004)");
+        std::fs::create_dir_all(&folder).expect("create movie dir");
+        let movie_path = folder.join("The Bourne Supremacy (2004) Remux-1080p.mkv");
+        std::fs::write(&movie_path, b"movie").expect("write movie");
+        std::fs::write(
+            folder.join(".plexmatch"),
+            "title: Patton\nyear: 1970\ntvdbid: 2502\n",
+        )
+        .expect("write plexmatch");
+
+        let candidate = prepare_movie_library_scan_candidate(
+            LibraryFile {
+                path: path_to_stored_string(&movie_path),
+                display_name: "The Bourne Supremacy (2004) Remux-1080p".into(),
+                nfo_path: None,
+                size_bytes: None,
+                source_signature_scheme: None,
+                source_signature_value: None,
+            },
+            path_to_stored_string(tempdir.path()),
+        )
+        .await
+        .expect("prepare movie candidate");
+
+        assert_eq!(candidate.query, "The Bourne Supremacy");
+        assert_eq!(candidate.year_hint, Some(2004));
+        assert!(candidate.identity_hint.as_ref().is_none_or(|hint| {
+            hint.tvdb_id.as_deref() != Some("2502")
+                && hint.title.as_deref() != Some("Patton")
+                && hint.year != Some(1970)
         }));
     }
 

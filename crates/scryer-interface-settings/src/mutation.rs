@@ -1,8 +1,10 @@
+use std::time::Instant;
+
 use async_graphql::{Context, Error, Object, Result as GqlResult};
 use chrono::Utc;
 use scryer_application::{
-    AcquisitionSettings as AppAcquisitionSettings, MediaServerConnectionDraft,
-    MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
+    AcquisitionSettings as AppAcquisitionSettings, LoginFailureTimingClass,
+    MediaServerConnectionDraft, MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
     UpdateGeneralSettings as AppUpdateGeneralSettings,
@@ -13,12 +15,12 @@ use scryer_application::{
 
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
-    mfa_verification_from_ctx, to_gql_error,
+    mfa_verification_from_ctx, to_gql_error, to_login_gql_error, to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
     from_media_server_connection, from_media_settings, from_plex_server_discovery,
-    from_quality_profile_settings, from_service_settings, from_user,
+    from_quality_profile_settings, from_service_settings, from_user_with_auth_factor_status,
 };
 use scryer_interface_media::types::*;
 
@@ -374,10 +376,14 @@ async fn login_payload_from_user(
         .issue_access_token_with_mfa(&user, mfa_verified_until)
         .await
         .map_err(to_gql_error)?;
+    let auth_factor_status = app
+        .user_auth_factor_status(&user.id)
+        .await
+        .map_err(to_gql_error)?;
     let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
     Ok(LoginPayload {
         token,
-        user: from_user(user),
+        user: from_user_with_auth_factor_status(user, auth_factor_status),
         expires_at,
         mfa_verified_until: mfa_verified_until.map(|value| value.to_rfc3339()),
         mfa_enrollment_required: false,
@@ -396,11 +402,15 @@ async fn login_mfa_enrollment_payload_from_user(
         .issue_mfa_enrollment_token(&user)
         .await
         .map_err(to_gql_error)?;
+    let auth_factor_status = app
+        .user_auth_factor_status(&user.id)
+        .await
+        .map_err(to_gql_error)?;
     let expires_at =
         (Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime())).to_rfc3339();
     Ok(LoginPayload {
         token,
-        user: from_user(user),
+        user: from_user_with_auth_factor_status(user, auth_factor_status),
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
@@ -1358,13 +1368,27 @@ impl SettingsMutations {
     ) -> GqlResult<WebauthnChallengePayload> {
         let app = app_from_ctx(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
-        app.webauthn_authenticate_start(
-            username.as_deref(),
-            auth_runtime.snapshot().effective_form_login_enabled,
-        )
-        .await
-        .map(from_webauthn_challenge_start)
-        .map_err(to_gql_error)
+        let form_login_enabled = auth_runtime.snapshot().effective_form_login_enabled;
+        let started_at = Instant::now();
+        let start = match app
+            .webauthn_authenticate_start(username.as_deref(), form_login_enabled)
+            .await
+        {
+            Ok(start) => start,
+            Err(err) => {
+                if !form_login_enabled {
+                    return Err(to_login_gql_error("passkey", err));
+                }
+                return Err(to_login_gql_error_after_timing(
+                    "passkey",
+                    LoginFailureTimingClass::FastMasked,
+                    started_at,
+                    err,
+                )
+                .await);
+            }
+        };
+        Ok(from_webauthn_challenge_start(start))
     }
 
     async fn webauthn_authenticate_complete(
@@ -1374,14 +1398,30 @@ impl SettingsMutations {
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
-        let user = app
+        let form_login_enabled = auth_runtime.snapshot().effective_form_login_enabled;
+        let started_at = Instant::now();
+        let user = match app
             .webauthn_authenticate_complete(
                 &input.challenge_id,
                 &input.response_json,
-                auth_runtime.snapshot().effective_form_login_enabled,
+                form_login_enabled,
             )
             .await
-            .map_err(to_gql_error)?;
+        {
+            Ok(user) => user,
+            Err(err) => {
+                if !form_login_enabled {
+                    return Err(to_login_gql_error("passkey", err));
+                }
+                return Err(to_login_gql_error_after_timing(
+                    "passkey",
+                    LoginFailureTimingClass::FastMasked,
+                    started_at,
+                    err,
+                )
+                .await);
+            }
+        };
         login_payload_from_user(&app, user, None).await
     }
 
@@ -1401,10 +1441,13 @@ impl SettingsMutations {
 
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
-        let user = app
+        let user = match app
             .authenticate_credentials(&input.username, &input.password)
             .await
-            .map_err(to_gql_error)?;
+        {
+            Ok(user) => user,
+            Err(err) => return Err(to_login_gql_error("local", err)),
+        };
         let effective_login_enabled = auth_runtime_from_ctx(ctx)
             .snapshot()
             .effective_form_login_enabled;

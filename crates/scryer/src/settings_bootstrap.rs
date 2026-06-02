@@ -32,7 +32,10 @@ pub(crate) use scryer_application::{
 use scryer_infrastructure::{QualityProfileStore, SettingsStore, SettingsValueRecord};
 use serde_json::{Value, json};
 
-use crate::{normalize_env_option, normalize_env_option_with_legacy};
+use crate::{
+    normalize_env_option, normalize_env_option_with_legacy,
+    startup_migrations::_0002_enhanced_subsync_plugin_016::ENHANCED_SUBSYNC_016_MIGRATION_STATE_KEY,
+};
 
 pub(crate) const SETTINGS_CATEGORY_SERVICE: &str = "service";
 pub(crate) const SETTINGS_CATEGORY_MEDIA: &str = "media";
@@ -877,7 +880,7 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: "subtitles.minimum_score_series",
             data_type: "number",
-            default_value_json: "240",
+            default_value_json: "90",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -942,6 +945,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: "subtitles.sync_max_offset_seconds",
             data_type: "number",
             default_value_json: "60",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SUBTITLES,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: ENHANCED_SUBSYNC_016_MIGRATION_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
             is_sensitive: false,
         },
     ]

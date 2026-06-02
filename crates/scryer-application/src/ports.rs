@@ -393,6 +393,7 @@ pub trait UserRepository: Send + Sync {
     async fn create(&self, user: User) -> AppResult<User>;
     async fn list_all(&self) -> AppResult<Vec<User>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<User>>;
+    async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>>;
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
@@ -575,7 +576,13 @@ pub trait TotpRepository: Send + Sync {
         user_id: &str,
     ) -> AppResult<Option<TotpEnrollmentChallengeRecord>>;
     async fn delete_enrollment_challenge(&self, id: &str, user_id: &str) -> AppResult<()>;
+    async fn delete_enrollment_challenges_for_user(&self, user_id: &str) -> AppResult<u64>;
     async fn delete_expired_enrollment_challenges(&self, now: &str) -> AppResult<u64>;
+    async fn reset_user_mfa_and_invalidate_sessions(
+        &self,
+        user_id: &str,
+        auth_session_version: &str,
+    ) -> AppResult<()>;
     async fn replace_recovery_codes(
         &self,
         user_id: &str,

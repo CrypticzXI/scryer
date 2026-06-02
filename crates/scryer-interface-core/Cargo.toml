@@ -8,3 +8,4 @@ async-graphql = { workspace = true }
 scryer-application = { path = "../scryer-application" }
 scryer-domain = { path = "../scryer-domain" }
 tokio = { workspace = true }
+tracing = { workspace = true }

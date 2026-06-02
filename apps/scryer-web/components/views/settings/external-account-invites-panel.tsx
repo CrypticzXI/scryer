@@ -37,6 +37,7 @@ import type {
   ExternalAccountProvider,
   LinkedAccount,
 } from "@/lib/types/settings";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 export type ExternalInviteDraft = {
   userId: string;
@@ -282,6 +283,7 @@ function JellyfinProviderUserCombobox({
             <div className="flex h-8 items-center gap-2 rounded-md border border-input bg-field px-2">
               <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <input
+                id={`${id}-search`}
                 type="text"
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
@@ -311,6 +313,7 @@ function JellyfinProviderUserCombobox({
                 const selected = selectedOption?.id === option.id;
                 return (
                   <CommandItem
+                    id={selectorId("settings-external-invite-provider-user-option", option.username)}
                     key={option.id}
                     value={`${option.username} ${option.displayName ?? ""} ${option.id}`}
                     onSelect={() => {
@@ -332,6 +335,7 @@ function JellyfinProviderUserCombobox({
               })}
               {showManualEntry ? (
                 <CommandItem
+                  id={selectorId("settings-external-invite-provider-user-manual", value.trim())}
                   value={`manual ${value}`}
                   onSelect={() => {
                     onChange(value.trim());
@@ -454,7 +458,11 @@ export function ExternalAccountInvitesPanel({
                 </SelectTrigger>
                 <SelectContent>
                 {users.map((user) => (
-                  <SelectItem key={user.id} value={user.id}>
+                  <SelectItem
+                    id={selectorId("settings-external-invite-user-option", user.username)}
+                    key={user.id}
+                    value={user.id}
+                  >
                     {user.username}
                   </SelectItem>
                 ))}
@@ -624,7 +632,15 @@ export function ExternalAccountInvitesPanel({
                   sortedInvites.map((invite) => {
                     const status = inviteStatus(invite, t);
                     return (
-                      <TableRow key={invite.id}>
+                      <TableRow
+                        key={invite.id}
+                        id={selectorId(
+                          "settings-external-account-invite-row",
+                          usersById.get(invite.userId) ?? invite.userId,
+                          invite.provider,
+                          invite.username,
+                        )}
+                      >
                         <TableCell>{usersById.get(invite.userId) ?? invite.userId}</TableCell>
                         <TableCell>{providerLabel(invite.provider)}</TableCell>
                         <TableCell>{inviteConnectionLabel(authProviderSettings, invite)}</TableCell>

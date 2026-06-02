@@ -27,6 +27,7 @@ type FacetPermissionDropdownProps = {
   permissions?: string[];
   selectedByLibrary: LibraryPermissionDrafts;
   disabled?: boolean;
+  idPrefix?: string;
   onLibraryChange: (libraryId: string, next: string[], permission: string) => void;
 };
 
@@ -124,11 +125,13 @@ function AppPermissionDropdown({
   permissions,
   selected,
   disabled,
+  idPrefix,
   onChange,
 }: {
   permissions?: string[];
   selected: string[];
   disabled?: boolean;
+  idPrefix?: string;
   onChange: (next: string[], permission: string) => void;
 }) {
   const options = permissionOptions(permissions, APP_PERMISSION_OPTIONS);
@@ -137,6 +140,7 @@ function AppPermissionDropdown({
     <Popover>
       <PopoverTrigger asChild>
         <PermissionDropdownTrigger
+          id={idPrefix ? `${idPrefix}-app-trigger` : undefined}
           label="App"
           count={selected.length}
           disabled={options.length === 0}
@@ -152,6 +156,7 @@ function AppPermissionDropdown({
             const checked = selected.includes(permission.value);
             return (
               <button
+                id={idPrefix ? `${idPrefix}-app-${permission.value}` : undefined}
                 key={permission.value}
                 type="button"
                 onClick={() =>
@@ -178,6 +183,7 @@ function FacetPermissionDropdown({
   permissions,
   selectedByLibrary,
   disabled,
+  idPrefix,
   onLibraryChange,
 }: FacetPermissionDropdownProps) {
   const options = permissionOptions(permissions, LIBRARY_PERMISSION_OPTIONS);
@@ -191,6 +197,7 @@ function FacetPermissionDropdown({
     <Popover>
       <PopoverTrigger asChild>
         <PermissionDropdownTrigger
+          id={idPrefix ? `${idPrefix}-${facet}-trigger` : undefined}
           label={label}
           count={selectedCount}
           disabled={facetLibraries.length === 0}
@@ -214,6 +221,11 @@ function FacetPermissionDropdown({
                     const checked = selected.includes(permission.value);
                     return (
                       <button
+                        id={
+                          idPrefix
+                            ? `${idPrefix}-${facet}-${library.id}-${permission.value}`
+                            : undefined
+                        }
                         key={`${library.id}-${permission.value}`}
                         type="button"
                         onClick={() =>
@@ -252,6 +264,7 @@ export function PermissionDropdowns({
   selectedAppPermissions,
   selectedLibraryPermissions,
   disabled,
+  idPrefix,
   onAppChange,
   onLibraryChange,
 }: {
@@ -261,6 +274,7 @@ export function PermissionDropdowns({
   selectedAppPermissions: string[];
   selectedLibraryPermissions: LibraryPermissionDrafts;
   disabled?: boolean;
+  idPrefix?: string;
   onAppChange: (next: string[], permission: string) => void;
   onLibraryChange: (libraryId: string, next: string[], permission: string) => void;
 }) {
@@ -270,6 +284,7 @@ export function PermissionDropdowns({
         permissions={appPermissions}
         selected={selectedAppPermissions}
         disabled={disabled}
+        idPrefix={idPrefix}
         onChange={onAppChange}
       />
       {FACET_OPTIONS.map((facet) => (
@@ -281,6 +296,7 @@ export function PermissionDropdowns({
           permissions={libraryPermissions}
           selectedByLibrary={selectedLibraryPermissions}
           disabled={disabled}
+          idPrefix={idPrefix}
           onLibraryChange={onLibraryChange}
         />
       ))}

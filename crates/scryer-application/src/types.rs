@@ -1167,6 +1167,12 @@ pub struct TotpFailedAttemptRecord {
     pub attempted_at: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserAuthFactorStatus {
+    pub has_mfa: bool,
+    pub has_passkey: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TotpStatus {
     pub enabled: bool,
@@ -1187,6 +1193,12 @@ pub struct TotpEnrollmentStart {
 pub struct TotpEnrollmentComplete {
     pub status: TotpStatus,
     pub recovery_codes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginFailureTimingClass {
+    PasswordBackedLocal,
+    FastMasked,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

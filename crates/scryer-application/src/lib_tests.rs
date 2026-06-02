@@ -995,6 +995,10 @@ impl UserRepository for MockUserRepo {
         Ok(self.store.lock().await.clone())
     }
 
+    async fn auth_session_version(&self, _user_id: &str) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
         let mut users = self.store.lock().await;
         let user = users
@@ -22675,6 +22679,65 @@ fn v1_password_still_validates() {
     );
 }
 
+#[test]
+fn login_failure_delay_targets_stay_in_configured_ranges() {
+    assert_eq!(
+        AppUseCase::login_failure_delay_target_for_random(
+            LoginFailureTimingClass::PasswordBackedLocal,
+            0,
+        ),
+        Duration::from_millis(400),
+    );
+    assert_eq!(
+        AppUseCase::login_failure_delay_target_for_random(
+            LoginFailureTimingClass::PasswordBackedLocal,
+            300,
+        ),
+        Duration::from_millis(700),
+    );
+    assert_eq!(
+        AppUseCase::login_failure_delay_target_for_random(LoginFailureTimingClass::FastMasked, 0,),
+        Duration::from_millis(500),
+    );
+    assert_eq!(
+        AppUseCase::login_failure_delay_target_for_random(LoginFailureTimingClass::FastMasked, 300,),
+        Duration::from_millis(800),
+    );
+}
+
+#[test]
+fn login_failure_delay_ranges_overlap_and_do_not_go_negative() {
+    assert_eq!(
+        AppUseCase::login_failure_delay_target_for_random(
+            LoginFailureTimingClass::PasswordBackedLocal,
+            200,
+        ),
+        AppUseCase::login_failure_delay_target_for_random(LoginFailureTimingClass::FastMasked, 100),
+    );
+    assert_eq!(
+        AppUseCase::login_failure_remaining_delay_for_elapsed(
+            LoginFailureTimingClass::FastMasked,
+            300,
+            Duration::from_millis(900),
+        ),
+        None,
+    );
+}
+
+#[tokio::test]
+async fn empty_local_login_inputs_use_masked_failure_delay() {
+    let (app, _) = bootstrap();
+    let started = std::time::Instant::now();
+
+    let result = app.authenticate_credentials("", "s3cr3t!!").await;
+
+    assert!(result.is_err());
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "empty credential failure returned before the masked delay band"
+    );
+}
+
 #[tokio::test]
 async fn existing_short_password_remains_valid_after_minimum_is_raised() {
     let (app, admin) = bootstrap();
@@ -22780,13 +22843,102 @@ async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
     );
 }
 
+#[tokio::test]
+async fn local_password_login_requires_exact_spacing() {
+    let (app, _) = bootstrap();
+    let password = "  exact-pass  ";
+    let user = User {
+        id: "exact-spacing-login-user".to_string(),
+        username: "exact_spacing_login".to_string(),
+        password_hash: Some(app.hash_password(password).expect("hash spaced password")),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("create spaced-password user");
+
+    let authenticated = app
+        .authenticate_credentials("exact_spacing_login", password)
+        .await
+        .expect("exact password should authenticate");
+    assert_eq!(authenticated.id, user.id);
+
+    let trimmed = app
+        .authenticate_credentials("exact_spacing_login", password.trim())
+        .await;
+    assert!(trimmed.is_err(), "trimmed password must be rejected");
+}
+
+#[tokio::test]
+async fn change_own_password_requires_exact_current_password_spacing() {
+    let (app, _) = bootstrap();
+    let old_password = "  old-pass  ";
+    let user = User {
+        id: "exact-current-password-user".to_string(),
+        username: "exact_current_password".to_string(),
+        password_hash: Some(app.hash_password(old_password).expect("hash old password")),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    let user = app
+        .services
+        .identity
+        .users
+        .create(user)
+        .await
+        .expect("create exact-current-password user");
+
+    let trimmed_current = app
+        .change_own_password(
+            &user,
+            "new-pass-1".to_string(),
+            old_password.trim().to_string(),
+        )
+        .await;
+    assert!(
+        trimmed_current.is_err(),
+        "trimmed current password must be rejected"
+    );
+
+    let changed = app
+        .change_own_password(&user, "new-pass-1".to_string(), old_password.to_string())
+        .await
+        .expect("exact current password should succeed");
+    assert!(
+        app.validate_password(
+            "new-pass-1",
+            changed.password_hash.as_deref().expect("new password hash")
+        )
+        .expect("new password should validate")
+    );
+}
+
 // ── password edge cases ───────────────────────────────────────────────────
 
 #[test]
 fn hash_password_empty_returns_error() {
     let (app, _) = bootstrap();
     assert!(app.hash_password("").is_err());
-    assert!(app.hash_password("   ").is_err());
+}
+
+#[test]
+fn hash_password_preserves_password_spacing() {
+    let (app, _) = bootstrap();
+    let password = "  P@ssw0rd  ";
+    let hash = app.hash_password(password).expect("hash password");
+
+    assert!(
+        app.validate_password(password, &hash)
+            .expect("exact password should validate")
+    );
+    assert!(
+        !app.validate_password(password.trim(), &hash)
+            .expect("trimmed password should be rejected")
+    );
 }
 
 #[test]
@@ -22977,6 +23129,45 @@ async fn issue_and_authenticate_token_round_trips() {
         .expect("authenticate token");
     assert_eq!(decoded.id, user.id);
     assert_eq!(decoded.username, user.username);
+}
+
+#[tokio::test]
+async fn token_signed_without_auth_session_version_authenticates() {
+    let (app, _) = bootstrap();
+    let user = User {
+        id: "user-jwt-no-session-version".to_string(),
+        username: "jwt_no_session_version".to_string(),
+        password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        account_kind: Default::default(),
+        authorization: Default::default(),
+    };
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .unwrap();
+    let claims = JwtClaims {
+        sub: user.id.clone(),
+        exp: Utc::now().timestamp() + 3600,
+        iat: Utc::now().timestamp(),
+        iss: app.auth.issuer.clone(),
+        username: user.username.clone(),
+        app_permissions: vec![],
+        library_permissions: vec![],
+        mfa_verified_until: None,
+        auth_scope: JwtSessionScope::Full,
+    };
+    let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+    let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
+    let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
+    let token = jsonwebtoken::encode(&header, &claims, &key).expect("encode token");
+
+    let decoded = app
+        .authenticate_token(&token)
+        .await
+        .expect("token without auth session version should authenticate");
+    assert_eq!(decoded.id, user.id);
 }
 
 #[tokio::test]

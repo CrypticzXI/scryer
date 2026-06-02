@@ -11,6 +11,7 @@ use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::subtitles::provider::{
     SubtitleFile, SubtitleMatch, SubtitleMediaKind, SubtitleProvider, SubtitleQuery,
 };
+use crate::subtitles::scoring::{SubtitleScoreKind, percent_to_raw_threshold};
 use crate::subtitles::search::SubtitleSearchOrchestrator;
 use crate::subtitles::sync;
 use crate::subtitles::wanted::{SubtitleLanguagePref, compute_missing_subtitles_from_streams};
@@ -751,11 +752,28 @@ struct SubtitleSyncSettings {
 
 impl SubtitleSyncSettings {
     fn threshold_for(self, media_kind: SubtitleMediaKind) -> i32 {
-        match media_kind {
+        let kind = subtitle_score_kind(media_kind);
+        let percent = match media_kind {
             SubtitleMediaKind::Episode => self.threshold_series,
             SubtitleMediaKind::Movie => self.threshold_movie,
-        }
+        };
+        percent_to_raw_threshold(kind, percent)
     }
+}
+
+fn subtitle_score_kind(media_kind: SubtitleMediaKind) -> SubtitleScoreKind {
+    match media_kind {
+        SubtitleMediaKind::Episode => SubtitleScoreKind::Episode,
+        SubtitleMediaKind::Movie => SubtitleScoreKind::Movie,
+    }
+}
+
+fn subtitle_minimum_raw_score(media_kind: SubtitleMediaKind, series: i32, movie: i32) -> i32 {
+    let percent = match media_kind {
+        SubtitleMediaKind::Episode => series,
+        SubtitleMediaKind::Movie => movie,
+    };
+    percent_to_raw_threshold(subtitle_score_kind(media_kind), percent)
 }
 
 fn read_subtitle_sync_settings(settings: &AppSubtitleSettings) -> SubtitleSyncSettings {
@@ -1340,11 +1358,16 @@ async fn run_subtitle_search_for_file(
         .ok_or_else(|| crate::AppError::NotFound("media file not found".into()))?;
 
     let is_series = is_series_title(&title);
-    let min_score: i32 = if is_series {
-        settings.minimum_score_series
+    let media_kind = if is_series {
+        SubtitleMediaKind::Episode
     } else {
-        settings.minimum_score_movie
+        SubtitleMediaKind::Movie
     };
+    let min_score = subtitle_minimum_raw_score(
+        media_kind,
+        settings.minimum_score_series,
+        settings.minimum_score_movie,
+    );
     let sync_settings = read_subtitle_sync_settings(&settings);
 
     let providers = match configured_runtime_subtitle_providers(app, &settings).await {
@@ -1582,12 +1605,9 @@ async fn run_subtitle_search_cycle(app: &AppUseCase) -> AppResult<()> {
                 continue;
             }
 
-            let is_series = is_series_title(title);
-            let min_score = if is_series {
-                min_score_series
-            } else {
-                min_score_movie
-            };
+            let media_kind = subtitle_media_kind(title);
+            let min_score =
+                subtitle_minimum_raw_score(media_kind, min_score_series, min_score_movie);
 
             let file_path = stored_path_to_path_buf(&mf.file_path);
             let episode_context = media_file_episode_context(app, mf).await;
@@ -1806,6 +1826,31 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use scryer_domain::{ExternalId, MediaFacet, Title};
+
+    #[test]
+    fn subtitle_minimum_settings_are_percentages_converted_to_raw_scores() {
+        assert_eq!(
+            subtitle_minimum_raw_score(SubtitleMediaKind::Episode, 90, 70),
+            324
+        );
+        assert_eq!(
+            subtitle_minimum_raw_score(SubtitleMediaKind::Movie, 90, 70),
+            84
+        );
+    }
+
+    #[test]
+    fn subtitle_sync_threshold_settings_are_percentages_converted_to_raw_scores() {
+        let settings = SubtitleSyncSettings {
+            enabled: true,
+            threshold_series: 90,
+            threshold_movie: 70,
+            max_offset_seconds: 60,
+        };
+
+        assert_eq!(settings.threshold_for(SubtitleMediaKind::Episode), 324);
+        assert_eq!(settings.threshold_for(SubtitleMediaKind::Movie), 84);
+    }
 
     fn sample_title(facet: MediaFacet, year: Option<i32>) -> Title {
         Title {

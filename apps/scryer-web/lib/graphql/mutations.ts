@@ -11,6 +11,8 @@ const AUTH_USER_FIELDS = `
       id
       username
       hasPassword
+      hasMfa
+      hasPasskey
       accountKind
       appPermissions
       libraryPermissions {
@@ -133,6 +135,8 @@ export const createUserMutation = `mutation CreateUser($input: CreateUserInput!)
     id
     username
     hasPassword
+    hasMfa
+    hasPasskey
     accountKind
     appPermissions
     libraryPermissions {
@@ -147,6 +151,8 @@ export const setUserPasswordMutation = `mutation SetUserPassword($input: SetUser
     id
     username
     hasPassword
+    hasMfa
+    hasPasskey
     accountKind
     appPermissions
     libraryPermissions {
@@ -161,6 +167,8 @@ export const setUserAppPermissionsMutation = `mutation SetUserAppPermissions($in
     id
     username
     hasPassword
+    hasMfa
+    hasPasskey
     accountKind
     appPermissions
     libraryPermissions {
@@ -175,6 +183,8 @@ export const setUserLibraryPermissionsMutation = `mutation SetUserLibraryPermiss
     id
     username
     hasPassword
+    hasMfa
+    hasPasskey
     accountKind
     appPermissions
     libraryPermissions {
@@ -186,6 +196,22 @@ export const setUserLibraryPermissionsMutation = `mutation SetUserLibraryPermiss
 
 export const deleteUserMutation = `mutation DeleteUser($input: DeleteUserInput!) {
   deleteUser(input: $input)
+}`;
+
+export const resetUserMfaMutation = `mutation ResetUserMfa($input: ResetUserMfaInput!) {
+  resetUserMfa(input: $input) {
+    id
+    username
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
+    appPermissions
+    libraryPermissions {
+      libraryId
+      permissions
+    }
+  }
 }`;
 
 export const deleteTitleMutation = `mutation DeleteTitle($input: DeleteTitleInput!) {

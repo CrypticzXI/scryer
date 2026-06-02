@@ -68,6 +68,10 @@ function graphQlErrorCode(error: unknown): string | null {
   return null;
 }
 
+function primaryLoginFailureMessage(t: (key: string) => string): string {
+  return t("auth.signInFailedGeneric");
+}
+
 function sanitizeTotpCode(value: string): string {
   return sanitizeDigits(value).slice(0, 6);
 }
@@ -190,6 +194,7 @@ export default function LoginPage() {
           .query<{ authProviderRuntimeSettings?: AuthProviderSettings }>(
             authProviderRuntimeSettingsQuery,
             {},
+            { requestPolicy: "network-only" },
           )
           .toPromise();
         if (error || cancelled) return;
@@ -236,12 +241,12 @@ export default function LoginPage() {
           } else if (err.code === "cancelled") {
             setError(t("auth.passkeyCancelled"));
           } else {
-            setError(err.message || t("auth.passkeyFailed"));
+            setError(primaryLoginFailureMessage(t));
           }
           return;
         }
 
-        setError(err instanceof Error ? err.message : t("auth.passkeyFailed"));
+        setError(primaryLoginFailureMessage(t));
       } finally {
         setPasskeySubmitting(false);
       }
@@ -293,7 +298,7 @@ export default function LoginPage() {
           setLocalTotpCode("");
           setError(null);
         } else {
-          setError(err instanceof Error ? err.message : t("auth.invalidCredentials"));
+          setError(primaryLoginFailureMessage(t));
         }
       } finally {
         setSubmitting(false);
@@ -406,7 +411,7 @@ export default function LoginPage() {
           setJellyfinTotpCode("");
           setError(null);
         } else {
-          setError(err instanceof Error ? err.message : t("auth.jellyfinFailed"));
+          setError(primaryLoginFailureMessage(t));
         }
       } finally {
         setJellyfinSubmitting(false);
@@ -448,8 +453,8 @@ export default function LoginPage() {
         }
         adoptSession(data.loginWithPlex.token, data.loginWithPlex.user ?? null);
         navigate(redirectTarget, { replace: true });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : t("auth.plexFailed"));
+      } catch {
+        setError(primaryLoginFailureMessage(t));
       } finally {
         setPlexSubmitting(false);
       }
@@ -479,7 +484,10 @@ export default function LoginPage() {
           </div>
 
           {error ? (
-            <div className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300">
+            <div
+              id="login-error"
+              className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300"
+            >
               {error}
             </div>
           ) : null}
@@ -495,6 +503,7 @@ export default function LoginPage() {
                 ))}
               </div>
               <button
+                id="jellyfin-mfa-enrollment-continue"
                 type="button"
                 onClick={continueAfterJellyfinMfaEnrollment}
                 className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500"
@@ -509,6 +518,7 @@ export default function LoginPage() {
                   <QRCode value={jellyfinMfaEnrollment.otpauthUrl} size={168} />
                 </div>
                 <a
+                  id="jellyfin-mfa-enrollment-setup-link"
                   className="break-all text-sm font-medium text-primary underline-offset-4 hover:underline"
                   href={jellyfinMfaEnrollment.otpauthUrl}
                 >
@@ -516,7 +526,10 @@ export default function LoginPage() {
                 </a>
                 <div className="w-full space-y-1">
                   <div className="text-xs text-muted-foreground">{t("profile.totpSecret")}</div>
-                  <code className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs">
+                  <code
+                    id="jellyfin-mfa-enrollment-secret"
+                    className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                  >
                     {jellyfinMfaEnrollment.secretBase32}
                   </code>
                 </div>
@@ -532,6 +545,7 @@ export default function LoginPage() {
                   placeholder={t("auth.totpCode")}
                 />
                 <button
+                  id="jellyfin-mfa-enrollment-submit"
                   type="button"
                   onClick={completeJellyfinMfaEnrollment}
                   disabled={jellyfinMfaBusy || jellyfinMfaEnrollmentCode.length !== 6}
@@ -584,7 +598,9 @@ export default function LoginPage() {
         <h1 className="text-center text-xl font-semibold tracking-tight">{t("auth.signIn")}</h1>
 
         {error && (
-          <div className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300">{error}</div>
+          <div id="login-error" className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300">
+            {error}
+          </div>
         )}
 
         <div className="space-y-3">
@@ -705,6 +721,7 @@ export default function LoginPage() {
 
           {passkeyEnabled ? (
             <button
+              id="login-passkey-submit"
               type="button"
               onClick={handlePasskeySignIn}
               disabled={anySubmitting}
@@ -722,6 +739,7 @@ export default function LoginPage() {
           {jellyfinLoginAvailable ? (
             <>
               <button
+                id="login-jellyfin-method"
                 type="button"
                 onClick={() =>
                   setActiveMethod((current) =>
@@ -761,6 +779,7 @@ export default function LoginPage() {
                     placeholder={t("auth.totpCode")}
                   />
                   <button
+                    id="jellyfin-login-totp-submit"
                     type="button"
                     onClick={handleJellyfinSignIn}
                     disabled={
@@ -827,6 +846,7 @@ export default function LoginPage() {
                     placeholder={t("auth.password")}
                   />
                   <button
+                    id="jellyfin-login-submit"
                     type="button"
                     onClick={handleJellyfinSignIn}
                     disabled={

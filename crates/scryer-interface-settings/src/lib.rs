@@ -8,7 +8,8 @@ use scryer_interface_media::mappers::{
     from_download_client_config, from_download_client_routing_entry,
     from_indexer_config_with_fields, from_indexer_routing_entry, from_jellyfin_server_user,
     from_library_paths_settings, from_media_server_connection, from_media_settings,
-    from_quality_profile_settings, from_service_settings, from_subtitle_provider_config, from_user,
+    from_quality_profile_settings, from_service_settings, from_subtitle_provider_config,
+    from_user_with_auth_factor_status,
 };
 use scryer_interface_media::types::*;
 
@@ -261,6 +262,7 @@ fn from_auth_runtime_state(
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
         passkey_enabled: auth_runtime.passkey_enabled,
+        env_override_active: auth_runtime.env_override_active,
         totp_require_local_login: auth_runtime.effective_form_login_enabled
             && security_settings.totp_require_local_login,
         totp_require_jellyfin_login: auth_runtime.effective_form_login_enabled
@@ -670,7 +672,11 @@ impl SettingsQueries {
                 .attach_user_authorization(user)
                 .await
                 .map_err(to_gql_error)?;
-            payloads.push(from_user(user));
+            let auth_factor_status = app
+                .user_auth_factor_status(&user.id)
+                .await
+                .map_err(to_gql_error)?;
+            payloads.push(from_user_with_auth_factor_status(user, auth_factor_status));
         }
         Ok(payloads)
     }

@@ -1161,6 +1161,8 @@ pub struct UserPayload {
     pub id: String,
     pub username: String,
     pub has_password: bool,
+    pub has_mfa: bool,
+    pub has_passkey: bool,
     pub account_kind: UserAccountKindValue,
     pub app_permissions: Vec<AppPermissionValue>,
     pub library_permissions: Vec<UserLibraryPermissionGrantPayload>,
@@ -1934,6 +1936,7 @@ pub struct AuthRuntimeStatePayload {
     pub effective_form_login_enabled: bool,
     pub skip_login_for_local_ips: bool,
     pub passkey_enabled: bool,
+    pub env_override_active: bool,
     pub totp_require_local_login: bool,
     pub totp_require_jellyfin_login: bool,
 }
@@ -2874,6 +2877,11 @@ pub struct SetUserAppPermissionsInput {
 
 #[derive(InputObject)]
 pub struct DeleteUserInput {
+    pub user_id: String,
+}
+
+#[derive(InputObject)]
+pub struct ResetUserMfaInput {
     pub user_id: String,
 }
 

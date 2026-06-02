@@ -43,7 +43,7 @@ const DEFAULTS: SubtitleSettings = {
   enabled: false,
   languages: [],
   autoDownloadOnImport: false,
-  minimumScoreSeries: 240,
+  minimumScoreSeries: 90,
   minimumScoreMovie: 70,
   searchIntervalHours: 6,
   includeAiTranslated: false,

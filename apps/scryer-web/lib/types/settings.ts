@@ -157,6 +157,7 @@ export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
   passkeyEnabled: boolean;
+  envOverrideActive: boolean;
   totpRequireLocalLogin: boolean;
   totpRequireJellyfinLogin: boolean;
 };

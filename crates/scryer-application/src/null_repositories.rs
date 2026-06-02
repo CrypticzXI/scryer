@@ -1652,16 +1652,28 @@ impl TotpRepository for NullTotpRepository {
         Ok(())
     }
 
+    async fn delete_enrollment_challenges_for_user(&self, _: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+
     async fn delete_expired_enrollment_challenges(&self, _: &str) -> AppResult<u64> {
         Ok(0)
+    }
+
+    async fn reset_user_mfa_and_invalidate_sessions(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
     }
 
     async fn replace_recovery_codes(
         &self,
         _: &str,
-        _: Vec<TotpRecoveryCodeRecord>,
+        codes: Vec<TotpRecoveryCodeRecord>,
     ) -> AppResult<()> {
-        Err(AppError::Repository("not configured".into()))
+        if codes.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Repository("not configured".into()))
+        }
     }
 
     async fn list_recovery_codes_for_user(
@@ -2145,6 +2157,9 @@ pub mod test_nulls {
             Ok(vec![])
         }
         async fn get_by_id(&self, _: &str) -> AppResult<Option<User>> {
+            Ok(None)
+        }
+        async fn auth_session_version(&self, _: &str) -> AppResult<Option<String>> {
             Ok(None)
         }
         async fn update_password_hash(&self, _: &str, _: String) -> AppResult<User> {

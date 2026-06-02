@@ -653,6 +653,7 @@ export function SettingsMediaServersSection({
                     <div className="grid gap-3 md:grid-cols-3">
                       <label className="flex items-center gap-3">
                         <Checkbox
+                          id="settings-media-server-login-enabled"
                           className="size-8 rounded-md"
                           checked={draft.loginEnabled}
                           onCheckedChange={(checked) =>
@@ -666,6 +667,7 @@ export function SettingsMediaServersSection({
                       </label>
                       <label className="flex items-center gap-3">
                         <Checkbox
+                          id="settings-media-server-linking-enabled"
                           className="size-8 rounded-md"
                           checked={draft.linkingEnabled}
                           onCheckedChange={(checked) =>
@@ -679,6 +681,7 @@ export function SettingsMediaServersSection({
                       </label>
                       <label className="flex items-center gap-3">
                         <Checkbox
+                          id="settings-media-server-auto-add-enabled"
                           className="size-8 rounded-md"
                           checked={draft.autoAddEnabled}
                           onCheckedChange={(checked) =>
@@ -697,6 +700,7 @@ export function SettingsMediaServersSection({
                         <Label className="mb-2 block">Default Permissions</Label>
                         <PermissionDropdowns
                           libraries={libraries}
+                          idPrefix="settings-media-server-default-permissions"
                           selectedAppPermissions={draft.defaultAppPermissions}
                           selectedLibraryPermissions={Object.fromEntries(
                             draft.defaultLibraryGrants.map((grant) => [

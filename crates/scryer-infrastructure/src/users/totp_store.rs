@@ -150,12 +150,76 @@ impl TotpRepository for TotpStore {
         Ok(())
     }
 
+    async fn delete_enrollment_challenges_for_user(&self, user_id: &str) -> AppResult<u64> {
+        execute_write(
+            &self.datastore,
+            "delete_totp_enrollment_challenges_for_user",
+            "DELETE FROM totp_enrollment_challenges WHERE user_id = {}",
+            vec![SqlArg::Text(user_id.to_string())],
+        )
+        .await
+    }
+
     async fn delete_expired_enrollment_challenges(&self, now: &str) -> AppResult<u64> {
         execute_write(
             &self.datastore,
             "delete_expired_totp_enrollment_challenges",
             "DELETE FROM totp_enrollment_challenges WHERE expires_at <= {}",
             vec![timestamp_arg(now)?],
+        )
+        .await
+    }
+
+    async fn reset_user_mfa_and_invalidate_sessions(
+        &self,
+        user_id: &str,
+        auth_session_version: &str,
+    ) -> AppResult<()> {
+        let user_id = user_id.to_string();
+        let auth_session_version = auth_session_version.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "reset_user_mfa_and_invalidate_sessions",
+            move |tx| {
+                let user_id = user_id.clone();
+                let auth_session_version = auth_session_version.clone();
+                Box::pin(async move {
+                    let rows = tx
+                        .execute(
+                            "UPDATE users SET auth_session_version = {} WHERE id = {}",
+                            &[
+                                SqlArg::Text(auth_session_version),
+                                SqlArg::Text(user_id.clone()),
+                            ],
+                        )
+                        .await?;
+                    if rows == 0 {
+                        return Err(AppError::NotFound(format!("user {user_id}")));
+                    }
+
+                    tx.execute(
+                        "DELETE FROM totp_credentials WHERE user_id = {}",
+                        &[SqlArg::Text(user_id.clone())],
+                    )
+                    .await?;
+                    tx.execute(
+                        "DELETE FROM totp_recovery_codes WHERE user_id = {}",
+                        &[SqlArg::Text(user_id.clone())],
+                    )
+                    .await?;
+                    tx.execute(
+                        "DELETE FROM totp_failed_attempts WHERE user_id = {}",
+                        &[SqlArg::Text(user_id.clone())],
+                    )
+                    .await?;
+                    tx.execute(
+                        "DELETE FROM totp_enrollment_challenges WHERE user_id = {}",
+                        &[SqlArg::Text(user_id)],
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
         )
         .await
     }

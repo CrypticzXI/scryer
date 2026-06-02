@@ -1332,6 +1332,8 @@ export const usersQuery = `query Users {
     id
     username
     hasPassword
+    hasMfa
+    hasPasskey
     accountKind
     appPermissions
     libraryPermissions {
@@ -1938,6 +1940,8 @@ export const meQuery = `query Me {
     id
     username
     hasPassword
+    hasMfa
+    hasPasskey
     accountKind
     appPermissions
     libraryPermissions {
@@ -1952,6 +1956,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     effectiveFormLoginEnabled
     skipLoginForLocalIps
     passkeyEnabled
+    envOverrideActive
     totpRequireLocalLogin
     totpRequireJellyfinLogin
   }

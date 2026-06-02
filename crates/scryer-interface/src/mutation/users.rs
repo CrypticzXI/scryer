@@ -1,13 +1,29 @@
+use std::time::Instant;
+
 use async_graphql::{Context, Object, Result as GqlResult};
 use chrono::Utc;
-use scryer_application::AppError;
+use scryer_application::{AppError, LoginFailureTimingClass};
 
-use crate::context::{actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error};
-use crate::mappers::{from_linked_account, from_user};
+use crate::context::{
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error,
+    to_login_gql_error_after_timing,
+};
+use crate::mappers::{from_linked_account, from_user_with_auth_factor_status};
 use crate::types::*;
 
 #[derive(Default)]
 pub(crate) struct UserMutations;
+
+async fn user_payload_from_user(
+    app: &scryer_application::AppUseCase,
+    user: scryer_domain::User,
+) -> GqlResult<UserPayload> {
+    let auth_factor_status = app
+        .user_auth_factor_status(&user.id)
+        .await
+        .map_err(to_gql_error)?;
+    Ok(from_user_with_auth_factor_status(user, auth_factor_status))
+}
 
 async fn login_payload_from_user(
     app: &scryer_application::AppUseCase,
@@ -25,7 +41,7 @@ async fn login_payload_from_user(
     let expires_at = (Utc::now() + chrono::Duration::seconds(app.token_lifetime())).to_rfc3339();
     Ok(LoginPayload {
         token,
-        user: from_user(user),
+        user: user_payload_from_user(app, user).await?,
         expires_at,
         mfa_verified_until: mfa_verified_until.map(|value| value.to_rfc3339()),
         mfa_enrollment_required: false,
@@ -48,7 +64,7 @@ async fn login_mfa_enrollment_payload_from_user(
         (Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime())).to_rfc3339();
     Ok(LoginPayload {
         token,
-        user: from_user(user),
+        user: user_payload_from_user(app, user).await?,
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
@@ -101,7 +117,7 @@ impl UserMutations {
             .attach_user_authorization(user)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_user(user))
+        user_payload_from_user(&app, user).await
     }
 
     async fn set_user_password(
@@ -130,7 +146,7 @@ impl UserMutations {
             .attach_user_authorization(user)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_user(user))
+        user_payload_from_user(&app, user).await
     }
 
     async fn set_user_app_permissions(
@@ -154,7 +170,7 @@ impl UserMutations {
             .attach_user_authorization(user)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_user(user))
+        user_payload_from_user(&app, user).await
     }
 
     async fn set_user_library_permissions(
@@ -189,7 +205,7 @@ impl UserMutations {
             .attach_user_authorization(user)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_user(user))
+        user_payload_from_user(&app, user).await
     }
 
     async fn delete_user(&self, ctx: &Context<'_>, input: DeleteUserInput) -> GqlResult<bool> {
@@ -199,6 +215,24 @@ impl UserMutations {
             .await
             .map(|_| true)
             .map_err(to_gql_error)
+    }
+
+    async fn reset_user_mfa(
+        &self,
+        ctx: &Context<'_>,
+        input: ResetUserMfaInput,
+    ) -> GqlResult<UserPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let user = app
+            .reset_user_mfa(&actor, &input.user_id)
+            .await
+            .map_err(to_gql_error)?;
+        let user = app
+            .attach_user_authorization(user)
+            .await
+            .map_err(to_gql_error)?;
+        user_payload_from_user(&app, user).await
     }
 
     async fn create_external_account_invite(
@@ -265,10 +299,22 @@ impl UserMutations {
         input: LoginWithPlexInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
-        let user = app
+        let started_at = Instant::now();
+        let user = match app
             .federated_login_with_plex(input.connection_id, input.plex_auth_token)
             .await
-            .map_err(to_gql_error)?;
+        {
+            Ok(user) => user,
+            Err(err) => {
+                return Err(to_login_gql_error_after_timing(
+                    "plex",
+                    LoginFailureTimingClass::FastMasked,
+                    started_at,
+                    err,
+                )
+                .await);
+            }
+        };
         login_payload_from_user(&app, user, None).await
     }
 
@@ -278,10 +324,22 @@ impl UserMutations {
         input: LoginWithJellyfinInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
-        let user = app
+        let started_at = Instant::now();
+        let user = match app
             .federated_login_with_jellyfin(input.connection_id, input.username, input.password)
             .await
-            .map_err(to_gql_error)?;
+        {
+            Ok(user) => user,
+            Err(err) => {
+                return Err(to_login_gql_error_after_timing(
+                    "jellyfin",
+                    LoginFailureTimingClass::FastMasked,
+                    started_at,
+                    err,
+                )
+                .await);
+            }
+        };
         let effective_login_enabled = auth_runtime_from_ctx(ctx)
             .snapshot()
             .effective_form_login_enabled;

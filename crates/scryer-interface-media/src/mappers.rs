@@ -1431,6 +1431,13 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
 }
 
 pub fn from_user(user: User) -> UserPayload {
+    from_user_with_auth_factor_status(user, scryer_application::UserAuthFactorStatus::default())
+}
+
+pub fn from_user_with_auth_factor_status(
+    user: User,
+    auth_factor_status: scryer_application::UserAuthFactorStatus,
+) -> UserPayload {
     let User {
         id,
         username,
@@ -1466,6 +1473,8 @@ pub fn from_user(user: User) -> UserPayload {
         id,
         username,
         has_password: password_hash.is_some(),
+        has_mfa: auth_factor_status.has_mfa,
+        has_passkey: auth_factor_status.has_passkey,
         account_kind: UserAccountKindValue::from_domain(account_kind),
         app_permissions,
         library_permissions,

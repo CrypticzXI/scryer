@@ -82,7 +82,7 @@ impl AppUseCase {
             minimum_score_series: self
                 .read_setting_i64_value(SUBTITLES_MINIMUM_SCORE_SERIES_KEY, None)
                 .await?
-                .unwrap_or(240) as i32,
+                .unwrap_or(90) as i32,
             minimum_score_movie: self
                 .read_setting_i64_value(SUBTITLES_MINIMUM_SCORE_MOVIE_KEY, None)
                 .await?
@@ -144,17 +144,23 @@ impl AppUseCase {
                 "subtitle search interval must be at least 1 hour".to_string(),
             ));
         }
-        if input.minimum_score_series < 0 || input.minimum_score_movie < 0 {
-            return Err(AppError::Validation(
-                "subtitle minimum scores cannot be negative".to_string(),
-            ));
-        }
-        if input.sync_threshold_series < 0
-            || input.sync_threshold_movie < 0
-            || input.sync_max_offset_seconds < 0
+        if !(0..=100).contains(&input.minimum_score_series)
+            || !(0..=100).contains(&input.minimum_score_movie)
         {
             return Err(AppError::Validation(
-                "subtitle sync settings cannot be negative".to_string(),
+                "subtitle minimum score percentages must be between 0 and 100".to_string(),
+            ));
+        }
+        if !(0..=100).contains(&input.sync_threshold_series)
+            || !(0..=100).contains(&input.sync_threshold_movie)
+        {
+            return Err(AppError::Validation(
+                "subtitle sync threshold percentages must be between 0 and 100".to_string(),
+            ));
+        }
+        if input.sync_max_offset_seconds < 0 {
+            return Err(AppError::Validation(
+                "subtitle sync max offset cannot be negative".to_string(),
             ));
         }
 

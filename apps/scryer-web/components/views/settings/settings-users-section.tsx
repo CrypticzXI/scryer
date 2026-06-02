@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { ChevronRight, KeyRound, Plus, Trash2, User2 } from "lucide-react";
+import { ChevronRight, KeyRound, Plus, ShieldOff, Trash2, User2 } from "lucide-react";
 import {
   PermissionDropdowns,
   type LibraryPermissionDrafts,
@@ -38,6 +38,7 @@ type SettingsUsersSectionProps = {
   setNewPassword: (value: string) => void;
   newAppPermissions: string[];
   newLibraryPermissionDrafts: LibraryPermissionDrafts;
+  canManagePermissions: boolean;
   toggleNewAppPermission: (value: string) => void;
   toggleNewLibraryPermission: (libraryId: string, value: string) => void;
   createUser: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
@@ -56,23 +57,42 @@ type SettingsUsersSectionProps = {
     permissions?: string[],
   ) => Promise<void> | void;
   deleteUser: (user: UserRecord) => Promise<void> | void;
+  resetUserMfa: (user: UserRecord) => Promise<void> | void;
 };
 
 function CollapsiblePermissionSection({
+  id,
   title,
   children,
 }: {
+  id?: string;
   title: string;
   children: React.ReactNode;
 }) {
   return (
-    <details className="group rounded border border-border bg-background/40 p-2">
+    <details id={id} className="group rounded border border-border bg-background/40 p-2">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-card-foreground [&::-webkit-details-marker]:hidden">
         <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" />
         <span>{title}</span>
       </summary>
       <div className="mt-2">{children}</div>
     </details>
+  );
+}
+
+function AuthFactorStatusBadge({ enabled }: { enabled: boolean }) {
+  const t = useTranslate();
+  return (
+    <span
+      className={cn(
+        "inline-flex min-w-24 items-center justify-center rounded border px-2 py-1 text-xs font-medium",
+        enabled
+          ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+          : "border-border bg-background text-muted-foreground",
+      )}
+    >
+      {enabled ? t("settings.setUp") : t("settings.notSetUp")}
+    </span>
   );
 }
 
@@ -88,6 +108,7 @@ export function SettingsUsersSection({
   setNewPassword,
   newAppPermissions,
   newLibraryPermissionDrafts,
+  canManagePermissions,
   toggleNewAppPermission,
   toggleNewLibraryPermission,
   createUser,
@@ -102,6 +123,7 @@ export function SettingsUsersSection({
   setUserAppPermissions,
   setUserLibraryPermissions,
   deleteUser,
+  resetUserMfa,
   externalAccountInvitesPanel,
 }: SettingsUsersSectionProps) {
   const t = useTranslate();
@@ -145,22 +167,24 @@ export function SettingsUsersSection({
                 />
               </div>
             </div>
-            <div className="rounded border border-border bg-background/40 p-3">
-              <Label className="mb-2 block">Permissions</Label>
-              <PermissionDropdowns
-                libraries={libraries}
-                appPermissions={appPermissions}
-                libraryPermissions={libraryPermissions}
-                selectedAppPermissions={newAppPermissions}
-                selectedLibraryPermissions={newLibraryPermissionDrafts}
-                onAppChange={(_nextPermissions, permission) =>
-                  toggleNewAppPermission(permission)
-                }
-                onLibraryChange={(libraryId, _nextPermissions, permission) =>
-                  toggleNewLibraryPermission(libraryId, permission)
-                }
-              />
-            </div>
+            {canManagePermissions ? (
+              <div className="rounded border border-border bg-background/40 p-3">
+                <Label className="mb-2 block">{t("settings.permissions")}</Label>
+                <PermissionDropdowns
+                  libraries={libraries}
+                  appPermissions={appPermissions}
+                  libraryPermissions={libraryPermissions}
+                  selectedAppPermissions={newAppPermissions}
+                  selectedLibraryPermissions={newLibraryPermissionDrafts}
+                  onAppChange={(_nextPermissions, permission) =>
+                    toggleNewAppPermission(permission)
+                  }
+                  onLibraryChange={(libraryId, _nextPermissions, permission) =>
+                    toggleNewLibraryPermission(libraryId, permission)
+                  }
+                />
+              </div>
+            ) : null}
             <Button id="settings-user-create" type="submit" className="min-w-40">
               <Plus className="h-4 w-4" />
               {t("settings.createUser")}
@@ -180,6 +204,8 @@ export function SettingsUsersSection({
             <TableRow>
               <TableHead className="min-w-40">{t("settings.username")}</TableHead>
               <TableHead className="min-w-[520px]">Permissions</TableHead>
+              <TableHead className="w-32">{t("settings.mfa")}</TableHead>
+              <TableHead className="w-32">{t("settings.passkey")}</TableHead>
               <TableHead className="min-w-72">{t("settings.newPassword")}</TableHead>
               <TableHead className="w-44 text-right">{t("label.actions")}</TableHead>
             </TableRow>
@@ -187,7 +213,7 @@ export function SettingsUsersSection({
           <TableBody>
             {settingsUsers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-muted-foreground">
+                <TableCell colSpan={6} className="text-muted-foreground">
                   {t("settings.noUsers")}
                 </TableCell>
               </TableRow>
@@ -195,6 +221,8 @@ export function SettingsUsersSection({
               settingsUsers.map((user) => {
                 const isOwnUser = currentUserId === user.id;
                 const canSetPassword = user.accountKind !== "external_auto_provisioned";
+                const permissionControlsDisabled =
+                  mutatingUserId === user.id || isOwnUser || !canManagePermissions;
                 const appSelected = userAppPermissionDrafts[user.id] ?? user.appPermissions;
                 const libraryDrafts =
                   userLibraryPermissionDrafts[user.id] ??
@@ -210,21 +238,25 @@ export function SettingsUsersSection({
                       <div className="text-lg font-semibold text-foreground">{user.username}</div>
                     </TableCell>
                     <TableCell className="align-top">
-                      <CollapsiblePermissionSection title="Permissions">
+                      <CollapsiblePermissionSection
+                        id={selectorId("settings-user-permissions", user.username, "section")}
+                        title="Permissions"
+                      >
                         <PermissionDropdowns
                           libraries={libraries}
                           appPermissions={appPermissions}
                           libraryPermissions={libraryPermissions}
+                          idPrefix={selectorId("settings-user-permissions", user.username)}
                           selectedAppPermissions={appSelected}
                           selectedLibraryPermissions={libraryDrafts}
-                          disabled={mutatingUserId === user.id || isOwnUser}
+                          disabled={permissionControlsDisabled}
                           onAppChange={(nextPermissions, permission) => {
-                            if (isOwnUser) return;
+                            if (isOwnUser || !canManagePermissions) return;
                             toggleUserAppPermission(user.id, permission);
                             void setUserAppPermissions(user.id, nextPermissions);
                           }}
                           onLibraryChange={(libraryId, nextPermissions, permission) => {
-                            if (isOwnUser) return;
+                            if (isOwnUser || !canManagePermissions) return;
                             toggleUserLibraryPermission(user.id, libraryId, permission);
                             void setUserLibraryPermissions(
                               user.id,
@@ -234,6 +266,12 @@ export function SettingsUsersSection({
                           }}
                         />
                       </CollapsiblePermissionSection>
+                    </TableCell>
+                    <TableCell className="align-middle">
+                      <AuthFactorStatusBadge enabled={user.hasMfa} />
+                    </TableCell>
+                    <TableCell className="align-middle">
+                      <AuthFactorStatusBadge enabled={user.hasPasskey} />
                     </TableCell>
                     <TableCell className="align-middle">
                       {canSetPassword ? (
@@ -270,6 +308,24 @@ export function SettingsUsersSection({
                     </TableCell>
                     <TableCell className="align-middle text-right">
                       <div className="flex justify-end gap-2">
+                        {!isOwnUser && user.hasMfa ? (
+                          <Button
+                            id={selectorId("settings-user-reset-mfa", user.username)}
+                            type="button"
+                            variant="secondary"
+                            size="icon-sm"
+                            title={t("settings.resetMfa")}
+                            aria-label={t("settings.resetMfa")}
+                            className={cn(
+                              boxedActionButtonBaseClass,
+                              boxedActionButtonToneClass.neutral,
+                            )}
+                            onClick={() => void resetUserMfa(user)}
+                            disabled={mutatingUserId === user.id}
+                          >
+                            <ShieldOff className="h-4 w-4" />
+                          </Button>
+                        ) : null}
                         <Button
                           id={selectorId("settings-user-delete", user.username)}
                           type="button"

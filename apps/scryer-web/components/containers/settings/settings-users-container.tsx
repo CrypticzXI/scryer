@@ -9,6 +9,7 @@ import { SettingsUsersSection } from "@/components/views/settings/settings-users
 import {
   createUserMutation,
   deleteUserMutation,
+  resetUserMfaMutation,
   setUserAppPermissionsMutation,
   setUserLibraryPermissionsMutation,
   setUserPasswordMutation,
@@ -64,6 +65,9 @@ export function SettingsUsersContainer() {
   const [userLibraryPermissionDrafts, setUserLibraryPermissionDrafts] = useState<Record<string, LibraryGrantDrafts>>({});
   const [mutatingUserId, setMutatingUserId] = useState<string | null>(null);
   const [pendingDeleteUser, setPendingDeleteUser] = useState<UserRecord | null>(null);
+  const [pendingResetMfaUser, setPendingResetMfaUser] = useState<UserRecord | null>(null);
+  const canManagePermissions =
+    currentUser?.appPermissions?.includes(APP_PERMISSIONS.managePermissions) ?? false;
 
   const updateUserPasswordDraft = useCallback((userId: string, value: string) => {
     setUserPasswordDrafts((previous) => ({ ...previous, [userId]: value }));
@@ -152,10 +156,12 @@ export function SettingsUsersContainer() {
         input: {
           username: newUsername.trim(),
           password: newPassword,
-          appPermissions: newAppPermissions,
-          libraryPermissions: Object.entries(newLibraryPermissionDrafts)
-            .filter(([, permissions]) => permissions.length > 0)
-            .map(([libraryId, permissions]) => ({ libraryId, permissions })),
+          appPermissions: canManagePermissions ? newAppPermissions : [],
+          libraryPermissions: canManagePermissions
+            ? Object.entries(newLibraryPermissionDrafts)
+                .filter(([, permissions]) => permissions.length > 0)
+                .map(([libraryId, permissions]) => ({ libraryId, permissions }))
+            : [],
         },
       }).toPromise();
       if (error) throw error;
@@ -200,6 +206,10 @@ export function SettingsUsersContainer() {
   };
 
   const setUserAppPermissions = async (userId: string, permissions?: string[]) => {
+    if (!canManagePermissions) {
+      setGlobalStatus(t("status.managePermissionsRequired"));
+      return;
+    }
     const resolvedPermissions = normalizePermissions(permissions ?? userAppPermissionDrafts[userId]);
     const updatedUserName =
       settingsUsers.find((candidate) => candidate.id === userId)?.username ?? userId;
@@ -226,6 +236,10 @@ export function SettingsUsersContainer() {
     libraryId: string,
     permissions?: string[],
   ) => {
+    if (!canManagePermissions) {
+      setGlobalStatus(t("status.managePermissionsRequired"));
+      return;
+    }
     const user = settingsUsers.find((candidate) => candidate.id === userId);
     const currentDrafts = userLibraryPermissionDrafts[userId] ?? {};
     const nextDrafts = {
@@ -255,6 +269,10 @@ export function SettingsUsersContainer() {
 
   const deleteUser = async (user: UserRecord) => {
     setPendingDeleteUser(user);
+  };
+
+  const resetUserMfa = async (user: UserRecord) => {
+    setPendingResetMfaUser(user);
   };
 
   const confirmDeleteUser = async () => {
@@ -293,6 +311,27 @@ export function SettingsUsersContainer() {
     }
   };
 
+  const confirmResetUserMfa = async () => {
+    if (!pendingResetMfaUser) {
+      return;
+    }
+    const user = pendingResetMfaUser;
+    setMutatingUserId(user.id);
+    try {
+      const { error } = await client.mutation(resetUserMfaMutation, {
+        input: { userId: user.id },
+      }).toPromise();
+      if (error) throw error;
+      setGlobalStatus(t("user.mfaReset", { name: user.username }));
+      await refreshUsers();
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+    } finally {
+      setMutatingUserId(null);
+      setPendingResetMfaUser(null);
+    }
+  };
+
   return (
     <>
       <SettingsUsersSection
@@ -307,6 +346,7 @@ export function SettingsUsersContainer() {
         libraryPermissions={Object.values(LIBRARY_PERMISSIONS)}
         newAppPermissions={newAppPermissions}
         newLibraryPermissionDrafts={newLibraryPermissionDrafts}
+        canManagePermissions={canManagePermissions}
         toggleNewAppPermission={toggleNewAppPermission}
         toggleNewLibraryPermission={toggleNewLibraryPermission}
         createUser={createUser}
@@ -321,6 +361,7 @@ export function SettingsUsersContainer() {
         setUserAppPermissions={setUserAppPermissions}
         setUserLibraryPermissions={setUserLibraryPermissions}
         deleteUser={deleteUser}
+        resetUserMfa={resetUserMfa}
         currentUserId={currentUser?.id ?? null}
       />
       <ConfirmDialog
@@ -332,6 +373,20 @@ export function SettingsUsersContainer() {
         isBusy={mutatingUserId !== null}
         onConfirm={confirmDeleteUser}
         onCancel={() => setPendingDeleteUser(null)}
+      />
+      <ConfirmDialog
+        open={pendingResetMfaUser !== null}
+        title={t("settings.resetMfa")}
+        description={
+          pendingResetMfaUser
+            ? t("settings.resetMfaConfirm", { name: pendingResetMfaUser.username })
+            : ""
+        }
+        confirmLabel={t("settings.resetMfa")}
+        cancelLabel={t("label.cancel")}
+        isBusy={mutatingUserId !== null}
+        onConfirm={confirmResetUserMfa}
+        onCancel={() => setPendingResetMfaUser(null)}
       />
     </>
   );

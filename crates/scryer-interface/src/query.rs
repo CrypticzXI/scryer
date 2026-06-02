@@ -22,7 +22,8 @@ use crate::mappers::{
     from_media_request_counts, from_pending_import_connection, from_pending_import_counts,
     from_pending_release, from_provider_type, from_smg_version_compatibility_notice,
     from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
-    from_title_history_record, from_title_release_blocklist_entry, from_user, from_wanted_item,
+    from_title_history_record, from_title_release_blocklist_entry,
+    from_user_with_auth_factor_status, from_wanted_item,
 };
 use crate::types::*;
 
@@ -1285,10 +1286,18 @@ impl SystemQueries {
         match current_user_from_ctx(ctx) {
             Some(user) => {
                 let app = app_from_ctx(ctx)?;
-                app.load_user_for_auth_payload(&user)
+                let user = app
+                    .load_user_for_auth_payload(&user)
                     .await
-                    .map(|user| Some(from_user(user)))
-                    .map_err(to_gql_error)
+                    .map_err(to_gql_error)?;
+                let auth_factor_status = app
+                    .user_auth_factor_status(&user.id)
+                    .await
+                    .map_err(to_gql_error)?;
+                Ok(Some(from_user_with_auth_factor_status(
+                    user,
+                    auth_factor_status,
+                )))
             }
             None => Ok(None),
         }

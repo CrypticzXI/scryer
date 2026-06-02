@@ -13,8 +13,9 @@ use scryer_application::{
     JwtSessionScope, LibraryRootDraft, MediaFileAnalysis, MediaFileRepository,
     MediaServerConnectionRepository, PendingRelease, PendingReleaseRepository, ReleaseDecision,
     ScopedExternalId, ShowRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, TotpRepository, WantedItem,
-    WantedItemRepository, start_background_download_delete_poller,
+    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository, TotpEnrollmentChallengeRecord,
+    TotpFailedAttemptRecord, TotpRepository, UserRepository, WantedItem, WantedItemRepository,
+    WebauthnCredentialRecord, WebauthnRepository, start_background_download_delete_poller,
 };
 use scryer_domain::{
     AppPermissionMask, Collection, CollectionType, DomainEventPayload, DomainEventStream,
@@ -26,7 +27,7 @@ use scryer_domain::{
 use scryer_infrastructure::sqlite::ShowStore;
 use scryer_infrastructure::{
     DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
-    SettingDefinitionSeed, TotpStore,
+    SettingDefinitionSeed, TotpStore, WebauthnStore,
 };
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -122,6 +123,64 @@ fn assert_no_errors(body: &Value) {
         body.get("errors").is_none(),
         "unexpected GraphQL errors: {body}"
     );
+}
+
+fn first_graphql_error_message_and_code(body: &Value) -> (String, String) {
+    let errors = body["errors"].as_array().expect("graphql errors");
+    let first = errors.first().expect("first graphql error");
+    let message = first["message"]
+        .as_str()
+        .expect("graphql error message")
+        .to_string();
+    let code = first["extensions"]["code"]
+        .as_str()
+        .expect("graphql error code")
+        .to_string();
+    (message, code)
+}
+
+fn manage_users_actor(username: &str) -> User {
+    User {
+        id: Id::new().0,
+        username: username.to_string(),
+        password_hash: None,
+        account_kind: Default::default(),
+        authorization: UserAuthorization {
+            app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
+            libraries: HashMap::new(),
+            default_library: LibraryPermissionMask::NONE,
+            loaded: true,
+        },
+    }
+}
+
+async fn enroll_totp_for_test(ctx: &TestContext, user: &User) {
+    let enrollment = ctx
+        .app
+        .totp_enrollment_start(user)
+        .await
+        .expect("start TOTP enrollment");
+    let code = test_totp_code(&enrollment.secret_base32);
+    ctx.app
+        .totp_enrollment_complete(user, &enrollment.challenge_id, &code)
+        .await
+        .expect("complete TOTP enrollment");
+}
+
+async fn seed_test_passkey(ctx: &TestContext, user_id: &str, credential_id: &str) {
+    let now = Utc::now().to_rfc3339();
+    WebauthnStore::new(ctx.db.datastore())
+        .create_credential(WebauthnCredentialRecord {
+            id: Id::new().0,
+            user_id: user_id.to_string(),
+            credential_id: credential_id.to_string(),
+            credential_json: "{}".to_string(),
+            friendly_name: Some("Test passkey".to_string()),
+            created_at: now,
+            last_used_at: None,
+        })
+        .await
+        .expect("seed passkey credential");
 }
 
 fn write_backup_fixture(ctx: &TestContext, info: BackupInfo, bundle_bytes: &[u8]) {
@@ -607,7 +666,7 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 scope: "system".into(),
                 key_name: "subtitles.minimum_score_series".into(),
                 data_type: "number".into(),
-                default_value_json: "240".into(),
+                default_value_json: "90".into(),
                 is_sensitive: false,
                 validation_json: None,
             },
@@ -4301,6 +4360,7 @@ async fn graphql_passkey_register_start_requires_authentication() {
 async fn graphql_passkey_authenticate_start_is_public() {
     let ctx = TestContext::new().await;
 
+    let started = std::time::Instant::now();
     let body = schema_exec(
         &ctx,
         r#"
@@ -4313,14 +4373,42 @@ async fn graphql_passkey_authenticate_start_is_public() {
         None,
     )
     .await;
+    let elapsed = started.elapsed();
 
-    let errors = body["errors"].as_array().expect("graphql errors");
-    let message = errors[0]["message"]
-        .as_str()
-        .expect("graphql error message");
+    let (message, code) = first_graphql_error_message_and_code(&body);
     assert_eq!(
         message,
-        "validation: passkey authentication is unavailable while form login is disabled"
+        "Sign-in failed. Check your sign-in details and try again."
+    );
+    assert_eq!(code, "LOGIN_FAILED");
+    assert!(
+        elapsed < std::time::Duration::from_millis(450),
+        "form-login-disabled passkey auth should not use login timing fuzz"
+    );
+
+    let started = std::time::Instant::now();
+    let complete_body = schema_exec(
+        &ctx,
+        r#"
+        mutation PasskeyAuthenticateComplete {
+          webauthnAuthenticateComplete(input: { challengeId: "missing", responseJson: "{}" }) {
+            token
+          }
+        }
+        "#,
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let (message, code) = first_graphql_error_message_and_code(&complete_body);
+    assert_eq!(
+        message,
+        "Sign-in failed. Check your sign-in details and try again."
+    );
+    assert_eq!(code, "LOGIN_FAILED");
+    assert!(
+        elapsed < std::time::Duration::from_millis(450),
+        "form-login-disabled passkey completion should not use login timing fuzz"
     );
 }
 
@@ -10416,6 +10504,252 @@ async fn graphql_create_user_rejects_short_password() {
 }
 
 #[tokio::test]
+async fn graphql_users_query_exposes_auth_factor_status_with_manage_users() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let with_factors = ctx
+        .app
+        .create_user(
+            &admin,
+            "factor_status".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create factor status user");
+    let without_factors = ctx
+        .app
+        .create_user(
+            &admin,
+            "factor_status_empty".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create user without factors");
+
+    enroll_totp_for_test(&ctx, &with_factors).await;
+    seed_test_passkey(&ctx, &with_factors.id, "factor-status-credential").await;
+
+    let body = schema_exec(
+        &ctx,
+        "{ users { id username hasMfa hasPasskey } }",
+        Some(manage_users_actor("user-manager")),
+    )
+    .await;
+    assert_no_errors(&body);
+    let users = body["data"]["users"].as_array().expect("users");
+    let row_with_factors = users
+        .iter()
+        .find(|row| row["id"].as_str() == Some(with_factors.id.as_str()))
+        .expect("user with factors in users query");
+    assert_eq!(row_with_factors["hasMfa"], true);
+    assert_eq!(row_with_factors["hasPasskey"], true);
+
+    let row_without_factors = users
+        .iter()
+        .find(|row| row["id"].as_str() == Some(without_factors.id.as_str()))
+        .expect("user without factors in users query");
+    assert_eq!(row_without_factors["hasMfa"], false);
+    assert_eq!(row_without_factors["hasPasskey"], false);
+}
+
+#[tokio::test]
+async fn graphql_reset_user_mfa_clears_totp_state_and_preserves_passkeys() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let target = ctx
+        .app
+        .create_user(
+            &admin,
+            "reset_mfa_target".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create reset target");
+    enroll_totp_for_test(&ctx, &target).await;
+    seed_test_passkey(&ctx, &target.id, "reset-mfa-passkey").await;
+
+    let old_token = ctx
+        .app
+        .issue_access_token(&target)
+        .await
+        .expect("issue token before reset");
+    let now = Utc::now();
+    let now_string = now.to_rfc3339();
+    let pending_challenge = TotpEnrollmentChallengeRecord {
+        id: Id::new().0,
+        user_id: target.id.clone(),
+        secret_base32: "JBSWY3DPEHPK3PXP".to_string(),
+        algorithm: "SHA1".to_string(),
+        digits: 6,
+        period_seconds: 30,
+        created_at: now_string.clone(),
+        expires_at: (now + Duration::minutes(10)).to_rfc3339(),
+    };
+    let totp_store = TotpStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    totp_store
+        .create_enrollment_challenge(pending_challenge.clone())
+        .await
+        .expect("seed pending TOTP enrollment challenge");
+    totp_store
+        .record_failed_attempt(TotpFailedAttemptRecord {
+            id: Id::new().0,
+            user_id: target.id.clone(),
+            attempted_at: now_string,
+        })
+        .await
+        .expect("seed failed TOTP attempt");
+
+    let reset = schema_exec(
+        &ctx,
+        &format!(
+            r#"
+            mutation {{
+              resetUserMfa(input: {{ userId: "{}" }}) {{
+                id
+                username
+                hasMfa
+                hasPasskey
+              }}
+            }}
+            "#,
+            target.id
+        ),
+        Some(manage_users_actor("mfa-reset-manager")),
+    )
+    .await;
+    assert_no_errors(&reset);
+    let reset_user = &reset["data"]["resetUserMfa"];
+    assert_eq!(reset_user["id"], target.id);
+    assert_eq!(reset_user["hasMfa"], false);
+    assert_eq!(reset_user["hasPasskey"], true);
+
+    assert!(
+        totp_store
+            .get_credential_for_user(&target.id)
+            .await
+            .expect("load TOTP credential")
+            .is_none(),
+        "TOTP credential should be removed"
+    );
+    assert!(
+        totp_store
+            .list_recovery_codes_for_user(&target.id)
+            .await
+            .expect("list recovery codes")
+            .is_empty(),
+        "recovery codes should be removed"
+    );
+    let failed_attempts = totp_store
+        .count_failed_attempts_since(&target.id, &(Utc::now() - Duration::hours(1)).to_rfc3339())
+        .await
+        .expect("count failed attempts");
+    assert_eq!(failed_attempts, 0);
+    assert!(
+        totp_store
+            .get_enrollment_challenge(&pending_challenge.id, &target.id)
+            .await
+            .expect("load pending enrollment challenge")
+            .is_none(),
+        "pending enrollment challenges should be removed"
+    );
+
+    let passkeys = WebauthnStore::new(ctx.db.datastore())
+        .list_credentials_for_user(&target.id)
+        .await
+        .expect("list passkeys");
+    assert_eq!(passkeys.len(), 1, "passkeys should be preserved");
+    assert!(
+        ctx.app.authenticate_token(&old_token).await.is_err(),
+        "tokens issued before MFA reset should be invalidated"
+    );
+    let new_token = ctx
+        .app
+        .issue_access_token(&target)
+        .await
+        .expect("issue token after reset");
+    ctx.app
+        .authenticate_token(&new_token)
+        .await
+        .expect("token issued after MFA reset should authenticate");
+}
+
+#[tokio::test]
+async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let target = ctx
+        .app
+        .create_user(
+            &admin,
+            "reset_mfa_authz".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create reset authz target");
+    let mutation = format!(
+        r#"
+        mutation {{
+          resetUserMfa(input: {{ userId: "{}" }}) {{
+            id
+          }}
+        }}
+        "#,
+        target.id
+    );
+
+    let denied = schema_exec(
+        &ctx,
+        &mutation,
+        Some(User {
+            id: Id::new().0,
+            username: "not-a-manager".to_string(),
+            password_hash: None,
+            account_kind: Default::default(),
+            authorization: UserAuthorization {
+                app: AppPermissionMask::NONE,
+                libraries: HashMap::new(),
+                default_library: LibraryPermissionMask::NONE,
+                loaded: true,
+            },
+        }),
+    )
+    .await;
+    assert!(
+        denied
+            .get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty()),
+        "reset should require Manage Users: {denied}"
+    );
+
+    let mut self_actor = target.clone();
+    self_actor.authorization = UserAuthorization {
+        app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
+        libraries: HashMap::new(),
+        default_library: LibraryPermissionMask::NONE,
+        loaded: true,
+    };
+    let self_reset = schema_exec(&ctx, &mutation, Some(self_actor)).await;
+    let errors = self_reset["errors"]
+        .as_array()
+        .expect("self reset should return errors");
+    assert!(
+        errors[0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("cannot reset your own MFA")),
+        "expected self-reset rejection: {self_reset}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_external_account_invites_expose_last_login() {
     let ctx = TestContext::new().await;
     let user = gql(
@@ -13593,6 +13927,81 @@ async fn newly_created_user_can_login() {
     let token = login_body["data"]["login"]["token"].as_str().unwrap();
     assert!(!token.is_empty());
     assert_eq!(login_body["data"]["login"]["user"]["username"], "newuser");
+}
+
+#[tokio::test]
+async fn graphql_local_password_login_masks_account_disclosure() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let create_body = schema_exec(
+        &ctx,
+        r#"mutation { createUser(input: { username: "maskedlocal", password: "s3cr3t!!", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&create_body);
+
+    ctx.users
+        .create(User {
+            id: "masked-no-password-user".to_string(),
+            username: "maskednopass".to_string(),
+            password_hash: None,
+            account_kind: Default::default(),
+            authorization: Default::default(),
+        })
+        .await
+        .expect("create passwordless user");
+
+    async fn failed_login_shape(
+        ctx: &TestContext,
+        username: &str,
+        password: &str,
+    ) -> (String, String) {
+        let body = schema_exec(
+            ctx,
+            &format!(
+                r#"
+                mutation {{
+                  login(input: {{ username: "{username}", password: "{password}" }}) {{
+                    token
+                  }}
+                }}
+                "#
+            ),
+            None,
+        )
+        .await;
+        let serialized = body.to_string().to_lowercase();
+        for leaked in [
+            "not invited",
+            "not found",
+            "disabled",
+            "credentials unavailable",
+        ] {
+            assert!(
+                !serialized.contains(leaked),
+                "login response leaked {leaked}: {body}"
+            );
+        }
+        first_graphql_error_message_and_code(&body)
+    }
+
+    let unknown = failed_login_shape(&ctx, "maskedmissing", "s3cr3t!!").await;
+    let wrong_password = failed_login_shape(&ctx, "maskedlocal", "wrongpass").await;
+    let no_password = failed_login_shape(&ctx, "maskednopass", "s3cr3t!!").await;
+    let empty_username = failed_login_shape(&ctx, "", "s3cr3t!!").await;
+    let empty_password = failed_login_shape(&ctx, "maskedlocal", "").await;
+
+    assert_eq!(
+        unknown.0,
+        "Sign-in failed. Check your sign-in details and try again."
+    );
+    assert_eq!(unknown.1, "LOGIN_FAILED");
+    assert_eq!(wrong_password, unknown);
+    assert_eq!(no_password, unknown);
+    assert_eq!(empty_username, unknown);
+    assert_eq!(empty_password, unknown);
 }
 
 #[tokio::test]

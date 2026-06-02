@@ -478,6 +478,23 @@ file = "postgres/migrations/0136_notification_subscription_target_indexes.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 137
+description = "user auth session version"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0137_user_auth_session_version.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0137_user_auth_session_version.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 122
 file = "baselines/0122_baseline.sql"

@@ -10,6 +10,7 @@ mod middleware;
 mod rate_limit;
 mod settings_bootstrap;
 mod splash;
+mod startup_migrations;
 mod ui_assets;
 
 use std::ffi::OsString;
@@ -29,19 +30,18 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AppUseCase, DownloadClientPluginProvider, FacetRegistry, HISTORY_KEEP_FOREVER_KEY,
-    HISTORY_RETENTION_DAYS_KEY, IndexerPluginProvider, MovieFacetHandler,
-    NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime,
-    PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad,
-    SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider, SystemInfoProvider,
-    TitleImageKind, TitleImageRepository, load_runtime_plugin_from_persisted_installation_payload,
-    start_background_acquisition_poller, start_background_auto_backup_scheduler,
-    start_background_banner_loop, start_background_download_delete_poller,
-    start_background_fanart_loop, start_background_library_refresh_loop,
-    start_background_manual_import_poller, start_background_poster_loop,
-    start_background_subtitle_poller, start_background_title_hydration_loop,
-    start_download_queue_poller, start_notification_dispatcher,
-    tracked_downloads::TrackedDownloadHandle,
+    AppUseCase, DownloadClientPluginProvider, FacetRegistry, IndexerPluginProvider,
+    MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
+    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
+    SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
+    start_background_auto_backup_scheduler, start_background_banner_loop,
+    start_background_download_delete_poller, start_background_fanart_loop,
+    start_background_library_refresh_loop, start_background_manual_import_poller,
+    start_background_poster_loop, start_background_subtitle_poller,
+    start_background_title_hydration_loop, start_download_queue_poller,
+    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
@@ -321,11 +321,11 @@ impl SelfRestartController {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum VersionLifecycle {
     FirstRun,
     Unchanged,
-    Upgraded,
+    Upgraded { previous: String },
 }
 
 fn log_smg_version_incompatibility(
@@ -689,8 +689,11 @@ async fn bootstrap_application(
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "encryption bootstrapped");
 
     // Detect version upgrades by comparing with last-run version stored in DB
-    let _version_lifecycle = check_version_upgrade(bootstrap_settings_store.clone()).await;
-    clear_legacy_history_retention_forever_override(bootstrap_settings_store.clone()).await;
+    let version_lifecycle = check_version_upgrade(bootstrap_settings_store.clone()).await;
+    startup_migrations::_0001_legacy_history_retention_forever_override::clear_legacy_history_retention_forever_override(
+        bootstrap_settings_store.clone(),
+    )
+    .await;
 
     let t = std::time::Instant::now();
     if let Err(error) =
@@ -1056,6 +1059,17 @@ async fn bootstrap_application(
             std::process::exit(1);
         }
     }
+    let previous_version = match &version_lifecycle {
+        VersionLifecycle::Upgraded { previous } => Some(previous.as_str()),
+        VersionLifecycle::FirstRun | VersionLifecycle::Unchanged => None,
+    };
+    startup_migrations::_0002_enhanced_subsync_plugin_016::migrate_enhanced_subsync_plugin_for_016_upgrade(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+        previous_version,
+        VERSION,
+    )
+    .await;
 
     app_use_case.connect_library_scan_tracker().await;
     spawn_sigstore_trust_root_prime_task(app_use_case.clone());
@@ -1741,7 +1755,9 @@ async fn check_version_upgrade(settings_store: Arc<SettingsStore>) -> VersionLif
                 current_version = VERSION,
                 "upgraded from {prev} to {VERSION}"
             );
-            VersionLifecycle::Upgraded
+            VersionLifecycle::Upgraded {
+                previous: prev.to_string(),
+            }
         }
         None => {
             tracing::info!(version = VERSION, "first run — recording version");
@@ -1758,43 +1774,6 @@ async fn check_version_upgrade(settings_store: Arc<SettingsStore>) -> VersionLif
     }
 
     lifecycle
-}
-
-async fn clear_legacy_history_retention_forever_override(settings_store: Arc<SettingsStore>) {
-    let keep_forever = settings_store
-        .get_setting_with_defaults("system", HISTORY_KEEP_FOREVER_KEY, None)
-        .await
-        .ok()
-        .flatten();
-    let retention_days = settings_store
-        .get_setting_with_defaults("system", HISTORY_RETENTION_DAYS_KEY, None)
-        .await
-        .ok()
-        .flatten();
-
-    let should_clear = keep_forever.as_ref().is_some_and(|record| {
-        record.source.as_deref() == Some("migration")
-            && record.value_json.as_deref() == Some("true")
-            && !retention_days
-                .as_ref()
-                .is_some_and(scryer_infrastructure::SettingsValueRecord::has_override)
-    });
-
-    if !should_clear {
-        return;
-    }
-
-    if let Err(error) = settings_store
-        .delete_setting_value("system", HISTORY_KEEP_FOREVER_KEY, None)
-        .await
-    {
-        tracing::warn!(
-            error = %error,
-            "failed to clear legacy history retention override"
-        );
-    } else {
-        tracing::info!("cleared legacy history retention forever override");
-    }
 }
 
 pub(crate) fn normalize_env_option_with_legacy<'a>(
@@ -2172,10 +2151,8 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthModeConfig, SelfRestartController, VersionLifecycle, bootstrap_plugin_installations,
-        check_version_upgrade, clear_legacy_history_retention_forever_override,
-        load_runtime_plugin_state, resolve_auth_mode, restart_spec_from_parts,
-        seed_service_setting_definitions, title_image_handler,
+        AuthModeConfig, SelfRestartController, bootstrap_plugin_installations,
+        load_runtime_plugin_state, resolve_auth_mode, restart_spec_from_parts, title_image_handler,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -2187,10 +2164,6 @@ mod tests {
     use std::time::Duration;
 
     use crate::base_path::{BasePath, mount_router};
-    use crate::{
-        HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
-        settings_bootstrap::SETTINGS_SCOPE_SYSTEM,
-    };
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
@@ -2199,9 +2172,7 @@ mod tests {
         AppResult, PluginInstallationRepository, TitleImageBlob, TitleImageKind,
         TitleImageReplacement, TitleImageRepository, TitleImageSyncTask,
     };
-    use scryer_infrastructure::{
-        DatastoreCustomizationStore, MigrationMode, SettingsStore, SqliteServices,
-    };
+    use scryer_infrastructure::{DatastoreCustomizationStore, SqliteServices};
     use tempfile::tempdir;
     use tower::ServiceExt;
 
@@ -2682,118 +2653,5 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
-        let temp = tempdir().expect("tempdir");
-        let db_path = temp.path().join("scryer.db");
-        let services = SqliteServices::new_with_mode(
-            db_path.to_string_lossy().to_string(),
-            MigrationMode::Apply,
-        )
-        .await
-        .expect("sqlite services");
-        let store = Arc::new(SettingsStore::new(
-            services.datastore(),
-            services.encryption_key_state(),
-        ));
-        seed_service_setting_definitions(store.clone())
-            .await
-            .expect("seed setting definitions");
-        (temp, store)
-    }
-
-    #[tokio::test]
-    async fn legacy_migration_history_override_is_cleared_back_to_default() {
-        let (_temp, store) = bootstrap_settings_store().await;
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                "last_run_version",
-                None,
-                "\"0.10.0\"",
-                "test",
-                None,
-            )
-            .await
-            .expect("seed previous version");
-
-        let lifecycle = check_version_upgrade(store.clone()).await;
-        assert_eq!(lifecycle, VersionLifecycle::Upgraded);
-
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                HISTORY_KEEP_FOREVER_KEY,
-                None,
-                "true",
-                "migration",
-                None,
-            )
-            .await
-            .expect("seed legacy migration override");
-
-        clear_legacy_history_retention_forever_override(store.clone()).await;
-
-        let keep_forever = store
-            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
-            .await
-            .expect("load keep forever")
-            .expect("setting exists");
-        assert_eq!(keep_forever.effective_value_json, "false");
-        assert_eq!(keep_forever.value_json, None);
-        assert_eq!(keep_forever.source, None);
-    }
-
-    #[tokio::test]
-    async fn legacy_migration_history_override_is_preserved_when_user_has_retention_override() {
-        let (_temp, store) = bootstrap_settings_store().await;
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                "last_run_version",
-                None,
-                "\"0.10.0\"",
-                "test",
-                None,
-            )
-            .await
-            .expect("seed previous version");
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                HISTORY_RETENTION_DAYS_KEY,
-                None,
-                "30",
-                "ui",
-                Some("user-1".to_string()),
-            )
-            .await
-            .expect("seed explicit retention override");
-        store
-            .upsert_setting_value(
-                SETTINGS_SCOPE_SYSTEM,
-                HISTORY_KEEP_FOREVER_KEY,
-                None,
-                "true",
-                "migration",
-                None,
-            )
-            .await
-            .expect("seed legacy migration override");
-
-        let lifecycle = check_version_upgrade(store.clone()).await;
-        assert_eq!(lifecycle, VersionLifecycle::Upgraded);
-
-        clear_legacy_history_retention_forever_override(store.clone()).await;
-
-        let keep_forever = store
-            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, HISTORY_KEEP_FOREVER_KEY, None)
-            .await
-            .expect("load keep forever")
-            .expect("setting exists");
-        assert_eq!(keep_forever.effective_value_json, "true");
-        assert_eq!(keep_forever.value_json.as_deref(), Some("true"));
-        assert_eq!(keep_forever.source.as_deref(), Some("migration"));
     }
 }

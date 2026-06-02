@@ -13,6 +13,8 @@ export type AuthUser = {
   id: string;
   username: string;
   hasPassword?: boolean;
+  hasMfa?: boolean;
+  hasPasskey?: boolean;
   accountKind?: UserAccountKind;
   appPermissions: AppPermission[];
   libraryPermissions: LibraryPermissionGrant[];
@@ -183,7 +185,10 @@ export function useAuth(): AuthState {
         // runtime-state probe is temporarily unavailable.
       }
 
-      if (runtimeState?.effectiveFormLoginEnabled === false) {
+      if (
+        runtimeState?.effectiveFormLoginEnabled === false &&
+        runtimeState?.envOverrideActive === true
+      ) {
         clearPersistedAuthToken();
         setToken(null);
         setUser(await loadUserFromBypass());
@@ -219,7 +224,7 @@ export function useAuth(): AuthState {
       }
 
       if (
-        runtimeState?.effectiveFormLoginEnabled !== true ||
+        runtimeState == null ||
         runtimeState?.skipLoginForLocalIps === true
       ) {
         let bypassUser = await loadUserFromBypass();

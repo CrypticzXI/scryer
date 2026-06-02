@@ -212,7 +212,9 @@ export function SettingsProfileSection({
         <h3 className="text-base font-medium">{t("profile.accountInfo")}</h3>
         <div className="flex items-center gap-2 text-muted-foreground">
           <span>{t("settings.username")}:</span>
-          <span className="font-medium text-foreground">{username ?? "—"}</span>
+          <span id="settings-profile-username" className="font-medium text-foreground">
+            {username ?? "—"}
+          </span>
         </div>
       </div>
 
@@ -377,6 +379,7 @@ export function SettingsProfileSection({
                 <div className="grid gap-2 sm:grid-cols-2">
                   {totpRecoveryCodes.map((code) => (
                     <code
+                      id={selectorId("settings-profile-totp-recovery-code", code)}
                       key={code}
                       className="rounded bg-background/70 px-2 py-1 font-mono text-xs"
                     >
@@ -400,6 +403,7 @@ export function SettingsProfileSection({
               />
               <div className="flex flex-wrap gap-2">
                 <Button
+                  id={selectorId("settings-profile-totp-step-up")}
                   type="button"
                   variant="outline"
                   disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
@@ -409,6 +413,7 @@ export function SettingsProfileSection({
                   {t("profile.totpVerifyStepUp")}
                 </Button>
                 <Button
+                  id={selectorId("settings-profile-totp-regenerate-recovery-codes")}
                   type="button"
                   variant="outline"
                   disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
@@ -418,6 +423,7 @@ export function SettingsProfileSection({
                   {t("profile.totpRegenerateRecoveryCodes")}
                 </Button>
                 <Button
+                  id={selectorId("settings-profile-totp-disable")}
                   type="button"
                   variant="destructive"
                   disabled={totpBusy || totpActionCode.length !== TOTP_CODE_LENGTH}
@@ -437,6 +443,7 @@ export function SettingsProfileSection({
               </div>
               <div className="min-w-0 space-y-3">
                 <a
+                  id={selectorId("settings-profile-totp-setup-link")}
                   className="break-all text-sm font-medium text-primary underline-offset-4 hover:underline"
                   href={totpEnrollment.otpauthUrl}
                 >
@@ -444,7 +451,10 @@ export function SettingsProfileSection({
                 </a>
                 <div className="space-y-1">
                   <div className="text-xs text-muted-foreground">{t("profile.totpSecret")}</div>
-                  <code className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs">
+                  <code
+                    id={selectorId("settings-profile-totp-secret")}
+                    className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                  >
                     {totpEnrollment.secretBase32}
                   </code>
                 </div>
@@ -462,6 +472,7 @@ export function SettingsProfileSection({
                 onChange={(event) => onTotpEnrollmentCodeChange(event.target.value)}
               />
               <Button
+                id={selectorId("settings-profile-totp-verify-enable")}
                 type="button"
                 disabled={totpBusy || totpEnrollmentCode.length !== TOTP_CODE_LENGTH}
                 onClick={onCompleteTotpEnrollment}
@@ -504,6 +515,7 @@ export function SettingsProfileSection({
             ) : null}
             {linkableJellyfinConnections.length > 0 ? (
               <Button
+                id="settings-profile-link-jellyfin-start"
                 type="button"
                 variant={linkingProvider === "jellyfin" ? "secondary" : "outline"}
                 onClick={() => onStartLinkAccount("jellyfin")}
@@ -588,10 +600,17 @@ export function SettingsProfileSection({
               </div>
             </div>
             {linkAccountError ? (
-              <p className="text-sm text-destructive">{linkAccountError}</p>
+              <p id="settings-profile-link-jellyfin-error" className="text-sm text-destructive">
+                {linkAccountError}
+              </p>
             ) : null}
             <div className="flex flex-wrap gap-2">
-              <Button type="submit" disabled={!canSubmitJellyfinLink} className="w-fit">
+              <Button
+                id="settings-profile-link-jellyfin-submit"
+                type="submit"
+                disabled={!canSubmitJellyfinLink}
+                className="w-fit"
+              >
                 {linkAccountBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 {t("profile.linkAccountSubmit")}
               </Button>
@@ -674,6 +693,11 @@ export function SettingsProfileSection({
           <div className="space-y-3">
             {linkedAccounts.map((account) => (
               <div
+                id={selectorId(
+                  "settings-profile-linked-account",
+                  account.provider,
+                  account.username,
+                )}
                 key={account.id}
                 className="flex flex-col gap-3 rounded-md border border-border bg-background/60 p-4 md:flex-row md:items-center md:justify-between"
               >
@@ -695,7 +719,11 @@ export function SettingsProfileSection({
                   </div>
                 </div>
                 <Button
-                  id={selectorId(`settings-profile-unlink-account-${account.id}`)}
+                  id={selectorId(
+                    "settings-profile-unlink-account",
+                    account.provider,
+                    account.username,
+                  )}
                   variant="outline"
                   onClick={() => onUnlinkExternalAccount(account.id)}
                   disabled={unlinkingAccountId === account.id}

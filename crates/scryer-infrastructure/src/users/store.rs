@@ -49,6 +49,17 @@ impl UserRepository for UserStore {
         load_user_by_id(self.datastore.read_exec(), id).await
     }
 
+    async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT auth_session_version FROM users WHERE id = {}",
+            &[SqlArg::Text(user_id.to_string())],
+        )
+        .await?;
+        row.map(|row| row.opt_text("auth_session_version"))
+            .unwrap_or(Ok(None))
+    }
+
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
         let id = id.to_string();
         SqlRuntime::run_in_transaction(&self.datastore, "update_user_password_hash", move |tx| {
@@ -480,7 +491,8 @@ mod tests {
                 id TEXT PRIMARY KEY NOT NULL,
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT,
-                account_kind TEXT NOT NULL DEFAULT 'local'
+                account_kind TEXT NOT NULL DEFAULT 'local',
+                auth_session_version TEXT
             )",
         )
         .execute(&pool)

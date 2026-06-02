@@ -1369,6 +1369,10 @@ mod tests {
                 .cloned())
         }
 
+        async fn auth_session_version(&self, _user_id: &str) -> AppResult<Option<String>> {
+            Ok(None)
+        }
+
         async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
             let mut users = self.users.lock().await;
             let user = users
