@@ -260,7 +260,8 @@ pub(super) async fn background_refresh_series(
     }
 
     for folder_batch in unknown_folders.chunks(LIBRARY_SCAN_SERIES_BATCH_SIZE) {
-        let prepared_candidates = prepare_series_library_scan_candidates(folder_batch).await?;
+        let prepared_candidates =
+            prepare_series_library_scan_candidates(folder_batch, None).await?;
         let mut unresolved_candidates = Vec::new();
 
         for candidate in prepared_candidates {
@@ -422,6 +423,7 @@ pub(super) async fn background_refresh_movies(
             app.services.library.library_scanner.clone(),
             entry_chunk,
             library_path,
+            None,
         )
         .await?;
         let mut unresolved_candidates = Vec::new();

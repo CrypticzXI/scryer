@@ -419,9 +419,11 @@ pub use types::{
     WebauthnCredentialRecord,
 };
 pub use types::{
-    ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
-    ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
-    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
+    ExternalIdHint, ExternalIdProvider, ExternalImportMonitorEpisodeEntry,
+    ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
+    ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
+    ExternalImportMonitorSnapshotEntryKind, LibraryScanHint, LibraryScanHintFacet,
+    LibraryScanHintSet, LibraryScanHintSource,
 };
 pub use types::{
     IndexerSearchResponse, IndexerSearchResult, ReleaseCandidateProvenance,

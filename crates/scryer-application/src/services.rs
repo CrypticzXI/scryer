@@ -519,6 +519,7 @@ struct ExternalImportMonitorWarmupSessionHandle {
     claimed: bool,
     cancel_token: tokio_util::sync::CancellationToken,
     tx: tokio::sync::watch::Sender<ExternalImportMonitorWarmupProgressSnapshot>,
+    scan_hints: Option<crate::LibraryScanHintSet>,
 }
 
 #[derive(Default)]
@@ -607,6 +608,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
                 claimed: false,
                 cancel_token: cancel_token.clone(),
                 tx,
+                scan_hints: None,
             },
         );
 
@@ -650,6 +652,32 @@ impl ExternalImportMonitorWarmupOrchestrator {
         };
         handle.tx.send_replace(snapshot);
         true
+    }
+
+    pub async fn set_scan_hints(
+        &self,
+        session_id: &str,
+        scan_hints: crate::LibraryScanHintSet,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
+            return false;
+        };
+        handle.scan_hints = (!scan_hints.is_empty()).then_some(scan_hints);
+        true
+    }
+
+    pub async fn scan_hints(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<crate::LibraryScanHintSet> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id)
+                .then(|| handle.scan_hints.clone())
+                .flatten()
+        })
     }
 
     pub async fn cancel(&self, actor_user_id: &str, session_id: &str) -> bool {

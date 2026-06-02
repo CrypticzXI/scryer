@@ -381,12 +381,14 @@ function MultiSelectDropdown({
   onSelectedValuesChange,
   placeholder,
   triggerId,
+  optionIdPrefix,
 }: {
   options: MultiSelectDropdownOption[];
   selectedValues: string[];
   onSelectedValuesChange: (values: string[]) => void;
   placeholder: string;
   triggerId?: string;
+  optionIdPrefix?: string;
 }) {
   const selectedLabel = React.useMemo(() => {
     const labels = options
@@ -437,6 +439,7 @@ function MultiSelectDropdown({
             return (
               <button
                 key={option.value}
+                id={selectorId(optionIdPrefix, option.value)}
                 type="button"
                 onClick={() => toggleOption(option.value)}
                 className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
@@ -785,8 +788,14 @@ export function SettingsNotificationsSection({
                        <SelectValue placeholder={t("settings.notificationProviderType")} />
                      </SelectTrigger>
                      <SelectContent>
-                       {providerTypeOptions.map((opt) => (
-                         <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                      {providerTypeOptions.map((opt) => (
+                         <SelectItem
+                           id={selectorId("settings-notification-channel-provider-type-option", opt.value)}
+                           key={opt.value}
+                           value={opt.value}
+                         >
+                           {opt.label}
+                         </SelectItem>
                        ))}
                      </SelectContent>
                    </Select>
@@ -924,7 +933,13 @@ export function SettingsNotificationsSection({
               {subscriptions.map((sub) => (
                 <TableRow
                   key={sub.id}
-                  id={selectorId("settings-notification-subscription-row", sub.id)}
+                  id={selectorId(
+                    "settings-notification-subscription-row",
+                    notificationTargetName(notificationTargets, sub.targetKind, sub.targetId),
+                    orderedSubscriptionEventTypes(sub.eventTypes).join("-"),
+                    sub.scope,
+                    sub.scopeId,
+                  )}
                 >
                   <TableCell>
                     <div className="space-y-1">
@@ -1070,6 +1085,7 @@ export function SettingsNotificationsSection({
                     }
                     placeholder={t("settings.notificationEventType")}
                     triggerId="settings-notification-subscription-event-types"
+                    optionIdPrefix="settings-notification-subscription-event-type-option"
                   />
                 </label>
                 <label>
@@ -1100,6 +1116,10 @@ export function SettingsNotificationsSection({
                         .filter((target) => target.isEnabled)
                         .map((target) => (
                           <SelectItem
+                            id={selectorId(
+                              "settings-notification-subscription-target-option",
+                              target.name,
+                            )}
                             key={notificationTargetValue(target)}
                             value={notificationTargetValue(target)}
                           >
@@ -1125,7 +1145,11 @@ export function SettingsNotificationsSection({
                     </SelectTrigger>
                     <SelectContent>
                       {scopeOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
+                        <SelectItem
+                          id={selectorId("settings-notification-subscription-scope-option", option.value)}
+                          key={option.value}
+                          value={option.value}
+                        >
                           {option.label}
                         </SelectItem>
                       ))}

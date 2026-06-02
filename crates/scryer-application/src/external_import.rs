@@ -46,6 +46,7 @@ pub struct DetectedProwlarrIndexer {
 pub struct ArrMovie {
     pub id: i64,
     pub root_folder_path: String,
+    pub path: Option<String>,
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub monitored: bool,
@@ -67,6 +68,7 @@ pub struct ArrSeriesStatistics {
 pub struct ArrSeries {
     pub id: i64,
     pub root_folder_path: String,
+    pub path: Option<String>,
     pub tvdb_id: Option<String>,
     pub monitored: bool,
     pub seasons: Vec<ArrSeriesSeason>,
@@ -376,6 +378,12 @@ impl ExternalArrClient {
                 Some(ArrMovie {
                     id,
                     root_folder_path,
+                    path: item
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
                     tmdb_id: value_str_or_number(item.get("tmdbId")),
                     imdb_id: item
                         .get("imdbId")
@@ -438,6 +446,12 @@ impl ExternalArrClient {
                 Some(ArrSeries {
                     id,
                     root_folder_path,
+                    path: item
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
                     tvdb_id: value_str_or_number(item.get("tvdbId")),
                     monitored: item
                         .get("monitored")

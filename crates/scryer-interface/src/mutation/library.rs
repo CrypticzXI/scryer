@@ -170,11 +170,19 @@ impl LibraryMutations {
         &self,
         ctx: &Context<'_>,
         library_id: String,
+        import_warmup_session_id: Option<String>,
     ) -> GqlResult<LibraryScanProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let scan_hints = match import_warmup_session_id.as_deref() {
+            Some(session_id) if !session_id.trim().is_empty() => {
+                app.external_import_monitor_warmup_scan_hints(&actor, session_id)
+                    .await
+            }
+            _ => None,
+        };
         let session = app
-            .trigger_library_scan_by_id(&actor, &library_id)
+            .trigger_library_scan_by_id_with_hints(&actor, &library_id, scan_hints)
             .await
             .map_err(to_gql_error)?;
         Ok(from_library_scan_session(session))

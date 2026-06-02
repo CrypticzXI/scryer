@@ -1137,12 +1137,16 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     onValueChange={setDraftImportMode}
                     disabled={settingsBusy}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="media-library-import-mode-trigger">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {IMPORT_MODE_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
+                        <SelectItem
+                          id={selectorId("media-library-import-mode-option", option.value)}
+                          key={option.value}
+                          value={option.value}
+                        >
                           {t(option.labelKey)}
                         </SelectItem>
                       ))}

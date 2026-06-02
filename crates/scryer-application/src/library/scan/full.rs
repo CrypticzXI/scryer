@@ -214,6 +214,7 @@ pub(super) async fn scan_library_movies(
     session_id: &str,
     mark_discovery_complete_on_drain: bool,
     cancel_token: Option<CancellationToken>,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<LibraryScanSummary> {
     let started_at = Instant::now();
     let coordinator = LibraryScanCoordinator::new(app.clone(), session_id.to_string());
@@ -254,6 +255,7 @@ pub(super) async fn scan_library_movies(
         library_path.to_string(),
         LIBRARY_SCAN_MOVIE_BATCH_SIZE,
         cancel_token.clone(),
+        scan_hints.cloned(),
     )?;
     let mut metadata_resolver = StreamingMovieMetadataResolver::new(
         app.services.library.metadata_gateway.clone(),
@@ -431,6 +433,7 @@ pub(super) async fn scan_library_series(
     session_id: &str,
     mark_discovery_complete_on_drain: bool,
     cancel_token: Option<CancellationToken>,
+    scan_hints: Option<&LibraryScanHintSet>,
 ) -> AppResult<LibraryScanSummary> {
     let started_at = Instant::now();
     let coordinator = LibraryScanCoordinator::new(app.clone(), session_id.to_string());
@@ -484,7 +487,7 @@ pub(super) async fn scan_library_series(
             library_path,
             session_id,
             &coordinator,
-            prepare_series_library_scan_candidates(&folder_batch).await?,
+            prepare_series_library_scan_candidates(&folder_batch, scan_hints).await?,
             &metadata_language,
             &mut metadata_lookup_stats,
             &mut existing_titles,
@@ -514,8 +517,12 @@ pub(super) async fn scan_library_series(
                 library_path,
                 session_id,
                 &coordinator,
-                prepare_series_library_scan_candidates_from_files(&loose_root_files, library_path)
-                    .await?,
+                prepare_series_library_scan_candidates_from_files(
+                    &loose_root_files,
+                    library_path,
+                    scan_hints,
+                )
+                .await?,
                 &metadata_language,
                 &mut metadata_lookup_stats,
                 &mut existing_titles,

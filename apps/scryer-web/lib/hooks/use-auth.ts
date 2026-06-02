@@ -185,10 +185,7 @@ export function useAuth(): AuthState {
         // runtime-state probe is temporarily unavailable.
       }
 
-      if (
-        runtimeState?.effectiveFormLoginEnabled === false &&
-        runtimeState?.envOverrideActive === true
-      ) {
+      if (runtimeState?.effectiveFormLoginEnabled === false) {
         clearPersistedAuthToken();
         setToken(null);
         setUser(await loadUserFromBypass());

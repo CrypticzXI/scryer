@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use async_graphql::{Context, Object, Result as GqlResult};
 use chrono::Utc;
@@ -6,13 +7,15 @@ use scryer_application::external_import::{
     self, ArrDownloadClient, ArrEpisode, ArrIndexer, ArrMovie, ArrSeries, DetectedProwlarrIndexer,
     ExternalArrClient,
 };
+use scryer_application::stored_paths::path_to_stored_string;
 use scryer_application::{
-    AppError, ExternalImportLibraryPathsSelection, ExternalImportMonitorEpisodeEntry,
-    ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
-    ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind, ExternalImportMonitorWarmupPhase,
-    ExternalImportMonitorWarmupProgressSnapshot, ExternalImportMonitorWarmupStatus,
-    IndexerConfigUpdate,
+    AppError, ExternalIdHint, ExternalIdProvider, ExternalImportLibraryPathsSelection,
+    ExternalImportMonitorEpisodeEntry, ExternalImportMonitorMovieEntry,
+    ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
+    ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupProgressSnapshot,
+    ExternalImportMonitorWarmupStatus, IndexerConfigUpdate, LibraryScanHint, LibraryScanHintFacet,
+    LibraryScanHintSet, LibraryScanHintSource,
 };
 use scryer_domain::{AppPermission, MediaFacet, NewDownloadClientConfig, NewIndexerConfig};
 use serde::Serialize;
@@ -1040,10 +1043,59 @@ impl ExternalImportMutations {
     }
 }
 
-fn movie_monitor_entry_from_arr(movie: ArrMovie) -> ExternalImportMonitorMovieEntry {
+fn movie_scan_hint_from_arr(movie: &ArrMovie) -> Option<LibraryScanHint> {
+    let path = movie.path.as_deref()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    let mut ids = Vec::new();
+    if let Some(tmdb_id) = movie
+        .tmdb_id
+        .as_deref()
+        .and_then(|value| ExternalIdHint::normalized(ExternalIdProvider::Tmdb, value))
+    {
+        ids.push(tmdb_id);
+    }
+    if let Some(imdb_id) = movie
+        .imdb_id
+        .as_deref()
+        .and_then(|value| ExternalIdHint::normalized(ExternalIdProvider::Imdb, value))
+    {
+        ids.push(imdb_id);
+    }
+
+    (!ids.is_empty()).then(|| LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportRadarr,
+        facet: LibraryScanHintFacet::Movie,
+        path_key: path_to_stored_string(Path::new(path)),
+        ids,
+    })
+}
+
+fn series_scan_hint_from_arr(series: &ArrSeries) -> Option<LibraryScanHint> {
+    let path = series.path.as_deref()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let ids = series
+        .tvdb_id
+        .as_deref()
+        .and_then(|value| ExternalIdHint::normalized(ExternalIdProvider::Tvdb, value))
+        .map(|id| vec![id])?;
+
+    Some(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportSonarr,
+        facet: LibraryScanHintFacet::Series,
+        path_key: path_to_stored_string(Path::new(path)),
+        ids,
+    })
+}
+
+fn movie_monitor_entry_from_arr(movie: &ArrMovie) -> ExternalImportMonitorMovieEntry {
     ExternalImportMonitorMovieEntry {
-        tmdb_id: movie.tmdb_id,
-        imdb_id: movie.imdb_id,
+        tmdb_id: movie.tmdb_id.clone(),
+        imdb_id: movie.imdb_id.clone(),
         monitored: movie.monitored,
     }
 }
@@ -1190,6 +1242,7 @@ async fn capture_external_import_monitor_warmup(
 ) -> scryer_application::AppResult<()> {
     clear_external_import_monitor_apply_targets(app, actor).await?;
 
+    let mut scan_hints = LibraryScanHintSet::new();
     let mut movie_writer = SnapshotChunkWriter::new(
         app.clone(),
         actor.clone(),
@@ -1237,8 +1290,11 @@ async fn capture_external_import_monitor_warmup(
                 return Ok(());
             }
 
+            if let Some(hint) = movie_scan_hint_from_arr(&movie) {
+                scan_hints.push(hint);
+            }
             movie_writer
-                .push(&movie_monitor_entry_from_arr(movie))
+                .push(&movie_monitor_entry_from_arr(&movie))
                 .await?;
             snapshot.movies_progress.completed =
                 snapshot.movies_progress.completed.saturating_add(1);
@@ -1329,6 +1385,9 @@ async fn capture_external_import_monitor_warmup(
             })?;
             let episodes = episodes_result?;
             let episode_count = i32::try_from(episodes.len()).unwrap_or(i32::MAX);
+            if let Some(hint) = series_scan_hint_from_arr(&series) {
+                scan_hints.push(hint);
+            }
             let entry = series_monitor_entry_from_arr(series, episodes);
             series_writer.push(&entry).await?;
             anime_writer.push(&entry).await?;
@@ -1361,6 +1420,8 @@ async fn capture_external_import_monitor_warmup(
     movie_writer.finish().await?;
     series_writer.finish().await?;
     anime_writer.finish().await?;
+    app.set_external_import_monitor_warmup_scan_hints(session_id, scan_hints)
+        .await;
     snapshot.snapshot_build_progress.completed = snapshot.snapshot_build_progress.total;
 
     Ok(())
@@ -1560,15 +1621,126 @@ fn map_indexer(idx: &ArrIndexer, source: &str) -> ExternalImportIndexerPayload {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::Path;
 
-    use scryer_application::external_import::{ArrDownloadClient, ArrIndexer};
+    use scryer_application::external_import::{
+        ArrDownloadClient, ArrIndexer, ArrMovie, ArrSeries, ArrSeriesStatistics,
+    };
+    use scryer_application::stored_paths::path_to_stored_string;
+    use scryer_application::{ExternalIdProvider, LibraryScanHintFacet, LibraryScanHintSource};
     use scryer_domain::{ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource};
     use serde_json::Value;
 
     use super::{
         detect_imported_prowlarr_proxy_indexer, imported_indexer_config_json, map_download_client,
-        map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, prowlarr_dedup_key,
+        map_indexer, merge_direct_prowlarr_group, merge_prowlarr_group, movie_scan_hint_from_arr,
+        prowlarr_dedup_key, series_scan_hint_from_arr,
     };
+
+    #[test]
+    fn radarr_warmup_builds_movie_hint_with_tmdb_and_imdb() {
+        let path = "/Movies/The Bourne Supremacy (2004)";
+        let hint = movie_scan_hint_from_arr(&ArrMovie {
+            id: 1,
+            root_folder_path: "/Movies".into(),
+            path: Some(path.into()),
+            tmdb_id: Some("2502".into()),
+            imdb_id: Some("tt0372183".into()),
+            monitored: true,
+        })
+        .expect("movie hint");
+
+        assert_eq!(hint.source, LibraryScanHintSource::ExternalImportRadarr);
+        assert_eq!(hint.facet, LibraryScanHintFacet::Movie);
+        assert_eq!(hint.path_key, path_to_stored_string(Path::new(path)));
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tmdb && id.value == "2502" })
+        );
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Imdb && id.value == "tt0372183" })
+        );
+    }
+
+    #[test]
+    fn radarr_warmup_omits_numeric_only_imdb_hint() {
+        let hint = movie_scan_hint_from_arr(&ArrMovie {
+            id: 1,
+            root_folder_path: "/Movies".into(),
+            path: Some("/Movies/Children of Men (2006)".into()),
+            tmdb_id: Some("9693".into()),
+            imdb_id: Some("9693".into()),
+            monitored: true,
+        })
+        .expect("movie hint");
+
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tmdb && id.value == "9693" })
+        );
+        assert!(
+            !hint
+                .ids
+                .iter()
+                .any(|id| id.provider == ExternalIdProvider::Imdb)
+        );
+    }
+
+    #[test]
+    fn radarr_warmup_omits_malformed_imdb_hint() {
+        let hint = movie_scan_hint_from_arr(&ArrMovie {
+            id: 1,
+            root_folder_path: "/Movies".into(),
+            path: Some("/Movies/Children of Men (2006)".into()),
+            tmdb_id: Some("9693".into()),
+            imdb_id: Some("tt0206634-extra".into()),
+            monitored: true,
+        })
+        .expect("movie hint");
+
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tmdb && id.value == "9693" })
+        );
+        assert!(
+            !hint
+                .ids
+                .iter()
+                .any(|id| id.provider == ExternalIdProvider::Imdb)
+        );
+    }
+
+    #[test]
+    fn sonarr_warmup_builds_series_hint_with_tvdb() {
+        let path = "/Series/Foundation (2021)";
+        let hint = series_scan_hint_from_arr(&ArrSeries {
+            id: 1,
+            root_folder_path: "/Series".into(),
+            path: Some(path.into()),
+            tvdb_id: Some("366972".into()),
+            monitored: true,
+            seasons: Vec::new(),
+            statistics: ArrSeriesStatistics {
+                total_episode_count: None,
+                monitored_episode_count: None,
+            },
+        })
+        .expect("series hint");
+
+        assert_eq!(hint.source, LibraryScanHintSource::ExternalImportSonarr);
+        assert_eq!(hint.facet, LibraryScanHintFacet::Series);
+        assert_eq!(hint.path_key, path_to_stored_string(Path::new(path)));
+        assert!(
+            hint.ids
+                .iter()
+                .any(|id| { id.provider == ExternalIdProvider::Tvdb && id.value == "366972" })
+        );
+    }
 
     #[test]
     fn map_download_client_marks_qbittorrent_as_supported() {

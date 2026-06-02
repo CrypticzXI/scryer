@@ -746,6 +746,7 @@ impl AppUseCase {
                     facet.clone(),
                     &session_id,
                     LibraryScanMode::Full,
+                    None,
                 )
                 .await
             {
@@ -769,6 +770,16 @@ impl AppUseCase {
         &self,
         actor: &User,
         library_id: &str,
+    ) -> AppResult<LibraryScanSession> {
+        self.trigger_library_scan_by_id_with_hints(actor, library_id, None)
+            .await
+    }
+
+    pub async fn trigger_library_scan_by_id_with_hints(
+        &self,
+        actor: &User,
+        library_id: &str,
+        scan_hints: Option<LibraryScanHintSet>,
     ) -> AppResult<LibraryScanSession> {
         let library = self
             .services
@@ -815,6 +826,7 @@ impl AppUseCase {
                     facet.clone(),
                     &session_id,
                     LibraryScanMode::Full,
+                    scan_hints,
                 )
                 .await;
             match result {
@@ -863,7 +875,7 @@ impl AppUseCase {
         self.ensure_library_scan_cancellation_token(&session.session_id, mode.clone())
             .await;
         let result = self
-            .run_started_library_scan_session(actor, facet, &session.session_id, mode)
+            .run_started_library_scan_session(actor, facet, &session.session_id, mode, None)
             .await;
 
         if result.is_err() {
@@ -896,6 +908,7 @@ impl AppUseCase {
         facet: MediaFacet,
         session_id: &str,
         mode: LibraryScanMode,
+        scan_hints: Option<LibraryScanHintSet>,
     ) -> AppResult<StartedLibraryScanOutcome> {
         let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
         let library_id = self
@@ -917,6 +930,7 @@ impl AppUseCase {
                 session_id,
                 mode,
                 cancel_token.clone(),
+                scan_hints,
             )
             .await?;
         if library_scan_cancel_requested(cancel_token.as_ref()) {
@@ -989,6 +1003,7 @@ impl AppUseCase {
         session_id: &str,
         mode: LibraryScanMode,
         cancel_token: Option<CancellationToken>,
+        scan_hints: Option<LibraryScanHintSet>,
     ) -> AppResult<LibraryScanSummary> {
         let coordinator = LibraryScanCoordinator::new(self.clone(), session_id.to_string());
         let mut valid_roots = Vec::new();
@@ -1067,6 +1082,7 @@ impl AppUseCase {
                         session_id,
                         finalize_discovery_on_drain,
                         cancel_token.clone(),
+                        scan_hints.as_ref(),
                     )
                     .await?
                 }
@@ -1080,6 +1096,11 @@ impl AppUseCase {
                         session_id,
                         finalize_discovery_on_drain,
                         cancel_token.clone(),
+                        if matches!(facet, MediaFacet::Series) {
+                            scan_hints.as_ref()
+                        } else {
+                            None
+                        },
                     )
                     .await?
                 }
@@ -1204,6 +1225,7 @@ impl AppUseCase {
                 &library_paths,
                 &session.session_id,
                 LibraryScanMode::Additive,
+                None,
                 None,
             )
             .await;

@@ -200,6 +200,124 @@ pub struct ExternalImportMonitorSnapshotChunk {
     pub created_at: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LibraryScanHintSource {
+    ExternalImportRadarr,
+    ExternalImportSonarr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LibraryScanHintFacet {
+    Movie,
+    Series,
+}
+
+impl LibraryScanHintFacet {
+    pub const fn from_media_facet(facet: scryer_domain::MediaFacet) -> Option<Self> {
+        match facet {
+            scryer_domain::MediaFacet::Movie => Some(Self::Movie),
+            scryer_domain::MediaFacet::Series => Some(Self::Series),
+            scryer_domain::MediaFacet::Anime => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExternalIdProvider {
+    Imdb,
+    Tmdb,
+    Tvdb,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalIdHint {
+    pub provider: ExternalIdProvider,
+    pub value: String,
+}
+
+impl ExternalIdHint {
+    pub fn normalized(provider: ExternalIdProvider, raw: &str) -> Option<Self> {
+        let value = match provider {
+            ExternalIdProvider::Imdb => normalize_strict_imdb_id(raw)?,
+            ExternalIdProvider::Tmdb | ExternalIdProvider::Tvdb => {
+                normalize_numeric_external_id(raw)?
+            }
+        };
+        Some(Self { provider, value })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryScanHint {
+    pub source: LibraryScanHintSource,
+    pub facet: LibraryScanHintFacet,
+    pub path_key: String,
+    pub ids: Vec<ExternalIdHint>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LibraryScanHintSet {
+    hints: Vec<LibraryScanHint>,
+}
+
+impl LibraryScanHintSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, hint: LibraryScanHint) {
+        if hint.ids.is_empty() || hint.path_key.trim().is_empty() {
+            return;
+        }
+        if let Some(existing) = self.hints.iter_mut().find(|existing| {
+            existing.facet == hint.facet
+                && stored_path_keys_match(&existing.path_key, &hint.path_key)
+        }) {
+            for id in hint.ids {
+                if !existing.ids.iter().any(|existing_id| existing_id == &id) {
+                    existing.ids.push(id);
+                }
+            }
+            return;
+        }
+        self.hints.push(hint);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hints.is_empty()
+    }
+
+    pub fn hint_for_stored_path(
+        &self,
+        facet: LibraryScanHintFacet,
+        candidate_path_key: &str,
+    ) -> Option<&LibraryScanHint> {
+        self.hints.iter().find(|hint| {
+            hint.facet == facet && stored_path_keys_match(&hint.path_key, candidate_path_key)
+        })
+    }
+}
+
+fn stored_path_keys_match(left: &str, right: &str) -> bool {
+    crate::stored_paths::stored_path_to_path_buf(left)
+        == crate::stored_paths::stored_path_to_path_buf(right)
+}
+
+fn normalize_strict_imdb_id(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let lower = value.to_ascii_lowercase();
+    let digits = lower.strip_prefix("tt")?;
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("tt{digits}"))
+}
+
+fn normalize_numeric_external_id(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    (!value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())).then(|| value.to_string())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DownloadQueueCommandRecord {
     pub id: String,

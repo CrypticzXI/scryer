@@ -22,6 +22,7 @@ import type {
 } from "@/lib/types/settings";
 import { authenticateWithPasskey, PasskeyClientError } from "@/lib/utils/passkeys";
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
+import { selectorId } from "@/lib/utils/dom-ids";
 
 type LoginMethod = "password" | "jellyfin" | null;
 
@@ -151,6 +152,19 @@ export default function LoginPage() {
   const plexLoginAvailable = plexConnections.length > 0;
   const localPasswordAvailable = effectiveFormLoginEnabled !== false;
   const jellyfinLoginAvailable = jellyfinConnections.length > 0;
+  const loginMethodCount = [
+    localPasswordAvailable,
+    passkeyEnabled,
+    jellyfinLoginAvailable,
+    plexLoginAvailable,
+  ].filter(Boolean).length;
+  const showLoginMethodChooser = loginMethodCount > 1;
+  const passwordFormVisible =
+    activeMethod === "password" ||
+    (!showLoginMethodChooser && localPasswordAvailable);
+  const jellyfinFormVisible =
+    activeMethod === "jellyfin" ||
+    (!showLoginMethodChooser && jellyfinLoginAvailable);
   const showJellyfinTotpCode = jellyfinTotpPrompted;
   const anySubmitting =
     submitting ||
@@ -606,23 +620,25 @@ export default function LoginPage() {
         <div className="space-y-3">
           {localPasswordAvailable ? (
             <>
-              <button
-                type="button"
-                onClick={() =>
-                  setActiveMethod((current) =>
-                    current === "password" ? null : "password",
-                  )
-                }
-                disabled={anySubmitting}
-                aria-controls="login-form"
-                aria-expanded={activeMethod === "password"}
-                className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
-              >
-                <KeyRound className="h-4 w-4" aria-hidden="true" />
-                {t("auth.signInWithScryerPassword")}
-              </button>
+              {showLoginMethodChooser ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setActiveMethod((current) =>
+                      current === "password" ? null : "password",
+                    )
+                  }
+                  disabled={anySubmitting}
+                  aria-controls="login-form"
+                  aria-expanded={activeMethod === "password"}
+                  className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  <KeyRound className="h-4 w-4" aria-hidden="true" />
+                  {t("auth.signInWithScryerPassword")}
+                </button>
+              ) : null}
 
-              {activeMethod === "password" ? (
+              {passwordFormVisible ? (
                 localTotpPrompted ? (
                   <form id="login-form" onSubmit={handleSubmit} className="space-y-4">
                     <div className="space-y-1 text-center">
@@ -738,29 +754,31 @@ export default function LoginPage() {
 
           {jellyfinLoginAvailable ? (
             <>
-              <button
-                id="login-jellyfin-method"
-                type="button"
-                onClick={() =>
-                  setActiveMethod((current) =>
-                    current === "jellyfin" ? null : "jellyfin",
-                  )
-                }
-                disabled={anySubmitting}
-                aria-controls="jellyfin-login-form"
-                aria-expanded={activeMethod === "jellyfin"}
-                className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
-              >
-                <img
-                  src="/auth-providers/jellyfin.svg"
-                  alt=""
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                />
-                {t("auth.signInWithJellyfin")}
-              </button>
+              {showLoginMethodChooser ? (
+                <button
+                  id="login-jellyfin-method"
+                  type="button"
+                  onClick={() =>
+                    setActiveMethod((current) =>
+                      current === "jellyfin" ? null : "jellyfin",
+                    )
+                  }
+                  disabled={anySubmitting}
+                  aria-controls="jellyfin-login-form"
+                  aria-expanded={activeMethod === "jellyfin"}
+                  className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  <img
+                    src="/auth-providers/jellyfin.svg"
+                    alt=""
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                  />
+                  {t("auth.signInWithJellyfin")}
+                </button>
+              ) : null}
 
-              {activeMethod === "jellyfin" && showJellyfinTotpCode ? (
+              {jellyfinFormVisible && showJellyfinTotpCode ? (
                 <div id="jellyfin-login-form" className="space-y-4">
                   <div className="space-y-1 text-center">
                     <h2 className="text-base font-semibold">{t("auth.totpCode")}</h2>
@@ -805,10 +823,11 @@ export default function LoginPage() {
                     {t("label.back")}
                   </button>
                 </div>
-              ) : activeMethod === "jellyfin" ? (
+              ) : jellyfinFormVisible ? (
                 <div id="jellyfin-login-form" className="space-y-3">
                   {jellyfinConnections.length > 1 ? (
                     <select
+                      id="login-jellyfin-connection"
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                       value={jellyfinConnectionId}
                       onChange={(event) => {
@@ -817,7 +836,14 @@ export default function LoginPage() {
                       }}
                     >
                       {jellyfinConnections.map((connection) => (
-                        <option key={connection.id} value={connection.id}>
+                        <option
+                          id={selectorId(
+                            "login-jellyfin-connection-option",
+                            connection.displayName,
+                          )}
+                          key={connection.id}
+                          value={connection.id}
+                        >
                           {connectionOptionLabel(connection)}
                         </option>
                       ))}

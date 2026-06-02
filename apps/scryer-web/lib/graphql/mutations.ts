@@ -414,8 +414,8 @@ export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteM
   deleteMediaFile(input: $input)
 }`;
 
-export const scanLibraryMutation = `mutation ScanLibrary($libraryId: String!) {
-  scanLibrary(libraryId: $libraryId) {
+export const scanLibraryMutation = `mutation ScanLibrary($libraryId: String!, $importWarmupSessionId: String) {
+  scanLibrary(libraryId: $libraryId, importWarmupSessionId: $importWarmupSessionId) {
     sessionId
     facet
     mode

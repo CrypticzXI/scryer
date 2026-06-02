@@ -1669,7 +1669,10 @@ export function SetupWizardContainer({
         selectedFacets.map(async ({ libraryId, label }) => {
           try {
             const result = await client
-              .mutation(scanLibraryMutation, { libraryId })
+              .mutation(scanLibraryMutation, {
+                libraryId,
+                importWarmupSessionId: importWarmupProgress?.sessionId ?? null,
+              })
               .toPromise();
             if (result.error) throw result.error;
           } catch (error) {
@@ -1702,6 +1705,7 @@ export function SetupWizardContainer({
     finalSelectedMoviesPaths.length,
     finalSelectedSeriesPaths.length,
     finalizeImportedMonitorSnapshots,
+    importWarmupProgress?.sessionId,
     navigateAfterSetup,
     t,
   ]);

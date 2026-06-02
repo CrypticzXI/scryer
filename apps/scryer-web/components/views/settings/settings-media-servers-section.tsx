@@ -398,7 +398,11 @@ export function SettingsMediaServersSection({
                       </SelectTrigger>
                       <SelectContent>
                         {PROVIDERS.map((provider) => (
-                          <SelectItem key={provider.value} value={provider.value}>
+                          <SelectItem
+                            id={selectorId("settings-media-server-provider-option", provider.value)}
+                            key={provider.value}
+                            value={provider.value}
+                          >
                             {provider.label}
                           </SelectItem>
                         ))}

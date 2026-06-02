@@ -1361,7 +1361,9 @@ fn build_search_tvdb_batch_query(queries: &[MetadataSearchQuery]) -> Vec<Metadat
     for query in queries {
         let trimmed_query = query.query.trim();
         let trimmed_type = query.type_hint.trim();
-        if trimmed_query.is_empty() || trimmed_type.is_empty() {
+        let has_external_id =
+            query.imdb_id.is_some() || query.tmdb_id.is_some() || query.tvdb_id.is_some();
+        if trimmed_type.is_empty() || (trimmed_query.is_empty() && !has_external_id) {
             continue;
         }
 
@@ -1664,6 +1666,14 @@ mod tests {
                 tvdb_id: None,
             },
             MetadataSearchQuery {
+                query: "   ".to_string(),
+                type_hint: "movie".to_string(),
+                year: None,
+                imdb_id: None,
+                tmdb_id: Some("2502".to_string()),
+                tvdb_id: None,
+            },
+            MetadataSearchQuery {
                 query: "Velvet Comet".to_string(),
                 type_hint: "anime".to_string(),
                 year: None,
@@ -1683,18 +1693,22 @@ mod tests {
 
         let normalized = build_search_tvdb_batch_query(&queries);
 
-        assert_eq!(normalized.len(), 3);
+        assert_eq!(normalized.len(), 4);
         assert_eq!(normalized[0].query, "Lantern Tide");
         assert_eq!(normalized[0].type_hint, "movie");
         assert_eq!(normalized[0].year, Some(2001));
         assert_eq!(normalized[0].imdb_id.as_deref(), Some("tt1234567"));
-        assert_eq!(normalized[1].query, "Velvet Comet");
-        assert_eq!(normalized[1].type_hint, "anime");
+        assert_eq!(normalized[1].query, "");
+        assert_eq!(normalized[1].type_hint, "movie");
         assert_eq!(normalized[1].year, None);
-        assert_eq!(normalized[1].tvdb_id.as_deref(), Some("999"));
-        assert_eq!(normalized[2].query, "Lantern Tide");
-        assert_eq!(normalized[2].type_hint, "movie");
-        assert_eq!(normalized[2].year, Some(2002));
+        assert_eq!(normalized[1].tmdb_id.as_deref(), Some("2502"));
+        assert_eq!(normalized[2].query, "Velvet Comet");
+        assert_eq!(normalized[2].type_hint, "anime");
+        assert_eq!(normalized[2].year, None);
+        assert_eq!(normalized[2].tvdb_id.as_deref(), Some("999"));
+        assert_eq!(normalized[3].query, "Lantern Tide");
+        assert_eq!(normalized[3].type_hint, "movie");
+        assert_eq!(normalized[3].year, Some(2002));
     }
 
     #[test]

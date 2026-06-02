@@ -3,6 +3,67 @@ pub async fn import_completed_download(
     actor: &User,
     completed: &CompletedDownload,
 ) -> AppResult<ImportResult> {
+    let app = app.clone();
+    let actor = actor.clone();
+    let completed = completed.clone();
+    import_completed_download_on_large_stack(app, actor, completed).await
+}
+
+const COMPLETED_IMPORT_THREAD_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+async fn import_completed_download_on_large_stack(
+    app: AppUseCase,
+    actor: User,
+    completed: CompletedDownload,
+) -> AppResult<ImportResult> {
+    let runtime = tokio::runtime::Handle::current();
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+    std::thread::Builder::new()
+        .name("scryer-completed-import".to_string())
+        .stack_size(COMPLETED_IMPORT_THREAD_STACK_BYTES)
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runtime.block_on(import_completed_download_inner(
+                    &app, &actor, &completed,
+                ))
+            }))
+            .unwrap_or_else(|panic| {
+                Err(AppError::Repository(format!(
+                    "completed download import worker panicked: {}",
+                    panic_payload_message(panic.as_ref())
+                )))
+            });
+            let _ = result_tx.send(result);
+        })
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "failed to spawn completed download import worker: {error}"
+            ))
+        })?;
+
+    result_rx.await.map_err(|error| {
+        AppError::Repository(format!(
+            "completed download import worker exited before returning a result: {error}"
+        ))
+    })?
+}
+
+fn panic_payload_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = panic.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "unknown panic payload".to_string()
+}
+
+async fn import_completed_download_inner(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+) -> AppResult<ImportResult> {
     let mut completed = completed.clone();
     remap_completed_download_for_client(app, &mut completed).await;
     let started_at = Utc::now();
