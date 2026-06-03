@@ -1680,10 +1680,10 @@ fn build_bulk_artwork_url_query(movie_ids: &[i64], series_ids: &[i64], language:
 #[cfg(test)]
 mod tests {
     use super::{
-        MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_artwork_url_query,
+        ArtworkItem, MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_artwork_url_query,
         build_bulk_mixed_query, build_search_tvdb_batch_query, compatibility_poll_phase,
         enrollment_retry_delay, next_version_compatibility_poll_delay_at, normalize_artwork_url,
-        normalize_optional_artwork_url, parse_version_compatibility_success,
+        normalize_optional_artwork_url, parse_version_compatibility_success, pick_artwork_url,
         validate_search_tvdb_batch_echo,
     };
     use std::time::{Duration, SystemTime};

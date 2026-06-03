@@ -1,3 +1,4 @@
+-- Rolled up from migrations/0136_notification_subscription_target_indexes.sql
 CREATE UNIQUE INDEX idx_notification_subscriptions_target_scope
     ON notification_subscriptions (
         target_kind,
@@ -12,3 +13,10 @@ CREATE INDEX idx_notification_subscriptions_channel
 
 CREATE INDEX idx_notification_subscriptions_target
     ON notification_subscriptions (target_kind, target_id);
+
+-- Rolled up from migrations/0137_user_auth_session_version.sql
+ALTER TABLE users ADD COLUMN auth_session_version TEXT;
+
+-- Rolled up from migrations/0138_drop_banner_images_and_rebuild_image_cache.sql
+ALTER TABLE titles DROP COLUMN banner_url;
+ALTER TABLE titles DROP COLUMN banner_local_path;

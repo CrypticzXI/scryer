@@ -1828,6 +1828,17 @@ async fn run_embedded_migration(pool: &sqlx::SqlitePool, sql: &str) {
     }
 }
 
+fn rolled_up_migration_section<'a>(rollup: &'a str, original_file: &str) -> &'a str {
+    let marker = format!("-- Rolled up from {original_file}\n");
+    let start = rollup
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing rollup section for {original_file}"))
+        + marker.len();
+    let rest = &rollup[start..];
+    let end = rest.find("\n-- Rolled up from ").unwrap_or(rest.len());
+    &rest[..end]
+}
+
 #[tokio::test]
 async fn release_metadata_enum_canonicalization_migration_normalizes_legacy_values() {
     let pool = SqlitePoolOptions::new()
@@ -1936,8 +1947,11 @@ async fn release_metadata_enum_canonicalization_migration_normalizes_legacy_valu
 
     run_embedded_migration(
         &pool,
-        include_str!(
-            "../../scryer/src/db/migrations/0125_release_metadata_enum_canonicalization.sql"
+        rolled_up_migration_section(
+            include_str!(
+                "../../scryer/src/db/migrations/0125_0_16_release_rollup_pre_notification_target_hook.sql"
+            ),
+            "migrations/0125_release_metadata_enum_canonicalization.sql",
         ),
     )
     .await;

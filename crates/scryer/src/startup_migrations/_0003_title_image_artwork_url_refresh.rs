@@ -3,7 +3,7 @@ use std::sync::Arc;
 use scryer_application::{AppUseCase, SETTINGS_SCOPE_SYSTEM};
 use scryer_infrastructure::SettingsStore;
 
-use super::versioning::{MajorMinor, is_upgrade_from_before_to_at_least};
+use super::versioning::{MajorMinor, is_upgrade_from_before_to_at_least, parse_major_minor};
 
 pub(crate) const TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY: &str =
     "catalog.title_image_url_rehydrate_016_state";
@@ -15,6 +15,10 @@ fn is_upgrade_to_016_or_later(previous_version: Option<&str>, current_version: &
     is_upgrade_from_before_to_at_least(previous_version, current_version, MajorMinor::new(0, 16))
 }
 
+fn is_016_or_later(version: &str) -> bool {
+    parse_major_minor(version).is_some_and(|version| version >= MajorMinor::new(0, 16))
+}
+
 fn should_attempt_title_image_artwork_url_refresh(
     previous_version: Option<&str>,
     current_version: &str,
@@ -22,7 +26,7 @@ fn should_attempt_title_image_artwork_url_refresh(
 ) -> bool {
     migration_state != STATE_COMPLETED
         && (is_upgrade_to_016_or_later(previous_version, current_version)
-            || migration_state == STATE_PENDING)
+            || (migration_state == STATE_PENDING && is_016_or_later(current_version)))
 }
 
 async fn read_state(settings_store: Arc<SettingsStore>) -> String {
@@ -88,6 +92,9 @@ pub(crate) async fn refresh_title_image_artwork_urls_for_upgrade(
                 title_urls_updated = summary.title_urls_updated,
                 episode_urls_updated = summary.episode_urls_updated,
                 missing_artwork_results = summary.missing_artwork_results,
+                missing_title_artwork_results = summary.missing_title_artwork_results,
+                missing_episode_matches = summary.missing_episode_matches,
+                missing_incoming_image_urls = summary.missing_incoming_image_urls,
                 "title image artwork URL refresh migration completed"
             );
         }
@@ -125,6 +132,11 @@ mod tests {
         assert!(should_attempt_title_image_artwork_url_refresh(
             None,
             "0.16.0",
+            STATE_PENDING,
+        ));
+        assert!(!should_attempt_title_image_artwork_url_refresh(
+            None,
+            "0.15.10",
             STATE_PENDING,
         ));
         assert!(!should_attempt_title_image_artwork_url_refresh(

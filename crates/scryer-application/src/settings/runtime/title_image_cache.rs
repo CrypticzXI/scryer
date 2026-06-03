@@ -22,6 +22,9 @@ pub struct TitleImageCacheRefreshSummary {
     pub title_urls_updated: u64,
     pub episode_urls_updated: u64,
     pub missing_artwork_results: u64,
+    pub missing_title_artwork_results: u64,
+    pub missing_episode_matches: u64,
+    pub missing_incoming_image_urls: u64,
     pub cache_cleared: bool,
 }
 
@@ -39,6 +42,9 @@ impl AppUseCase {
                         title_urls_updated = summary.title_urls_updated,
                         episode_urls_updated = summary.episode_urls_updated,
                         missing_artwork_results = summary.missing_artwork_results,
+                        missing_title_artwork_results = summary.missing_title_artwork_results,
+                        missing_episode_matches = summary.missing_episode_matches,
+                        missing_incoming_image_urls = summary.missing_incoming_image_urls,
                         "title image cache refresh completed"
                     );
                 }
@@ -109,6 +115,9 @@ impl AppUseCase {
             title_urls_updated = summary.title_urls_updated,
             episode_urls_updated = summary.episode_urls_updated,
             missing_artwork_results = summary.missing_artwork_results,
+            missing_title_artwork_results = summary.missing_title_artwork_results,
+            missing_episode_matches = summary.missing_episode_matches,
+            missing_incoming_image_urls = summary.missing_incoming_image_urls,
             "title image cache reset completed"
         );
         self.wake_title_image_loops();
@@ -140,11 +149,26 @@ impl AppUseCase {
             summary.title_urls_updated += batch_summary.title_urls_updated;
             summary.episode_urls_updated += batch_summary.episode_urls_updated;
             summary.missing_artwork_results += batch_summary.missing_artwork_results;
+            summary.missing_title_artwork_results += batch_summary.missing_title_artwork_results;
+            summary.missing_episode_matches += batch_summary.missing_episode_matches;
+            summary.missing_incoming_image_urls += batch_summary.missing_incoming_image_urls;
 
             info!(
                 titles_scanned = summary.titles_scanned,
                 title_urls_updated = summary.title_urls_updated,
                 episode_urls_updated = summary.episode_urls_updated,
+                missing_artwork_results = summary.missing_artwork_results,
+                missing_title_artwork_results = summary.missing_title_artwork_results,
+                missing_episode_matches = summary.missing_episode_matches,
+                missing_incoming_image_urls = summary.missing_incoming_image_urls,
+                batch_titles_scanned = batch_summary.titles_scanned,
+                batch_title_urls_updated = batch_summary.title_urls_updated,
+                batch_episode_urls_updated = batch_summary.episode_urls_updated,
+                batch_missing_artwork_results = batch_summary.missing_artwork_results,
+                batch_missing_title_artwork_results =
+                    batch_summary.missing_title_artwork_results,
+                batch_missing_episode_matches = batch_summary.missing_episode_matches,
+                batch_missing_incoming_image_urls = batch_summary.missing_incoming_image_urls,
                 "title image cache refresh rehydrated artwork url batch"
             );
         }
@@ -202,9 +226,26 @@ impl AppUseCase {
             };
             let Some(urls) = artwork.movies.get(&tvdb_id) else {
                 summary.missing_artwork_results += 1;
+                summary.missing_title_artwork_results += 1;
+                tracing::debug!(
+                    title_id = %title.id,
+                    tvdb_id,
+                    "title image cache refresh skipped movie with missing artwork result"
+                );
                 continue;
             };
-            if let Some(update) = title_artwork_update(title, urls.poster_url.as_ref(), urls.background_url.as_ref()) {
+            if urls.poster_url.is_none() && urls.background_url.is_none() {
+                summary.missing_artwork_results += 1;
+                summary.missing_incoming_image_urls += 1;
+                tracing::debug!(
+                    title_id = %title.id,
+                    tvdb_id,
+                    "title image cache refresh skipped movie artwork update with no usable image URLs"
+                );
+            }
+            if let Some(update) =
+                title_artwork_update(title, urls.poster_url.as_ref(), urls.background_url.as_ref())
+            {
                 title_updates.push(update);
             }
         }
@@ -215,9 +256,26 @@ impl AppUseCase {
             };
             let Some(urls) = artwork.series.get(&tvdb_id) else {
                 summary.missing_artwork_results += 1;
+                summary.missing_title_artwork_results += 1;
+                tracing::debug!(
+                    title_id = %title.id,
+                    tvdb_id,
+                    "title image cache refresh skipped series with missing artwork result"
+                );
                 continue;
             };
-            if let Some(update) = title_artwork_update(title, urls.poster_url.as_ref(), urls.background_url.as_ref()) {
+            if urls.poster_url.is_none() && urls.background_url.is_none() {
+                summary.missing_artwork_results += 1;
+                summary.missing_incoming_image_urls += 1;
+                tracing::debug!(
+                    title_id = %title.id,
+                    tvdb_id,
+                    "title image cache refresh skipped series artwork update with no usable image URLs"
+                );
+            }
+            if let Some(update) =
+                title_artwork_update(title, urls.poster_url.as_ref(), urls.background_url.as_ref())
+            {
                 title_updates.push(update);
             }
 
@@ -259,16 +317,31 @@ impl AppUseCase {
                     });
                 let Some(existing) = existing else {
                     summary.missing_artwork_results += 1;
+                    summary.missing_episode_matches += 1;
+                    tracing::debug!(
+                        title_id = %title.id,
+                        series_tvdb_id = tvdb_id,
+                        episode_tvdb_id = incoming.tvdb_id,
+                        season_number = incoming.season_number,
+                        episode_number = incoming.episode_number,
+                        "title image cache refresh skipped incoming episode still with no local episode match"
+                    );
                     continue;
                 };
-                let Some(image_url) = incoming.image_url.as_ref() else {
+                if incoming.image_url.is_none() {
+                    summary.missing_artwork_results += 1;
+                    summary.missing_incoming_image_urls += 1;
+                    tracing::debug!(
+                        title_id = %title.id,
+                        episode_id = %existing.id,
+                        episode_tvdb_id = incoming.tvdb_id,
+                        "title image cache refresh skipped incoming episode still with no usable image URL"
+                    );
                     continue;
                 };
-                if existing.image_url.as_deref() != Some(image_url.as_str()) {
-                    episode_updates.push(EpisodeImageUrlUpdate {
-                        episode_id: existing.id.clone(),
-                        image_url: Some(image_url.clone()),
-                    });
+                if let Some(update) = episode_image_url_update(existing, incoming.image_url.as_ref())
+                {
+                    episode_updates.push(update);
                 }
             }
         }
@@ -324,4 +397,132 @@ fn title_artwork_update(
         poster_url: next_poster,
         background_url: next_background,
     })
+}
+
+fn episode_image_url_update(
+    episode: &scryer_domain::Episode,
+    incoming_image_url: Option<&String>,
+) -> Option<EpisodeImageUrlUpdate> {
+    let image_url = incoming_image_url?;
+    if episode.image_url.as_deref() == Some(image_url.as_str()) {
+        return None;
+    }
+
+    Some(EpisodeImageUrlUpdate {
+        episode_id: episode.id.clone(),
+        image_url: Some(image_url.clone()),
+    })
+}
+
+#[cfg(test)]
+mod title_image_cache_refresh_tests {
+    use super::*;
+
+    fn test_title() -> Title {
+        Title {
+            id: "title-1".to_string(),
+            library_id: "library-1".to_string(),
+            name: "Example".to_string(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: Vec::new(),
+            external_ids: vec![scryer_domain::ExternalId {
+                source: "tvdb".to_string(),
+                value: "123".to_string(),
+            }],
+            created_by: None,
+            created_at: chrono::Utc::now(),
+            year: None,
+            overview: None,
+            poster_url: Some("https://old.example/poster.jpg".to_string()),
+            poster_source_url: None,
+            background_url: Some("https://old.example/background.jpg".to_string()),
+            background_source_url: None,
+            sort_title: None,
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            genres: Vec::new(),
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: Vec::new(),
+            tagged_aliases: Vec::new(),
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    fn test_episode() -> scryer_domain::Episode {
+        scryer_domain::Episode {
+            id: "episode-1".to_string(),
+            title_id: "title-1".to_string(),
+            collection_id: None,
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: None,
+            title: None,
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: Some("456".to_string()),
+            image_url: Some("https://old.example/still.jpg".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn title_artwork_update_preserves_existing_urls_when_incoming_is_missing() {
+        let title = test_title();
+
+        assert!(title_artwork_update(&title, None, None).is_none());
+    }
+
+    #[test]
+    fn title_artwork_update_updates_only_when_incoming_url_changes() {
+        let title = test_title();
+        let incoming_poster = "https://new.example/poster.jpg".to_string();
+
+        let update = title_artwork_update(&title, Some(&incoming_poster), None)
+            .expect("changed poster should create update");
+
+        assert_eq!(update.title_id, "title-1");
+        assert_eq!(update.poster_url, Some(incoming_poster));
+        assert_eq!(
+            update.background_url,
+            Some("https://old.example/background.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn episode_image_url_update_preserves_existing_url_when_incoming_is_missing() {
+        let episode = test_episode();
+
+        assert!(episode_image_url_update(&episode, None).is_none());
+    }
+
+    #[test]
+    fn episode_image_url_update_updates_only_when_incoming_url_changes() {
+        let episode = test_episode();
+        let incoming_image = "https://new.example/still.jpg".to_string();
+
+        let update = episode_image_url_update(&episode, Some(&incoming_image))
+            .expect("changed still should create update");
+
+        assert_eq!(update.episode_id, "episode-1");
+        assert_eq!(update.image_url, Some(incoming_image));
+    }
 }
