@@ -158,10 +158,16 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
   const [actionRequestId, setActionRequestId] = React.useState<string | null>(null);
   const refreshSeqRef = React.useRef(0);
   const librariesRef = React.useRef<LibraryRecord[]>([]);
+  const refreshContextKey = `${user?.id ?? ""}|${facet}|${mode}`;
+  const refreshContextRef = React.useRef(refreshContextKey);
 
   React.useEffect(() => {
     librariesRef.current = libraries;
   }, [libraries]);
+
+  React.useEffect(() => {
+    refreshContextRef.current = refreshContextKey;
+  }, [refreshContextKey]);
 
   React.useEffect(() => {
     setMode(canManageTitle ? "admin" : "mine");
@@ -177,6 +183,7 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
 
   const refresh = React.useCallback(async () => {
     const refreshSeq = ++refreshSeqRef.current;
+    const refreshContext = refreshContextKey;
     setLoading(true);
     try {
       const librariesQuery =
@@ -202,19 +209,30 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
           status: requestStatus,
         }).toPromise(),
       ]);
-      if (librariesResult.error) throw librariesResult.error;
-      if (requestsResult.error) throw requestsResult.error;
-      if (refreshSeq !== refreshSeqRef.current) {
+      if (
+        refreshSeq !== refreshSeqRef.current ||
+        refreshContext !== refreshContextRef.current
+      ) {
         return;
       }
-      const nextLibraries = (librariesResult.data?.libraries ?? []) as LibraryRecord[];
-      setLibraries(nextLibraries);
-      const nextSelectedLibraryIds = normalizeLibraryFilterSelection(
-        selectedLibraryIds,
-        nextLibraries,
-      );
-      if (!sameStringArray(nextSelectedLibraryIds, selectedLibraryIds)) {
-        setSelectedLibraryIds(nextSelectedLibraryIds);
+
+      if (librariesResult.error) {
+        setGlobalStatus(librariesResult.error.message || t("status.apiError"));
+      } else {
+        const nextLibraries = (librariesResult.data?.libraries ?? []) as LibraryRecord[];
+        setLibraries(nextLibraries);
+        const nextSelectedLibraryIds = normalizeLibraryFilterSelection(
+          selectedLibraryIds,
+          nextLibraries,
+        );
+        if (!sameStringArray(nextSelectedLibraryIds, selectedLibraryIds)) {
+          setSelectedLibraryIds(nextSelectedLibraryIds);
+        }
+      }
+
+      if (requestsResult.error) {
+        setGlobalStatus(requestsResult.error.message || t("status.apiError"));
+        return;
       }
       const loadedRequests =
         mode === "admin"
@@ -228,11 +246,14 @@ export function RequestsContainer({ facet }: RequestsContainerProps) {
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.apiError"));
     } finally {
-      if (refreshSeq === refreshSeqRef.current) {
+      if (
+        refreshSeq === refreshSeqRef.current &&
+        refreshContext === refreshContextRef.current
+      ) {
         setLoading(false);
       }
     }
-  }, [client, facet, mode, selectedLibraryIds, setGlobalStatus, t]);
+  }, [client, facet, mode, refreshContextKey, selectedLibraryIds, setGlobalStatus, t]);
 
   const refreshQualityProfileOptions = React.useCallback(async () => {
     try {

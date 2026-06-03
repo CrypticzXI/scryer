@@ -814,6 +814,16 @@ impl AppUseCase {
                     serde_json::to_string(&CountSummary { count }).ok(),
                 ))
             }
+            JobKey::TitleImageCacheRefresh => {
+                let summary = self.run_title_image_cache_refresh().await?;
+                Ok(JobExecutionOutcome::new(
+                    Some(format!(
+                        "Refreshed artwork URLs for {} title(s) and {} episode(s); image cache reset",
+                        summary.title_urls_updated, summary.episode_urls_updated
+                    )),
+                    serde_json::to_string(&summary).ok(),
+                ))
+            }
         }
     }
 

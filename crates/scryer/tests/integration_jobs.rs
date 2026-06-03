@@ -109,8 +109,6 @@ async fn background_series_refresh_skips_non_relinked_titles_and_completes_job_r
             overview: Some("Pending hydration title".to_string()),
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: Some("Pending Series".to_string()),

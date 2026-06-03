@@ -800,8 +800,8 @@ pub struct AppRuntimeCatalogState {
         Arc<RwLock<crate::import_title_resolution::MonitoredTitleMatcherCache>>,
     pub title_hydration_wake: Arc<tokio::sync::Notify>,
     pub poster_wake: Arc<tokio::sync::Notify>,
-    pub banner_wake: Arc<tokio::sync::Notify>,
     pub fanart_wake: Arc<tokio::sync::Notify>,
+    pub image_processing_limit: Arc<Semaphore>,
     pub title_image_maintenance_lock: Arc<tokio::sync::RwLock<()>>,
     pub title_image_cache_clear_scheduled: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -985,8 +985,8 @@ impl AppRuntimeState {
                 )),
                 title_hydration_wake: Arc::new(tokio::sync::Notify::new()),
                 poster_wake: Arc::new(tokio::sync::Notify::new()),
-                banner_wake: Arc::new(tokio::sync::Notify::new()),
                 fanart_wake: Arc::new(tokio::sync::Notify::new()),
+                image_processing_limit: Arc::new(Semaphore::new(2)),
                 title_image_maintenance_lock: Arc::new(tokio::sync::RwLock::new(())),
                 title_image_cache_clear_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(
                     false,
@@ -2676,7 +2676,6 @@ impl AppUseCase {
 
     pub fn wake_title_image_loops(&self) {
         self.runtime.catalog.poster_wake.notify_one();
-        self.runtime.catalog.banner_wake.notify_one();
         self.runtime.catalog.fanart_wake.notify_one();
     }
 

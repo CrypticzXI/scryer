@@ -21,8 +21,6 @@ pub struct TitlePayload {
     pub overview: Option<String>,
     pub poster_url: Option<String>,
     pub poster_source_url: Option<String>,
-    pub banner_url: Option<String>,
-    pub banner_source_url: Option<String>,
     pub background_url: Option<String>,
     pub background_source_url: Option<String>,
     pub sort_title: Option<String>,

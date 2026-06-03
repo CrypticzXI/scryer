@@ -619,7 +619,7 @@ export function MovieOverviewView({
 
       {/* title header with poster */}
       {(() => {
-        const overviewBackdropUrl = title.backgroundUrl ?? title.bannerUrl;
+        const overviewBackdropUrl = title.backgroundUrl;
         return (
       <Card
         className="relative overflow-hidden p-0"

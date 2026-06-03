@@ -1,9 +1,9 @@
 use super::*;
 use async_trait::async_trait;
 use scryer_domain::{
-    DomainEventFilter, DomainEventPayload, DomainEventType, EventType, ImportType,
-    JobRunCompletedEventData, JobRunStartedEventData, MediaRequestRequester, MediaRequestStatus,
-    RootFolderEntry, TrackedDownloadState,
+    Collection, CollectionType, DomainEventFilter, DomainEventPayload, DomainEventType, Episode,
+    EpisodeType, EventType, ImportType, JobRunCompletedEventData, JobRunStartedEventData,
+    MediaRequestRequester, MediaRequestStatus, RootFolderEntry, TrackedDownloadState,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -373,7 +373,6 @@ impl TitleRepository for MockTitleRepo {
         title.year = metadata.year;
         title.overview = metadata.overview;
         title.poster_url = metadata.poster_url;
-        title.banner_url = metadata.banner_url;
         title.background_url = metadata.background_url;
         title.sort_title = metadata.sort_title;
         title.slug = metadata.slug;
@@ -6508,6 +6507,71 @@ async fn list_my_media_requests_filters_to_requester_owned_requests() {
 }
 
 #[tokio::test]
+async fn request_only_user_can_list_submitted_bluey_series_request() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let requester = library_permission_user(
+        "bluey-requester-owned-list",
+        &library_id,
+        &[scryer_domain::LibraryPermission::Request],
+    );
+    let mut input = media_request_input(library_id.clone(), 353546);
+    input.facet = MediaFacet::Series;
+    input.title = "Bluey".to_string();
+    input.sort_title = Some("Bluey".to_string());
+    input.slug = Some("bluey".to_string());
+    input.year = Some(2018);
+    input.content_status = Some("Continuing".to_string());
+    input.requested_monitor_type = Some("allEpisodes".to_string());
+    input.external_ids = vec![
+        ExternalId {
+            source: "tvdb".to_string(),
+            value: "353546".to_string(),
+        },
+        ExternalId {
+            source: "imdb".to_string(),
+            value: "tt7678620".to_string(),
+        },
+    ];
+
+    harness
+        .app
+        .submit_media_request(&requester, input)
+        .await
+        .expect("request-only Bluey submission should succeed");
+
+    let requests = harness
+        .app
+        .list_my_media_requests(
+            &requester,
+            ListMediaRequestsInput {
+                facet: Some(MediaFacet::Series),
+                library_ids: None,
+                status: Some(MediaRequestStatus::Pending),
+            },
+        )
+        .await
+        .expect("requester should list own Bluey request");
+
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].library_id, library_id);
+    assert_eq!(requests[0].facet, MediaFacet::Series);
+    assert_eq!(requests[0].title, "Bluey");
+    assert_eq!(requests[0].status, MediaRequestStatus::Pending);
+    assert_eq!(requests[0].created_by_user_id, requester.id);
+    assert_eq!(
+        requests[0].requested_monitor_type.as_deref(),
+        Some("allepisodes")
+    );
+    assert!(
+        requests[0]
+            .requesters
+            .iter()
+            .any(|entry| entry.user_id == requester.id)
+    );
+}
+
+#[tokio::test]
 async fn requester_can_update_pending_request_preferences() {
     let harness = bootstrap_media_request_app();
     let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
@@ -7087,8 +7151,6 @@ fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64) -> Title 
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
@@ -7121,7 +7183,6 @@ fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
         content_status: "Released".to_string(),
         overview: format!("{name} overview"),
         poster_url: format!("https://example.com/{tvdb_id}.jpg"),
-        banner_url: None,
         background_url: None,
         language: "eng".to_string(),
         runtime_minutes: 100,
@@ -10892,7 +10953,6 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_clears_item(
                     content_status: "Released".into(),
                     overview: "Matched overview".into(),
                     poster_url: "https://example.com/poster.jpg".into(),
-                    banner_url: None,
                     background_url: None,
                     language: "eng".into(),
                     runtime_minutes: 101,
@@ -10978,7 +11038,6 @@ async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clea
                     content_status: "Released".into(),
                     overview: "Matched overview".into(),
                     poster_url: "https://example.com/poster.jpg".into(),
-                    banner_url: None,
                     background_url: None,
                     language: "eng".into(),
                     runtime_minutes: 101,
@@ -11099,7 +11158,6 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
                     content_status: "Released".into(),
                     overview: "日本語概要".into(),
                     poster_url: "https://example.com/poster.jpg".into(),
-                    banner_url: None,
                     background_url: None,
                     language: "jpn".into(),
                     runtime_minutes: 155,
@@ -18617,6 +18675,259 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
 }
 
 #[tokio::test]
+async fn acquisition_cycle_submits_paperman_media_request_candidate() {
+    let release_title = "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Paperman".into(),
+                sort_title: Some("Paperman".into()),
+                slug: Some("paperman".into()),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2012),
+                external_ids: vec![
+                    ExternalId {
+                        source: "tvdb".to_string(),
+                        value: "5890".to_string(),
+                    },
+                    ExternalId {
+                        source: "imdb".to_string(),
+                        value: "tt2388725".to_string(),
+                    },
+                ],
+                content_status: Some("Released".to_string()),
+                min_availability: Some("released".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create Paperman movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+    let wanted_id = Id::new().0;
+    wanted_items
+        .upsert_wanted_item(&WantedItem {
+            id: wanted_id.clone(),
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_slug: title.slug.clone(),
+            title_facet: Some(MediaFacet::Movie.as_str().to_string()),
+            library_id: Some(title.library_id.clone()),
+            library_name: Some("Movies".to_string()),
+            library_slug: Some("movies".to_string()),
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            episode_number: None,
+            media_type: "movie".to_string(),
+            search_phase: "initial".to_string(),
+            next_search_at: Some(Utc::now().to_rfc3339()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2012-11-02".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        })
+        .await
+        .expect("seed Paperman wanted item");
+
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &[release_title.to_string()]
+    );
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].title_id, title.id);
+    assert_eq!(submissions[0].source_title.as_deref(), Some(release_title));
+    assert_eq!(submissions[0].scope, SubmissionScope::Title);
+
+    let decisions = wanted_items.release_decisions.lock().await.clone();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].wanted_item_id, wanted_id);
+    assert_eq!(decisions[0].release_title, release_title);
+    assert_eq!(decisions[0].decision_code, "eligible");
+}
+
+#[tokio::test]
+async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
+    let release_title = "Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Bluey (2018)".into(),
+                sort_title: Some("Bluey".into()),
+                slug: Some("bluey-2018".into()),
+                facet: MediaFacet::Series,
+                monitored: true,
+                year: Some(2018),
+                external_ids: vec![ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "353546".to_string(),
+                }],
+                content_status: Some("Continuing".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create Bluey series");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Series)
+        .await;
+
+    let season = Collection {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        collection_type: CollectionType::Season,
+        collection_index: "1".to_string(),
+        label: Some("Season 1".to_string()),
+        ordered_path: Some("S01".to_string()),
+        narrative_order: None,
+        first_episode_number: Some("1".to_string()),
+        last_episode_number: Some("1".to_string()),
+        interstitial_movie: None,
+        specials_movies: vec![],
+        interstitial_season_episode: None,
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    app.services
+        .catalog
+        .shows
+        .create_collection(season.clone())
+        .await
+        .expect("create Bluey season");
+
+    let episode = Episode {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        collection_id: Some(season.id.clone()),
+        episode_type: EpisodeType::Standard,
+        episode_number: Some("1".to_string()),
+        season_number: Some("1".to_string()),
+        episode_label: Some("S01E01".to_string()),
+        title: Some("The Magic Xylophone".to_string()),
+        air_date: Some("2018-10-01".to_string()),
+        duration_seconds: Some(420),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: Some("1".to_string()),
+        overview: None,
+        tvdb_id: Some("7214505".to_string()),
+        image_url: None,
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    app.services
+        .catalog
+        .shows
+        .create_episode(episode.clone())
+        .await
+        .expect("create Bluey episode");
+
+    let wanted_id = Id::new().0;
+    wanted_items
+        .upsert_wanted_item(&WantedItem {
+            id: wanted_id.clone(),
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_slug: title.slug.clone(),
+            title_facet: Some(MediaFacet::Series.as_str().to_string()),
+            library_id: Some(title.library_id.clone()),
+            library_name: Some("Series".to_string()),
+            library_slug: Some("series".to_string()),
+            episode_id: Some(episode.id.clone()),
+            collection_id: Some(season.id.clone()),
+            season_number: Some("1".to_string()),
+            episode_number: None,
+            media_type: "episode".to_string(),
+            search_phase: "long_tail".to_string(),
+            next_search_at: Some(Utc::now().to_rfc3339()),
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: Some("2018-10-01".to_string()),
+            status: WantedStatus::Wanted,
+            grabbed_release: None,
+            current_score: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        })
+        .await
+        .expect("seed Bluey wanted item");
+
+    crate::acquisition_workflow::process_due_wanted_items_with_blocked_facets(&app, &[]).await;
+
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &[release_title.to_string()]
+    );
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].title_id, title.id);
+    assert_eq!(submissions[0].source_title.as_deref(), Some(release_title));
+    assert_eq!(
+        submissions[0].scope,
+        SubmissionScope::Episode {
+            episode_id: episode.id.clone()
+        }
+    );
+
+    let decisions = wanted_items.release_decisions.lock().await.clone();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].wanted_item_id, wanted_id);
+    assert_eq!(decisions[0].release_title, release_title);
+    assert_eq!(decisions[0].decision_code, "eligible");
+}
+
+#[tokio::test]
 async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -19900,8 +20211,6 @@ async fn monitoring_interstitial_collection_reconciles_stale_episode_wanted_item
             overview: None,
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,
@@ -21085,7 +21394,6 @@ async fn anime_hybrid_movie_mapping_creates_interstitial_collection() {
                     content_status: "Released".into(),
                     overview: "A train mission.".into(),
                     poster_url: "https://example.com/mugen-train.jpg".into(),
-                    banner_url: None,
                     background_url: None,
                     language: "eng".into(),
                     runtime_minutes: 117,

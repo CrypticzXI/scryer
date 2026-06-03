@@ -8,10 +8,10 @@ use async_trait::async_trait;
 use aws_lc_rs::digest;
 use reqwest::Client;
 use scryer_application::{
-    AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult, BulkMetadataResult,
-    EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
-    MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesMetadata,
-    SettingsRepository,
+    AnimeEpisodeMapping, AnimeMapping, AnimeMovie, AppError, AppResult, BulkArtworkUrlResult,
+    BulkMetadataResult, EpisodeArtworkUrls, EpisodeMetadata, MetadataGateway, MetadataSearchItem,
+    MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem,
+    SeasonMetadata, SeriesArtworkUrls, SeriesMetadata, SettingsRepository, TitleArtworkUrls,
 };
 use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, OutboundRequestError, RateLimitRegistry, RequestPolicy,
@@ -1417,6 +1417,55 @@ fn build_bulk_metadata_alias_requests(
         .collect()
 }
 
+fn merge_bulk_artwork_url_partial(
+    data: &serde_json::Value,
+    movies: &mut HashMap<i64, TitleArtworkUrls>,
+    series: &mut HashMap<i64, SeriesArtworkUrls>,
+) {
+    let Some(obj) = data.as_object() else {
+        return;
+    };
+
+    for (alias, value) in obj {
+        if value.is_null() {
+            continue;
+        }
+        if alias.starts_with('m') {
+            if let Ok(movie_result) = serde_json::from_value::<ArtworkMovieResult>(value.clone()) {
+                let movie = movie_result.movie;
+                movies.insert(
+                    movie.tvdb_id,
+                    TitleArtworkUrls {
+                        poster_url: normalize_optional_artwork_url(Some(movie.poster_url)),
+                        background_url: pick_artwork_url(&movie.artworks, "background"),
+                    },
+                );
+            }
+        } else if alias.starts_with('s')
+            && let Ok(series_result) = serde_json::from_value::<ArtworkSeriesResult>(value.clone())
+        {
+            let item = series_result.series;
+            series.insert(
+                item.tvdb_id,
+                SeriesArtworkUrls {
+                    poster_url: normalize_optional_artwork_url(Some(item.poster_url)),
+                    background_url: pick_artwork_url(&item.artworks, "background"),
+                    episodes: item
+                        .episodes
+                        .into_iter()
+                        .map(|episode| EpisodeArtworkUrls {
+                            tvdb_id: episode.tvdb_id,
+                            season_number: episode.season_number,
+                            episode_number: episode.episode_number,
+                            image_url: normalize_optional_artwork_url(episode.image_url),
+                        })
+                        .collect(),
+                },
+            );
+        }
+    }
+}
+
 fn merge_bulk_metadata_partial(
     data: &serde_json::Value,
     movies: &mut HashMap<i64, MovieMetadata>,
@@ -1443,7 +1492,6 @@ fn merge_bulk_metadata_partial(
                         content_status: m.status,
                         overview: m.overview,
                         poster_url: normalize_artwork_url(&m.poster_url),
-                        banner_url: pick_artwork_url(&m.artworks, "banner"),
                         background_url: pick_artwork_url(&m.artworks, "background"),
                         language: m.language,
                         runtime_minutes: m.runtime_minutes,
@@ -1474,7 +1522,6 @@ fn merge_bulk_metadata_partial(
                     network: s.network,
                     runtime_minutes: s.runtime_minutes,
                     poster_url: normalize_artwork_url(&s.poster_url),
-                    banner_url: pick_artwork_url(&s.artworks, "banner"),
                     background_url: pick_artwork_url(&s.artworks, "background"),
                     country: s.country,
                     genres: s.genres,
@@ -1612,12 +1659,30 @@ fn build_bulk_mixed_query(movie_ids: &[i64], series_ids: &[i64], language: &str)
     q
 }
 
+fn build_bulk_artwork_url_query(movie_ids: &[i64], series_ids: &[i64], language: &str) -> String {
+    let mut q = String::from("query {\n");
+    for (i, &id) in movie_ids.iter().enumerate() {
+        let _ = writeln!(
+            q,
+            "  m{i}: movie(tvdbId: {id}, language: \"{language}\") {{ movie {{ tvdb_id poster_url artworks {{ kind url }} }} }}"
+        );
+    }
+    for (i, &id) in series_ids.iter().enumerate() {
+        let _ = writeln!(
+            q,
+            "  s{i}: series(id: \"{id}\", includeEpisodes: true, language: \"{language}\") {{ series {{ tvdb_id poster_url artworks {{ kind url }} episodes {{ tvdb_id season_number episode_number image_url }} }} }}"
+        );
+    }
+    q.push_str("}\n");
+    q
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_mixed_query,
-        build_search_tvdb_batch_query, compatibility_poll_phase, enrollment_retry_delay,
-        next_version_compatibility_poll_delay_at, normalize_artwork_url,
+        MetadataSearchQuery, SearchTvdbBatchResult, build_bulk_artwork_url_query,
+        build_bulk_mixed_query, build_search_tvdb_batch_query, compatibility_poll_phase,
+        enrollment_retry_delay, next_version_compatibility_poll_delay_at, normalize_artwork_url,
         normalize_optional_artwork_url, parse_version_compatibility_success,
         validate_search_tvdb_batch_echo,
     };
@@ -1636,6 +1701,19 @@ mod tests {
         assert!(query.contains("fragment SeriesFields on TvdbSeries"));
         assert!(query.contains("tagged_aliases"));
         assert!(query.contains("language"));
+    }
+
+    #[test]
+    fn bulk_artwork_url_query_uses_narrow_projection() {
+        let query = build_bulk_artwork_url_query(&[11], &[22], "eng");
+
+        assert!(query.contains("movie(tvdbId: 11"));
+        assert!(query.contains("series(id: \"22\""));
+        assert!(query.contains("tvdb_id poster_url artworks { kind url }"));
+        assert!(query.contains("episodes { tvdb_id season_number episode_number image_url }"));
+        assert!(!query.contains("...MovieFields"));
+        assert!(!query.contains("...SeriesFields"));
+        assert!(!query.contains("tagged_aliases"));
     }
 
     #[test]
@@ -2000,6 +2078,19 @@ struct SearchTvdbMultiResult {
 // --- Movie types ---
 
 #[derive(Deserialize)]
+struct ArtworkMovieResult {
+    movie: ArtworkTitleItem,
+}
+
+#[derive(Deserialize)]
+struct ArtworkTitleItem {
+    tvdb_id: i64,
+    poster_url: String,
+    #[serde(default)]
+    artworks: Vec<ArtworkItem>,
+}
+
+#[derive(Deserialize)]
 struct MovieResponse {
     movie: MovieResult,
 }
@@ -2123,6 +2214,30 @@ fn normalize_artwork_url(url: &str) -> String {
 }
 
 // --- Series types ---
+
+#[derive(Deserialize)]
+struct ArtworkSeriesResult {
+    series: ArtworkSeriesItem,
+}
+
+#[derive(Deserialize)]
+struct ArtworkSeriesItem {
+    tvdb_id: i64,
+    poster_url: String,
+    #[serde(default)]
+    artworks: Vec<ArtworkItem>,
+    #[serde(default)]
+    episodes: Vec<ArtworkEpisodeItem>,
+}
+
+#[derive(Deserialize)]
+struct ArtworkEpisodeItem {
+    tvdb_id: i64,
+    season_number: i32,
+    episode_number: i32,
+    #[serde(default)]
+    image_url: Option<String>,
+}
 
 #[derive(Deserialize)]
 struct SeriesResponse {
@@ -2473,7 +2588,6 @@ impl MetadataGateway for MetadataGatewayClient {
             content_status: m.status,
             overview: m.overview,
             poster_url: normalize_artwork_url(&m.poster_url),
-            banner_url: pick_artwork_url(&m.artworks, "banner"),
             background_url: pick_artwork_url(&m.artworks, "background"),
             language: m.language,
             runtime_minutes: m.runtime_minutes,
@@ -2510,7 +2624,6 @@ impl MetadataGateway for MetadataGatewayClient {
             network: s.network,
             runtime_minutes: s.runtime_minutes,
             poster_url: normalize_artwork_url(&s.poster_url),
-            banner_url: pick_artwork_url(&s.artworks, "banner"),
             background_url: pick_artwork_url(&s.artworks, "background"),
             country: s.country,
             genres: s.genres,
@@ -2673,5 +2786,63 @@ impl MetadataGateway for MetadataGatewayClient {
             "bulk metadata complete"
         );
         Ok(BulkMetadataResult { movies, series })
+    }
+
+    async fn get_artwork_urls_bulk(
+        &self,
+        movie_tvdb_ids: &[i64],
+        series_tvdb_ids: &[i64],
+        language: &str,
+    ) -> AppResult<BulkArtworkUrlResult> {
+        if movie_tvdb_ids.is_empty() && series_tvdb_ids.is_empty() {
+            return Ok(BulkArtworkUrlResult::default());
+        }
+
+        let unique_movies: Vec<i64> = movie_tvdb_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let unique_series: Vec<i64> = series_tvdb_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let request_started_at = Instant::now();
+        debug!(
+            movies = unique_movies.len(),
+            series = unique_series.len(),
+            "bulk artwork url request"
+        );
+
+        let mut movies = HashMap::new();
+        let mut series = HashMap::new();
+        let bulk_requests = build_bulk_metadata_alias_requests(&unique_movies, &unique_series);
+        for chunk in bulk_requests.chunks(METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH) {
+            let mut chunk_movie_ids = Vec::new();
+            let mut chunk_series_ids = Vec::new();
+            for request in chunk {
+                match request {
+                    BulkMetadataAliasRequest::Movie(tvdb_id) => chunk_movie_ids.push(*tvdb_id),
+                    BulkMetadataAliasRequest::Series(tvdb_id) => chunk_series_ids.push(*tvdb_id),
+                }
+            }
+
+            let query = build_bulk_artwork_url_query(&chunk_movie_ids, &chunk_series_ids, language);
+            let data = self.post_batched_graphql_partial(&query).await?;
+            merge_bulk_artwork_url_partial(&data, &mut movies, &mut series);
+        }
+
+        debug!(
+            movies_resolved = movies.len(),
+            series_resolved = series.len(),
+            elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+            "bulk artwork url request complete"
+        );
+
+        Ok(BulkArtworkUrlResult { movies, series })
     }
 }

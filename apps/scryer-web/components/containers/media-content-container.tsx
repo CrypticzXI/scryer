@@ -122,7 +122,6 @@ function mergePreferLoadedImageFields(
   incoming: TitleRecord,
 ): TitleRecord {
   const incomingHasPoster = Boolean(incoming.posterUrl || incoming.posterSourceUrl);
-  const incomingHasBanner = Boolean(incoming.bannerUrl || incoming.bannerSourceUrl);
   const incomingHasBackground = Boolean(
     incoming.backgroundUrl || incoming.backgroundSourceUrl,
   );
@@ -133,10 +132,6 @@ function mergePreferLoadedImageFields(
     posterSourceUrl: incomingHasPoster
       ? incoming.posterSourceUrl
       : (current.posterSourceUrl ?? null),
-    bannerUrl: incomingHasBanner ? incoming.bannerUrl : (current.bannerUrl ?? null),
-    bannerSourceUrl: incomingHasBanner
-      ? incoming.bannerSourceUrl
-      : (current.bannerSourceUrl ?? null),
     backgroundUrl: incomingHasBackground
       ? incoming.backgroundUrl
       : (current.backgroundUrl ?? null),

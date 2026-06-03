@@ -7,14 +7,14 @@ use scryer_application::{TitleImageKind, TitleImageStorageMode, TitleImageVarian
 fn preferred_local_route_key_for_kind(kind: TitleImageKind) -> &'static str {
     match kind {
         TitleImageKind::Poster => "w500",
-        TitleImageKind::Banner | TitleImageKind::Fanart => "master",
+        TitleImageKind::Fanart => "w1280",
     }
 }
 
 pub(crate) fn required_persisted_variant_for_kind(kind: TitleImageKind) -> Option<&'static str> {
     match kind {
         TitleImageKind::Poster => Some("w500"),
-        TitleImageKind::Banner | TitleImageKind::Fanart => None,
+        TitleImageKind::Fanart => Some("w1280"),
     }
 }
 
@@ -27,22 +27,17 @@ pub(crate) fn materialize_local_title_image_path(
 ) -> String {
     let (variant_key, version_hash) = match storage_mode {
         TitleImageStorageMode::Original => ("original", master_sha256),
-        TitleImageStorageMode::AvifMaster => match kind {
-            TitleImageKind::Poster => {
-                let preferred_variant = preferred_local_route_key_for_kind(kind);
-                if let Some(variant) = variants
-                    .iter()
-                    .find(|variant| variant.variant_key == preferred_variant)
-                {
-                    (preferred_variant, variant.sha256.as_str())
-                } else {
-                    ("original", master_sha256)
-                }
+        TitleImageStorageMode::AvifMaster => {
+            let preferred_variant = preferred_local_route_key_for_kind(kind);
+            if let Some(variant) = variants
+                .iter()
+                .find(|variant| variant.variant_key == preferred_variant)
+            {
+                (preferred_variant, variant.sha256.as_str())
+            } else {
+                ("original", master_sha256)
             }
-            TitleImageKind::Banner | TitleImageKind::Fanart => {
-                (preferred_local_route_key_for_kind(kind), master_sha256)
-            }
-        },
+        }
     };
 
     synthesize_local_title_image_url("", title_id, kind, variant_key, version_hash)

@@ -33,8 +33,6 @@ export type TitleRecord = {
   contentStatus?: string | null;
   posterUrl?: string | null;
   posterSourceUrl?: string | null;
-  bannerUrl?: string | null;
-  bannerSourceUrl?: string | null;
   backgroundUrl?: string | null;
   backgroundSourceUrl?: string | null;
   runtimeMinutes?: number | null;

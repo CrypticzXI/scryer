@@ -1514,8 +1514,6 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
         overview: Some("overview".to_string()),
         poster_url: poster_url.map(str::to_string),
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,
@@ -3817,9 +3815,9 @@ async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
 }
 
 #[tokio::test]
-async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
+async fn fanart_queries_use_w1280_variant_when_present() {
     let db = std::env::temp_dir().join(format!(
-        "scryer_title_banner_fanart_alias_{}.db",
+        "scryer_title_fanart_w1280_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
@@ -3828,41 +3826,18 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let title = make_test_title("title-banner-fanart", None);
+    let title = make_test_title("title-fanart-w1280", None);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    sqlx::query("UPDATE titles SET banner_url = ?, background_url = ? WHERE id = ?")
-        .bind("https://tvdb.example/banner.jpg")
+    sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
         .bind("https://tvdb.example/fanart.jpg")
         .bind(&title.id)
         .execute(&services.pool)
         .await
         .expect("source urls should update");
 
-    title_images
-        .replace_title_image(
-            &title.id,
-            TitleImageReplacement {
-                kind: TitleImageKind::Banner,
-                source_url: "https://tvdb.example/banner.jpg".to_string(),
-                source_etag: None,
-                source_last_modified: None,
-                source_format: "jpeg".to_string(),
-                source_width: 1920,
-                source_height: 1080,
-                storage_mode: TitleImageStorageMode::AvifMaster,
-                master_format: "avif".to_string(),
-                master_sha256: "11111111111111111111111111111111".to_string(),
-                master_width: 1920,
-                master_height: 1080,
-                master_bytes: vec![1, 2, 3, 4],
-                variants: Vec::new(),
-            },
-        )
-        .await
-        .expect("banner image should insert");
     title_images
         .replace_title_image(
             &title.id,
@@ -3880,7 +3855,14 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
                 master_width: 2560,
                 master_height: 1440,
                 master_bytes: vec![5, 6, 7, 8],
-                variants: Vec::new(),
+                variants: vec![TitleImageVariantRecord {
+                    variant_key: "w1280".to_string(),
+                    format: "avif".to_string(),
+                    width: 1280,
+                    height: 720,
+                    bytes: vec![9, 10, 11],
+                    sha256: "33333333333333333333333333333333".to_string(),
+                }],
             },
         )
         .await
@@ -3891,32 +3873,24 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
         .expect("title lookup should succeed")
         .expect("title should exist");
     assert_eq!(
-        updated.banner_url.as_deref(),
-        Some("/images/titles/title-banner-fanart/banner/master?v=1111111111111111")
-    );
-    assert_eq!(
-        updated.banner_source_url.as_deref(),
-        Some("https://tvdb.example/banner.jpg")
-    );
-    assert_eq!(
         updated.background_url.as_deref(),
-        Some("/images/titles/title-banner-fanart/fanart/master?v=2222222222222222")
+        Some("/images/titles/title-fanart-w1280/fanart/w1280?v=3333333333333333")
     );
     assert_eq!(
         updated.background_source_url.as_deref(),
         Some("https://tvdb.example/fanart.jpg")
     );
 
-    let banner = title_images
-        .get_title_image_blob(&title.id, TitleImageKind::Banner, "master")
+    let fanart_variant = title_images
+        .get_title_image_blob(&title.id, TitleImageKind::Fanart, "w1280")
         .await
-        .expect("banner blob lookup should succeed");
+        .expect("fanart variant blob lookup should succeed");
     assert_eq!(
-        banner,
+        fanart_variant,
         Some(TitleImageBlob {
             content_type: "image/avif".to_string(),
-            etag: "11111111111111111111111111111111".to_string(),
-            bytes: vec![1, 2, 3, 4],
+            etag: "33333333333333333333333333333333".to_string(),
+            bytes: vec![9, 10, 11],
         })
     );
 
@@ -3937,10 +3911,9 @@ async fn banner_and_fanart_queries_use_master_alias_without_variant_rows() {
 }
 
 #[tokio::test]
-async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_master_variant_rows()
-{
+async fn list_titles_requiring_image_refresh_requires_fanart_w1280_variant() {
     let db = std::env::temp_dir().join(format!(
-        "scryer_title_banner_fanart_refresh_{}.db",
+        "scryer_title_fanart_refresh_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
@@ -3949,60 +3922,79 @@ async fn list_titles_requiring_image_refresh_does_not_require_banner_or_fanart_m
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let title = make_test_title("title-banner-fanart-refresh", None);
+    let title = make_test_title("title-fanart-refresh", None);
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
-    sqlx::query("UPDATE titles SET banner_url = ?, background_url = ? WHERE id = ?")
-        .bind("https://tvdb.example/banner-refresh.jpg")
+    sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
         .bind("https://tvdb.example/fanart-refresh.jpg")
         .bind(&title.id)
         .execute(&services.pool)
         .await
         .expect("source urls should update");
 
-    for (kind, source_url, sha) in [
-        (
-            TitleImageKind::Banner,
-            "https://tvdb.example/banner-refresh.jpg",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        ),
-        (
-            TitleImageKind::Fanart,
-            "https://tvdb.example/fanart-refresh.jpg",
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        ),
-    ] {
-        title_images
-            .replace_title_image(
-                &title.id,
-                TitleImageReplacement {
-                    kind,
-                    source_url: source_url.to_string(),
-                    source_etag: None,
-                    source_last_modified: None,
-                    source_format: "jpeg".to_string(),
-                    source_width: 1920,
-                    source_height: 1080,
-                    storage_mode: TitleImageStorageMode::AvifMaster,
-                    master_format: "avif".to_string(),
-                    master_sha256: sha.to_string(),
-                    master_width: 1920,
-                    master_height: 1080,
-                    master_bytes: vec![1, 2, 3],
-                    variants: Vec::new(),
-                },
-            )
-            .await
-            .expect("title image should insert");
-    }
-
-    let pending_banner = title_images
-        .list_titles_requiring_image_refresh(TitleImageKind::Banner, 10)
+    title_images
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Fanart,
+                source_url: "https://tvdb.example/fanart-refresh.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1920,
+                source_height: 1080,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                master_width: 1920,
+                master_height: 1080,
+                master_bytes: vec![1, 2, 3],
+                variants: Vec::new(),
+            },
+        )
         .await
-        .expect("list pending banner refresh should succeed");
-    assert!(pending_banner.is_empty());
+        .expect("fanart image should insert");
+
+    let pending_fanart = title_images
+        .list_titles_requiring_image_refresh(TitleImageKind::Fanart, 10)
+        .await
+        .expect("list pending fanart refresh should succeed");
+    assert!(
+        pending_fanart.iter().any(|task| task.title_id == title.id),
+        "fanart without w1280 should be re-queued for processing"
+    );
+
+    title_images
+        .replace_title_image(
+            &title.id,
+            TitleImageReplacement {
+                kind: TitleImageKind::Fanart,
+                source_url: "https://tvdb.example/fanart-refresh.jpg".to_string(),
+                source_etag: None,
+                source_last_modified: None,
+                source_format: "jpeg".to_string(),
+                source_width: 1920,
+                source_height: 1080,
+                storage_mode: TitleImageStorageMode::AvifMaster,
+                master_format: "avif".to_string(),
+                master_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                master_width: 1920,
+                master_height: 1080,
+                master_bytes: vec![1, 2, 3],
+                variants: vec![TitleImageVariantRecord {
+                    variant_key: "w1280".to_string(),
+                    format: "avif".to_string(),
+                    width: 1280,
+                    height: 720,
+                    bytes: vec![4, 5, 6],
+                    sha256: "cccccccccccccccccccccccccccccccc".to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("fanart image with w1280 should insert");
 
     let pending_fanart = title_images
         .list_titles_requiring_image_refresh(TitleImageKind::Fanart, 10)
@@ -4231,209 +4223,6 @@ async fn clear_title_image_cache_repairs_polluted_urls_and_clears_db_cache() {
         .expect("variant count should load");
     assert_eq!(image_count, 0);
     assert_eq!(variant_count, 0);
-
-    let _ = std::fs::remove_file(db);
-}
-
-#[tokio::test]
-async fn title_image_master_dedup_migration_rewrites_paths_and_deletes_banner_fanart_variants() {
-    let db = std::env::temp_dir().join(format!(
-        "scryer_title_image_master_dedup_{}.db",
-        chrono::Utc::now().timestamp_micros()
-    ));
-    let services = SqliteServices::new(db.to_string_lossy())
-        .await
-        .expect("db should initialize");
-    let catalog = title_store(&services);
-    let title_images = title_image_store(&services);
-
-    let title = make_test_title("title-master-dedup", None);
-    TitleRepository::create(&catalog, title.clone())
-        .await
-        .expect("title should insert");
-
-    sqlx::query(
-        "UPDATE titles SET
-            banner_url = ?,
-            background_url = ?,
-            banner_local_path = ?,
-            background_local_path = ?
-         WHERE id = ?",
-    )
-    .bind("https://tvdb.example/banner-master.jpg")
-    .bind("https://tvdb.example/fanart-master.jpg")
-    .bind("/images/titles/title-master-dedup/banner/master?v=bbbbbbbbbbbbbbbb")
-    .bind("/images/titles/title-master-dedup/fanart/master?v=dddddddddddddddd")
-    .bind(&title.id)
-    .execute(&services.pool)
-    .await
-    .expect("title source and legacy local paths should update");
-
-    sqlx::query(
-        "INSERT INTO title_images (
-            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-            source_last_modified, source_format, source_width, source_height, storage_mode,
-            master_path, master_format, master_sha256, master_width, master_height, bytes,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("img-banner-master")
-    .bind(&title.id)
-    .bind("tvdb")
-    .bind(Option::<String>::None)
-    .bind("banner")
-    .bind("https://tvdb.example/banner-master.jpg")
-    .bind(Option::<String>::None)
-    .bind(Option::<String>::None)
-    .bind("jpeg")
-    .bind(1920i32)
-    .bind(1080i32)
-    .bind("avif_master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    .bind(1920i32)
-    .bind(1080i32)
-    .bind(vec![1_u8, 2, 3, 4])
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("banner image row should insert");
-
-    sqlx::query(
-        "INSERT INTO title_images (
-            id, title_id, provider, provider_image_id, kind, source_url, source_etag,
-            source_last_modified, source_format, source_width, source_height, storage_mode,
-            master_path, master_format, master_sha256, master_width, master_height, bytes,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("img-fanart-master")
-    .bind(&title.id)
-    .bind("tvdb")
-    .bind(Option::<String>::None)
-    .bind("fanart")
-    .bind("https://tvdb.example/fanart-master.jpg")
-    .bind(Option::<String>::None)
-    .bind(Option::<String>::None)
-    .bind("jpeg")
-    .bind(2560i32)
-    .bind(1440i32)
-    .bind("avif_master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind("cccccccccccccccccccccccccccccccc")
-    .bind(2560i32)
-    .bind(1440i32)
-    .bind(vec![5_u8, 6, 7, 8])
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("fanart image row should insert");
-
-    sqlx::query(
-        "INSERT INTO title_image_variants (
-            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("variant-banner-master")
-    .bind("img-banner-master")
-    .bind("master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind(1920i32)
-    .bind(1080i32)
-    .bind(vec![9_u8, 9, 9])
-    .bind("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("banner master variant row should insert");
-
-    sqlx::query(
-        "INSERT INTO title_image_variants (
-            id, title_image_id, variant_key, path, format, width, height, bytes, sha256, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("variant-fanart-master")
-    .bind("img-fanart-master")
-    .bind("master")
-    .bind(Option::<String>::None)
-    .bind("avif")
-    .bind(2560i32)
-    .bind(1440i32)
-    .bind(vec![8_u8, 8, 8])
-    .bind("dddddddddddddddddddddddddddddddd")
-    .bind(Utc::now().to_rfc3339())
-    .bind(Utc::now().to_rfc3339())
-    .execute(&services.pool)
-    .await
-    .expect("fanart master variant row should insert");
-
-    run_embedded_migration(
-        &services.pool,
-        include_str!("../../scryer/src/db/migrations/0081_title_image_master_dedup.sql"),
-    )
-    .await;
-
-    let paths =
-        sqlx::query("SELECT banner_local_path, background_local_path FROM titles WHERE id = ?")
-            .bind(&title.id)
-            .fetch_one(&services.pool)
-            .await
-            .expect("load migrated local paths");
-    let banner_local_path: Option<String> = paths.try_get("banner_local_path").unwrap_or(None);
-    let background_local_path: Option<String> =
-        paths.try_get("background_local_path").unwrap_or(None);
-    assert_eq!(
-        banner_local_path.as_deref(),
-        Some("/images/titles/title-master-dedup/banner/master?v=aaaaaaaaaaaaaaaa")
-    );
-    assert_eq!(
-        background_local_path.as_deref(),
-        Some("/images/titles/title-master-dedup/fanart/master?v=cccccccccccccccc")
-    );
-
-    let remaining_master_variants: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)
-         FROM title_image_variants tiv
-         INNER JOIN title_images ti ON ti.id = tiv.title_image_id
-         WHERE tiv.variant_key = 'master'
-           AND ti.kind IN ('banner', 'fanart')",
-    )
-    .fetch_one(&services.pool)
-    .await
-    .expect("count remaining master variants");
-    assert_eq!(remaining_master_variants, 0);
-
-    let banner = title_images
-        .get_title_image_blob(&title.id, TitleImageKind::Banner, "master")
-        .await
-        .expect("banner blob lookup should succeed after migration");
-    assert_eq!(
-        banner,
-        Some(TitleImageBlob {
-            content_type: "image/avif".to_string(),
-            etag: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-            bytes: vec![1, 2, 3, 4],
-        })
-    );
-
-    let fanart = title_images
-        .get_title_image_blob(&title.id, TitleImageKind::Fanart, "master")
-        .await
-        .expect("fanart blob lookup should succeed after migration");
-    assert_eq!(
-        fanart,
-        Some(TitleImageBlob {
-            content_type: "image/avif".to_string(),
-            etag: "cccccccccccccccccccccccccccccccc".to_string(),
-            bytes: vec![5, 6, 7, 8],
-        })
-    );
 
     let _ = std::fs::remove_file(db);
 }
@@ -5130,7 +4919,12 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
         .expect("wanted item should reset for scored completion");
 
     workflow
-        .complete_wanted_item_for_title("title-series", None, Some("2026-04-20T01:00:00Z"), Some(720))
+        .complete_wanted_item_for_title(
+            "title-series",
+            None,
+            Some("2026-04-20T01:00:00Z"),
+            Some(720),
+        )
         .await
         .expect("scored completion should succeed");
 
@@ -6698,8 +6492,6 @@ async fn sqlite_show_queries_roundtrip() {
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,

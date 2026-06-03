@@ -266,6 +266,7 @@ impl IntoApplication<AppJobKey> for JobKeyValue {
             Self::WantedSync => AppJobKey::WantedSync,
             Self::PendingReleaseProcessing => AppJobKey::PendingReleaseProcessing,
             Self::StagedNzbPrune => AppJobKey::StagedNzbPrune,
+            Self::TitleImageCacheRefresh => AppJobKey::TitleImageCacheRefresh,
         }
     }
 }
@@ -290,6 +291,7 @@ impl FromApplication<AppJobKey> for JobKeyValue {
             AppJobKey::WantedSync => Self::WantedSync,
             AppJobKey::PendingReleaseProcessing => Self::PendingReleaseProcessing,
             AppJobKey::StagedNzbPrune => Self::StagedNzbPrune,
+            AppJobKey::TitleImageCacheRefresh => Self::TitleImageCacheRefresh,
         }
     }
 }

@@ -157,8 +157,6 @@ async fn seed_series_title(
         overview: None,
         poster_url: None,
         poster_source_url: None,
-        banner_url: None,
-        banner_source_url: None,
         background_url: None,
         background_source_url: None,
         sort_title: None,

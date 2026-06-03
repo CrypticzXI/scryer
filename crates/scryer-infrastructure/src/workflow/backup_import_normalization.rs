@@ -182,7 +182,6 @@ fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
         "year",
         "overview",
         "poster_url",
-        "banner_url",
         "background_url",
         "sort_title",
         "slug",

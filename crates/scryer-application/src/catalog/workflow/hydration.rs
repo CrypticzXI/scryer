@@ -110,8 +110,6 @@ impl AppUseCase {
             overview: request.overview,
             poster_url: request.poster_url,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: request.sort_title,
@@ -495,13 +493,6 @@ impl AppUseCase {
             self.runtime.catalog.poster_wake.notify_one();
         }
         if title
-            .banner_url
-            .as_ref()
-            .is_some_and(|value| !value.trim().is_empty())
-        {
-            self.runtime.catalog.banner_wake.notify_one();
-        }
-        if title
             .background_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
@@ -514,18 +505,38 @@ impl AppUseCase {
 }
 impl AppUseCase {
     pub async fn hydrate_all_titles_for_current_language(&self) -> AppResult<u32> {
-        let titles = self.services.catalog.titles.list(None, None).await?;
-        let refreshed = titles.len() as u32;
-        let targets = titles
-            .into_iter()
-            .map(|title| HydrationTarget {
-                title,
-                requested_tvdb_id: None,
-                sync_wanted_after_completion: false,
-                source: HydrationSource::Maintenance,
-            })
-            .collect::<Vec<_>>();
-        let _ = self.hydrate_titles_bulk(targets).await?;
+        const HYDRATE_ALL_TITLES_BATCH_SIZE: usize = 100;
+
+        let mut refreshed = 0_u32;
+        let mut after_id = None;
+        loop {
+            let titles = self
+                .services
+                .catalog
+                .titles
+                .list_page_after_id(after_id.clone(), HYDRATE_ALL_TITLES_BATCH_SIZE)
+                .await?;
+            if titles.is_empty() {
+                break;
+            }
+            after_id = titles.last().map(|title| title.id.clone());
+            refreshed += titles.len() as u32;
+            let targets = titles
+                .into_iter()
+                .map(|title| HydrationTarget {
+                    title,
+                    requested_tvdb_id: None,
+                    sync_wanted_after_completion: false,
+                    source: HydrationSource::Maintenance,
+                })
+                .collect::<Vec<_>>();
+            let _ = self.hydrate_titles_bulk(targets).await?;
+            info!(
+                refreshed_titles = refreshed,
+                batch_size = HYDRATE_ALL_TITLES_BATCH_SIZE,
+                "metadata rehydration processed title batch"
+            );
+        }
         Ok(refreshed)
     }
 }

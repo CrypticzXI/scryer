@@ -1833,8 +1833,6 @@ pub struct PluginNotificationTitle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub banner_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poster_url: Option<String>,
@@ -3152,7 +3150,6 @@ mod tests {
                 path: Some("/library/Example Show".to_string()),
                 overview: Some("Overview".to_string()),
                 sort_title: Some("Example Show".to_string()),
-                banner_url: None,
                 background_url: None,
                 poster_url: Some("https://example.invalid/poster.jpg".to_string()),
                 genres: vec!["Drama".to_string()],

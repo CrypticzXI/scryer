@@ -70,7 +70,6 @@ impl NotificationClient for WasmNotificationClient {
                 path: title.path.clone(),
                 overview: title.overview.clone(),
                 sort_title: title.sort_title.clone(),
-                banner_url: title.banner_url.clone(),
                 background_url: title.background_url.clone(),
                 poster_url: title.poster_url.clone(),
                 genres: title.genres.clone(),

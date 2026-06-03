@@ -889,13 +889,24 @@ async fn process_single_wanted_item(
             .as_ref()
             .map(|d| d.allowed)
             .unwrap_or(false);
+        let decision_code = if is_allowed {
+            effective_auto_decision_code(candidate, &failed_source_kinds)
+        } else {
+            ReleaseAutoDecisionCode::QualityBlocked
+        };
         if !is_allowed {
+            record_release_decision(app, item, &title, candidate, decision_code, now).await;
+            app.emit_acquisition_candidate_rejected_event(
+                None,
+                &title,
+                candidate.title.clone(),
+                decision_code.as_str().to_string(),
+            )
+            .await;
             continue;
         }
 
         had_quality_allowed_candidate = true;
-
-        let decision_code = effective_auto_decision_code(candidate, &failed_source_kinds);
 
         let candidate_score = candidate
             .quality_profile_decision

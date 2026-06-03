@@ -93,7 +93,6 @@ impl TitleImageRepository for TitleImageStore {
 fn build_refresh_sql(kind: TitleImageKind, limit: usize) -> (String, Vec<SqlArg>) {
     let source_col = match kind {
         TitleImageKind::Poster => "poster_url",
-        TitleImageKind::Banner => "banner_url",
         TitleImageKind::Fanart => "background_url",
     };
     let required_variant = crate::title_images::required_persisted_variant_for_kind(kind);
@@ -173,11 +172,7 @@ async fn fetch_refresh_tasks(
 }
 
 async fn clear_title_image_cache_tx(tx: &mut SqlTx<'_>) -> AppResult<()> {
-    for kind in [
-        TitleImageKind::Poster,
-        TitleImageKind::Banner,
-        TitleImageKind::Fanart,
-    ] {
+    for kind in [TitleImageKind::Poster, TitleImageKind::Fanart] {
         repair_local_title_image_source_tx(tx, kind).await?;
         clear_unrecoverable_local_title_image_source_tx(tx, kind).await?;
     }
@@ -188,10 +183,8 @@ async fn clear_title_image_cache_tx(tx: &mut SqlTx<'_>) -> AppResult<()> {
         SqlExec::Tx(tx),
         "UPDATE titles
             SET poster_local_path = NULL,
-                banner_local_path = NULL,
                 background_local_path = NULL
           WHERE poster_local_path IS NOT NULL
-             OR banner_local_path IS NOT NULL
              OR background_local_path IS NOT NULL",
         &[],
     )
@@ -203,7 +196,6 @@ async fn clear_title_image_cache_tx(tx: &mut SqlTx<'_>) -> AppResult<()> {
 fn title_image_source_columns(kind: TitleImageKind) -> (&'static str, &'static str) {
     match kind {
         TitleImageKind::Poster => ("poster_url", "poster_local_path"),
-        TitleImageKind::Banner => ("banner_url", "banner_local_path"),
         TitleImageKind::Fanart => ("background_url", "background_local_path"),
     }
 }
@@ -327,7 +319,6 @@ async fn replace_title_image_tx(
     );
     let local_path_column = match replacement.kind {
         TitleImageKind::Poster => "poster_local_path",
-        TitleImageKind::Banner => "banner_local_path",
         TitleImageKind::Fanart => "background_local_path",
     };
     let update_title_sql = format!("UPDATE titles SET {local_path_column} = {{}} WHERE id = {{}}");
@@ -498,8 +489,7 @@ async fn fetch_title_image_blob(
     variant_key: &str,
 ) -> AppResult<Option<TitleImageBlob>> {
     if variant_key == "original"
-        || (variant_key == "master"
-            && matches!(kind, TitleImageKind::Banner | TitleImageKind::Fanart))
+        || (variant_key == "master" && matches!(kind, TitleImageKind::Fanart))
     {
         return fetch_optional_blob(
             exec,

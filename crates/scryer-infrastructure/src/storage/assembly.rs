@@ -2164,8 +2164,6 @@ mod tests {
             overview: Some("Logical backup lattice fixture".to_string()),
             poster_url: Some("https://example.invalid/poster.jpg".to_string()),
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: Some("Backup Lattice Movie".to_string()),

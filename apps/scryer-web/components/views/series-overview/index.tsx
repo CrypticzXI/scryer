@@ -625,7 +625,7 @@ export function SeriesOverviewView({
     );
   }
 
-  const overviewBackdropUrl = title.backgroundUrl ?? title.bannerUrl;
+  const overviewBackdropUrl = title.backgroundUrl;
 
   return (
     <>

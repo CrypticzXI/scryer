@@ -9,6 +9,7 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import {
   catalogSearchTitlesQuery,
   globalSearchInitQuery,
+  globalSearchRequesterInitQuery,
   metadataMovieQuery,
   metadataSeriesQuery,
   requestableLibrariesQuery,
@@ -36,6 +37,11 @@ import {
 import { FACET_REGISTRY, facetById } from "@/lib/facets/registry";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
+import { useAuth } from "@/lib/hooks/use-auth";
+import {
+  hasAnyLibraryPermission,
+  LIBRARY_PERMISSIONS,
+} from "@/lib/utils/permissions";
 
 export type MetadataSearchResults = Record<string, MetadataTvdbSearchItem[]>;
 
@@ -327,6 +333,8 @@ export function useGlobalSearch({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { user } = useAuth();
+  const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
   const [queueFacet, setQueueFacet] = useState<Facet>(initialQueueFacet);
   const catalogChangeSignal = 0;
   const sortByRelevance = useCallback((results: MetadataTvdbSearchItem[], query: string) => {
@@ -464,7 +472,11 @@ export function useGlobalSearch({
       setCatalogConfigLoading(true);
       try {
         const { data, error } = await client
-          .query(globalSearchInitQuery, {}, { requestPolicy: "network-only" })
+          .query(
+            canManageTitle ? globalSearchInitQuery : globalSearchRequesterInitQuery,
+            {},
+            { requestPolicy: "network-only" },
+          )
           .toPromise();
         if (error) throw error;
 
@@ -503,30 +515,32 @@ export function useGlobalSearch({
             : nextOverrides,
         );
 
-        const nextAnimeDefaults: AnimeCatalogDefaults = {
-          monitorSpecials: data.animeSettings?.monitorSpecials ?? false,
-          interSeasonMovies: data.animeSettings?.interSeasonMovies ?? true,
-        };
-        setAnimeCatalogDefaults((previous) =>
-          previous.monitorSpecials === nextAnimeDefaults.monitorSpecials &&
-          previous.interSeasonMovies === nextAnimeDefaults.interSeasonMovies
-            ? previous
-            : nextAnimeDefaults,
-        );
+        if (canManageTitle) {
+          const nextAnimeDefaults: AnimeCatalogDefaults = {
+            monitorSpecials: data.animeSettings?.monitorSpecials ?? false,
+            interSeasonMovies: data.animeSettings?.interSeasonMovies ?? true,
+          };
+          setAnimeCatalogDefaults((previous) =>
+            previous.monitorSpecials === nextAnimeDefaults.monitorSpecials &&
+            previous.interSeasonMovies === nextAnimeDefaults.interSeasonMovies
+              ? previous
+              : nextAnimeDefaults,
+          );
 
-        const nextRootFolders: Record<Facet, RootFolderOption[]> = {
-          movie: data.movieSettings?.rootFolders ?? [],
-          series: data.seriesSettings?.rootFolders ?? [],
-          anime: data.animeSettings?.rootFolders ?? [],
-        };
-        setRootFoldersByFacet((previous) => {
-          const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
-            const prev = previous[f];
-            const next = nextRootFolders[f];
-            return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
+          const nextRootFolders: Record<Facet, RootFolderOption[]> = {
+            movie: data.movieSettings?.rootFolders ?? [],
+            series: data.seriesSettings?.rootFolders ?? [],
+            anime: data.animeSettings?.rootFolders ?? [],
+          };
+          setRootFoldersByFacet((previous) => {
+            const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
+              const prev = previous[f];
+              const next = nextRootFolders[f];
+              return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
+            });
+            return same ? previous : nextRootFolders;
           });
-          return same ? previous : nextRootFolders;
-        });
+        }
 
         const nextLibrariesByFacet = librariesByFacetFromList(
           data.manageableLibraries ?? [],
@@ -570,7 +584,7 @@ export function useGlobalSearch({
 
     catalogConfigRefreshPromiseRef.current = refreshPromise;
     return refreshPromise;
-  }, [client]);
+  }, [canManageTitle, client]);
 
   const ensureCatalogConfigReady = useCallback(
     async (facet: Facet) => {

@@ -419,26 +419,78 @@ pub(crate) fn annotate_auto_decision(
 }
 
 pub(crate) fn serialize_decision_explanation(candidate: &IndexerSearchResult) -> Option<String> {
-    candidate.quality_profile_decision.as_ref().map(|decision| {
-        serde_json::to_string(
-            &decision
+    let quality = candidate.quality_profile_decision.as_ref();
+    let scoring_log = quality
+        .map(|decision| {
+            decision
                 .scoring_log
                 .iter()
                 .map(|entry| serde_json::json!({"code": entry.code, "delta": entry.delta}))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default()
-    })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let parsed = candidate.parsed_release_metadata.as_ref().map(|parsed| {
+        serde_json::json!({
+            "raw_title": parsed.raw_title.as_str(),
+            "normalized_title": parsed.normalized_title.as_str(),
+            "normalized_title_variants": &parsed.normalized_title_variants,
+            "year": parsed.year,
+            "quality": parsed.quality.as_deref(),
+            "source": parsed.source.as_ref().map(|source| format!("{source:?}")),
+            "release_group": parsed.release_group.as_deref(),
+            "disposition": format!("{:?}", parsed.disposition),
+            "parse_family": format!("{:?}", parsed.parse_family),
+            "parse_confidence": parsed.parse_confidence,
+            "is_ambiguous": parsed.is_ambiguous,
+            "parse_hints": &parsed.parse_hints,
+        })
+    });
+    let payload = serde_json::json!({
+        "candidate": {
+            "source": candidate.source.as_str(),
+            "source_kind": candidate.source_kind.map(|kind| kind.as_str()),
+            "guid": candidate.guid.as_deref(),
+            "download_url_present": candidate.download_url.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "link_present": candidate.link.as_deref().is_some_and(|value| !value.trim().is_empty()),
+        },
+        "auto_decision": {
+            "eligible": candidate.auto_eligible,
+            "code": candidate.auto_decision_code.as_deref(),
+            "summary": candidate.auto_decision_summary.as_deref(),
+        },
+        "quality_profile_decision": {
+            "allowed": quality.map(|decision| decision.allowed),
+            "block_codes": quality.map(|decision| &decision.block_codes),
+            "release_score": quality.map(|decision| decision.release_score),
+            "preference_score": quality.map(|decision| decision.preference_score),
+            "scoring_log": scoring_log,
+        },
+        "parsed": parsed,
+    });
+
+    serde_json::to_string(&payload).ok()
 }
 
 pub(crate) fn evaluate_auto_candidate(
     candidate: &IndexerSearchResult,
     context: &AutoCandidateEvaluationContext<'_>,
 ) -> ReleaseAutoDecisionCode {
-    match candidate_parse_state(candidate) {
-        CandidateParseState::Ambiguous => return ReleaseAutoDecisionCode::ParseAmbiguous,
-        CandidateParseState::Unparseable => return ReleaseAutoDecisionCode::ParseUnparseable,
-        CandidateParseState::Parsed => {}
+    let parse_state = candidate_parse_state(candidate);
+    let matches_title = candidate_matches_title_subject(candidate, &context.subject.title_evidence);
+    match parse_state {
+        CandidateParseState::Ambiguous if !matches_title => {
+            return ReleaseAutoDecisionCode::ParseAmbiguous;
+        }
+        CandidateParseState::Unparseable if !matches_title => {
+            return ReleaseAutoDecisionCode::ParseUnparseable;
+        }
+        CandidateParseState::Ambiguous
+        | CandidateParseState::Unparseable
+        | CandidateParseState::Parsed => {}
+    }
+
+    if !matches_title {
+        return ReleaseAutoDecisionCode::TitleMismatch;
     }
 
     let is_allowed = candidate
@@ -448,10 +500,6 @@ pub(crate) fn evaluate_auto_candidate(
         .unwrap_or(false);
     if !is_allowed {
         return ReleaseAutoDecisionCode::QualityBlocked;
-    }
-
-    if !candidate_matches_title_subject(candidate, &context.subject.title_evidence) {
-        return ReleaseAutoDecisionCode::TitleMismatch;
     }
 
     if context.cutoff_reached {
@@ -694,9 +742,7 @@ impl AppUseCase {
             subject_kind: ReleaseSearchSubjectKind::Title,
             current_score: wanted.as_ref().and_then(|item| item.current_score),
             last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
-            grabbed_release: wanted
-                .as_ref()
-                .and_then(grabbed_release_for_search_subject),
+            grabbed_release: wanted.as_ref().and_then(grabbed_release_for_search_subject),
             submission_scope: SubmissionScope::Title,
         })
     }
@@ -812,9 +858,7 @@ impl AppUseCase {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             current_score: wanted.as_ref().and_then(|item| item.current_score),
             last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
-            grabbed_release: wanted
-                .as_ref()
-                .and_then(grabbed_release_for_search_subject),
+            grabbed_release: wanted.as_ref().and_then(grabbed_release_for_search_subject),
             submission_scope: episode_record
                 .as_ref()
                 .map(|episode| SubmissionScope::Episode {
@@ -950,9 +994,7 @@ impl AppUseCase {
                 subject_kind: ReleaseSearchSubjectKind::Title,
                 current_score: wanted.as_ref().and_then(|item| item.current_score),
                 last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
-                grabbed_release: wanted
-                    .as_ref()
-                    .and_then(grabbed_release_for_search_subject),
+                grabbed_release: wanted.as_ref().and_then(grabbed_release_for_search_subject),
                 submission_scope: SubmissionScope::Collection {
                     collection_id: collection.id.clone(),
                 },
@@ -1021,8 +1063,6 @@ mod tests {
             overview: None,
             poster_url: None,
             poster_source_url: None,
-            banner_url: None,
-            banner_source_url: None,
             background_url: None,
             background_source_url: None,
             sort_title: None,

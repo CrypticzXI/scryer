@@ -22,7 +22,6 @@ pub struct TitleMetadataUpdate {
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub poster_url: Option<String>,
-    pub banner_url: Option<String>,
     pub background_url: Option<String>,
     pub sort_title: Option<String>,
     pub slug: Option<String>,
@@ -339,7 +338,6 @@ pub struct DownloadQueueCommandRecord {
 #[serde(rename_all = "snake_case")]
 pub enum TitleImageKind {
     Poster,
-    Banner,
     Fanart,
 }
 
@@ -347,7 +345,6 @@ impl TitleImageKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Poster => "poster",
-            Self::Banner => "banner",
             Self::Fanart => "fanart",
         }
     }
@@ -355,7 +352,6 @@ impl TitleImageKind {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "poster" => Some(Self::Poster),
-            "banner" => Some(Self::Banner),
             "fanart" => Some(Self::Fanart),
             _ => None,
         }

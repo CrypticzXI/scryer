@@ -521,13 +521,6 @@ impl AppUseCase {
             self.runtime.catalog.poster_wake.notify_one();
         }
         if title
-            .banner_url
-            .as_ref()
-            .is_some_and(|value| !value.trim().is_empty())
-        {
-            self.runtime.catalog.banner_wake.notify_one();
-        }
-        if title
             .background_url
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())

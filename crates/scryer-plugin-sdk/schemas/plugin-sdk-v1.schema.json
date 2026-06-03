@@ -4009,12 +4009,6 @@
             "null"
           ]
         },
-        "banner_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "background_url": {
           "type": [
             "string",

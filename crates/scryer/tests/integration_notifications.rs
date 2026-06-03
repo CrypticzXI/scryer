@@ -412,7 +412,6 @@ fn jellyfin_title_payload(
         overview: None,
         sort_title: None,
         poster_url: None,
-        banner_url: None,
         background_url: None,
         genres: Vec::new(),
         tags: Vec::new(),

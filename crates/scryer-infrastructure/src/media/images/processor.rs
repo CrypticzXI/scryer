@@ -21,9 +21,9 @@ use tracing::warn;
 
 const MAX_SOURCE_BYTES: usize = 20 * 1024 * 1024;
 const POSTER_VARIANT_WIDTHS: [u32; 3] = [500, 250, 70];
-const AVIF_SPEED: u8 = if cfg!(debug_assertions) { 10 } else { 6 };
-const AVIF_VARIANT_SPEED: u8 = 9;
-const AVIF_QUALITY: u8 = if cfg!(debug_assertions) { 60 } else { 85 };
+const FANART_VARIANT_WIDTHS: [u32; 1] = [1280];
+const AVIF_SPEED: u8 = 4;
+const AVIF_QUALITY: u8 = 85;
 const AVIF_ENCODER_THREADS: usize = 1;
 
 #[derive(Clone)]
@@ -310,60 +310,113 @@ fn build_image_variants(
     master_bytes: &[u8],
 ) -> AppResult<Vec<TitleImageVariantRecord>> {
     match kind {
-        TitleImageKind::Poster => {
-            let (source_width, source_height) = rgba.dimensions();
-            let mut variants = Vec::with_capacity(POSTER_VARIANT_WIDTHS.len());
-            for target_width in POSTER_VARIANT_WIDTHS {
-                let actual_width = source_width.min(target_width);
-                let actual_height = scaled_height(source_width, source_height, actual_width);
-                let bytes = if actual_width == source_width {
-                    master_bytes.to_vec()
-                } else {
-                    let speed = if target_width >= 500 {
-                        AVIF_SPEED
-                    } else {
-                        AVIF_VARIANT_SPEED
-                    };
-                    let resized = resize_rgba(rgba, actual_width, actual_height)?;
-                    encode_avif(&resized, speed, AVIF_QUALITY)?
-                };
-                variants.push(TitleImageVariantRecord {
-                    variant_key: format!("w{target_width}"),
-                    format: SupportedImageFormat::Avif.as_str().to_string(),
-                    width: actual_width as i32,
-                    height: actual_height as i32,
-                    sha256: sha256_hex(&bytes),
-                    bytes,
-                });
-            }
-            Ok(variants)
-        }
-        TitleImageKind::Banner => Ok(Vec::new()),
-        TitleImageKind::Fanart => Ok(Vec::new()),
+        TitleImageKind::Poster => build_width_variants(rgba, master_bytes, &POSTER_VARIANT_WIDTHS),
+        TitleImageKind::Fanart => build_width_variants(rgba, master_bytes, &FANART_VARIANT_WIDTHS),
     }
 }
 
-fn resize_rgba(image: &RgbaImage, width: u32, height: u32) -> AppResult<RgbaImage> {
-    let src = fir::images::Image::from_vec_u8(
-        image.width(),
-        image.height(),
-        image.clone().into_raw(),
-        fir::PixelType::U8x4,
-    )
-    .map_err(|err| AppError::Repository(format!("failed to prepare resize source: {err}")))?;
-    let mut dst = fir::images::Image::new(width, height, fir::PixelType::U8x4);
+fn build_width_variants(
+    rgba: &RgbaImage,
+    master_bytes: &[u8],
+    target_widths: &[u32],
+) -> AppResult<Vec<TitleImageVariantRecord>> {
+    let (source_width, source_height) = rgba.dimensions();
+    let mut variants = Vec::with_capacity(target_widths.len());
+    for &target_width in target_widths {
+        let actual_width = source_width.min(target_width);
+        let actual_height = scaled_height(source_width, source_height, actual_width);
+        let bytes = if actual_width == source_width {
+            master_bytes.to_vec()
+        } else {
+            let resized = resize_rgba_linear_box(rgba, actual_width, actual_height)?;
+            encode_avif(&resized, AVIF_SPEED, AVIF_QUALITY)?
+        };
+        variants.push(TitleImageVariantRecord {
+            variant_key: format!("w{target_width}"),
+            format: SupportedImageFormat::Avif.as_str().to_string(),
+            width: actual_width as i32,
+            height: actual_height as i32,
+            sha256: sha256_hex(&bytes),
+            bytes,
+        });
+    }
+    Ok(variants)
+}
+
+fn resize_rgba_linear_box(image: &RgbaImage, width: u32, height: u32) -> AppResult<RgbaImage> {
+    let linear = rgba_to_premultiplied_linear(image);
+    let src = fir::images::ImageRef::from_pixels(image.width(), image.height(), &linear)
+        .map_err(|err| AppError::Repository(format!("failed to prepare resize source: {err}")))?;
+    let mut dst_pixels = vec![fir::pixels::F32x4::default(); width as usize * height as usize];
     let mut resizer = fir::Resizer::new();
-    resizer
-        .resize(
-            &src,
-            &mut dst,
-            &fir::ResizeOptions::new()
-                .resize_alg(fir::ResizeAlg::Convolution(fir::FilterType::Lanczos3)),
-        )
-        .map_err(|err| AppError::Repository(format!("failed to resize image: {err}")))?;
-    let bytes = dst.into_vec();
-    RgbaImage::from_raw(width, height, bytes)
-        .ok_or_else(|| AppError::Repository("failed to materialize resized image".to_string()))
+
+    {
+        let (head, dst_bytes, tail) = unsafe { dst_pixels.align_to_mut::<u8>() };
+        debug_assert!(head.is_empty());
+        debug_assert!(tail.is_empty());
+        let mut dst =
+            fir::images::Image::from_slice_u8(width, height, dst_bytes, fir::PixelType::F32x4)
+                .map_err(|err| {
+                    AppError::Repository(format!("failed to prepare resize destination: {err}"))
+                })?;
+        resizer
+            .resize(
+                &src,
+                &mut dst,
+                &fir::ResizeOptions::new()
+                    .resize_alg(fir::ResizeAlg::Convolution(fir::FilterType::Box)),
+            )
+            .map_err(|err| AppError::Repository(format!("failed to resize image: {err}")))?;
+    }
+
+    Ok(linear_to_rgba(width, height, &dst_pixels))
+}
+
+fn rgba_to_premultiplied_linear(image: &RgbaImage) -> Vec<fir::pixels::F32x4> {
+    let mut out = Vec::with_capacity(image.width() as usize * image.height() as usize);
+    for pixel in image.as_raw().chunks_exact(4) {
+        let alpha = pixel[3] as f32 / 255.0;
+        out.push(fir::pixels::F32x4::new([
+            srgb_to_linear(pixel[0]) * alpha,
+            srgb_to_linear(pixel[1]) * alpha,
+            srgb_to_linear(pixel[2]) * alpha,
+            alpha,
+        ]));
+    }
+    out
+}
+
+fn linear_to_rgba(width: u32, height: u32, pixels: &[fir::pixels::F32x4]) -> RgbaImage {
+    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+    for pixel in pixels {
+        let [r, g, b, a] = pixel.0;
+        let alpha = a.clamp(0.0, 1.0);
+        let scale = if alpha > 0.00001 { 1.0 / alpha } else { 0.0 };
+        out.push(linear_to_srgb_u8((r * scale).clamp(0.0, 1.0)));
+        out.push(linear_to_srgb_u8((g * scale).clamp(0.0, 1.0)));
+        out.push(linear_to_srgb_u8((b * scale).clamp(0.0, 1.0)));
+        out.push((alpha * 255.0).round() as u8);
+    }
+    RgbaImage::from_raw(width, height, out)
+        .expect("linear resize conversion should preserve dimensions")
+}
+
+fn srgb_to_linear(value: u8) -> f32 {
+    let channel = value as f32 / 255.0;
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb_u8(value: f32) -> u8 {
+    let channel = if value <= 0.0031308 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    (channel.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 fn encode_avif(image: &RgbaImage, speed: u8, quality: u8) -> AppResult<Vec<u8>> {
@@ -523,40 +576,43 @@ mod tests {
     }
 
     #[test]
-    fn banner_and_fanart_avif_pipeline_do_not_generate_persisted_variants() {
+    fn fanart_avif_pipeline_generates_w1280_variant_without_upscaling() {
         let processor = HttpTitleImageProcessor::new_for_tests(true);
         let bytes = encode_test_image(ImageFormat::Png);
 
-        for kind in [TitleImageKind::Banner, TitleImageKind::Fanart] {
-            let processed = processor
-                .process_bytes_for_tests(kind, "https://example.com/image.png", &bytes)
-                .expect("processing should succeed");
+        let processed = processor
+            .process_bytes_for_tests(
+                TitleImageKind::Fanart,
+                "https://example.com/fanart.png",
+                &bytes,
+            )
+            .expect("processing should succeed");
 
-            assert_eq!(processed.storage_mode, TitleImageStorageMode::AvifMaster);
-            assert_eq!(processed.master_format, "avif");
-            assert!(processed.variants.is_empty());
-        }
+        assert_eq!(processed.storage_mode, TitleImageStorageMode::AvifMaster);
+        assert_eq!(processed.master_format, "avif");
+
+        let widths = processed
+            .variants
+            .iter()
+            .map(|variant| (variant.variant_key.clone(), (variant.width, variant.height)))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(widths.get("w1280"), Some(&(800, 1200)));
     }
 
     #[test]
-    fn materialize_local_path_uses_master_alias_for_banner_and_fanart_without_variants() {
-        for kind in [TitleImageKind::Banner, TitleImageKind::Fanart] {
-            let path = materialize_local_title_image_path(
-                "title-1",
-                kind,
-                TitleImageStorageMode::AvifMaster,
-                "abcdef0123456789abcdef0123456789",
-                &[],
-            );
+    fn materialize_local_path_falls_back_to_original_without_preferred_variant() {
+        let path = materialize_local_title_image_path(
+            "title-1",
+            TitleImageKind::Fanart,
+            TitleImageStorageMode::AvifMaster,
+            "abcdef0123456789abcdef0123456789",
+            &[],
+        );
 
-            assert_eq!(
-                path,
-                format!(
-                    "/images/titles/title-1/{}/master?v=abcdef0123456789",
-                    kind.as_str()
-                )
-            );
-        }
+        assert_eq!(
+            path,
+            "/images/titles/title-1/fanart/original?v=abcdef0123456789"
+        );
     }
 
     #[test]

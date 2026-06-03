@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, EpisodeUpdate, PrimaryCollectionSummary,
-    ScopedExternalId, ShowRepository,
+    AppError, AppResult, CollectionUpdate, EpisodeImageUrlUpdate, EpisodeUpdate,
+    PrimaryCollectionSummary, ScopedExternalId, ShowRepository,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, CollectionType, Episode, EpisodeType, Id,
@@ -399,6 +399,37 @@ impl ShowRepository for ShowStore {
         SqlRuntime::run_in_transaction(&self.datastore, "delete_episode", move |tx| {
             let episode_id = episode_id.clone();
             Box::pin(async move { delete_episode_tx(tx, &episode_id).await })
+        })
+        .await
+    }
+
+    async fn update_episode_image_urls(&self, updates: &[EpisodeImageUrlUpdate]) -> AppResult<u64> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let updates = updates.to_vec();
+        SqlRuntime::run_in_transaction(&self.datastore, "update_episode_image_urls", move |tx| {
+            let updates = updates.clone();
+            Box::pin(async move {
+                let mut changed = 0_u64;
+                for update in updates {
+                    let rows = tx
+                        .execute(
+                            "UPDATE episodes
+                                SET image_url = {}
+                              WHERE id = {}
+                                AND COALESCE(image_url, '') <> COALESCE({}, '')",
+                            &[
+                                SqlArg::OptText(update.image_url.clone()),
+                                SqlArg::Text(update.episode_id.clone()),
+                                SqlArg::OptText(update.image_url),
+                            ],
+                        )
+                        .await?;
+                    changed += rows;
+                }
+                Ok(changed)
+            })
         })
         .await
     }

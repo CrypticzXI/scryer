@@ -15,8 +15,6 @@ export const TITLE_CORE_FIELDS = `
     overview
     posterUrl
     posterSourceUrl
-    bannerUrl
-    bannerSourceUrl
     backgroundUrl
     backgroundSourceUrl
     sortTitle
@@ -848,7 +846,6 @@ export const mediaRequestRequesterLibrariesQuery = `query MediaRequestRequesterL
     name
     slug
     isDefault
-    qualityProfileId
     requestQualityProfileIds
     requestQualityProfileDefaultId
     roots {
@@ -1694,6 +1691,25 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
   seriesSettings: mediaSettings(scope: series) {${mediaSettingsFieldSelection}
   }
   animeSettings: mediaSettings(scope: anime) {${mediaSettingsFieldSelection}
+  }
+}`;
+
+export const globalSearchRequesterInitQuery = `query GlobalSearchRequesterInit {
+  qualityProfileSettings {${qualityProfileSettingsFieldSelection}
+  }
+  requestableLibraries: libraries(permission: request) {
+    id
+    facet
+    name
+    slug
+    isDefault
+    requestQualityProfileIds
+    requestQualityProfileDefaultId
+    roots {
+      id
+      path
+      isDefault
+    }
   }
 }`;
 

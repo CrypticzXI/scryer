@@ -1248,6 +1248,7 @@ pub enum JobKeyValue {
     WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
+    TitleImageCacheRefresh,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]

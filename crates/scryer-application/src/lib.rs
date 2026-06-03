@@ -82,7 +82,10 @@ pub(crate) use rules::user_rule_input;
 
 pub use download_client_config::resolve_download_client_base_url_from_config_json;
 pub use import::completed_download as completed_download_handler;
-pub use ports::{MediaRequestResolution, SubtitleSyncClient, SubtitleSyncJob};
+pub use ports::{
+    EpisodeImageUrlUpdate, MediaRequestResolution, SubtitleSyncClient, SubtitleSyncJob,
+    TitleArtworkUrlUpdate,
+};
 pub(crate) mod normalize;
 pub use import::failed_download as failed_download_handler;
 pub use import::post_processing as app_usecase_post_processing;
@@ -157,7 +160,6 @@ pub use catalog::facets::movie::MovieFacetHandler;
 pub use catalog::facets::registry::FacetRegistry;
 pub use catalog::facets::series::SeriesFacetHandler;
 pub use catalog::title_hydration::start_background_title_hydration_loop;
-pub use catalog::title_images::start_background_banner_loop;
 pub use catalog::title_images::start_background_fanart_loop;
 pub use catalog::title_images::start_background_poster_loop;
 pub use contracts::{
@@ -272,11 +274,12 @@ pub use jobs::definitions::{
 };
 pub use library::user_delete::DeletePreview;
 pub use library_scan::{
-    AnimeEpisodeMapping, AnimeMapping, AnimeMovie, BulkMetadataResult, EpisodeMetadata,
-    LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch, LibraryFileBatchReceiver,
-    LibraryScanSummary, LibraryScanner, MetadataGateway, MetadataSearchItem, MetadataSearchQuery,
-    MovieMetadata, MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata,
-    SeriesMetadata, source_signature_from_std_metadata,
+    AnimeEpisodeMapping, AnimeMapping, AnimeMovie, BulkArtworkUrlResult, BulkMetadataResult,
+    EpisodeArtworkUrls, EpisodeMetadata, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatch,
+    LibraryFileBatchReceiver, LibraryScanSummary, LibraryScanner, MetadataGateway,
+    MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult,
+    RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls, SeriesMetadata, TitleArtworkUrls,
+    source_signature_from_std_metadata,
 };
 pub use library_scan_progress::{
     LibraryScanMode, LibraryScanPhaseProgress, LibraryScanSession, LibraryScanStatus,

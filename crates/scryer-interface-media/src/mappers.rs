@@ -903,8 +903,6 @@ pub fn from_title(title: Title) -> TitlePayload {
         overview: title.overview,
         poster_url: title.poster_url,
         poster_source_url: title.poster_source_url,
-        banner_url: title.banner_url,
-        banner_source_url: title.banner_source_url,
         background_url: title.background_url,
         background_source_url: title.background_source_url,
         sort_title: title.sort_title,

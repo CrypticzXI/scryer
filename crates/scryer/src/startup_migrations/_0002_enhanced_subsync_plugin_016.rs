@@ -3,6 +3,8 @@ use std::sync::Arc;
 use scryer_application::{AppUseCase, SETTINGS_SCOPE_SYSTEM};
 use scryer_infrastructure::SettingsStore;
 
+use super::versioning::{MajorMinor, is_upgrade_from_line_to_at_least};
+
 const ENHANCED_SUBTITLE_SYNC_PLUGIN_ID: &str = "enhanced-subtitle-sync";
 pub(crate) const ENHANCED_SUBSYNC_016_MIGRATION_STATE_KEY: &str =
     "subtitles.enhanced_sync_plugin_migration_state";
@@ -11,24 +13,13 @@ const ENHANCED_SUBSYNC_016_MIGRATION_STATE_PENDING: &str = "pending";
 const ENHANCED_SUBSYNC_016_MIGRATION_STATE_COMPLETED: &str = "completed";
 const STARTUP_PLUGIN_MIGRATION_ACTOR_ID: &str = "system:startup-plugin-migration";
 
-fn version_major_minor(version: &str) -> Option<(u64, u64)> {
-    let normalized = version.trim().trim_start_matches('v');
-    let mut parts = normalized.split('.');
-    let major = parts.next()?.parse::<u64>().ok()?;
-    let minor = parts
-        .next()?
-        .chars()
-        .take_while(|character| character.is_ascii_digit())
-        .collect::<String>()
-        .parse::<u64>()
-        .ok()?;
-    Some((major, minor))
-}
-
 fn is_015_to_016_or_later_upgrade(previous_version: Option<&str>, current_version: &str) -> bool {
-    previous_version.and_then(version_major_minor) == Some((0, 15))
-        && version_major_minor(current_version)
-            .is_some_and(|(major, minor)| major == 0 && minor >= 16)
+    is_upgrade_from_line_to_at_least(
+        previous_version,
+        current_version,
+        MajorMinor::new(0, 15),
+        MajorMinor::new(0, 16),
+    )
 }
 
 fn should_attempt_enhanced_subsync_016_migration(

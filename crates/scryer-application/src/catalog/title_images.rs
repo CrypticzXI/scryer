@@ -11,20 +11,12 @@ const IMAGE_MAX_BATCH: usize = 256;
 const IMAGE_WRITE_CHUNK_SIZE: usize = 8;
 const IMAGE_RETRY_BASE: Duration = Duration::from_secs(10);
 const IMAGE_RETRY_MAX: Duration = Duration::from_secs(300);
-const IMAGE_CONCURRENT_WORKERS: usize = 2;
 
 pub async fn start_background_poster_loop(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
     start_background_image_loop(app, token, TitleImageKind::Poster).await
-}
-
-pub async fn start_background_banner_loop(
-    app: AppUseCase,
-    token: tokio_util::sync::CancellationToken,
-) {
-    start_background_image_loop(app, token, TitleImageKind::Banner).await
 }
 
 pub async fn start_background_fanart_loop(
@@ -65,27 +57,26 @@ async fn process_image_refresh_chunk(
     label: &str,
     chunk: &[TitleImageSyncTask],
 ) -> (usize, usize) {
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(IMAGE_CONCURRENT_WORKERS));
     let mut join_set = tokio::task::JoinSet::new();
     let label = label.to_string();
 
     for task in chunk.iter().cloned() {
-        let sem = semaphore.clone();
         let app = app.clone();
         let label = label.clone();
         join_set.spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore should not be closed");
+            let _permit = app
+                .runtime
+                .catalog
+                .image_processing_limit
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("image processing semaphore should not be closed");
             let started_at = std::time::Instant::now();
             match kind {
                 TitleImageKind::Poster => debug!(
                     title_id = %task.title_id,
                     poster_url = %task.source_url,
-                    kind = %label,
-                    "image loop: refreshing"
-                ),
-                TitleImageKind::Banner => debug!(
-                    title_id = %task.title_id,
-                    banner_url = %task.source_url,
                     kind = %label,
                     "image loop: refreshing"
                 ),
@@ -162,14 +153,6 @@ async fn process_image_refresh_chunk(
                                         kind = %label,
                                         "image loop: failed to store processed image and append refresh event"
                                     ),
-                                    TitleImageKind::Banner => warn!(
-                                        error = %error,
-                                        elapsed_ms = started_at.elapsed().as_millis(),
-                                        title_id = %task.title_id,
-                                        banner_url = %task.source_url,
-                                        kind = %label,
-                                        "image loop: failed to store processed image and append refresh event"
-                                    ),
                                     TitleImageKind::Fanart => warn!(
                                         error = %error,
                                         elapsed_ms = started_at.elapsed().as_millis(),
@@ -196,14 +179,6 @@ async fn process_image_refresh_chunk(
                                     elapsed_ms = started_at.elapsed().as_millis(),
                                     title_id = %task.title_id,
                                     poster_url = %task.source_url,
-                                    kind = %label,
-                                    "image loop: failed to store processed image"
-                                ),
-                                TitleImageKind::Banner => warn!(
-                                    error = %error,
-                                    elapsed_ms = started_at.elapsed().as_millis(),
-                                    title_id = %task.title_id,
-                                    banner_url = %task.source_url,
                                     kind = %label,
                                     "image loop: failed to store processed image"
                                 ),
@@ -238,13 +213,6 @@ async fn process_image_refresh_chunk(
                             error = %error,
                             title_id = %task.title_id,
                             poster_url = %task.source_url,
-                            kind = %label,
-                            "image loop: fetch/process failed"
-                        ),
-                        TitleImageKind::Banner => warn!(
-                            error = %error,
-                            title_id = %task.title_id,
-                            banner_url = %task.source_url,
                             kind = %label,
                             "image loop: fetch/process failed"
                         ),
@@ -290,7 +258,6 @@ async fn start_background_image_loop(
     let label: &'static str = kind.as_str();
     let wake: Arc<Notify> = match kind {
         TitleImageKind::Poster => app.runtime.catalog.poster_wake.clone(),
-        TitleImageKind::Banner => app.runtime.catalog.banner_wake.clone(),
         TitleImageKind::Fanart => app.runtime.catalog.fanart_wake.clone(),
     };
 
@@ -299,7 +266,11 @@ async fn start_background_image_loop(
         collect_window_ms = IMAGE_COLLECT_WINDOW.as_millis(),
         max_batch = IMAGE_MAX_BATCH,
         write_chunk_size = IMAGE_WRITE_CHUNK_SIZE,
-        concurrent_workers = IMAGE_CONCURRENT_WORKERS,
+        shared_concurrent_workers = app
+            .runtime
+            .catalog
+            .image_processing_limit
+            .available_permits(),
         retry_base_secs = IMAGE_RETRY_BASE.as_secs(),
         retry_max_secs = IMAGE_RETRY_MAX.as_secs(),
         "background image loop started"

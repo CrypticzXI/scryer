@@ -7,6 +7,19 @@ use std::path::PathBuf;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Clone, Debug)]
+pub struct TitleArtworkUrlUpdate {
+    pub title_id: String,
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EpisodeImageUrlUpdate {
+    pub episode_id: String,
+    pub image_url: Option<String>,
+}
+
 #[async_trait]
 pub trait TitleRepository: Send + Sync {
     async fn list(&self, facet: Option<MediaFacet>, query: Option<String>)
@@ -150,6 +163,30 @@ pub trait TitleRepository: Send + Sync {
     async fn set_folder_path(&self, id: &str, folder_path: &str) -> AppResult<()>;
     async fn clear_folder_path(&self, id: &str) -> AppResult<()>;
     async fn clear_metadata_language_for_all(&self) -> AppResult<u64>;
+    async fn list_page_after_id(
+        &self,
+        after_id: Option<String>,
+        limit: usize,
+    ) -> AppResult<Vec<Title>> {
+        let mut titles = self.list(None, None).await?;
+        titles.sort_by(|left, right| left.id.cmp(&right.id));
+        let filtered = titles
+            .into_iter()
+            .filter(|title| {
+                after_id
+                    .as_ref()
+                    .is_none_or(|after_id| title.id.as_str() > after_id.as_str())
+            })
+            .take(limit)
+            .collect();
+        Ok(filtered)
+    }
+    async fn update_title_artwork_urls(
+        &self,
+        _updates: &[TitleArtworkUrlUpdate],
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
 }
 
 #[async_trait]
@@ -358,6 +395,12 @@ pub trait ShowRepository: Send + Sync {
         monitored: bool,
     ) -> AppResult<()>;
     async fn delete_episode(&self, episode_id: &str) -> AppResult<()>;
+    async fn update_episode_image_urls(
+        &self,
+        _updates: &[EpisodeImageUrlUpdate],
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
     async fn delete_episodes_for_title(&self, title_id: &str) -> AppResult<()>;
     async fn find_episode_by_title_and_numbers(
         &self,
@@ -1836,7 +1879,6 @@ pub struct NotificationTitlePayload {
     pub overview: Option<String>,
     pub sort_title: Option<String>,
     pub poster_url: Option<String>,
-    pub banner_url: Option<String>,
     pub background_url: Option<String>,
     pub genres: Vec<String>,
     pub tags: Vec<String>,

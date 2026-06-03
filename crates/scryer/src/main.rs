@@ -36,12 +36,12 @@ use scryer_application::{
     RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
     SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
-    start_background_auto_backup_scheduler, start_background_banner_loop,
-    start_background_download_delete_poller, start_background_fanart_loop,
-    start_background_library_refresh_loop, start_background_manual_import_poller,
-    start_background_poster_loop, start_background_subtitle_poller,
-    start_background_title_hydration_loop, start_download_queue_poller,
-    start_notification_dispatcher, tracked_downloads::TrackedDownloadHandle,
+    start_background_auto_backup_scheduler, start_background_download_delete_poller,
+    start_background_fanart_loop, start_background_library_refresh_loop,
+    start_background_manual_import_poller, start_background_poster_loop,
+    start_background_subtitle_poller, start_background_title_hydration_loop,
+    start_download_queue_poller, start_notification_dispatcher,
+    tracked_downloads::TrackedDownloadHandle,
 };
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
@@ -1070,6 +1070,13 @@ async fn bootstrap_application(
         VERSION,
     )
     .await;
+    startup_migrations::_0003_title_image_artwork_url_refresh::refresh_title_image_artwork_urls_for_upgrade(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+        previous_version,
+        VERSION,
+    )
+    .await;
 
     app_use_case.connect_library_scan_tracker().await;
     spawn_sigstore_trust_root_prime_task(app_use_case.clone());
@@ -1208,10 +1215,6 @@ async fn bootstrap_application(
         shutdown_token.child_token(),
     ));
     tokio::spawn(start_background_poster_loop(
-        app_use_case.clone(),
-        shutdown_token.child_token(),
-    ));
-    tokio::spawn(start_background_banner_loop(
         app_use_case.clone(),
         shutdown_token.child_token(),
     ));
