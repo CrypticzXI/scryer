@@ -27,6 +27,11 @@ import type {
   MetadataCatalogRequestOptions,
 } from "@/lib/hooks/use-global-search";
 import type { Facet, LibraryRecord } from "@/lib/types";
+import {
+  mediaRequestMonitorOptionId,
+  mediaRequestProfileOptionId,
+  selectorId,
+} from "@/lib/utils/dom-ids";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 
 type RequestMediaDialogProps = {
@@ -187,7 +192,11 @@ export function RequestMediaDialog({
             </SelectTrigger>
             <SelectContent>
               {requestableLibraries.map((library) => (
-                <SelectItem key={library.id} value={library.id}>
+                <SelectItem
+                  id={selectorId("request-media-library-option", library.id)}
+                  key={library.id}
+                  value={library.id}
+                >
                   {library.name}
                 </SelectItem>
               ))}
@@ -209,7 +218,11 @@ export function RequestMediaDialog({
             </SelectTrigger>
             <SelectContent>
               {requestProfileOptions.map((profile) => (
-                <SelectItem key={profile.id} value={profile.id}>
+                <SelectItem
+                  id={mediaRequestProfileOptionId("request", profile.id)}
+                  key={profile.id}
+                  value={profile.id}
+                >
                   {profile.name}
                 </SelectItem>
               ))}
@@ -234,7 +247,11 @@ export function RequestMediaDialog({
               </SelectTrigger>
               <SelectContent>
                 {monitorOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
+                  <SelectItem
+                    id={mediaRequestMonitorOptionId("request", option.value)}
+                    key={option.value}
+                    value={option.value}
+                  >
                     {option.label}
                   </SelectItem>
                 ))}

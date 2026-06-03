@@ -293,8 +293,11 @@ export function RouteCommandPalette({
       title={config.title}
       description={config.description}
       showCloseButton={false}
+      contentId="route-command-palette"
     >
       <CommandInput
+        id="route-command-palette-input"
+        wrapperId="route-command-palette-input-wrapper"
         value={searchValue}
         onValueChange={setSearchValue}
         placeholder={config.placeholder}

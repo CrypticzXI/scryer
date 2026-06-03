@@ -216,7 +216,8 @@ async fn execute_resolved_episode_import(
                     "episode file upgraded"
                 );
                 for episode_id in &target_episode_ids {
-                    mark_wanted_completed(app, &title.id, Some(episode_id), None).await;
+                    mark_wanted_completed(app, &title.id, Some(episode_id), Some(outcome.new_score))
+                        .await;
                 }
                 return Ok(EpisodeImportOutcome::Imported {
                     dest_path: path_to_stored_string(&dest_path),
@@ -337,7 +338,7 @@ async fn execute_resolved_episode_import(
         finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
 
     for episode in target_episodes {
-        mark_wanted_completed(app, &title.id, Some(&episode.id), None).await;
+        mark_wanted_completed(app, &title.id, Some(&episode.id), Some(acq_score)).await;
     }
 
     Ok(EpisodeImportOutcome::Imported {

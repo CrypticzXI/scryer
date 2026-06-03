@@ -1934,6 +1934,7 @@ mod tests {
     #[derive(Default)]
     struct MockDownloadClient {
         submissions: Mutex<Vec<DownloadClientAddRequest>>,
+        submit_error: Mutex<Option<MockSubmitError>>,
         queue_items: Mutex<Vec<DownloadQueueItem>>,
         history_items: Mutex<Vec<DownloadQueueItem>>,
         completed_downloads: Mutex<Vec<scryer_domain::CompletedDownload>>,
@@ -1943,6 +1944,11 @@ mod tests {
         deleted: Mutex<Vec<(String, bool)>>,
     }
 
+    #[derive(Clone, Copy)]
+    enum MockSubmitError {
+        Ambiguous,
+    }
+
     #[async_trait]
     impl DownloadClient for MockDownloadClient {
         async fn submit_download(
@@ -1950,6 +1956,14 @@ mod tests {
             request: &DownloadClientAddRequest,
         ) -> AppResult<DownloadGrabResult> {
             self.submissions.lock().unwrap().push(request.clone());
+            match *self.submit_error.lock().unwrap() {
+                Some(MockSubmitError::Ambiguous) => {
+                    return Err(AppError::DownloadSubmitAmbiguous(
+                        "submit result is ambiguous".to_string(),
+                    ));
+                }
+                None => {}
+            }
             Ok(DownloadGrabResult {
                 job_id: "job-1".to_string(),
                 client_id: None,
@@ -2243,6 +2257,60 @@ mod tests {
 
         assert_eq!(result.client_type, "qbittorrent");
         assert_eq!(torrent_client.submissions.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn submit_download_does_not_failover_ambiguous_submit_errors() {
+        let primary = Arc::new(MockDownloadClient::default());
+        *primary.submit_error.lock().unwrap() = Some(MockSubmitError::Ambiguous);
+        let secondary = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![
+                    ("primary".to_string(), primary.clone()),
+                    ("secondary".to_string(), secondary.clone()),
+                ],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("primary", "Primary", "qbittorrent", 0),
+                    test_config("secondary", "Secondary", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            Arc::new(MockDownloadClient::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let error = router
+            .submit_download(&DownloadClientAddRequest {
+                title: test_title(),
+                source_hint: Some("https://tracker.example/file.torrent".to_string()),
+                staged_nzb: None,
+                source_kind: Some(DownloadSourceKind::TorrentFile),
+                source_title: Some("Test Release".to_string()),
+                source_password: None,
+                category: None,
+                queue_priority: None,
+                download_directory: None,
+                release_title: None,
+                indexer_name: None,
+                info_hash_hint: None,
+                seed_goal_ratio: None,
+                seed_goal_seconds: None,
+                is_recent: None,
+                season_pack: None,
+            })
+            .await
+            .expect_err("ambiguous submit errors should stop router failover");
+
+        assert!(matches!(error, AppError::DownloadSubmitAmbiguous(_)));
+        assert_eq!(primary.submissions.lock().unwrap().len(), 1);
+        assert_eq!(secondary.submissions.lock().unwrap().len(), 0);
     }
 
     #[tokio::test]

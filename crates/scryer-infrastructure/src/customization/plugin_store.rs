@@ -39,6 +39,7 @@ impl PluginStore {
 
     pub async fn delete_incompatible_external_plugin_installations(
         &self,
+        preserve_restored_recovery_targets: bool,
     ) -> AppResult<Vec<String>> {
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -54,7 +55,12 @@ impl PluginStore {
                         .await?;
                     let removed_plugin_ids = rows
                         .iter()
-                        .filter(|row| row_is_incompatible_external_installation(row))
+                        .filter(|row| {
+                            row_is_incompatible_external_installation(
+                                row,
+                                preserve_restored_recovery_targets,
+                            )
+                        })
                         .map(|row| row.text("plugin_id"))
                         .collect::<AppResult<Vec<_>>>()?;
 
@@ -211,7 +217,7 @@ impl PluginInstallationRepository for PluginStore {
         SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &[])
             .await?
             .iter()
-            .filter(|row| !row_is_incompatible_external_installation(row))
+            .filter(|row| !row_is_incompatible_external_installation(row, true))
             .map(row_to_plugin_installation)
             .collect()
     }
@@ -234,7 +240,7 @@ impl PluginInstallationRepository for PluginStore {
         let Some(row) = row else {
             return Ok(None);
         };
-        if row_is_incompatible_external_installation(&row) {
+        if row_is_incompatible_external_installation(&row, true) {
             return Ok(None);
         }
         row_to_plugin_installation(&row).map(Some)
@@ -543,7 +549,7 @@ async fn existing_installation_is_incompatible_external_shape(
 
     Ok(row
         .as_ref()
-        .is_some_and(row_is_incompatible_external_installation))
+        .is_some_and(|row| row_is_incompatible_external_installation(row, false)))
 }
 
 async fn read_plugin_installation_tx(
@@ -566,7 +572,7 @@ async fn read_plugin_installation_tx(
     let Some(row) = row else {
         return Ok(None);
     };
-    if filter_incompatible && row_is_incompatible_external_installation(&row) {
+    if filter_incompatible && row_is_incompatible_external_installation(&row, true) {
         return Ok(None);
     }
     row_to_plugin_installation(&row).map(Some)
@@ -737,7 +743,10 @@ fn optional_timestamp_or_none(row: &SqlRow, column: &str) -> AppResult<Option<Da
     }
 }
 
-fn row_is_incompatible_external_installation(row: &SqlRow) -> bool {
+fn row_is_incompatible_external_installation(
+    row: &SqlRow,
+    preserve_restored_recovery_targets: bool,
+) -> bool {
     let is_builtin = row.bool("is_builtin").unwrap_or(false);
     if is_builtin {
         return false;
@@ -759,6 +768,18 @@ fn row_is_incompatible_external_installation(row: &SqlRow) -> bool {
     let descriptor_supported = descriptor_json_text(row)
         .unwrap_or(None)
         .is_some_and(|value| !value.trim().is_empty());
+    if preserve_restored_recovery_targets
+        && wasm_bytes.is_none()
+        && descriptor_supported
+        && matches!(source_kind.as_str(), "downloaded" | "manual")
+        && (source_kind == "downloaded"
+            || row
+                .opt_text("source_repo")
+                .unwrap_or(None)
+                .is_some_and(|value| !value.trim().is_empty()))
+    {
+        return false;
+    }
 
     !external_plugin_installation_is_supported_shape(
         wasm_bytes.as_deref(),

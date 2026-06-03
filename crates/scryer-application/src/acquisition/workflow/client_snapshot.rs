@@ -117,7 +117,7 @@ async fn record_failed_release_outcome(
                 .services
                 .workflow
                 .blocklist_repo
-                .add(&NewBlocklistEntry {
+                .add_failed_download_if_absent(&NewBlocklistEntry {
                     title_id: title_id.to_string(),
                     source_title: normalized_source_title.clone(),
                     source_hint: normalized_source_hint.clone(),
@@ -128,9 +128,10 @@ async fn record_failed_release_outcome(
                 })
                 .await
             {
-                Ok(_) => {
+                Ok(true) => {
                     blocklist_persisted = true;
                 }
+                Ok(false) => {}
                 Err(error) => {
                     warn!(
                         title_id,
@@ -558,8 +559,9 @@ pub(crate) async fn process_download_failure(
         .runtime
         .acquisition
         .download_failure_guards
-        .acquire(
+        .acquire_release_or_client_item(
             resolved_title_id.as_deref(),
+            normalized_source_title.as_deref(),
             &context.client_id,
             &context.client_type,
             &context.client_item_id,

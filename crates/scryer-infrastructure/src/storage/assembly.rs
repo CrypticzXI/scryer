@@ -345,9 +345,10 @@ impl DatastoreCustomizationStore {
 
     pub async fn delete_incompatible_external_plugin_installations(
         &self,
+        preserve_restored_recovery_targets: bool,
     ) -> AppResult<Vec<String>> {
         self.plugins
-            .delete_incompatible_external_plugin_installations()
+            .delete_incompatible_external_plugin_installations(preserve_restored_recovery_targets)
             .await
     }
 }

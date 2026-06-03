@@ -600,6 +600,7 @@ export function SettingsDownloadClientsContainer({
       />
       <ConfirmDialog
         open={pendingDeleteDownloadClient !== null}
+        contentId="settings-download-client-delete-dialog"
         title={t("label.delete")}
         description={
           pendingDeleteDownloadClient
@@ -608,6 +609,8 @@ export function SettingsDownloadClientsContainer({
         }
         confirmLabel={t("label.delete")}
         cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-download-client-delete-confirm"
+        cancelButtonId="settings-download-client-delete-cancel"
         isBusy={mutatingDownloadClientId !== null}
         onConfirm={confirmDeleteDownloadClient}
         onCancel={() => setPendingDeleteDownloadClient(null)}

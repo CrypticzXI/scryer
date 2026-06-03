@@ -76,10 +76,11 @@ panic = "abort"
 [profile.e2e]
 inherits = "release"
 opt-level = 1
-lto = "thin"
-codegen-units = 32
-strip = true
-panic = "abort"
+lto = false
+codegen-units = 256
+debug = 1
+strip = false
+incremental = true
 
 [profile.release-launcher]
 inherits = "release"

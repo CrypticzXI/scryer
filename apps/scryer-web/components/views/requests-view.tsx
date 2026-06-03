@@ -20,6 +20,16 @@ import {
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { LibraryRecord, MediaRequestRecord } from "@/lib/types";
+import {
+  mediaRequestApproveId,
+  mediaRequestCancelId,
+  mediaRequestDismissId,
+  mediaRequestEditId,
+  mediaRequestMonitorOptionId,
+  mediaRequestProfileOptionId,
+  mediaRequestRowId,
+  mediaRequestStatusId,
+} from "@/lib/utils/dom-ids";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 
@@ -350,6 +360,7 @@ export function RequestsView({
         {showModeSwitch ? (
           <div className="inline-flex h-11 rounded-md border border-border bg-background p-1">
             <Button
+              id="requests-mode-admin"
               type="button"
               variant={mode === "admin" ? "default" : "ghost"}
               size="sm"
@@ -359,6 +370,7 @@ export function RequestsView({
               {t("requests.mode.admin")}
             </Button>
             <Button
+              id="requests-mode-mine"
               type="button"
               variant={mode === "mine" ? "default" : "ghost"}
               size="sm"
@@ -388,7 +400,10 @@ export function RequestsView({
 
       <div className="grid gap-3">
         {requests.length === 0 && !loading ? (
-          <div className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-8 text-center text-sm text-muted-foreground">
+          <div
+            id={mode === "admin" ? "requests-empty-admin" : "requests-empty-mine"}
+            className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-8 text-center text-sm text-muted-foreground"
+          >
             {mode === "admin" ? t("requests.empty") : t("requests.emptyMine")}
           </div>
         ) : null}
@@ -404,6 +419,9 @@ export function RequestsView({
           return (
             <article
               key={request.id}
+              id={mediaRequestRowId(request.id)}
+              data-request-status={request.status}
+              data-request-title={request.title}
               className="rounded-lg border border-border bg-card/60 p-3"
             >
               <div className="flex gap-3">
@@ -433,12 +451,17 @@ export function RequestsView({
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium uppercase text-muted-foreground">
+                      <span
+                        id={mediaRequestStatusId(request.id)}
+                        data-request-status={request.status}
+                        className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium uppercase text-muted-foreground"
+                      >
                         {requestStatusLabel(t, request.status)}
                       </span>
                       {mode === "admin" ? (
                         <>
                           <Button
+                            id={mediaRequestApproveId(request.id)}
                             type="button"
                             size="sm"
                             onClick={() => openApprovalDialog(request)}
@@ -452,6 +475,7 @@ export function RequestsView({
                             {t("requests.approve")}
                           </Button>
                           <Button
+                            id={mediaRequestDismissId(request.id)}
                             type="button"
                             size="sm"
                             variant="outline"
@@ -465,6 +489,7 @@ export function RequestsView({
                       ) : canEditOwnRequest ? (
                         <>
                           <Button
+                            id={mediaRequestEditId(request.id)}
                             type="button"
                             size="sm"
                             variant="outline"
@@ -475,6 +500,7 @@ export function RequestsView({
                             {t("requests.modify")}
                           </Button>
                           <Button
+                            id={mediaRequestCancelId(request.id)}
                             type="button"
                             size="sm"
                             variant="outline"
@@ -526,7 +552,7 @@ export function RequestsView({
         })}
       </div>
       <Dialog open={approvalRequest !== null} onOpenChange={(open) => { if (!open) closeApprovalDialog(); }}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent id="approve-media-request-dialog" className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>{t("requests.approveTitle")}</DialogTitle>
           </DialogHeader>
@@ -544,7 +570,11 @@ export function RequestsView({
               </SelectTrigger>
               <SelectContent>
                 {qualityProfileOptions.map((profile) => (
-                  <SelectItem key={profile.id} value={profile.id}>
+                  <SelectItem
+                    id={mediaRequestProfileOptionId("approve", profile.id)}
+                    key={profile.id}
+                    value={profile.id}
+                  >
                     {profile.name}
                   </SelectItem>
                 ))}
@@ -571,7 +601,11 @@ export function RequestsView({
                 </SelectTrigger>
                 <SelectContent>
                   {monitorOptions(t).map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
+                    <SelectItem
+                      id={mediaRequestMonitorOptionId("approve", option.value)}
+                      key={option.value}
+                      value={option.value}
+                    >
                       {option.label}
                     </SelectItem>
                   ))}
@@ -580,10 +614,11 @@ export function RequestsView({
             </label>
           ) : null}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={closeApprovalDialog}>
+            <Button id="approve-media-request-cancel" type="button" variant="outline" onClick={closeApprovalDialog}>
               {t("label.cancel")}
             </Button>
             <Button
+              id="approve-media-request-confirm"
               type="button"
               onClick={confirmApproval}
               disabled={!approvalProfileId || loading || actionRequestId !== null}
@@ -595,7 +630,7 @@ export function RequestsView({
         </DialogContent>
       </Dialog>
       <Dialog open={editRequest !== null} onOpenChange={(open) => { if (!open) closeEditDialog(); }}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent id="edit-media-request-dialog" className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>{t("requests.modifyTitle")}</DialogTitle>
           </DialogHeader>
@@ -613,7 +648,11 @@ export function RequestsView({
               </SelectTrigger>
               <SelectContent>
                 {editProfileOptions.map((profile) => (
-                  <SelectItem key={profile.id} value={profile.id}>
+                  <SelectItem
+                    id={mediaRequestProfileOptionId("edit", profile.id)}
+                    key={profile.id}
+                    value={profile.id}
+                  >
                     {profile.name}
                   </SelectItem>
                 ))}
@@ -635,7 +674,11 @@ export function RequestsView({
                 </SelectTrigger>
                 <SelectContent>
                   {monitorOptions(t).map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
+                    <SelectItem
+                      id={mediaRequestMonitorOptionId("edit", option.value)}
+                      key={option.value}
+                      value={option.value}
+                    >
                       {option.label}
                     </SelectItem>
                   ))}
@@ -644,10 +687,11 @@ export function RequestsView({
             </label>
           ) : null}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={closeEditDialog}>
+            <Button id="edit-media-request-cancel" type="button" variant="outline" onClick={closeEditDialog}>
               {t("label.cancel")}
             </Button>
             <Button
+              id="edit-media-request-confirm"
               type="button"
               onClick={confirmUpdate}
               disabled={!editProfileId || loading || actionRequestId !== null}

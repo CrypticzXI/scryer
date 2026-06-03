@@ -366,10 +366,13 @@ export function SettingsUsersContainer() {
       />
       <ConfirmDialog
         open={pendingDeleteUser !== null}
+        contentId="settings-user-delete-dialog"
         title={t("label.delete")}
         description={pendingDeleteUser ? t("status.deletingUser", { name: pendingDeleteUser.username }) : ""}
         confirmLabel={t("label.delete")}
         cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-user-delete-confirm"
+        cancelButtonId="settings-user-delete-cancel"
         isBusy={mutatingUserId !== null}
         onConfirm={confirmDeleteUser}
         onCancel={() => setPendingDeleteUser(null)}

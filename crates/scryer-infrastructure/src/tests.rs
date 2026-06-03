@@ -341,7 +341,7 @@ async fn cleanup_deletes_legacy_external_plugin_rows_and_preserves_builtins() {
         .expect("seed builtin install");
 
     let removed = customization
-        .delete_incompatible_external_plugin_installations()
+        .delete_incompatible_external_plugin_installations(false)
         .await
         .expect("cleanup incompatible external installs");
 
@@ -509,7 +509,7 @@ async fn plugin_catalog_source_rows_survive_cleanup() {
     );
 
     let removed = customization
-        .delete_incompatible_external_plugin_installations()
+        .delete_incompatible_external_plugin_installations(false)
         .await
         .expect("cleanup incompatible external installs");
     assert!(removed.is_empty());
@@ -5120,6 +5120,32 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
         row.get::<Option<String>, _>("grabbed_release"),
         Some("Existing Release".to_string())
     );
+
+    sqlx::query("UPDATE wanted_items SET status = ?, grabbed_release = ? WHERE id = ?")
+        .bind("wanted")
+        .bind("Stale Grabbed Release")
+        .bind("wanted-episode")
+        .execute(services.pool())
+        .await
+        .expect("wanted item should reset for scored completion");
+
+    workflow
+        .complete_wanted_item_for_title("title-series", None, Some("2026-04-20T01:00:00Z"), Some(720))
+        .await
+        .expect("scored completion should succeed");
+
+    let row = sqlx::query(
+        "SELECT current_score, grabbed_release
+         FROM wanted_items
+         WHERE id = ?",
+    )
+    .bind("wanted-episode")
+    .fetch_one(services.pool())
+    .await
+    .expect("wanted item should load after scored completion");
+
+    assert_eq!(row.get::<Option<i64>, _>("current_score"), Some(720));
+    assert_eq!(row.get::<Option<String>, _>("grabbed_release"), None);
 
     let _ = std::fs::remove_file(db);
 }

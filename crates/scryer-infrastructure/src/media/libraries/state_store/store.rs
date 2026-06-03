@@ -753,6 +753,7 @@ impl WantedItemRepository for WantedStore {
                         next_search_at = {},
                         last_search_at = {},
                         current_score = COALESCE({}, current_score),
+                        grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
                         updated_at = {}
                   WHERE title_id = {} AND episode_id = {}"
                     .to_string(),
@@ -760,6 +761,7 @@ impl WantedItemRepository for WantedStore {
                     SqlArg::Text(WantedStatus::Completed.as_str().to_string()),
                     opt_timestamp_arg_for_datastore(&self.datastore, None)?,
                     opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
+                    SqlArg::OptI32(current_score),
                     SqlArg::OptI32(current_score),
                     timestamp_arg_for_datastore(&self.datastore, &now)?,
                     SqlArg::Text(title_id.to_string()),
@@ -773,6 +775,7 @@ impl WantedItemRepository for WantedStore {
                         next_search_at = {},
                         last_search_at = {},
                         current_score = COALESCE({}, current_score),
+                        grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
                         updated_at = {}
                   WHERE title_id = {} AND episode_id IS NULL"
                     .to_string(),
@@ -780,6 +783,7 @@ impl WantedItemRepository for WantedStore {
                     SqlArg::Text(WantedStatus::Completed.as_str().to_string()),
                     opt_timestamp_arg_for_datastore(&self.datastore, None)?,
                     opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
+                    SqlArg::OptI32(current_score),
                     SqlArg::OptI32(current_score),
                     timestamp_arg_for_datastore(&self.datastore, &now)?,
                     SqlArg::Text(title_id.to_string()),
@@ -1614,6 +1618,106 @@ impl BlocklistRepository for BlocklistStore {
         )
         .await?;
         Ok(id)
+    }
+
+    async fn add_failed_download_if_absent(&self, entry: &NewBlocklistEntry) -> AppResult<bool> {
+        let id = Id::new().0;
+        let now = Utc::now().to_rfc3339();
+        let title_id = entry.title_id.clone();
+        let source_title = entry.source_title.clone();
+        let source_hint = entry.source_hint.clone();
+        let download_id = entry.download_id.clone();
+        let quality = entry.quality.clone();
+        let reason = entry.reason.clone();
+        let data_json = serde_json::to_string(&entry.data).map_err(repo_err)?;
+        let data_arg = opt_json_arg_for_datastore(&self.datastore, Some(&data_json))?;
+        let created_at_arg = timestamp_arg_for_datastore(&self.datastore, &now)?;
+        let use_postgres_advisory_lock = matches!(&self.datastore, StoreDatastore::Postgres { .. });
+
+        let dedupe_key = source_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| ("source_title", value.to_ascii_lowercase()))
+            .or_else(|| {
+                source_hint
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| ("source_hint", value.to_ascii_lowercase()))
+            })
+            .or_else(|| {
+                download_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| ("download_id", value.to_ascii_lowercase()))
+            });
+
+        let datastore = self.datastore.clone();
+        SqlRuntime::run_in_transaction(&datastore, "insert_failed_download_blocklist_entry", move |tx| {
+            let title_id = title_id.clone();
+            let source_title = source_title.clone();
+            let source_hint = source_hint.clone();
+            let download_id = download_id.clone();
+            let quality = quality.clone();
+            let reason = reason.clone();
+            let id = id.clone();
+            let data_arg = data_arg.clone();
+            let created_at_arg = created_at_arg.clone();
+            let dedupe_key = dedupe_key.clone();
+            let use_postgres_advisory_lock = use_postgres_advisory_lock;
+            Box::pin(async move {
+                if let Some((column, value)) = dedupe_key {
+                    if use_postgres_advisory_lock {
+                        let lock_key = format!("{title_id}:{column}:{value}");
+                        let _ = SqlRuntime::fetch_optional(
+                            SqlExec::Tx(&mut *tx),
+                            "SELECT pg_advisory_xact_lock(hashtext({}))",
+                            &[SqlArg::Text(lock_key)],
+                        )
+                        .await?;
+                    }
+
+                    let matched = fetch_exists(
+                        SqlExec::Tx(&mut *tx),
+                        &format!(
+                            "SELECT EXISTS(
+                                 SELECT 1 FROM blocklist
+                                  WHERE title_id = {{}}
+                                    AND LOWER(TRIM(COALESCE({column}, ''))) = {{}}
+                             ) AS matched"
+                        ),
+                        &[SqlArg::Text(title_id.clone()), SqlArg::Text(value)],
+                    )
+                    .await?;
+                    if matched {
+                        return Ok(false);
+                    }
+                }
+
+                SqlRuntime::execute(
+                    SqlExec::Tx(&mut *tx),
+                    "INSERT INTO blocklist
+                     (id, title_id, source_title, source_hint, quality, download_id, reason, data_json, created_at)
+                     VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
+                    &[
+                        SqlArg::Text(id),
+                        SqlArg::Text(title_id),
+                        SqlArg::OptText(source_title),
+                        SqlArg::OptText(source_hint),
+                        SqlArg::OptText(quality),
+                        SqlArg::OptText(download_id),
+                        SqlArg::OptText(reason),
+                        data_arg,
+                        created_at_arg,
+                    ],
+                )
+                .await?;
+                Ok(true)
+            })
+        })
+        .await
     }
 
     async fn list_for_title(&self, title_id: &str, limit: usize) -> AppResult<Vec<BlocklistEntry>> {

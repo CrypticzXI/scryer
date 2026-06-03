@@ -6,6 +6,51 @@ async fn run_import(
     started_at: chrono::DateTime<Utc>,
     archive_password: Option<&str>,
 ) -> AppResult<ImportResult> {
+    let target = match Box::pin(resolve_completed_import_target(
+        app,
+        import_id,
+        completed,
+        started_at,
+        archive_password,
+    ))
+    .await?
+    {
+        CompletedImportTargetResolution::Ready(target) => target,
+        CompletedImportTargetResolution::Finished(result) => return Ok(result),
+    };
+
+    let result =
+        dispatch_completed_import_target(app, actor, import_id, completed, started_at, &target)
+            .await;
+
+    // Clean up extracted archive directory if we created one
+    if let Some(ref dir) = target.extracted_dir {
+        crate::archive_extractor::cleanup_extracted_dir(dir).await;
+    }
+
+    result
+}
+
+struct CompletedImportTarget {
+    title: scryer_domain::Title,
+    is_series: bool,
+    video_files: Vec<PathBuf>,
+    extracted_dir: Option<PathBuf>,
+    interstitial_collection_id: Option<String>,
+}
+
+enum CompletedImportTargetResolution {
+    Ready(CompletedImportTarget),
+    Finished(ImportResult),
+}
+
+async fn resolve_completed_import_target(
+    app: &AppUseCase,
+    import_id: &str,
+    completed: &CompletedDownload,
+    started_at: chrono::DateTime<Utc>,
+    archive_password: Option<&str>,
+) -> AppResult<CompletedImportTargetResolution> {
     // 2. TITLE MATCHING
     let mut title = None;
     let dest_dir = Path::new(&completed.dest_dir);
@@ -119,7 +164,7 @@ async fn run_import(
             app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
                 .await?;
 
-            return Ok(result);
+            return Ok(CompletedImportTargetResolution::Finished(result));
         }
     };
 
@@ -141,7 +186,7 @@ async fn run_import(
         let result_json = serde_json::to_string(&result).ok();
         app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
             .await?;
-        return Ok(result);
+        return Ok(CompletedImportTargetResolution::Finished(result));
     }
 
     // 3. FIND VIDEO FILES (extract archives first if needed)
@@ -172,56 +217,68 @@ async fn run_import(
         let status = completed_import_status_for_result(&result, ImportStatus::Skipped);
         app.update_import_status_and_notify(import_id, status, result_json)
             .await?;
-        return Ok(result);
+        return Ok(CompletedImportTargetResolution::Finished(result));
     }
 
     // Check if this is an interstitial movie import (anime franchise movie → Season 00)
     let interstitial_collection_id =
         extract_parameter(&completed.parameters, "*scryer_collection_id");
 
+    Ok(CompletedImportTargetResolution::Ready(
+        CompletedImportTarget {
+            title,
+            is_series,
+            video_files,
+            extracted_dir,
+            interstitial_collection_id,
+        },
+    ))
+}
+
+async fn dispatch_completed_import_target(
+    app: &AppUseCase,
+    actor: &User,
+    import_id: &str,
+    completed: &CompletedDownload,
+    started_at: chrono::DateTime<Utc>,
+    target: &CompletedImportTarget,
+) -> AppResult<ImportResult> {
     // Branch on facet: movies import the single largest file, series import all episode files
-    let result = if let Some(ref coll_id) = interstitial_collection_id {
-        import_interstitial_movie_download(
+    if let Some(ref coll_id) = target.interstitial_collection_id {
+        Box::pin(import_interstitial_movie_download(
             app,
             actor,
-            &title,
+            &target.title,
             import_id,
             completed,
-            &video_files,
+            &target.video_files,
             started_at,
             coll_id,
-        )
+        ))
         .await
-    } else if is_series {
-        import_series_download(
+    } else if target.is_series {
+        Box::pin(import_series_download(
             app,
             actor,
-            &title,
+            &target.title,
             import_id,
             completed,
-            &video_files,
+            &target.video_files,
             started_at,
-        )
+        ))
         .await
     } else {
-        import_movie_download(
+        Box::pin(import_movie_download(
             app,
             actor,
-            &title,
+            &target.title,
             import_id,
             completed,
-            &video_files,
+            &target.video_files,
             started_at,
-        )
+        ))
         .await
-    };
-
-    // Clean up extracted archive directory if we created one
-    if let Some(ref dir) = extracted_dir {
-        crate::archive_extractor::cleanup_extracted_dir(dir).await;
     }
-
-    result
 }
 // ---------------------------------------------------------------------------
 // Movie import: pick largest file, single import
@@ -484,7 +541,7 @@ async fn import_movie_download(
                             "movie file upgraded"
                         );
                         persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
-                        mark_wanted_completed(app, &title.id, None, None).await;
+                        mark_wanted_completed(app, &title.id, None, Some(outcome.new_score)).await;
                         let result_json = serde_json::to_string(&result).ok();
                         app.update_import_status_and_notify(
                             import_id,
@@ -716,7 +773,7 @@ async fn import_movie_download(
         quality: prepared.parsed.quality.clone(),
     });
 
-    mark_wanted_completed(app, &title.id, None, None).await;
+    mark_wanted_completed(app, &title.id, None, Some(acq_score)).await;
 
     let result = ImportResult {
         import_id: import_id.to_string(),
@@ -1015,7 +1072,13 @@ async fn import_interstitial_movie_download(
                             "interstitial movie file upgraded"
                         );
                         persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
-                        mark_wanted_completed_for_collection(app, &title.id, collection_id).await;
+                        mark_wanted_completed_for_collection(
+                            app,
+                            &title.id,
+                            collection_id,
+                            Some(outcome.new_score),
+                        )
+                        .await;
                         let result = ImportResult {
                             import_id: import_id.to_string(),
                             decision: ImportDecision::Imported,
@@ -1287,7 +1350,7 @@ async fn import_interstitial_movie_download(
     }
 
     // Mark wanted item as completed (by collection_id)
-    mark_wanted_completed_for_collection(app, &title.id, collection_id).await;
+    mark_wanted_completed_for_collection(app, &title.id, collection_id, Some(acq_score)).await;
 
     // Spawn post-processing
     spawn_post_processing(PostProcessingContext {
@@ -1361,6 +1424,7 @@ async fn mark_wanted_completed_for_collection(
     app: &AppUseCase,
     title_id: &str,
     collection_id: &str,
+    imported_score: Option<i32>,
 ) {
     // Find the wanted item by iterating (since we don't have a direct lookup by collection_id)
     match app
@@ -1388,8 +1452,12 @@ async fn mark_wanted_completed_for_collection(
                             id: item.id.clone(),
                             last_search_at: Some(now),
                             search_count: item.search_count,
-                            current_score: item.current_score,
-                            grabbed_release: item.grabbed_release.clone(),
+                            current_score: imported_score.or(item.current_score),
+                            grabbed_release: if imported_score.is_some() {
+                                None
+                            } else {
+                                item.grabbed_release.clone()
+                            },
                         })
                         .await;
                     return;

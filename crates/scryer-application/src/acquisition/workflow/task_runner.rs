@@ -1231,6 +1231,33 @@ async fn process_single_wanted_item(
                 return Ok(());
             }
             Err(err) => {
+                if matches!(err, AppError::DownloadSubmitAmbiguous(_)) {
+                    warn!(
+                        title = title.name.as_str(),
+                        release = candidate.title.as_str(),
+                        attempt = grab_attempts,
+                        error = %err,
+                        "download submission result is ambiguous; deferring acquisition retry without blocklisting or failover"
+                    );
+
+                    let retry_at = (Utc::now() + chrono::Duration::seconds(60)).to_rfc3339();
+                    let _ = app
+                        .services
+                        .workflow
+                        .wanted_items
+                        .schedule_wanted_item_search(&WantedSearchTransition {
+                            id: item.id.clone(),
+                            next_search_at: Some(retry_at),
+                            last_search_at: Some(now.to_rfc3339()),
+                            search_count: item.search_count + 1,
+                            current_score: item.current_score,
+                            grabbed_release: item.grabbed_release.clone(),
+                        })
+                        .await;
+
+                    return Ok(());
+                }
+
                 // ── Grab failed — try next candidate ────────────────────────
                 warn!(
                     title = title.name.as_str(),

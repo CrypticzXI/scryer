@@ -364,6 +364,51 @@ fn candidate_parse_state(candidate: &IndexerSearchResult) -> CandidateParseState
     CandidateParseState::Parsed
 }
 
+fn normalized_release_identity(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn media_file_matches_release_identity(file: &TitleMediaFile, release_title: &str) -> bool {
+    if release_title.is_empty() {
+        return false;
+    }
+
+    [
+        file.grabbed_release_title.as_deref(),
+        file.scene_name.as_deref(),
+        file.original_file_path.as_deref(),
+        Some(file.file_path.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(normalized_release_identity)
+    .any(|candidate| candidate == release_title || candidate.contains(release_title))
+}
+
+fn candidate_matches_existing_media_file(
+    candidate: &IndexerSearchResult,
+    existing_files: &[TitleMediaFile],
+    episode_id: Option<&str>,
+) -> bool {
+    let release_title = normalized_release_identity(&candidate.title);
+    if release_title.is_empty() {
+        return false;
+    }
+
+    existing_files.iter().any(|file| {
+        episode_id.is_none_or(|episode_id| file.episode_id.as_deref() == Some(episode_id))
+            && media_file_matches_release_identity(file, &release_title)
+    })
+}
+
+fn grabbed_release_for_search_subject(item: &WantedItem) -> Option<String> {
+    if item.status == WantedStatus::Completed && item.current_score.is_some() {
+        None
+    } else {
+        item.grabbed_release.clone()
+    }
+}
+
 pub(crate) fn annotate_auto_decision(
     candidate: &mut IndexerSearchResult,
     code: ReleaseAutoDecisionCode,
@@ -433,6 +478,14 @@ pub(crate) fn evaluate_auto_candidate(
         .contains(&candidate.title.to_ascii_lowercase())
     {
         return ReleaseAutoDecisionCode::DbBlocklisted;
+    }
+
+    if candidate_matches_existing_media_file(
+        candidate,
+        context.existing_files,
+        context.subject.submission_scope.episode_id(),
+    ) {
+        return ReleaseAutoDecisionCode::AlreadyActive;
     }
 
     if let Some(failed_source_kinds) = context.failed_source_kinds
@@ -641,7 +694,9 @@ impl AppUseCase {
             subject_kind: ReleaseSearchSubjectKind::Title,
             current_score: wanted.as_ref().and_then(|item| item.current_score),
             last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
-            grabbed_release: wanted.and_then(|item| item.grabbed_release),
+            grabbed_release: wanted
+                .as_ref()
+                .and_then(grabbed_release_for_search_subject),
             submission_scope: SubmissionScope::Title,
         })
     }
@@ -759,7 +814,7 @@ impl AppUseCase {
             last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
             grabbed_release: wanted
                 .as_ref()
-                .and_then(|item| item.grabbed_release.clone()),
+                .and_then(grabbed_release_for_search_subject),
             submission_scope: episode_record
                 .as_ref()
                 .map(|episode| SubmissionScope::Episode {
@@ -823,7 +878,7 @@ impl AppUseCase {
             subject_kind: ReleaseSearchSubjectKind::Season,
             current_score: item.current_score,
             last_search_at: item.last_search_at.clone(),
-            grabbed_release: item.grabbed_release.clone(),
+            grabbed_release: grabbed_release_for_search_subject(item),
             submission_scope: collection_download_submission_scope_for_wanted_item(item, episode),
         })
     }
@@ -895,7 +950,9 @@ impl AppUseCase {
                 subject_kind: ReleaseSearchSubjectKind::Title,
                 current_score: wanted.as_ref().and_then(|item| item.current_score),
                 last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
-                grabbed_release: wanted.and_then(|item| item.grabbed_release),
+                grabbed_release: wanted
+                    .as_ref()
+                    .and_then(grabbed_release_for_search_subject),
                 submission_scope: SubmissionScope::Collection {
                     collection_id: collection.id.clone(),
                 },
@@ -938,7 +995,7 @@ impl AppUseCase {
             },
             current_score: item.current_score,
             last_search_at: item.last_search_at.clone(),
-            grabbed_release: item.grabbed_release.clone(),
+            grabbed_release: grabbed_release_for_search_subject(item),
             submission_scope: direct_download_submission_scope_for_wanted_item(item, episode),
         }
     }
@@ -1024,6 +1081,103 @@ mod tests {
         }
     }
 
+    fn make_media_file(release_title: &str, episode_id: Option<&str>) -> TitleMediaFile {
+        TitleMediaFile {
+            id: "media-file-1".to_string(),
+            title_id: "title-1".to_string(),
+            episode_id: episode_id.map(str::to_string),
+            file_path: format!("/data/series/{release_title}.mkv"),
+            size_bytes: 1,
+            source_signature_scheme: None,
+            source_signature_value: None,
+            quality_label: Some("720p".to_string()),
+            scan_status: "scanned".to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            video_codec: None,
+            video_width: Some(1280),
+            video_height: Some(720),
+            video_bitrate_kbps: None,
+            video_bit_depth: None,
+            video_hdr_format: None,
+            video_frame_rate: None,
+            video_profile: None,
+            audio_codec: None,
+            audio_profile: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            audio_languages: Vec::new(),
+            audio_streams: Vec::new(),
+            subtitle_languages: Vec::new(),
+            subtitle_codecs: Vec::new(),
+            subtitle_streams: Vec::new(),
+            has_multiaudio: false,
+            duration_seconds: None,
+            num_chapters: None,
+            container_format: None,
+            scene_name: Some(release_title.to_string()),
+            release_group: None,
+            source_type: None,
+            resolution: Some("720p".to_string()),
+            video_codec_parsed: None,
+            audio_codec_parsed: None,
+            audio_channels_parsed: None,
+            acquisition_score: Some(-15),
+            scoring_log: None,
+            indexer_source: None,
+            grabbed_release_title: None,
+            grabbed_at: None,
+            edition: None,
+            original_file_path: Some(format!(
+                "/nzbget-downloads/completed/{release_title}/{release_title}.mkv"
+            )),
+            release_hash: None,
+        }
+    }
+
+    fn make_wanted_item(
+        status: WantedStatus,
+        current_score: Option<i32>,
+        grabbed_release: Option<&str>,
+    ) -> WantedItem {
+        WantedItem {
+            id: "wanted-1".to_string(),
+            title_id: "title-1".to_string(),
+            title_name: None,
+            title_slug: None,
+            title_facet: None,
+            library_id: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            episode_number: None,
+            media_type: "movie".to_string(),
+            search_phase: "primary".to_string(),
+            next_search_at: None,
+            last_search_at: None,
+            search_count: 0,
+            baseline_date: None,
+            status,
+            grabbed_release: grabbed_release.map(str::to_string),
+            current_score,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    fn allowed_quality_decision(score: i32) -> QualityProfileDecision {
+        QualityProfileDecision {
+            release_score: score,
+            scoring_log: Vec::new(),
+            allowed: true,
+            block_codes: Vec::new(),
+            preference_score: score,
+        }
+    }
+
     #[test]
     fn canonical_title_lookup_keys_include_tagged_aliases() {
         let title = make_title();
@@ -1090,6 +1244,95 @@ mod tests {
         assert_eq!(
             candidate_parse_state(&candidate),
             CandidateParseState::Ambiguous
+        );
+    }
+
+    #[test]
+    fn candidate_matches_existing_media_file_for_same_episode_release() {
+        let candidate = make_candidate("Nightfall.S01E01.1080p.WEB-DL", None);
+        let existing = vec![make_media_file(
+            "Nightfall.S01E01.1080p.WEB-DL",
+            Some("episode-1"),
+        )];
+
+        assert!(candidate_matches_existing_media_file(
+            &candidate,
+            &existing,
+            Some("episode-1")
+        ));
+        assert!(!candidate_matches_existing_media_file(
+            &candidate,
+            &existing,
+            Some("episode-2")
+        ));
+    }
+
+    #[test]
+    fn completed_current_score_suppresses_stale_grabbed_release_cutoff() {
+        let completed = make_wanted_item(
+            WantedStatus::Completed,
+            Some(1200),
+            Some(r#"{"title":"Nightfall.2022.1080p.WEB-DL"}"#),
+        );
+        assert_eq!(grabbed_release_for_search_subject(&completed), None);
+
+        let grabbed = make_wanted_item(
+            WantedStatus::Grabbed,
+            Some(1200),
+            Some(r#"{"title":"Nightfall.2022.1080p.WEB-DL"}"#),
+        );
+        assert_eq!(
+            grabbed_release_for_search_subject(&grabbed),
+            Some(r#"{"title":"Nightfall.2022.1080p.WEB-DL"}"#.to_string())
+        );
+
+        let title = make_title();
+        let mut candidate = make_candidate("Nightfall.2022.1080p.WEB-DL", None);
+        candidate.quality_profile_decision = Some(allowed_quality_decision(2400));
+        let subject = ResolvedReleaseSearchSubject {
+            title_id: title.id.clone(),
+            title_tags: title.tags.clone(),
+            title_evidence: canonical_title_evidence(&title),
+            queries: vec!["Nightfall".to_string()],
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: None,
+            anidb_id: None,
+            category: title.facet.as_str().to_string(),
+            facet: title.facet.as_str().to_string(),
+            runtime_minutes: title.runtime_minutes,
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            subject_kind: ReleaseSearchSubjectKind::Title,
+            current_score: completed.current_score,
+            last_search_at: None,
+            grabbed_release: grabbed_release_for_search_subject(&completed),
+            submission_scope: SubmissionScope::Title,
+        };
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            current_score: subject.current_score,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            cutoff_reached: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_source_kinds: None,
+        };
+
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::Eligible
         );
     }
 }

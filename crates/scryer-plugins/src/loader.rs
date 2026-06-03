@@ -1925,6 +1925,14 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
         Some(client)
     }
 
+    fn subtitle_sync_client(&self) -> Option<Arc<dyn SubtitleSyncClient>> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned");
+        guard.subtitle_sync_client()
+    }
+
     fn available_provider_types(&self) -> Vec<String> {
         let guard = self
             .inner

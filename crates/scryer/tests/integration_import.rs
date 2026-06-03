@@ -3,7 +3,9 @@
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
@@ -408,6 +410,133 @@ async fn seed_series_episode_in_collection(
         .await
         .expect("create seeded episode");
     episode
+}
+
+#[test]
+fn completed_download_series_import_stack_subprocess_probe() {
+    let exe = std::env::current_exe().expect("resolve current test executable");
+    let mut child = Command::new(exe)
+        .arg("--exact")
+        .arg("completed_download_series_import_stack_subprocess_probe_child")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env("RUST_TEST_THREADS", "1")
+        .env("RUST_BACKTRACE", "1")
+        .env("SCRYER_COMPLETED_IMPORT_STACK_PROBE_CHILD", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn completed import stack probe");
+
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        if child
+            .try_wait()
+            .expect("poll completed import stack probe status")
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .expect("collect completed import stack probe output");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "completed import stack probe child failed\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                stderr
+            );
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .expect("collect timed-out completed import stack probe output");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!(
+                "completed import stack probe child timed out after {}s\nstdout:\n{}\nstderr:\n{}",
+                deadline.elapsed().as_secs(),
+                stdout,
+                stderr
+            );
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+#[ignore = "subprocess-only completed import stack probe child"]
+fn completed_download_series_import_stack_subprocess_probe_child() {
+    if std::env::var_os("SCRYER_COMPLETED_IMPORT_STACK_PROBE_CHILD").is_none() {
+        return;
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(4)
+        .build()
+        .expect("build tokio runtime for completed import stack probe");
+
+    runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            run_completed_download_series_import_stack_probe(),
+        )
+        .await
+        .expect("completed import stack probe should finish within timeout");
+    });
+}
+
+async fn run_completed_download_series_import_stack_probe() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx);
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_video = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Bluey.S01E01.720p.WEB-DL.H264.AAC2.0.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_video);
+
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_series_title(
+        &ctx,
+        "title-series-completed-import-stack-probe",
+        "Bluey",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let episode = seed_series_episode(&ctx, &title).await;
+
+    let completed = scryer_completed(
+        "dl-series-completed-import-stack-probe",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "series",
+    );
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("completed download series import");
+
+    assert_eq!(result.decision, ImportDecision::Imported);
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list imported media files");
+    assert_eq!(media_files.len(), 1);
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(episode.id.as_str())
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -404,6 +404,10 @@ function PluginTable({
               <TableRow
                 key={plugin.id}
                 id={selectorId("settings-plugin-row", plugin.name)}
+                data-plugin-table={showActions}
+                data-plugin-installed={plugin.isInstalled ? "true" : "false"}
+                data-plugin-enabled={plugin.isEnabled ? "true" : "false"}
+                data-plugin-update-available={plugin.updateAvailable ? "true" : "false"}
               >
                 <TableCell className={nameColumnClass}>
                   <div>

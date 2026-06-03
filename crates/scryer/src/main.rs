@@ -821,7 +821,7 @@ async fn bootstrap_application(
             .map_err(|e| format!("failed to initialize staged nzb store: {e}"))?,
     );
     let staged_nzb_pipeline_limit = Arc::new(tokio::sync::Semaphore::new(4));
-    bootstrap_plugin_installations(&customization_store)
+    bootstrap_plugin_installations(&customization_store, finalized_pending_restore)
         .await
         .map_err(|e| format!("failed to bootstrap plugin installations: {e}"))?;
     let (runtime_plugins, disabled_builtin_plugins) =
@@ -1921,9 +1921,10 @@ async fn load_runtime_plugin_state(
 
 async fn bootstrap_plugin_installations(
     customization_store: &DatastoreCustomizationStore,
+    finalized_pending_restore: bool,
 ) -> Result<(), String> {
     let removed = customization_store
-        .delete_incompatible_external_plugin_installations()
+        .delete_incompatible_external_plugin_installations(finalized_pending_restore)
         .await
         .map_err(|error| error.to_string())?;
     for plugin_id in removed {
@@ -2347,7 +2348,7 @@ mod tests {
             .await
             .expect("seed legacy nzbgeek builtin row");
 
-        bootstrap_plugin_installations(&customization)
+        bootstrap_plugin_installations(&customization, false)
             .await
             .expect("bootstrap plugin installations");
 
@@ -2408,7 +2409,7 @@ mod tests {
             .await
             .expect("seed legacy plugin row");
 
-        bootstrap_plugin_installations(&customization)
+        bootstrap_plugin_installations(&customization, false)
             .await
             .expect("bootstrap plugin installations");
 
@@ -2425,6 +2426,76 @@ mod tests {
                 .expect("read plugin installation")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_preserves_restored_downloaded_plugin_rows_until_recovery() {
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("plugins.db");
+        let services = SqliteServices::new(db_path.to_string_lossy())
+            .await
+            .unwrap();
+        let customization = DatastoreCustomizationStore::new(services.datastore());
+        let now = Utc::now();
+
+        customization
+            .create_plugin_installation(
+                &scryer_domain::PluginInstallation {
+                    id: scryer_domain::Id::new().0,
+                    plugin_id: "email".to_string(),
+                    name: "Email".to_string(),
+                    description: "Email notifications".to_string(),
+                    version: "0.1.9".to_string(),
+                    sdk_version: scryer_plugins::SDK_VERSION.to_string(),
+                    sdk_constraint: scryer_plugins::sdk_constraint_or_legacy(
+                        scryer_plugins::SDK_VERSION,
+                        "",
+                    ),
+                    scryer_constraint: None,
+                    plugin_type: "notification".to_string(),
+                    provider_type: "email".to_string(),
+                    source_kind: scryer_domain::PluginSourceKind::Downloaded,
+                    is_enabled: true,
+                    is_builtin: false,
+                    wasm_encoding: scryer_domain::PluginWasmEncoding::Zstd,
+                    wasm_digest_algo: Some("blake3".to_string()),
+                    source_url: Some("https://example.com/email.wasm.zst".to_string()),
+                    support_tier: scryer_domain::PluginSupportTier::Official,
+                    publisher: Some("scryer".to_string()),
+                    docs_url: Some("https://example.com/email/docs".to_string()),
+                    source_repo: Some("https://github.com/scryer-media/scryer-plugins".to_string()),
+                    manifest_url: Some("https://example.com/email.manifest.json".to_string()),
+                    wasm_digest: Some("a".repeat(64)),
+                    artifact_digest: Some("blake3:abcd".to_string()),
+                    descriptor_json: Some(
+                        r#"{"id":"email","name":"Email","version":"0.1.9","sdk_version":"1.6.0","sdk_constraint":">=1.6.0, <2.0.0","socket_permissions":[],"provider":{"kind":"notification","provider_type":"email","provider_aliases":[],"config_fields":[],"allowed_hosts":[],"default_base_url":null,"capabilities":{"supported_events":[]}}}"#.to_string(),
+                    ),
+                    installed_at: now,
+                    updated_at: now,
+                },
+                None,
+            )
+            .await
+            .expect("seed restored downloaded plugin row");
+
+        bootstrap_plugin_installations(&customization, true)
+            .await
+            .expect("bootstrap plugin installations");
+
+        assert!(
+            customization
+                .get_plugin_installation("email")
+                .await
+                .expect("read plugin installation")
+                .is_some()
+        );
+
+        let (runtime_plugins, disabled_builtins) = load_runtime_plugin_state(&customization)
+            .await
+            .expect("load runtime plugin state");
+
+        assert!(runtime_plugins.is_empty());
+        assert!(disabled_builtins.is_empty());
     }
 
     #[tokio::test]
@@ -2480,7 +2551,7 @@ mod tests {
             .await
             .expect("seed corrupt plugin row");
 
-        bootstrap_plugin_installations(&customization)
+        bootstrap_plugin_installations(&customization, false)
             .await
             .expect("bootstrap plugin installations");
 

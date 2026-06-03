@@ -389,7 +389,7 @@ impl NzbgetDownloadClient {
             .map_err(|error| match error {
                 OutboundRequestError::Build(error) => error,
                 OutboundRequestError::Http(error) => {
-                    map_nzbget_outbound_error("nzbget append request", error)
+                    map_nzbget_append_outbound_error(append_request, error)
                 }
             })?;
         let status = response.status();
@@ -523,6 +523,90 @@ impl NzbgetDownloadClient {
                 None => Ok(None),
             }
         })
+    }
+
+    async fn reconcile_append_after_transport_error(
+        &self,
+        append_request: &NzbgetAppendRequest<'_>,
+        title_id: &str,
+        error: &AppError,
+    ) -> Option<i64> {
+        const RECONCILE_DELAYS: [Duration; 5] = [
+            Duration::from_millis(0),
+            Duration::from_millis(100),
+            Duration::from_millis(250),
+            Duration::from_millis(500),
+            Duration::from_millis(1000),
+        ];
+
+        warn!(
+            error = %error,
+            title_id,
+            title = append_request.title_name,
+            nzb_filename = append_request.nzb_filename,
+            "nzbget append response was ambiguous; reconciling queue and history before returning failure"
+        );
+
+        for delay in RECONCILE_DELAYS {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+
+            match self.list_queue_for_client().await {
+                Ok(items) => {
+                    if let Some(job_id) =
+                        find_reconciled_nzbget_append_job(&items, title_id, append_request)
+                    {
+                        info!(
+                            nzb_id = job_id,
+                            title_id,
+                            nzb_filename = append_request.nzb_filename,
+                            "reconciled ambiguous nzbget append from queue"
+                        );
+                        return Some(job_id);
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id,
+                        nzb_filename = append_request.nzb_filename,
+                        "failed to read nzbget queue while reconciling ambiguous append"
+                    );
+                }
+            }
+
+            match self.list_history_for_client().await {
+                Ok(items) => {
+                    if let Some(job_id) =
+                        find_reconciled_nzbget_append_job(&items, title_id, append_request)
+                    {
+                        info!(
+                            nzb_id = job_id,
+                            title_id,
+                            nzb_filename = append_request.nzb_filename,
+                            "reconciled ambiguous nzbget append from history"
+                        );
+                        return Some(job_id);
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        title_id,
+                        nzb_filename = append_request.nzb_filename,
+                        "failed to read nzbget history while reconciling ambiguous append"
+                    );
+                }
+            }
+        }
+
+        warn!(
+            title_id,
+            nzb_filename = append_request.nzb_filename,
+            "ambiguous nzbget append was not found in queue or history"
+        );
+        None
     }
 
     async fn edit_queue(&self, command: &str, ids: Vec<i64>) -> AppResult<()> {
@@ -929,6 +1013,76 @@ fn map_nzbget_outbound_error(operation: &str, error: OutboundHttpError) -> AppEr
     }
 }
 
+fn map_nzbget_append_outbound_error(
+    append_request: &NzbgetAppendRequest<'_>,
+    error: OutboundHttpError,
+) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
+            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+                Some(delay) => {
+                    format!(
+                        "nzbget append request was rate limited; retry after {}s",
+                        delay.as_secs()
+                    )
+                }
+                None => "nzbget append request was rate limited".to_string(),
+            },
+        ),
+        OutboundHttpError::Transport {
+            attempts, source, ..
+        } => {
+            warn!(
+                attempts,
+                error = %source,
+                error_debug = ?source,
+                is_timeout = source.is_timeout(),
+                is_connect = source.is_connect(),
+                is_request = source.is_request(),
+                is_body = source.is_body(),
+                is_decode = source.is_decode(),
+                title = append_request.title_name,
+                nzb_filename = append_request.nzb_filename,
+                "nzbget append transport failed after sending mutation request"
+            );
+            AppError::DownloadSubmitAmbiguous(format!(
+                "nzbget append request transport failed after the request may have been accepted: {source}"
+            ))
+        }
+    }
+}
+
+fn find_reconciled_nzbget_append_job(
+    items: &[DownloadQueueItem],
+    title_id: &str,
+    append_request: &NzbgetAppendRequest<'_>,
+) -> Option<i64> {
+    let expected_name = normalize_nzbget_append_match_name(append_request.nzb_filename);
+    items.iter().find_map(|item| {
+        let item_title_id = item.title_id.as_deref()?.trim();
+        if item_title_id != title_id {
+            return None;
+        }
+
+        let item_name = normalize_nzbget_append_match_name(&item.title_name);
+        if item_name != expected_name {
+            return None;
+        }
+
+        item.download_client_item_id.trim().parse::<i64>().ok()
+    })
+}
+
+fn normalize_nzbget_append_match_name(value: &str) -> String {
+    let trimmed = value.trim();
+    let without_ext = if trimmed.to_ascii_lowercase().ends_with(".nzb") {
+        &trimmed[..trimmed.len().saturating_sub(4)]
+    } else {
+        trimmed
+    };
+    without_ext.to_ascii_lowercase()
+}
+
 #[async_trait]
 impl DownloadClient for NzbgetDownloadClient {
     async fn submit_download(
@@ -1035,6 +1189,20 @@ impl DownloadClient for NzbgetDownloadClient {
                     };
                     self.send_append_request(&retry_request, &staged.staged_nzb)
                         .await?
+                }
+                Err(err @ AppError::DownloadSubmitAmbiguous(_)) => {
+                    if let Some(queue_id) = self
+                        .reconcile_append_after_transport_error(
+                            &append_request,
+                            title.id.as_str(),
+                            &err,
+                        )
+                        .await
+                    {
+                        queue_id
+                    } else {
+                        return Err(err);
+                    }
                 }
                 Err(err) => return Err(err),
             };
@@ -1849,6 +2017,71 @@ mod tests {
         assert!(!supports_nzbget_append_auto_category("25.2"));
         assert!(supports_nzbget_append_auto_category("25.3"));
         assert!(supports_nzbget_append_auto_category("26.0"));
+    }
+
+    #[test]
+    fn reconciled_append_job_requires_matching_title_id_and_release_name() {
+        let parameters = Vec::new();
+        let append_request = NzbgetAppendRequest {
+            request_id: "req-1",
+            title_name: "Bluey",
+            nzb_filename: "Bluey.S01.720p.WEB-DL.AV1.AAC2.0-NTb.nzb",
+            source_for_payload: "",
+            category: "series",
+            queue_priority: 0,
+            parameters: &parameters,
+            use_auto_category: true,
+        };
+
+        let matching = DownloadQueueItem {
+            id: "queue-1".to_string(),
+            title_id: Some("title-1".to_string()),
+            episode_id: None,
+            title_name: "Bluey.S01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string(),
+            facet: None,
+            client_id: String::new(),
+            client_name: String::new(),
+            client_type: "nzbget".to_string(),
+            state: DownloadQueueState::Queued,
+            progress_percent: 0,
+            size_bytes: None,
+            remaining_seconds: None,
+            queued_at: None,
+            last_updated_at: None,
+            attention_required: false,
+            attention_reason: None,
+            download_client_item_id: "42".to_string(),
+            import_status: None,
+            import_error_code: None,
+            import_error_message: None,
+            imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
+            is_scryer_origin: true,
+            tracked_state: None,
+            tracked_status: None,
+            tracked_status_messages: Vec::new(),
+            tracked_match_type: None,
+        };
+        let wrong_release = DownloadQueueItem {
+            title_name: "Bluey.S02.720p.WEB-DL.AV1.AAC2.0-NTb".to_string(),
+            download_client_item_id: "43".to_string(),
+            ..matching.clone()
+        };
+        let wrong_title = DownloadQueueItem {
+            title_id: Some("title-2".to_string()),
+            download_client_item_id: "44".to_string(),
+            ..matching.clone()
+        };
+
+        assert_eq!(
+            find_reconciled_nzbget_append_job(
+                &[wrong_release, wrong_title, matching],
+                "title-1",
+                &append_request,
+            ),
+            Some(42)
+        );
     }
 
     #[test]

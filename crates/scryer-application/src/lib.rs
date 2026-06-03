@@ -448,6 +448,9 @@ pub enum AppError {
     DownloadFeedbackTimeout(String),
 
     #[error("{0}")]
+    DownloadSubmitAmbiguous(String),
+
+    #[error("{0}")]
     TotpStepUpRequired(String),
 
     #[error("{0}")]

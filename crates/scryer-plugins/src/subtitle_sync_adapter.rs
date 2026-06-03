@@ -109,11 +109,13 @@ pub(crate) fn build_subtitle_sync_manifest(
     input_path: &Path,
     scratch_dir: &Path,
 ) -> extism::Manifest {
+    let input_root = input_path.parent().unwrap_or_else(|| Path::new("."));
+
     extism::Manifest::new([extism::Wasm::data(wasm_bytes.to_vec())])
         .with_timeout(std::time::Duration::from_secs(
             SUBTITLE_SYNC_TIMEOUT_SECONDS,
         ))
-        .with_allowed_path(format!("ro:{}", input_path.display()), GUEST_INPUT_ROOT)
+        .with_allowed_path(format!("ro:{}", input_root.display()), GUEST_INPUT_ROOT)
         .with_allowed_path(scratch_dir.display().to_string(), GUEST_SCRATCH_ROOT)
 }
 

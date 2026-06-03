@@ -64,103 +64,6 @@ impl MetadataIdentityHint {
                 | MetadataIdentitySource::ExternalImportSonarr
         )
     }
-
-    fn accepts_safe_match(&self, item: &MetadataSearchItem) -> bool {
-        !self.has_external_ids()
-            || (self.has_matching_external_id_signal(item)
-                && self.external_id_match_is_evidence_compatible(item))
-            || self.allows_sidecar_exact_title_year_fallback(item)
-    }
-
-    fn has_matching_external_id_signal(&self, item: &MetadataSearchItem) -> bool {
-        (self.imdb_id.is_some() && item.has_auto_match_signal("external_id:imdb"))
-            || (self.tmdb_id.is_some() && item.has_auto_match_signal("external_id:tmdb"))
-            || (self.tvdb_id.is_some() && item.has_auto_match_signal("external_id:tvdb"))
-    }
-
-    fn external_id_match_is_evidence_compatible(&self, item: &MetadataSearchItem) -> bool {
-        if let Some(hint_year) = self.year
-            && let Some(item_year) = item.year
-        {
-            let Ok(hint_year) = i32::try_from(hint_year) else {
-                return false;
-            };
-            if (hint_year - item_year).abs() > 1 {
-                return false;
-            }
-        }
-
-        self.title
-            .as_deref()
-            .is_none_or(|hint_title| title_evidence_is_compatible(hint_title, &item.name))
-    }
-
-    fn allows_sidecar_exact_title_year_fallback(&self, item: &MetadataSearchItem) -> bool {
-        matches!(
-            self.source,
-            MetadataIdentitySource::Nfo | MetadataIdentitySource::Plexmatch
-        ) && self.title.is_some()
-            && self.year.is_some()
-            && self.year.and_then(|year| i32::try_from(year).ok()) == item.year
-            && !item.has_any_external_id_signal()
-            && item.has_auto_match_signal("exact_title")
-            && item.has_auto_match_signal("exact_year")
-    }
-}
-
-fn title_evidence_is_compatible(expected: &str, actual: &str) -> bool {
-    let expected = crate::title_matching::canonical_lookup_key(expected);
-    let actual = crate::title_matching::canonical_lookup_key(actual);
-    if expected.is_empty() || actual.is_empty() {
-        return true;
-    }
-    if expected == actual {
-        return true;
-    }
-
-    let distance = levenshtein_distance(&expected, &actual);
-    let max_len = expected.chars().count().max(actual.chars().count());
-    if max_len <= 4 {
-        return false;
-    }
-
-    distance <= 2 || (max_len >= 16 && distance.saturating_mul(100) <= max_len.saturating_mul(18))
-}
-
-fn levenshtein_distance(left: &str, right: &str) -> usize {
-    let right_chars = right.chars().collect::<Vec<_>>();
-    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
-    let mut current = vec![0; right_chars.len() + 1];
-
-    for (left_index, left_char) in left.chars().enumerate() {
-        current[0] = left_index + 1;
-        for (right_index, right_char) in right_chars.iter().enumerate() {
-            let substitution_cost = usize::from(left_char != *right_char);
-            current[right_index + 1] = (previous[right_index + 1] + 1)
-                .min(current[right_index] + 1)
-                .min(previous[right_index] + substitution_cost);
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-
-    previous[right_chars.len()]
-}
-
-trait MetadataSearchItemSignals {
-    fn has_auto_match_signal(&self, signal: &str) -> bool;
-    fn has_any_external_id_signal(&self) -> bool;
-}
-
-impl MetadataSearchItemSignals for MetadataSearchItem {
-    fn has_auto_match_signal(&self, signal: &str) -> bool {
-        self.auto_match_signals.iter().any(|value| value == signal)
-    }
-
-    fn has_any_external_id_signal(&self) -> bool {
-        self.auto_match_signals
-            .iter()
-            .any(|value| value.starts_with("external_id:"))
-    }
 }
 
 #[cfg(test)]
@@ -1216,9 +1119,7 @@ pub(crate) fn select_movie_metadata_from_batch_results(
             ))
         })?;
 
-        if let Some(best) =
-            select_safe_batch_match(results_for_query.as_ref(), candidate.identity_hint.as_ref())
-        {
+        if let Some(best) = select_safe_batch_match(results_for_query.as_ref()) {
             return Ok(Some(best));
         }
     }
@@ -1251,9 +1152,7 @@ pub(crate) fn select_series_metadata_from_batch_results(
             ))
         })?;
 
-        if let Some(best) =
-            select_safe_batch_match(results_for_query.as_ref(), candidate.identity_hint.as_ref())
-        {
+        if let Some(best) = select_safe_batch_match(results_for_query.as_ref()) {
             return Ok(Some(best));
         }
     }
@@ -1261,15 +1160,8 @@ pub(crate) fn select_series_metadata_from_batch_results(
     Ok(None)
 }
 
-fn select_safe_batch_match(
-    results: &[MetadataSearchItem],
-    identity_hint: Option<&MetadataIdentityHint>,
-) -> Option<MetadataSearchItem> {
-    results
-        .first()
-        .filter(|item| item.auto_match_safe)
-        .filter(|item| identity_hint.is_none_or(|hint| hint.accepts_safe_match(item)))
-        .cloned()
+fn select_safe_batch_match(results: &[MetadataSearchItem]) -> Option<MetadataSearchItem> {
+    results.first().filter(|item| item.auto_match_safe).cloned()
 }
 
 #[cfg(test)]
@@ -2533,15 +2425,7 @@ mod tests {
     }
 
     #[test]
-    fn arr_hint_accepts_only_supplied_provider_signal() {
-        let hint = MetadataIdentityHint {
-            source: MetadataIdentitySource::ExternalImportRadarr,
-            imdb_id: None,
-            tmdb_id: Some("2502".to_string()),
-            tvdb_id: None,
-            title: None,
-            year: None,
-        };
+    fn select_safe_batch_match_trusts_smg_auto_match_safe() {
         let patton_tvdb_signal = MetadataSearchItem {
             tvdb_id: "2502".to_string(),
             name: "Patton".to_string(),
@@ -2549,18 +2433,10 @@ mod tests {
             auto_match_safe: true,
             auto_match_signals: vec!["external_id:tvdb".to_string()],
         };
-        let bourne_tmdb_signal = MetadataSearchItem {
-            tvdb_id: "2502".to_string(),
-            name: "The Bourne Supremacy".to_string(),
-            year: Some(2004),
-            auto_match_safe: true,
-            auto_match_signals: vec!["external_id:tmdb".to_string()],
-        };
 
-        assert!(select_safe_batch_match(&[patton_tvdb_signal], Some(&hint)).is_none());
         assert_eq!(
-            select_safe_batch_match(&[bourne_tmdb_signal], Some(&hint)).map(|item| item.name),
-            Some("The Bourne Supremacy".to_string())
+            select_safe_batch_match(&[patton_tvdb_signal]).map(|item| item.name),
+            Some("Patton".to_string())
         );
     }
 
@@ -2848,6 +2724,34 @@ mod tests {
                 .iter()
                 .any(|query| query == "Bastard!! (2022)")
         );
+
+        let key = BatchMetadataSearchKey::new(
+            METADATA_TYPE_SERIES,
+            "Bastard!!",
+            Some(2022),
+            candidate.identity_hint.as_ref(),
+        )
+        .expect("series key");
+        let mut results = HashMap::new();
+        results.insert(
+            key,
+            Arc::new(vec![MetadataSearchItem {
+                tvdb_id: "415677".into(),
+                name: "Bastard!! (2022)".into(),
+                year: Some(2022),
+                auto_match_safe: true,
+                auto_match_signals: vec![
+                    "exact_title_year_hint".into(),
+                    "exact_year".into(),
+                    "score_gap_clear".into(),
+                ],
+            }]),
+        );
+
+        let selected = select_series_metadata_from_batch_results(&candidate, &results)
+            .expect("series batch selection")
+            .expect("safe year-hint match");
+        assert_eq!(selected.tvdb_id, "415677");
     }
 
     #[test]
@@ -3035,7 +2939,7 @@ mod tests {
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_allows_sidecar_exact_title_year_fallback() {
+    fn select_movie_metadata_from_batch_results_trusts_smg_safe_with_identity_hint() {
         let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Nfo,
@@ -3066,13 +2970,13 @@ mod tests {
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
             .expect("movie batch selection")
-            .expect("sidecar exact title/year fallback");
+            .expect("SMG-safe auto-match");
 
         assert_eq!(selected.tvdb_id, "movie-1");
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_rejects_provider_mismatch_for_id_hint() {
+    fn select_movie_metadata_from_batch_results_trusts_smg_safe_provider_signal() {
         let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Nfo,
@@ -3106,13 +3010,14 @@ mod tests {
         );
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
-            .expect("movie batch selection");
+            .expect("movie batch selection")
+            .expect("SMG-safe auto-match");
 
-        assert!(selected.is_none());
+        assert_eq!(selected.tvdb_id, "movie-1");
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_rejects_filename_id_without_external_signal() {
+    fn select_movie_metadata_from_batch_results_trusts_smg_safe_without_external_signal() {
         let mut candidate = build_prepared_movie_candidate(&["Glass Harbor"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Filename,
@@ -3142,9 +3047,10 @@ mod tests {
         );
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
-            .expect("movie batch selection");
+            .expect("movie batch selection")
+            .expect("SMG-safe auto-match");
 
-        assert!(selected.is_none());
+        assert_eq!(selected.tvdb_id, "movie-1");
     }
 
     #[test]
@@ -3185,7 +3091,7 @@ mod tests {
     }
 
     #[test]
-    fn select_movie_metadata_from_batch_results_rejects_external_id_with_conflicting_evidence() {
+    fn select_movie_metadata_from_batch_results_trusts_smg_safe_with_conflicting_local_evidence() {
         let mut candidate = build_prepared_movie_candidate(&["The Bourne Supremacy"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Nfo,
@@ -3215,9 +3121,10 @@ mod tests {
         );
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
-            .expect("movie batch selection");
+            .expect("movie batch selection")
+            .expect("SMG-safe auto-match");
 
-        assert!(selected.is_none());
+        assert_eq!(selected.tvdb_id, "2502");
     }
 
     #[test]
@@ -3252,7 +3159,7 @@ mod tests {
 
         let selected = select_movie_metadata_from_batch_results(&candidate, &results)
             .expect("movie batch selection")
-            .expect("compatible ID-backed match");
+            .expect("SMG-safe auto-match");
 
         assert_eq!(selected.tvdb_id, "157390");
     }

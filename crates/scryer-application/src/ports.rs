@@ -1299,7 +1299,11 @@ pub trait WantedItemRepository: Send + Sync {
             last_search_at: last_search_at.map(str::to_string),
             search_count: wanted.search_count,
             current_score: current_score.or(wanted.current_score),
-            grabbed_release: wanted.grabbed_release,
+            grabbed_release: if current_score.is_some() {
+                None
+            } else {
+                wanted.grabbed_release
+            },
         })
         .await?;
 
@@ -1437,6 +1441,17 @@ pub trait PendingReleaseRepository: Send + Sync {
 #[async_trait]
 pub trait BlocklistRepository: Send + Sync {
     async fn add(&self, entry: &NewBlocklistEntry) -> AppResult<String>;
+
+    async fn add_failed_download_if_absent(&self, entry: &NewBlocklistEntry) -> AppResult<bool> {
+        if self
+            .has_recorded_download_failure(&entry.title_id, entry.source_title.as_deref())
+            .await?
+        {
+            return Ok(false);
+        }
+        self.add(entry).await?;
+        Ok(true)
+    }
 
     async fn list_for_title(&self, title_id: &str, limit: usize) -> AppResult<Vec<BlocklistEntry>>;
 

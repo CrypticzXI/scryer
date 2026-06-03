@@ -804,6 +804,11 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             Json(ErrorResponse { error: message }),
         )
             .into_response(),
+        AppError::DownloadSubmitAmbiguous(message) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response(),
         AppError::TotpStepUpRequired(message)
         | AppError::TotpEnrollmentRequired(message)
         | AppError::MfaEnrollmentRequired(message)

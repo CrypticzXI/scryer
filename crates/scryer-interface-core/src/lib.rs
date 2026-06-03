@@ -292,6 +292,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::PluginInstallInProgress(_) => "PluginInstallInProgress",
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
+        AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
         AppError::TotpStepUpRequired(_) => "TotpStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
         AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",

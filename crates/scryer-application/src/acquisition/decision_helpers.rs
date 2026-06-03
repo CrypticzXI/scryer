@@ -101,6 +101,14 @@ impl AppUseCase {
         category_hint: Option<&str>,
     ) -> ResolvedUpgradeContext {
         let category = upgrade_context_category(title, category_hint);
+        let grabbed_release = if grabbed_release
+            .map(str::trim)
+            .is_some_and(|value| value.is_empty())
+        {
+            None
+        } else {
+            grabbed_release
+        };
         let profile = self
             .resolve_quality_profile(QualityProfileLookup {
                 title_tags: &title.tags,

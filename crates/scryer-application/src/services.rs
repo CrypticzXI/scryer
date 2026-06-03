@@ -91,6 +91,30 @@ impl DownloadFailureGuardTable {
         );
         Some(self.acquire_key(key).await)
     }
+
+    pub async fn acquire_release_or_client_item(
+        &self,
+        title_id: Option<&str>,
+        source_title: Option<&str>,
+        client_id: &str,
+        client_type: &str,
+        client_item_id: &str,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let title_id = title_id.map(str::trim).filter(|value| !value.is_empty())?;
+        if let Some(source_title) = source_title
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase())
+        {
+            return Some(
+                self.acquire_key(format!("release:{title_id}:{source_title}"))
+                    .await,
+            );
+        }
+
+        self.acquire(Some(title_id), client_id, client_type, client_item_id)
+            .await
+    }
 }
 
 #[derive(Clone, Default)]
